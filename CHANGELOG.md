@@ -1,5 +1,11 @@
 # caplets
 
+## 0.3.0
+
+### Minor Changes
+
+- b924a7b: Add MCP-backed Markdown Caplet files with Caplet-first discovery operations.
+
 ## 0.2.1
 
 ### Patch Changes
