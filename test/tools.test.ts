@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { parseConfig } from "../src/config.js";
 import { DownstreamManager } from "../src/downstream.js";
 import { CapletsError } from "../src/errors.js";
 import { ServerRegistry } from "../src/registry.js";
-import { handleServerTool, validateOperationRequest } from "../src/tools.js";
+import {
+  generatedToolInputSchema,
+  handleServerTool,
+  validateOperationRequest,
+} from "../src/tools.js";
 
 describe("generated tool request validation", () => {
   it("rejects operation-specific extra fields", () => {
@@ -36,6 +41,24 @@ describe("generated tool request validation", () => {
     expect(() => validateOperationRequest({ operation: "explode" }, 50)).toThrow(
       expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
     );
+  });
+
+  it("describes the nested call_tool argument shape to agents", () => {
+    const schema = z.toJSONSchema(generatedToolInputSchema, { io: "input" }) as {
+      properties: Record<string, { description?: string }>;
+    };
+
+    const operationDescription = schema.properties.operation?.description;
+    const toolDescription = schema.properties.tool?.description;
+    const argumentsDescription = schema.properties.arguments?.description;
+
+    expect(operationDescription).toContain("call_tool");
+    expect(toolDescription).toContain("Exact downstream tool name");
+    expect(argumentsDescription).toContain("arguments");
+    expect(argumentsDescription).toContain(
+      '"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}',
+    );
+    expect(argumentsDescription).toContain("top-level query");
   });
 });
 

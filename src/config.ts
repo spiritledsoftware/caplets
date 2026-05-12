@@ -69,6 +69,7 @@ const FORBIDDEN_HEADERS = new Set([
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".caplets", "config.json");
 export const DEFAULT_AUTH_DIR = join(homedir(), ".caplets", "auth");
+export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
 
 const remoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -249,13 +250,28 @@ export function resolveConfigPath(path?: string): string {
   return path ?? join(homedir(), ".caplets", "config.json");
 }
 
-export function loadConfig(path = resolveConfigPath()): CapletsConfig {
-  if (!existsSync(path)) {
-    throw new CapletsError("CONFIG_NOT_FOUND", `Caplets config not found at ${path}`);
+export function resolveProjectConfigPath(cwd = process.cwd()): string {
+  return join(cwd, PROJECT_CONFIG_FILE);
+}
+
+export function loadConfig(
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+): CapletsConfig {
+  const hasUserConfig = existsSync(path);
+  const hasProjectConfig = existsSync(projectPath);
+
+  if (!hasUserConfig && !hasProjectConfig) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplets config not found at ${path} or ${projectPath}`,
+    );
   }
 
   try {
-    return parseConfig(JSON.parse(readFileSync(path, "utf8")));
+    const projectConfig = hasProjectConfig ? readConfigFile(projectPath) : undefined;
+    const userConfig = hasUserConfig ? readConfigFile(path) : undefined;
+    return parseConfig(mergeConfigInputs(projectConfig, userConfig));
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;
@@ -266,6 +282,46 @@ export function loadConfig(path = resolveConfigPath()): CapletsConfig {
       redactSecrets(error),
     );
   }
+}
+
+function readConfigFile(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplets config at ${path} is not valid JSON`,
+      redactSecrets(error),
+    );
+  }
+}
+
+function mergeConfigInputs(projectConfig: unknown, userConfig: unknown): unknown {
+  if (projectConfig === undefined) {
+    return userConfig;
+  }
+  if (userConfig === undefined) {
+    return projectConfig;
+  }
+  if (!isPlainConfigObject(projectConfig) || !isPlainConfigObject(userConfig)) {
+    return userConfig;
+  }
+
+  return {
+    ...userConfig,
+    ...projectConfig,
+    mcpServers: {
+      ...userConfig.mcpServers,
+      ...projectConfig.mcpServers,
+    },
+  };
+}
+
+function isPlainConfigObject(value: unknown): value is {
+  mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+} {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function parseConfig(input: unknown): CapletsConfig {

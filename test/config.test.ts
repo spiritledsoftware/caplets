@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configJsonSchema, loadConfig, parseConfig } from "../src/config.js";
@@ -43,6 +43,79 @@ describe("config", () => {
     expect(config.options.defaultSearchLimit).toBe(20);
     expect(config.mcpServers["my-server_1"]?.transport).toBe("stdio");
     expect(config.mcpServers["my-server_1"]?.env?.EXAMPLE_TOKEN).toBe("secret-value");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loads project config when user config does not exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          project: {
+            name: "Project Server",
+            description: "A useful project downstream server.",
+            command: "node",
+          },
+        },
+      }),
+    );
+
+    const config = loadConfig(join(dir, "missing-user-config.json"), projectConfigPath);
+    expect(config.mcpServers.project?.name).toBe("Project Server");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("merges user config with project config and lets project config win", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const userConfigPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, "user"), { recursive: true });
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        defaultSearchLimit: 7,
+        maxSearchLimit: 40,
+        mcpServers: {
+          shared: {
+            name: "Project Shared",
+            description: "A useful project shared downstream server.",
+            command: "project-shared",
+          },
+          projectOnly: {
+            name: "Project Only",
+            description: "A useful project-only downstream server.",
+            command: "project-only",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      userConfigPath,
+      JSON.stringify({
+        defaultSearchLimit: 3,
+        mcpServers: {
+          shared: {
+            name: "User Shared",
+            description: "A useful user shared downstream server.",
+            command: "user-shared",
+          },
+          userOnly: {
+            name: "User Only",
+            description: "A useful user-only downstream server.",
+            command: "user-only",
+          },
+        },
+      }),
+    );
+
+    const config = loadConfig(userConfigPath, projectConfigPath);
+    expect(config.options).toEqual({ defaultSearchLimit: 7, maxSearchLimit: 40 });
+    expect(Object.keys(config.mcpServers).sort()).toEqual(["projectOnly", "shared", "userOnly"]);
+    expect(config.mcpServers.shared?.command).toBe("project-shared");
     rmSync(dir, { recursive: true, force: true });
   });
 
