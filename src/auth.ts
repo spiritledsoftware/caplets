@@ -218,13 +218,13 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return this.verifier;
   }
 
-  async addClientAuthentication(headers: Headers, params: URLSearchParams): Promise<void> {
+  addClientAuthentication = async (headers: Headers, params: URLSearchParams): Promise<void> => {
     if (this.server.auth?.type !== "oauth2" || !this.server.auth.clientSecret) {
       return;
     }
     params.set("client_secret", this.server.auth.clientSecret);
     headers.set("content-type", "application/x-www-form-urlencoded");
-  }
+  };
 }
 
 export async function runOAuthFlow(
