@@ -8,7 +8,12 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletServerConfig } from "./config.js";
-import { classifyRemoteAuthError, oauthHeaders, staticRemoteHeaders } from "./auth.js";
+import {
+  classifyRemoteAuthError,
+  FileOAuthProvider,
+  readTokenBundle,
+  staticRemoteHeaders,
+} from "./auth.js";
 import { CapletsError, toSafeError } from "./errors.js";
 import type { ServerRegistry } from "./registry.js";
 
@@ -242,11 +247,9 @@ export class DownstreamManager {
       throw new CapletsError("CONFIG_INVALID", `${server.server} is missing url`);
     }
 
-    const headers = {
-      ...staticRemoteHeaders(server),
-      ...oauthHeaders(server, this.options.authDir),
-    };
+    const headers = staticRemoteHeaders(server);
     const requestInit = Object.keys(headers).length ? { headers } : undefined;
+    const authProvider = this.oauthProvider(server);
     const fetchWithAuthClassification = async (
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
@@ -259,23 +262,47 @@ export class DownstreamManager {
       return response;
     };
     if (server.transport === "http") {
-      return new StreamableHTTPClientTransport(
-        new URL(server.url),
-        requestInit
-          ? { requestInit, fetch: fetchWithAuthClassification }
-          : { fetch: fetchWithAuthClassification },
-      );
+      return new StreamableHTTPClientTransport(new URL(server.url), {
+        ...(requestInit ? { requestInit } : {}),
+        ...(authProvider ? { authProvider } : {}),
+        fetch: authProvider ? fetch : fetchWithAuthClassification,
+      });
     }
     if (server.transport === "sse") {
-      return new SSEClientTransport(
-        new URL(server.url),
-        requestInit
-          ? { requestInit, fetch: fetchWithAuthClassification }
-          : { fetch: fetchWithAuthClassification },
-      );
+      return new SSEClientTransport(new URL(server.url), {
+        ...(requestInit ? { requestInit } : {}),
+        ...(authProvider ? { authProvider } : {}),
+        fetch: authProvider ? fetch : fetchWithAuthClassification,
+      });
     }
 
     throw new CapletsError("UNSUPPORTED_TRANSPORT", `Unsupported transport for ${server.server}`);
+  }
+
+  private oauthProvider(server: CapletServerConfig): FileOAuthProvider | undefined {
+    if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
+      return undefined;
+    }
+    const bundle = readTokenBundle(server.server, this.options.authDir);
+    if (!bundle?.accessToken && !bundle?.refreshToken) {
+      throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
+        server: server.server,
+        authType: server.auth.type,
+        nextAction: "run_caplets_auth_login",
+      });
+    }
+    return new FileOAuthProvider(
+      server,
+      server.auth.redirectUri ?? "http://127.0.0.1/callback",
+      () => {
+        throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
+          server: server.server,
+          authType: server.auth?.type,
+          nextAction: "run_caplets_auth_login",
+        });
+      },
+      this.options.authDir,
+    );
   }
 }
 
