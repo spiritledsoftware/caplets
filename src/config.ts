@@ -22,6 +22,7 @@ export type RemoteAuthConfig =
 
 export type CapletServerConfig = {
   server: string;
+  backend: "mcp";
   name: string;
   description: string;
   tags?: string[] | undefined;
@@ -39,6 +40,29 @@ export type CapletServerConfig = {
   disabled: boolean;
 };
 
+export type OpenApiAuthConfig =
+  | { type: "none" }
+  | { type: "bearer"; token: string }
+  | { type: "headers"; headers: Record<string, string> };
+
+export type OpenApiEndpointConfig = {
+  server: string;
+  backend: "openapi";
+  name: string;
+  description: string;
+  tags?: string[] | undefined;
+  body?: string | undefined;
+  specPath?: string | undefined;
+  specUrl?: string | undefined;
+  baseUrl?: string | undefined;
+  auth: OpenApiAuthConfig;
+  requestTimeoutMs: number;
+  operationCacheTtlMs: number;
+  disabled: boolean;
+};
+
+export type CapletConfig = CapletServerConfig | OpenApiEndpointConfig;
+
 export type CapletsOptions = {
   defaultSearchLimit: number;
   maxSearchLimit: number;
@@ -48,6 +72,7 @@ export type CapletsConfig = {
   version: 1;
   options: CapletsOptions;
   mcpServers: Record<string, CapletServerConfig>;
+  openapiEndpoints: Record<string, OpenApiEndpointConfig>;
 };
 
 const SERVER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -97,6 +122,16 @@ const remoteAuthSchema = z
       .strict(),
   ])
   .describe("Authentication settings for a remote MCP server.");
+
+const openApiAuthSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("none") }).strict(),
+    z.object({ type: z.literal("bearer"), token: z.string().min(1) }).strict(),
+    z
+      .object({ type: z.literal("headers"), headers: z.record(z.string(), z.string().min(1)) })
+      .strict(),
+  ])
+  .describe("Authentication settings for an OpenAPI endpoint.");
 
 const publicServerSchema = z
   .object({
@@ -152,13 +187,61 @@ const normalizedServerSchema = publicServerSchema.extend({
   body: z.string().optional(),
 });
 
+const publicOpenApiEndpointSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).describe("Human-readable OpenAPI display name."),
+    description: z
+      .string()
+      .describe("Capability description shown to agents before OpenAPI operations are disclosed.")
+      .refine(
+        (value) => value.trim().length >= 10,
+        "description must contain at least 10 non-whitespace characters",
+      )
+      .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
+    specPath: z.string().min(1).optional().describe("Local OpenAPI specification path."),
+    specUrl: z.string().url().optional().describe("Remote OpenAPI specification URL."),
+    baseUrl: z.string().url().optional().describe("Override base URL for OpenAPI requests."),
+    auth: openApiAuthSchema.describe(
+      'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60_000)
+      .describe("Timeout in milliseconds for OpenAPI HTTP requests."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe(
+        "Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time.",
+      ),
+    disabled: z
+      .boolean()
+      .default(false)
+      .describe("When true, omit this OpenAPI Caplet from discovery."),
+  })
+  .strict();
+
+const normalizedOpenApiEndpointSchema = publicOpenApiEndpointSchema.extend({
+  body: z.string().optional(),
+});
+
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
+type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
 type ConfigInput = {
   mcpServers?: Record<string, unknown>;
+  openapiEndpoints?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
-function configSchemaFor(serverValueSchema: z.ZodTypeAny) {
+function configSchemaFor(
+  serverValueSchema: z.ZodTypeAny,
+  openApiEndpointValueSchema: z.ZodTypeAny,
+) {
   return z
     .object({
       $schema: z
@@ -184,6 +267,10 @@ function configSchemaFor(serverValueSchema: z.ZodTypeAny) {
         .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
         .default({})
         .describe("Downstream MCP servers keyed by stable server ID."),
+      openapiEndpoints: z
+        .record(z.string().regex(SERVER_ID_PATTERN), openApiEndpointValueSchema)
+        .default({})
+        .describe("OpenAPI endpoints keyed by stable Caplet ID."),
     })
     .strict()
     .superRefine((config, ctx) => {
@@ -253,11 +340,65 @@ function configSchemaFor(serverValueSchema: z.ZodTypeAny) {
           }
         }
       }
+
+      for (const [endpoint, rawValue] of Object.entries(config.openapiEndpoints)) {
+        const raw = rawValue as ConfigSchemaOpenApiEndpointValue;
+        if (config.mcpServers[endpoint]) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["openapiEndpoints", endpoint],
+            message: `Caplet ID ${endpoint} is already used by mcpServers`,
+          });
+        }
+        if (!SERVER_ID_PATTERN.test(endpoint)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["openapiEndpoints", endpoint],
+            message: "OpenAPI endpoint ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
+        if (Boolean(raw.specPath) === Boolean(raw.specUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["openapiEndpoints", endpoint],
+            message: "OpenAPI endpoint must define exactly one spec source: specPath or specUrl",
+          });
+        }
+        if (raw.specUrl && !isAllowedRemoteUrl(raw.specUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["openapiEndpoints", endpoint, "specUrl"],
+            message: "OpenAPI specUrl must use https except loopback development urls",
+          });
+        }
+        if (raw.baseUrl && !isAllowedRemoteUrl(raw.baseUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["openapiEndpoints", endpoint, "baseUrl"],
+            message: "OpenAPI baseUrl must use https except loopback development urls",
+          });
+        }
+        if (raw.auth?.type === "headers") {
+          for (const headerName of Object.keys(raw.auth.headers)) {
+            const normalized = headerName.toLowerCase();
+            if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["openapiEndpoints", endpoint, "auth", "headers", headerName],
+                message: `header ${headerName} is not allowed`,
+              });
+            }
+          }
+        }
+      }
     });
 }
 
-export const configFileSchema = configSchemaFor(publicServerSchema);
-const normalizedConfigFileSchema = configSchemaFor(normalizedServerSchema);
+export const configFileSchema = configSchemaFor(publicServerSchema, publicOpenApiEndpointSchema);
+const normalizedConfigFileSchema = configSchemaFor(
+  normalizedServerSchema,
+  normalizedOpenApiEndpointSchema,
+);
 
 export function configJsonSchema(): unknown {
   return {
@@ -293,7 +434,9 @@ export function loadConfig(
   const hasProjectConfig = existsSync(projectPath);
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
   const userCaplets = loadCapletFiles(resolveCapletsRoot(path));
-  const projectConfig = hasProjectConfig ? readPublicConfigInput(projectPath) : undefined;
+  const projectConfig = hasProjectConfig
+    ? rejectUntrustedProjectOpenApi(readPublicConfigInput(projectPath), projectPath)
+    : undefined;
   const projectCaplets = shouldLoadProjectCaplets()
     ? loadCapletFiles(dirname(projectPath))
     : undefined;
@@ -309,10 +452,13 @@ export function loadConfig(
     const config = parseConfig(
       mergeConfigInputs(userConfig, userCaplets, projectConfig, projectCaplets),
     );
-    if (Object.keys(config.mcpServers).length === 0) {
+    if (
+      Object.keys(config.mcpServers).length === 0 &&
+      Object.keys(config.openapiEndpoints).length === 0
+    ) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server",
+        "Caplets config must define at least one MCP server or OpenAPI endpoint",
       );
     }
     return config;
@@ -360,6 +506,16 @@ function readPublicConfigInput(path: string): ConfigInput {
   }
 }
 
+function rejectUntrustedProjectOpenApi(input: ConfigInput, path: string): ConfigInput {
+  if (input.openapiEndpoints && Object.keys(input.openapiEndpoints).length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define openapiEndpoints; use trusted project Caplet files or user config`,
+    );
+  }
+  return input;
+}
+
 function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInput | undefined {
   let merged: ConfigInput | undefined;
   for (const input of inputs) {
@@ -372,6 +528,10 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       mcpServers: {
         ...merged?.mcpServers,
         ...input.mcpServers,
+      },
+      openapiEndpoints: {
+        ...merged?.openapiEndpoints,
+        ...input.openapiEndpoints,
       },
     };
   }
@@ -390,8 +550,19 @@ export function parseConfig(input: unknown): CapletsConfig {
     servers[server] = stripUndefined({
       ...interpolated,
       server,
+      backend: "mcp",
       transport: interpolated.transport ?? (interpolated.command ? "stdio" : "http"),
     }) as CapletServerConfig;
+  }
+
+  const openapiEndpoints: Record<string, OpenApiEndpointConfig> = {};
+  for (const [server, raw] of Object.entries(parsed.data.openapiEndpoints)) {
+    const interpolated = raw as ConfigSchemaOpenApiEndpointValue;
+    openapiEndpoints[server] = stripUndefined({
+      ...interpolated,
+      server,
+      backend: "openapi",
+    }) as OpenApiEndpointConfig;
   }
 
   return {
@@ -401,6 +572,7 @@ export function parseConfig(input: unknown): CapletsConfig {
       maxSearchLimit: parsed.data.maxSearchLimit,
     },
     mcpServers: servers,
+    openapiEndpoints,
   };
 }
 
@@ -432,7 +604,7 @@ function interpolateConfig<T>(value: T, path: string[] = []): T {
 }
 
 function isPublicMetadataPath(path: string[]): boolean {
-  if (path.length < 3 || path[0] !== "mcpServers") {
+  if (path.length < 3 || (path[0] !== "mcpServers" && path[0] !== "openapiEndpoints")) {
     return false;
   }
   return NON_INTERPOLATED_SERVER_FIELDS.has(path[2] ?? "");

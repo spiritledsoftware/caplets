@@ -29,9 +29,21 @@ describe("registry", () => {
           disabled: true,
         },
       },
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath: "/tmp/users-openapi.json",
+          auth: { type: "bearer", token: "secret-token" },
+        },
+      },
     });
     const registry = new ServerRegistry(config);
-    expect(registry.enabledServers().map((server) => server.server)).toEqual(["enabled", "remote"]);
+    expect(registry.enabledServers().map((server) => server.server)).toEqual([
+      "enabled",
+      "remote",
+      "users",
+    ]);
     expect(registry.get("disabled")).toBeUndefined();
     const description = capabilityDescription(config.mcpServers.enabled!);
     expect(description).toContain("Enabled Server");
@@ -47,5 +59,23 @@ describe("registry", () => {
     expect(serialized).toContain('"transport":"http"');
     expect(serialized).not.toContain("secret-url-value");
     expect(serialized).not.toContain("secret-bearer-value");
+
+    const openApiDescription = capabilityDescription(config.openapiEndpoints.users!);
+    expect(openApiDescription).toContain("OpenAPI endpoint backend");
+    expect(openApiDescription).toContain('"operation":"check_backend"');
+    const openApiDetail = registry.detail(config.openapiEndpoints.users!);
+    expect(openApiDetail).toEqual({
+      caplet: "users",
+      name: "Users API",
+      description: "Manage users through the internal HTTP API.",
+      backend: {
+        type: "openapi",
+        disabled: false,
+        requestTimeoutMs: 60000,
+        operationCacheTtlMs: 30000,
+        source: "specPath",
+      },
+    });
+    expect(JSON.stringify(openApiDetail)).not.toContain("secret-token");
   });
 });

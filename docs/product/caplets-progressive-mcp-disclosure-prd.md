@@ -4,7 +4,7 @@
 
 **Problem Statement**: MCP clients that connect directly to many servers receive a large, flat tool surface up front. This creates context bloat, weak tool selection, name-collision risk, and poor discoverability when an agent only needs to know which capability domain to inspect next.
 
-**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions from `~/.caplets/config.json`, user-owned MCP-backed Markdown Caplet files from `~/.caplets`, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing server's tools through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
+**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions and native OpenAPI endpoint definitions from `~/.caplets/config.json`, user-owned Markdown Caplet files from `~/.caplets`, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools or OpenAPI operations through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
 
 **Success Criteria**:
 
@@ -25,13 +25,13 @@
 ### Primary User Flow
 
 1. User installs and configures Caplets as an MCP server in their MCP client.
-2. User creates either `~/.caplets/config.json` with downstream server definitions and Caplets options, or Markdown Caplet files with required `mcpServer` frontmatter.
-3. Each downstream server entry or Caplet file uses the supported MCP server configuration shape plus a required `description`.
+2. User creates either `~/.caplets/config.json` with downstream server or OpenAPI endpoint definitions and Caplets options, or Markdown Caplet files with exactly one executable backend.
+3. Each downstream MCP server, OpenAPI endpoint, or Caplet file uses the supported backend configuration shape plus a required `description`.
 4. Client calls Caplets `tools/list` and sees one top-level tool per enabled downstream server, for example `linear`, `chrome-devtools`, and `context7`.
 5. Agent chooses the relevant Caplet tool based on its skill-like tool name and description.
 6. Agent calls that Caplet tool with an operation such as `get_caplet`, `search_tools`, `list_tools`, or `get_tool`.
 7. Agent calls the same Caplet tool with `operation: "call_tool"`, an exact downstream tool name, and a JSON object of arguments.
-8. Caplets forwards the request to that server's downstream MCP process and returns the downstream result.
+8. Caplets forwards the request to that server's downstream MCP process or executes the selected OpenAPI HTTP operation and returns the result.
 
 ### User Stories
 
@@ -42,6 +42,8 @@ Acceptance Criteria:
 - Caplets reads `~/.caplets/config.json` from the current user's home directory by default.
 - Caplets reads user-owned Markdown Caplet files from `~/.caplets` by default.
 - Caplets reads project Markdown Caplet files from `./.caplets` only when `CAPLETS_TRUST_PROJECT_CAPLETS` is set to `1`, `true`, or `yes`.
+- Caplets supports `mcpServers` for MCP backends and `openapiEndpoints` for native OpenAPI backends.
+- Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
 - Every configured server requires a stable server key and non-empty `description`.
 - Caplets `tools/list` returns one generated top-level MCP tool per enabled server.
 - Each generated Caplet tool uses the configured server ID as the MCP tool name.
@@ -74,6 +76,7 @@ Acceptance Criteria:
 Acceptance Criteria:
 
 - `operation: "call_tool"` requires exact downstream `tool` and a JSON object `arguments`.
+- For OpenAPI-backed Caplets, `call_tool.arguments` uses grouped HTTP inputs: `path`, `query`, `header`, and `body`.
 - `call_tool` requires the exact downstream tool name; Caplets does not use fuzzy matching, aliases, or auto-correction for execution.
 - The selected generated Caplet tool is the server namespace, so `call_tool` does not accept a `server` argument in MVP.
 - Caplets preserves downstream tool names exactly and does not support flattened namespaced identifiers such as `server.tool` in MVP.
@@ -130,6 +133,7 @@ Caplets exposes dynamic MCP tools:
 Each generated Caplet tool supports these operations:
 
 - `get_caplet`: Returns the full configured capability card for the selected server without starting the downstream process.
+- `check_backend`: Validates that the selected backend is available. For MCP it checks the downstream tool list; for OpenAPI it validates the spec and executable base URL without invoking an operation.
 - `check_mcp_server`: Validates that the selected downstream server can start, initialize, and return its tool list without invoking any downstream tool.
 - `list_tools`: Lists compact downstream tool entries for the selected server.
 - `search_tools`: Searches downstream tools for the selected server. Supports optional `limit`, defaults to 20 results, and rejects values above 50.
@@ -138,11 +142,12 @@ Each generated Caplet tool supports these operations:
 
 Generated Caplet tool input schema:
 
-- `operation` is required and must be one of `get_caplet`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, or `call_tool`.
+- `operation` is required and must be one of `get_caplet`, `check_backend`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, or `call_tool`.
 - `get_caplet` accepts no extra fields.
 - `get_caplet` returns only configured capability-card data and does not start, initialize, or probe the downstream server.
 - `get_caplet` is intentionally provisional in MVP; it may be pruned later if generated top-level Caplet tool descriptions prove sufficient.
 - `check_mcp_server` accepts no extra fields.
+- `check_backend` accepts no extra fields.
 - `list_tools` accepts no extra fields.
 - `search_tools` requires `query` and accepts optional `limit`.
 - `get_tool` requires `tool`.
@@ -252,7 +257,8 @@ Requirements:
 - `call_tool` must resolve against fresh-enough downstream `tools/list` metadata and must not forward a call for a tool absent from that metadata in MVP.
 - `disabled` defaults to false. Disabled servers are omitted from normal discovery, never appear in search results, are never started, and cannot be inspected or invoked until re-enabled and Caplets is restarted.
 - Disabled servers are omitted from generated `tools/list` to preserve the token-saving purpose of Caplets.
-- MVP supports stdio, MCP Streamable HTTP, and legacy HTTP+SSE downstream servers. Streamable HTTP is preferred for remote servers; SSE exists for compatibility.
+- MCP backends support stdio, MCP Streamable HTTP, and legacy HTTP+SSE downstream servers. Streamable HTTP is preferred for remote servers; SSE exists for compatibility.
+- OpenAPI backends support local `specPath` or remote `specUrl`, explicit `auth`, optional `baseUrl`, and native HTTP execution for standard OpenAPI methods.
 - OpenCode's `mcp` config shape is a compatibility reference, not Caplets' native MVP shape: OpenCode uses local/remote entries under `mcp`, local `command` as an array, `environment` instead of `env`, and `{env:NAME}`-style interpolation in its broader config system. Automatic OpenCode config import/normalization is deferred.
 
 ### Non-Goals
@@ -358,6 +364,7 @@ Core modules:
 - `defaultSearchLimit?: number`
 - `maxSearchLimit?: number`
 - `mcpServers: Record<string, CapletServerConfig>`
+- `openapiEndpoints: Record<string, OpenApiEndpointConfig>`
 
 `CapletServerConfig`:
 
@@ -381,6 +388,18 @@ Core modules:
 - `{ type: "bearer"; token: string }`
 - `{ type: "headers"; headers: Record<string, string> }`
 - `{ type: "oauth2"; authorizationUrl?: string; tokenUrl?: string; issuer?: string; clientId?: string; clientSecret?: string; scopes?: string[]; redirectUri?: string }`
+
+`OpenApiEndpointConfig`:
+
+- `name: string`
+- `description: string`
+- `specPath?: string`
+- `specUrl?: string`
+- `baseUrl?: string`
+- `auth: { type: "none" } | { type: "bearer"; token: string } | { type: "headers"; headers: Record<string, string> }`
+- `requestTimeoutMs?: number`
+- `operationCacheTtlMs?: number`
+- `disabled?: boolean`
 
 `StoredOAuthTokenBundle`:
 
@@ -408,7 +427,8 @@ Core modules:
 - `description: string`
 - `tags?: string[]`
 - `body?: string`
-- `mcpServer: { transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number }`
+- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" }`
+- `mcpServer?: { transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number }`
 
 `CapletToolRef`:
 
@@ -420,7 +440,7 @@ Core modules:
 
 `GeneratedServerToolRequest`:
 
-- `operation: "get_caplet" | "check_mcp_server" | "list_tools" | "search_tools" | "get_tool" | "call_tool"`
+- `operation: "get_caplet" | "check_backend" | "check_mcp_server" | "list_tools" | "search_tools" | "get_tool" | "call_tool"`
 - `query?: string`
 - `limit?: number`
 - `tool?: string`
@@ -447,6 +467,8 @@ Requirements:
 - MCP SDK server: exposes Caplets over stdio.
 - MCP SDK client: connects to downstream stdio, Streamable HTTP, and legacy HTTP+SSE servers.
 - Node child process runtime: launches configured downstream commands.
+- OpenAPI parser: loads and validates configured local or remote OpenAPI specs.
+- Native fetch: executes configured OpenAPI operations with explicit Caplets auth.
 - Caplets CLI: runs `caplets auth login <server>` for OAuth-backed remote servers.
 - Browser/loopback OAuth: opens the authorization URL and receives the OAuth callback on localhost for configured OAuth servers.
 - Local auth store: reads and writes OAuth token bundles under `~/.caplets/auth`.
