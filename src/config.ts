@@ -723,7 +723,7 @@ function shouldLoadProjectCaplets(): boolean {
   return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
 }
 
-function isTrustedEnvEnabled(value: string | undefined): boolean {
+export function isTrustedEnvEnabled(value: string | undefined): boolean {
   return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
 }
 

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, runCli, starterConfig } from "../src/cli.js";
+import { initConfig, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
 import { parseConfig, TRUST_PROJECT_CAPLETS_ENV } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 import { writeTokenBundle } from "../src/auth.js";
@@ -282,6 +282,24 @@ describe("cli init", () => {
     }
   });
 
+  it("installs a selected Caplet when an unrelated Caplet is invalid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    try {
+      writeInstallableRepo(repo);
+      writeFileSync(join(repo, "caplets", "broken.md"), "not frontmatter\n");
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+
+      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(dir, "user", "broken.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to overwrite installed Caplets without force", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
@@ -316,6 +334,18 @@ describe("cli init", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("normalizes GitHub shorthand repos without double appending git suffixes", () => {
+    expect(normalizeGitRepo("spiritledsoftware/caplets")).toBe(
+      "https://github.com/spiritledsoftware/caplets.git",
+    );
+    expect(normalizeGitRepo("spiritledsoftware/caplets.git")).toBe(
+      "https://github.com/spiritledsoftware/caplets.git",
+    );
+    expect(normalizeGitRepo("https://github.com/spiritledsoftware/caplets.git")).toBe(
+      "https://github.com/spiritledsoftware/caplets.git",
+    );
   });
 
   it("lists configured OAuth servers without printing token values", async () => {

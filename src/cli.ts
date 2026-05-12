@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Command, CommanderError } from "commander";
 import { version as packageJsonVersion } from "../package.json";
-import { discoverCapletFiles, loadCapletFiles } from "./caplet-files.js";
+import { discoverCapletFiles, validateCapletFile } from "./caplet-files.js";
 import {
   DEFAULT_AUTH_DIR,
   loadConfig,
@@ -24,6 +24,7 @@ import {
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
   TRUST_PROJECT_CAPLETS_ENV,
+  isTrustedEnvEnabled,
   type CapletConfig,
   type CapletsConfig,
 } from "./config.js";
@@ -267,7 +268,9 @@ export function installCaplets(
       throw new CapletsError("CONFIG_NOT_FOUND", `No Caplets found in ${sourceRoot}`);
     }
 
-    loadCapletFiles(sourceRoot);
+    for (const caplet of selected) {
+      validateCapletFile(caplet.path);
+    }
     mkdirSync(destinationRoot, { recursive: true, mode: 0o700 });
 
     const installed = selected.map((caplet) =>
@@ -299,9 +302,10 @@ function resolveInstallSource(repo: string): { repoRoot: string; cleanup: () => 
   }
 }
 
-function normalizeGitRepo(repo: string): string {
+export function normalizeGitRepo(repo: string): string {
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
-    return `https://github.com/${repo}.git`;
+    const normalized = repo.endsWith(".git") ? repo.slice(0, -4) : repo;
+    return `https://github.com/${normalized}.git`;
   }
   return repo;
 }
@@ -404,8 +408,7 @@ function formatConfigPaths(paths: ConfigPaths): string {
 }
 
 function isTrustedProjectCapletsEnabled(): boolean {
-  const value = process.env[TRUST_PROJECT_CAPLETS_ENV];
-  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+  return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
 }
 
 function formatTable(rows: string[][]): string {

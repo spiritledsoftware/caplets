@@ -519,6 +519,10 @@ function readCapletFile(path: string): unknown {
   return capletToServerConfig(parsed.data, body, dirname(path));
 }
 
+export function validateCapletFile(path: string): void {
+  readCapletFile(path);
+}
+
 function capletToServerConfig(
   frontmatter: CapletFileFrontmatter,
   body: string,
