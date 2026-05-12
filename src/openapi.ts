@@ -1,14 +1,15 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { OpenApiEndpointConfig } from "./config.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import type { ServerRegistry } from "./registry.js";
-import type { CompactTool } from "./downstream.js";
 import { genericOAuthHeaders } from "./auth.js";
+import type { OpenApiEndpointConfig } from "./config.js";
+import { isAllowedRemoteUrl } from "./config/validation.js";
+import type { CompactTool } from "./downstream.js";
+import { CapletsError, toSafeError } from "./errors.js";
+import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
+import type { ServerRegistry } from "./registry.js";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];
-const MAX_RESPONSE_BYTES = 1024 * 1024;
 const FORBIDDEN_ARGUMENT_HEADERS = new Set([
   "accept",
   "authorization",
@@ -564,8 +565,10 @@ function shouldSendSpecAuth(endpoint: OpenApiEndpointConfig): boolean {
 
 async function readResponse(response: Response): Promise<Record<string, unknown>> {
   const contentType = response.headers.get("content-type") ?? "";
-  const text = await readLimitedText(response);
-  const body = parseResponseBody(contentType, text);
+  const text = await readLimitedText(response, {
+    errorMessage: "OpenAPI response exceeded byte limit",
+  });
+  const body = parseHttpBody(contentType, text);
   return {
     status: response.status,
     statusText: response.statusText,
@@ -574,44 +577,6 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
     },
     ...(body === undefined ? {} : { body }),
   };
-}
-
-function parseResponseBody(contentType: string, text: string): unknown {
-  if (!text) {
-    return undefined;
-  }
-  if (!contentType.includes("application/json")) {
-    return text;
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-async function readLimitedText(response: Response): Promise<string> {
-  if (!response.body) {
-    return "";
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (value) {
-      bytes += value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new CapletsError("DOWNSTREAM_PROTOCOL_ERROR", "OpenAPI response exceeded byte limit");
-      }
-      chunks.push(value);
-    }
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 async function fetchWithLimit(
@@ -638,7 +603,9 @@ async function fetchWithLimit(
         status: response.status,
       });
     }
-    return await readLimitedText(response);
+    return await readLimitedText(response, {
+      errorMessage: "OpenAPI response exceeded byte limit",
+    });
   } catch (error) {
     if (isAbortError(error)) {
       throw new CapletsError("TOOL_CALL_TIMEOUT", "OpenAPI spec request timed out");
@@ -662,7 +629,7 @@ function validateOperationBaseUrl(
       `${endpoint.server} must configure baseUrl when using remote specUrl`,
     );
   }
-  if (!isAllowedRequestBaseUrl(base)) {
+  if (!isAllowedRemoteUrl(base)) {
     throw new CapletsError("CONFIG_INVALID", `${endpoint.server} OpenAPI baseUrl is not allowed`);
   }
   const url = new URL(base);
@@ -683,21 +650,6 @@ function buildOperationUrl(base: string, operationPath: string): URL {
   const relativePath = operationPath.replace(/^\/+/, "");
   baseUrl.pathname = [basePath, relativePath].filter(Boolean).join("/");
   return baseUrl;
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
-function isAllowedRequestBaseUrl(value: string): boolean {
-  const url = new URL(value);
-  if (url.protocol === "https:") {
-    return true;
-  }
-  if (url.protocol !== "http:") {
-    return false;
-  }
-  return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
 }
 
 function openApiCacheKey(endpoint: OpenApiEndpointConfig): string {

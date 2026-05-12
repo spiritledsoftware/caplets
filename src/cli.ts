@@ -1,18 +1,19 @@
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import { Command, CommanderError } from "commander";
-import { loadConfig, resolveConfigPath } from "./config.js";
-import { CapletsError, toSafeError } from "./errors.js";
+import { version as packageJsonVersion } from "../package.json";
+import { loginAuth, logoutAuth, listAuth } from "./cli/auth.js";
+import { initConfig } from "./cli/init.js";
 import {
-  deleteTokenBundle,
-  isTokenBundleExpired,
-  readTokenBundle,
-  runGenericOAuthFlow,
-  runOAuthFlow,
-  type GenericAuthTarget,
-} from "./auth.js";
+  formatCapletList,
+  formatConfigPaths,
+  listCaplets,
+  resolveCliConfigPaths,
+} from "./cli/inspection.js";
+import { installCaplets } from "./cli/install.js";
+import { loadConfig, resolveCapletsRoot, resolveConfigPath } from "./config.js";
+import { CapletsError } from "./errors.js";
+
+export { initConfig, starterConfig } from "./cli/init.js";
+export { installCaplets, normalizeGitRepo } from "./cli/install.js";
 
 type CliIO = {
   writeOut?: (value: string) => void;
@@ -43,6 +44,7 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .name("caplets")
     .description("Progressive-disclosure gateway for MCP servers.")
+    .version(packageJsonVersion)
     .exitOverride()
     .configureOutput({
       writeOut,
@@ -63,6 +65,60 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(`Created Caplets config at ${path}\n`);
     });
 
+  program
+    .command("list")
+    .description("List configured Caplets.")
+    .option("--all", "include disabled Caplets")
+    .option("--json", "print JSON output")
+    .action((options: { all?: boolean; json?: boolean }) => {
+      const config = loadConfig(envConfigPath());
+      const rows = listCaplets(config, { includeDisabled: Boolean(options.all) });
+      if (options.json) {
+        writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+        return;
+      }
+      writeOut(formatCapletList(rows));
+    });
+
+  program
+    .command("install")
+    .description("Install Caplets from a repo's caplets directory.")
+    .argument("<repo>", "local repo path, Git URL, or GitHub owner/repo")
+    .argument("[caplets...]", "optional Caplet IDs to install")
+    .option("--force", "overwrite installed Caplets")
+    .action((repo: string, capletIds: string[], options: { force?: boolean }) => {
+      const result = installCaplets(repo, {
+        capletIds,
+        force: Boolean(options.force),
+        destinationRoot: resolveCapletsRoot(resolveConfigPath(envConfigPath())),
+      });
+      for (const caplet of result.installed) {
+        writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
+      }
+    });
+
+  const config = program.command("config").description("Inspect Caplets config locations.");
+
+  config
+    .command("path")
+    .description("Print the effective user config path.")
+    .action(() => {
+      writeOut(`${resolveConfigPath(envConfigPath())}\n`);
+    });
+
+  config
+    .command("paths")
+    .description("Print resolved Caplets config, root, and auth paths.")
+    .option("--json", "print JSON output")
+    .action((options: { json?: boolean }) => {
+      const paths = resolveCliConfigPaths(envConfigPath(), io.authDir);
+      if (options.json) {
+        writeOut(`${JSON.stringify(paths, null, 2)}\n`);
+        return;
+      }
+      writeOut(formatConfigPaths(paths));
+    });
+
   const auth = program.command("auth").description("Manage OAuth credentials for remote servers.");
 
   auth
@@ -71,10 +127,12 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<server>", "configured server ID")
     .option("--no-open", "print the authorization URL without opening a browser")
     .action(async (serverId: string, options: { open?: boolean }) => {
+      const configPath = envConfigPath();
       await loginAuth(serverId, {
         noOpen: options.open === false,
         writeOut,
         writeErr,
+        ...(configPath ? { configPath } : {}),
         ...(io.authDir ? { authDir: io.authDir } : {}),
       });
     });
@@ -84,185 +142,29 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Delete stored OAuth credentials for a server.")
     .argument("<server>", "configured server ID")
     .action((serverId: string) => {
-      const target = findAuthTarget(serverId);
-      assertLoginTarget(target, serverId);
-
-      if (deleteTokenBundle(serverId, io.authDir)) {
-        writeOut(`Deleted OAuth credentials for ${serverId}\n`);
-      } else {
-        writeOut(`No OAuth credentials found for ${serverId}\n`);
-      }
+      const configPath = envConfigPath();
+      logoutAuth(serverId, {
+        writeOut,
+        ...(configPath ? { configPath } : {}),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+      });
     });
 
   auth
     .command("list")
     .description("List servers with stored OAuth credentials.")
     .action(() => {
-      const config = loadConfig(envConfigPath());
-      const servers = authTargets(config).sort((left, right) =>
-        left.server.localeCompare(right.server),
-      );
-
-      if (servers.length === 0) {
-        writeOut("No configured remote OAuth servers found.\n");
-        return;
-      }
-      for (const server of servers) {
-        const bundle = readTokenBundle(server.server, io.authDir);
-        const status = !bundle
-          ? "missing"
-          : isTokenBundleExpired(bundle)
-            ? "expired"
-            : "authenticated";
-        writeOut(
-          [
-            server.server,
-            status,
-            bundle?.expiresAt ? `expires ${bundle.expiresAt}` : undefined,
-            bundle?.scope ? `scope ${bundle.scope}` : undefined,
-          ]
-            .filter(Boolean)
-            .join("\t"),
-        );
-        writeOut("\n");
-      }
+      const configPath = envConfigPath();
+      listAuth({
+        writeOut,
+        ...(configPath ? { configPath } : {}),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+      });
     });
 
   return program;
 }
 
-async function loginAuth(
-  serverId: string,
-  options: {
-    noOpen: boolean;
-    writeOut: (value: string) => void;
-    writeErr: (value: string) => void;
-    authDir?: string;
-  },
-): Promise<void> {
-  const config = loadConfig(envConfigPath());
-  const server = findAuthTarget(serverId, config);
-  assertLoginTarget(server, serverId);
-
-  try {
-    const flowOptions = {
-      noOpen: options.noOpen,
-      ...(options.authDir ? { authDir: options.authDir } : {}),
-      ...(options.noOpen ? { readManualInput: maybeReadManualInput } : {}),
-      print: (line: string) => options.writeOut(`${line}\n`),
-    };
-    if (server.backend === "mcp") {
-      await runOAuthFlow(server, flowOptions);
-    } else {
-      await runGenericOAuthFlow(server, flowOptions);
-    }
-    options.writeOut(`Authenticated ${serverId}\n`);
-  } catch (error) {
-    options.writeErr(`${JSON.stringify(toSafeError(error, "AUTH_FAILED"), null, 2)}\n`);
-    process.exitCode = 1;
-  }
-}
-
-type AuthTarget = ReturnType<typeof authTargets>[number];
-
-function findAuthTarget(
-  serverId: string,
-  config = loadConfig(envConfigPath()),
-): AuthTarget | undefined {
-  return authTargets(config).find((server) => server.server === serverId);
-}
-
-function authTargets(config: ReturnType<typeof loadConfig>) {
-  const graphqlEndpoints = (
-    config as unknown as { graphqlEndpoints?: Record<string, GenericAuthTarget> }
-  ).graphqlEndpoints;
-  return [
-    ...Object.values(config.mcpServers).filter(
-      (server) =>
-        server.transport !== "stdio" &&
-        (server.auth?.type === "oauth2" || server.auth?.type === "oidc"),
-    ),
-    ...Object.values(config.openapiEndpoints).filter(
-      (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
-    ),
-    ...Object.values(graphqlEndpoints ?? {}).filter(
-      (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
-    ),
-  ];
-}
-
-function assertLoginTarget(
-  target: AuthTarget | undefined,
-  serverId: string,
-): asserts target is AuthTarget {
-  if (!target) {
-    throw new CapletsError("SERVER_NOT_FOUND", `Server ${serverId} is not configured for OAuth`);
-  }
-  if ("disabled" in target && target.disabled) {
-    throw new CapletsError("SERVER_UNAVAILABLE", `Server ${serverId} is disabled`);
-  }
-}
-
-export function initConfig(options: { path?: string; force?: boolean } = {}): string {
-  const path = resolveConfigPath(options.path);
-  if (existsSync(path) && !options.force) {
-    throw new CapletsError(
-      "CONFIG_EXISTS",
-      `Caplets config already exists at ${path}; pass --force to overwrite it`,
-    );
-  }
-
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${starterConfig()}\n`, {
-    mode: 0o600,
-    flag: options.force ? "w" : "wx",
-  });
-  try {
-    chmodSync(path, 0o600);
-  } catch {
-    // Best effort on platforms without POSIX permissions.
-  }
-  return path;
-}
-
-export function starterConfig(): string {
-  return JSON.stringify(
-    {
-      $schema:
-        "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
-      version: 1,
-      defaultSearchLimit: 20,
-      maxSearchLimit: 50,
-      mcpServers: {
-        example: {
-          name: "Example MCP Server",
-          description: "Replace this with a real MCP server and what agents should use it for.",
-          command: "npx",
-          args: ["-y", "@modelcontextprotocol/server-everything"],
-          disabled: true,
-        },
-      },
-    },
-    null,
-    2,
-  );
-}
-
 function envConfigPath(): string | undefined {
   return process.env.CAPLETS_CONFIG?.trim() || undefined;
-}
-
-async function maybeReadManualInput(): Promise<string | undefined> {
-  if (!input.isTTY) {
-    return undefined;
-  }
-  const rl = createInterface({ input, output });
-  try {
-    const answer = await rl.question(
-      "Paste callback URL or authorization code after completing authorization, or press Enter to wait for loopback callback: ",
-    );
-    return answer.trim() || undefined;
-  } finally {
-    rl.close();
-  }
 }

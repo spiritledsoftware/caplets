@@ -129,6 +129,15 @@ CAPLETS_CONFIG=/path/to/config.json caplets init
 CAPLETS_CONFIG=/path/to/config.json caplets serve
 ```
 
+Inspect the installed CLI version and resolved config locations:
+
+```sh
+caplets --version
+caplets config path
+caplets config paths
+caplets config paths --json
+```
+
 Caplets validates this file at startup. Config changes take effect after restarting the
 Caplets MCP server.
 
@@ -200,6 +209,30 @@ graphqlEndpoint:
 Top-level files derive their Caplet ID from the filename. Directory-style Caplets use
 `linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
 normal Markdown links from `CAPLET.md`.
+
+This repository includes polished working examples under [`caplets/`](caplets/):
+
+- `github`: GitHub's official MCP server container, using `GITHUB_PERSONAL_ACCESS_TOKEN`.
+- `linear`: Linear's hosted OAuth MCP endpoint.
+- `context7`: Context7 documentation lookup through `@upstash/context7-mcp`.
+
+Install every example from a repo's `caplets/` directory:
+
+```sh
+caplets install spiritledsoftware/caplets
+```
+
+Install one or more individual Caplets by ID:
+
+```sh
+caplets install spiritledsoftware/caplets github
+caplets install spiritledsoftware/caplets github linear
+```
+
+`caplets install` accepts a GitHub `owner/repo` shorthand, a Git URL, or a local repository path.
+It installs into your user Caplets root, which is `~/.caplets` by default or the parent directory
+of `CAPLETS_CONFIG` when that environment variable is set. Existing Caplets are not overwritten
+unless `--force` is passed.
 
 Caplets always loads user Caplet files from `~/.caplets`. Project `./.caplets/config.json`
 is still loaded as project config, but project Markdown Caplet files are executable
@@ -388,6 +421,14 @@ To inspect or remove stored OAuth credentials:
 ```sh
 caplets auth list
 caplets auth logout <server>
+```
+
+To list configured Caplets without starting downstream backends:
+
+```sh
+caplets list
+caplets list --all
+caplets list --json
 ```
 
 ### Optional Server Settings
