@@ -1,6 +1,6 @@
 {
   "name": "caplets",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Progressive disclosure gateway for MCP servers.",
   "keywords": [
     "caplets",

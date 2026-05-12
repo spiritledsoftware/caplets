@@ -1,5 +1,11 @@
 # caplets
 
+## 0.5.2
+
+### Patch Changes
+
+- 99bce4a: Fix MCP OAuth/OIDC token exchange for dynamically registered clients.
+
 ## 0.5.1
 
 ### Patch Changes
