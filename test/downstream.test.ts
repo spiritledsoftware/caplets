@@ -46,6 +46,37 @@ describe("downstream stdio lifecycle", () => {
       await manager.close();
     }
   });
+
+  it("closes one managed stdio server so the next operation reconnects", async () => {
+    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const config = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A useful fixture server.",
+          command: process.execPath,
+          args: [fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const manager = new DownstreamManager(registry);
+    const server = config.mcpServers.fixture!;
+
+    try {
+      const first = await manager.listTools(server);
+      expect(first.map((tool) => tool.name).sort()).toEqual(["duplicate", "echo"]);
+
+      await manager.closeServer("fixture");
+
+      const second = await manager.listTools(server);
+      expect(second.map((tool) => tool.name).sort()).toEqual(["duplicate", "echo"]);
+      expect(registry.getStatus("fixture")).toBe("available");
+    } finally {
+      await manager.close();
+    }
+  });
 });
 
 describe("downstream remote OAuth lifecycle", () => {

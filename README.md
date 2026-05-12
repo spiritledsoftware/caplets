@@ -138,8 +138,10 @@ caplets config paths
 caplets config paths --json
 ```
 
-Caplets validates this file at startup. Config changes take effect after restarting the
-Caplets MCP server.
+Caplets validates this file at startup and hot reloads config changes while `caplets serve`
+is running. Invalid edits are ignored until fixed, so the MCP server keeps serving the last
+known-good config instead of dropping every tool because of a transient JSON or validation
+error.
 
 The optional `$schema` field points editors at the generated JSON Schema in
 [`schemas/caplets-config.schema.json`](schemas/caplets-config.schema.json). CI verifies that
@@ -458,6 +460,12 @@ Configure your MCP client to run Caplets as a stdio server:
 If your client starts the configured command directly, `caplets` without arguments also
 starts the MCP server. `serve` is explicit and recommended for clarity.
 
+`caplets serve` watches the effective user config, project config, user Caplet files, and
+trusted project Caplet files. Adding, editing, disabling, or removing a Caplet updates the
+top-level MCP tool list without restarting Caplets. When an MCP-backed Caplet changes or is
+removed, Caplets closes only that affected downstream connection; unrelated Caplets and
+their downstream connections keep running.
+
 ## How Agents Use It
 
 Caplets initially exposes one MCP tool per enabled Caplet. If the config has `filesystem`,
@@ -536,9 +544,10 @@ pnpm schema:check
 pnpm verify
 ```
 
-`pnpm dev` rebuilds on source changes and restarts the local stdio MCP server from
+`pnpm dev` rebuilds Caplets source changes and restarts the local stdio MCP server from
 `dist/index.js`. Use it for local development, not as the command configured in an MCP
-client, because build logs are written to stdout.
+client, because build logs are written to stdout. Runtime config hot reload is built into
+normal `caplets serve` and does not require `pnpm dev`.
 
 ## Product Notes
 

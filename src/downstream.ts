@@ -31,6 +31,7 @@ type ManagedConnection = {
   tools?: Tool[];
   toolsFetchedAt?: number;
   restartingAfterDeath?: boolean;
+  closing?: boolean;
 };
 
 export class DownstreamManager {
@@ -38,15 +39,32 @@ export class DownstreamManager {
   private readonly restartState = new Map<string, { restartUsed: boolean; backoffUntil: number }>();
 
   constructor(
-    private readonly registry: ServerRegistry,
+    private registry: ServerRegistry,
     private readonly options: { authDir?: string } = {},
   ) {}
 
+  updateRegistry(registry: ServerRegistry): void {
+    this.registry = registry;
+  }
+
   async close(): Promise<void> {
+    for (const connection of this.connections.values()) {
+      connection.closing = true;
+    }
     await Promise.allSettled(
       [...this.connections.values()].map((connection) => connection.transport.close()),
     );
     this.connections.clear();
+  }
+
+  async closeServer(serverId: string): Promise<void> {
+    const connection = this.connections.get(serverId);
+    this.connections.delete(serverId);
+    this.restartState.delete(serverId);
+    if (connection) {
+      connection.closing = true;
+      await connection.transport.close();
+    }
   }
 
   async checkServer(server: CapletServerConfig): Promise<{
@@ -199,8 +217,12 @@ export class DownstreamManager {
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
       const transport = this.createTransport(server);
+      const connection: ManagedConnection = { client, transport };
       transport.onclose = () => {
         this.connections.delete(server.server);
+        if (connection.closing) {
+          return;
+        }
         this.restartState.set(server.server, {
           restartUsed: true,
           backoffUntil: Date.now() + 1_000,
@@ -219,7 +241,6 @@ export class DownstreamManager {
         );
       };
       await client.connect(transport, { timeout: server.startupTimeoutMs });
-      const connection: ManagedConnection = { client, transport };
       this.connections.set(server.server, connection);
       this.registry.setStatus(server.server, "available");
       return connection;
