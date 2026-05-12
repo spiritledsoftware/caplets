@@ -1,12 +1,14 @@
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { CapletServerConfig } from "./config.js";
+import type { CapletConfig } from "./config.js";
 import type { DownstreamManager } from "./downstream.js";
 import { CapletsError } from "./errors.js";
+import type { OpenApiManager } from "./openapi.js";
 import type { ServerRegistry } from "./registry.js";
 
 const operations = [
   "get_caplet",
+  "check_backend",
   "check_mcp_server",
   "list_tools",
   "search_tools",
@@ -19,8 +21,8 @@ export const generatedToolInputSchema = z
   .object({
     operation: operationSchema.describe(
       [
-        "Caplets wrapper operation to perform for this configured MCP server.",
-        "Use get_caplet to read the full Caplet card, check_mcp_server to check the MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool.",
+        "Caplets wrapper operation to perform for this configured Caplet backend.",
+        "Use get_caplet to read the full Caplet card, check_backend to check any backend, check_mcp_server to check an MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool or OpenAPI operation.",
         'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
       ].join(" "),
     ),
@@ -56,40 +58,56 @@ export const generatedToolInputSchema = z
 export type GeneratedServerToolRequest = z.infer<typeof generatedToolInputSchema>;
 
 export async function handleServerTool(
-  server: CapletServerConfig,
+  server: CapletConfig,
   request: unknown,
   registry: ServerRegistry,
   downstream: DownstreamManager,
+  openapi?: OpenApiManager,
 ): Promise<any> {
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
   switch (parsed.operation) {
     case "get_caplet":
       return jsonResult(registry.detail(server));
+    case "check_backend":
+      return jsonResult(await backendFor(server, downstream, openapi).check(server as never));
     case "check_mcp_server":
+      if (server.backend !== "mcp") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "check_mcp_server is only valid for MCP-backed Caplets; use check_backend",
+        );
+      }
       return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
-      const tools = await downstream.listTools(server);
+      const backend = backendFor(server, downstream, openapi);
+      const tools = await backend.listTools(server as never);
       return jsonResult({
         server: server.server,
-        tools: tools.map((tool) => downstream.compact(server, tool)),
+        tools: tools.map((tool) => backend.compact(server as never, tool)),
       });
     }
     case "search_tools": {
-      const tools = await downstream.listTools(server);
+      const backend = backendFor(server, downstream, openapi);
+      const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult({
         server: server.server,
         query: parsed.query,
-        tools: downstream.search(server, tools, parsed.query, limit),
+        tools: backend.search(server as never, tools, parsed.query, limit),
       });
     }
     case "get_tool": {
-      const tool = await downstream.getTool(server, parsed.tool);
+      const backend = backendFor(server, downstream, openapi);
+      const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult({ server: server.server, tool });
     }
     case "call_tool":
-      return downstream.callTool(server, parsed.tool, parsed.arguments);
+      return backendFor(server, downstream, openapi).callTool(
+        server as never,
+        parsed.tool,
+        parsed.arguments,
+      );
   }
 }
 
@@ -136,6 +154,7 @@ export function validateOperationRequest(
 
   switch (value.operation) {
     case "get_caplet":
+    case "check_backend":
     case "check_mcp_server":
     case "list_tools":
       allowed([]);
@@ -173,7 +192,7 @@ export function validateOperationRequest(
 }
 
 type RequiredOperationRequest =
-  | { operation: "get_caplet" | "check_mcp_server" | "list_tools" }
+  | { operation: "get_caplet" | "check_backend" | "check_mcp_server" | "list_tools" }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
   | { operation: "call_tool"; tool: string; arguments: Record<string, unknown> };
@@ -192,4 +211,31 @@ export function jsonResult(value: unknown): CallToolResult {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function backendFor(server: CapletConfig, downstream: DownstreamManager, openapi?: OpenApiManager) {
+  if (server.backend === "mcp") {
+    return {
+      check: (...args: Parameters<DownstreamManager["checkServer"]>) =>
+        downstream.checkServer(...args),
+      listTools: (...args: Parameters<DownstreamManager["listTools"]>) =>
+        downstream.listTools(...args),
+      getTool: (...args: Parameters<DownstreamManager["getTool"]>) => downstream.getTool(...args),
+      callTool: (...args: Parameters<DownstreamManager["callTool"]>) =>
+        downstream.callTool(...args),
+      compact: (...args: Parameters<DownstreamManager["compact"]>) => downstream.compact(...args),
+      search: (...args: Parameters<DownstreamManager["search"]>) => downstream.search(...args),
+    };
+  }
+  if (!openapi) {
+    throw new CapletsError("INTERNAL_ERROR", "OpenAPI manager is not configured");
+  }
+  return {
+    check: (...args: Parameters<OpenApiManager["checkEndpoint"]>) => openapi.checkEndpoint(...args),
+    listTools: (...args: Parameters<OpenApiManager["listTools"]>) => openapi.listTools(...args),
+    getTool: (...args: Parameters<OpenApiManager["getTool"]>) => openapi.getTool(...args),
+    callTool: (...args: Parameters<OpenApiManager["callTool"]>) => openapi.callTool(...args),
+    compact: (...args: Parameters<OpenApiManager["compact"]>) => openapi.compact(...args),
+    search: (...args: Parameters<OpenApiManager["search"]>) => openapi.search(...args),
+  };
 }

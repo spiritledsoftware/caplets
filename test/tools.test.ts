@@ -56,6 +56,7 @@ describe("generated tool request validation", () => {
 
     expect(schema.properties.operation?.enum).toEqual([
       "get_caplet",
+      "check_backend",
       "check_mcp_server",
       "list_tools",
       "search_tools",
@@ -122,6 +123,14 @@ describe("generated tool handlers", () => {
       caplet: "alpha",
       name: "Alpha",
       description: "Search alpha project documents.",
+      backend: {
+        type: "mcp",
+        transport: "stdio",
+        disabled: false,
+        startupTimeoutMs: 10000,
+        callTimeoutMs: 60000,
+        toolCacheTtlMs: 30000,
+      },
       mcpServer: {
         transport: "stdio",
         disabled: false,
@@ -131,6 +140,37 @@ describe("generated tool handlers", () => {
       },
     });
     expect(downstream.listTools).not.toHaveBeenCalled();
+  });
+
+  it("returns OpenAPI get_caplet without requiring an OpenAPI manager", async () => {
+    const openApiConfig = parseConfig({
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath: "/tmp/openapi.json",
+          baseUrl: "https://api.example.com",
+          auth: { type: "none" },
+        },
+      },
+    });
+    const openApiRegistry = new ServerRegistry(openApiConfig);
+    const downstream = {} as unknown as DownstreamManager;
+
+    const result = (await handleServerTool(
+      openApiConfig.openapiEndpoints.users!,
+      { operation: "get_caplet" },
+      openApiRegistry,
+      downstream,
+    )) as any;
+
+    expect(result.structuredContent?.result).toMatchObject({
+      caplet: "users",
+      backend: {
+        type: "openapi",
+        source: "specPath",
+      },
+    });
   });
 
   it("checks the MCP server backend", async () => {

@@ -120,6 +120,14 @@ describe("cli init", () => {
               command: "node",
             },
           },
+          openapiEndpoints: {
+            users: {
+              name: "Users API",
+              description: "Manage users through the internal HTTP API.",
+              specPath: "/tmp/users-openapi.json",
+              auth: { type: "bearer", token: "secret-openapi-token" },
+            },
+          },
         }),
       );
       process.env.CAPLETS_CONFIG = configPath;
@@ -148,7 +156,9 @@ describe("cli init", () => {
       expect(text).toContain("remote\tauthenticated\texpires 2999-01-01T00:00:00.000Z");
       expect(text).toContain("expired\texpired\texpires 2000-01-01T00:00:00.000Z");
       expect(text).not.toContain("stdio");
+      expect(text).not.toContain("users");
       expect(text).not.toContain("secret-access-token");
+      expect(text).not.toContain("secret-openapi-token");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -49,6 +49,16 @@ const capletRemoteAuthSchema = z
   ])
   .describe("Authentication settings for a remote MCP server.");
 
+const capletOpenApiAuthSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("none") }).strict(),
+    z.object({ type: z.literal("bearer"), token: z.string().min(1) }).strict(),
+    z
+      .object({ type: z.literal("headers"), headers: z.record(z.string(), z.string().min(1)) })
+      .strict(),
+  ])
+  .describe("Authentication settings for an OpenAPI endpoint.");
+
 const capletMcpServerSchema = z
   .object({
     transport: z
@@ -150,6 +160,74 @@ const capletMcpServerSchema = z
     }
   });
 
+const capletOpenApiEndpointSchema = z
+  .object({
+    specPath: z.string().min(1).optional().describe("Local OpenAPI specification path."),
+    specUrl: z.string().min(1).optional().describe("Remote OpenAPI specification URL."),
+    baseUrl: z.string().min(1).optional().describe("Override base URL for OpenAPI requests."),
+    auth: capletOpenApiAuthSchema.describe(
+      'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Timeout in milliseconds for OpenAPI HTTP requests."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time.",
+      ),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+  })
+  .strict()
+  .superRefine((endpoint, ctx) => {
+    if (Boolean(endpoint.specPath) === Boolean(endpoint.specUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "openapiEndpoint must define exactly one spec source: specPath or specUrl",
+      });
+    }
+    if (
+      endpoint.specUrl &&
+      !hasEnvReference(endpoint.specUrl) &&
+      !isAllowedRemoteUrl(endpoint.specUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["specUrl"],
+        message: "OpenAPI specUrl must use https except loopback development urls",
+      });
+    }
+    if (
+      endpoint.baseUrl &&
+      !hasEnvReference(endpoint.baseUrl) &&
+      !isAllowedRemoteUrl(endpoint.baseUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "OpenAPI baseUrl must use https except loopback development urls",
+      });
+    }
+    if (endpoint.auth?.type === "headers") {
+      for (const headerName of Object.keys(endpoint.auth.headers)) {
+        const normalized = headerName.toLowerCase();
+        if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["auth", "headers", headerName],
+            message: `header ${headerName} is not allowed`,
+          });
+        }
+      }
+    }
+  });
+
 export const capletFileSchema = z
   .object({
     $schema: z
@@ -170,11 +248,22 @@ export const capletFileSchema = z
       .array(z.string().trim().min(1).max(80))
       .optional()
       .describe("Optional tags for grouping or searching Caplets."),
-    mcpServer: capletMcpServerSchema.describe(
-      "Required MCP server backend configuration for this Caplet.",
-    ),
+    mcpServer: capletMcpServerSchema
+      .describe("MCP server backend configuration for this Caplet.")
+      .optional(),
+    openapiEndpoint: capletOpenApiEndpointSchema
+      .describe("OpenAPI endpoint backend configuration for this Caplet.")
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((frontmatter, ctx) => {
+    if (Boolean(frontmatter.mcpServer) === Boolean(frontmatter.openapiEndpoint)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Caplet file must define exactly one backend: mcpServer or openapiEndpoint",
+      });
+    }
+  });
 
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 
@@ -189,7 +278,8 @@ export function capletJsonSchema(): unknown {
 }
 
 export type CapletFileConfig = {
-  mcpServers: Record<string, unknown>;
+  mcpServers?: Record<string, unknown>;
+  openapiEndpoints?: Record<string, unknown>;
 };
 
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
@@ -198,14 +288,28 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   }
 
   const servers: Record<string, unknown> = {};
+  const openapiEndpoints: Record<string, unknown> = {};
   for (const candidate of discoverCapletFiles(root)) {
-    if (servers[candidate.id]) {
+    if (servers[candidate.id] || openapiEndpoints[candidate.id]) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
-    servers[candidate.id] = readCapletFile(candidate.path);
+    const config = readCapletFile(candidate.path);
+    if (isPlainObject(config) && config.backend === "openapi") {
+      const { backend: _backend, ...endpoint } = config;
+      openapiEndpoints[candidate.id] = endpoint;
+    } else {
+      servers[candidate.id] = config;
+    }
   }
 
-  return Object.keys(servers).length > 0 ? { mcpServers: servers } : undefined;
+  const hasServers = Object.keys(servers).length > 0;
+  const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
+  return hasServers || hasOpenApi
+    ? {
+        ...(hasServers ? { mcpServers: servers } : {}),
+        ...(hasOpenApi ? { openapiEndpoints } : {}),
+      }
+    : undefined;
 }
 
 function discoverCapletFiles(root: string): Array<{ id: string; path: string }> {
@@ -269,8 +373,19 @@ function readCapletFile(path: string): unknown {
 }
 
 function capletToServerConfig(frontmatter: CapletFileFrontmatter, body: string): unknown {
+  if (frontmatter.openapiEndpoint) {
+    return {
+      ...frontmatter.openapiEndpoint,
+      backend: "openapi",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      body,
+    };
+  }
+
   return {
-    ...frontmatter.mcpServer,
+    ...frontmatter.mcpServer!,
     name: frontmatter.name,
     description: frontmatter.description,
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),

@@ -1,11 +1,12 @@
 # Caplets
 
-Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers.
+Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers and
+native OpenAPI endpoints.
 
-Instead of connecting an MCP client to many downstream servers and exposing every tool up
-front, Caplets exposes one top-level tool per configured server. An agent first chooses a
-capability domain, then asks Caplets to list, search, inspect, or call that server's
-underlying tools.
+Instead of connecting an MCP client to many downstream servers or HTTP APIs and exposing
+every operation up front, Caplets exposes one top-level tool per configured capability.
+An agent first chooses a capability domain, then asks Caplets to list, search, inspect,
+or call that backend's underlying tools or operations.
 
 This keeps the initial MCP tool list small, makes tool selection easier, and avoids
 flattened tool-name collisions across servers.
@@ -27,13 +28,14 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## What It Does
 
-- Reads downstream MCP server definitions from `~/.caplets/config.json`.
-- Registers one generated MCP tool for each enabled server.
+- Reads downstream MCP server definitions and native OpenAPI endpoint definitions from `~/.caplets/config.json`.
+- Registers one generated MCP tool for each enabled MCP server or OpenAPI endpoint.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
-- Starts downstream servers lazily when an operation needs them.
+- Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
 - Supports stdio, Streamable HTTP, and legacy HTTP+SSE downstream servers.
-- Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected server namespace.
+- Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected Caplet namespace.
+- Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
 - Preserves downstream tool results instead of rewriting them into a custom format.
 - Redacts secrets from structured errors.
 - Supports static remote auth and OAuth token storage for remote servers.
@@ -91,6 +93,18 @@ you want Caplets to expose:
         "token": "$env:DOCS_MCP_TOKEN"
       }
     }
+  },
+  "openapiEndpoints": {
+    "users": {
+      "name": "Users API",
+      "description": "Manage users through the internal HTTP API.",
+      "specPath": "./openapi.json",
+      "baseUrl": "https://api.example.com",
+      "auth": {
+        "type": "bearer",
+        "token": "$env:USERS_API_TOKEN"
+      }
+    }
   }
 }
 ```
@@ -112,8 +126,8 @@ the committed schema stays in sync with the Zod config validator.
 ### Caplet Files
 
 For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
-file must include an `mcpServer` backend; serverless Caplets are intentionally out of
-scope.
+file must include exactly one executable backend: `mcpServer` or `openapiEndpoint`;
+serverless Caplets are intentionally out of scope.
 
 Top-level files derive the Caplet ID from the filename:
 
@@ -133,6 +147,23 @@ mcpServer:
 # GitHub
 
 Use this Caplet for repository, issue, pull request, and code review workflows.
+```
+
+OpenAPI-backed Caplet files use `openapiEndpoint`:
+
+```md
+---
+name: Users API
+description: Manage users through the internal HTTP API.
+openapiEndpoint:
+  specPath: ./openapi.json
+  baseUrl: https://api.example.com
+  auth:
+    type: bearer
+    token: $env:USERS_API_TOKEN
+---
+
+# Users API
 ```
 
 That file is exposed as the `github` Caplet. Directory-style Caplets use
@@ -156,10 +187,10 @@ project `config.json`, and, only when trusted, project Caplet files.
 caplets init --force
 ```
 
-### Server IDs
+### Caplet IDs
 
-Each key under `mcpServers` is the stable server ID. It becomes the generated MCP tool
-name exactly, so keep it short and specific:
+Each key under `mcpServers` or `openapiEndpoints` is the stable Caplet ID. It becomes the
+generated MCP tool name exactly, so keep it short and specific:
 
 ```json
 {
@@ -174,8 +205,8 @@ name exactly, so keep it short and specific:
 }
 ```
 
-Server IDs must match `^[a-zA-Z0-9_-]{1,64}$`. Spaces, dots, slashes, colons, and
-Unicode IDs are rejected.
+Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers` and
+`openapiEndpoints`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
 
 ### Stdio Servers
 
@@ -215,6 +246,51 @@ Use `transport` and `url` for remote MCP servers.
 
 `transport` can be `http` for MCP Streamable HTTP or `sse` for legacy HTTP+SSE. Remote
 URLs must use `https://`, except loopback development URLs such as `http://localhost`.
+
+### OpenAPI Endpoints
+
+Use `openapiEndpoints` for native HTTP APIs described by OpenAPI 3 specs. Each entry
+points at one spec through either `specPath` or `specUrl`, and may override the request
+base URL with `baseUrl`.
+
+```json
+{
+  "name": "Users API",
+  "description": "Manage users through the internal HTTP API.",
+  "specPath": "./openapi.json",
+  "baseUrl": "https://api.example.com",
+  "auth": { "type": "none" }
+}
+```
+
+OpenAPI auth is explicit and supports:
+
+- `{"type": "none"}`
+- `{"type": "bearer", "token": "$env:TOKEN"}`
+- `{"type": "headers", "headers": {"x-api-key": "$env:API_KEY"}}`
+
+OpenAPI OAuth is not part of the first native OpenAPI backend. OAuth remains available
+for remote MCP servers through `caplets auth`.
+
+OpenAPI `call_tool.arguments` uses grouped HTTP inputs:
+
+```json
+{
+  "operation": "call_tool",
+  "tool": "GET /users/{id}",
+  "arguments": {
+    "path": { "id": "42" },
+    "query": { "active": true },
+    "body": { "name": "Ada" }
+  }
+}
+```
+
+Every OpenAPI endpoint can set:
+
+- `requestTimeoutMs`: timeout for HTTP calls. Defaults to `60000`.
+- `operationCacheTtlMs`: how long OpenAPI operation metadata stays fresh. Defaults to `30000`; `0` refreshes every time.
+- `disabled`: omit the endpoint from Caplets discovery. Defaults to `false`.
 
 ### Authentication
 
@@ -277,8 +353,9 @@ starts the MCP server. `serve` is explicit and recommended for clarity.
 
 ## How Agents Use It
 
-Caplets initially exposes one MCP tool per enabled Caplet. If the config has `filesystem`
-and `docs`, the client sees two top-level tools: `filesystem` and `docs`.
+Caplets initially exposes one MCP tool per enabled Caplet. If the config has `filesystem`,
+`docs`, and `users`, the client sees three top-level tools: `filesystem`, `docs`, and
+`users`.
 
 Each generated Caplet tool accepts an `operation`:
 
@@ -322,9 +399,10 @@ Call one exact downstream tool:
 Available operations:
 
 - `get_caplet`: return the configured capability card without starting the downstream server.
-- `check_mcp_server`: start or connect to the downstream server and verify its tool list.
+- `check_backend`: verify the selected backend, whether MCP or OpenAPI.
+- `check_mcp_server`: start or connect to an MCP server and verify its tool list.
 - `list_tools`: return compact downstream tool metadata.
-- `search_tools`: search downstream tool names and descriptions within this server.
+- `search_tools`: search downstream tool names and descriptions within this Caplet.
 - `get_tool`: return full metadata for one exact downstream tool.
 - `call_tool`: invoke one exact downstream tool with JSON object arguments.
 
