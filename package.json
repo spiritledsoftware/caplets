@@ -1,0 +1,70 @@
+{
+  "name": "caplets",
+  "version": "1.0.0",
+  "description": "Progressive disclosure gateway for MCP servers.",
+  "keywords": [
+    "caplets",
+    "gateway",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "bin": {
+    "caplets": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rolldown -c",
+    "build:watch": "rolldown -c --watch",
+    "changeset": "changeset",
+    "dev": "node ./scripts/dev.mjs",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "prepack": "pnpm build",
+    "prepare": "husky",
+    "release": "pnpm build && changeset publish --provenance",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "version-packages": "changeset version"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.0",
+    "@types/node": "^25.6.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.3",
+    "oxfmt": "^0.48.0",
+    "oxlint": "^1.63.0",
+    "rolldown": "^1.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  },
+  "lint-staged": {
+    "*.{js,cjs,mjs,ts,json,md,yml,yaml}": "oxfmt --check",
+    "*.{js,cjs,mjs,ts}": "oxlint"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.0.9"
+}
