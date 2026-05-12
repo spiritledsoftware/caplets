@@ -300,6 +300,24 @@ describe("cli init", () => {
     }
   });
 
+  it("installs a selected Caplet when an unrelated Caplet filename has an invalid ID", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    try {
+      writeInstallableRepo(repo);
+      writeFileSync(join(repo, "caplets", "api.v2.md"), "not frontmatter\n");
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+
+      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(dir, "user", "api.v2.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to overwrite installed Caplets without force", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");

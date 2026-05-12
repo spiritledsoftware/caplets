@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { discoverCapletFiles, validateCapletFile } from "../caplet-files.js";
 import { resolveCapletsRoot, resolveConfigPath } from "../config.js";
+import { SERVER_ID_PATTERN } from "../config/validation.js";
 import { CapletsError, toSafeError } from "../errors.js";
 
 type InstallableCaplet = {
@@ -43,9 +44,13 @@ export function installCaplets(
 
     const selectedIds = new Set(options.capletIds ?? []);
     const destinationRoot = options.destinationRoot ?? resolveCapletsRoot(resolveConfigPath());
-    const available = discoverCapletFiles(sourceRoot);
-    const selected =
-      selectedIds.size === 0 ? available : available.filter((caplet) => selectedIds.has(caplet.id));
+    const available =
+      selectedIds.size === 0
+        ? discoverCapletFiles(sourceRoot)
+        : discoverSelectedCapletFiles(sourceRoot, selectedIds);
+    const selected = available.filter(
+      (caplet) => selectedIds.size === 0 || selectedIds.has(caplet.id),
+    );
     const missing = [...selectedIds].filter((id) => !available.some((caplet) => caplet.id === id));
     if (missing.length > 0) {
       throw new CapletsError(
@@ -70,6 +75,29 @@ export function installCaplets(
   } finally {
     source.cleanup();
   }
+}
+
+function discoverSelectedCapletFiles(
+  sourceRoot: string,
+  selectedIds: Set<string>,
+): Array<{ id: string; path: string }> {
+  const candidates: Array<{ id: string; path: string }> = [];
+  for (const id of selectedIds) {
+    if (!SERVER_ID_PATTERN.test(id)) {
+      continue;
+    }
+
+    const filePath = join(sourceRoot, `${id}.md`);
+    if (existsSync(filePath) && statSync(filePath).isFile()) {
+      candidates.push({ id, path: filePath });
+    }
+
+    const directoryPath = join(sourceRoot, id, "CAPLET.md");
+    if (existsSync(directoryPath) && statSync(directoryPath).isFile()) {
+      candidates.push({ id, path: directoryPath });
+    }
+  }
+  return candidates.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function resolveInstallSource(repo: string): { id: string; repoRoot: string; cleanup: () => void } {
