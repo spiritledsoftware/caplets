@@ -1,5 +1,11 @@
 # caplets
 
+## 0.5.0
+
+### Minor Changes
+
+- 6e5ec50: Add native GraphQL Caplets with configured or auto-generated operations, OAuth/OIDC discovery for OpenAPI and GraphQL backends, and safer credential handling for discovered auth flows.
+
 ## 0.4.0
 
 ### Minor Changes
