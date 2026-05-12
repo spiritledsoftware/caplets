@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
 import { loadConfig } from "./config.js";
 import { DownstreamManager } from "./downstream.js";
 import { errorResult } from "./errors.js";
+import { GraphQLManager } from "./graphql.js";
 import { OpenApiManager } from "./openapi.js";
 import { capabilityDescription, ServerRegistry } from "./registry.js";
 import { generatedToolInputSchema, handleServerTool } from "./tools.js";
@@ -19,6 +20,7 @@ async function main() {
   const registry = new ServerRegistry(config);
   const downstream = new DownstreamManager(registry);
   const openapi = new OpenApiManager(registry);
+  const graphql = new GraphQLManager(registry);
   const server = new McpServer({
     name: "caplets",
     version: packageJsonVersion,
@@ -34,7 +36,14 @@ async function main() {
       },
       async (request) => {
         try {
-          return await handleServerTool(capletServer, request, registry, downstream, openapi);
+          return await handleServerTool(
+            capletServer,
+            request,
+            registry,
+            downstream,
+            openapi,
+            graphql,
+          );
         } catch (error) {
           return errorResult(error);
         }

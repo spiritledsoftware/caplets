@@ -4,6 +4,7 @@ import type { OpenApiEndpointConfig } from "./config.js";
 import { CapletsError, toSafeError } from "./errors.js";
 import type { ServerRegistry } from "./registry.js";
 import type { CompactTool } from "./downstream.js";
+import { genericOAuthHeaders } from "./auth.js";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];
@@ -46,7 +47,10 @@ type ManagedOpenApi = {
 export class OpenApiManager {
   private readonly cache = new Map<string, ManagedOpenApi>();
 
-  constructor(private readonly registry: ServerRegistry) {}
+  constructor(
+    private readonly registry: ServerRegistry,
+    private readonly options: { authDir?: string } = {},
+  ) {}
 
   async checkEndpoint(endpoint: OpenApiEndpointConfig): Promise<{
     server: string;
@@ -93,7 +97,7 @@ export class OpenApiManager {
     args: Record<string, unknown>,
   ): Promise<CompatibilityCallToolResult> {
     const operation = await this.getOperation(endpoint, toolName);
-    const request = buildRequest(endpoint, operation, args);
+    const request = buildRequest(endpoint, operation, args, this.options.authDir);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), endpoint.requestTimeoutMs);
     try {
@@ -111,6 +115,22 @@ export class OpenApiManager {
           status: response.status,
           location: response.headers.get("location") ? "[REDACTED]" : undefined,
         });
+      }
+      if (response.status === 401 || response.status === 403) {
+        throw new CapletsError(
+          response.status === 401 ? "AUTH_REQUIRED" : "AUTH_FAILED",
+          "OpenAPI authentication failed",
+          {
+            server: endpoint.server,
+            status: response.status,
+            message: response.statusText,
+            authType: endpoint.auth.type,
+            challenge: response.headers.get("www-authenticate") ? "[REDACTED]" : undefined,
+            ...(endpoint.auth.type === "oauth2" || endpoint.auth.type === "oidc"
+              ? { nextAction: "run_caplets_auth_login" }
+              : {}),
+          },
+        );
       }
       const parsed = await readResponse(response);
       return {
@@ -212,7 +232,7 @@ export class OpenApiManager {
     }
 
     try {
-      const document = await loadOpenApiDocument(endpoint);
+      const document = await loadOpenApiDocument(endpoint, this.options.authDir);
       const operations = extractOperations(endpoint, document);
       this.cache.set(endpoint.server, { operations, fetchedAt: Date.now(), cacheKey });
       this.registry.setStatus(endpoint.server, "available");
@@ -243,8 +263,11 @@ export class OpenApiManager {
   }
 }
 
-async function loadOpenApiDocument(endpoint: OpenApiEndpointConfig): Promise<OpenApiDocument> {
-  const source = await loadOpenApiSource(endpoint);
+async function loadOpenApiDocument(
+  endpoint: OpenApiEndpointConfig,
+  authDir?: string,
+): Promise<OpenApiDocument> {
+  const source = await loadOpenApiSource(endpoint, authDir);
   return (await SwaggerParser.validate(source as any, {
     resolve: {
       external: false,
@@ -255,6 +278,7 @@ async function loadOpenApiDocument(endpoint: OpenApiEndpointConfig): Promise<Ope
 
 async function loadOpenApiSource(
   endpoint: OpenApiEndpointConfig,
+  authDir?: string,
 ): Promise<string | OpenApiDocument> {
   if (endpoint.specPath) {
     return endpoint.specPath;
@@ -268,7 +292,11 @@ async function loadOpenApiSource(
       `${endpoint.server} must configure baseUrl when using remote specUrl`,
     );
   }
-  const response = await fetchWithLimit(endpoint.specUrl, endpoint.requestTimeoutMs);
+  const response = await fetchWithLimit(
+    endpoint.specUrl,
+    endpoint.requestTimeoutMs,
+    shouldSendSpecAuth(endpoint) ? authHeaders(endpoint, authDir) : {},
+  );
   return JSON.parse(response);
 }
 
@@ -416,6 +444,7 @@ function buildRequest(
   endpoint: OpenApiEndpointConfig,
   operation: OpenApiOperation,
   args: Record<string, unknown>,
+  authDir?: string,
 ): { url: URL; headers: Headers; body?: string } {
   const base = endpoint.baseUrl ?? operation.baseUrl;
   validateOperationBaseUrl(endpoint, base);
@@ -429,7 +458,7 @@ function buildRequest(
     }
   }
   const headers = new Headers();
-  applyAuth(headers, endpoint);
+  applyAuth(headers, endpoint, authDir);
   const configuredHeaderNames =
     endpoint.auth.type === "headers"
       ? new Set(Object.keys(endpoint.auth.headers).map((key) => key.toLowerCase()))
@@ -505,18 +534,32 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function applyAuth(headers: Headers, endpoint: OpenApiEndpointConfig): void {
+function applyAuth(headers: Headers, endpoint: OpenApiEndpointConfig, authDir?: string): void {
+  for (const [key, value] of Object.entries(authHeaders(endpoint, authDir))) {
+    headers.set(key, value);
+  }
+}
+
+function authHeaders(endpoint: OpenApiEndpointConfig, authDir?: string): Record<string, string> {
   switch (endpoint.auth.type) {
     case "none":
-      return;
+      return {};
     case "bearer":
-      headers.set("authorization", `Bearer ${endpoint.auth.token}`);
-      return;
+      return { authorization: `Bearer ${endpoint.auth.token}` };
     case "headers":
-      for (const [key, value] of Object.entries(endpoint.auth.headers)) {
-        headers.set(key, value);
-      }
+      return endpoint.auth.headers;
+    case "oauth2":
+    case "oidc":
+      return genericOAuthHeaders(endpoint, authDir);
   }
+}
+
+function shouldSendSpecAuth(endpoint: OpenApiEndpointConfig): boolean {
+  return Boolean(
+    endpoint.specUrl &&
+    endpoint.baseUrl &&
+    new URL(endpoint.specUrl).origin === new URL(endpoint.baseUrl).origin,
+  );
 }
 
 async function readResponse(response: Response): Promise<Record<string, unknown>> {
@@ -571,11 +614,16 @@ async function readLimitedText(response: Response): Promise<string> {
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-async function fetchWithLimit(url: string, timeoutMs: number): Promise<string> {
+async function fetchWithLimit(
+  url: string,
+  timeoutMs: number,
+  headers: Record<string, string> = {},
+): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
+      headers,
       redirect: "manual",
       signal: controller.signal,
     });

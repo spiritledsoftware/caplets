@@ -4,7 +4,7 @@
 
 **Problem Statement**: MCP clients that connect directly to many servers receive a large, flat tool surface up front. This creates context bloat, weak tool selection, name-collision risk, and poor discoverability when an agent only needs to know which capability domain to inspect next.
 
-**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions and native OpenAPI endpoint definitions from `~/.caplets/config.json`, user-owned Markdown Caplet files from `~/.caplets`, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools or OpenAPI operations through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
+**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, and native GraphQL endpoint definitions from `~/.caplets/config.json`, user-owned Markdown Caplet files from `~/.caplets`, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, or GraphQL operations through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
 
 **Success Criteria**:
 
@@ -42,8 +42,8 @@ Acceptance Criteria:
 - Caplets reads `~/.caplets/config.json` from the current user's home directory by default.
 - Caplets reads user-owned Markdown Caplet files from `~/.caplets` by default.
 - Caplets reads project Markdown Caplet files from `./.caplets` only when `CAPLETS_TRUST_PROJECT_CAPLETS` is set to `1`, `true`, or `yes`.
-- Caplets supports `mcpServers` for MCP backends and `openapiEndpoints` for native OpenAPI backends.
-- Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
+- Caplets supports `mcpServers` for MCP backends, `openapiEndpoints` for native OpenAPI backends, and `graphqlEndpoints` for native GraphQL backends.
+- Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
 - Every configured server requires a stable server key and non-empty `description`.
 - Caplets `tools/list` returns one generated top-level MCP tool per enabled server.
 - Each generated Caplet tool uses the configured server ID as the MCP tool name.
@@ -77,6 +77,7 @@ Acceptance Criteria:
 
 - `operation: "call_tool"` requires exact downstream `tool` and a JSON object `arguments`.
 - For OpenAPI-backed Caplets, `call_tool.arguments` uses grouped HTTP inputs: `path`, `query`, `header`, and `body`.
+- For GraphQL-backed Caplets, configured operation `call_tool.arguments` is the GraphQL variables object directly; auto-generated operation `call_tool.arguments` is the root field arguments object directly.
 - `call_tool` requires the exact downstream tool name; Caplets does not use fuzzy matching, aliases, or auto-correction for execution.
 - The selected generated Caplet tool is the server namespace, so `call_tool` does not accept a `server` argument in MVP.
 - Caplets preserves downstream tool names exactly and does not support flattened namespaced identifiers such as `server.tool` in MVP.
@@ -259,6 +260,7 @@ Requirements:
 - Disabled servers are omitted from generated `tools/list` to preserve the token-saving purpose of Caplets.
 - MCP backends support stdio, MCP Streamable HTTP, and legacy HTTP+SSE downstream servers. Streamable HTTP is preferred for remote servers; SSE exists for compatibility.
 - OpenAPI backends support local `specPath` or remote `specUrl`, explicit `auth`, optional `baseUrl`, and native HTTP execution for standard OpenAPI methods.
+- GraphQL backends support local `schemaPath`, remote `schemaUrl`, or endpoint introspection, configured operations, auto-generated query/mutation tools, explicit `auth`, and native GraphQL HTTP execution.
 - OpenCode's `mcp` config shape is a compatibility reference, not Caplets' native MVP shape: OpenCode uses local/remote entries under `mcp`, local `command` as an array, `environment` instead of `env`, and `{env:NAME}`-style interpolation in its broader config system. Automatic OpenCode config import/normalization is deferred.
 
 ### Non-Goals
@@ -365,6 +367,7 @@ Core modules:
 - `maxSearchLimit?: number`
 - `mcpServers: Record<string, CapletServerConfig>`
 - `openapiEndpoints: Record<string, OpenApiEndpointConfig>`
+- `graphqlEndpoints: Record<string, GraphQlEndpointConfig>`
 
 `CapletServerConfig`:
 
@@ -382,12 +385,13 @@ Core modules:
 - `toolCacheTtlMs?: number`
 - `disabled?: boolean`
 
-`RemoteAuthConfig`:
+`RemoteAuthConfig` and HTTP endpoint auth:
 
 - `{ type: "none" }`
 - `{ type: "bearer"; token: string }`
 - `{ type: "headers"; headers: Record<string, string> }`
-- `{ type: "oauth2"; authorizationUrl?: string; tokenUrl?: string; issuer?: string; clientId?: string; clientSecret?: string; scopes?: string[]; redirectUri?: string }`
+- `{ type: "oauth2"; authorizationUrl?: string; tokenUrl?: string; issuer?: string; resourceMetadataUrl?: string; authorizationServerMetadataUrl?: string; clientId?: string; clientSecret?: string; scopes?: string[]; redirectUri?: string }`
+- `{ type: "oidc"; issuer?: string; openidConfigurationUrl?: string; clientId?: string; clientSecret?: string; scopes?: string[]; redirectUri?: string }`
 
 `OpenApiEndpointConfig`:
 
@@ -401,6 +405,19 @@ Core modules:
 - `operationCacheTtlMs?: number`
 - `disabled?: boolean`
 
+`GraphQlEndpointConfig`:
+
+- `name: string`
+- `description: string`
+- `endpointUrl: string`
+- exactly one of `schemaPath?: string`, `schemaUrl?: string`, or `introspection?: true`
+- `operations?: Record<string, { document?: string; documentPath?: string; operationName?: string; description?: string }>`
+- `auth: { type: "none" } | { type: "bearer"; token: string } | { type: "headers"; headers: Record<string, string> } | { type: "oauth2" | "oidc"; ... }`
+- `requestTimeoutMs?: number`
+- `operationCacheTtlMs?: number`
+- `selectionDepth?: number`
+- `disabled?: boolean`
+
 `StoredOAuthTokenBundle`:
 
 - `server: string`
@@ -409,6 +426,10 @@ Core modules:
 - `tokenType?: string`
 - `expiresAt?: string`
 - `scope?: string`
+- `idToken?: string`
+- `issuer?: string`
+- `subject?: string`
+- `clientId?: string`
 - `metadata?: Record<string, unknown>`
 
 `CapletServerSummary`:
@@ -427,7 +448,7 @@ Core modules:
 - `description: string`
 - `tags?: string[]`
 - `body?: string`
-- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" }`
+- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" } | { type: "graphql"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "schemaPath" | "schemaUrl" | "introspection"; configuredOperations: boolean }`
 - `mcpServer?: { transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number }`
 
 `CapletToolRef`:

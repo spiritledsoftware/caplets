@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { VFile } from "vfile";
 import { matter as parseMatter } from "vfile-matter";
 import { z } from "zod";
@@ -40,6 +40,24 @@ const capletRemoteAuthSchema = z
         authorizationUrl: z.string().min(1).optional(),
         tokenUrl: z.string().min(1).optional(),
         issuer: z.string().min(1).optional(),
+        resourceMetadataUrl: z.string().min(1).optional(),
+        authorizationServerMetadataUrl: z.string().min(1).optional(),
+        openidConfigurationUrl: z.string().min(1).optional(),
+        clientId: z.string().min(1).optional(),
+        clientSecret: z.string().min(1).optional(),
+        scopes: z.array(z.string().min(1)).optional(),
+        redirectUri: z.string().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("oidc"),
+        authorizationUrl: z.string().min(1).optional(),
+        tokenUrl: z.string().min(1).optional(),
+        issuer: z.string().min(1).optional(),
+        resourceMetadataUrl: z.string().min(1).optional(),
+        authorizationServerMetadataUrl: z.string().min(1).optional(),
+        openidConfigurationUrl: z.string().min(1).optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -49,15 +67,45 @@ const capletRemoteAuthSchema = z
   ])
   .describe("Authentication settings for a remote MCP server.");
 
-const capletOpenApiAuthSchema = z
+const capletEndpointAuthSchema = z
   .discriminatedUnion("type", [
     z.object({ type: z.literal("none") }).strict(),
     z.object({ type: z.literal("bearer"), token: z.string().min(1) }).strict(),
     z
       .object({ type: z.literal("headers"), headers: z.record(z.string(), z.string().min(1)) })
       .strict(),
+    z
+      .object({
+        type: z.literal("oauth2"),
+        authorizationUrl: z.string().min(1).optional(),
+        tokenUrl: z.string().min(1).optional(),
+        issuer: z.string().min(1).optional(),
+        resourceMetadataUrl: z.string().min(1).optional(),
+        authorizationServerMetadataUrl: z.string().min(1).optional(),
+        openidConfigurationUrl: z.string().min(1).optional(),
+        clientId: z.string().min(1).optional(),
+        clientSecret: z.string().min(1).optional(),
+        scopes: z.array(z.string().min(1)).optional(),
+        redirectUri: z.string().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("oidc"),
+        authorizationUrl: z.string().min(1).optional(),
+        tokenUrl: z.string().min(1).optional(),
+        issuer: z.string().min(1).optional(),
+        resourceMetadataUrl: z.string().min(1).optional(),
+        authorizationServerMetadataUrl: z.string().min(1).optional(),
+        openidConfigurationUrl: z.string().min(1).optional(),
+        clientId: z.string().min(1).optional(),
+        clientSecret: z.string().min(1).optional(),
+        scopes: z.array(z.string().min(1)).optional(),
+        redirectUri: z.string().min(1).optional(),
+      })
+      .strict(),
   ])
-  .describe("Authentication settings for an OpenAPI endpoint.");
+  .describe("Authentication settings for an OpenAPI or GraphQL endpoint.");
 
 const capletMcpServerSchema = z
   .object({
@@ -165,7 +213,7 @@ const capletOpenApiEndpointSchema = z
     specPath: z.string().min(1).optional().describe("Local OpenAPI specification path."),
     specUrl: z.string().min(1).optional().describe("Remote OpenAPI specification URL."),
     baseUrl: z.string().min(1).optional().describe("Override base URL for OpenAPI requests."),
-    auth: capletOpenApiAuthSchema.describe(
+    auth: capletEndpointAuthSchema.describe(
       'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
     ),
     requestTimeoutMs: z
@@ -214,18 +262,102 @@ const capletOpenApiEndpointSchema = z
         message: "OpenAPI baseUrl must use https except loopback development urls",
       });
     }
-    if (endpoint.auth?.type === "headers") {
-      for (const headerName of Object.keys(endpoint.auth.headers)) {
-        const normalized = headerName.toLowerCase();
-        if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["auth", "headers", headerName],
-            message: `header ${headerName} is not allowed`,
-          });
-        }
-      }
+    validateEndpointAuthHeaders(endpoint.auth, ctx);
+  });
+
+const capletGraphQlOperationSchema = z
+  .object({
+    document: z.string().min(1).optional().describe("Inline GraphQL operation document."),
+    documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
+    operationName: z.string().min(1).optional().describe("Operation name to execute."),
+    description: z.string().min(1).optional().describe("Operation capability description."),
+  })
+  .strict()
+  .superRefine((operation, ctx) => {
+    if (Boolean(operation.document) === Boolean(operation.documentPath)) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "GraphQL operation must define exactly one document source: document or documentPath",
+      });
     }
+  });
+
+const capletGraphQlEndpointSchema = z
+  .object({
+    endpointUrl: z.string().min(1).describe("GraphQL HTTP endpoint URL."),
+    schemaPath: z.string().min(1).optional().describe("Local GraphQL SDL or introspection path."),
+    schemaUrl: z.string().min(1).optional().describe("Remote GraphQL SDL or introspection URL."),
+    introspection: z
+      .literal(true)
+      .optional()
+      .describe("Load schema through endpoint introspection."),
+    operations: z
+      .record(z.string().regex(SERVER_ID_PATTERN), capletGraphQlOperationSchema)
+      .optional()
+      .describe("Configured GraphQL operations keyed by stable tool name."),
+    auth: capletEndpointAuthSchema.describe(
+      'Explicit GraphQL request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Timeout in milliseconds for GraphQL HTTP requests."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "Milliseconds GraphQL operation metadata stays fresh. Set 0 to refresh every time.",
+      ),
+    selectionDepth: z
+      .number()
+      .int()
+      .positive()
+      .max(5)
+      .optional()
+      .describe("Maximum depth for auto-generated GraphQL selection sets."),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+  })
+  .strict()
+  .superRefine((endpoint, ctx) => {
+    const sourceCount =
+      Number(Boolean(endpoint.schemaPath)) +
+      Number(Boolean(endpoint.schemaUrl)) +
+      Number(endpoint.introspection === true);
+    if (sourceCount !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "graphqlEndpoint must define exactly one schema source: schemaPath, schemaUrl, or introspection",
+      });
+    }
+    if (
+      endpoint.endpointUrl &&
+      !hasEnvReference(endpoint.endpointUrl) &&
+      !isAllowedRemoteUrl(endpoint.endpointUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["endpointUrl"],
+        message: "GraphQL endpointUrl must use https except loopback development urls",
+      });
+    }
+    if (
+      endpoint.schemaUrl &&
+      !hasEnvReference(endpoint.schemaUrl) &&
+      !isAllowedRemoteUrl(endpoint.schemaUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["schemaUrl"],
+        message: "GraphQL schemaUrl must use https except loopback development urls",
+      });
+    }
+    validateEndpointAuthHeaders(endpoint.auth, ctx);
   });
 
 export const capletFileSchema = z
@@ -254,13 +386,21 @@ export const capletFileSchema = z
     openapiEndpoint: capletOpenApiEndpointSchema
       .describe("OpenAPI endpoint backend configuration for this Caplet.")
       .optional(),
+    graphqlEndpoint: capletGraphQlEndpointSchema
+      .describe("GraphQL endpoint backend configuration for this Caplet.")
+      .optional(),
   })
   .strict()
   .superRefine((frontmatter, ctx) => {
-    if (Boolean(frontmatter.mcpServer) === Boolean(frontmatter.openapiEndpoint)) {
+    const backendCount =
+      Number(Boolean(frontmatter.mcpServer)) +
+      Number(Boolean(frontmatter.openapiEndpoint)) +
+      Number(Boolean(frontmatter.graphqlEndpoint));
+    if (backendCount !== 1) {
       ctx.addIssue({
         code: "custom",
-        message: "Caplet file must define exactly one backend: mcpServer or openapiEndpoint",
+        message:
+          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, or graphqlEndpoint",
       });
     }
   });
@@ -280,6 +420,7 @@ export function capletJsonSchema(): unknown {
 export type CapletFileConfig = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
+  graphqlEndpoints?: Record<string, unknown>;
 };
 
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
@@ -289,14 +430,18 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
 
   const servers: Record<string, unknown> = {};
   const openapiEndpoints: Record<string, unknown> = {};
+  const graphqlEndpoints: Record<string, unknown> = {};
   for (const candidate of discoverCapletFiles(root)) {
-    if (servers[candidate.id] || openapiEndpoints[candidate.id]) {
+    if (servers[candidate.id] || openapiEndpoints[candidate.id] || graphqlEndpoints[candidate.id]) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
     const config = readCapletFile(candidate.path);
     if (isPlainObject(config) && config.backend === "openapi") {
       const { backend: _backend, ...endpoint } = config;
       openapiEndpoints[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "graphql") {
+      const { backend: _backend, ...endpoint } = config;
+      graphqlEndpoints[candidate.id] = endpoint;
     } else {
       servers[candidate.id] = config;
     }
@@ -304,10 +449,12 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
 
   const hasServers = Object.keys(servers).length > 0;
   const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
-  return hasServers || hasOpenApi
+  const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
+  return hasServers || hasOpenApi || hasGraphQl
     ? {
         ...(hasServers ? { mcpServers: servers } : {}),
         ...(hasOpenApi ? { openapiEndpoints } : {}),
+        ...(hasGraphQl ? { graphqlEndpoints } : {}),
       }
     : undefined;
 }
@@ -369,14 +516,32 @@ function readCapletFile(path: string): unknown {
     );
   }
 
-  return capletToServerConfig(parsed.data, body);
+  return capletToServerConfig(parsed.data, body, dirname(path));
 }
 
-function capletToServerConfig(frontmatter: CapletFileFrontmatter, body: string): unknown {
+function capletToServerConfig(
+  frontmatter: CapletFileFrontmatter,
+  body: string,
+  baseDir: string,
+): unknown {
   if (frontmatter.openapiEndpoint) {
     return {
       ...frontmatter.openapiEndpoint,
+      specPath: normalizeLocalPath(frontmatter.openapiEndpoint.specPath, baseDir),
       backend: "openapi",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      body,
+    };
+  }
+
+  if (frontmatter.graphqlEndpoint) {
+    return {
+      ...frontmatter.graphqlEndpoint,
+      schemaPath: normalizeLocalPath(frontmatter.graphqlEndpoint.schemaPath, baseDir),
+      operations: normalizeGraphQlOperations(frontmatter.graphqlEndpoint.operations, baseDir),
+      backend: "graphql",
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
@@ -391,6 +556,50 @@ function capletToServerConfig(frontmatter: CapletFileFrontmatter, body: string):
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
     body,
   };
+}
+
+function normalizeGraphQlOperations(
+  operations: z.infer<typeof capletGraphQlEndpointSchema>["operations"],
+  baseDir: string,
+): z.infer<typeof capletGraphQlEndpointSchema>["operations"] {
+  if (!operations) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(operations).map(([name, operation]) => [
+      name,
+      {
+        ...operation,
+        documentPath: normalizeLocalPath(operation.documentPath, baseDir),
+      },
+    ]),
+  );
+}
+
+function normalizeLocalPath(value: string | undefined, baseDir: string): string | undefined {
+  if (!value || isAbsolute(value) || hasEnvReference(value)) {
+    return value;
+  }
+  return join(baseDir, value);
+}
+
+function validateEndpointAuthHeaders(
+  auth: z.infer<typeof capletEndpointAuthSchema> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  if (auth?.type !== "headers") {
+    return;
+  }
+  for (const headerName of Object.keys(auth.headers)) {
+    const normalized = headerName.toLowerCase();
+    if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["auth", "headers", headerName],
+        message: `header ${headerName} is not allowed`,
+      });
+    }
+  }
 }
 
 function parseFrontmatter(text: string, path: string): { frontmatter: unknown; body: string } {

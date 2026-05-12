@@ -4,6 +4,7 @@ import { z } from "zod";
 import { parseConfig } from "../src/config.js";
 import { DownstreamManager } from "../src/downstream.js";
 import { CapletsError } from "../src/errors.js";
+import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql.js";
 import { ServerRegistry } from "../src/registry.js";
 import {
   generatedToolInputSchema,
@@ -257,5 +258,47 @@ describe("generated tool handlers", () => {
       downstream,
     );
     expect(result).toBe(downstreamResult);
+  });
+
+  it("routes GraphQL-backed Caplets to the GraphQL manager", async () => {
+    const graphqlCaplet: GraphqlEndpointConfig = {
+      server: "graph",
+      backend: "graphql",
+      name: "Graph",
+      description: "Search graph project records.",
+      endpointUrl: "http://127.0.0.1/graphql",
+      schemaPath: "/tmp/schema.graphql",
+      auth: { type: "none" },
+      requestTimeoutMs: 60000,
+      operationCacheTtlMs: 30000,
+      selectionDepth: 2,
+      disabled: false,
+    };
+    const graphRegistry = {
+      config: { options: { maxSearchLimit: 50, defaultSearchLimit: 20 } },
+      detail: vi.fn(),
+    } as unknown as ServerRegistry;
+    const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
+    const graphqlResult = {
+      content: [{ type: "text" as const, text: "ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    };
+    const graphql = {
+      callTool: vi.fn().mockResolvedValue(graphqlResult),
+    } as unknown as GraphQLManager;
+
+    const result = await handleServerTool(
+      graphqlCaplet as never,
+      { operation: "call_tool", tool: "query_user", arguments: { id: "42" } },
+      graphRegistry,
+      downstream,
+      undefined,
+      graphql,
+    );
+
+    expect(result).toBe(graphqlResult);
+    expect(graphql.callTool).toHaveBeenCalledWith(graphqlCaplet, "query_user", { id: "42" });
+    expect(downstream.callTool).not.toHaveBeenCalled();
   });
 });
