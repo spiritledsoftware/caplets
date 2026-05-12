@@ -17,19 +17,39 @@ const operationSchema = z.enum(operations);
 
 export const generatedToolInputSchema = z
   .object({
-    operation: operationSchema.describe("Operation to perform for this configured MCP server."),
-    query: z.string().optional().describe("Required for search_tools."),
+    operation: operationSchema.describe(
+      [
+        "Caplets wrapper operation to perform for this configured MCP server.",
+        "Use list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool.",
+        'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
+      ].join(" "),
+    ),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        'Required only for search_tools. Example: {"operation":"search_tools","query":"web search","limit":5}. Do not use query for call_tool; put downstream query values under arguments.query.',
+      ),
     limit: z
       .number()
       .int()
       .positive()
       .optional()
-      .describe("Optional for search_tools; defaults to configured limit."),
-    tool: z.string().optional().describe("Exact downstream tool name for get_tool or call_tool."),
+      .describe(
+        "Optional only for search_tools; defaults to the configured search limit. For downstream result limits, use call_tool.arguments with the downstream schema field name.",
+      ),
+    tool: z
+      .string()
+      .optional()
+      .describe(
+        'Exact downstream tool name for get_tool or call_tool. Example: {"operation":"get_tool","tool":"web_search_exa"} before calling it.',
+      ),
     arguments: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe("JSON object arguments for call_tool."),
+      .describe(
+        'Required JSON object only for call_tool. Put every downstream tool input inside this object. Example: {"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}. Do not send downstream inputs as top-level query, limit, url, path, or other fields.',
+      ),
   })
   .strict();
 

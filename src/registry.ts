@@ -79,6 +79,15 @@ export class ServerRegistry {
 }
 
 export function capabilityDescription(server: CapletServerConfig): string {
-  const hint = `Use this tool to inspect and call tools from ${server.server}. Start with search_tools or list_tools; use get_tool for schema; use call_tool to invoke.`;
+  const hint = [
+    `Use this Caplets wrapper to inspect and call tools from ${server.server}.`,
+    "",
+    "Recommended flow:",
+    '- Discover tools: {"operation":"list_tools"} or {"operation":"search_tools","query":"<what you need>"}',
+    '- Read one tool schema: {"operation":"get_tool","tool":"<tool name>"}',
+    '- Invoke one downstream tool: {"operation":"call_tool","tool":"<tool name>","arguments":{...}}',
+    "",
+    'Important: call_tool requires a top-level "arguments" JSON object containing the downstream tool inputs. Do not put downstream arguments at the top level of this wrapper request.',
+  ].join("\n");
   return `${server.name}\n\n${server.description}\n\n${hint}`;
 }

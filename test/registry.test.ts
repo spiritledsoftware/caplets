@@ -23,7 +23,12 @@ describe("registry", () => {
     const registry = new ServerRegistry(config);
     expect(registry.enabledServers().map((server) => server.server)).toEqual(["enabled"]);
     expect(registry.get("disabled")).toBeUndefined();
-    expect(capabilityDescription(config.mcpServers.enabled!)).toContain("Enabled Server");
-    expect(capabilityDescription(config.mcpServers.enabled!)).not.toContain("secret-arg");
+    const description = capabilityDescription(config.mcpServers.enabled!);
+    expect(description).toContain("Enabled Server");
+    expect(description).toContain(
+      '{"operation":"call_tool","tool":"<tool name>","arguments":{...}}',
+    );
+    expect(description).toContain("Do not put downstream arguments at the top level");
+    expect(description).not.toContain("secret-arg");
   });
 });
