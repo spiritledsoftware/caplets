@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, parseConfig } from "../src/config.js";
+import { configJsonSchema, loadConfig, parseConfig } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 
 describe("config", () => {
@@ -40,10 +40,43 @@ describe("config", () => {
 
     const config = loadConfig(path);
     expect(config.version).toBe(1);
-    expect(config.caplets.defaultSearchLimit).toBe(20);
+    expect(config.options.defaultSearchLimit).toBe(20);
     expect(config.mcpServers["my-server_1"]?.transport).toBe("stdio");
     expect(config.mcpServers["my-server_1"]?.env?.EXAMPLE_TOKEN).toBe("secret-value");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loads top-level Caplets options", () => {
+    const config = parseConfig({
+      $schema:
+        "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+      defaultSearchLimit: 5,
+      maxSearchLimit: 10,
+      mcpServers: {},
+    });
+
+    expect(config.options).toEqual({
+      defaultSearchLimit: 5,
+      maxSearchLimit: 10,
+    });
+  });
+
+  it("rejects nested Caplets options", () => {
+    expect(() =>
+      parseConfig({
+        caplets: {
+          defaultSearchLimit: 5,
+          maxSearchLimit: 10,
+        },
+        mcpServers: {},
+      }),
+    ).toThrow(CapletsError);
+  });
+
+  it("keeps the committed JSON Schema in sync with the Zod schema", () => {
+    expect(JSON.parse(readFileSync("schemas/caplets-config.schema.json", "utf8"))).toEqual(
+      configJsonSchema(),
+    );
   });
 
   it("rejects unsupported versions and unknown keys", () => {

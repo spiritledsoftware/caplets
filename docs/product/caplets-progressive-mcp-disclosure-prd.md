@@ -102,13 +102,15 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- `caplets auth <server>` performs OAuth setup for configured remote servers with `auth.type: "oauth2"`.
+- `caplets auth login <server>` performs OAuth setup for configured remote servers with `auth.type: "oauth2"`.
 - The command opens a browser-based authorization code flow with PKCE and receives the callback on a loopback URL.
-- `caplets auth <server> --no-open` supports headless terminals and remote shells by printing the authorization URL and accepting manual completion input.
+- `caplets auth login <server> --no-open` supports headless terminals and remote shells by printing the authorization URL and accepting manual completion input.
 - Successful auth writes a token bundle to `~/.caplets/auth/<server>.json` using owner-only file permissions where supported.
 - The Caplets MCP server uses stored OAuth tokens for subsequent HTTP/SSE requests without exposing tokens through MCP tools, generated descriptions, logs, or errors.
 - Auth failures are reported with structured, redacted errors.
-- Re-running `caplets auth <server>` replaces the stored token bundle for that server atomically.
+- Re-running `caplets auth login <server>` replaces the stored token bundle for that server atomically.
+- `caplets auth list` lists configured remote OAuth servers and safe token status without printing access tokens, refresh tokens, or raw token-store contents.
+- `caplets auth logout <server>` deletes the stored token bundle for a configured remote OAuth server.
 
 ### MVP Tool Surface
 
@@ -154,11 +156,10 @@ MVP supports one documented config file at `~/.caplets/config.json`:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
   "version": 1,
-  "caplets": {
-    "defaultSearchLimit": 20,
-    "maxSearchLimit": 50
-  },
+  "defaultSearchLimit": 20,
+  "maxSearchLimit": 50,
   "mcpServers": {
     "filesystem": {
       "name": "Project Files",
@@ -196,12 +197,13 @@ MVP supports one documented config file at `~/.caplets/config.json`:
 Requirements:
 
 - `mcpServers` is required for MVP.
+- `$schema` is optional and exists only for JSON Schema-aware editor validation.
 - `version` is optional for MVP and defaults to 1 when omitted. If present, MVP accepts only `1` and rejects unsupported versions with `CONFIG_INVALID`.
-- Allowed top-level keys in MVP are `version`, `caplets`, and `mcpServers`; unknown top-level keys are rejected with `CONFIG_INVALID`.
-- Unknown keys inside `caplets` are rejected with `CONFIG_INVALID`.
+- Allowed top-level keys in MVP are `$schema`, `version`, `defaultSearchLimit`, `maxSearchLimit`, and `mcpServers`; unknown top-level keys are rejected with `CONFIG_INVALID`.
+- The committed JSON Schema lives at `schemas/caplets-config.schema.json`, is generated from the Zod runtime config schema, and CI must fail when the committed schema drifts from the generated output.
 - Unknown keys inside each server config are rejected with `CONFIG_INVALID`, except fields that belong to the tracked standard MCP server schema plus Caplets-owned additions documented here.
 - `mcpServers` is the only accepted top-level server configuration key for downstream MCP servers in MVP.
-- `caplets` is optional and reserved for Caplets-owned configuration. MVP supports `defaultSearchLimit` and `maxSearchLimit`; future Caplets options should live here rather than changing the downstream MCP server shape.
+- `defaultSearchLimit` and `maxSearchLimit` are optional top-level Caplets options. Future Caplets options should remain top-level unless they are specific to one downstream server.
 - Caplets' native config shape follows the shared/standard `mcpServers` convention used by tools such as Pi's MCP adapter, with Caplets-specific metadata added per server.
 - Each server key is the stable server ID. It must match `^[a-zA-Z0-9_-]{1,64}$` and be unique within the file.
 - The server ID becomes the generated MCP tool name exactly.
@@ -225,20 +227,22 @@ Requirements:
   - `none`: no additional auth material.
   - `bearer`: requires `token`; Caplets sends `Authorization: Bearer <token>` on every HTTP/SSE request and never places tokens in query strings.
   - `headers`: requires a `headers` object of static string headers, intended for non-standard API-key schemes. Caplets validates header names, rejects hop-by-hop or transport-controlled headers, interpolates values, and redacts values everywhere.
-  - `oauth2`: supports interactive OAuth for MCP-compliant HTTP/SSE servers through `caplets auth <server>`. MVP accepts optional `authorizationUrl`, `tokenUrl`, `issuer`, `clientId`, `clientSecret`, `scopes`, and `redirectUri`; Caplets sends bearer access tokens on every HTTP/SSE request.
-- `caplets auth <server>` is the required MVP user flow for OAuth-backed remote servers unless valid tokens already exist in the Caplets auth store.
-- `caplets auth <server>` validates that `<server>` is a configured remote server with `auth.type: "oauth2"`, discovers or reads authorization metadata, starts an OAuth authorization code flow with PKCE, opens the user's browser, listens on a loopback callback URL, exchanges the code for tokens, and writes the token bundle to Caplets' local auth store.
-- `caplets auth <server> --no-open` must print the authorization URL and allow the user to paste the final callback URL, authorization code, or provider-issued authorization token into the CLI. It may also continue listening on the loopback callback URL when practical.
+  - `oauth2`: supports interactive OAuth for MCP-compliant HTTP/SSE servers through `caplets auth login <server>`. MVP accepts optional `authorizationUrl`, `tokenUrl`, `issuer`, `clientId`, `clientSecret`, `scopes`, and `redirectUri`; Caplets sends bearer access tokens on every HTTP/SSE request.
+- `caplets auth login <server>` is the required MVP user flow for OAuth-backed remote servers unless valid tokens already exist in the Caplets auth store.
+- `caplets auth login <server>` validates that `<server>` is a configured remote server with `auth.type: "oauth2"`, discovers or reads authorization metadata, starts an OAuth authorization code flow with PKCE, opens the user's browser, listens on a loopback callback URL, exchanges the code for tokens, and writes the token bundle to Caplets' local auth store.
+- `caplets auth login <server> --no-open` must print the authorization URL and allow the user to paste the final callback URL, authorization code, or provider-issued authorization token into the CLI. It may also continue listening on the loopback callback URL when practical.
 - Manual OAuth completion must validate `state`, apply the stored PKCE verifier, reject mismatched callback URLs or codes, and redact pasted secrets from logs and errors.
 - OAuth authorization requests must include a state parameter and PKCE challenge. OAuth token requests must verify state and include the PKCE verifier.
 - For MCP-compliant OAuth servers, Caplets must include the target server resource indicator in authorization and token requests when required by the MCP authorization specification.
 - The default OAuth token store is `~/.caplets/auth/<server>.json`; files must be created with owner-only permissions when the platform supports it.
 - Token bundles are runtime auth state, not server description state. They must not be embedded in generated MCP tool descriptions, `get_server`, logs, or structured errors.
-- The Caplets MCP server reads OAuth tokens from the auth store lazily before remote operations. Updating tokens with `caplets auth <server>` should not require editing config and should be designed to work without restarting Caplets when practical.
+- The Caplets MCP server reads OAuth tokens from the auth store lazily before remote operations. Updating tokens with `caplets auth login <server>` should not require editing config and should be designed to work without restarting Caplets when practical.
+- `caplets auth list` reports configured OAuth remote servers as missing, authenticated, or expired and must not enumerate arbitrary orphan token files outside the configured server set.
+- `caplets auth logout <server>` removes the local token bundle for a configured OAuth remote server and is allowed even when the server is currently disabled.
 - Caplets may refresh expired OAuth tokens when a refresh token and token endpoint are available, and should persist refreshed token bundles atomically back to the auth store.
-- If OAuth metadata is not fully configured, `caplets auth <server>` should use MCP/OAuth discovery where available, including safe handling of `WWW-Authenticate` metadata from the remote server.
+- If OAuth metadata is not fully configured, `caplets auth login <server>` should use MCP/OAuth discovery where available, including safe handling of `WWW-Authenticate` metadata from the remote server.
 - HTTP 401/403 responses from remote servers return structured auth errors with safe challenge metadata when available. Caplets must parse `WWW-Authenticate` enough to classify auth-required/auth-failed cases without leaking credentials.
-- Remote auth error payloads use safe fields only: `server`, `status`, `message`, `authType`, optional redacted `challenge`, and optional `nextAction: "run_caplets_auth"`.
+- Remote auth error payloads use safe fields only: `server`, `status`, `message`, `authType`, optional redacted `challenge`, and optional `nextAction: "run_caplets_auth_login"`.
 - Streamable HTTP clients must preserve MCP protocol-version and session semantics, including `MCP-Protocol-Version` and `Mcp-Session-Id` behavior, through the official SDK transport where possible.
 - `toolCacheTtlMs` defaults to 30000. `0` means refresh downstream `tools/list` on every metadata operation.
 - `get_tool` and `call_tool` must ensure cached downstream tool metadata is fresh enough according to `toolCacheTtlMs` before exact downstream tool-name resolution.
@@ -254,7 +258,7 @@ Requirements:
 - No GUI or config editor.
 - No attempt to standardize every MCP client config format.
 - No automatic import from other MCP clients.
-- No GUI OAuth onboarding in MVP; OAuth setup is CLI-driven through `caplets auth <server>`.
+- No GUI OAuth onboarding in MVP; OAuth setup is CLI-driven through `caplets auth login <server>`.
 - No mandatory dynamic client registration in MVP. Caplets may use it when an MCP/OAuth server advertises support, but a configured `clientId` path must work.
 - No `tags` field in MVP; users can include tag-like Markdown in `description` when helpful.
 - No separate `whenToUse` or `avoidWhen` fields in MVP; users can include those sections in Markdown-formatted `description`.
@@ -333,7 +337,7 @@ flowchart LR
 
 Core modules:
 
-- `src/cli.ts`: CLI entrypoint, including `caplets auth <server>` for OAuth setup.
+- `src/cli.ts`: CLI entrypoint, including `caplets auth login <server>` for OAuth setup.
 - `src/index.ts`: MCP server bootstrap and dynamic generated server-tool registration.
 - `src/config.ts`: Config loading, schema validation, defaults, and redaction helpers.
 - `src/auth.ts`: Remote auth resolution, OAuth flow orchestration, token storage, token refresh, and auth redaction helpers.
@@ -346,14 +350,11 @@ Core modules:
 
 `CapletsConfig`:
 
+- `$schema?: string`
 - `version?: 1`
-- `caplets?: CapletsOptions`
-- `mcpServers: Record<string, CapletServerConfig>`
-
-`CapletsOptions`:
-
 - `defaultSearchLimit?: number`
 - `maxSearchLimit?: number`
+- `mcpServers: Record<string, CapletServerConfig>`
 
 `CapletServerConfig`:
 
@@ -440,7 +441,7 @@ Requirements:
 - MCP SDK server: exposes Caplets over stdio.
 - MCP SDK client: connects to downstream stdio, Streamable HTTP, and legacy HTTP+SSE servers.
 - Node child process runtime: launches configured downstream commands.
-- Caplets CLI: runs `caplets auth <server>` for OAuth-backed remote servers.
+- Caplets CLI: runs `caplets auth login <server>` for OAuth-backed remote servers.
 - Browser/loopback OAuth: opens the authorization URL and receives the OAuth callback on localhost for configured OAuth servers.
 - Local auth store: reads and writes OAuth token bundles under `~/.caplets/auth`.
 - Remote transport headers: preserves required MCP protocol-version and session headers for Streamable HTTP servers.
@@ -491,7 +492,7 @@ Add automated tests for:
 - File system reads `~/.caplets/config.json`.
 - Valid config loading from a temp home directory.
 - Optional config version defaulting to 1 and unsupported version rejection.
-- Unknown top-level, `caplets`, and server config key rejection.
+- Unknown top-level and server config key rejection.
 - Server ID pattern validation.
 - Server ID validation covers allowed hyphens/underscores and rejects spaces, dots, slashes, colons, and Unicode.
 - Required display `name` validation.
@@ -505,10 +506,10 @@ Add automated tests for:
 - Remote auth config validation for `none`, `bearer`, `headers`, and `oauth2`.
 - Header auth validation rejects hop-by-hop and transport-controlled headers.
 - OAuth token-store path derivation from server ID and owner-only file permission behavior where supported.
-- `caplets auth <server>` success flow: loads config, validates OAuth server config, performs PKCE callback exchange against a mocked OAuth server, and stores a token bundle.
-- `caplets auth <server> --no-open` prints the authorization URL and completes via pasted callback URL, pasted authorization code/token, or loopback callback when available.
+- `caplets auth login <server>` success flow: loads config, validates OAuth server config, performs PKCE callback exchange against a mocked OAuth server, and stores a token bundle.
+- `caplets auth login <server> --no-open` prints the authorization URL and completes via pasted callback URL, pasted authorization code/token, or loopback callback when available.
 - Manual OAuth completion validates state/PKCE and rejects mismatched, expired, malformed, or already-used completion input.
-- `caplets auth <server>` failure behavior for missing server, non-remote server, non-OAuth server, denied callback, token exchange failure, and secret redaction.
+- `caplets auth login <server>` failure behavior for missing server, non-remote server, non-OAuth server, denied callback, token exchange failure, and secret redaction.
 - Remote HTTP/SSE clients use bearer/header/OAuth auth material without leaking it in responses or logs.
 - OAuth refresh success and failure behavior, including atomic token-store update on success and `AUTH_REFRESH_FAILED` on refresh failure.
 - Remote 401/403 classification into `AUTH_REQUIRED` or `AUTH_FAILED` with safe challenge metadata.
@@ -558,7 +559,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 - Support server-scoped diagnostics, tool listing, lexical search, tool metadata lookup, and explicit tool invocation through each generated server tool.
 - Support managed downstream stdio server lifecycles, remote HTTP/SSE transports, startup/call timeouts, structured errors, and secret redaction.
 - Support bearer, static-header, and OAuth2 auth for remote HTTP/SSE servers.
-- Provide `caplets auth <server>` for OAuth browser/PKCE setup and local token storage.
+- Provide `caplets auth login <server>` for OAuth browser/PKCE setup and local token storage.
 - Start downstream stdio servers on first relevant capability operation rather than blocking Caplets process startup.
 - Support server-scoped tool search with fresh cached metadata and bounded startup for missing processes.
 - Add regression tests and benchmark fixture.
