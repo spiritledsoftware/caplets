@@ -141,6 +141,7 @@ describe("auth helpers", () => {
 
     await addClientAuthentication(headers, params);
 
+    expect(params.get("client_id")).toBe("client");
     expect(params.get("client_secret")).toBe("secret");
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
   });
