@@ -145,6 +145,30 @@ describe("auth helpers", () => {
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
   });
 
+  it("adds configured OAuth public client ID during SDK token exchange", async () => {
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "oauth2", clientId: "client" },
+        },
+      },
+    }).mcpServers.remote!;
+    const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {});
+    const addClientAuthentication = provider.addClientAuthentication;
+    const headers = new Headers();
+    const params = new URLSearchParams();
+
+    await addClientAuthentication(headers, params);
+
+    expect(params.get("client_id")).toBe("client");
+    expect(params.has("client_secret")).toBe(false);
+    expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+  });
+
   it("runs generic OIDC authorization code flow with discovery and dynamic client registration", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     let baseUrl = "";
