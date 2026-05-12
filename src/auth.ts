@@ -26,13 +26,44 @@ import type {
 import { CapletsError, redactSecrets } from "./errors.js";
 import type { CapletServerConfig } from "./config.js";
 
+type OAuthLikeAuthConfig = {
+  type: "oauth2" | "oidc";
+  authorizationUrl?: string | undefined;
+  tokenUrl?: string | undefined;
+  issuer?: string | undefined;
+  resourceMetadataUrl?: string | undefined;
+  authorizationServerMetadataUrl?: string | undefined;
+  openidConfigurationUrl?: string | undefined;
+  clientId?: string | undefined;
+  clientSecret?: string | undefined;
+  scopes?: string[] | undefined;
+  redirectUri?: string | undefined;
+};
+
+export type GenericAuthTarget = {
+  server: string;
+  backend: "openapi" | "graphql";
+  url?: string | undefined;
+  baseUrl?: string | undefined;
+  specUrl?: string | undefined;
+  auth?: OAuthLikeAuthConfig | { type: string } | undefined;
+  requestTimeoutMs?: number | undefined;
+};
+
 export type StoredOAuthTokenBundle = {
   server: string;
+  authType?: "oauth2" | "oidc" | undefined;
   accessToken: string;
   refreshToken?: string | undefined;
   tokenType?: string | undefined;
   expiresAt?: string | undefined;
   scope?: string | undefined;
+  idToken?: string | undefined;
+  issuer?: string | undefined;
+  subject?: string | undefined;
+  clientId?: string | undefined;
+  clientSecret?: string | undefined;
+  protectedResourceOrigin?: string | undefined;
   metadata?: Record<string, unknown>;
 };
 
@@ -103,24 +134,53 @@ export function staticRemoteHeaders(server: CapletServerConfig): Record<string, 
 }
 
 export function oauthHeaders(server: CapletServerConfig, authDir?: string): Record<string, string> {
-  if (server.auth?.type !== "oauth2") {
+  if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
     return {};
   }
   const bundle = readTokenBundle(server.server, authDir);
   if (!bundle?.accessToken) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
       server: server.server,
-      authType: "oauth2",
+      authType: server.auth.type,
       nextAction: "run_caplets_auth_login",
     });
   }
   if (bundle.expiresAt && Date.parse(bundle.expiresAt) <= Date.now()) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${server.server} is expired`, {
       server: server.server,
-      authType: "oauth2",
+      authType: server.auth.type,
       nextAction: "run_caplets_auth_login",
     });
   }
+  return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
+}
+
+export function genericOAuthHeaders(
+  target: GenericAuthTarget,
+  authDir?: string,
+): Record<string, string> {
+  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
+    return {};
+  }
+  const authConfig = target.auth as OAuthLikeAuthConfig;
+  const bundle = readTokenBundle(target.server, authDir);
+  if (!bundle?.accessToken) {
+    throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${target.server}`, {
+      server: target.server,
+      backend: target.backend,
+      authType: authConfig.type,
+      nextAction: "run_caplets_auth_login",
+    });
+  }
+  if (isTokenBundleExpired(bundle)) {
+    throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
+      server: target.server,
+      backend: target.backend,
+      authType: authConfig.type,
+      nextAction: "run_caplets_auth_login",
+    });
+  }
+  assertTokenBundleMatchesTarget(bundle, target, authConfig);
   return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
 }
 
@@ -143,10 +203,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
       response_types: ["code"],
       grant_types: ["authorization_code", "refresh_token"],
       token_endpoint_auth_method:
-        this.server.auth?.type === "oauth2" && this.server.auth.clientSecret
+        (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
+        this.server.auth.clientSecret
           ? "client_secret_post"
           : "none",
-      ...(this.server.auth?.type === "oauth2" && this.server.auth.clientId
+      ...((this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
+      this.server.auth.clientId
         ? { client_id: this.server.auth.clientId }
         : {}),
     };
@@ -160,7 +222,10 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (this.clientInfo) {
       return this.clientInfo;
     }
-    if (this.server.auth?.type === "oauth2" && this.server.auth.clientId) {
+    if (
+      (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
+      this.server.auth.clientId
+    ) {
       return {
         ...this.clientMetadata,
         client_id: this.server.auth.clientId,
@@ -219,7 +284,10 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   addClientAuthentication = async (headers: Headers, params: URLSearchParams): Promise<void> => {
-    if (this.server.auth?.type !== "oauth2" || !this.server.auth.clientSecret) {
+    if (
+      (this.server.auth?.type !== "oauth2" && this.server.auth?.type !== "oidc") ||
+      !this.server.auth.clientSecret
+    ) {
       return;
     }
     params.set("client_secret", this.server.auth.clientSecret);
@@ -238,7 +306,11 @@ export async function runOAuthFlow(
     print?: (line: string) => void;
   } = {},
 ): Promise<AuthResult> {
-  if (server.transport === "stdio" || !server.url || server.auth?.type !== "oauth2") {
+  if (
+    server.transport === "stdio" ||
+    !server.url ||
+    (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc")
+  ) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `${server.server} is not a configured OAuth remote server`,
@@ -271,7 +343,7 @@ export async function runOAuthFlow(
   );
 
   try {
-    const scope = server.auth.scopes?.join(" ");
+    const scope = scopesFor(server.auth);
     const first = await auth(provider, {
       serverUrl: server.url,
       ...(scope ? { scope } : {}),
@@ -312,6 +384,149 @@ export async function runOAuthFlow(
   }
 }
 
+type AuthorizationServerMetadata = {
+  issuer?: string;
+  authorization_endpoint?: string;
+  token_endpoint?: string;
+  registration_endpoint?: string;
+  [key: string]: unknown;
+};
+
+export async function runGenericOAuthFlow(
+  target: GenericAuthTarget,
+  options: {
+    noOpen?: boolean;
+    authDir?: string;
+    manualInput?: string;
+    readManualInput?: () => Promise<string | undefined>;
+    open?: (url: string) => Promise<void>;
+    print?: (line: string) => void;
+  } = {},
+): Promise<StoredOAuthTokenBundle> {
+  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
+    throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
+  }
+  const authConfig = target.auth as OAuthLikeAuthConfig;
+  let callbackCode: string | undefined;
+  let callbackState: string | undefined;
+  const callback = await createLoopbackCallback((url) => {
+    if (url.searchParams.get("error")) {
+      throw new CapletsError(
+        "AUTH_FAILED",
+        "OAuth provider returned an error",
+        redactSecrets(Object.fromEntries(url.searchParams)),
+      );
+    }
+    callbackCode = url.searchParams.get("code") ?? undefined;
+    callbackState = url.searchParams.get("state") ?? undefined;
+  });
+  const redirectUri = authConfig.redirectUri ?? callback.redirectUri;
+  const verifier = base64url(randomBytes(32));
+  const state = base64url(randomBytes(24));
+  const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
+  try {
+    const metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
+    const authorizationEndpoint = authConfig.authorizationUrl ?? metadata.authorization_endpoint;
+    const tokenEndpoint = authConfig.tokenUrl ?? metadata.token_endpoint;
+    if (!authorizationEndpoint || !tokenEndpoint) {
+      throw new CapletsError("AUTH_FAILED", "OAuth metadata is missing endpoints", {
+        server: target.server,
+      });
+    }
+    assertAllowedAuthUrl(authorizationEndpoint, "authorization endpoint", allowLoopbackHttp);
+    assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
+    const client = await resolveGenericClient(
+      target,
+      authConfig,
+      metadata,
+      redirectUri,
+      allowLoopbackHttp,
+    );
+    const scope = scopesFor(authConfig);
+    const authorizationUrl = new URL(authorizationEndpoint);
+    authorizationUrl.searchParams.set("response_type", "code");
+    authorizationUrl.searchParams.set("client_id", client.clientId);
+    authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+    authorizationUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
+    authorizationUrl.searchParams.set("code_challenge_method", "S256");
+    authorizationUrl.searchParams.set("state", state);
+    if (scope) {
+      authorizationUrl.searchParams.set("scope", scope);
+    }
+    options.print?.(`Open this URL to authorize ${target.server}:\n${authorizationUrl.toString()}`);
+    if (!options.noOpen) {
+      await (options.open
+        ? options.open(authorizationUrl.toString())
+        : openBrowser(authorizationUrl.toString()));
+    }
+    const manualInput =
+      options.manualInput ?? (options.noOpen ? await options.readManualInput?.() : undefined);
+    const completion = manualInput
+      ? extractCompletion(manualInput)
+      : await callback.waitForCode(() =>
+          callbackCode
+            ? {
+                code: callbackCode,
+                ...(callbackState ? { state: callbackState } : {}),
+              }
+            : undefined,
+        );
+    if (completion.state !== state) {
+      throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+    }
+    const params = new URLSearchParams({
+      grant_type: "authorization_code",
+      code: completion.code,
+      redirect_uri: redirectUri,
+      client_id: client.clientId,
+      code_verifier: verifier,
+    });
+    if (client.clientSecret) {
+      params.set("client_secret", client.clientSecret);
+    }
+    const tokenResponse = await fetchJson(
+      tokenEndpoint,
+      target.requestTimeoutMs,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      },
+      allowLoopbackHttp,
+    );
+    const idToken = asString(tokenResponse.id_token);
+    const idClaims = parseJwtPayload(idToken);
+    validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
+    const bundle = stripUndefined({
+      server: target.server,
+      authType: authConfig.type,
+      accessToken: requireString(tokenResponse.access_token, "access_token"),
+      refreshToken: asString(tokenResponse.refresh_token),
+      tokenType: asString(tokenResponse.token_type),
+      expiresAt:
+        typeof tokenResponse.expires_in === "number"
+          ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+          : undefined,
+      scope: asString(tokenResponse.scope) ?? scope,
+      idToken,
+      issuer: asString(idClaims?.iss) ?? metadata.issuer ?? authConfig.issuer,
+      subject: asString(idClaims?.sub),
+      clientId: client.clientId,
+      clientSecret: client.clientSecret,
+      protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
+      metadata: redactSecrets({
+        protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
+        authorizationServer: metadata,
+        dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
+      }) as Record<string, unknown>,
+    });
+    writeTokenBundle(bundle, options.authDir);
+    return bundle;
+  } finally {
+    await callback.close();
+  }
+}
+
 export function extractCompletion(input: string): { code: string; state?: string } {
   try {
     const url = new URL(input);
@@ -343,7 +558,9 @@ export function classifyRemoteAuthError(
       message: response.statusText,
       authType: server.auth?.type ?? "none",
       challenge: redactSecrets(challenge),
-      ...(server.auth?.type === "oauth2" ? { nextAction: "run_caplets_auth_login" } : {}),
+      ...(server.auth?.type === "oauth2" || server.auth?.type === "oidc"
+        ? { nextAction: "run_caplets_auth_login" }
+        : {}),
     },
   );
 }
@@ -392,6 +609,313 @@ async function openBrowser(url: string): Promise<void> {
 
 function base64url(bytes: Buffer): string {
   return bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function discoverAuthorizationServer(
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+  allowLoopbackHttp: boolean,
+): Promise<AuthorizationServerMetadata> {
+  if (authConfig.authorizationUrl && authConfig.tokenUrl) {
+    return {
+      ...(authConfig.issuer ? { issuer: authConfig.issuer } : {}),
+      authorization_endpoint: authConfig.authorizationUrl,
+      token_endpoint: authConfig.tokenUrl,
+    };
+  }
+  const resource = target.url ?? target.baseUrl ?? target.specUrl ?? authConfig.issuer;
+  const resourceOrigin = resource ? new URL(resource).origin : undefined;
+  const protectedMetadata =
+    (authConfig.resourceMetadataUrl
+      ? ((await fetchJson(
+          authConfig.resourceMetadataUrl,
+          target.requestTimeoutMs,
+          {},
+          allowLoopbackHttp,
+        )) as AuthorizationServerMetadata)
+      : undefined) ??
+    (resourceOrigin
+      ? await fetchOptionalJson(
+          `${resourceOrigin}/.well-known/oauth-protected-resource`,
+          target.requestTimeoutMs,
+          allowLoopbackHttp,
+        )
+      : undefined);
+  const authorizationServer =
+    authConfig.issuer ??
+    asString((protectedMetadata?.authorization_servers as unknown[] | undefined)?.[0]) ??
+    resourceOrigin;
+  if (!authorizationServer) {
+    throw new CapletsError("AUTH_FAILED", "OAuth authorization server could not be discovered", {
+      server: target.server,
+    });
+  }
+  return (
+    (authConfig.authorizationServerMetadataUrl
+      ? ((await fetchJson(
+          authConfig.authorizationServerMetadataUrl,
+          target.requestTimeoutMs,
+          {},
+          allowLoopbackHttp,
+        )) as AuthorizationServerMetadata)
+      : undefined) ??
+    (await fetchOptionalJson(
+      oauthAuthorizationServerMetadataUrl(authorizationServer, allowLoopbackHttp),
+      target.requestTimeoutMs,
+      allowLoopbackHttp,
+    )) ??
+    (authConfig.openidConfigurationUrl
+      ? ((await fetchJson(
+          authConfig.openidConfigurationUrl,
+          target.requestTimeoutMs,
+          {},
+          allowLoopbackHttp,
+        )) as AuthorizationServerMetadata)
+      : undefined) ??
+    (await fetchOptionalJson(
+      openIdConfigurationUrl(authorizationServer, allowLoopbackHttp),
+      target.requestTimeoutMs,
+      allowLoopbackHttp,
+    )) ??
+    {}
+  );
+}
+
+async function resolveGenericClient(
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+  metadata: AuthorizationServerMetadata,
+  redirectUri: string,
+  allowLoopbackHttp: boolean,
+): Promise<{ clientId: string; clientSecret?: string; dynamic: boolean }> {
+  if (authConfig.clientId) {
+    return {
+      clientId: authConfig.clientId,
+      ...(authConfig.clientSecret ? { clientSecret: authConfig.clientSecret } : {}),
+      dynamic: false,
+    };
+  }
+  if (!metadata.registration_endpoint) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "OAuth clientId is required without dynamic registration",
+      {
+        server: target.server,
+      },
+    );
+  }
+  const response = await fetchJson(
+    metadata.registration_endpoint,
+    target.requestTimeoutMs,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Caplets",
+        redirect_uris: [redirectUri],
+        response_types: ["code"],
+        grant_types: ["authorization_code", "refresh_token"],
+        token_endpoint_auth_method: "none",
+      }),
+    },
+    allowLoopbackHttp,
+  );
+  const clientSecret = asString(response.client_secret);
+  return {
+    clientId: requireString(response.client_id, "client_id"),
+    ...(clientSecret ? { clientSecret } : {}),
+    dynamic: true,
+  };
+}
+
+async function fetchOptionalJson(
+  url: string,
+  timeoutMs?: number,
+  allowLoopbackHttp = false,
+): Promise<AuthorizationServerMetadata | undefined> {
+  try {
+    return (await fetchJson(url, timeoutMs, {}, allowLoopbackHttp)) as AuthorizationServerMetadata;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchJson(
+  url: string,
+  timeoutMs = 60_000,
+  init: RequestInit = {},
+  allowLoopbackHttp = false,
+): Promise<Record<string, unknown>> {
+  assertAllowedAuthUrl(url, "OAuth discovery URL", allowLoopbackHttp);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, redirect: "manual", signal: controller.signal });
+    if (!response.ok) {
+      throw new CapletsError("AUTH_FAILED", "OAuth metadata request failed", {
+        status: response.status,
+      });
+    }
+    return (await response.json()) as Record<string, unknown>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function oauthAuthorizationServerMetadataUrl(issuer: string, allowLoopbackHttp: boolean): string {
+  assertAllowedAuthUrl(issuer, "OAuth issuer", allowLoopbackHttp);
+  const url = new URL(issuer);
+  const issuerPath = trimSlashes(url.pathname);
+  url.pathname = issuerPath
+    ? `/.well-known/oauth-authorization-server/${issuerPath}`
+    : "/.well-known/oauth-authorization-server";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function openIdConfigurationUrl(issuer: string, allowLoopbackHttp: boolean): string {
+  assertAllowedAuthUrl(issuer, "OAuth issuer", allowLoopbackHttp);
+  const url = new URL(issuer);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/.well-known/openid-configuration`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function trimSlashes(value: string): string {
+  return value.replace(/^\/+|\/+$/g, "");
+}
+
+function assertAllowedAuthUrl(value: string, label: string, allowLoopbackHttp = false): void {
+  const url = new URL(value);
+  if (url.protocol === "https:") {
+    return;
+  }
+  if (allowLoopbackHttp && isLoopbackHttpUrl(value)) {
+    return;
+  }
+  throw new CapletsError("AUTH_FAILED", `${label} must use https except loopback development URLs`);
+}
+
+function assertTokenBundleMatchesTarget(
+  bundle: StoredOAuthTokenBundle,
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+): void {
+  const expectedOrigin = protectedResourceOrigin(target, authConfig);
+  const mismatch =
+    bundle.authType !== authConfig.type ||
+    (expectedOrigin && bundle.protectedResourceOrigin !== expectedOrigin) ||
+    (authConfig.clientId && bundle.clientId !== authConfig.clientId) ||
+    (authConfig.issuer && bundle.issuer !== authConfig.issuer);
+  if (mismatch) {
+    throw new CapletsError(
+      "AUTH_REQUIRED",
+      `OAuth credentials for ${target.server} do not match the configured backend`,
+      {
+        server: target.server,
+        backend: target.backend,
+        authType: authConfig.type,
+        nextAction: "run_caplets_auth_login",
+      },
+    );
+  }
+}
+
+function protectedResourceOrigin(
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+): string | undefined {
+  const resource = target.url ?? target.baseUrl ?? target.specUrl ?? authConfig.issuer;
+  return resource ? new URL(resource).origin : undefined;
+}
+
+function isLoopbackDevelopmentTarget(
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+): boolean {
+  return Boolean(
+    [target.url, target.baseUrl, target.specUrl, authConfig.issuer].some(
+      (value) => value && isLoopbackHttpUrl(value),
+    ),
+  );
+}
+
+function isLoopbackHttpUrl(value: string): boolean {
+  const url = new URL(value);
+  return (
+    url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
+  );
+}
+
+function scopesFor(authConfig: OAuthLikeAuthConfig): string | undefined {
+  if (authConfig.scopes?.length) {
+    return authConfig.scopes.join(" ");
+  }
+  return authConfig.type === "oidc" ? "openid profile email" : undefined;
+}
+
+function validateOidcToken(
+  authConfig: OAuthLikeAuthConfig,
+  metadata: AuthorizationServerMetadata,
+  idToken: string | undefined,
+  claims: Record<string, unknown> | undefined,
+  clientId: string,
+): void {
+  if (authConfig.type !== "oidc") {
+    return;
+  }
+  if (!idToken || !claims) {
+    throw new CapletsError("AUTH_FAILED", "OIDC token response is missing a valid id_token");
+  }
+  const expectedIssuer = metadata.issuer ?? authConfig.issuer;
+  if (!expectedIssuer) {
+    throw new CapletsError("AUTH_FAILED", "OIDC issuer could not be verified");
+  }
+  if (claims.iss !== expectedIssuer) {
+    throw new CapletsError("AUTH_FAILED", "OIDC issuer did not match discovered metadata");
+  }
+  if (!oidcAudienceMatches(claims.aud, clientId)) {
+    throw new CapletsError("AUTH_FAILED", "OIDC audience did not match the client id");
+  }
+  if (!asString(claims.sub)) {
+    throw new CapletsError("AUTH_FAILED", "OIDC id_token is missing subject");
+  }
+}
+
+function oidcAudienceMatches(audience: unknown, clientId: string): boolean {
+  if (typeof audience === "string") {
+    return audience === clientId;
+  }
+  return Array.isArray(audience) && audience.includes(clientId);
+}
+
+function parseJwtPayload(token: string | undefined): Record<string, unknown> | undefined {
+  const payload = token?.split(".")[1];
+  if (!payload) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return undefined;
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function requireString(value: unknown, field: string): string {
+  const result = asString(value);
+  if (!result) {
+    throw new CapletsError("AUTH_FAILED", `OAuth response is missing ${field}`);
+  }
+  return result;
 }
 
 function stripUndefined<T extends Record<string, unknown>>(value: T): T {

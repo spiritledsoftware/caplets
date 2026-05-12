@@ -1,7 +1,7 @@
 # Caplets
 
-Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers and
-native OpenAPI endpoints.
+Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers,
+native OpenAPI endpoints, and native GraphQL endpoints.
 
 Instead of connecting an MCP client to many downstream servers or HTTP APIs and exposing
 every operation up front, Caplets exposes one top-level tool per configured capability.
@@ -28,14 +28,15 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## What It Does
 
-- Reads downstream MCP server definitions and native OpenAPI endpoint definitions from `~/.caplets/config.json`.
-- Registers one generated MCP tool for each enabled MCP server or OpenAPI endpoint.
+- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, and native GraphQL endpoint definitions from `~/.caplets/config.json`.
+- Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, or GraphQL endpoint.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
 - Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
 - Supports stdio, Streamable HTTP, and legacy HTTP+SSE downstream servers.
 - Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected Caplet namespace.
 - Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
+- Converts configured GraphQL operations into MCP-style tool metadata, and can auto-generate GraphQL tools from schema root query and mutation fields.
 - Preserves downstream tool results instead of rewriting them into a custom format.
 - Redacts secrets from structured errors.
 - Supports static remote auth and OAuth token storage for remote servers.
@@ -105,6 +106,18 @@ you want Caplets to expose:
         "token": "$env:USERS_API_TOKEN"
       }
     }
+  },
+  "graphqlEndpoints": {
+    "catalog": {
+      "name": "Catalog GraphQL",
+      "description": "Query and update catalog records through GraphQL.",
+      "endpointUrl": "https://api.example.com/graphql",
+      "introspection": true,
+      "auth": {
+        "type": "oidc",
+        "issuer": "https://login.example.com"
+      }
+    }
   }
 }
 ```
@@ -126,7 +139,8 @@ the committed schema stays in sync with the Zod config validator.
 ### Caplet Files
 
 For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
-file must include exactly one executable backend: `mcpServer` or `openapiEndpoint`;
+file must include exactly one executable backend: `mcpServer`, `openapiEndpoint`, or
+`graphqlEndpoint`;
 serverless Caplets are intentionally out of scope.
 
 Top-level files derive the Caplet ID from the filename:
@@ -166,7 +180,24 @@ openapiEndpoint:
 # Users API
 ```
 
-That file is exposed as the `github` Caplet. Directory-style Caplets use
+GraphQL-backed Caplet files use `graphqlEndpoint`:
+
+```md
+---
+name: Catalog GraphQL
+description: Query and update catalog records through GraphQL.
+graphqlEndpoint:
+  endpointUrl: https://api.example.com/graphql
+  schemaPath: ./schema.graphql
+  auth:
+    type: oidc
+    issuer: https://login.example.com
+---
+
+# Catalog GraphQL
+```
+
+Top-level files derive their Caplet ID from the filename. Directory-style Caplets use
 `linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
 normal Markdown links from `CAPLET.md`.
 
@@ -205,8 +236,8 @@ generated MCP tool name exactly, so keep it short and specific:
 }
 ```
 
-Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers` and
-`openapiEndpoints`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
+Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers`,
+`openapiEndpoints`, and `graphqlEndpoints`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
 
 ### Stdio Servers
 
@@ -268,9 +299,8 @@ OpenAPI auth is explicit and supports:
 - `{"type": "none"}`
 - `{"type": "bearer", "token": "$env:TOKEN"}`
 - `{"type": "headers", "headers": {"x-api-key": "$env:API_KEY"}}`
-
-OpenAPI OAuth is not part of the first native OpenAPI backend. OAuth remains available
-for remote MCP servers through `caplets auth`.
+- `{"type": "oauth2", ...}`
+- `{"type": "oidc", ...}`
 
 OpenAPI `call_tool.arguments` uses grouped HTTP inputs:
 
@@ -292,6 +322,40 @@ Every OpenAPI endpoint can set:
 - `operationCacheTtlMs`: how long OpenAPI operation metadata stays fresh. Defaults to `30000`; `0` refreshes every time.
 - `disabled`: omit the endpoint from Caplets discovery. Defaults to `false`.
 
+### GraphQL Endpoints
+
+Use `graphqlEndpoints` for native GraphQL APIs. Each entry points at a GraphQL HTTP
+endpoint and exactly one schema source: `schemaPath`, `schemaUrl`, or `introspection: true`.
+
+```json
+{
+  "name": "Catalog GraphQL",
+  "description": "Query and update catalog records through GraphQL.",
+  "endpointUrl": "https://api.example.com/graphql",
+  "schemaPath": "./schema.graphql",
+  "auth": { "type": "oidc", "issuer": "https://login.example.com" },
+  "operations": {
+    "product": {
+      "document": "query Product($id: ID!) { product(id: $id) { id name } }",
+      "operationName": "Product",
+      "description": "Fetch a product by ID."
+    }
+  }
+}
+```
+
+When `operations` is omitted or empty, Caplets auto-generates tools from schema root
+fields: `query_<field>` and `mutation_<field>`. Generated tools use bounded scalar
+selection sets and pass `call_tool.arguments` directly as GraphQL variables/root-field
+arguments.
+
+Every GraphQL endpoint can set:
+
+- `requestTimeoutMs`: timeout for HTTP calls. Defaults to `60000`.
+- `operationCacheTtlMs`: how long GraphQL operation metadata stays fresh. Defaults to `30000`; `0` refreshes every time.
+- `selectionDepth`: maximum depth for generated selection sets. Defaults to `2`; maximum `5`.
+- `disabled`: omit the endpoint from Caplets discovery. Defaults to `false`.
+
 ### Authentication
 
 Remote servers can use:
@@ -300,8 +364,9 @@ Remote servers can use:
 - `{"type": "bearer", "token": "$env:TOKEN"}`
 - `{"type": "headers", "headers": {"x-api-key": "$env:API_KEY"}}`
 - `{"type": "oauth2", ...}`
+- `{"type": "oidc", ...}`
 
-For OAuth-backed remote servers, authenticate once with:
+For OAuth/OIDC-backed MCP, OpenAPI, and GraphQL Caplets, authenticate once with:
 
 ```sh
 caplets auth login <server>
@@ -313,8 +378,9 @@ For headless terminals:
 caplets auth login <server> --no-open
 ```
 
-OAuth tokens are stored under `~/.caplets/auth/<server>.json` with owner-only file
-permissions where the platform supports them. When an OAuth token expires, run
+OAuth/OIDC tokens are stored under `~/.caplets/auth/<server>.json` with owner-only file
+permissions where the platform supports them. Caplets supports well-known OAuth/OIDC
+discovery and dynamic client registration when advertised. When a token expires, run
 `caplets auth login <server>` again.
 
 To inspect or remove stored OAuth credentials:
@@ -399,7 +465,7 @@ Call one exact downstream tool:
 Available operations:
 
 - `get_caplet`: return the configured capability card without starting the downstream server.
-- `check_backend`: verify the selected backend, whether MCP or OpenAPI.
+- `check_backend`: verify the selected backend, whether MCP, OpenAPI, or GraphQL.
 - `check_mcp_server`: start or connect to an MCP server and verify its tool list.
 - `list_tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.

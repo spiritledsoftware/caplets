@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletConfig } from "./config.js";
 import type { DownstreamManager } from "./downstream.js";
 import { CapletsError } from "./errors.js";
+import type { GraphQLManager } from "./graphql.js";
 import type { OpenApiManager } from "./openapi.js";
 import type { ServerRegistry } from "./registry.js";
 
@@ -63,6 +64,7 @@ export async function handleServerTool(
   registry: ServerRegistry,
   downstream: DownstreamManager,
   openapi?: OpenApiManager,
+  graphql?: GraphQLManager,
 ): Promise<any> {
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
@@ -70,7 +72,9 @@ export async function handleServerTool(
     case "get_caplet":
       return jsonResult(registry.detail(server));
     case "check_backend":
-      return jsonResult(await backendFor(server, downstream, openapi).check(server as never));
+      return jsonResult(
+        await backendFor(server, downstream, openapi, graphql).check(server as never),
+      );
     case "check_mcp_server":
       if (server.backend !== "mcp") {
         throw new CapletsError(
@@ -80,7 +84,7 @@ export async function handleServerTool(
       }
       return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
-      const backend = backendFor(server, downstream, openapi);
+      const backend = backendFor(server, downstream, openapi, graphql);
       const tools = await backend.listTools(server as never);
       return jsonResult({
         server: server.server,
@@ -88,7 +92,7 @@ export async function handleServerTool(
       });
     }
     case "search_tools": {
-      const backend = backendFor(server, downstream, openapi);
+      const backend = backendFor(server, downstream, openapi, graphql);
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult({
@@ -98,12 +102,12 @@ export async function handleServerTool(
       });
     }
     case "get_tool": {
-      const backend = backendFor(server, downstream, openapi);
+      const backend = backendFor(server, downstream, openapi, graphql);
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult({ server: server.server, tool });
     }
     case "call_tool":
-      return backendFor(server, downstream, openapi).callTool(
+      return backendFor(server, downstream, openapi, graphql).callTool(
         server as never,
         parsed.tool,
         parsed.arguments,
@@ -213,7 +217,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function backendFor(server: CapletConfig, downstream: DownstreamManager, openapi?: OpenApiManager) {
+function backendFor(
+  server: CapletConfig | { backend: string },
+  downstream: DownstreamManager,
+  openapi?: OpenApiManager,
+  graphql?: GraphQLManager,
+) {
   if (server.backend === "mcp") {
     return {
       check: (...args: Parameters<DownstreamManager["checkServer"]>) =>
@@ -225,6 +234,20 @@ function backendFor(server: CapletConfig, downstream: DownstreamManager, openapi
         downstream.callTool(...args),
       compact: (...args: Parameters<DownstreamManager["compact"]>) => downstream.compact(...args),
       search: (...args: Parameters<DownstreamManager["search"]>) => downstream.search(...args),
+    };
+  }
+  if (server.backend === "graphql") {
+    if (!graphql) {
+      throw new CapletsError("INTERNAL_ERROR", "GraphQL manager is not configured");
+    }
+    return {
+      check: (...args: Parameters<GraphQLManager["checkEndpoint"]>) =>
+        graphql.checkEndpoint(...args),
+      listTools: (...args: Parameters<GraphQLManager["listTools"]>) => graphql.listTools(...args),
+      getTool: (...args: Parameters<GraphQLManager["getTool"]>) => graphql.getTool(...args),
+      callTool: (...args: Parameters<GraphQLManager["callTool"]>) => graphql.callTool(...args),
+      compact: (...args: Parameters<GraphQLManager["compact"]>) => graphql.compact(...args),
+      search: (...args: Parameters<GraphQLManager["search"]>) => graphql.search(...args),
     };
   }
   if (!openapi) {

@@ -125,7 +125,7 @@ describe("cli init", () => {
               name: "Users API",
               description: "Manage users through the internal HTTP API.",
               specPath: "/tmp/users-openapi.json",
-              auth: { type: "bearer", token: "secret-openapi-token" },
+              auth: { type: "oauth2", clientId: "openapi-client" },
             },
           },
         }),
@@ -155,10 +155,10 @@ describe("cli init", () => {
       const text = out.join("");
       expect(text).toContain("remote\tauthenticated\texpires 2999-01-01T00:00:00.000Z");
       expect(text).toContain("expired\texpired\texpires 2000-01-01T00:00:00.000Z");
+      expect(text).toContain("users\tmissing");
       expect(text).not.toContain("stdio");
-      expect(text).not.toContain("users");
       expect(text).not.toContain("secret-access-token");
-      expect(text).not.toContain("secret-openapi-token");
+      expect(text).not.toContain("openapi-client");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -201,6 +201,39 @@ describe("cli init", () => {
       });
 
       expect(out.join("")).toBe("No OAuth credentials found for remote\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs out configured OpenAPI OAuth endpoints", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    const authDir = join(dir, "auth");
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          openapiEndpoints: {
+            users: {
+              name: "Users API",
+              description: "Manage users through the internal HTTP API.",
+              specPath: "/tmp/users-openapi.json",
+              auth: { type: "oidc", issuer: "https://issuer.example" },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      writeTokenBundle({ server: "users", accessToken: "secret-access-token" }, authDir);
+
+      await runCli(["auth", "logout", "users"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe("Deleted OAuth credentials for users\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

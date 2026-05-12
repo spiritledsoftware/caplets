@@ -8,6 +8,7 @@ import { ServerRegistry } from "../src/registry.js";
 import { DownstreamManager } from "../src/downstream.js";
 import { OpenApiManager } from "../src/openapi.js";
 import { handleServerTool } from "../src/tools.js";
+import { writeTokenBundle } from "../src/auth.js";
 
 describe("native OpenAPI Caplets", () => {
   let baseUrl = "";
@@ -72,6 +73,16 @@ describe("native OpenAPI Caplets", () => {
         }
         if (request.url === "/invalid-json") {
           response.end("{not json");
+          return;
+        }
+        if (request.url === "/protected") {
+          response.statusCode = 401;
+          response.statusMessage = "Unauthorized";
+          response.setHeader(
+            "www-authenticate",
+            'Bearer error="invalid_token", access_token="secret-openapi-token"',
+          );
+          response.end(JSON.stringify({ error: "secret-openapi-token" }));
           return;
         }
         response.statusCode = 404;
@@ -471,6 +482,124 @@ describe("native OpenAPI Caplets", () => {
     await expect(
       openapi.listTools({ ...remote, specUrl: `${baseUrl}/large-openapi.json` }),
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+  });
+
+  it("applies stored OAuth tokens to remote specs and OpenAPI requests", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-auth-"));
+    const authDir = join(dir, "auth");
+    try {
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "secret-openapi-access-token",
+          authType: "oauth2",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        authDir,
+      );
+      requests.length = 0;
+      const endpoint = {
+        server: "remote",
+        backend: "openapi" as const,
+        name: "Remote API",
+        description: "Exercise OAuth auth for OpenAPI.",
+        specUrl: `${baseUrl}/openapi.json`,
+        baseUrl,
+        auth: { type: "oauth2" as const, clientId: "client" },
+        requestTimeoutMs: 1000,
+        operationCacheTtlMs: 0,
+        disabled: false,
+      };
+      const registry = new ServerRegistry({
+        version: 1,
+        options: { defaultSearchLimit: 20, maxSearchLimit: 50 },
+        mcpServers: {},
+        openapiEndpoints: { remote: endpoint },
+        graphqlEndpoints: {},
+      });
+      const openapi = new OpenApiManager(registry, { authDir });
+
+      await openapi.listTools(endpoint);
+      await openapi.callTool(endpoint, "GET /users/{id}", {
+        path: { id: "42" },
+        query: { active: true },
+      });
+
+      expect(
+        requests.some(
+          (request) => request.headers.authorization === "Bearer secret-openapi-access-token",
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts OpenAPI auth failures without returning downstream error bodies", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-auth-failure-"));
+    const authDir = join(dir, "auth");
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Protected API", version: "1.0.0" },
+        servers: [{ url: baseUrl }],
+        paths: {
+          "/protected": {
+            get: {
+              operationId: "protected",
+              responses: { "200": { description: "OK" }, "401": { description: "Unauthorized" } },
+            },
+          },
+        },
+      }),
+    );
+    const config = parseConfig({
+      openapiEndpoints: {
+        protectedApi: {
+          name: "Protected API",
+          description: "Exercise protected OpenAPI failure handling.",
+          specPath,
+          baseUrl,
+          auth: { type: "oauth2", clientId: "client" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    writeTokenBundle(
+      {
+        server: "protectedApi",
+        accessToken: "expired-downstream-token",
+        authType: "oauth2",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      },
+      authDir,
+    );
+    const openapi = new OpenApiManager(registry, { authDir });
+
+    try {
+      await expect(
+        openapi.callTool(config.openapiEndpoints.protectedApi!, "protected", {}),
+      ).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        details: {
+          server: "protectedApi",
+          status: 401,
+          authType: "oauth2",
+          challenge: "[REDACTED]",
+          nextAction: "run_caplets_auth_login",
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

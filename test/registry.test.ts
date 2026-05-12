@@ -37,12 +37,22 @@ describe("registry", () => {
           auth: { type: "bearer", token: "secret-token" },
         },
       },
+      graphqlEndpoints: {
+        catalog: {
+          name: "Catalog GraphQL",
+          description: "Query catalog data through GraphQL.",
+          endpointUrl: "https://api.example.com/graphql?token=secret-graphql-url",
+          schemaPath: "/tmp/catalog.graphql",
+          auth: { type: "bearer", token: "secret-graphql-token" },
+        },
+      },
     });
     const registry = new ServerRegistry(config);
     expect(registry.enabledServers().map((server) => server.server)).toEqual([
       "enabled",
       "remote",
       "users",
+      "catalog",
     ]);
     expect(registry.get("disabled")).toBeUndefined();
     const description = capabilityDescription(config.mcpServers.enabled!);
@@ -77,5 +87,24 @@ describe("registry", () => {
       },
     });
     expect(JSON.stringify(openApiDetail)).not.toContain("secret-token");
+
+    const graphQlDescription = capabilityDescription(config.graphqlEndpoints.catalog!);
+    expect(graphQlDescription).toContain("GraphQL endpoint backend");
+    expect(graphQlDescription).toContain('"operation":"check_backend"');
+    const graphQlDetail = registry.detail(config.graphqlEndpoints.catalog!);
+    expect(graphQlDetail).toEqual({
+      caplet: "catalog",
+      name: "Catalog GraphQL",
+      description: "Query catalog data through GraphQL.",
+      backend: {
+        type: "graphql",
+        disabled: false,
+        requestTimeoutMs: 60000,
+        operationCacheTtlMs: 30000,
+        source: "schemaPath",
+        configuredOperations: false,
+      },
+    });
+    expect(JSON.stringify(graphQlDetail)).not.toContain("secret-graphql");
   });
 });

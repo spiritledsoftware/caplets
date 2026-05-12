@@ -5,7 +5,14 @@ import { dirname } from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig, resolveConfigPath } from "./config.js";
 import { CapletsError, toSafeError } from "./errors.js";
-import { deleteTokenBundle, isTokenBundleExpired, readTokenBundle, runOAuthFlow } from "./auth.js";
+import {
+  deleteTokenBundle,
+  isTokenBundleExpired,
+  readTokenBundle,
+  runGenericOAuthFlow,
+  runOAuthFlow,
+  type GenericAuthTarget,
+} from "./auth.js";
 
 type CliIO = {
   writeOut?: (value: string) => void;
@@ -77,16 +84,8 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Delete stored OAuth credentials for a server.")
     .argument("<server>", "configured server ID")
     .action((serverId: string) => {
-      const server = loadConfig(envConfigPath()).mcpServers[serverId];
-      if (!server) {
-        throw new CapletsError("SERVER_NOT_FOUND", `Server ${serverId} is not configured`);
-      }
-      if (server.transport === "stdio" || server.auth?.type !== "oauth2") {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `Server ${serverId} is not a remote OAuth server`,
-        );
-      }
+      const target = findAuthTarget(serverId);
+      assertLoginTarget(target, serverId);
 
       if (deleteTokenBundle(serverId, io.authDir)) {
         writeOut(`Deleted OAuth credentials for ${serverId}\n`);
@@ -100,9 +99,9 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List servers with stored OAuth credentials.")
     .action(() => {
       const config = loadConfig(envConfigPath());
-      const servers = Object.values(config.mcpServers)
-        .filter((server) => server.transport !== "stdio" && server.auth?.type === "oauth2")
-        .sort((left, right) => left.server.localeCompare(right.server));
+      const servers = authTargets(config).sort((left, right) =>
+        left.server.localeCompare(right.server),
+      );
 
       if (servers.length === 0) {
         writeOut("No configured remote OAuth servers found.\n");
@@ -142,32 +141,65 @@ async function loginAuth(
   },
 ): Promise<void> {
   const config = loadConfig(envConfigPath());
-  const server = config.mcpServers[serverId];
-  if (!server) {
-    throw new CapletsError("SERVER_NOT_FOUND", `Server ${serverId} is not configured`);
-  }
-  if (server.disabled) {
-    throw new CapletsError("SERVER_UNAVAILABLE", `Server ${serverId} is disabled`);
-  }
-  if (server.transport === "stdio" || server.auth?.type !== "oauth2") {
-    throw new CapletsError("REQUEST_INVALID", `Server ${serverId} is not a remote OAuth server`);
-  }
+  const server = findAuthTarget(serverId, config);
+  assertLoginTarget(server, serverId);
 
   try {
-    await runOAuthFlow(server, {
+    const flowOptions = {
       noOpen: options.noOpen,
       ...(options.authDir ? { authDir: options.authDir } : {}),
-      ...(options.noOpen
-        ? {
-            readManualInput: maybeReadManualInput,
-          }
-        : {}),
-      print: (line) => options.writeOut(`${line}\n`),
-    });
+      ...(options.noOpen ? { readManualInput: maybeReadManualInput } : {}),
+      print: (line: string) => options.writeOut(`${line}\n`),
+    };
+    if (server.backend === "mcp") {
+      await runOAuthFlow(server, flowOptions);
+    } else {
+      await runGenericOAuthFlow(server, flowOptions);
+    }
     options.writeOut(`Authenticated ${serverId}\n`);
   } catch (error) {
     options.writeErr(`${JSON.stringify(toSafeError(error, "AUTH_FAILED"), null, 2)}\n`);
     process.exitCode = 1;
+  }
+}
+
+type AuthTarget = ReturnType<typeof authTargets>[number];
+
+function findAuthTarget(
+  serverId: string,
+  config = loadConfig(envConfigPath()),
+): AuthTarget | undefined {
+  return authTargets(config).find((server) => server.server === serverId);
+}
+
+function authTargets(config: ReturnType<typeof loadConfig>) {
+  const graphqlEndpoints = (
+    config as unknown as { graphqlEndpoints?: Record<string, GenericAuthTarget> }
+  ).graphqlEndpoints;
+  return [
+    ...Object.values(config.mcpServers).filter(
+      (server) =>
+        server.transport !== "stdio" &&
+        (server.auth?.type === "oauth2" || server.auth?.type === "oidc"),
+    ),
+    ...Object.values(config.openapiEndpoints).filter(
+      (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
+    ),
+    ...Object.values(graphqlEndpoints ?? {}).filter(
+      (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
+    ),
+  ];
+}
+
+function assertLoginTarget(
+  target: AuthTarget | undefined,
+  serverId: string,
+): asserts target is AuthTarget {
+  if (!target) {
+    throw new CapletsError("SERVER_NOT_FOUND", `Server ${serverId} is not configured for OAuth`);
+  }
+  if ("disabled" in target && target.disabled) {
+    throw new CapletsError("SERVER_UNAVAILABLE", `Server ${serverId} is disabled`);
   }
 }
 

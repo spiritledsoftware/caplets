@@ -1,4 +1,9 @@
-import type { CapletConfig, CapletsConfig, CapletServerConfig } from "./config.js";
+import type {
+  CapletConfig,
+  CapletsConfig,
+  CapletServerConfig,
+  GraphQlEndpointConfig,
+} from "./config.js";
 import type { SafeErrorSummary } from "./errors.js";
 
 export type ServerStatus = "disabled" | "not_started" | "starting" | "available" | "unavailable";
@@ -33,6 +38,14 @@ export type CapletServerDetail = {
         requestTimeoutMs: number;
         operationCacheTtlMs: number;
         source: "specPath" | "specUrl";
+      }
+    | {
+        type: "graphql";
+        disabled: boolean;
+        requestTimeoutMs: number;
+        operationCacheTtlMs: number;
+        source: "schemaPath" | "schemaUrl" | "introspection";
+        configuredOperations: boolean;
       };
   mcpServer?: {
     transport: CapletServerConfig["transport"];
@@ -62,7 +75,10 @@ export class ServerRegistry {
   }
 
   get(serverId: string): CapletConfig | undefined {
-    const server = this.config.mcpServers[serverId] ?? this.config.openapiEndpoints[serverId];
+    const server =
+      this.config.mcpServers[serverId] ??
+      this.config.openapiEndpoints[serverId] ??
+      this.config.graphqlEndpoints[serverId];
     return server?.disabled ? undefined : server;
   }
 
@@ -121,12 +137,18 @@ export class ServerRegistry {
     return [
       ...Object.values(this.config.mcpServers),
       ...Object.values(this.config.openapiEndpoints),
+      ...Object.values(this.config.graphqlEndpoints),
     ];
   }
 }
 
 export function capabilityDescription(server: CapletConfig): string {
-  const backendName = server.backend === "mcp" ? "MCP server" : "OpenAPI endpoint";
+  const backendName =
+    server.backend === "mcp"
+      ? "MCP server"
+      : server.backend === "openapi"
+        ? "OpenAPI endpoint"
+        : "GraphQL endpoint";
   const checkOperation = server.backend === "mcp" ? "check_mcp_server" : "check_backend";
   const hint = [
     `Use this Caplet to inspect and call tools from its ${backendName} backend.`,
@@ -154,6 +176,17 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
     };
   }
 
+  if (server.backend === "graphql") {
+    return {
+      type: "graphql",
+      disabled: server.disabled,
+      requestTimeoutMs: server.requestTimeoutMs,
+      operationCacheTtlMs: server.operationCacheTtlMs,
+      source: graphQlSource(server),
+      configuredOperations: Boolean(server.operations && Object.keys(server.operations).length > 0),
+    };
+  }
+
   return {
     type: "mcp",
     transport: server.transport,
@@ -162,4 +195,16 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
     callTimeoutMs: server.callTimeoutMs,
     toolCacheTtlMs: server.toolCacheTtlMs,
   };
+}
+
+function graphQlSource(
+  server: GraphQlEndpointConfig,
+): "schemaPath" | "schemaUrl" | "introspection" {
+  if (server.schemaPath) {
+    return "schemaPath";
+  }
+  if (server.schemaUrl) {
+    return "schemaUrl";
+  }
+  return "introspection";
 }

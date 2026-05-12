@@ -59,6 +59,7 @@
     "@apidevtools/swagger-parser": "^12.1.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.3",
+    "graphql": "^16.14.0",
     "vfile": "^6.0.3",
     "vfile-matter": "^5.0.1",
     "zod": "^4.4.3"
