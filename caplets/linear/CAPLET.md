@@ -28,6 +28,10 @@ implementation work synchronized with issues, projects, and team workflows.
 - Add implementation notes or status comments after code changes.
 - Check whether a bug or feature already has active work before creating a new issue.
 
+## Reference Files
+
+- [Workflows](./workflows.md): recommended lookup, planning, status update, and triage flows.
+
 ## Use Carefully
 
 - Linear issue updates are visible to teammates. Read first, then write deliberately.

@@ -1,5 +1,13 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files.js";
@@ -294,6 +302,28 @@ describe("config", () => {
       url: "https://mcp.linear.app/mcp",
       auth: { type: "oauth2" },
     });
+  });
+
+  it("keeps repository Caplet reference files linked from CAPLET.md", () => {
+    const examplesRoot = join(process.cwd(), "caplets");
+    const capletDirs = readdirSync(examplesRoot, { withFileTypes: true }).filter((entry) =>
+      entry.isDirectory(),
+    );
+
+    for (const entry of capletDirs) {
+      const capletPath = join(examplesRoot, entry.name, "CAPLET.md");
+      if (!existsSync(capletPath)) {
+        continue;
+      }
+      const caplet = readFileSync(capletPath, "utf8");
+      const referenceFiles = readdirSync(join(examplesRoot, entry.name)).filter(
+        (file) => file.endsWith(".md") && file !== "CAPLET.md" && file !== "README.md",
+      );
+
+      for (const file of referenceFiles) {
+        expect(caplet, `${entry.name}/CAPLET.md should link ${file}`).toContain(`./${file}`);
+      }
+    }
   });
 
   it("does not load project Caplet files without explicit trust", () => {
