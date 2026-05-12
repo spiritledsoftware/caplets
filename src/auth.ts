@@ -287,11 +287,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (this.server.auth?.type !== "oauth2" && this.server.auth?.type !== "oidc") {
       return;
     }
-    if (this.server.auth.clientId) {
-      params.set("client_id", this.server.auth.clientId);
+    const clientInformation = this.clientInformation();
+    const clientId = clientInformation?.client_id;
+    const clientSecret = clientInformation?.client_secret;
+    if (clientId) {
+      params.set("client_id", clientId);
     }
-    if (this.server.auth.clientSecret) {
-      params.set("client_secret", this.server.auth.clientSecret);
+    if (clientSecret) {
+      params.set("client_secret", clientSecret);
     }
     headers.set("content-type", "application/x-www-form-urlencoded");
   };

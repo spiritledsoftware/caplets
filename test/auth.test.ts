@@ -170,6 +170,62 @@ describe("auth helpers", () => {
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
   });
 
+  it.each(["oauth2", "oidc"] as const)(
+    "adds dynamically registered %s client information during SDK token exchange",
+    async (authType) => {
+      const server = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: "https://example.com/mcp",
+            auth: { type: authType },
+          },
+        },
+      }).mcpServers.remote!;
+      const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {});
+      provider.saveClientInformation({
+        client_id: "dynamic-client",
+        client_secret: "dynamic-secret",
+      });
+      const addClientAuthentication = provider.addClientAuthentication;
+      const headers = new Headers();
+      const params = new URLSearchParams();
+
+      await addClientAuthentication(headers, params);
+
+      expect(params.get("client_id")).toBe("dynamic-client");
+      expect(params.get("client_secret")).toBe("dynamic-secret");
+      expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    },
+  );
+
+  it("does not mix dynamic public client ID with configured client secret", async () => {
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "oauth2", clientId: "static-client", clientSecret: "static-secret" },
+        },
+      },
+    }).mcpServers.remote!;
+    const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {});
+    provider.saveClientInformation({ client_id: "dynamic-client" });
+    const addClientAuthentication = provider.addClientAuthentication;
+    const headers = new Headers();
+    const params = new URLSearchParams();
+
+    await addClientAuthentication(headers, params);
+
+    expect(params.get("client_id")).toBe("dynamic-client");
+    expect(params.has("client_secret")).toBe(false);
+    expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+  });
+
   it("runs generic OIDC authorization code flow with discovery and dynamic client registration", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     let baseUrl = "";
