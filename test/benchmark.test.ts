@@ -24,8 +24,8 @@ describe("progressive disclosure benchmark fixture", () => {
           properties: {
             operation: {
               enum: [
-                "get_server",
-                "check_server",
+                "get_caplet",
+                "check_mcp_server",
                 "list_tools",
                 "search_tools",
                 "get_tool",

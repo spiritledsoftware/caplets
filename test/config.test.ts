@@ -2,14 +2,17 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { capletJsonSchema } from "../src/caplet-files.js";
 import { configJsonSchema, loadConfig, parseConfig } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 
 describe("config", () => {
   const originalEnv = process.env.EXAMPLE_TOKEN;
+  const originalTrustProjectCaplets = process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
 
   beforeEach(() => {
     process.env.EXAMPLE_TOKEN = "secret-value";
+    delete process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
   });
 
   afterEach(() => {
@@ -17,6 +20,11 @@ describe("config", () => {
       delete process.env.EXAMPLE_TOKEN;
     } else {
       process.env.EXAMPLE_TOKEN = originalEnv;
+    }
+    if (originalTrustProjectCaplets === undefined) {
+      delete process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
+    } else {
+      process.env.CAPLETS_TRUST_PROJECT_CAPLETS = originalTrustProjectCaplets;
     }
   });
 
@@ -119,6 +127,234 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("loads top-level and directory Caplet files with project Caplets winning", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    const userRoot = join(dir, "user");
+    const projectRoot = join(dir, "project", ".caplets");
+    mkdirSync(join(userRoot, "linear"), { recursive: true });
+    mkdirSync(join(projectRoot, "linear"), { recursive: true });
+    process.env.CAPLETS_TRUST_PROJECT_CAPLETS = "1";
+    writeFileSync(
+      join(userRoot, "github.md"),
+      [
+        "---",
+        "name: GitHub",
+        "description: Use GitHub repositories, issues, and ${EXAMPLE_TOKEN}.",
+        "tags:",
+        "  - code",
+        "  - $env:EXAMPLE_TOKEN",
+        "mcpServer:",
+        "  command: user-github",
+        "  env:",
+        "    name: $env:EXAMPLE_TOKEN",
+        "---",
+        "# GitHub Card",
+        "Use this for GitHub work with ${EXAMPLE_TOKEN} in prose.",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(userRoot, "linear", "CAPLET.md"),
+      [
+        "---",
+        "name: Linear User",
+        "description: Use Linear for user issue planning.",
+        "mcpServer:",
+        "  command: user-linear",
+        "---",
+        "# User Linear",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(projectRoot, "linear", "CAPLET.md"),
+      [
+        "---",
+        "name: Linear Project",
+        "description: Use Linear for project issue planning.",
+        "mcpServer:",
+        "  command: project-linear",
+        "---",
+        "# Project Linear",
+      ].join("\n"),
+    );
+
+    const config = loadConfig(join(userRoot, "config.json"), join(projectRoot, "config.json"));
+
+    expect(config.mcpServers.github).toMatchObject({
+      server: "github",
+      name: "GitHub",
+      description: "Use GitHub repositories, issues, and ${EXAMPLE_TOKEN}.",
+      command: "user-github",
+      env: { name: "secret-value" },
+      tags: ["code", "$env:EXAMPLE_TOKEN"],
+      body: "# GitHub Card\nUse this for GitHub work with ${EXAMPLE_TOKEN} in prose.",
+    });
+    expect(config.mcpServers.github?.description).toContain("${EXAMPLE_TOKEN}");
+    expect(config.mcpServers.github?.tags).toContain("$env:EXAMPLE_TOKEN");
+    expect(config.mcpServers.github?.body).toContain("${EXAMPLE_TOKEN}");
+    expect(config.mcpServers.linear).toMatchObject({
+      server: "linear",
+      name: "Linear Project",
+      command: "project-linear",
+      body: "# Project Linear",
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not load project Caplet files without explicit trust", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    const userRoot = join(dir, "user");
+    const projectRoot = join(dir, "project", ".caplets");
+    mkdirSync(userRoot, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(
+      join(userRoot, "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            name: "GitHub User",
+            description: "Use GitHub from trusted user config.",
+            command: "user-github",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      join(projectRoot, "github.md"),
+      [
+        "---",
+        "name: GitHub Project",
+        "description: Use GitHub from untrusted project Caplet.",
+        "mcpServer:",
+        "  command: project-github",
+        "---",
+        "# GitHub Project",
+      ].join("\n"),
+    );
+
+    const config = loadConfig(join(userRoot, "config.json"), join(projectRoot, "config.json"));
+    expect(config.mcpServers.github?.name).toBe("GitHub User");
+    expect(config.mcpServers.github?.command).toBe("user-github");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lets Caplet files override same-root config entries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            name: "GitHub Config",
+            description: "Use GitHub from plain config.",
+            command: "config-github",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      join(root, "github.md"),
+      [
+        "---",
+        "name: GitHub File",
+        "description: Use GitHub from the Caplet file.",
+        "mcpServer:",
+        "  command: file-github",
+        "---",
+        "# GitHub File",
+      ].join("\n"),
+    );
+
+    const config = loadConfig(join(root, "config.json"), join(dir, "missing", "config.json"));
+    expect(config.mcpServers.github?.name).toBe("GitHub File");
+    expect(config.mcpServers.github?.command).toBe("file-github");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects invalid Caplet files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(join(root, "github"), { recursive: true });
+    writeFileSync(
+      join(root, "missing-server.md"),
+      ["---", "name: Missing", "description: Missing backend config.", "---", "# Missing"].join(
+        "\n",
+      ),
+    );
+    expect(() =>
+      loadConfig(join(root, "config.json"), join(dir, "missing", "config.json")),
+    ).toThrow(CapletsError);
+    rmSync(root, { recursive: true, force: true });
+
+    mkdirSync(join(root, "github"), { recursive: true });
+    writeFileSync(
+      join(root, "github.md"),
+      [
+        "---",
+        "name: GitHub",
+        "description: Use GitHub repositories and issues.",
+        "mcpServer:",
+        "  command: node",
+        "---",
+        "# GitHub",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(root, "github", "CAPLET.md"),
+      [
+        "---",
+        "name: GitHub Directory",
+        "description: Use GitHub repositories and issues.",
+        "mcpServer:",
+        "  command: node",
+        "---",
+        "# GitHub",
+      ].join("\n"),
+    );
+    expect(() =>
+      loadConfig(join(root, "config.json"), join(dir, "missing", "config.json")),
+    ).toThrow(CapletsError);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects oversized Caplet files and bodies", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(root, { recursive: true });
+    const frontmatter = [
+      "---",
+      "name: Big",
+      "description: Use this oversized Caplet fixture.",
+      "mcpServer:",
+      "  command: node",
+      "---",
+      "",
+    ].join("\n");
+    writeFileSync(join(root, "big.md"), `${frontmatter}${"x".repeat(130 * 1024)}`);
+
+    expect(() =>
+      loadConfig(join(root, "config.json"), join(dir, "missing", "config.json")),
+    ).toThrow(CapletsError);
+    rmSync(root, { recursive: true, force: true });
+
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "big.md"), `${frontmatter}${"x".repeat(65 * 1024)}`);
+    expect(() =>
+      loadConfig(join(root, "config.json"), join(dir, "missing", "config.json")),
+    ).toThrow(CapletsError);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects empty config files when no Caplet files exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, "{}");
+
+    expect(() => loadConfig(path, join(dir, "missing", "config.json"))).toThrow(CapletsError);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("loads top-level Caplets options", () => {
     const config = parseConfig({
       $schema:
@@ -150,6 +386,9 @@ describe("config", () => {
     expect(JSON.parse(readFileSync("schemas/caplets-config.schema.json", "utf8"))).toEqual(
       configJsonSchema(),
     );
+    expect(JSON.parse(readFileSync("schemas/caplet.schema.json", "utf8"))).toEqual(
+      capletJsonSchema(),
+    );
   });
 
   it("rejects unsupported versions and unknown keys", () => {
@@ -167,6 +406,24 @@ describe("config", () => {
         },
       }),
     ).toThrow(CapletsError);
+
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const path = join(dir, "config.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        mcpServers: {
+          plain: {
+            name: "Plain",
+            description: "A useful plain downstream server.",
+            command: "node",
+            body: "Caplet file-only field.",
+          },
+        },
+      }),
+    );
+    expect(() => loadConfig(path, join(dir, "missing", "config.json"))).toThrow(CapletsError);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("validates server IDs, required names, descriptions, and disabled default", () => {

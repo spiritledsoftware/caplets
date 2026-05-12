@@ -109,6 +109,47 @@ The optional `$schema` field points editors at the generated JSON Schema in
 [`schemas/caplets-config.schema.json`](schemas/caplets-config.schema.json). CI verifies that
 the committed schema stays in sync with the Zod config validator.
 
+### Caplet Files
+
+For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
+file must include an `mcpServer` backend; serverless Caplets are intentionally out of
+scope.
+
+Top-level files derive the Caplet ID from the filename:
+
+```md
+---
+$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+name: GitHub
+description: Interact with GitHub repositories, issues, and pull requests.
+tags:
+  - code
+  - review
+mcpServer:
+  command: npx
+  args: ["-y", "github-mcp-server"]
+---
+
+# GitHub
+
+Use this Caplet for repository, issue, pull request, and code review workflows.
+```
+
+That file is exposed as the `github` Caplet. Directory-style Caplets use
+`linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
+normal Markdown links from `CAPLET.md`.
+
+Caplets always loads user Caplet files from `~/.caplets`. Project `./.caplets/config.json`
+is still loaded as project config, but project Markdown Caplet files are executable
+configuration and are ignored unless explicitly trusted:
+
+```sh
+CAPLETS_TRUST_PROJECT_CAPLETS=1 caplets serve
+```
+
+Later sources override earlier ones in this order: user `config.json`, user Caplet files,
+project `config.json`, and, only when trusted, project Caplet files.
+
 `caplets init` refuses to overwrite an existing config. To intentionally replace the file:
 
 ```sh
@@ -236,10 +277,10 @@ starts the MCP server. `serve` is explicit and recommended for clarity.
 
 ## How Agents Use It
 
-Caplets initially exposes one MCP tool per enabled server. If the config has `filesystem`
+Caplets initially exposes one MCP tool per enabled Caplet. If the config has `filesystem`
 and `docs`, the client sees two top-level tools: `filesystem` and `docs`.
 
-Each generated server tool accepts an `operation`:
+Each generated Caplet tool accepts an `operation`:
 
 ```json
 {
@@ -280,8 +321,8 @@ Call one exact downstream tool:
 
 Available operations:
 
-- `get_server`: return the configured capability card without starting the downstream server.
-- `check_server`: start or connect to the downstream server and verify its tool list.
+- `get_caplet`: return the configured capability card without starting the downstream server.
+- `check_mcp_server`: start or connect to the downstream server and verify its tool list.
 - `list_tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this server.
 - `get_tool`: return full metadata for one exact downstream tool.

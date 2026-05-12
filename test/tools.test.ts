@@ -41,6 +41,27 @@ describe("generated tool request validation", () => {
     expect(() => validateOperationRequest({ operation: "explode" }, 50)).toThrow(
       expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
     );
+    expect(() => validateOperationRequest({ operation: "get_server" }, 50)).toThrow(
+      expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
+    );
+    expect(() => validateOperationRequest({ operation: "check_server" }, 50)).toThrow(
+      expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
+    );
+  });
+
+  it("exposes the Caplet-first operation enum", () => {
+    const schema = z.toJSONSchema(generatedToolInputSchema, { io: "input" }) as {
+      properties: Record<string, { enum?: string[] }>;
+    };
+
+    expect(schema.properties.operation?.enum).toEqual([
+      "get_caplet",
+      "check_mcp_server",
+      "list_tools",
+      "search_tools",
+      "get_tool",
+      "call_tool",
+    ]);
   });
 
   it("describes the nested call_tool argument shape to agents", () => {
@@ -89,20 +110,47 @@ describe("generated tool handlers", () => {
     },
   ];
 
-  it("returns get_server without starting downstream", async () => {
+  it("returns get_caplet without starting downstream", async () => {
     const downstream = { checkServer: vi.fn(), listTools: vi.fn() } as unknown as DownstreamManager;
     const result = (await handleServerTool(
       server,
-      { operation: "get_server" },
+      { operation: "get_caplet" },
       registry,
       downstream,
     )) as any;
     expect(result.structuredContent?.result).toEqual({
-      server: "alpha",
+      caplet: "alpha",
       name: "Alpha",
       description: "Search alpha project documents.",
+      mcpServer: {
+        transport: "stdio",
+        disabled: false,
+        startupTimeoutMs: 10000,
+        callTimeoutMs: 60000,
+        toolCacheTtlMs: 30000,
+      },
     });
     expect(downstream.listTools).not.toHaveBeenCalled();
+  });
+
+  it("checks the MCP server backend", async () => {
+    const status = { server: "alpha", status: "available", toolCount: 2, elapsedMs: 5 };
+    const downstream = {
+      checkServer: vi.fn().mockResolvedValue(status),
+      listTools: vi.fn(),
+      callTool: vi.fn(),
+    } as unknown as DownstreamManager;
+    const result = (await handleServerTool(
+      server,
+      { operation: "check_mcp_server" },
+      registry,
+      downstream,
+    )) as any;
+
+    expect(result.structuredContent?.result).toEqual(status);
+    expect(downstream.checkServer).toHaveBeenCalledWith(server);
+    expect(downstream.listTools).not.toHaveBeenCalled();
+    expect(downstream.callTool).not.toHaveBeenCalled();
   });
 
   it("lists compact metadata and preserves full get_tool metadata", async () => {

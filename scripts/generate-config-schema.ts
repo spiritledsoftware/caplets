@@ -3,20 +3,29 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { configJsonSchema } from "../src/config.js";
+import { capletJsonSchema } from "../src/caplet-files.js";
 
-const schemaPath = "schemas/caplets-config.schema.json";
-const next = formatJson(`${JSON.stringify(configJsonSchema(), null, 2)}\n`);
+const schemas = [
+  { path: "schemas/caplets-config.schema.json", schema: configJsonSchema() },
+  { path: "schemas/caplet.schema.json", schema: capletJsonSchema() },
+];
 
 if (process.argv.includes("--check")) {
-  const current = existsSync(schemaPath) ? readFileSync(schemaPath, "utf8") : "";
-  if (current !== next) {
-    console.error(`${schemaPath} is out of date. Run pnpm schema:generate.`);
-    process.exitCode = 1;
+  for (const entry of schemas) {
+    const next = formatJson(`${JSON.stringify(entry.schema, null, 2)}\n`);
+    const current = existsSync(entry.path) ? readFileSync(entry.path, "utf8") : "";
+    if (current !== next) {
+      console.error(`${entry.path} is out of date. Run pnpm schema:generate.`);
+      process.exitCode = 1;
+    }
   }
 } else {
-  mkdirSync(dirname(schemaPath), { recursive: true });
-  writeFileSync(schemaPath, next);
-  console.log(`Generated ${schemaPath}`);
+  for (const entry of schemas) {
+    const next = formatJson(`${JSON.stringify(entry.schema, null, 2)}\n`);
+    mkdirSync(dirname(entry.path), { recursive: true });
+    writeFileSync(entry.path, next);
+    console.log(`Generated ${entry.path}`);
+  }
 }
 
 function formatJson(value: string): string {

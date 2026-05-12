@@ -6,8 +6,8 @@ import { CapletsError } from "./errors.js";
 import type { ServerRegistry } from "./registry.js";
 
 const operations = [
-  "get_server",
-  "check_server",
+  "get_caplet",
+  "check_mcp_server",
   "list_tools",
   "search_tools",
   "get_tool",
@@ -20,7 +20,7 @@ export const generatedToolInputSchema = z
     operation: operationSchema.describe(
       [
         "Caplets wrapper operation to perform for this configured MCP server.",
-        "Use list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool.",
+        "Use get_caplet to read the full Caplet card, check_mcp_server to check the MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool.",
         'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
       ].join(" "),
     ),
@@ -64,9 +64,9 @@ export async function handleServerTool(
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
   switch (parsed.operation) {
-    case "get_server":
+    case "get_caplet":
       return jsonResult(registry.detail(server));
-    case "check_server":
+    case "check_mcp_server":
       return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
       const tools = await downstream.listTools(server);
@@ -135,8 +135,8 @@ export function validateOperationRequest(
   };
 
   switch (value.operation) {
-    case "get_server":
-    case "check_server":
+    case "get_caplet":
+    case "check_mcp_server":
     case "list_tools":
       allowed([]);
       return { operation: value.operation };
@@ -173,7 +173,7 @@ export function validateOperationRequest(
 }
 
 type RequiredOperationRequest =
-  | { operation: "get_server" | "check_server" | "list_tools" }
+  | { operation: "get_caplet" | "check_mcp_server" | "list_tools" }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
   | { operation: "call_tool"; tool: string; arguments: Record<string, unknown> };

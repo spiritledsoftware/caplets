@@ -31,6 +31,8 @@
       "maximum": 50
     },
     "mcpServers": {
+      "default": {},
+      "description": "Downstream MCP servers keyed by stable server ID.",
       "type": "object",
       "propertyNames": {
         "type": "string",
@@ -180,6 +182,14 @@
             ],
             "description": "Authentication settings for a remote MCP server."
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
           "startupTimeoutMs": {
             "default": 10000,
             "description": "Timeout in milliseconds for starting or checking a downstream server.",
@@ -209,10 +219,8 @@
         },
         "required": ["name", "description"],
         "additionalProperties": false
-      },
-      "description": "Downstream MCP servers keyed by stable server ID."
+      }
     }
   },
-  "required": ["mcpServers"],
   "additionalProperties": false
 }

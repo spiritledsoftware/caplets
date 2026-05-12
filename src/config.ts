@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
+import { loadCapletFiles } from "./caplet-files.js";
 import { CapletsError, redactSecrets } from "./errors.js";
 
 export type RemoteAuthConfig =
@@ -23,6 +24,8 @@ export type CapletServerConfig = {
   server: string;
   name: string;
   description: string;
+  tags?: string[] | undefined;
+  body?: string | undefined;
   transport: "stdio" | "http" | "sse";
   command?: string | undefined;
   args?: string[] | undefined;
@@ -66,10 +69,12 @@ const FORBIDDEN_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
+const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".caplets", "config.json");
 export const DEFAULT_AUTH_DIR = join(homedir(), ".caplets", "auth");
 export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
+export const TRUST_PROJECT_CAPLETS_ENV = "CAPLETS_TRUST_PROJECT_CAPLETS";
 
 const remoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -93,7 +98,7 @@ const remoteAuthSchema = z
   ])
   .describe("Authentication settings for a remote MCP server.");
 
-const serverSchema = z
+const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
     description: z
@@ -117,6 +122,7 @@ const serverSchema = z
     cwd: z.string().min(1).optional().describe("Working directory for stdio servers."),
     url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
     startupTimeoutMs: z
       .number()
       .int()
@@ -142,99 +148,116 @@ const serverSchema = z
   })
   .strict();
 
-export const configFileSchema = z
-  .object({
-    $schema: z
-      .string()
-      .url()
-      .optional()
-      .describe("Optional JSON Schema URL for editor validation."),
-    version: z.literal(1).default(1).describe("Caplets config schema version."),
-    defaultSearchLimit: z
-      .number()
-      .int()
-      .positive()
-      .default(20)
-      .describe("Default maximum number of same-server search results."),
-    maxSearchLimit: z
-      .number()
-      .int()
-      .positive()
-      .max(50)
-      .default(50)
-      .describe("Maximum accepted search_tools limit."),
-    mcpServers: z
-      .record(z.string().regex(SERVER_ID_PATTERN), serverSchema)
-      .describe("Downstream MCP servers keyed by stable server ID."),
-  })
-  .strict()
-  .superRefine((config, ctx) => {
-    if (config.defaultSearchLimit > config.maxSearchLimit) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["defaultSearchLimit"],
-        message: "defaultSearchLimit must be <= maxSearchLimit",
-      });
-    }
+const normalizedServerSchema = publicServerSchema.extend({
+  body: z.string().optional(),
+});
 
-    for (const [server, raw] of Object.entries(config.mcpServers)) {
-      if (!SERVER_ID_PATTERN.test(server)) {
+type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
+type ConfigInput = {
+  mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+function configSchemaFor(serverValueSchema: z.ZodTypeAny) {
+  return z
+    .object({
+      $schema: z
+        .string()
+        .url()
+        .optional()
+        .describe("Optional JSON Schema URL for editor validation."),
+      version: z.literal(1).default(1).describe("Caplets config schema version."),
+      defaultSearchLimit: z
+        .number()
+        .int()
+        .positive()
+        .default(20)
+        .describe("Default maximum number of same-server search results."),
+      maxSearchLimit: z
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .default(50)
+        .describe("Maximum accepted search_tools limit."),
+      mcpServers: z
+        .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
+        .default({})
+        .describe("Downstream MCP servers keyed by stable server ID."),
+    })
+    .strict()
+    .superRefine((config, ctx) => {
+      if (config.defaultSearchLimit > config.maxSearchLimit) {
         ctx.addIssue({
           code: "custom",
-          path: ["mcpServers", server],
-          message: "server ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          path: ["defaultSearchLimit"],
+          message: "defaultSearchLimit must be <= maxSearchLimit",
         });
       }
 
-      const effectiveTransport = raw.transport ?? (raw.command ? "stdio" : undefined);
-      const hasStdio = Boolean(raw.command);
-      const hasRemote = Boolean(raw.url);
-      if (hasStdio === hasRemote) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["mcpServers", server],
-          message: "server must define exactly one connection shape: command or url",
-        });
-      }
+      for (const [server, rawValue] of Object.entries(config.mcpServers)) {
+        const raw = rawValue as ConfigSchemaServerValue;
+        if (!SERVER_ID_PATTERN.test(server)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["mcpServers", server],
+            message: "server ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
 
-      if (effectiveTransport === "stdio" && !raw.command) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["mcpServers", server, "command"],
-          message: "stdio servers require command",
-        });
-      }
+        const effectiveTransport = raw.transport ?? (raw.command ? "stdio" : undefined);
+        const hasStdio = Boolean(raw.command);
+        const hasRemote = Boolean(raw.url);
+        if (hasStdio === hasRemote) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["mcpServers", server],
+            message: "server must define exactly one connection shape: command or url",
+          });
+        }
 
-      if ((effectiveTransport === "http" || effectiveTransport === "sse") && !raw.url) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["mcpServers", server, "url"],
-          message: "remote servers require url",
-        });
-      }
+        if (effectiveTransport === "stdio" && !raw.command) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["mcpServers", server, "command"],
+            message: "stdio servers require command",
+          });
+        }
 
-      if (raw.url && !isAllowedRemoteUrl(raw.url)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["mcpServers", server, "url"],
-          message: "remote url must use https except loopback development urls",
-        });
-      }
+        if ((effectiveTransport === "http" || effectiveTransport === "sse") && !raw.url) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["mcpServers", server, "url"],
+            message: "remote servers require url",
+          });
+        }
 
-      if (raw.auth?.type === "headers") {
-        for (const headerName of Object.keys(raw.auth.headers)) {
-          const normalized = headerName.toLowerCase();
-          if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
-            ctx.addIssue({
-              code: "custom",
-              path: ["mcpServers", server, "auth", "headers", headerName],
-              message: `header ${headerName} is not allowed`,
-            });
+        if (raw.url && !isAllowedRemoteUrl(raw.url)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["mcpServers", server, "url"],
+            message: "remote url must use https except loopback development urls",
+          });
+        }
+
+        if (raw.auth?.type === "headers") {
+          for (const headerName of Object.keys(raw.auth.headers)) {
+            const normalized = headerName.toLowerCase();
+            if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["mcpServers", server, "auth", "headers", headerName],
+                message: `header ${headerName} is not allowed`,
+              });
+            }
           }
         }
       }
-    }
-  });
+    });
+}
+
+export const configFileSchema = configSchemaFor(publicServerSchema);
+const normalizedConfigFileSchema = configSchemaFor(normalizedServerSchema);
 
 export function configJsonSchema(): unknown {
   return {
@@ -254,14 +277,28 @@ export function resolveProjectConfigPath(cwd = process.cwd()): string {
   return join(cwd, PROJECT_CONFIG_FILE);
 }
 
+export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
+  return dirname(configPath);
+}
+
+export function resolveProjectCapletsRoot(cwd = process.cwd()): string {
+  return join(cwd, ".caplets");
+}
+
 export function loadConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
 ): CapletsConfig {
   const hasUserConfig = existsSync(path);
   const hasProjectConfig = existsSync(projectPath);
+  const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
+  const userCaplets = loadCapletFiles(resolveCapletsRoot(path));
+  const projectConfig = hasProjectConfig ? readPublicConfigInput(projectPath) : undefined;
+  const projectCaplets = shouldLoadProjectCaplets()
+    ? loadCapletFiles(dirname(projectPath))
+    : undefined;
 
-  if (!hasUserConfig && !hasProjectConfig) {
+  if (!hasUserConfig && !hasProjectConfig && !userCaplets && !projectCaplets) {
     throw new CapletsError(
       "CONFIG_NOT_FOUND",
       `Caplets config not found at ${path} or ${projectPath}`,
@@ -269,9 +306,16 @@ export function loadConfig(
   }
 
   try {
-    const projectConfig = hasProjectConfig ? readConfigFile(projectPath) : undefined;
-    const userConfig = hasUserConfig ? readConfigFile(path) : undefined;
-    return parseConfig(mergeConfigInputs(projectConfig, userConfig));
+    const config = parseConfig(
+      mergeConfigInputs(userConfig, userCaplets, projectConfig, projectCaplets),
+    );
+    if (Object.keys(config.mcpServers).length === 0) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "Caplets config must define at least one MCP server",
+      );
+    }
+    return config;
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;
@@ -284,10 +328,30 @@ export function loadConfig(
   }
 }
 
-function readConfigFile(path: string): unknown {
+function shouldLoadProjectCaplets(): boolean {
+  return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
+}
+
+function isTrustedEnvEnabled(value: string | undefined): boolean {
+  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+}
+
+function readPublicConfigInput(path: string): ConfigInput {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    const input = JSON.parse(readFileSync(path, "utf8"));
+    const parsed = configFileSchema.safeParse(interpolateConfig(input));
+    if (!parsed.success) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplets config at ${path} is invalid`,
+        parsed.error.issues,
+      );
+    }
+    return input as ConfigInput;
   } catch (error) {
+    if (error instanceof CapletsError) {
+      throw error;
+    }
     throw new CapletsError(
       "CONFIG_INVALID",
       `Caplets config at ${path} is not valid JSON`,
@@ -296,43 +360,33 @@ function readConfigFile(path: string): unknown {
   }
 }
 
-function mergeConfigInputs(projectConfig: unknown, userConfig: unknown): unknown {
-  if (projectConfig === undefined) {
-    return userConfig;
+function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInput | undefined {
+  let merged: ConfigInput | undefined;
+  for (const input of inputs) {
+    if (input === undefined) {
+      continue;
+    }
+    merged = {
+      ...merged,
+      ...input,
+      mcpServers: {
+        ...merged?.mcpServers,
+        ...input.mcpServers,
+      },
+    };
   }
-  if (userConfig === undefined) {
-    return projectConfig;
-  }
-  if (!isPlainConfigObject(projectConfig) || !isPlainConfigObject(userConfig)) {
-    return userConfig;
-  }
-
-  return {
-    ...userConfig,
-    ...projectConfig,
-    mcpServers: {
-      ...userConfig.mcpServers,
-      ...projectConfig.mcpServers,
-    },
-  };
-}
-
-function isPlainConfigObject(value: unknown): value is {
-  mcpServers?: Record<string, unknown>;
-  [key: string]: unknown;
-} {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return merged;
 }
 
 export function parseConfig(input: unknown): CapletsConfig {
-  const parsed = configFileSchema.safeParse(interpolateServer(input));
+  const parsed = normalizedConfigFileSchema.safeParse(interpolateConfig(input));
   if (!parsed.success) {
     throw new CapletsError("CONFIG_INVALID", "Caplets config is invalid", parsed.error.issues);
   }
 
   const servers: Record<string, CapletServerConfig> = {};
   for (const [server, raw] of Object.entries(parsed.data.mcpServers)) {
-    const interpolated = raw;
+    const interpolated = raw as ConfigSchemaServerValue;
     servers[server] = stripUndefined({
       ...interpolated,
       server,
@@ -356,19 +410,32 @@ function stripUndefined<T extends Record<string, unknown>>(value: T): T {
   ) as T;
 }
 
-function interpolateServer<T>(value: T): T {
+function interpolateConfig<T>(value: T, path: string[] = []): T {
+  if (isPublicMetadataPath(path)) {
+    return value;
+  }
   if (typeof value === "string") {
     return interpolateEnv(value) as T;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => interpolateServer(item)) as T;
+    return value.map((item, index) => interpolateConfig(item, [...path, String(index)])) as T;
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, interpolateServer(nested)]),
+      Object.entries(value).map(([nestedKey, nested]) => [
+        nestedKey,
+        interpolateConfig(nested, [...path, nestedKey]),
+      ]),
     ) as T;
   }
   return value;
+}
+
+function isPublicMetadataPath(path: string[]): boolean {
+  if (path.length < 3 || path[0] !== "mcpServers") {
+    return false;
+  }
+  return NON_INTERPOLATED_SERVER_FIELDS.has(path[2] ?? "");
 }
 
 export function interpolateEnv(value: string): string {
