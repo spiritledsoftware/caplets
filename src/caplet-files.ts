@@ -3,29 +3,16 @@ import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { VFile } from "vfile";
 import { matter as parseMatter } from "vfile-matter";
 import { z } from "zod";
+import {
+  FORBIDDEN_HEADERS,
+  HEADER_NAME_PATTERN,
+  SERVER_ID_PATTERN,
+  isAllowedRemoteUrl,
+} from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
 
 const MAX_CAPLET_FILE_BYTES = 128 * 1024;
 const MAX_CAPLET_BODY_CHARS = 64 * 1024;
-const SERVER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-const FORBIDDEN_HEADERS = new Set([
-  "accept",
-  "authorization",
-  "connection",
-  "content-length",
-  "content-type",
-  "host",
-  "keep-alive",
-  "mcp-protocol-version",
-  "mcp-session-id",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
 
 const capletRemoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -657,15 +644,4 @@ function isUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isAllowedRemoteUrl(value: string): boolean {
-  const url = new URL(value);
-  if (url.protocol === "https:") {
-    return true;
-  }
-  if (url.protocol !== "http:") {
-    return false;
-  }
-  return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
 }

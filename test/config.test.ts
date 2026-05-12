@@ -331,7 +331,10 @@ describe("config", () => {
       );
 
       for (const file of referenceFiles) {
-        expect(caplet, `${entry.name}/CAPLET.md should link ${file}`).toContain(`./${file}`);
+        expect(
+          markdownLinkTargets(caplet),
+          `${entry.name}/CAPLET.md should link ${file}`,
+        ).toContain(`./${file}`);
       }
     }
   });
@@ -905,3 +908,9 @@ describe("config", () => {
     ).toThrow(CapletsError);
   });
 });
+
+function markdownLinkTargets(markdown: string): string[] {
+  return [...markdown.matchAll(/\[[^\]]+\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].flatMap((match) =>
+    match[1] ? [match[1]] : [],
+  );
+}

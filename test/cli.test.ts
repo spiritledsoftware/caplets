@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
+import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
 import { parseConfig, TRUST_PROJECT_CAPLETS_ENV } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 import { writeTokenBundle } from "../src/auth.js";
@@ -315,6 +315,48 @@ describe("cli init", () => {
       );
 
       await runCli(["install", repo, "github", "--force"], { writeOut: () => {} });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preflights selected installs before copying any Caplets", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(join(destinationRoot, "github"), { recursive: true });
+      writeFileSync(join(destinationRoot, "github", "CAPLET.md"), "existing\n");
+
+      expect(() => installCaplets(repo, { destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+
+      expect(existsSync(join(destinationRoot, "filesystem.md"))).toBe(false);
+      expect(readFileSync(join(destinationRoot, "github", "CAPLET.md"), "utf8")).toBe("existing\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns stable install source identifiers", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+
+      const result = installCaplets(repo, { capletIds: ["github"], destinationRoot });
+
+      expect(result.installed).toEqual([
+        {
+          id: "github",
+          source: `${repo}#caplets/github`,
+          destination: join(destinationRoot, "github"),
+          kind: "directory",
+        },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -1,9 +1,33 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { loadCapletFiles } from "./caplet-files.js";
+import {
+  TRUST_PROJECT_CAPLETS_ENV,
+  isTrustedEnvEnabled,
+  resolveCapletsRoot,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+} from "./config/paths.js";
+import {
+  FORBIDDEN_HEADERS,
+  HEADER_NAME_PATTERN,
+  SERVER_ID_PATTERN,
+  isAllowedRemoteUrl,
+} from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
+
+export {
+  DEFAULT_AUTH_DIR,
+  DEFAULT_CONFIG_PATH,
+  PROJECT_CONFIG_FILE,
+  TRUST_PROJECT_CAPLETS_ENV,
+  isTrustedEnvEnabled,
+  resolveCapletsRoot,
+  resolveConfigPath,
+  resolveProjectCapletsRoot,
+  resolveProjectConfigPath,
+} from "./config/paths.js";
 
 export type RemoteAuthConfig =
   | { type: "none" }
@@ -119,31 +143,7 @@ export type CapletsConfig = {
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
 };
 
-const SERVER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-const FORBIDDEN_HEADERS = new Set([
-  "accept",
-  "authorization",
-  "connection",
-  "content-length",
-  "content-type",
-  "host",
-  "keep-alive",
-  "mcp-protocol-version",
-  "mcp-session-id",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
-
-export const DEFAULT_CONFIG_PATH = join(homedir(), ".caplets", "config.json");
-export const DEFAULT_AUTH_DIR = join(homedir(), ".caplets", "auth");
-export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
-export const TRUST_PROJECT_CAPLETS_ENV = "CAPLETS_TRUST_PROJECT_CAPLETS";
 
 const remoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -654,22 +654,6 @@ export function configJsonSchema(): unknown {
   };
 }
 
-export function resolveConfigPath(path?: string): string {
-  return path ?? join(homedir(), ".caplets", "config.json");
-}
-
-export function resolveProjectConfigPath(cwd = process.cwd()): string {
-  return join(cwd, PROJECT_CONFIG_FILE);
-}
-
-export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
-  return dirname(configPath);
-}
-
-export function resolveProjectCapletsRoot(cwd = process.cwd()): string {
-  return join(cwd, ".caplets");
-}
-
 export function loadConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
@@ -721,10 +705,6 @@ export function loadConfig(
 
 function shouldLoadProjectCaplets(): boolean {
   return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
-}
-
-export function isTrustedEnvEnabled(value: string | undefined): boolean {
-  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
 }
 
 function readPublicConfigInput(path: string): ConfigInput {
@@ -977,15 +957,4 @@ export function interpolateEnv(value: string): string {
   return value
     .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match, name: string) => process.env[name] ?? "")
     .replace(/\$env:([A-Za-z_][A-Za-z0-9_]*)/g, (_match, name: string) => process.env[name] ?? "");
-}
-
-function isAllowedRemoteUrl(value: string): boolean {
-  const url = new URL(value);
-  if (url.protocol === "https:") {
-    return true;
-  }
-  if (url.protocol !== "http:") {
-    return false;
-  }
-  return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
 }

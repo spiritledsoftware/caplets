@@ -1,16 +1,4 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import { randomBytes, createHash } from "node:crypto";
 import {
   auth,
@@ -23,8 +11,24 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth";
-import { CapletsError, redactSecrets } from "./errors.js";
+import {
+  isTokenBundleExpired,
+  readTokenBundle,
+  writeTokenBundle,
+  type StoredOAuthTokenBundle,
+} from "./auth/store.js";
 import type { CapletServerConfig } from "./config.js";
+import { CapletsError, redactSecrets } from "./errors.js";
+
+export {
+  authStorePath,
+  deleteTokenBundle,
+  isTokenBundleExpired,
+  listTokenBundles,
+  readTokenBundle,
+  writeTokenBundle,
+  type StoredOAuthTokenBundle,
+} from "./auth/store.js";
 
 type OAuthLikeAuthConfig = {
   type: "oauth2" | "oidc";
@@ -49,79 +53,6 @@ export type GenericAuthTarget = {
   auth?: OAuthLikeAuthConfig | { type: string } | undefined;
   requestTimeoutMs?: number | undefined;
 };
-
-export type StoredOAuthTokenBundle = {
-  server: string;
-  authType?: "oauth2" | "oidc" | undefined;
-  accessToken: string;
-  refreshToken?: string | undefined;
-  tokenType?: string | undefined;
-  expiresAt?: string | undefined;
-  scope?: string | undefined;
-  idToken?: string | undefined;
-  issuer?: string | undefined;
-  subject?: string | undefined;
-  clientId?: string | undefined;
-  clientSecret?: string | undefined;
-  protectedResourceOrigin?: string | undefined;
-  metadata?: Record<string, unknown>;
-};
-
-export function authStorePath(
-  server: string,
-  authDir = join(homedir(), ".caplets", "auth"),
-): string {
-  return join(authDir, `${server}.json`);
-}
-
-export function readTokenBundle(
-  server: string,
-  authDir?: string,
-): StoredOAuthTokenBundle | undefined {
-  const path = authStorePath(server, authDir);
-  if (!existsSync(path)) {
-    return undefined;
-  }
-  return JSON.parse(readFileSync(path, "utf8")) as StoredOAuthTokenBundle;
-}
-
-export function listTokenBundles(authDir?: string): StoredOAuthTokenBundle[] {
-  const dir = authDir ?? join(homedir(), ".caplets", "auth");
-  if (!existsSync(dir)) {
-    return [];
-  }
-  return readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => readTokenBundle(entry.name.slice(0, -".json".length), dir))
-    .filter((bundle): bundle is StoredOAuthTokenBundle => Boolean(bundle))
-    .sort((left, right) => left.server.localeCompare(right.server));
-}
-
-export function deleteTokenBundle(server: string, authDir?: string): boolean {
-  const path = authStorePath(server, authDir);
-  if (!existsSync(path)) {
-    return false;
-  }
-  rmSync(path, { force: true });
-  return true;
-}
-
-export function isTokenBundleExpired(bundle: StoredOAuthTokenBundle): boolean {
-  return Boolean(bundle.expiresAt && Date.parse(bundle.expiresAt) <= Date.now());
-}
-
-export function writeTokenBundle(bundle: StoredOAuthTokenBundle, authDir?: string): void {
-  const path = authStorePath(bundle.server, authDir);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, `${JSON.stringify(bundle, null, 2)}\n`, { mode: 0o600 });
-  try {
-    chmodSync(tempPath, 0o600);
-  } catch {
-    // Best effort on platforms without POSIX permissions.
-  }
-  renameSync(tempPath, path);
-}
 
 export function staticRemoteHeaders(server: CapletServerConfig): Record<string, string> {
   if (server.auth?.type === "bearer") {

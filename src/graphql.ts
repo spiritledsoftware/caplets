@@ -27,13 +27,14 @@ import {
   type TypeNode,
   validate,
 } from "graphql";
-import type { GraphQlEndpointConfig } from "./config.js";
 import { genericOAuthHeaders } from "./auth.js";
+import type { GraphQlEndpointConfig } from "./config.js";
+import { isAllowedRemoteUrl } from "./config/validation.js";
 import type { CompactTool } from "./downstream.js";
 import { CapletsError, toSafeError } from "./errors.js";
+import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
 import type { ServerRegistry } from "./registry.js";
 
-const MAX_RESPONSE_BYTES = 1024 * 1024;
 const GRAPHQL_METHOD = "POST";
 const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
   String: { type: "string" },
@@ -165,9 +166,9 @@ export class GraphQLManager {
           },
         );
       }
-      const body = parseGraphQlBody(
+      const body = parseHttpBody(
         response.headers.get("content-type") ?? "",
-        await readLimitedText(response),
+        await readGraphQlText(response),
       );
       const result = {
         status: response.status,
@@ -334,7 +335,7 @@ async function loadSchema(
       status: response.status,
     });
   }
-  const parsed = JSON.parse(await readLimitedText(response)) as {
+  const parsed = JSON.parse(await readGraphQlText(response)) as {
     data?: unknown;
     errors?: unknown;
   };
@@ -659,7 +660,7 @@ async function fetchGraphQlText(
       status: response.status,
     });
   }
-  return readLimitedText(response);
+  return readGraphQlText(response);
 }
 
 function schemaAuthHeaders(
@@ -698,63 +699,18 @@ function shouldSendSchemaAuth(endpoint: GraphQlEndpointConfig): boolean {
   );
 }
 
-function parseGraphQlBody(contentType: string, text: string): unknown {
-  if (!text) {
-    return undefined;
-  }
-  if (!contentType.includes("application/json")) {
-    return text;
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-async function readLimitedText(response: Response): Promise<string> {
-  if (!response.body) {
-    return "";
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    if (value) {
-      bytes += value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) {
-        await reader.cancel();
-        throw new CapletsError("DOWNSTREAM_PROTOCOL_ERROR", "GraphQL response exceeded byte limit");
-      }
-      chunks.push(value);
-    }
-  }
-  return new TextDecoder().decode(Buffer.concat(chunks));
+async function readGraphQlText(response: Response): Promise<string> {
+  return readLimitedText(response, { errorMessage: "GraphQL response exceeded byte limit" });
 }
 
 function validateEndpointUrl(value: string): void {
-  const url = new URL(value);
-  if (url.protocol === "https:") {
-    return;
-  }
-  if (
-    url.protocol === "http:" &&
-    ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
-  ) {
+  if (isAllowedRemoteUrl(value)) {
     return;
   }
   throw new CapletsError(
     "CONFIG_INVALID",
     "GraphQL URLs must use https except loopback development urls",
   );
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function graphQlCacheKey(endpoint: GraphQlEndpointConfig): string {
