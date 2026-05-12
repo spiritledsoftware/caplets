@@ -459,7 +459,7 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
     : undefined;
 }
 
-function discoverCapletFiles(root: string): Array<{ id: string; path: string }> {
+export function discoverCapletFiles(root: string): Array<{ id: string; path: string }> {
   const entries = readdirSync(root, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name),
   );

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { capletJsonSchema } from "../src/caplet-files.js";
+import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files.js";
 import { configJsonSchema, loadConfig, parseConfig } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 
@@ -260,6 +260,40 @@ describe("config", () => {
       body: "# Project Linear",
     });
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps repository example Caplets loadable", () => {
+    const examples = loadCapletFiles(join(process.cwd(), "caplets"));
+
+    const config = parseConfig(examples);
+
+    expect(config.mcpServers.context7).toMatchObject({
+      server: "context7",
+      name: "Context7 Documentation",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+    });
+    expect(config.mcpServers.github).toMatchObject({
+      server: "github",
+      name: "GitHub",
+      command: "docker",
+      args: [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server",
+      ],
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
+    });
+    expect(config.mcpServers.linear).toMatchObject({
+      server: "linear",
+      name: "Linear",
+      transport: "http",
+      url: "https://mcp.linear.app/mcp",
+      auth: { type: "oauth2" },
+    });
   });
 
   it("does not load project Caplet files without explicit trust", () => {

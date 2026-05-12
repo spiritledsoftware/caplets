@@ -1,9 +1,21 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { Command, CommanderError } from "commander";
 import { version as packageJsonVersion } from "../package.json";
+import { discoverCapletFiles, loadCapletFiles } from "./caplet-files.js";
 import {
   DEFAULT_AUTH_DIR,
   loadConfig,
@@ -49,6 +61,13 @@ type ConfigPaths = {
   authDir: string;
   envConfig: string | null;
   projectCapletsTrusted: boolean;
+};
+
+type InstallableCaplet = {
+  id: string;
+  source: string;
+  destination: string;
+  kind: "file" | "directory";
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -108,6 +127,23 @@ export function createProgram(io: CliIO = {}): Command {
         return;
       }
       writeOut(formatCapletList(rows));
+    });
+
+  program
+    .command("install")
+    .description("Install Caplets from a repo's caplets directory.")
+    .argument("<repo>", "local repo path, Git URL, or GitHub owner/repo")
+    .argument("[caplets...]", "optional Caplet IDs to install")
+    .option("--force", "overwrite installed Caplets")
+    .action((repo: string, capletIds: string[], options: { force?: boolean }) => {
+      const result = installCaplets(repo, {
+        capletIds,
+        force: Boolean(options.force),
+        destinationRoot: resolveCapletsRoot(resolveConfigPath(envConfigPath())),
+      });
+      for (const caplet of result.installed) {
+        writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
+      }
     });
 
   const config = program.command("config").description("Inspect Caplets config locations.");
@@ -198,6 +234,105 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   return program;
+}
+
+export function installCaplets(
+  repo: string,
+  options: {
+    capletIds?: string[];
+    destinationRoot?: string;
+    force?: boolean;
+  } = {},
+): { installed: InstallableCaplet[] } {
+  const source = resolveInstallSource(repo);
+  try {
+    const sourceRoot = join(source.repoRoot, "caplets");
+    if (!existsSync(sourceRoot) || !statSync(sourceRoot).isDirectory()) {
+      throw new CapletsError("CONFIG_NOT_FOUND", `No caplets directory found at ${sourceRoot}`);
+    }
+
+    const selectedIds = new Set(options.capletIds ?? []);
+    const destinationRoot = options.destinationRoot ?? resolveCapletsRoot(resolveConfigPath());
+    const available = discoverCapletFiles(sourceRoot);
+    const selected =
+      selectedIds.size === 0 ? available : available.filter((caplet) => selectedIds.has(caplet.id));
+    const missing = [...selectedIds].filter((id) => !available.some((caplet) => caplet.id === id));
+    if (missing.length > 0) {
+      throw new CapletsError(
+        "CONFIG_NOT_FOUND",
+        `Caplet ${missing.join(", ")} not found in ${sourceRoot}`,
+      );
+    }
+    if (selected.length === 0) {
+      throw new CapletsError("CONFIG_NOT_FOUND", `No Caplets found in ${sourceRoot}`);
+    }
+
+    loadCapletFiles(sourceRoot);
+    mkdirSync(destinationRoot, { recursive: true, mode: 0o700 });
+
+    const installed = selected.map((caplet) =>
+      installOneCaplet(caplet, { destinationRoot, force: Boolean(options.force) }),
+    );
+    return { installed };
+  } finally {
+    source.cleanup();
+  }
+}
+
+function resolveInstallSource(repo: string): { repoRoot: string; cleanup: () => void } {
+  if (existsSync(repo) && statSync(repo).isDirectory()) {
+    return { repoRoot: repo, cleanup: () => {} };
+  }
+
+  const repoRoot = mkdtempSync(join(tmpdir(), "caplets-install-"));
+  try {
+    execFileSync("git", ["clone", "--depth", "1", normalizeGitRepo(repo), repoRoot], {
+      stdio: "ignore",
+    });
+    return {
+      repoRoot,
+      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(repoRoot, { recursive: true, force: true });
+    throw new CapletsError("CONFIG_NOT_FOUND", `Could not clone repo ${repo}`, toSafeError(error));
+  }
+}
+
+function normalizeGitRepo(repo: string): string {
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    return `https://github.com/${repo}.git`;
+  }
+  return repo;
+}
+
+function installOneCaplet(
+  caplet: { id: string; path: string },
+  options: { destinationRoot: string; force: boolean },
+): InstallableCaplet {
+  const isDirectory = basename(caplet.path) === "CAPLET.md";
+  const source = isDirectory ? dirname(caplet.path) : caplet.path;
+  const destination = isDirectory
+    ? join(options.destinationRoot, caplet.id)
+    : join(options.destinationRoot, `${caplet.id}.md`);
+
+  if (existsSync(destination)) {
+    if (!options.force) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Caplet ${caplet.id} already exists at ${destination}; pass --force to overwrite it`,
+      );
+    }
+    rmSync(destination, { recursive: true, force: true });
+  }
+
+  cpSync(source, destination, { recursive: isDirectory, force: false, errorOnExist: true });
+  return {
+    id: caplet.id,
+    source,
+    destination,
+    kind: isDirectory ? "directory" : "file",
+  };
 }
 
 function listCaplets(

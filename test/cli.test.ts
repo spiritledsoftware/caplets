@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
@@ -239,6 +239,85 @@ describe("cli init", () => {
     }
   });
 
+  it("installs all Caplets from a local repo caplets directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    const out: string[] = [];
+    try {
+      writeInstallableRepo(repo);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["install", repo], { writeOut: (value) => out.push(value) });
+
+      expect(readFileSync(join(dir, "user", "filesystem.md"), "utf8")).toContain(
+        "name: Project Files",
+      );
+      expect(readFileSync(join(dir, "user", "github", "CAPLET.md"), "utf8")).toContain(
+        "name: GitHub",
+      );
+      expect(out.join("")).toContain("Installed filesystem");
+      expect(out.join("")).toContain("Installed github");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("installs selected Caplets from a local repo caplets directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    const out: string[] = [];
+    try {
+      writeInstallableRepo(repo);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["install", repo, "github"], { writeOut: (value) => out.push(value) });
+
+      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(dir, "user", "filesystem.md"))).toBe(false);
+      expect(out.join("")).toBe(`Installed github to ${join(dir, "user", "github")}\n`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite installed Caplets without force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    try {
+      writeInstallableRepo(repo);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+
+      await expect(runCli(["install", repo, "github"], { writeOut: () => {} })).rejects.toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+
+      await runCli(["install", repo, "github", "--force"], { writeOut: () => {} });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects selected Caplets that are not in the repo", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    try {
+      writeInstallableRepo(repo);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await expect(runCli(["install", repo, "missing"], { writeOut: () => {} })).rejects.toThrow(
+        expect.objectContaining({ code: "CONFIG_NOT_FOUND" }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lists configured OAuth servers without printing token values", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const authDir = join(dir, "auth");
@@ -428,5 +507,45 @@ function writeInspectionConfig(path: string): void {
         },
       },
     }),
+  );
+}
+
+function writeInstallableRepo(repo: string): void {
+  const root = join(repo, "caplets");
+  mkdirSync(join(root, "github"), { recursive: true });
+  writeFileSync(
+    join(root, "filesystem.md"),
+    [
+      "---",
+      "name: Project Files",
+      "description: Read and search local project files.",
+      "mcpServer:",
+      "  command: npx",
+      "  args:",
+      "    - -y",
+      "    - '@modelcontextprotocol/server-filesystem'",
+      "    - .",
+      "---",
+      "# Project Files",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(root, "github", "CAPLET.md"),
+    [
+      "---",
+      "name: GitHub",
+      "description: Work with GitHub repositories and pull requests.",
+      "mcpServer:",
+      "  command: npx",
+      "  args:",
+      "    - -y",
+      "    - github-mcp-server",
+      "---",
+      "# GitHub",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(root, "github", "README.md"),
+    "Extra files are copied with directory Caplets.\n",
   );
 }

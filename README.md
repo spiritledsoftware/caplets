@@ -210,6 +210,30 @@ Top-level files derive their Caplet ID from the filename. Directory-style Caplet
 `linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
 normal Markdown links from `CAPLET.md`.
 
+This repository includes polished working examples under [`caplets/`](caplets/):
+
+- `github`: GitHub's official MCP server container, using `GITHUB_PERSONAL_ACCESS_TOKEN`.
+- `linear`: Linear's hosted OAuth MCP endpoint.
+- `context7`: Context7 documentation lookup through `@upstash/context7-mcp`.
+
+Install every example from a repo's `caplets/` directory:
+
+```sh
+caplets install spiritledsoftware/caplets
+```
+
+Install one or more individual Caplets by ID:
+
+```sh
+caplets install spiritledsoftware/caplets github
+caplets install spiritledsoftware/caplets github linear
+```
+
+`caplets install` accepts a GitHub `owner/repo` shorthand, a Git URL, or a local repository path.
+It installs into your user Caplets root, which is `~/.caplets` by default or the parent directory
+of `CAPLETS_CONFIG` when that environment variable is set. Existing Caplets are not overwritten
+unless `--force` is passed.
+
 Caplets always loads user Caplet files from `~/.caplets`. Project `./.caplets/config.json`
 is still loaded as project config, but project Markdown Caplet files are executable
 configuration and are ignored unless explicitly trusted:
