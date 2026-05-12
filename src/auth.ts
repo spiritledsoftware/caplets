@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -45,6 +54,31 @@ export function readTokenBundle(
   return JSON.parse(readFileSync(path, "utf8")) as StoredOAuthTokenBundle;
 }
 
+export function listTokenBundles(authDir?: string): StoredOAuthTokenBundle[] {
+  const dir = authDir ?? join(homedir(), ".caplets", "auth");
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => readTokenBundle(entry.name.slice(0, -".json".length), dir))
+    .filter((bundle): bundle is StoredOAuthTokenBundle => Boolean(bundle))
+    .sort((left, right) => left.server.localeCompare(right.server));
+}
+
+export function deleteTokenBundle(server: string, authDir?: string): boolean {
+  const path = authStorePath(server, authDir);
+  if (!existsSync(path)) {
+    return false;
+  }
+  rmSync(path, { force: true });
+  return true;
+}
+
+export function isTokenBundleExpired(bundle: StoredOAuthTokenBundle): boolean {
+  return Boolean(bundle.expiresAt && Date.parse(bundle.expiresAt) <= Date.now());
+}
+
 export function writeTokenBundle(bundle: StoredOAuthTokenBundle, authDir?: string): void {
   const path = authStorePath(bundle.server, authDir);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -77,14 +111,14 @@ export function oauthHeaders(server: CapletServerConfig, authDir?: string): Reco
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
       server: server.server,
       authType: "oauth2",
-      nextAction: "run_caplets_auth",
+      nextAction: "run_caplets_auth_login",
     });
   }
   if (bundle.expiresAt && Date.parse(bundle.expiresAt) <= Date.now()) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${server.server} is expired`, {
       server: server.server,
       authType: "oauth2",
-      nextAction: "run_caplets_auth",
+      nextAction: "run_caplets_auth_login",
     });
   }
   return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
@@ -309,7 +343,7 @@ export function classifyRemoteAuthError(
       message: response.statusText,
       authType: server.auth?.type ?? "none",
       challenge: redactSecrets(challenge),
-      ...(server.auth?.type === "oauth2" ? { nextAction: "run_caplets_auth" } : {}),
+      ...(server.auth?.type === "oauth2" ? { nextAction: "run_caplets_auth_login" } : {}),
     },
   );
 }

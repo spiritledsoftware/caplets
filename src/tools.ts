@@ -41,7 +41,7 @@ export async function handleServerTool(
   registry: ServerRegistry,
   downstream: DownstreamManager,
 ): Promise<any> {
-  const parsed = validateOperationRequest(request, registry.config.caplets.maxSearchLimit);
+  const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
   switch (parsed.operation) {
     case "get_server":
@@ -57,7 +57,7 @@ export async function handleServerTool(
     }
     case "search_tools": {
       const tools = await downstream.listTools(server);
-      const limit = parsed.limit ?? registry.config.caplets.defaultSearchLimit;
+      const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult({
         server: server.server,
         query: parsed.query,

@@ -43,7 +43,7 @@ export type CapletsOptions = {
 
 export type CapletsConfig = {
   version: 1;
-  caplets: CapletsOptions;
+  options: CapletsOptions;
   mcpServers: Record<string, CapletServerConfig>;
 };
 
@@ -70,68 +70,108 @@ const FORBIDDEN_HEADERS = new Set([
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".caplets", "config.json");
 export const DEFAULT_AUTH_DIR = join(homedir(), ".caplets", "auth");
 
-const remoteAuthSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("none") }).strict(),
-  z.object({ type: z.literal("bearer"), token: z.string().min(1) }).strict(),
-  z
-    .object({ type: z.literal("headers"), headers: z.record(z.string(), z.string().min(1)) })
-    .strict(),
-  z
-    .object({
-      type: z.literal("oauth2"),
-      authorizationUrl: z.string().url().optional(),
-      tokenUrl: z.string().url().optional(),
-      issuer: z.string().url().optional(),
-      clientId: z.string().min(1).optional(),
-      clientSecret: z.string().min(1).optional(),
-      scopes: z.array(z.string().min(1)).optional(),
-      redirectUri: z.string().url().optional(),
-    })
-    .strict(),
-]);
+const remoteAuthSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("none") }).strict(),
+    z.object({ type: z.literal("bearer"), token: z.string().min(1) }).strict(),
+    z
+      .object({ type: z.literal("headers"), headers: z.record(z.string(), z.string().min(1)) })
+      .strict(),
+    z
+      .object({
+        type: z.literal("oauth2"),
+        authorizationUrl: z.string().url().optional(),
+        tokenUrl: z.string().url().optional(),
+        issuer: z.string().url().optional(),
+        clientId: z.string().min(1).optional(),
+        clientSecret: z.string().min(1).optional(),
+        scopes: z.array(z.string().min(1)).optional(),
+        redirectUri: z.string().url().optional(),
+      })
+      .strict(),
+  ])
+  .describe("Authentication settings for a remote MCP server.");
 
 const serverSchema = z
   .object({
-    name: z.string().trim().min(1).max(80),
+    name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
     description: z
       .string()
+      .describe("Capability description shown to agents before downstream tools are disclosed.")
       .refine(
         (value) => value.trim().length >= 10,
         "description must contain at least 10 non-whitespace characters",
       )
       .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
-    transport: z.enum(["stdio", "http", "sse"]).optional(),
-    command: z.string().min(1).optional(),
-    args: z.array(z.string()).optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    cwd: z.string().min(1).optional(),
-    url: z.string().url().optional(),
+    transport: z
+      .enum(["stdio", "http", "sse"])
+      .optional()
+      .describe("Downstream MCP transport. Defaults to stdio when command is present."),
+    command: z.string().min(1).optional().describe("Executable command for stdio servers."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the stdio command."),
+    env: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe("Environment variables for stdio servers. Supports ${VAR} and $env:VAR."),
+    cwd: z.string().min(1).optional().describe("Working directory for stdio servers."),
+    url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
-    startupTimeoutMs: z.number().int().positive().default(10_000),
-    callTimeoutMs: z.number().int().positive().default(60_000),
-    toolCacheTtlMs: z.number().int().nonnegative().default(30_000),
-    disabled: z.boolean().default(false),
+    startupTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(10_000)
+      .describe("Timeout in milliseconds for starting or checking a downstream server."),
+    callTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60_000)
+      .describe("Timeout in milliseconds for downstream tool calls."),
+    toolCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe("Milliseconds downstream tool metadata stays fresh. Set 0 to refresh every time."),
+    disabled: z
+      .boolean()
+      .default(false)
+      .describe("When true, omit this server from Caplets discovery and do not start it."),
   })
   .strict();
 
-const rawConfigSchema = z
+export const configFileSchema = z
   .object({
-    version: z.literal(1).default(1),
-    caplets: z
-      .object({
-        defaultSearchLimit: z.number().int().positive().default(20),
-        maxSearchLimit: z.number().int().positive().max(50).default(50),
-      })
-      .strict()
-      .prefault({}),
-    mcpServers: z.record(z.string(), serverSchema),
+    $schema: z
+      .string()
+      .url()
+      .optional()
+      .describe("Optional JSON Schema URL for editor validation."),
+    version: z.literal(1).default(1).describe("Caplets config schema version."),
+    defaultSearchLimit: z
+      .number()
+      .int()
+      .positive()
+      .default(20)
+      .describe("Default maximum number of same-server search results."),
+    maxSearchLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(50)
+      .default(50)
+      .describe("Maximum accepted search_tools limit."),
+    mcpServers: z
+      .record(z.string().regex(SERVER_ID_PATTERN), serverSchema)
+      .describe("Downstream MCP servers keyed by stable server ID."),
   })
   .strict()
   .superRefine((config, ctx) => {
-    if (config.caplets.defaultSearchLimit > config.caplets.maxSearchLimit) {
+    if (config.defaultSearchLimit > config.maxSearchLimit) {
       ctx.addIssue({
         code: "custom",
-        path: ["caplets", "defaultSearchLimit"],
+        path: ["defaultSearchLimit"],
         message: "defaultSearchLimit must be <= maxSearchLimit",
       });
     }
@@ -195,6 +235,16 @@ const rawConfigSchema = z
     }
   });
 
+export function configJsonSchema(): unknown {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+    title: "Caplets config",
+    description: "Configuration file for the Caplets progressive MCP disclosure gateway.",
+    ...z.toJSONSchema(configFileSchema, { io: "input" }),
+  };
+}
+
 export function resolveConfigPath(path?: string): string {
   return path ?? join(homedir(), ".caplets", "config.json");
 }
@@ -219,7 +269,7 @@ export function loadConfig(path = resolveConfigPath()): CapletsConfig {
 }
 
 export function parseConfig(input: unknown): CapletsConfig {
-  const parsed = rawConfigSchema.safeParse(interpolateServer(input));
+  const parsed = configFileSchema.safeParse(interpolateServer(input));
   if (!parsed.success) {
     throw new CapletsError("CONFIG_INVALID", "Caplets config is invalid", parsed.error.issues);
   }
@@ -236,7 +286,10 @@ export function parseConfig(input: unknown): CapletsConfig {
 
   return {
     version: parsed.data.version,
-    caplets: parsed.data.caplets,
+    options: {
+      defaultSearchLimit: parsed.data.defaultSearchLimit,
+      maxSearchLimit: parsed.data.maxSearchLimit,
+    },
     mcpServers: servers,
   };
 }
