@@ -271,41 +271,51 @@ describe("config", () => {
   });
 
   it("keeps repository example Caplets loadable", () => {
-    const examples = loadCapletFiles(join(process.cwd(), "caplets"));
+    const originalGithubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    try {
+      const examples = loadCapletFiles(join(import.meta.dirname, "..", "caplets"));
 
-    const config = parseConfig(examples);
+      const config = parseConfig(examples);
 
-    expect(config.mcpServers.context7).toMatchObject({
-      server: "context7",
-      name: "Context7 Documentation",
-      command: "npx",
-      args: ["-y", "@upstash/context7-mcp"],
-    });
-    expect(config.mcpServers.github).toMatchObject({
-      server: "github",
-      name: "GitHub",
-      command: "docker",
-      args: [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "ghcr.io/github/github-mcp-server",
-      ],
-      env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
-    });
-    expect(config.mcpServers.linear).toMatchObject({
-      server: "linear",
-      name: "Linear",
-      transport: "http",
-      url: "https://mcp.linear.app/mcp",
-      auth: { type: "oauth2" },
-    });
+      expect(config.mcpServers.context7).toMatchObject({
+        server: "context7",
+        name: "Context7 Documentation",
+        command: "npx",
+        args: ["-y", "@upstash/context7-mcp"],
+      });
+      expect(config.mcpServers.github).toMatchObject({
+        server: "github",
+        name: "GitHub",
+        command: "docker",
+        args: [
+          "run",
+          "-i",
+          "--rm",
+          "-e",
+          "GITHUB_PERSONAL_ACCESS_TOKEN",
+          "ghcr.io/github/github-mcp-server",
+        ],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
+      });
+      expect(config.mcpServers.linear).toMatchObject({
+        server: "linear",
+        name: "Linear",
+        transport: "http",
+        url: "https://mcp.linear.app/mcp",
+        auth: { type: "oauth2" },
+      });
+    } finally {
+      if (originalGithubToken === undefined) {
+        delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+      } else {
+        process.env.GITHUB_PERSONAL_ACCESS_TOKEN = originalGithubToken;
+      }
+    }
   });
 
   it("keeps repository Caplet reference files linked from CAPLET.md", () => {
-    const examplesRoot = join(process.cwd(), "caplets");
+    const examplesRoot = join(import.meta.dirname, "..", "caplets");
     const capletDirs = readdirSync(examplesRoot, { withFileTypes: true }).filter((entry) =>
       entry.isDirectory(),
     );

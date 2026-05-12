@@ -289,8 +289,9 @@ function resolveInstallSource(repo: string): { repoRoot: string; cleanup: () => 
 
   const repoRoot = mkdtempSync(join(tmpdir(), "caplets-install-"));
   try {
-    execFileSync("git", ["clone", "--depth", "1", normalizeGitRepo(repo), repoRoot], {
+    execFileSync("git", ["clone", "--depth", "1", "--", normalizeGitRepo(repo), repoRoot], {
       stdio: "ignore",
+      timeout: 60_000,
     });
     return {
       repoRoot,
