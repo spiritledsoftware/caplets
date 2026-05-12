@@ -1,5 +1,11 @@
 # caplets
 
+## 0.5.1
+
+### Patch Changes
+
+- bcd0dde: Fix MCP OAuth/OIDC login for configured public clients by including the client ID in the token exchange.
+
 ## 0.5.0
 
 ### Minor Changes
