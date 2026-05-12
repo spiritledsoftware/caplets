@@ -8,7 +8,7 @@ import {
   runOAuthFlow,
   type GenericAuthTarget,
 } from "../auth.js";
-import { loadConfig } from "../config.js";
+import { loadConfig, type GraphQlEndpointConfig } from "../config.js";
 import { CapletsError, toSafeError } from "../errors.js";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
@@ -96,9 +96,6 @@ function findAuthTarget(serverId: string, config = loadConfig()): AuthTarget | u
 }
 
 function authTargets(config: ReturnType<typeof loadConfig>) {
-  const graphqlEndpoints = (
-    config as unknown as { graphqlEndpoints?: Record<string, GenericAuthTarget> }
-  ).graphqlEndpoints;
   return [
     ...Object.values(config.mcpServers).filter(
       (server) =>
@@ -108,10 +105,19 @@ function authTargets(config: ReturnType<typeof loadConfig>) {
     ...Object.values(config.openapiEndpoints).filter(
       (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
     ),
-    ...Object.values(graphqlEndpoints ?? {}).filter(
-      (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
-    ),
+    ...Object.values(config.graphqlEndpoints)
+      .filter((endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc")
+      .map(graphQlAuthTarget),
   ];
+}
+
+function graphQlAuthTarget(
+  endpoint: GraphQlEndpointConfig,
+): GraphQlEndpointConfig & GenericAuthTarget {
+  return {
+    ...endpoint,
+    url: endpoint.endpointUrl,
+  };
 }
 
 function assertLoginTarget(

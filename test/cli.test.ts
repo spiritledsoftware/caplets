@@ -464,6 +464,35 @@ describe("cli init", () => {
     }
   });
 
+  it("lists configured GraphQL OAuth endpoints", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          graphqlEndpoints: {
+            catalog: {
+              name: "Catalog",
+              description: "Query catalog data through GraphQL.",
+              endpointUrl: "https://api.example.com/graphql",
+              introspection: true,
+              auth: { type: "oauth2", issuer: "https://issuer.example" },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["auth", "list"], { writeOut: (value) => out.push(value) });
+
+      expect(out.join("")).toContain("catalog\tmissing");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("logs out configured OAuth servers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const authDir = join(dir, "auth");

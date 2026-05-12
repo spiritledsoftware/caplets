@@ -9,7 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { CapletsError } from "../errors.js";
 
 export type StoredOAuthTokenBundle = {
   server: string;
@@ -32,7 +33,15 @@ export function authStorePath(
   server: string,
   authDir = join(homedir(), ".caplets", "auth"),
 ): string {
-  return join(authDir, `${server}.json`);
+  if (!server || server.includes("/") || server.includes("\\") || server.includes("..")) {
+    throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
+  }
+  const authRoot = resolve(authDir);
+  const candidate = resolve(authRoot, `${server}.json`);
+  if (candidate !== authRoot && candidate.startsWith(`${authRoot}${sep}`)) {
+    return candidate;
+  }
+  throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
 }
 
 export function readTokenBundle(
@@ -43,7 +52,11 @@ export function readTokenBundle(
   if (!existsSync(path)) {
     return undefined;
   }
-  return JSON.parse(readFileSync(path, "utf8")) as StoredOAuthTokenBundle;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as StoredOAuthTokenBundle;
+  } catch {
+    return undefined;
+  }
 }
 
 export function listTokenBundles(authDir?: string): StoredOAuthTokenBundle[] {

@@ -19,12 +19,16 @@ export const FORBIDDEN_HEADERS = new Set([
 ]);
 
 export function isAllowedRemoteUrl(value: string): boolean {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
   if (url.protocol === "https:") {
     return true;
   }
-  if (url.protocol !== "http:") {
-    return false;
-  }
-  return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+  return (
+    url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
+  );
 }

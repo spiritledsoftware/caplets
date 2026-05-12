@@ -6,7 +6,8 @@ export function parseHttpBody(contentType: string, text: string): unknown {
   if (!text) {
     return undefined;
   }
-  if (!contentType.includes("application/json")) {
+  const mime = contentType.split(";")[0]?.toLowerCase().trim() ?? "";
+  if (mime !== "application/json" && !mime.endsWith("+json") && !mime.endsWith("/json")) {
     return text;
   }
   try {

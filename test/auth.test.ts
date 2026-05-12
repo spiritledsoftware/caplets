@@ -4,13 +4,15 @@ import {
   genericOAuthHeaders,
   extractCompletion,
   FileOAuthProvider,
+  authStorePath,
   oauthHeaders,
+  readTokenBundle,
   runGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth.js";
 import { parseConfig } from "../src/config.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,6 +60,28 @@ describe("auth helpers", () => {
       writeTokenBundle({ server: "remote", accessToken: "secret-token" }, dir);
 
       expect(oauthHeaders(server, dir)).toEqual({ authorization: "Bearer secret-token" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores corrupt token bundle files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      writeFileSync(join(dir, "remote.json"), "{not-json\n");
+
+      expect(readTokenBundle("remote", dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects auth store path traversal", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      expect(() => authStorePath("../remote", dir)).toThrow(
+        expect.objectContaining({ code: "REQUEST_INVALID" }),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
