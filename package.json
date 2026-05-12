@@ -9,8 +9,16 @@
     "model-context-protocol",
     "tools"
   ],
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/caplets/issues"
+  },
   "license": "MIT",
   "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spiritledsoftware/caplets.git"
+  },
   "bin": {
     "caplets": "dist/index.js"
   },
@@ -38,7 +46,7 @@
     "lint:fix": "oxlint --fix .",
     "prepack": "pnpm build",
     "prepare": "husky",
-    "release": "pnpm build && changeset publish --provenance",
+    "release": "pnpm build && changeset publish",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",

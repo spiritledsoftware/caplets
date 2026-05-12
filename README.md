@@ -17,4 +17,4 @@ User-facing changes should include a changeset:
 pnpm changeset
 ```
 
-Merging changesets to `main` lets the release workflow open a version PR. Merging that version PR publishes the package to npm with `NPM_TOKEN`.
+Merging changesets to `main` lets the release workflow open a version PR. Merging that version PR publishes the package to npm through trusted publishing.
