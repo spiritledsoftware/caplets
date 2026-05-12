@@ -13,9 +13,18 @@ export type CapletServerSummary = {
 };
 
 export type CapletServerDetail = {
-  server: string;
+  caplet: string;
   name: string;
   description: string;
+  tags?: string[];
+  body?: string;
+  mcpServer: {
+    transport: CapletServerConfig["transport"];
+    disabled: boolean;
+    startupTimeoutMs: number;
+    callTimeoutMs: number;
+    toolCacheTtlMs: number;
+  };
 };
 
 export class ServerRegistry {
@@ -71,18 +80,29 @@ export class ServerRegistry {
 
   detail(server: CapletServerConfig): CapletServerDetail {
     return {
-      server: server.server,
+      caplet: server.server,
       name: server.name,
       description: server.description,
+      ...(server.tags ? { tags: server.tags } : {}),
+      ...(server.body ? { body: server.body } : {}),
+      mcpServer: {
+        transport: server.transport,
+        disabled: server.disabled,
+        startupTimeoutMs: server.startupTimeoutMs,
+        callTimeoutMs: server.callTimeoutMs,
+        toolCacheTtlMs: server.toolCacheTtlMs,
+      },
     };
   }
 }
 
 export function capabilityDescription(server: CapletServerConfig): string {
   const hint = [
-    `Use this Caplets wrapper to inspect and call tools from ${server.server}.`,
+    `Use this Caplet to inspect and call tools from its MCP server backend.`,
     "",
     "Recommended flow:",
+    '- Read the full Caplet card: {"operation":"get_caplet"}',
+    '- Check the MCP backend: {"operation":"check_mcp_server"}',
     '- Discover tools: {"operation":"list_tools"} or {"operation":"search_tools","query":"<what you need>"}',
     '- Read one tool schema: {"operation":"get_tool","tool":"<tool name>"}',
     '- Invoke one downstream tool: {"operation":"call_tool","tool":"<tool name>","arguments":{...}}',
