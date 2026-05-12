@@ -3,8 +3,20 @@ import { stdin as input, stdout as output } from "node:process";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { Command, CommanderError } from "commander";
-import { loadConfig, resolveConfigPath } from "./config.js";
+import { version as packageJsonVersion } from "../package.json";
+import {
+  DEFAULT_AUTH_DIR,
+  loadConfig,
+  resolveCapletsRoot,
+  resolveConfigPath,
+  resolveProjectCapletsRoot,
+  resolveProjectConfigPath,
+  TRUST_PROJECT_CAPLETS_ENV,
+  type CapletConfig,
+  type CapletsConfig,
+} from "./config.js";
 import { CapletsError, toSafeError } from "./errors.js";
+import type { ServerStatus } from "./registry.js";
 import {
   deleteTokenBundle,
   isTokenBundleExpired,
@@ -18,6 +30,25 @@ type CliIO = {
   writeOut?: (value: string) => void;
   writeErr?: (value: string) => void;
   authDir?: string;
+};
+
+type CapletListRow = {
+  server: string;
+  backend: CapletConfig["backend"];
+  name: string;
+  description: string;
+  disabled: boolean;
+  status: ServerStatus;
+};
+
+type ConfigPaths = {
+  userConfig: string;
+  projectConfig: string;
+  userRoot: string;
+  projectRoot: string;
+  authDir: string;
+  envConfig: string | null;
+  projectCapletsTrusted: boolean;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -43,6 +74,7 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .name("caplets")
     .description("Progressive-disclosure gateway for MCP servers.")
+    .version(packageJsonVersion)
     .exitOverride()
     .configureOutput({
       writeOut,
@@ -61,6 +93,43 @@ export function createProgram(io: CliIO = {}): Command {
         force: Boolean(options.force),
       });
       writeOut(`Created Caplets config at ${path}\n`);
+    });
+
+  program
+    .command("list")
+    .description("List configured Caplets.")
+    .option("--all", "include disabled Caplets")
+    .option("--json", "print JSON output")
+    .action((options: { all?: boolean; json?: boolean }) => {
+      const config = loadConfig(envConfigPath());
+      const rows = listCaplets(config, { includeDisabled: Boolean(options.all) });
+      if (options.json) {
+        writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+        return;
+      }
+      writeOut(formatCapletList(rows));
+    });
+
+  const config = program.command("config").description("Inspect Caplets config locations.");
+
+  config
+    .command("path")
+    .description("Print the effective user config path.")
+    .action(() => {
+      writeOut(`${resolveConfigPath(envConfigPath())}\n`);
+    });
+
+  config
+    .command("paths")
+    .description("Print resolved Caplets config, root, and auth paths.")
+    .option("--json", "print JSON output")
+    .action((options: { json?: boolean }) => {
+      const paths = resolveCliConfigPaths(io.authDir);
+      if (options.json) {
+        writeOut(`${JSON.stringify(paths, null, 2)}\n`);
+        return;
+      }
+      writeOut(formatConfigPaths(paths));
     });
 
   const auth = program.command("auth").description("Manage OAuth credentials for remote servers.");
@@ -129,6 +198,104 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   return program;
+}
+
+function listCaplets(
+  config: CapletsConfig,
+  options: { includeDisabled: boolean },
+): CapletListRow[] {
+  const rows = allCaplets(config)
+    .filter((server) => options.includeDisabled || !server.disabled)
+    .map((server) => ({
+      server: server.server,
+      backend: server.backend,
+      name: server.name,
+      description: server.description,
+      disabled: server.disabled,
+      status: initialServerStatus(server),
+    }));
+  return rows.sort((left, right) => left.server.localeCompare(right.server));
+}
+
+function initialServerStatus(server: CapletConfig): ServerStatus {
+  return server.disabled ? "disabled" : "not_started";
+}
+
+function allCaplets(config: CapletsConfig): CapletConfig[] {
+  return [
+    ...Object.values(config.mcpServers),
+    ...Object.values(config.openapiEndpoints),
+    ...Object.values(config.graphqlEndpoints),
+  ];
+}
+
+function formatCapletList(rows: CapletListRow[]): string {
+  if (rows.length === 0) {
+    return "No configured Caplets found.\n";
+  }
+
+  return `${formatTable([
+    ["server", "backend", "status", "name"],
+    ...rows.map((row) => [row.server, row.backend, row.status, row.name]),
+  ])}\n`;
+}
+
+function resolveCliConfigPaths(authDir?: string): ConfigPaths {
+  const envConfig = envConfigPath();
+  const configPath = resolveConfigPath(envConfig);
+  return {
+    userConfig: configPath,
+    projectConfig: resolveProjectConfigPath(),
+    userRoot: resolveCapletsRoot(configPath),
+    projectRoot: resolveProjectCapletsRoot(),
+    authDir: authDir ?? DEFAULT_AUTH_DIR,
+    envConfig: envConfig ?? null,
+    projectCapletsTrusted: isTrustedProjectCapletsEnabled(),
+  };
+}
+
+function formatConfigPaths(paths: ConfigPaths): string {
+  return (
+    [
+      `userConfig: ${paths.userConfig}`,
+      `projectConfig: ${paths.projectConfig}`,
+      `userRoot: ${paths.userRoot}`,
+      `projectRoot: ${paths.projectRoot}`,
+      `authDir: ${paths.authDir}`,
+      `envConfig: ${paths.envConfig ?? "unset"}`,
+      `projectCapletsTrusted: ${paths.projectCapletsTrusted}`,
+    ].join("\n") + "\n"
+  );
+}
+
+function isTrustedProjectCapletsEnabled(): boolean {
+  const value = process.env[TRUST_PROJECT_CAPLETS_ENV];
+  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
+}
+
+function formatTable(rows: string[][]): string {
+  const firstRow = rows[0];
+  if (!firstRow) {
+    return "";
+  }
+
+  const widths = firstRow.map((_, column) =>
+    Math.max(...rows.map((row) => row[column]?.length ?? 0)),
+  );
+
+  return rows.map((row) => formatTableRow(row, widths)).join("\n");
+}
+
+function formatTableRow(row: string[], widths: number[]): string {
+  return row
+    .map((value, column) => {
+      if (column === row.length - 1) {
+        return value;
+      }
+      return value.padEnd((widths[column] ?? 0) + 2);
+    })
+    .join("")
+    .trimEnd();
 }
 
 async function loginAuth(

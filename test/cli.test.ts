@@ -2,13 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { version as packageJsonVersion } from "../package.json";
 import { initConfig, runCli, starterConfig } from "../src/cli.js";
-import { parseConfig } from "../src/config.js";
+import { parseConfig, TRUST_PROJECT_CAPLETS_ENV } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 import { writeTokenBundle } from "../src/auth.js";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;
+  const originalTrustProjectCaplets = process.env[TRUST_PROJECT_CAPLETS_ENV];
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -16,6 +18,11 @@ describe("cli init", () => {
       delete process.env.CAPLETS_CONFIG;
     } else {
       process.env.CAPLETS_CONFIG = originalConfigPath;
+    }
+    if (originalTrustProjectCaplets === undefined) {
+      delete process.env[TRUST_PROJECT_CAPLETS_ENV];
+    } else {
+      process.env[TRUST_PROJECT_CAPLETS_ENV] = originalTrustProjectCaplets;
     }
   });
 
@@ -88,6 +95,148 @@ describe("cli init", () => {
     await expect(runCli(["auth", "remote"], { writeErr: () => {} })).rejects.toThrow(
       expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
     );
+  });
+
+  it("prints the package version", async () => {
+    const out: string[] = [];
+
+    await runCli(["--version"], { writeOut: (value) => out.push(value) });
+
+    expect(out.join("")).toBe(`${packageJsonVersion}\n`);
+  });
+
+  it("lists enabled Caplets by default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["list"], { writeOut: (value) => out.push(value) });
+
+      const text = out.join("");
+      expect(text).toContain("server");
+      expect(text).toContain("filesystem");
+      expect(text).toContain("mcp");
+      expect(text).toContain("not_started");
+      expect(text).toContain("Project Files");
+      expect(text).toContain("users");
+      expect(text).toContain("openapi");
+      expect(text).toContain("catalog");
+      expect(text).toContain("graphql");
+      expect(text).not.toContain("disabled_remote");
+      expect(text).not.toContain("secret-access-token");
+      expect(text).not.toContain("openapi-client");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("can include disabled Caplets in the list", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["list", "--all"], { writeOut: (value) => out.push(value) });
+
+      const text = out.join("");
+      expect(text).toContain("disabled_remote");
+      expect(text).toContain("disabled");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints listed Caplets as JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["list", "--json"], { writeOut: (value) => out.push(value) });
+
+      const rows = JSON.parse(out.join("")) as Array<{
+        server: string;
+        backend: string;
+        name: string;
+        description: string;
+        disabled: boolean;
+        status: string;
+      }>;
+      expect(rows).toEqual([
+        expect.objectContaining({
+          server: "catalog",
+          backend: "graphql",
+          disabled: false,
+          status: "not_started",
+        }),
+        expect.objectContaining({
+          server: "filesystem",
+          backend: "mcp",
+          disabled: false,
+          status: "not_started",
+        }),
+        expect.objectContaining({
+          server: "users",
+          backend: "openapi",
+          disabled: false,
+          status: "not_started",
+        }),
+      ]);
+      expect(out.join("")).not.toContain("secret-access-token");
+      expect(out.join("")).not.toContain("openapi-client");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints the effective config path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-path-"));
+    const configPath = join(dir, "custom.json");
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["config", "path"], { writeOut: (value) => out.push(value) });
+
+      expect(out.join("")).toBe(`${configPath}\n`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints resolved config paths as JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-paths-"));
+    const configPath = join(dir, "custom.json");
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = configPath;
+      process.env[TRUST_PROJECT_CAPLETS_ENV] = "yes";
+
+      await runCli(["config", "paths", "--json"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(JSON.parse(out.join(""))).toEqual({
+        userConfig: configPath,
+        projectConfig: join(process.cwd(), ".caplets", "config.json"),
+        userRoot: dir,
+        projectRoot: join(process.cwd(), ".caplets"),
+        authDir,
+        envConfig: configPath,
+        projectCapletsTrusted: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("lists configured OAuth servers without printing token values", async () => {
@@ -239,3 +388,45 @@ describe("cli init", () => {
     }
   });
 });
+
+function writeInspectionConfig(path: string): void {
+  writeFileSync(
+    path,
+    JSON.stringify({
+      mcpServers: {
+        filesystem: {
+          name: "Project Files",
+          description: "Read and search local project files.",
+          command: "node",
+          env: {
+            TOKEN: "secret-access-token",
+          },
+        },
+        disabled_remote: {
+          name: "Disabled Remote",
+          description: "A disabled remote server for testing.",
+          transport: "http",
+          url: "https://disabled.example.com/mcp",
+          disabled: true,
+        },
+      },
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath: "/tmp/users-openapi.json",
+          auth: { type: "oauth2", clientId: "openapi-client" },
+        },
+      },
+      graphqlEndpoints: {
+        catalog: {
+          name: "Catalog GraphQL",
+          description: "Query and update catalog data through GraphQL.",
+          endpointUrl: "https://api.example.com/graphql",
+          schemaPath: "/tmp/catalog.graphql",
+          auth: { type: "none" },
+        },
+      },
+    }),
+  );
+}

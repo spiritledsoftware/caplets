@@ -129,6 +129,15 @@ CAPLETS_CONFIG=/path/to/config.json caplets init
 CAPLETS_CONFIG=/path/to/config.json caplets serve
 ```
 
+Inspect the installed CLI version and resolved config locations:
+
+```sh
+caplets --version
+caplets config path
+caplets config paths
+caplets config paths --json
+```
+
 Caplets validates this file at startup. Config changes take effect after restarting the
 Caplets MCP server.
 
@@ -388,6 +397,14 @@ To inspect or remove stored OAuth credentials:
 ```sh
 caplets auth list
 caplets auth logout <server>
+```
+
+To list configured Caplets without starting downstream backends:
+
+```sh
+caplets list
+caplets list --all
+caplets list --json
 ```
 
 ### Optional Server Settings
