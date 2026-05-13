@@ -16,8 +16,10 @@ import {
   SERVER_ID_PATTERN,
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
+  isUrl,
 } from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
+import { nestedSchema, schemaPath } from "./schema-utils.js";
 
 export {
   DEFAULT_AUTH_DIR,
@@ -135,8 +137,8 @@ export type HttpActionConfig = {
   path: string;
   description?: string | undefined;
   inputSchema?: Record<string, unknown> | undefined;
-  query?: unknown;
-  headers?: unknown;
+  query?: Record<string, string | number | boolean> | undefined;
+  headers?: Record<string, string | number | boolean> | undefined;
   jsonBody?: unknown;
 };
 
@@ -444,6 +446,11 @@ const normalizedGraphQlEndpointSchema = publicGraphQlEndpointSchema.extend({
   body: z.string().optional(),
 });
 
+const httpScalarMappingSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean()]),
+);
+
 const httpActionSchema = z
   .object({
     method: z
@@ -460,8 +467,8 @@ const httpActionSchema = z
       .record(z.string(), z.unknown())
       .optional()
       .describe("JSON Schema for call_tool arguments."),
-    query: z.unknown().optional().describe("Query parameter mapping."),
-    headers: z.unknown().optional().describe("Request header mapping."),
+    query: httpScalarMappingSchema.optional().describe("Query parameter mapping."),
+    headers: httpScalarMappingSchema.optional().describe("Request header mapping."),
     jsonBody: z.unknown().optional().describe("JSON request body mapping."),
   })
   .strict();
@@ -774,6 +781,17 @@ function configSchemaFor(
           });
         }
         validateEndpointAuthHeaders(raw.auth, ctx, ["httpApis", endpoint, "auth"]);
+        for (const [actionName, action] of Object.entries(raw.actions)) {
+          if (action.headers) {
+            validateHttpActionHeaders(action.headers, ctx, [
+              "httpApis",
+              endpoint,
+              "actions",
+              actionName,
+              "headers",
+            ]);
+          }
+        }
       }
     });
 }
@@ -1077,6 +1095,23 @@ function validateEndpointAuthHeaders(
   }
 }
 
+function validateHttpActionHeaders(
+  headers: Record<string, unknown>,
+  ctx: z.RefinementCtx,
+  path: Array<string>,
+): void {
+  for (const headerName of Object.keys(headers)) {
+    const normalized = headerName.toLowerCase();
+    if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...path, headerName],
+        message: `header ${headerName} is not allowed`,
+      });
+    }
+  }
+}
+
 function stripUndefined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(([, nested]) => nested !== undefined),
@@ -1125,15 +1160,6 @@ function hasEnvReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
 
-function isUrl(value: string): boolean {
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function patchHttpApiJsonSchema<T>(schema: T): T {
   const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
     "properties",
@@ -1150,24 +1176,6 @@ function patchHttpApiJsonSchema<T>(schema: T): T {
     baseUrl.format = "uri";
   }
   return schema;
-}
-
-function nestedSchema<T>(value: unknown, key: string): T | undefined {
-  if (!isPlainObject(value)) {
-    return undefined;
-  }
-  return value[key] as T | undefined;
-}
-
-function schemaPath<T>(value: unknown, path: string[]): T | undefined {
-  let current = value;
-  for (const segment of path) {
-    current = nestedSchema(current, segment);
-    if (current === undefined) {
-      return undefined;
-    }
-  }
-  return current as T;
 }
 
 export function interpolateEnv(value: string): string {

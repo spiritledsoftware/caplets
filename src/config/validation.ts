@@ -43,3 +43,12 @@ export function isAllowedHttpBaseUrl(value: string): boolean {
   }
   return isAllowedRemoteUrl(value) && !url.username && !url.password && !url.search && !url.hash;
 }
+
+export function isUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}

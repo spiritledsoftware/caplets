@@ -10,8 +10,10 @@ import {
   SERVER_ID_PATTERN,
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
+  isUrl,
 } from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
+import { nestedSchema, schemaPath } from "./schema-utils.js";
 
 const MAX_CAPLET_FILE_BYTES = 128 * 1024;
 const MAX_CAPLET_BODY_CHARS = 64 * 1024;
@@ -349,6 +351,11 @@ const capletGraphQlEndpointSchema = z
     validateEndpointAuthHeaders(endpoint.auth, ctx);
   });
 
+const httpScalarMappingSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean()]),
+);
+
 const capletHttpActionSchema = z
   .object({
     method: z
@@ -365,8 +372,8 @@ const capletHttpActionSchema = z
       .record(z.string(), z.unknown())
       .optional()
       .describe("JSON Schema for call_tool arguments."),
-    query: z.unknown().optional().describe("Query parameter mapping."),
-    headers: z.unknown().optional().describe("Request header mapping."),
+    query: httpScalarMappingSchema.optional().describe("Query parameter mapping."),
+    headers: httpScalarMappingSchema.optional().describe("Request header mapping."),
     jsonBody: z.unknown().optional().describe("JSON request body mapping."),
   })
   .strict();
@@ -416,6 +423,11 @@ const capletHttpApiSchema = z
       });
     }
     validateEndpointAuthHeaders(api.auth, ctx);
+    for (const [actionName, action] of Object.entries(api.actions)) {
+      if (action.headers) {
+        validateHttpActionHeaders(action.headers, ctx, ["actions", actionName, "headers"]);
+      }
+    }
   });
 
 export const capletFileSchema = z
@@ -691,6 +703,23 @@ function validateEndpointAuthHeaders(
   }
 }
 
+function validateHttpActionHeaders(
+  headers: Record<string, unknown>,
+  ctx: z.RefinementCtx,
+  path: Array<string>,
+): void {
+  for (const headerName of Object.keys(headers)) {
+    const normalized = headerName.toLowerCase();
+    if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [...path, headerName],
+        message: `header ${headerName} is not allowed`,
+      });
+    }
+  }
+}
+
 function parseFrontmatter(text: string, path: string): { frontmatter: unknown; body: string } {
   if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) {
     throw new CapletsError(
@@ -735,15 +764,6 @@ function hasEnvReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
 
-function isUrl(value: string): boolean {
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function patchHttpApiJsonSchema<T>(schema: T): T {
   const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
     "properties",
@@ -759,22 +779,4 @@ function patchHttpApiJsonSchema<T>(schema: T): T {
     baseUrl.format = "uri";
   }
   return schema;
-}
-
-function nestedSchema<T>(value: unknown, key: string): T | undefined {
-  if (!isPlainObject(value)) {
-    return undefined;
-  }
-  return value[key] as T | undefined;
-}
-
-function schemaPath<T>(value: unknown, path: string[]): T | undefined {
-  let current = value;
-  for (const segment of path) {
-    current = nestedSchema(current, segment);
-    if (current === undefined) {
-      return undefined;
-    }
-  }
-  return current as T;
 }

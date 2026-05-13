@@ -1,21 +1,13 @@
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { genericOAuthHeaders } from "./auth.js";
 import type { HttpActionConfig, HttpApiConfig } from "./config.js";
-import { isAllowedRemoteUrl } from "./config/validation.js";
+import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation.js";
 import type { CompactTool } from "./downstream.js";
 import { CapletsError, toSafeError } from "./errors.js";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
 import type { ServerRegistry } from "./registry.js";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
-const FORBIDDEN_CONFIGURED_HEADERS = new Set([
-  "authorization",
-  "connection",
-  "content-length",
-  "content-type",
-  "host",
-]);
-
 type HttpActionOperation = HttpActionConfig & { name: string };
 
 export class HttpActionManager {
@@ -302,7 +294,7 @@ function validateResolvedHeader(
       ? new Set(Object.keys(api.auth.headers).map((header) => header.toLowerCase()))
       : new Set<string>();
   const normalized = key.toLowerCase();
-  if (FORBIDDEN_CONFIGURED_HEADERS.has(normalized) || authHeaderNames.has(normalized)) {
+  if (FORBIDDEN_HEADERS.has(normalized) || authHeaderNames.has(normalized)) {
     throw new CapletsError("CONFIG_INVALID", `HTTP action header ${key} is not allowed`, {
       server: api.server,
       tool: operation.name,
@@ -400,8 +392,16 @@ function buildActionUrl(base: string, actionPath: string): URL {
   if (/^[a-z][a-z0-9+.-]*:/i.test(actionPath) || actionPath.startsWith("//")) {
     throw new CapletsError("CONFIG_INVALID", "HTTP action path cannot change origin");
   }
-  if (actionPath.split("/").some((segment) => segment === "." || segment === "..")) {
-    throw new CapletsError("CONFIG_INVALID", "HTTP action path cannot contain dot segments");
+  for (const rawSegment of actionPath.split("/")) {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(rawSegment);
+    } catch {
+      throw new CapletsError("CONFIG_INVALID", "HTTP action path contains invalid encoding");
+    }
+    if (segment === "." || segment === ".." || segment.includes("/")) {
+      throw new CapletsError("CONFIG_INVALID", "HTTP action path cannot contain dot segments");
+    }
   }
   const baseUrl = new URL(base);
   const originalOrigin = baseUrl.origin;

@@ -765,6 +765,20 @@ describe("config", () => {
       {
         name: "Bad HTTP",
         description: "Invalid HTTP API settings.",
+        baseUrl: "http://localhost:3000",
+        auth: { type: "none" },
+        actions: { fetch: { method: "GET", path: "/fetch", query: "$input.query" } },
+      },
+      {
+        name: "Bad HTTP",
+        description: "Invalid HTTP API settings.",
+        baseUrl: "http://localhost:3000",
+        auth: { type: "none" },
+        actions: { fetch: { method: "GET", path: "/fetch", headers: { Authorization: "x" } } },
+      },
+      {
+        name: "Bad HTTP",
+        description: "Invalid HTTP API settings.",
         baseUrl: "https://user:pass@example.com",
         auth: { type: "none" },
         actions: { fetch: { method: "GET", path: "/fetch" } },

@@ -129,7 +129,7 @@ describe("HttpActionManager", () => {
     });
 
     const result = await manager.callTool(api, "create", {
-      teamId: "alpha/beta",
+      teamId: "alpha-beta",
       id: "42",
       include: true,
       requestId: "req-1",
@@ -141,7 +141,7 @@ describe("HttpActionManager", () => {
     expect(result.structuredContent).toMatchObject({ status: 200, body: { ok: true } });
     expect(requests.at(-1)).toMatchObject({
       method: "POST",
-      url: "/teams/alpha%2Fbeta/users/42?include=true&fixed=yes",
+      url: "/teams/alpha-beta/users/42?include=true&fixed=yes",
       headers: {
         authorization: "Bearer secret-token",
         "x-request-id": "req-1",
@@ -152,7 +152,7 @@ describe("HttpActionManager", () => {
       user: { name: "Ada" },
       tags: ["static", "new"],
       all: {
-        teamId: "alpha/beta",
+        teamId: "alpha-beta",
         id: "42",
         include: true,
         requestId: "req-1",
@@ -179,25 +179,18 @@ describe("HttpActionManager", () => {
 
   it("rejects query and header mappings that resolve to non-objects", async () => {
     const manager = new HttpActionManager(registry());
+    const badQueryApi = httpApi({ actions: { bad_query: { method: "GET", path: "/ok" } } });
+    badQueryApi.actions.bad_query!.query = "$input.query" as never;
 
     await expect(
-      manager.callTool(
-        httpApi({
-          actions: { bad_query: { method: "GET", path: "/ok", query: "$input.query" } },
-        }),
-        "bad_query",
-        { query: "not-an-object" },
-      ),
+      manager.callTool(badQueryApi, "bad_query", { query: "not-an-object" }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
 
+    const badHeadersApi = httpApi({ actions: { bad_headers: { method: "GET", path: "/ok" } } });
+    badHeadersApi.actions.bad_headers!.headers = "$input.headers" as never;
+
     await expect(
-      manager.callTool(
-        httpApi({
-          actions: { bad_headers: { method: "GET", path: "/ok", headers: "$input.headers" } },
-        }),
-        "bad_headers",
-        { headers: ["not", "an", "object"] },
-      ),
+      manager.callTool(badHeadersApi, "bad_headers", { headers: ["not", "an", "object"] }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 
@@ -244,23 +237,30 @@ describe("HttpActionManager", () => {
     await expect(manager.callTool(basePathEscapeApi, "escape", {})).rejects.toMatchObject({
       code: "CONFIG_INVALID",
     });
+    const encodedEscapeApi = httpApi({
+      baseUrl: `${baseUrl}/api/v1`,
+      actions: { escape: { method: "GET", path: "/ok" } },
+    });
+    encodedEscapeApi.actions.escape!.path = "/%2e%2e/admin";
+    await expect(manager.callTool(encodedEscapeApi, "escape", {})).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+    const encodedSlashApi = httpApi({ actions: { escape: { method: "GET", path: "/ok" } } });
+    encodedSlashApi.actions.escape!.path = "/safe%2Fescape";
+    await expect(manager.callTool(encodedSlashApi, "escape", {})).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+    const forbiddenHeaderApi = httpApi({ actions: { bad: { method: "GET", path: "/ok" } } });
+    forbiddenHeaderApi.actions.bad!.headers = { authorization: "x" } as never;
+    await expect(manager.callTool(forbiddenHeaderApi, "bad", {})).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+    });
+    const dynamicHeaderApi = httpApi({ actions: { bad_dynamic: { method: "GET", path: "/ok" } } });
+    dynamicHeaderApi.actions.bad_dynamic!.headers = "$input.headers" as never;
     await expect(
-      manager.callTool(
-        httpApi({
-          actions: { bad: { method: "GET", path: "/ok", headers: { authorization: "x" } } },
-        }),
-        "bad",
-        {},
-      ),
-    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(
-      manager.callTool(
-        httpApi({
-          actions: { bad_dynamic: { method: "GET", path: "/ok", headers: "$input.headers" } },
-        }),
-        "bad_dynamic",
-        { headers: { authorization: "Bearer attacker" } },
-      ),
+      manager.callTool(dynamicHeaderApi, "bad_dynamic", {
+        headers: { "proxy-authorization": "Bearer attacker" },
+      }),
     ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(
       manager.callTool(

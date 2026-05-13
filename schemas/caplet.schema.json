@@ -902,10 +902,44 @@
                 "additionalProperties": {}
               },
               "query": {
-                "description": "Query parameter mapping."
+                "description": "Query parameter mapping.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                }
               },
               "headers": {
-                "description": "Request header mapping."
+                "description": "Request header mapping.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                }
               },
               "jsonBody": {
                 "description": "JSON request body mapping."
