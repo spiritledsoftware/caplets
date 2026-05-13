@@ -5,6 +5,7 @@ import { parseConfig } from "../src/config.js";
 import { DownstreamManager } from "../src/downstream.js";
 import { CapletsError } from "../src/errors.js";
 import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql.js";
+import type { HttpActionManager } from "../src/http-actions.js";
 import { ServerRegistry } from "../src/registry.js";
 import {
   generatedToolInputSchema,
@@ -174,6 +175,37 @@ describe("generated tool handlers", () => {
     });
   });
 
+  it("returns HTTP get_caplet without requiring an HTTP manager", async () => {
+    const httpConfig = parseConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check internal service status through HTTP.",
+          baseUrl: "https://api.example.com",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    });
+    const httpRegistry = new ServerRegistry(httpConfig);
+    const downstream = {} as unknown as DownstreamManager;
+
+    const result = (await handleServerTool(
+      httpConfig.httpApis.status!,
+      { operation: "get_caplet" },
+      httpRegistry,
+      downstream,
+    )) as any;
+
+    expect(result.structuredContent?.result).toMatchObject({
+      caplet: "status",
+      backend: {
+        type: "http",
+        configuredActions: 1,
+      },
+    });
+  });
+
   it("checks the MCP server backend", async () => {
     const status = { server: "alpha", status: "available", toolCount: 2, elapsedMs: 5 };
     const downstream = {
@@ -299,6 +331,47 @@ describe("generated tool handlers", () => {
 
     expect(result).toBe(graphqlResult);
     expect(graphql.callTool).toHaveBeenCalledWith(graphqlCaplet, "query_user", { id: "42" });
+    expect(downstream.callTool).not.toHaveBeenCalled();
+  });
+
+  it("routes HTTP-backed Caplets to the HTTP action manager", async () => {
+    const httpCaplet = parseConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check internal service status through HTTP.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    }).httpApis.status!;
+    const httpRegistry = {
+      config: { options: { maxSearchLimit: 50, defaultSearchLimit: 20 } },
+      detail: vi.fn(),
+    } as unknown as ServerRegistry;
+    const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
+    const httpResult = {
+      content: [{ type: "text" as const, text: "ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    };
+    const http = {
+      callTool: vi.fn().mockResolvedValue(httpResult),
+    } as unknown as HttpActionManager;
+
+    const result = await handleServerTool(
+      httpCaplet,
+      { operation: "call_tool", tool: "check", arguments: { id: "42" } },
+      httpRegistry,
+      downstream,
+      undefined,
+      undefined,
+      http,
+    );
+
+    expect(result).toBe(httpResult);
+    expect(http.callTool).toHaveBeenCalledWith(httpCaplet, "check", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
   });
 });

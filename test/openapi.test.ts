@@ -519,6 +519,7 @@ describe("native OpenAPI Caplets", () => {
         mcpServers: {},
         openapiEndpoints: { remote: endpoint },
         graphqlEndpoints: {},
+        httpApis: {},
       });
       const openapi = new OpenApiManager(registry, { authDir });
 

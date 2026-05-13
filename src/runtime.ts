@@ -16,6 +16,7 @@ import {
 import { DownstreamManager } from "./downstream.js";
 import { errorResult, toSafeError } from "./errors.js";
 import { GraphQLManager } from "./graphql.js";
+import { HttpActionManager } from "./http-actions.js";
 import { OpenApiManager } from "./openapi.js";
 import { capabilityDescription, ServerRegistry } from "./registry.js";
 import { generatedToolInputSchema, handleServerTool } from "./tools.js";
@@ -47,6 +48,7 @@ export class CapletsRuntime {
   private readonly downstream: DownstreamManager;
   private readonly openapi: OpenApiManager;
   private readonly graphql: GraphQLManager;
+  private readonly http: HttpActionManager;
   private readonly tools = new Map<string, RegisteredTool>();
   private readonly paths: RuntimePaths;
   private readonly watchDebounceMs: number;
@@ -68,6 +70,7 @@ export class CapletsRuntime {
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
     this.openapi = new OpenApiManager(this.registry, selectAuthOptions(options.authDir));
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
+    this.http = new HttpActionManager(this.registry, selectAuthOptions(options.authDir));
     this.server =
       options.server ??
       new McpServer({
@@ -166,6 +169,7 @@ export class CapletsRuntime {
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.graphql.updateRegistry(nextRegistry);
+    this.http.updateRegistry(nextRegistry);
     let invalidated = true;
     try {
       await this.invalidateChangedBackends(previousConfig, nextConfig);
@@ -249,6 +253,7 @@ export class CapletsRuntime {
         this.downstream,
         this.openapi,
         this.graphql,
+        this.http,
       );
     } catch (error) {
       return errorResult(error);
@@ -278,6 +283,9 @@ export class CapletsRuntime {
       }
       if (before?.backend === "graphql" || after?.backend === "graphql" || !after) {
         this.graphql.invalidate(serverId);
+      }
+      if (before?.backend === "http" || after?.backend === "http" || !after) {
+        this.http.invalidate(serverId);
       }
     }
   }
@@ -399,6 +407,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
     ...Object.values(config.graphqlEndpoints),
+    ...Object.values(config.httpApis),
   ];
 }
 
@@ -410,7 +419,8 @@ function capletById(config: CapletsConfig, serverId: string): CapletConfig | und
   return (
     config.mcpServers[serverId] ??
     config.openapiEndpoints[serverId] ??
-    config.graphqlEndpoints[serverId]
+    config.graphqlEndpoints[serverId] ??
+    config.httpApis[serverId]
   );
 }
 
