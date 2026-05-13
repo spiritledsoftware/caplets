@@ -104,13 +104,15 @@ export class CapletsRuntime {
       await this.reloading;
       return !this.closed;
     }
-    this.reloading = this.reloadOnce().catch(err => {
-      this.writeErr(`Caplets reload failed.\n`);
-      this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
-      return false;
-    }).finally(() => {
-      this.reloading = undefined;
-    });
+    this.reloading = this.reloadOnce()
+      .catch((err) => {
+        this.writeErr(`Caplets reload failed.\n`);
+        this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
+        return false;
+      })
+      .finally(() => {
+        this.reloading = undefined;
+      });
     await this.reloading;
     return true;
   }
