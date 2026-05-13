@@ -377,7 +377,16 @@ const capletHttpActionSchema = z
     headers: httpScalarMappingSchema.optional().describe("Request header mapping."),
     jsonBody: z.unknown().optional().describe("JSON request body mapping."),
   })
-  .strict();
+  .strict()
+  .superRefine((action, ctx) => {
+    if (action.method === "GET" && action.jsonBody !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["jsonBody"],
+        message: "HTTP GET actions must not define jsonBody",
+      });
+    }
+  });
 
 const capletHttpApiSchema = z
   .object({

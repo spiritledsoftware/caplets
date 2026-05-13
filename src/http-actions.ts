@@ -33,6 +33,7 @@ export class HttpActionManager {
     try {
       const operations = operationsFor(api);
       validateBaseUrl(api);
+      authHeaders(api, this.options.authDir);
       for (const operation of operations) {
         validateAction(api, operation);
       }
@@ -182,7 +183,9 @@ function buildRequest(
 ): { url: URL; headers: Headers; body?: string } {
   validateBaseUrl(api);
   validateAction(api, operation);
-  const url = buildActionUrl(api.baseUrl, substitutePath(operation.path, args, operation));
+  const url = buildActionUrl(api.baseUrl, substitutePath(operation.path, args, operation), {
+    allowEncodedSlash: true,
+  });
   const query = resolveMappingToRecord(operation.query, args, "query");
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null) {
@@ -394,7 +397,11 @@ function validateBaseUrl(api: HttpApiConfig): void {
   }
 }
 
-function buildActionUrl(base: string, actionPath: string): URL {
+function buildActionUrl(
+  base: string,
+  actionPath: string,
+  options: { allowEncodedSlash?: boolean } = {},
+): URL {
   if (/^[a-z][a-z0-9+.-]*:/i.test(actionPath) || actionPath.startsWith("//")) {
     throw new CapletsError("CONFIG_INVALID", "HTTP action path cannot change origin");
   }
@@ -405,7 +412,11 @@ function buildActionUrl(base: string, actionPath: string): URL {
     } catch {
       throw new CapletsError("CONFIG_INVALID", "HTTP action path contains invalid encoding");
     }
-    if (segment === "." || segment === ".." || segment.includes("/")) {
+    if (
+      segment === "." ||
+      segment === ".." ||
+      (!options.allowEncodedSlash && segment.includes("/"))
+    ) {
       throw new CapletsError("CONFIG_INVALID", "HTTP action path cannot contain dot segments");
     }
   }

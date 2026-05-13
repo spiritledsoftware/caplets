@@ -129,7 +129,7 @@ describe("HttpActionManager", () => {
     });
 
     const result = await manager.callTool(api, "create", {
-      teamId: "alpha-beta",
+      teamId: "alpha/beta",
       id: "42",
       include: true,
       requestId: "req-1",
@@ -141,7 +141,7 @@ describe("HttpActionManager", () => {
     expect(result.structuredContent).toMatchObject({ status: 200, body: { ok: true } });
     expect(requests.at(-1)).toMatchObject({
       method: "POST",
-      url: "/teams/alpha-beta/users/42?include=true&fixed=yes",
+      url: "/teams/alpha%2Fbeta/users/42?include=true&fixed=yes",
       headers: {
         authorization: "Bearer secret-token",
         "x-request-id": "req-1",
@@ -152,7 +152,7 @@ describe("HttpActionManager", () => {
       user: { name: "Ada" },
       tags: ["static", "new"],
       all: {
-        teamId: "alpha-beta",
+        teamId: "alpha/beta",
         id: "42",
         include: true,
         requestId: "req-1",
