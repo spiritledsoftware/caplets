@@ -219,8 +219,14 @@ export class DownstreamManager {
       const transport = this.createTransport(server);
       const connection: ManagedConnection = { client, transport };
       transport.onclose = () => {
-        this.connections.delete(server.server);
+        const current = this.connections.get(server.server);
+        if (current === connection) {
+          this.connections.delete(server.server);
+        }
         if (connection.closing) {
+          return;
+        }
+        if (current !== connection) {
           return;
         }
         this.restartState.set(server.server, {
@@ -235,6 +241,9 @@ export class DownstreamManager {
       };
       transport.onerror = (error: Error) => {
         if (connection.closing) {
+          return;
+        }
+        if (this.connections.get(server.server) !== connection) {
           return;
         }
         this.registry.setStatus(
