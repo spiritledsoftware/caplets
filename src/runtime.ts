@@ -54,7 +54,7 @@ export class CapletsRuntime {
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
-  private reloading: Promise<void> | undefined;
+  private reloading: Promise<void | boolean> | undefined;
   private closed = false;
 
   constructor(options: CapletsRuntimeOptions = {}) {
@@ -104,7 +104,11 @@ export class CapletsRuntime {
       await this.reloading;
       return !this.closed;
     }
-    this.reloading = this.reloadOnce().finally(() => {
+    this.reloading = this.reloadOnce().catch(err => {
+      this.writeErr(`Caplets reload failed.\n`);
+      this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
+      return false;
+    }).finally(() => {
       this.reloading = undefined;
     });
     await this.reloading;
@@ -302,12 +306,20 @@ export class CapletsRuntime {
     const watchers: FSWatcher[] = [];
     const directories = discoverDirectories(root);
     for (const directory of directories) {
-      watchers.push(
-        watch(directory, { persistent: true }, () => {
-          this.scheduleReload();
-          this.scheduleWatcherRefresh();
-        }),
-      );
+      try {
+        watchers.push(
+          watch(directory, { persistent: true }, () => {
+            this.scheduleReload();
+            this.scheduleWatcherRefresh();
+          }),
+        );
+      } catch (error) {
+        // Clean up any watchers created so far before rethrowing
+        for (const watcher of watchers) {
+          watcher.close();
+        }
+        throw error;
+      }
     }
     return watchers;
   }
