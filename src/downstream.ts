@@ -234,6 +234,9 @@ export class DownstreamManager {
         );
       };
       transport.onerror = (error: Error) => {
+        if (connection.closing) {
+          return;
+        }
         this.registry.setStatus(
           server.server,
           "unavailable",

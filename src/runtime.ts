@@ -1,5 +1,5 @@
-import { existsSync, watch, type FSWatcher } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
+import { dirname, parse } from "node:path";
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { version as packageJsonVersion } from "../package.json";
@@ -53,6 +53,7 @@ export class CapletsRuntime {
   private readonly writeErr: (value: string) => void;
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
+  private watcherRefreshTimer: NodeJS.Timeout | undefined;
   private reloading: Promise<void> | undefined;
   private closed = false;
 
@@ -101,6 +102,7 @@ export class CapletsRuntime {
     }
     if (this.reloading) {
       await this.reloading;
+      return !this.closed;
     }
     this.reloading = this.reloadOnce().finally(() => {
       this.reloading = undefined;
@@ -114,6 +116,13 @@ export class CapletsRuntime {
     if (this.reloadTimer) {
       clearTimeout(this.reloadTimer);
       this.reloadTimer = undefined;
+    }
+    if (this.watcherRefreshTimer) {
+      clearTimeout(this.watcherRefreshTimer);
+      this.watcherRefreshTimer = undefined;
+    }
+    if (this.reloading) {
+      await this.reloading;
     }
     this.closeWatchers();
     await this.downstream.close();
@@ -135,6 +144,9 @@ export class CapletsRuntime {
   }
 
   private async reloadOnce(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
     let nextConfig: CapletsConfig;
     try {
       nextConfig = loadConfig(this.paths.configPath, this.paths.projectConfigPath);
@@ -144,9 +156,15 @@ export class CapletsRuntime {
       return;
     }
 
+    if (this.closed) {
+      return;
+    }
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     await this.invalidateChangedBackends(previousConfig, nextConfig);
+    if (this.closed) {
+      return;
+    }
     this.registry = nextRegistry;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
@@ -224,21 +242,17 @@ export class CapletsRuntime {
     for (const serverId of changedIds) {
       const before = previousCaplets.get(serverId);
       const after = nextCaplets.get(serverId);
-      if (
-        before &&
-        before.backend === "mcp" &&
-        serializeCaplet(before) !== serializeCaplet(after)
-      ) {
+      const changed = serializeCaplet(before) !== serializeCaplet(after);
+      if (!changed) {
+        continue;
+      }
+      if (before?.backend === "mcp") {
         await this.downstream.closeServer(serverId);
       }
-      if (after?.backend === "openapi" && serializeCaplet(before) !== serializeCaplet(after)) {
+      if (before?.backend === "openapi" || after?.backend === "openapi" || !after) {
         this.openapi.invalidate(serverId);
       }
-      if (after?.backend === "graphql" && serializeCaplet(before) !== serializeCaplet(after)) {
-        this.graphql.invalidate(serverId);
-      }
-      if (!after) {
-        this.openapi.invalidate(serverId);
+      if (before?.backend === "graphql" || after?.backend === "graphql" || !after) {
         this.graphql.invalidate(serverId);
       }
     }
@@ -246,16 +260,15 @@ export class CapletsRuntime {
 
   private resetWatchers(): void {
     this.closeWatchers();
+    const watched = new Set<string>();
     for (const entry of watchedPaths(this.paths)) {
-      if (!existsSync(entry.path)) {
+      const watchPath = existsSync(entry.path) ? entry.path : nearestExistingParent(entry.path);
+      if (!watchPath || watched.has(watchPath)) {
         continue;
       }
+      watched.add(watchPath);
       try {
-        this.watchers.push(
-          watch(entry.path, { persistent: true }, () => {
-            this.scheduleReload();
-          }),
-        );
+        this.watchers.push(...this.watchPathTree(watchPath, entry.path));
       } catch (error) {
         this.writeErr(`Caplets could not watch ${entry.reason} path ${entry.path}.\n`);
         this.writeErr(`${JSON.stringify(toSafeError(error, "SERVER_UNAVAILABLE"), null, 2)}\n`);
@@ -268,6 +281,50 @@ export class CapletsRuntime {
       watcher.close();
     }
     this.watchers = [];
+  }
+
+  private watchPathTree(watchPath: string, targetPath: string): FSWatcher[] {
+    if (isDirectory(watchPath)) {
+      return this.watchDirectoryTree(watchPath);
+    }
+
+    return [
+      watch(watchPath, { persistent: true }, () => {
+        this.scheduleReload();
+        if (existsSync(targetPath)) {
+          this.scheduleWatcherRefresh();
+        }
+      }),
+    ];
+  }
+
+  private watchDirectoryTree(root: string): FSWatcher[] {
+    const watchers: FSWatcher[] = [];
+    const directories = discoverDirectories(root);
+    for (const directory of directories) {
+      watchers.push(
+        watch(directory, { persistent: true }, () => {
+          this.scheduleReload();
+          this.scheduleWatcherRefresh();
+        }),
+      );
+    }
+    return watchers;
+  }
+
+  private scheduleWatcherRefresh(): void {
+    if (this.closed) {
+      return;
+    }
+    if (this.watcherRefreshTimer) {
+      clearTimeout(this.watcherRefreshTimer);
+    }
+    this.watcherRefreshTimer = setTimeout(() => {
+      this.watcherRefreshTimer = undefined;
+      if (!this.closed) {
+        this.resetWatchers();
+      }
+    }, this.watchDebounceMs);
   }
 }
 
@@ -323,4 +380,37 @@ function capletById(config: CapletsConfig, serverId: string): CapletConfig | und
 
 function serializeCaplet(caplet: CapletConfig | undefined): string {
   return JSON.stringify(caplet ?? null);
+}
+
+function nearestExistingParent(path: string): string | undefined {
+  let candidate = dirname(path);
+  const root = parse(candidate).root;
+  while (candidate && candidate !== root) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    candidate = dirname(candidate);
+  }
+  return existsSync(root) ? root : undefined;
+}
+
+function discoverDirectories(root: string): string[] {
+  if (!isDirectory(root)) {
+    return [];
+  }
+  const directories = [root];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      directories.push(...discoverDirectories(`${root}/${entry.name}`));
+    }
+  }
+  return directories;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }

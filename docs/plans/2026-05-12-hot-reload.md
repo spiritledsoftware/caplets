@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Runtime Controller
+## Task 1: Runtime Controller
 
 **Files:**
 
@@ -23,7 +23,7 @@
 - [ ] Register initial enabled Caplets during startup.
 - [ ] Keep `src/index.ts` as a small CLI/server entrypoint.
 
-### Task 2: Reload Reconciliation
+## Task 2: Reload Reconciliation
 
 **Files:**
 
@@ -42,7 +42,7 @@
 - [ ] Invalidate or close only backends whose normalized config changed.
 - [ ] Keep serving the previous registry and tools if reload parsing or validation fails.
 
-### Task 3: Filesystem Watching
+## Task 3: Filesystem Watching
 
 **Files:**
 
@@ -55,7 +55,7 @@
 - [ ] Recreate watchers after every successful reload because roots can change with `CAPLETS_CONFIG`.
 - [ ] Close all watchers during runtime shutdown.
 
-### Task 4: Documentation
+## Task 4: Documentation
 
 **Files:**
 
@@ -66,7 +66,7 @@
 - [ ] Document that changed or removed MCP-backed Caplets close only their affected downstream connection.
 - [ ] Keep `pnpm dev` documented as source rebuild/restart tooling, separate from runtime config hot reload.
 
-### Task 5: Verification
+## Task 5: Verification
 
 **Files:**
 
