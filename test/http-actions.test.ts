@@ -194,6 +194,18 @@ describe("HttpActionManager", () => {
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 
+  it("rejects JSON body mappings that resolve to undefined", async () => {
+    const manager = new HttpActionManager(registry());
+    const api = httpApi({
+      actions: { create: { method: "POST", path: "/ok", jsonBody: "$input.missing" } },
+    });
+
+    await expect(manager.callTool(api, "create", {})).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "HTTP action jsonBody must not resolve to undefined",
+    });
+  });
+
   it("returns structured 401 and 403 responses instead of throwing auth errors", async () => {
     const manager = new HttpActionManager(registry());
     const api = httpApi({

@@ -200,6 +200,12 @@ function buildRequest(
   }
   const bodyValue = resolveMapping(operation.jsonBody, args);
   if (operation.jsonBody !== undefined) {
+    if (bodyValue === undefined) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "HTTP action jsonBody must not resolve to undefined",
+      );
+    }
     headers.set("content-type", "application/json");
     return { url, headers, body: JSON.stringify(bodyValue) };
   }
