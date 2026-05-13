@@ -2,6 +2,9 @@ export function nestedSchema<T>(value: unknown, key: string): T | undefined {
   if (!isPlainObject(value)) {
     return undefined;
   }
+  if (!Object.prototype.hasOwnProperty.call(value, key)) {
+    return undefined;
+  }
   return value[key] as T | undefined;
 }
 

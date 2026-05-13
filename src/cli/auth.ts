@@ -124,10 +124,7 @@ function graphQlAuthTarget(
 }
 
 function httpAuthTarget(api: HttpApiConfig): HttpApiConfig & GenericAuthTarget {
-  return {
-    ...api,
-    baseUrl: api.baseUrl,
-  };
+  return { ...api };
 }
 
 function assertLoginTarget(

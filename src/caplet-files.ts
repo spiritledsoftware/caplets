@@ -11,6 +11,7 @@ import {
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
   isUrl,
+  validateHttpActionHeaders,
 } from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
 import { nestedSchema, schemaPath } from "./schema-utils.js";
@@ -697,23 +698,6 @@ function validateEndpointAuthHeaders(
       ctx.addIssue({
         code: "custom",
         path: ["auth", "headers", headerName],
-        message: `header ${headerName} is not allowed`,
-      });
-    }
-  }
-}
-
-function validateHttpActionHeaders(
-  headers: Record<string, unknown>,
-  ctx: z.RefinementCtx,
-  path: Array<string>,
-): void {
-  for (const headerName of Object.keys(headers)) {
-    const normalized = headerName.toLowerCase();
-    if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
-      ctx.addIssue({
-        code: "custom",
-        path: [...path, headerName],
         message: `header ${headerName} is not allowed`,
       });
     }
