@@ -620,7 +620,6 @@ describe("config", () => {
       auth: { type: "none" },
       requestTimeoutMs: 60000,
       maxResponseBytes: 1000000,
-      operationCacheTtlMs: 30000,
       actions: {
         invoice: {
           method: "GET",
@@ -1160,22 +1159,24 @@ function markdownLinkTargets(markdown: string): string[] {
 }
 
 function findHttpActionsSchema(value: unknown): { minProperties?: number } | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  if (
-    "description" in value &&
-    value.description === "Configured HTTP actions keyed by stable tool name."
-  ) {
-    return value as { minProperties?: number };
-  }
-  for (const nested of Object.values(value)) {
-    const found = Array.isArray(nested)
-      ? nested.map(findHttpActionsSchema).find(Boolean)
-      : findHttpActionsSchema(nested);
-    if (found) {
-      return found;
+  return (
+    schemaPath(value, [
+      "properties",
+      "httpApis",
+      "additionalProperties",
+      "properties",
+      "actions",
+    ]) ?? schemaPath(value, ["properties", "httpApi", "properties", "actions"])
+  );
+}
+
+function schemaPath<T>(value: unknown, path: string[]): T | undefined {
+  let current = value;
+  for (const segment of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
     }
+    current = (current as Record<string, unknown>)[segment];
   }
-  return undefined;
+  return current as T;
 }

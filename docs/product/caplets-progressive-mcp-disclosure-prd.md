@@ -432,7 +432,6 @@ Core modules:
 - `actions: Record<string, { method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; description?: string; inputSchema?: Record<string, unknown>; query?: unknown; headers?: unknown; jsonBody?: unknown }>`
 - `requestTimeoutMs?: number`
 - `maxResponseBytes?: number`
-- `operationCacheTtlMs?: number`
 - `disabled?: boolean`
 
 `StoredOAuthTokenBundle`:
@@ -465,7 +464,7 @@ Core modules:
 - `description: string`
 - `tags?: string[]`
 - `body?: string`
-- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" } | { type: "graphql"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "schemaPath" | "schemaUrl" | "introspection"; configuredOperations: boolean } | { type: "http"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; configuredActions: number }`
+- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" } | { type: "graphql"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "schemaPath" | "schemaUrl" | "introspection"; configuredOperations: boolean } | { type: "http"; disabled: boolean; requestTimeoutMs: number; configuredActions: number }`
 - `mcpServer?: { transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number }`
 
 `CapletToolRef`:

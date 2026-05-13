@@ -132,7 +132,6 @@ describe("registry", () => {
         type: "http",
         disabled: false,
         requestTimeoutMs: 60000,
-        operationCacheTtlMs: 30000,
         configuredActions: 1,
       },
     });

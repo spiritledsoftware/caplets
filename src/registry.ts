@@ -51,7 +51,6 @@ export type CapletServerDetail = {
         type: "http";
         disabled: boolean;
         requestTimeoutMs: number;
-        operationCacheTtlMs: number;
         configuredActions: number;
       };
   mcpServer?: {
@@ -203,7 +202,6 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
       type: "http",
       disabled: server.disabled,
       requestTimeoutMs: server.requestTimeoutMs,
-      operationCacheTtlMs: server.operationCacheTtlMs,
       configuredActions: Object.keys(server.actions).length,
     };
   }

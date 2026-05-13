@@ -151,7 +151,14 @@ describe("HttpActionManager", () => {
     expect(JSON.parse(requests.at(-1)!.body)).toMatchObject({
       user: { name: "Ada" },
       tags: ["static", "new"],
-      all: { teamId: "alpha/beta", id: "42" },
+      all: {
+        teamId: "alpha/beta",
+        id: "42",
+        include: true,
+        requestId: "req-1",
+        tag: "new",
+        user: { name: "Ada" },
+      },
     });
   });
 

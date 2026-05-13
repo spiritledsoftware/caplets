@@ -403,12 +403,6 @@ const capletHttpApiSchema = z
       .positive()
       .optional()
       .describe("Maximum HTTP action response body bytes to read."),
-    operationCacheTtlMs: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe("Milliseconds HTTP action metadata stays fresh. Set 0 to refresh every time."),
     disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
   })
   .strict()
@@ -476,7 +470,7 @@ export const capletFileSchema = z
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 
 export function capletJsonSchema(): unknown {
-  return withHttpActionMinProperties({
+  return patchHttpApiJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json",
     title: "Caplet file frontmatter",
@@ -750,28 +744,37 @@ function isUrl(value: string): boolean {
   }
 }
 
-function withHttpActionMinProperties<T>(schema: T): T {
-  const actions = findHttpActionsSchema(schema);
+function patchHttpApiJsonSchema<T>(schema: T): T {
+  const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
+    "properties",
+    "httpApi",
+    "properties",
+  ]);
+  const actions = nestedSchema<Record<string, unknown>>(httpApiProperties, "actions");
   if (actions) {
     actions.minProperties = 1;
+  }
+  const baseUrl = nestedSchema<Record<string, unknown>>(httpApiProperties, "baseUrl");
+  if (baseUrl) {
+    baseUrl.format = "uri";
   }
   return schema;
 }
 
-function findHttpActionsSchema(value: unknown): Record<string, unknown> | undefined {
+function nestedSchema<T>(value: unknown, key: string): T | undefined {
   if (!isPlainObject(value)) {
     return undefined;
   }
-  if (value.description === "Configured HTTP actions keyed by stable tool name.") {
-    return value;
-  }
-  for (const nested of Object.values(value)) {
-    const found = Array.isArray(nested)
-      ? nested.map(findHttpActionsSchema).find(Boolean)
-      : findHttpActionsSchema(nested);
-    if (found) {
-      return found;
+  return value[key] as T | undefined;
+}
+
+function schemaPath<T>(value: unknown, path: string[]): T | undefined {
+  let current = value;
+  for (const segment of path) {
+    current = nestedSchema(current, segment);
+    if (current === undefined) {
+      return undefined;
     }
   }
-  return undefined;
+  return current as T;
 }

@@ -104,7 +104,7 @@ export class HttpActionManager {
       return {
         content: [{ type: "text", text: JSON.stringify(parsed, null, 2) }],
         structuredContent: parsed,
-        isError: response.ok ? false : true,
+        isError: !response.ok,
       };
     } catch (error) {
       if (isAbortError(error)) {
