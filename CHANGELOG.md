@@ -1,5 +1,17 @@
 # caplets
 
+## 0.7.0
+
+### Minor Changes
+
+- 359eba4: # Hot reload serve config
+
+  Add default hot reload for `caplets serve`, including live config and Caplet file reconciliation without restarting the MCP process.
+
+### Patch Changes
+
+- 85bfe0c: Use the MCP SDK OAuth auth provider for remote OAuth MCP transports instead of precomputing static bearer headers, allowing SDK-managed refresh, resource metadata, and auth challenge handling.
+
 ## 0.6.0
 
 ### Minor Changes
