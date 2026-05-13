@@ -168,13 +168,20 @@ export class CapletsRuntime {
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.graphql.updateRegistry(nextRegistry);
-    await this.invalidateChangedBackends(previousConfig, nextConfig);
+    let invalidated = true;
+    try {
+      await this.invalidateChangedBackends(previousConfig, nextConfig);
+    } catch (error) {
+      invalidated = false;
+      this.writeErr(`Caplets backend invalidation failed; continuing reload.\n`);
+      this.writeErr(`${JSON.stringify(toSafeError(error, "INTERNAL_ERROR"), null, 2)}\n`);
+    }
     if (this.closed) {
       return false;
     }
     this.reconcileTools(previousConfig, nextConfig);
     this.resetWatchers();
-    return true;
+    return invalidated;
   }
 
   private async reloadUntilSettled(): Promise<boolean> {

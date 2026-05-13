@@ -128,6 +128,54 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("reconciles tools when backend invalidation fails", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const errors: string[] = [];
+    const runtime = new CapletsRuntime({
+      configPath,
+      projectConfigPath,
+      server,
+      writeErr: (value) => errors.push(value),
+    });
+    const alpha = server.registered.get("alpha")!;
+    (
+      runtime as unknown as {
+        invalidateChangedBackends: () => Promise<void>;
+      }
+    ).invalidateChangedBackends = vi.fn(async () => {
+      throw new Error("close failed");
+    });
+
+    writeConfig(configPath, {
+      mcpServers: {
+        gamma: {
+          name: "Gamma",
+          description: "Search gamma project documents.",
+          command: "node",
+        },
+      },
+    });
+    const reloaded = await runtime.reload();
+
+    expect(reloaded).toBe(false);
+    expect(alpha.remove).toHaveBeenCalledTimes(1);
+    expect(runtime.registeredToolIds()).toEqual(["gamma"]);
+    expect(server.registered.get("gamma")).toBeDefined();
+    expect(errors.join("")).toContain("backend invalidation failed");
+
+    await runtime.close();
+  });
+
   it("runs a follow-up reload when another reload is requested mid-flight", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
