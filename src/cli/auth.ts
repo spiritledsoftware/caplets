@@ -8,7 +8,7 @@ import {
   runOAuthFlow,
   type GenericAuthTarget,
 } from "../auth.js";
-import { loadConfig, type GraphQlEndpointConfig } from "../config.js";
+import { loadConfig, type GraphQlEndpointConfig, type HttpApiConfig } from "../config.js";
 import { CapletsError, toSafeError } from "../errors.js";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
@@ -108,6 +108,9 @@ function authTargets(config: ReturnType<typeof loadConfig>) {
     ...Object.values(config.graphqlEndpoints)
       .filter((endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc")
       .map(graphQlAuthTarget),
+    ...Object.values(config.httpApis)
+      .filter((api) => api.auth?.type === "oauth2" || api.auth?.type === "oidc")
+      .map(httpAuthTarget),
   ];
 }
 
@@ -117,6 +120,13 @@ function graphQlAuthTarget(
   return {
     ...endpoint,
     url: endpoint.endpointUrl,
+  };
+}
+
+function httpAuthTarget(api: HttpApiConfig): HttpApiConfig & GenericAuthTarget {
+  return {
+    ...api,
+    baseUrl: api.baseUrl,
   };
 }
 

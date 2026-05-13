@@ -46,6 +46,13 @@ export type CapletServerDetail = {
         operationCacheTtlMs: number;
         source: "schemaPath" | "schemaUrl" | "introspection";
         configuredOperations: boolean;
+      }
+    | {
+        type: "http";
+        disabled: boolean;
+        requestTimeoutMs: number;
+        operationCacheTtlMs: number;
+        configuredActions: number;
       };
   mcpServer?: {
     transport: CapletServerConfig["transport"];
@@ -78,7 +85,8 @@ export class ServerRegistry {
     const server =
       this.config.mcpServers[serverId] ??
       this.config.openapiEndpoints[serverId] ??
-      this.config.graphqlEndpoints[serverId];
+      this.config.graphqlEndpoints[serverId] ??
+      this.config.httpApis[serverId];
     return server?.disabled ? undefined : server;
   }
 
@@ -138,6 +146,7 @@ export class ServerRegistry {
       ...Object.values(this.config.mcpServers),
       ...Object.values(this.config.openapiEndpoints),
       ...Object.values(this.config.graphqlEndpoints),
+      ...Object.values(this.config.httpApis),
     ];
   }
 }
@@ -148,7 +157,9 @@ export function capabilityDescription(server: CapletConfig): string {
       ? "MCP server"
       : server.backend === "openapi"
         ? "OpenAPI endpoint"
-        : "GraphQL endpoint";
+        : server.backend === "graphql"
+          ? "GraphQL endpoint"
+          : "HTTP API";
   const checkOperation = server.backend === "mcp" ? "check_mcp_server" : "check_backend";
   const hint = [
     `Use this Caplet to inspect and call tools from its ${backendName} backend.`,
@@ -184,6 +195,16 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
       operationCacheTtlMs: server.operationCacheTtlMs,
       source: graphQlSource(server),
       configuredOperations: Boolean(server.operations && Object.keys(server.operations).length > 0),
+    };
+  }
+
+  if (server.backend === "http") {
+    return {
+      type: "http",
+      disabled: server.disabled,
+      requestTimeoutMs: server.requestTimeoutMs,
+      operationCacheTtlMs: server.operationCacheTtlMs,
+      configuredActions: Object.keys(server.actions).length,
     };
   }
 

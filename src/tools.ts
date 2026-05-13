@@ -4,6 +4,7 @@ import type { CapletConfig } from "./config.js";
 import type { DownstreamManager } from "./downstream.js";
 import { CapletsError } from "./errors.js";
 import type { GraphQLManager } from "./graphql.js";
+import type { HttpActionManager } from "./http-actions.js";
 import type { OpenApiManager } from "./openapi.js";
 import type { ServerRegistry } from "./registry.js";
 
@@ -65,6 +66,7 @@ export async function handleServerTool(
   downstream: DownstreamManager,
   openapi?: OpenApiManager,
   graphql?: GraphQLManager,
+  http?: HttpActionManager,
 ): Promise<any> {
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
@@ -73,7 +75,7 @@ export async function handleServerTool(
       return jsonResult(registry.detail(server));
     case "check_backend":
       return jsonResult(
-        await backendFor(server, downstream, openapi, graphql).check(server as never),
+        await backendFor(server, downstream, openapi, graphql, http).check(server as never),
       );
     case "check_mcp_server":
       if (server.backend !== "mcp") {
@@ -84,7 +86,7 @@ export async function handleServerTool(
       }
       return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
-      const backend = backendFor(server, downstream, openapi, graphql);
+      const backend = backendFor(server, downstream, openapi, graphql, http);
       const tools = await backend.listTools(server as never);
       return jsonResult({
         server: server.server,
@@ -92,7 +94,7 @@ export async function handleServerTool(
       });
     }
     case "search_tools": {
-      const backend = backendFor(server, downstream, openapi, graphql);
+      const backend = backendFor(server, downstream, openapi, graphql, http);
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult({
@@ -102,12 +104,12 @@ export async function handleServerTool(
       });
     }
     case "get_tool": {
-      const backend = backendFor(server, downstream, openapi, graphql);
+      const backend = backendFor(server, downstream, openapi, graphql, http);
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult({ server: server.server, tool });
     }
     case "call_tool":
-      return backendFor(server, downstream, openapi, graphql).callTool(
+      return backendFor(server, downstream, openapi, graphql, http).callTool(
         server as never,
         parsed.tool,
         parsed.arguments,
@@ -222,6 +224,7 @@ function backendFor(
   downstream: DownstreamManager,
   openapi?: OpenApiManager,
   graphql?: GraphQLManager,
+  http?: HttpActionManager,
 ) {
   if (server.backend === "mcp") {
     return {
@@ -248,6 +251,19 @@ function backendFor(
       callTool: (...args: Parameters<GraphQLManager["callTool"]>) => graphql.callTool(...args),
       compact: (...args: Parameters<GraphQLManager["compact"]>) => graphql.compact(...args),
       search: (...args: Parameters<GraphQLManager["search"]>) => graphql.search(...args),
+    };
+  }
+  if (server.backend === "http") {
+    if (!http) {
+      throw new CapletsError("INTERNAL_ERROR", "HTTP action manager is not configured");
+    }
+    return {
+      check: (...args: Parameters<HttpActionManager["checkApi"]>) => http.checkApi(...args),
+      listTools: (...args: Parameters<HttpActionManager["listTools"]>) => http.listTools(...args),
+      getTool: (...args: Parameters<HttpActionManager["getTool"]>) => http.getTool(...args),
+      callTool: (...args: Parameters<HttpActionManager["callTool"]>) => http.callTool(...args),
+      compact: (...args: Parameters<HttpActionManager["compact"]>) => http.compact(...args),
+      search: (...args: Parameters<HttpActionManager["search"]>) => http.search(...args),
     };
   }
   if (!openapi) {

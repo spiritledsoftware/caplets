@@ -788,6 +788,280 @@
         "required": ["name", "description", "endpointUrl", "auth"],
         "additionalProperties": false
       }
+    },
+    "httpApis": {
+      "default": {},
+      "description": "HTTP APIs keyed by stable Caplet ID.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Human-readable HTTP API display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "Capability description shown to agents before HTTP actions are disclosed."
+          },
+          "baseUrl": {
+            "type": "string",
+            "pattern": "^(?![a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/[^/?#]*@)[^?#]*$",
+            "description": "Base URL for HTTP action requests."
+          },
+          "auth": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "none"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "bearer"
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["type", "token"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "headers"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": ["type", "headers"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "oauth2"
+                  },
+                  "authorizationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "tokenUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "resourceMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "authorizationServerMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "redirectUri": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "oidc"
+                  },
+                  "authorizationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "tokenUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "resourceMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "authorizationServerMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "redirectUri": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            ],
+            "description": "Explicit HTTP API request auth config. Use {\"type\":\"none\"} for public APIs."
+          },
+          "actions": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                  "description": "HTTP method used for this action."
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^\\/",
+                  "description": "URL path appended to the HTTP API baseUrl."
+                },
+                "description": {
+                  "description": "Action capability description.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "inputSchema": {
+                  "description": "JSON Schema for call_tool arguments.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "query": {
+                  "description": "Query parameter mapping."
+                },
+                "headers": {
+                  "description": "Request header mapping."
+                },
+                "jsonBody": {
+                  "description": "JSON request body mapping."
+                }
+              },
+              "required": ["method", "path"],
+              "additionalProperties": false
+            },
+            "description": "Configured HTTP actions keyed by stable tool name.",
+            "minProperties": 1
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "requestTimeoutMs": {
+            "default": 60000,
+            "description": "Timeout in milliseconds for HTTP action requests.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "maxResponseBytes": {
+            "default": 1000000,
+            "description": "Maximum HTTP action response body bytes to read.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "operationCacheTtlMs": {
+            "default": 30000,
+            "description": "Milliseconds HTTP action metadata stays fresh. Set 0 to refresh every time.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "disabled": {
+            "default": false,
+            "description": "When true, omit this HTTP API Caplet.",
+            "type": "boolean"
+          }
+        },
+        "required": ["name", "description", "baseUrl", "auth", "actions"],
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

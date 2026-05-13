@@ -12,7 +12,9 @@ import {
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
+  HTTP_BASE_URL_PATTERN,
   SERVER_ID_PATTERN,
+  isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
 } from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
@@ -128,7 +130,37 @@ export type GraphQlEndpointConfig = {
   disabled: boolean;
 };
 
-export type CapletConfig = CapletServerConfig | OpenApiEndpointConfig | GraphQlEndpointConfig;
+export type HttpActionConfig = {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path: string;
+  description?: string | undefined;
+  inputSchema?: Record<string, unknown> | undefined;
+  query?: unknown;
+  headers?: unknown;
+  jsonBody?: unknown;
+};
+
+export type HttpApiConfig = {
+  server: string;
+  backend: "http";
+  name: string;
+  description: string;
+  tags?: string[] | undefined;
+  body?: string | undefined;
+  baseUrl: string;
+  auth: OpenApiAuthConfig;
+  actions: Record<string, HttpActionConfig>;
+  requestTimeoutMs: number;
+  maxResponseBytes: number;
+  operationCacheTtlMs: number;
+  disabled: boolean;
+};
+
+export type CapletConfig =
+  | CapletServerConfig
+  | OpenApiEndpointConfig
+  | GraphQlEndpointConfig
+  | HttpApiConfig;
 
 export type CapletsOptions = {
   defaultSearchLimit: number;
@@ -141,6 +173,7 @@ export type CapletsConfig = {
   mcpServers: Record<string, CapletServerConfig>;
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
+  httpApis: Record<string, HttpApiConfig>;
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
@@ -412,13 +445,93 @@ const normalizedGraphQlEndpointSchema = publicGraphQlEndpointSchema.extend({
   body: z.string().optional(),
 });
 
+const httpActionSchema = z
+  .object({
+    method: z
+      .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+      .describe("HTTP method used for this action."),
+    path: z
+      .string()
+      .min(1)
+      .regex(/^\//, "HTTP action path must start with /")
+      .describe("URL path appended to the HTTP API baseUrl.")
+      .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
+    description: z.string().min(1).optional().describe("Action capability description."),
+    inputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for call_tool arguments."),
+    query: z.unknown().optional().describe("Query parameter mapping."),
+    headers: z.unknown().optional().describe("Request header mapping."),
+    jsonBody: z.unknown().optional().describe("JSON request body mapping."),
+  })
+  .strict();
+
+const publicHttpApiSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).describe("Human-readable HTTP API display name."),
+    description: z
+      .string()
+      .describe("Capability description shown to agents before HTTP actions are disclosed.")
+      .refine(
+        (value) => value.trim().length >= 10,
+        "description must contain at least 10 non-whitespace characters",
+      )
+      .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
+    baseUrl: z
+      .string()
+      .url()
+      .regex(
+        HTTP_BASE_URL_PATTERN,
+        "HTTP API baseUrl must not include credentials, query, or fragment",
+      )
+      .describe("Base URL for HTTP action requests."),
+    auth: openApiAuthSchema.describe(
+      'Explicit HTTP API request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    actions: z
+      .record(z.string().regex(SERVER_ID_PATTERN), httpActionSchema)
+      .refine(
+        (actions) => Object.keys(actions).length > 0,
+        "HTTP API must define at least one action",
+      )
+      .describe("Configured HTTP actions keyed by stable tool name."),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60_000)
+      .describe("Timeout in milliseconds for HTTP action requests."),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(1_000_000)
+      .describe("Maximum HTTP action response body bytes to read."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe("Milliseconds HTTP action metadata stays fresh. Set 0 to refresh every time."),
+    disabled: z.boolean().default(false).describe("When true, omit this HTTP API Caplet."),
+  })
+  .strict();
+
+const normalizedHttpApiSchema = publicHttpApiSchema.extend({
+  body: z.string().optional(),
+});
+
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
 type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
 type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpointSchema>;
+type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigInput = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
+  httpApis?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -426,6 +539,7 @@ function configSchemaFor(
   serverValueSchema: z.ZodTypeAny,
   openApiEndpointValueSchema: z.ZodTypeAny,
   graphQlEndpointValueSchema: z.ZodTypeAny,
+  httpApiValueSchema: z.ZodTypeAny,
 ) {
   return z
     .object({
@@ -460,6 +574,10 @@ function configSchemaFor(
         .record(z.string().regex(SERVER_ID_PATTERN), graphQlEndpointValueSchema)
         .default({})
         .describe("GraphQL endpoints keyed by stable Caplet ID."),
+      httpApis: z
+        .record(z.string().regex(SERVER_ID_PATTERN), httpApiValueSchema)
+        .default({})
+        .describe("HTTP APIs keyed by stable Caplet ID."),
     })
     .strict()
     .superRefine((config, ctx) => {
@@ -630,6 +748,40 @@ function configSchemaFor(
         }
         validateEndpointAuthHeaders(raw.auth, ctx, ["graphqlEndpoints", endpoint, "auth"]);
       }
+
+      for (const [endpoint, rawValue] of Object.entries(config.httpApis)) {
+        const raw = rawValue as ConfigSchemaHttpApiValue;
+        const duplicateBackend = config.mcpServers[endpoint]
+          ? "mcpServers"
+          : config.openapiEndpoints[endpoint]
+            ? "openapiEndpoints"
+            : config.graphqlEndpoints[endpoint]
+              ? "graphqlEndpoints"
+              : undefined;
+        if (duplicateBackend) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["httpApis", endpoint],
+            message: `Caplet ID ${endpoint} is already used by ${duplicateBackend}`,
+          });
+        }
+        if (!SERVER_ID_PATTERN.test(endpoint)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["httpApis", endpoint],
+            message: "HTTP API ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
+        if (raw.baseUrl && !isAllowedHttpBaseUrl(raw.baseUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["httpApis", endpoint, "baseUrl"],
+            message:
+              "HTTP API baseUrl must use https except loopback development urls and must not include credentials, query, or fragment",
+          });
+        }
+        validateEndpointAuthHeaders(raw.auth, ctx, ["httpApis", endpoint, "auth"]);
+      }
     });
 }
 
@@ -637,21 +789,23 @@ export const configFileSchema = configSchemaFor(
   publicServerSchema,
   publicOpenApiEndpointSchema,
   publicGraphQlEndpointSchema,
+  publicHttpApiSchema,
 );
 const normalizedConfigFileSchema = configSchemaFor(
   normalizedServerSchema,
   normalizedOpenApiEndpointSchema,
   normalizedGraphQlEndpointSchema,
+  normalizedHttpApiSchema,
 );
 
 export function configJsonSchema(): unknown {
-  return {
+  return withHttpActionMinProperties({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
     title: "Caplets config",
     description: "Configuration file for the Caplets progressive MCP disclosure gateway.",
     ...z.toJSONSchema(configFileSchema, { io: "input" }),
-  };
+  });
 }
 
 export function loadConfig(
@@ -683,11 +837,12 @@ export function loadConfig(
     if (
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
-      Object.keys(config.graphqlEndpoints).length === 0
+      Object.keys(config.graphqlEndpoints).length === 0 &&
+      Object.keys(config.httpApis).length === 0
     ) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server, OpenAPI endpoint, or GraphQL endpoint",
+        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, or HTTP API",
       );
     }
     return config;
@@ -810,6 +965,12 @@ function rejectUntrustedProjectExecutableBackends(input: ConfigInput, path: stri
       `Project config at ${path} cannot define graphqlEndpoints; use trusted project Caplet files or user config`,
     );
   }
+  if (input.httpApis && Object.keys(input.httpApis).length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define httpApis; use trusted project Caplet files or user config`,
+    );
+  }
   return input;
 }
 
@@ -833,6 +994,10 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       graphqlEndpoints: {
         ...merged?.graphqlEndpoints,
         ...input.graphqlEndpoints,
+      },
+      httpApis: {
+        ...merged?.httpApis,
+        ...input.httpApis,
       },
     };
   }
@@ -876,6 +1041,16 @@ export function parseConfig(input: unknown): CapletsConfig {
     }) as GraphQlEndpointConfig;
   }
 
+  const httpApis: Record<string, HttpApiConfig> = {};
+  for (const [server, raw] of Object.entries(parsed.data.httpApis)) {
+    const interpolated = raw as ConfigSchemaHttpApiValue;
+    httpApis[server] = stripUndefined({
+      ...interpolated,
+      server,
+      backend: "http",
+    }) as HttpApiConfig;
+  }
+
   return {
     version: parsed.data.version,
     options: {
@@ -885,6 +1060,7 @@ export function parseConfig(input: unknown): CapletsConfig {
     mcpServers: servers,
     openapiEndpoints,
     graphqlEndpoints,
+    httpApis,
   };
 }
 
@@ -938,7 +1114,10 @@ function interpolateConfig<T>(value: T, path: string[] = []): T {
 function isPublicMetadataPath(path: string[]): boolean {
   if (
     path.length < 3 ||
-    (path[0] !== "mcpServers" && path[0] !== "openapiEndpoints" && path[0] !== "graphqlEndpoints")
+    (path[0] !== "mcpServers" &&
+      path[0] !== "openapiEndpoints" &&
+      path[0] !== "graphqlEndpoints" &&
+      path[0] !== "httpApis")
   ) {
     return false;
   }
@@ -951,6 +1130,41 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function hasEnvReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
+}
+
+function isUrl(value: string): boolean {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function withHttpActionMinProperties<T>(schema: T): T {
+  const actions = findHttpActionsSchema(schema);
+  if (actions) {
+    actions.minProperties = 1;
+  }
+  return schema;
+}
+
+function findHttpActionsSchema(value: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+  if (value.description === "Configured HTTP actions keyed by stable tool name.") {
+    return value;
+  }
+  for (const nested of Object.values(value)) {
+    const found = Array.isArray(nested)
+      ? nested.map(findHttpActionsSchema).find(Boolean)
+      : findHttpActionsSchema(nested);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 export function interpolateEnv(value: string): string {

@@ -46,6 +46,17 @@ describe("registry", () => {
           auth: { type: "bearer", token: "secret-graphql-token" },
         },
       },
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check internal service status through HTTP.",
+          baseUrl: "https://api.example.com/status",
+          auth: { type: "bearer", token: "secret-http-token" },
+          actions: {
+            check: { method: "GET", path: "/check" },
+          },
+        },
+      },
     });
     const registry = new ServerRegistry(config);
     expect(registry.enabledServers().map((server) => server.server)).toEqual([
@@ -53,8 +64,10 @@ describe("registry", () => {
       "remote",
       "users",
       "catalog",
+      "status",
     ]);
     expect(registry.get("disabled")).toBeUndefined();
+    expect(registry.get("status")?.backend).toBe("http");
     const description = capabilityDescription(config.mcpServers.enabled!);
     expect(description).toContain("Enabled Server");
     expect(description).toContain(
@@ -106,5 +119,23 @@ describe("registry", () => {
       },
     });
     expect(JSON.stringify(graphQlDetail)).not.toContain("secret-graphql");
+
+    const httpDescription = capabilityDescription(config.httpApis.status!);
+    expect(httpDescription).toContain("HTTP API backend");
+    expect(httpDescription).toContain('"operation":"check_backend"');
+    const httpDetail = registry.detail(config.httpApis.status!);
+    expect(httpDetail).toEqual({
+      caplet: "status",
+      name: "Status HTTP",
+      description: "Check internal service status through HTTP.",
+      backend: {
+        type: "http",
+        disabled: false,
+        requestTimeoutMs: 60000,
+        operationCacheTtlMs: 30000,
+        configuredActions: 1,
+      },
+    });
+    expect(JSON.stringify(httpDetail)).not.toContain("secret-http");
   });
 });

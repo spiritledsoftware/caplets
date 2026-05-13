@@ -10,6 +10,7 @@ import {
   runGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth.js";
+import { listAuth } from "../src/cli/auth.js";
 import { parseConfig } from "../src/config.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -114,6 +115,34 @@ describe("auth helpers", () => {
           dir,
         ),
       ).toEqual({ authorization: "Bearer secret-access-token" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes HTTP APIs in OAuth auth target listing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-config-"));
+    try {
+      const configPath = join(dir, "config.json");
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          httpApis: {
+            status: {
+              name: "Status HTTP",
+              description: "Check internal service status through HTTP.",
+              baseUrl: "https://api.example.com",
+              auth: { type: "oidc", clientId: "client" },
+              actions: { check: { method: "GET", path: "/check" } },
+            },
+          },
+        }),
+      );
+      const output: string[] = [];
+
+      listAuth({ configPath, writeOut: (value) => output.push(value) });
+
+      expect(output.join("")).toContain("status\tmissing");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

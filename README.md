@@ -1,7 +1,7 @@
 # Caplets
 
 Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers,
-native OpenAPI endpoints, and native GraphQL endpoints.
+native OpenAPI endpoints, native GraphQL endpoints, and explicitly configured HTTP APIs.
 
 Instead of connecting an MCP client to many downstream servers or HTTP APIs and exposing
 every operation up front, Caplets exposes one top-level tool per configured capability.
@@ -28,8 +28,8 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## What It Does
 
-- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, and native GraphQL endpoint definitions from `~/.caplets/config.json`.
-- Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, or GraphQL endpoint.
+- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from `~/.caplets/config.json`.
+- Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, or HTTP API.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
 - Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
@@ -37,6 +37,7 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 - Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected Caplet namespace.
 - Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
 - Converts configured GraphQL operations into MCP-style tool metadata, and can auto-generate GraphQL tools from schema root query and mutation fields.
+- Converts explicitly configured HTTP actions into MCP-style tool metadata and executes HTTP calls directly.
 - Preserves downstream tool results instead of rewriting them into a custom format.
 - Redacts secrets from structured errors.
 - Supports static remote auth and OAuth token storage for remote servers.
@@ -118,6 +119,26 @@ you want Caplets to expose:
         "issuer": "https://login.example.com"
       }
     }
+  },
+  "httpApis": {
+    "status": {
+      "name": "Status API",
+      "description": "Read deployment status from a simple HTTP API.",
+      "baseUrl": "https://api.example.com",
+      "auth": { "type": "none" },
+      "actions": {
+        "get_status": {
+          "method": "GET",
+          "path": "/status/{service}",
+          "description": "Fetch status for one service.",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "service": { "type": "string" } },
+            "required": ["service"]
+          }
+        }
+      }
+    }
   }
 }
 ```
@@ -150,8 +171,8 @@ the committed schema stays in sync with the Zod config validator.
 ### Caplet Files
 
 For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
-file must include exactly one executable backend: `mcpServer`, `openapiEndpoint`, or
-`graphqlEndpoint`;
+file must include exactly one executable backend: `mcpServer`, `openapiEndpoint`,
+`graphqlEndpoint`, or `httpApi`;
 serverless Caplets are intentionally out of scope.
 
 Top-level files derive the Caplet ID from the filename:
@@ -208,6 +229,32 @@ graphqlEndpoint:
 # Catalog GraphQL
 ```
 
+HTTP action Caplet files use `httpApi`:
+
+```md
+---
+name: Status API
+description: Read deployment status from a simple HTTP API.
+httpApi:
+  baseUrl: https://api.example.com
+  auth:
+    type: none
+  actions:
+    get_status:
+      method: GET
+      path: /status/{service}
+      description: Fetch status for one service.
+      inputSchema:
+        type: object
+        properties:
+          service:
+            type: string
+        required: [service]
+---
+
+# Status API
+```
+
 Top-level files derive their Caplet ID from the filename. Directory-style Caplets use
 `linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
 normal Markdown links from `CAPLET.md`.
@@ -255,8 +302,8 @@ caplets init --force
 
 ### Caplet IDs
 
-Each key under `mcpServers` or `openapiEndpoints` is the stable Caplet ID. It becomes the
-generated MCP tool name exactly, so keep it short and specific:
+Each key under `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, or `httpApis` is the
+stable Caplet ID. It becomes the generated MCP tool name exactly, so keep it short and specific:
 
 ```json
 {
@@ -272,7 +319,7 @@ generated MCP tool name exactly, so keep it short and specific:
 ```
 
 Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers`,
-`openapiEndpoints`, and `graphqlEndpoints`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
+`openapiEndpoints`, `graphqlEndpoints`, and `httpApis`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
 
 ### Stdio Servers
 
@@ -391,6 +438,57 @@ Every GraphQL endpoint can set:
 - `selectionDepth`: maximum depth for generated selection sets. Defaults to `2`; maximum `5`.
 - `disabled`: omit the endpoint from Caplets discovery. Defaults to `false`.
 
+### HTTP APIs
+
+Use `httpApis` for simple HTTP APIs that do not have an OpenAPI spec. Each action is an
+explicitly configured tool; Caplets does not discover routes, import curl commands, or execute
+shell snippets.
+
+```json
+{
+  "name": "Status API",
+  "description": "Read and update deployment status through HTTP actions.",
+  "baseUrl": "https://api.example.com",
+  "auth": { "type": "bearer", "token": "$env:STATUS_API_TOKEN" },
+  "maxResponseBytes": 1000000,
+  "actions": {
+    "get_status": {
+      "method": "GET",
+      "path": "/status/{service}",
+      "description": "Fetch status for one service.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "service": { "type": "string" }, "verbose": { "type": "boolean" } },
+        "required": ["service"]
+      },
+      "query": { "verbose": "$input.verbose" }
+    },
+    "set_status": {
+      "method": "POST",
+      "path": "/status/{service}",
+      "jsonBody": { "state": "$input.state", "note": "$input.note" }
+    }
+  }
+}
+```
+
+HTTP API actions support `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`. `baseUrl` must be HTTPS
+except loopback URLs, must not include credentials, query, or fragment, and action `path` values
+must start with `/` and be URL paths that cannot change origin or escape the base URL path.
+
+Action mappings can set `query`, `headers`, and `jsonBody`. `query` and `headers` must resolve
+to object maps whose values are strings, numbers, or booleans. `jsonBody` may use literals,
+nested arrays/objects, `$input.field` references, or `$input` for the whole argument object.
+Path placeholders such as `{service}` are read directly from `call_tool.arguments` and URL-encoded.
+Configured action headers cannot set managed headers such as `authorization`, `host`,
+`content-length`, `connection`, or `content-type`; JSON bodies set `content-type` automatically.
+
+HTTP API auth supports `none`, `bearer`, `headers`, `oauth2`, and `oidc`, matching OpenAPI and
+GraphQL. Responses are returned as structured content with `status`, `statusText`, safe headers,
+parsed `body` when present, and `elapsedMs`; non-2xx responses set `isError`, redirects are rejected,
+timeouts are enforced, response bodies are capped by `maxResponseBytes` (default `1000000`), and
+errors redact secrets.
+
 ### Authentication
 
 Remote servers can use:
@@ -401,7 +499,7 @@ Remote servers can use:
 - `{"type": "oauth2", ...}`
 - `{"type": "oidc", ...}`
 
-For OAuth/OIDC-backed MCP, OpenAPI, and GraphQL Caplets, authenticate once with:
+For OAuth/OIDC-backed MCP, OpenAPI, GraphQL, and HTTP API Caplets, authenticate once with:
 
 ```sh
 caplets auth login <server>

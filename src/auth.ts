@@ -46,7 +46,7 @@ type OAuthLikeAuthConfig = {
 
 export type GenericAuthTarget = {
   server: string;
-  backend: "openapi" | "graphql";
+  backend: "openapi" | "graphql" | "http";
   url?: string | undefined;
   baseUrl?: string | undefined;
   specUrl?: string | undefined;

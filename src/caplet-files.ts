@@ -6,7 +6,9 @@ import { z } from "zod";
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
+  HTTP_BASE_URL_PATTERN,
   SERVER_ID_PATTERN,
+  isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
 } from "./config/validation.js";
 import { CapletsError, redactSecrets } from "./errors.js";
@@ -347,6 +349,81 @@ const capletGraphQlEndpointSchema = z
     validateEndpointAuthHeaders(endpoint.auth, ctx);
   });
 
+const capletHttpActionSchema = z
+  .object({
+    method: z
+      .enum(["GET", "POST", "PUT", "PATCH", "DELETE"])
+      .describe("HTTP method used for this action."),
+    path: z
+      .string()
+      .min(1)
+      .regex(/^\//, "HTTP action path must start with /")
+      .describe("URL path appended to the HTTP API baseUrl.")
+      .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
+    description: z.string().min(1).optional().describe("Action capability description."),
+    inputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for call_tool arguments."),
+    query: z.unknown().optional().describe("Query parameter mapping."),
+    headers: z.unknown().optional().describe("Request header mapping."),
+    jsonBody: z.unknown().optional().describe("JSON request body mapping."),
+  })
+  .strict();
+
+const capletHttpApiSchema = z
+  .object({
+    baseUrl: z
+      .string()
+      .min(1)
+      .regex(
+        HTTP_BASE_URL_PATTERN,
+        "HTTP API baseUrl must not include credentials, query, or fragment",
+      )
+      .describe("Base URL for HTTP action requests."),
+    auth: capletEndpointAuthSchema.describe(
+      'Explicit HTTP API request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    actions: z
+      .record(z.string().regex(SERVER_ID_PATTERN), capletHttpActionSchema)
+      .refine(
+        (actions) => Object.keys(actions).length > 0,
+        "HTTP API must define at least one action",
+      )
+      .describe("Configured HTTP actions keyed by stable tool name."),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Timeout in milliseconds for HTTP action requests."),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Maximum HTTP action response body bytes to read."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Milliseconds HTTP action metadata stays fresh. Set 0 to refresh every time."),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+  })
+  .strict()
+  .superRefine((api, ctx) => {
+    if (api.baseUrl && !hasEnvReference(api.baseUrl) && !isAllowedHttpBaseUrl(api.baseUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message:
+          "HTTP API baseUrl must use https except loopback development urls and must not include credentials, query, or fragment",
+      });
+    }
+    validateEndpointAuthHeaders(api.auth, ctx);
+  });
+
 export const capletFileSchema = z
   .object({
     $schema: z
@@ -376,18 +453,22 @@ export const capletFileSchema = z
     graphqlEndpoint: capletGraphQlEndpointSchema
       .describe("GraphQL endpoint backend configuration for this Caplet.")
       .optional(),
+    httpApi: capletHttpApiSchema
+      .describe("HTTP API backend configuration for this Caplet.")
+      .optional(),
   })
   .strict()
   .superRefine((frontmatter, ctx) => {
     const backendCount =
       Number(Boolean(frontmatter.mcpServer)) +
       Number(Boolean(frontmatter.openapiEndpoint)) +
-      Number(Boolean(frontmatter.graphqlEndpoint));
+      Number(Boolean(frontmatter.graphqlEndpoint)) +
+      Number(Boolean(frontmatter.httpApi));
     if (backendCount !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, or graphqlEndpoint",
+          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, or httpApi",
       });
     }
   });
@@ -395,19 +476,20 @@ export const capletFileSchema = z
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 
 export function capletJsonSchema(): unknown {
-  return {
+  return withHttpActionMinProperties({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json",
     title: "Caplet file frontmatter",
     description: "YAML frontmatter schema for a Markdown Caplet file.",
     ...z.toJSONSchema(capletFileSchema, { io: "input" }),
-  };
+  });
 }
 
 export type CapletFileConfig = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
+  httpApis?: Record<string, unknown>;
 };
 
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
@@ -418,8 +500,14 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const servers: Record<string, unknown> = {};
   const openapiEndpoints: Record<string, unknown> = {};
   const graphqlEndpoints: Record<string, unknown> = {};
+  const httpApis: Record<string, unknown> = {};
   for (const candidate of discoverCapletFiles(root)) {
-    if (servers[candidate.id] || openapiEndpoints[candidate.id] || graphqlEndpoints[candidate.id]) {
+    if (
+      servers[candidate.id] ||
+      openapiEndpoints[candidate.id] ||
+      graphqlEndpoints[candidate.id] ||
+      httpApis[candidate.id]
+    ) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
     const config = readCapletFile(candidate.path);
@@ -429,6 +517,9 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
     } else if (isPlainObject(config) && config.backend === "graphql") {
       const { backend: _backend, ...endpoint } = config;
       graphqlEndpoints[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "http") {
+      const { backend: _backend, ...endpoint } = config;
+      httpApis[candidate.id] = endpoint;
     } else {
       servers[candidate.id] = config;
     }
@@ -437,11 +528,13 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const hasServers = Object.keys(servers).length > 0;
   const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
   const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
-  return hasServers || hasOpenApi || hasGraphQl
+  const hasHttpApis = Object.keys(httpApis).length > 0;
+  return hasServers || hasOpenApi || hasGraphQl || hasHttpApis
     ? {
         ...(hasServers ? { mcpServers: servers } : {}),
         ...(hasOpenApi ? { openapiEndpoints } : {}),
         ...(hasGraphQl ? { graphqlEndpoints } : {}),
+        ...(hasHttpApis ? { httpApis } : {}),
       }
     : undefined;
 }
@@ -533,6 +626,17 @@ function capletToServerConfig(
       schemaPath: normalizeLocalPath(frontmatter.graphqlEndpoint.schemaPath, baseDir),
       operations: normalizeGraphQlOperations(frontmatter.graphqlEndpoint.operations, baseDir),
       backend: "graphql",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      body,
+    };
+  }
+
+  if (frontmatter.httpApi) {
+    return {
+      ...frontmatter.httpApi,
+      backend: "http",
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
@@ -644,4 +748,30 @@ function isUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function withHttpActionMinProperties<T>(schema: T): T {
+  const actions = findHttpActionsSchema(schema);
+  if (actions) {
+    actions.minProperties = 1;
+  }
+  return schema;
+}
+
+function findHttpActionsSchema(value: unknown): Record<string, unknown> | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+  if (value.description === "Configured HTTP actions keyed by stable tool name.") {
+    return value;
+  }
+  for (const nested of Object.values(value)) {
+    const found = Array.isArray(nested)
+      ? nested.map(findHttpActionsSchema).find(Boolean)
+      : findHttpActionsSchema(nested);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }

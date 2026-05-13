@@ -40,6 +40,32 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("registers HTTP API Caplets", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check internal service status through HTTP.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+
+    expect(runtime.registeredToolIds()).toEqual(["status"]);
+    expect(server.registerTool).toHaveBeenCalledWith(
+      "status",
+      expect.objectContaining({ title: "Status HTTP" }),
+      expect.any(Function),
+    );
+
+    await runtime.close();
+  });
+
   it("adds, updates, and removes tools across successful reloads", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -81,11 +107,13 @@ describe("CapletsRuntime", () => {
     expect(server.registered.get("gamma")).toBeDefined();
 
     writeConfig(configPath, {
-      mcpServers: {
+      httpApis: {
         gamma: {
-          name: "Gamma",
-          description: "Search gamma project documents.",
-          command: "node",
+          name: "Gamma HTTP",
+          description: "Search gamma project documents over HTTP.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { search: { method: "GET", path: "/search" } },
         },
       },
     });

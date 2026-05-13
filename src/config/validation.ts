@@ -1,5 +1,6 @@
 export const SERVER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 export const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+export const HTTP_BASE_URL_PATTERN = /^(?![a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*@)[^?#]*$/;
 export const FORBIDDEN_HEADERS = new Set([
   "accept",
   "authorization",
@@ -31,4 +32,14 @@ export function isAllowedRemoteUrl(value: string): boolean {
   return (
     url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
   );
+}
+
+export function isAllowedHttpBaseUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return isAllowedRemoteUrl(value) && !url.username && !url.password && !url.search && !url.hash;
 }
