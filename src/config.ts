@@ -462,6 +462,7 @@ const httpActionSchema = z
       .min(1)
       .regex(/^\//, "HTTP action path must start with /")
       .describe("URL path appended to the HTTP API baseUrl.")
+      .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
     inputSchema: z
