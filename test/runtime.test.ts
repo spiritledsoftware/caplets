@@ -118,10 +118,11 @@ describe("CapletsRuntime", () => {
     });
 
     writeFileSync(configPath, "{not json");
-    await runtime.reload();
+    const reloaded = await runtime.reload();
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
     expect(server.registered.get("alpha")?.remove).not.toHaveBeenCalled();
+    expect(reloaded).toBe(false);
     expect(errors.join("")).toContain("keeping last known-good config");
 
     await runtime.close();

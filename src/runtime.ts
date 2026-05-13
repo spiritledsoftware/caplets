@@ -54,7 +54,7 @@ export class CapletsRuntime {
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
-  private reloading: Promise<void> | undefined;
+  private reloading: Promise<boolean> | undefined;
   private pendingReload = false;
   private closed = false;
 
@@ -103,14 +103,12 @@ export class CapletsRuntime {
     }
     if (this.reloading) {
       this.pendingReload = true;
-      await this.reloading;
-      return !this.closed && !this.reloading;
+      return await this.reloading;
     }
     this.reloading = this.reloadUntilSettled().finally(() => {
       this.reloading = undefined;
     });
-    await this.reloading;
-    return true;
+    return await this.reloading;
   }
 
   async close(): Promise<void> {
@@ -145,9 +143,9 @@ export class CapletsRuntime {
       .sort();
   }
 
-  private async reloadOnce(): Promise<void> {
+  private async reloadOnce(): Promise<boolean> {
     if (this.closed) {
-      return;
+      return false;
     }
     let nextConfig: CapletsConfig;
     try {
@@ -155,36 +153,40 @@ export class CapletsRuntime {
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
-      return;
+      return false;
     }
 
     if (this.closed) {
-      return;
+      return false;
     }
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
-    await this.invalidateChangedBackends(previousConfig, nextConfig);
-    if (this.closed) {
-      return;
-    }
     this.registry = nextRegistry;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.graphql.updateRegistry(nextRegistry);
+    await this.invalidateChangedBackends(previousConfig, nextConfig);
+    if (this.closed) {
+      return false;
+    }
     this.reconcileTools(previousConfig, nextConfig);
     this.resetWatchers();
+    return true;
   }
 
-  private async reloadUntilSettled(): Promise<void> {
+  private async reloadUntilSettled(): Promise<boolean> {
+    let succeeded = true;
     do {
       this.pendingReload = false;
       try {
-        await this.reloadOnce();
+        succeeded = (await this.reloadOnce()) && succeeded;
       } catch (err) {
         this.writeErr(`Caplets reload failed.\n`);
         this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
+        succeeded = false;
       }
     } while (this.pendingReload && !this.closed);
+    return succeeded && !this.closed;
   }
 
   private reconcileTools(previous: CapletsConfig | undefined, next: CapletsConfig): void {
@@ -282,7 +284,7 @@ export class CapletsRuntime {
       }
       watched.add(watchPath);
       try {
-        this.watchers.push(...this.watchPathTree(watchPath, entry.path));
+        this.watchers.push(...this.watchEntry(entry, watchPath));
       } catch (error) {
         this.writeErr(`Caplets could not watch ${entry.reason} path ${entry.path}.\n`);
         this.writeErr(`${JSON.stringify(toSafeError(error, "SERVER_UNAVAILABLE"), null, 2)}\n`);
@@ -297,15 +299,15 @@ export class CapletsRuntime {
     this.watchers = [];
   }
 
-  private watchPathTree(watchPath: string, targetPath: string): FSWatcher[] {
-    if (isDirectory(watchPath)) {
+  private watchEntry(entry: WatchedPath, watchPath: string): FSWatcher[] {
+    if (entry.reason === "caplets" && existsSync(entry.path) && isDirectory(watchPath)) {
       return this.watchDirectoryTree(watchPath);
     }
 
     return [
       watch(watchPath, { persistent: true }, (eventType) => {
         this.scheduleReload();
-        if (eventType === "rename" && existsSync(targetPath)) {
+        if (eventType === "rename" && entry.reason === "caplets" && existsSync(entry.path)) {
           this.scheduleWatcherRefresh();
         }
       }),
