@@ -37,6 +37,7 @@ type ManagedConnection = {
 
 export class DownstreamManager {
   private readonly connections = new Map<string, ManagedConnection>();
+  private readonly connecting = new Map<string, ManagedConnection>();
   private readonly restartState = new Map<string, { restartUsed: boolean; backoffUntil: number }>();
 
   constructor(
@@ -49,18 +50,19 @@ export class DownstreamManager {
   }
 
   async close(): Promise<void> {
-    for (const connection of this.connections.values()) {
+    const connections = [...this.connections.values(), ...this.connecting.values()];
+    for (const connection of connections) {
       connection.closing = true;
     }
-    await Promise.allSettled(
-      [...this.connections.values()].map((connection) => connection.transport.close()),
-    );
+    await Promise.allSettled(connections.map((connection) => connection.transport.close()));
     this.connections.clear();
+    this.connecting.clear();
   }
 
   async closeServer(serverId: string): Promise<void> {
-    const connection = this.connections.get(serverId);
+    const connection = this.connections.get(serverId) ?? this.connecting.get(serverId);
     this.connections.delete(serverId);
+    this.connecting.delete(serverId);
     this.restartState.delete(serverId);
     if (connection) {
       connection.closing = true;
@@ -229,6 +231,7 @@ export class DownstreamManager {
     }
 
     this.registry.setStatus(server.server, "starting");
+    let pendingConnection: ManagedConnection | undefined;
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
       const transport = this.createTransport(server);
@@ -237,6 +240,8 @@ export class DownstreamManager {
         transport,
         configFingerprint: expectedFingerprint,
       };
+      pendingConnection = connection;
+      this.connecting.set(server.server, connection);
       transport.onclose = () => {
         const current = this.connections.get(server.server);
         if (current === connection) {
@@ -272,15 +277,28 @@ export class DownstreamManager {
         );
       };
       await client.connect(transport, { timeout: server.startupTimeoutMs });
+      if (connection.closing) {
+        await transport.close();
+        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was closed`);
+      }
       if (this.currentServerFingerprint(server) !== expectedFingerprint) {
         connection.closing = true;
         await transport.close();
         throw staleServerConfigError(server.server);
       }
+      if (this.connecting.get(server.server) !== connection) {
+        connection.closing = true;
+        await transport.close();
+        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was replaced`);
+      }
+      this.connecting.delete(server.server);
       this.connections.set(server.server, connection);
       this.registry.setStatus(server.server, "available");
       return connection;
     } catch (error) {
+      if (pendingConnection && this.connecting.get(server.server) === pendingConnection) {
+        this.connecting.delete(server.server);
+      }
       const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
       const safe = toSafeError(error, code);
       this.registry.setStatus(server.server, "unavailable", safe);

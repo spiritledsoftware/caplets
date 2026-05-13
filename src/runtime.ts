@@ -141,9 +141,7 @@ export class CapletsRuntime {
   }
 
   watchedPaths(): string[] {
-    return watchedPaths(this.paths)
-      .map((entry) => entry.path)
-      .sort();
+    return [...new Set(watchedPaths(this.paths).map((entry) => entry.path))].sort();
   }
 
   private async reloadOnce(): Promise<boolean> {
@@ -289,10 +287,11 @@ export class CapletsRuntime {
     const watched = new Set<string>();
     for (const entry of watchedPaths(this.paths)) {
       const watchPath = existsSync(entry.path) ? entry.path : nearestExistingParent(entry.path);
-      if (!watchPath || watched.has(watchPath)) {
+      const watchKey = `${entry.reason}:${watchPath}`;
+      if (!watchPath || watched.has(watchKey)) {
         continue;
       }
-      watched.add(watchPath);
+      watched.add(watchKey);
       try {
         this.watchers.push(...this.watchEntry(entry, watchPath));
       } catch (error) {
@@ -385,10 +384,11 @@ function uniqueWatchedPaths(entries: WatchedPath[]): WatchedPath[] {
   const seen = new Set<string>();
   const unique: WatchedPath[] = [];
   for (const entry of entries) {
-    if (seen.has(entry.path)) {
+    const key = `${entry.reason}:${entry.path}`;
+    if (seen.has(key)) {
       continue;
     }
-    seen.add(entry.path);
+    seen.add(key);
     unique.push(entry);
   }
   return unique;

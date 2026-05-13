@@ -119,6 +119,98 @@ describe("downstream stdio lifecycle", () => {
       await manager.close();
     }
   });
+
+  it("closes an in-flight remote connection before it can be cached", async () => {
+    const firstInitialize = deferred<void>();
+    const releaseFirstInitialize = deferred<void>();
+    let initializeCount = 0;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { id?: number; method?: string };
+          response.setHeader("content-type", "application/json");
+          if (message.method === "initialize") {
+            initializeCount += 1;
+            if (initializeCount === 1) {
+              firstInitialize.resolve();
+              await releaseFirstInitialize.promise;
+            }
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "fixture-remote", version: "1.0.0" },
+                },
+              }),
+            );
+            return;
+          }
+          if (message.method === "tools/list") {
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: { tools: [{ name: "remote_echo", inputSchema: {} }] },
+              }),
+            );
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const firstList = manager.listTools(config.mcpServers.remote!);
+
+      await firstInitialize.promise;
+      await manager.closeServer("remote");
+      releaseFirstInitialize.resolve();
+
+      await expect(firstList).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+      } satisfies Partial<CapletsError>);
+
+      await manager.close();
+    } finally {
+      releaseFirstInitialize.resolve();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 describe("downstream remote OAuth lifecycle", () => {
@@ -335,3 +427,17 @@ describe("downstream remote OAuth lifecycle", () => {
     }
   });
 });
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}

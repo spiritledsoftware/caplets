@@ -176,6 +176,38 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("watches nested Caplet files when the config dir is also the Caplets root", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const nestedFile = join(dir, "user", "nested", "notes.md");
+    mkdirSync(join(dir, "user", "nested"), { recursive: true });
+    writeFileSync(nestedFile, "before");
+    const runtime = new CapletsRuntime({
+      configPath,
+      projectConfigPath,
+      server: mockServer(),
+      watchDebounceMs: 10,
+    });
+    let reloads = 0;
+    (runtime as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
+      reloads += 1;
+      return true;
+    });
+
+    writeFileSync(nestedFile, "after");
+    await eventually(() => expect(reloads).toBeGreaterThan(0));
+
+    await runtime.close();
+  });
+
   it("runs a follow-up reload when another reload is requested mid-flight", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -244,4 +276,23 @@ function mockServer() {
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
+}
+
+async function eventually(assertion: () => void): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  try {
+    assertion();
+  } catch {
+    throw lastError;
+  }
 }
