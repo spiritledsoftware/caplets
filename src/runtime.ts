@@ -54,7 +54,8 @@ export class CapletsRuntime {
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
-  private reloading: Promise<void | boolean> | undefined;
+  private reloading: Promise<void> | undefined;
+  private pendingReload = false;
   private closed = false;
 
   constructor(options: CapletsRuntimeOptions = {}) {
@@ -101,18 +102,13 @@ export class CapletsRuntime {
       return false;
     }
     if (this.reloading) {
+      this.pendingReload = true;
       await this.reloading;
-      return !this.closed;
+      return !this.closed && !this.reloading;
     }
-    this.reloading = this.reloadOnce()
-      .catch((err) => {
-        this.writeErr(`Caplets reload failed.\n`);
-        this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
-        return false;
-      })
-      .finally(() => {
-        this.reloading = undefined;
-      });
+    this.reloading = this.reloadUntilSettled().finally(() => {
+      this.reloading = undefined;
+    });
     await this.reloading;
     return true;
   }
@@ -177,6 +173,18 @@ export class CapletsRuntime {
     this.graphql.updateRegistry(nextRegistry);
     this.reconcileTools(previousConfig, nextConfig);
     this.resetWatchers();
+  }
+
+  private async reloadUntilSettled(): Promise<void> {
+    do {
+      this.pendingReload = false;
+      try {
+        await this.reloadOnce();
+      } catch (err) {
+        this.writeErr(`Caplets reload failed.\n`);
+        this.writeErr(`${JSON.stringify(toSafeError(err, "INTERNAL_ERROR"), null, 2)}\n`);
+      }
+    } while (this.pendingReload && !this.closed);
   }
 
   private reconcileTools(previous: CapletsConfig | undefined, next: CapletsConfig): void {
@@ -295,9 +303,9 @@ export class CapletsRuntime {
     }
 
     return [
-      watch(watchPath, { persistent: true }, () => {
+      watch(watchPath, { persistent: true }, (eventType) => {
         this.scheduleReload();
-        if (existsSync(targetPath)) {
+        if (eventType === "rename" && existsSync(targetPath)) {
           this.scheduleWatcherRefresh();
         }
       }),
@@ -310,9 +318,11 @@ export class CapletsRuntime {
     for (const directory of directories) {
       try {
         watchers.push(
-          watch(directory, { persistent: true }, () => {
+          watch(directory, { persistent: true }, (eventType) => {
             this.scheduleReload();
-            this.scheduleWatcherRefresh();
+            if (eventType === "rename") {
+              this.scheduleWatcherRefresh();
+            }
           }),
         );
       } catch (error) {

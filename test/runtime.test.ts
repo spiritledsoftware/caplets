@@ -127,6 +127,34 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("runs a follow-up reload when another reload is requested mid-flight", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server: mockServer() });
+    let calls = 0;
+
+    (runtime as unknown as { reloadOnce: () => Promise<void> }).reloadOnce = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        void runtime.reload();
+      }
+    });
+
+    await runtime.reload();
+
+    expect(calls).toBe(2);
+
+    await runtime.close();
+  });
+
   function tempConfig(config: unknown): {
     dir: string;
     configPath: string;
