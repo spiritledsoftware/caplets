@@ -1,5 +1,11 @@
 # caplets
 
+## 0.8.0
+
+### Minor Changes
+
+- 349459a: Add native HTTP actions for explicitly configured non-OpenAPI APIs.
+
 ## 0.7.0
 
 ### Minor Changes
