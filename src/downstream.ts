@@ -113,6 +113,10 @@ export class DownstreamManager {
         { timeout: server.callTimeoutMs },
       );
     } catch (error) {
+      if (isAuthRemediationError(error)) {
+        this.registry.setStatus(server.server, "unavailable", toSafeError(error));
+        throw error;
+      }
       if (isTimeoutLike(error)) {
         throw new CapletsError(
           "TOOL_CALL_TIMEOUT",
@@ -174,6 +178,9 @@ export class DownstreamManager {
         isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "DOWNSTREAM_PROTOCOL_ERROR",
       );
       this.registry.setStatus(server.server, "unavailable", safe);
+      if (isAuthRemediationError(error)) {
+        throw error;
+      }
       throw new CapletsError(safe.code, `Could not list tools for ${server.server}`, safe);
     }
   }
@@ -220,6 +227,9 @@ export class DownstreamManager {
       const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
       const safe = toSafeError(error, code);
       this.registry.setStatus(server.server, "unavailable", safe);
+      if (isAuthRemediationError(error)) {
+        throw error;
+      }
       throw new CapletsError(code, `Could not start ${server.server}`, safe);
     }
   }
@@ -261,18 +271,31 @@ export class DownstreamManager {
       }
       return response;
     };
+    const fetchWithOAuthAuthClassification = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ) => {
+      const response = await fetch(input, init);
+      if (response.status === 403) {
+        const authError = classifyRemoteAuthError(server, response);
+        if (authError) {
+          throw authError;
+        }
+      }
+      return response;
+    };
     if (server.transport === "http") {
       return new StreamableHTTPClientTransport(new URL(server.url), {
         ...(requestInit ? { requestInit } : {}),
         ...(authProvider ? { authProvider } : {}),
-        fetch: authProvider ? fetch : fetchWithAuthClassification,
+        fetch: authProvider ? fetchWithOAuthAuthClassification : fetchWithAuthClassification,
       });
     }
     if (server.transport === "sse") {
       return new SSEClientTransport(new URL(server.url), {
         ...(requestInit ? { requestInit } : {}),
         ...(authProvider ? { authProvider } : {}),
-        fetch: authProvider ? fetch : fetchWithAuthClassification,
+        fetch: authProvider ? fetchWithOAuthAuthClassification : fetchWithAuthClassification,
       });
     }
 
@@ -317,4 +340,11 @@ function nearbyToolNames(tools: Tool[], needle: string): string[] {
 
 function isTimeoutLike(error: unknown): boolean {
   return error instanceof Error && /timeout|timed out|aborted/i.test(error.message);
+}
+
+function isAuthRemediationError(error: unknown): error is CapletsError {
+  return (
+    error instanceof CapletsError &&
+    (error.code === "AUTH_REQUIRED" || error.code === "AUTH_FAILED")
+  );
 }

@@ -49,6 +49,125 @@ describe("downstream stdio lifecycle", () => {
 });
 
 describe("downstream remote OAuth lifecycle", () => {
+  it("surfaces missing OAuth credentials as AUTH_REQUIRED", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote OAuth server.",
+            transport: "http",
+            url: "http://127.0.0.1:9/mcp",
+            auth: { type: "oauth2" },
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry, { authDir: join(dir, "auth") });
+
+      await expect(manager.listTools(config.mcpServers.remote!)).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        details: expect.objectContaining({
+          nextAction: "run_caplets_auth_login",
+        }),
+      } satisfies Partial<CapletsError>);
+      expect(registry.getStatus("remote")).toBe("unavailable");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies OAuth 403 responses as AUTH_FAILED", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    const authDir = join(dir, "auth");
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        if (!body) {
+          response.statusCode = 202;
+          response.end();
+          return;
+        }
+        const message = JSON.parse(body) as { id?: number; method?: string };
+        response.setHeader("content-type", "application/json");
+        if (message.method === "initialize") {
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                protocolVersion: "2025-06-18",
+                capabilities: { tools: {} },
+                serverInfo: { name: "fixture-remote", version: "1.0.0" },
+              },
+            }),
+          );
+          return;
+        }
+        if (message.method === "tools/list") {
+          response.statusCode = 403;
+          response.statusMessage = "Forbidden";
+          response.end();
+          return;
+        }
+        response.statusCode = 202;
+        response.end();
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "secret-oauth-token",
+          refreshToken: "secret-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+        authDir,
+      );
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote OAuth server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+            auth: { type: "oauth2" },
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry, { authDir });
+
+      try {
+        await expect(manager.listTools(config.mcpServers.remote!)).rejects.toMatchObject({
+          code: "AUTH_FAILED",
+          details: expect.objectContaining({
+            nextAction: "run_caplets_auth_login",
+            status: 403,
+          }),
+        } satisfies Partial<CapletsError>);
+        expect(registry.getStatus("remote")).toBe("unavailable");
+      } finally {
+        await manager.close();
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uses the MCP SDK auth provider for stored OAuth tokens", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const authDir = join(dir, "auth");
