@@ -8,7 +8,12 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletServerConfig } from "./config.js";
-import { classifyRemoteAuthError, oauthHeaders, staticRemoteHeaders } from "./auth.js";
+import {
+  classifyRemoteAuthError,
+  FileOAuthProvider,
+  readTokenBundle,
+  staticRemoteHeaders,
+} from "./auth.js";
 import { CapletsError, toSafeError } from "./errors.js";
 import type { ServerRegistry } from "./registry.js";
 
@@ -108,6 +113,10 @@ export class DownstreamManager {
         { timeout: server.callTimeoutMs },
       );
     } catch (error) {
+      if (isAuthRemediationError(error)) {
+        this.registry.setStatus(server.server, "unavailable", toSafeError(error));
+        throw error;
+      }
       if (isTimeoutLike(error)) {
         throw new CapletsError(
           "TOOL_CALL_TIMEOUT",
@@ -169,6 +178,9 @@ export class DownstreamManager {
         isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "DOWNSTREAM_PROTOCOL_ERROR",
       );
       this.registry.setStatus(server.server, "unavailable", safe);
+      if (isAuthRemediationError(error)) {
+        throw error;
+      }
       throw new CapletsError(safe.code, `Could not list tools for ${server.server}`, safe);
     }
   }
@@ -215,6 +227,9 @@ export class DownstreamManager {
       const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
       const safe = toSafeError(error, code);
       this.registry.setStatus(server.server, "unavailable", safe);
+      if (isAuthRemediationError(error)) {
+        throw error;
+      }
       throw new CapletsError(code, `Could not start ${server.server}`, safe);
     }
   }
@@ -242,11 +257,9 @@ export class DownstreamManager {
       throw new CapletsError("CONFIG_INVALID", `${server.server} is missing url`);
     }
 
-    const headers = {
-      ...staticRemoteHeaders(server),
-      ...oauthHeaders(server, this.options.authDir),
-    };
+    const headers = staticRemoteHeaders(server);
     const requestInit = Object.keys(headers).length ? { headers } : undefined;
+    const authProvider = this.oauthProvider(server);
     const fetchWithAuthClassification = async (
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
@@ -258,24 +271,61 @@ export class DownstreamManager {
       }
       return response;
     };
+    const fetchWithOAuthAuthClassification = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ) => {
+      const response = await fetch(input, init);
+      if (response.status === 403) {
+        const authError = classifyRemoteAuthError(server, response);
+        if (authError) {
+          throw authError;
+        }
+      }
+      return response;
+    };
     if (server.transport === "http") {
-      return new StreamableHTTPClientTransport(
-        new URL(server.url),
-        requestInit
-          ? { requestInit, fetch: fetchWithAuthClassification }
-          : { fetch: fetchWithAuthClassification },
-      );
+      return new StreamableHTTPClientTransport(new URL(server.url), {
+        ...(requestInit ? { requestInit } : {}),
+        ...(authProvider ? { authProvider } : {}),
+        fetch: authProvider ? fetchWithOAuthAuthClassification : fetchWithAuthClassification,
+      });
     }
     if (server.transport === "sse") {
-      return new SSEClientTransport(
-        new URL(server.url),
-        requestInit
-          ? { requestInit, fetch: fetchWithAuthClassification }
-          : { fetch: fetchWithAuthClassification },
-      );
+      return new SSEClientTransport(new URL(server.url), {
+        ...(requestInit ? { requestInit } : {}),
+        ...(authProvider ? { authProvider } : {}),
+        fetch: authProvider ? fetchWithOAuthAuthClassification : fetchWithAuthClassification,
+      });
     }
 
     throw new CapletsError("UNSUPPORTED_TRANSPORT", `Unsupported transport for ${server.server}`);
+  }
+
+  private oauthProvider(server: CapletServerConfig): FileOAuthProvider | undefined {
+    if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
+      return undefined;
+    }
+    const bundle = readTokenBundle(server.server, this.options.authDir);
+    if (!bundle?.accessToken && !bundle?.refreshToken) {
+      throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
+        server: server.server,
+        authType: server.auth.type,
+        nextAction: "run_caplets_auth_login",
+      });
+    }
+    return new FileOAuthProvider(
+      server,
+      server.auth.redirectUri ?? "http://127.0.0.1/callback",
+      (_url: URL) => {
+        throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
+          server: server.server,
+          authType: server.auth?.type,
+          nextAction: "run_caplets_auth_login",
+        });
+      },
+      this.options.authDir,
+    );
   }
 }
 
@@ -290,4 +340,11 @@ function nearbyToolNames(tools: Tool[], needle: string): string[] {
 
 function isTimeoutLike(error: unknown): boolean {
   return error instanceof Error && /timeout|timed out|aborted/i.test(error.message);
+}
+
+function isAuthRemediationError(error: unknown): error is CapletsError {
+  return (
+    error instanceof CapletsError &&
+    (error.code === "AUTH_REQUIRED" || error.code === "AUTH_FAILED")
+  );
 }
