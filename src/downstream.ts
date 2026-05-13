@@ -317,7 +317,7 @@ export class DownstreamManager {
     return new FileOAuthProvider(
       server,
       server.auth.redirectUri ?? "http://127.0.0.1/callback",
-      () => {
+      (_url: URL) => {
         throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
           server: server.server,
           authType: server.auth?.type,
