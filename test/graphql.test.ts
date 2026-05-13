@@ -293,6 +293,46 @@ describe("GraphQLManager", () => {
       ),
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
   });
+
+  it("invalidates cached operations for one endpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-graphql-invalidate-"));
+    const schemaPath = join(dir, "schema.graphql");
+    writeFileSync(
+      schemaPath,
+      `
+        type Query {
+          first: String
+        }
+      `,
+    );
+    const manager = new GraphQLManager(registry());
+    const endpoint = graphqlEndpoint({
+      schemaPath,
+      operationCacheTtlMs: 30_000,
+    });
+
+    try {
+      expect((await manager.listTools(endpoint)).map((tool) => tool.name)).toEqual(["query_first"]);
+
+      writeFileSync(
+        schemaPath,
+        `
+          type Query {
+            second: String
+          }
+        `,
+      );
+      expect((await manager.listTools(endpoint)).map((tool) => tool.name)).toEqual(["query_first"]);
+
+      manager.invalidate("users");
+
+      expect((await manager.listTools(endpoint)).map((tool) => tool.name)).toEqual([
+        "query_second",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 const schemaSdl = `

@@ -601,6 +601,39 @@ describe("native OpenAPI Caplets", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("invalidates cached operations for one endpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-invalidate-"));
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(specPath, JSON.stringify(singleOperationSpec("first")));
+    const config = parseConfig({
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry);
+    const endpoint = config.openapiEndpoints.users!;
+
+    try {
+      expect((await openapi.listTools(endpoint)).map((tool) => tool.name)).toEqual(["first"]);
+
+      writeFileSync(specPath, JSON.stringify(singleOperationSpec("second")));
+      expect((await openapi.listTools(endpoint)).map((tool) => tool.name)).toEqual(["first"]);
+
+      openapi.invalidate("users");
+
+      expect((await openapi.listTools(endpoint)).map((tool) => tool.name)).toEqual(["second"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function openApiSpec(baseUrl: string) {
@@ -645,6 +678,21 @@ function openApiSpec(baseUrl: string) {
             },
           },
           responses: { "201": { description: "Created" } },
+        },
+      },
+    },
+  };
+}
+
+function singleOperationSpec(operationId: string) {
+  return {
+    openapi: "3.0.3",
+    info: { title: "Users API", version: "1.0.0" },
+    paths: {
+      "/users": {
+        get: {
+          operationId,
+          responses: { "200": { description: "OK" } },
         },
       },
     },

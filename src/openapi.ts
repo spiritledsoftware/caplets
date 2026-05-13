@@ -49,9 +49,17 @@ export class OpenApiManager {
   private readonly cache = new Map<string, ManagedOpenApi>();
 
   constructor(
-    private readonly registry: ServerRegistry,
+    private registry: ServerRegistry,
     private readonly options: { authDir?: string } = {},
   ) {}
+
+  updateRegistry(registry: ServerRegistry): void {
+    this.registry = registry;
+  }
+
+  invalidate(serverId: string): void {
+    this.cache.delete(serverId);
+  }
 
   async checkEndpoint(endpoint: OpenApiEndpointConfig): Promise<{
     server: string;
