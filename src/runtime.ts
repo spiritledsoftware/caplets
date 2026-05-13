@@ -113,20 +113,23 @@ export class CapletsRuntime {
 
   async close(): Promise<void> {
     this.closed = true;
-    if (this.reloadTimer) {
-      clearTimeout(this.reloadTimer);
-      this.reloadTimer = undefined;
+    try {
+      if (this.reloadTimer) {
+        clearTimeout(this.reloadTimer);
+        this.reloadTimer = undefined;
+      }
+      if (this.watcherRefreshTimer) {
+        clearTimeout(this.watcherRefreshTimer);
+        this.watcherRefreshTimer = undefined;
+      }
+      if (this.reloading) {
+        await this.reloading;
+      }
+    } finally {
+      this.closeWatchers();
+      await this.downstream.close();
+      await this.server.close();
     }
-    if (this.watcherRefreshTimer) {
-      clearTimeout(this.watcherRefreshTimer);
-      this.watcherRefreshTimer = undefined;
-    }
-    if (this.reloading) {
-      await this.reloading;
-    }
-    this.closeWatchers();
-    await this.downstream.close();
-    await this.server.close();
   }
 
   currentConfig(): CapletsConfig {

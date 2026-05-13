@@ -77,6 +77,48 @@ describe("downstream stdio lifecycle", () => {
       await manager.close();
     }
   });
+
+  it("refuses stale server configs after the registry changes", async () => {
+    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const initialConfig = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A useful fixture server.",
+          command: process.execPath,
+          args: [fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    const nextConfig = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture Reloaded",
+          description: "A reloaded fixture server.",
+          command: process.execPath,
+          args: [fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    const registry = new ServerRegistry(initialConfig);
+    const manager = new DownstreamManager(registry);
+    const staleServer = initialConfig.mcpServers.fixture!;
+
+    try {
+      manager.updateRegistry(new ServerRegistry(nextConfig));
+
+      await expect(manager.listTools(staleServer)).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+      } satisfies Partial<CapletsError>);
+
+      const listed = await manager.listTools(nextConfig.mcpServers.fixture!);
+      expect(listed.map((tool) => tool.name).sort()).toEqual(["duplicate", "echo"]);
+    } finally {
+      await manager.close();
+    }
+  });
 });
 
 describe("downstream remote OAuth lifecycle", () => {

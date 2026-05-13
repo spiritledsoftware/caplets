@@ -28,6 +28,7 @@ export type CompactTool = {
 type ManagedConnection = {
   client: Client;
   transport: { close(): Promise<void>; onclose?: () => void; onerror?: (error: Error) => void };
+  configFingerprint: string;
   tools?: Tool[];
   toolsFetchedAt?: number;
   restartingAfterDeath?: boolean;
@@ -204,9 +205,23 @@ export class DownstreamManager {
   }
 
   private async connect(server: CapletServerConfig): Promise<ManagedConnection> {
+    const expectedFingerprint = this.currentServerFingerprint(server);
     const existing = this.connections.get(server.server);
     if (existing) {
-      return existing;
+      if (existing.configFingerprint !== expectedFingerprint) {
+        this.connections.delete(server.server);
+        existing.closing = true;
+        await existing.transport.close();
+      } else {
+        return existing;
+      }
+    }
+    if (this.currentServerFingerprint(server) !== expectedFingerprint) {
+      throw staleServerConfigError(server.server);
+    }
+    const currentServer = this.currentServer(server.server);
+    if (!sameServerConfig(currentServer, server)) {
+      throw staleServerConfigError(server.server);
     }
     const restart = this.restartState.get(server.server);
     if (restart && restart.restartUsed && Date.now() < restart.backoffUntil) {
@@ -217,7 +232,11 @@ export class DownstreamManager {
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
       const transport = this.createTransport(server);
-      const connection: ManagedConnection = { client, transport };
+      const connection: ManagedConnection = {
+        client,
+        transport,
+        configFingerprint: expectedFingerprint,
+      };
       transport.onclose = () => {
         const current = this.connections.get(server.server);
         if (current === connection) {
@@ -253,6 +272,11 @@ export class DownstreamManager {
         );
       };
       await client.connect(transport, { timeout: server.startupTimeoutMs });
+      if (this.currentServerFingerprint(server) !== expectedFingerprint) {
+        connection.closing = true;
+        await transport.close();
+        throw staleServerConfigError(server.server);
+      }
       this.connections.set(server.server, connection);
       this.registry.setStatus(server.server, "available");
       return connection;
@@ -360,6 +384,34 @@ export class DownstreamManager {
       this.options.authDir,
     );
   }
+
+  private currentServer(serverId: string): CapletServerConfig {
+    const current = this.registry.require(serverId);
+    if (current.backend !== "mcp") {
+      throw staleServerConfigError(serverId);
+    }
+    return current;
+  }
+
+  private currentServerFingerprint(server: CapletServerConfig): string {
+    const current = this.currentServer(server.server);
+    if (!sameServerConfig(current, server)) {
+      throw staleServerConfigError(server.server);
+    }
+    return serializeServerConfig(current);
+  }
+}
+
+function sameServerConfig(left: CapletServerConfig, right: CapletServerConfig): boolean {
+  return serializeServerConfig(left) === serializeServerConfig(right);
+}
+
+function serializeServerConfig(server: CapletServerConfig): string {
+  return JSON.stringify(server);
+}
+
+function staleServerConfigError(serverId: string): CapletsError {
+  return new CapletsError("SERVER_UNAVAILABLE", `${serverId} configuration changed; retry request`);
 }
 
 function nearbyToolNames(tools: Tool[], needle: string): string[] {
