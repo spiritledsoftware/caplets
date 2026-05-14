@@ -11,6 +11,24 @@ or call that backend's underlying tools or operations.
 This keeps the initial MCP tool list small, makes tool selection easier, and avoids
 flattened tool-name collisions across servers.
 
+## Benchmarks
+
+Caplets includes reproducible coding-agent benchmarks that compare direct MCP exposure with Caplets progressive disclosure.
+
+In the deterministic benchmark fixture, Caplets reduces initially visible tools from 106 to 3, cuts the serialized initial MCP tool payload from 29546 bytes to 8358 bytes, and reduces the approximate initial context surface from 7387 tokens to 2090 tokens. That is 71.7% fewer payload bytes while preserving access to downstream tools through scoped discovery and `call_tool`.
+
+See [`docs/benchmarks/coding-agent.md`](docs/benchmarks/coding-agent.md) for methodology, deterministic results, live Pi/OpenCode benchmark instructions, and limitations.
+
+Live benchmarks are opt-in and model-dependent because they require local agent CLIs, credentials, configured models, and runtime behavior that can vary by provider, model, date, and agent release.
+
+```sh
+pnpm benchmark
+pnpm benchmark:check
+pnpm build
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode
+```
+
 ## Inspiration
 
 Caplets is a mashup of two ideas that work well separately but leave a gap together:

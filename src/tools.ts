@@ -8,60 +8,25 @@ import type { HttpActionManager } from "./http-actions.js";
 import type { OpenApiManager } from "./openapi.js";
 import type { ServerRegistry } from "./registry.js";
 import { projectStructuredContent, validateFieldSelection } from "./field-selection.js";
+import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema.mjs";
 
-const operations = [
-  "get_caplet",
-  "check_backend",
-  "check_mcp_server",
-  "list_tools",
-  "search_tools",
-  "get_tool",
-  "call_tool",
-] as const;
 const operationSchema = z.enum(operations);
 
 export const generatedToolInputSchema = z
   .object({
-    operation: operationSchema.describe(
-      [
-        "Caplets wrapper operation to perform for this configured Caplet backend.",
-        "Use get_caplet to read the full Caplet card, check_backend to check any backend, check_mcp_server to check an MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool or OpenAPI operation.",
-        'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
-      ].join(" "),
-    ),
-    query: z
-      .string()
-      .optional()
-      .describe(
-        'Required only for search_tools. Example: {"operation":"search_tools","query":"web search","limit":5}. Do not use query for call_tool; put downstream query values under arguments.query.',
-      ),
-    limit: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe(
-        "Optional only for search_tools; defaults to the configured search limit. For downstream result limits, use call_tool.arguments with the downstream schema field name.",
-      ),
-    tool: z
-      .string()
-      .optional()
-      .describe(
-        'Exact downstream tool name for get_tool or call_tool. Example: {"operation":"get_tool","tool":"web_search_exa"} before calling it.',
-      ),
+    operation: operationSchema.describe(generatedToolInputDescriptions.operation),
+    query: z.string().optional().describe(generatedToolInputDescriptions.query),
+    limit: z.number().int().positive().optional().describe(generatedToolInputDescriptions.limit),
+    tool: z.string().optional().describe(generatedToolInputDescriptions.tool),
     arguments: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe(
-        'Required JSON object only for call_tool. Put every downstream tool input inside this object. Example: {"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}. Do not send downstream inputs as top-level query, limit, url, path, or other fields.',
-      ),
+      .describe(generatedToolInputDescriptions.arguments),
     fields: z
       .array(z.string().min(1))
       .min(1)
       .optional()
-      .describe(
-        'Optional for call_tool after get_tool shows outputSchema on a non-GraphQL tool. Example: fields: ["path.to.field"].',
-      ),
+      .describe(generatedToolInputDescriptions.fields),
   })
   .strict();
 

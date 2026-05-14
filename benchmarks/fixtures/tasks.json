@@ -1,0 +1,20 @@
+[
+  {
+    "id": "discount-policy",
+    "prompt": "Fix the discount calculation. Use the available MCP tools to inspect the current pricing policy before editing files. Do not hard-code test-only behavior.",
+    "validationCommand": "node --test test/discount.node-test.js",
+    "hiddenValidator": "validators/discount-validator.mjs",
+    "hiddenValidationCommand": "node --test ../validators/discount-validator.mjs",
+    "expectedFiles": ["src/discount.js"],
+    "requiredFact": "Premium customers receive 15% off only when the cart total is at least 100; employees receive 25% off regardless of total; discounts are rounded to two decimal places."
+  },
+  {
+    "id": "retry-policy",
+    "prompt": "Fix retry scheduling. Use the available MCP tools to inspect the current retry policy before editing files.",
+    "validationCommand": "node --test test/retry.node-test.js",
+    "hiddenValidator": "validators/retry-validator.mjs",
+    "hiddenValidationCommand": "node --test ../validators/retry-validator.mjs",
+    "expectedFiles": ["src/retry.js"],
+    "requiredFact": "Retry delays are 100ms, 250ms, and 500ms for attempts 1 through 3; retryable status codes are 408, 429, 500, 502, 503, and 504."
+  }
+]

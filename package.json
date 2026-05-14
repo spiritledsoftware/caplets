@@ -40,6 +40,11 @@
   "scripts": {
     "build": "rolldown -c",
     "build:watch": "rolldown -c --watch",
+    "benchmark": "node benchmarks/run-deterministic.mjs",
+    "benchmark:check": "node benchmarks/run-deterministic.mjs --check",
+    "benchmark:live": "node benchmarks/run-live.mjs",
+    "benchmark:live:opencode": "node benchmarks/run-live.mjs --agent opencode",
+    "benchmark:live:pi": "node benchmarks/run-live.mjs --agent pi",
     "changeset": "changeset",
     "dev": "node ./scripts/dev.mjs",
     "format": "oxfmt .",
@@ -53,7 +58,7 @@
     "schema:generate": "rolldown -c rolldown.schema.config.ts && node dist-schema/generate-config-schema.js && rm -rf dist-schema",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm build",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version"
   },
   "dependencies": {
