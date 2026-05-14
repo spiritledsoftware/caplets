@@ -7,53 +7,26 @@ import type { GraphQLManager } from "./graphql.js";
 import type { HttpActionManager } from "./http-actions.js";
 import type { OpenApiManager } from "./openapi.js";
 import type { ServerRegistry } from "./registry.js";
+import { projectStructuredContent, validateFieldSelection } from "./field-selection.js";
+import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema.mjs";
 
-const operations = [
-  "get_caplet",
-  "check_backend",
-  "check_mcp_server",
-  "list_tools",
-  "search_tools",
-  "get_tool",
-  "call_tool",
-] as const;
 const operationSchema = z.enum(operations);
 
 export const generatedToolInputSchema = z
   .object({
-    operation: operationSchema.describe(
-      [
-        "Caplets wrapper operation to perform for this configured Caplet backend.",
-        "Use get_caplet to read the full Caplet card, check_backend to check any backend, check_mcp_server to check an MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool or OpenAPI operation.",
-        'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
-      ].join(" "),
-    ),
-    query: z
-      .string()
-      .optional()
-      .describe(
-        'Required only for search_tools. Example: {"operation":"search_tools","query":"web search","limit":5}. Do not use query for call_tool; put downstream query values under arguments.query.',
-      ),
-    limit: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe(
-        "Optional only for search_tools; defaults to the configured search limit. For downstream result limits, use call_tool.arguments with the downstream schema field name.",
-      ),
-    tool: z
-      .string()
-      .optional()
-      .describe(
-        'Exact downstream tool name for get_tool or call_tool. Example: {"operation":"get_tool","tool":"web_search_exa"} before calling it.',
-      ),
+    operation: operationSchema.describe(generatedToolInputDescriptions.operation),
+    query: z.string().optional().describe(generatedToolInputDescriptions.query),
+    limit: z.number().int().positive().optional().describe(generatedToolInputDescriptions.limit),
+    tool: z.string().optional().describe(generatedToolInputDescriptions.tool),
     arguments: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe(
-        'Required JSON object only for call_tool. Put every downstream tool input inside this object. Example: {"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}. Do not send downstream inputs as top-level query, limit, url, path, or other fields.',
-      ),
+      .describe(generatedToolInputDescriptions.arguments),
+    fields: z
+      .array(z.string().min(1))
+      .min(1)
+      .optional()
+      .describe(generatedToolInputDescriptions.fields),
   })
   .strict();
 
@@ -108,12 +81,30 @@ export async function handleServerTool(
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult({ server: server.server, tool });
     }
-    case "call_tool":
-      return backendFor(server, downstream, openapi, graphql, http).callTool(
-        server as never,
-        parsed.tool,
-        parsed.arguments,
+    case "call_tool": {
+      const backend = backendFor(server, downstream, openapi, graphql, http);
+      if (parsed.fields === undefined) {
+        return backend.callTool(server as never, parsed.tool, parsed.arguments);
+      }
+      if (server.backend === "graphql") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "call_tool.fields is not supported for GraphQL-backed Caplets; select fields in the GraphQL operation document instead",
+        );
+      }
+
+      const tool = await backend.getTool(server as never, parsed.tool);
+      if (!tool.outputSchema) {
+        throw new CapletsError("REQUEST_INVALID", "Field selection requires an output schema");
+      }
+      validateFieldSelection(tool.outputSchema, parsed.fields);
+
+      return projectCallToolResult(
+        await backend.callTool(server as never, parsed.tool, parsed.arguments),
+        tool.outputSchema,
+        parsed.fields,
       );
+    }
   }
 }
 
@@ -186,14 +177,21 @@ export function validateOperationRequest(
       }
       return { operation: "get_tool", tool: value.tool };
     case "call_tool":
-      allowed(["tool", "arguments"]);
+      allowed(["tool", "arguments", "fields"]);
       if (!value.tool) {
         throw new CapletsError("REQUEST_INVALID", "call_tool requires tool");
       }
       if (!isPlainObject(value.arguments)) {
         throw new CapletsError("REQUEST_INVALID", "call_tool.arguments must be a JSON object");
       }
-      return { operation: "call_tool", tool: value.tool, arguments: value.arguments };
+      return value.fields === undefined
+        ? { operation: "call_tool", tool: value.tool, arguments: value.arguments }
+        : {
+            operation: "call_tool",
+            tool: value.tool,
+            arguments: value.arguments,
+            fields: value.fields,
+          };
   }
 }
 
@@ -201,7 +199,7 @@ type RequiredOperationRequest =
   | { operation: "get_caplet" | "check_backend" | "check_mcp_server" | "list_tools" }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
-  | { operation: "call_tool"; tool: string; arguments: Record<string, unknown> };
+  | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] };
 
 export function jsonResult(value: unknown): CallToolResult {
   return {
@@ -213,6 +211,36 @@ export function jsonResult(value: unknown): CallToolResult {
     ],
     structuredContent: { result: value as Record<string, unknown> },
   };
+}
+
+export function projectCallToolResult<T extends object>(
+  result: T,
+  outputSchema: unknown,
+  fields: string[],
+): T & CallToolResult {
+  if ((result as { isError?: unknown }).isError === true) {
+    return result as T & CallToolResult;
+  }
+
+  const structuredContent = (result as { structuredContent?: unknown }).structuredContent;
+  if (!isPlainObject(structuredContent)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Field selection requires the downstream tool to return object structuredContent",
+    );
+  }
+
+  const projected = projectStructuredContent(structuredContent, outputSchema, fields);
+  return {
+    ...result,
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(projected, null, 2),
+      },
+    ],
+    structuredContent: projected,
+  } as T & CallToolResult;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

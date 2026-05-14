@@ -6,10 +6,12 @@ import { DownstreamManager } from "../src/downstream.js";
 import { CapletsError } from "../src/errors.js";
 import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql.js";
 import type { HttpActionManager } from "../src/http-actions.js";
+import type { OpenApiManager } from "../src/openapi.js";
 import { ServerRegistry } from "../src/registry.js";
 import {
   generatedToolInputSchema,
   handleServerTool,
+  projectCallToolResult,
   validateOperationRequest,
 } from "../src/tools.js";
 
@@ -37,6 +39,57 @@ describe("generated tool request validation", () => {
     expect(() => validateOperationRequest({ operation: "call_tool", arguments: {} }, 50)).toThrow(
       CapletsError,
     );
+  });
+
+  it("accepts top-level field selection only for call_tool", () => {
+    expect(
+      validateOperationRequest(
+        { operation: "call_tool", tool: "read", arguments: {}, fields: ["body.name"] },
+        50,
+      ),
+    ).toEqual({
+      operation: "call_tool",
+      tool: "read",
+      arguments: {},
+      fields: ["body.name"],
+    });
+    expect(() =>
+      validateOperationRequest({ operation: "get_tool", tool: "read", fields: ["body.name"] }, 50),
+    ).toThrow(CapletsError);
+  });
+
+  it("rejects invalid top-level field selections", () => {
+    expect(() =>
+      validateOperationRequest(
+        { operation: "call_tool", tool: "read", arguments: {}, fields: [] },
+        50,
+      ),
+    ).toThrow(CapletsError);
+    expect(() =>
+      validateOperationRequest(
+        { operation: "call_tool", tool: "read", arguments: {}, fields: [""] },
+        50,
+      ),
+    ).toThrow(CapletsError);
+    expect(() =>
+      validateOperationRequest(
+        { operation: "call_tool", tool: "read", arguments: {}, fields: [1] },
+        50,
+      ),
+    ).toThrow(CapletsError);
+  });
+
+  it("treats arguments.fields as downstream input", () => {
+    expect(
+      validateOperationRequest(
+        { operation: "call_tool", tool: "read", arguments: { fields: [] } },
+        50,
+      ),
+    ).toEqual({
+      operation: "call_tool",
+      tool: "read",
+      arguments: { fields: [] },
+    });
   });
 
   it("returns UNKNOWN_OPERATION for unknown operations", () => {
@@ -75,6 +128,7 @@ describe("generated tool request validation", () => {
     const operationDescription = schema.properties.operation?.description;
     const toolDescription = schema.properties.tool?.description;
     const argumentsDescription = schema.properties.arguments?.description;
+    const fieldsDescription = schema.properties.fields?.description;
 
     expect(operationDescription).toContain("call_tool");
     expect(toolDescription).toContain("Exact downstream tool name");
@@ -83,10 +137,15 @@ describe("generated tool request validation", () => {
       '"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}',
     );
     expect(argumentsDescription).toContain("top-level query");
+    expect(fieldsDescription).toBe(
+      'Optional for call_tool after get_tool shows outputSchema on a non-GraphQL tool. Example: fields: ["path.to.field"].',
+    );
   });
 });
 
 describe("generated tool handlers", () => {
+  const graphqlFieldsUnsupportedMessage =
+    "call_tool.fields is not supported for GraphQL-backed Caplets; select fields in the GraphQL operation document instead";
   const config = parseConfig({
     mcpServers: {
       alpha: {
@@ -104,7 +163,12 @@ describe("generated tool handlers", () => {
   const registry = new ServerRegistry(config);
   const server = config.mcpServers.alpha!;
   const tools: Tool[] = [
-    { name: "read", description: "Read files", inputSchema: { type: "object" } },
+    {
+      name: "read",
+      description: "Read files",
+      inputSchema: { type: "object" },
+      outputSchema: { type: "object" },
+    },
     {
       name: "write",
       description: "Write files",
@@ -227,6 +291,10 @@ describe("generated tool handlers", () => {
   });
 
   it("lists compact metadata and preserves full get_tool metadata", async () => {
+    expect(new DownstreamManager(registry).compact(server, tools[0]!)).toMatchObject({
+      hasOutputSchema: true,
+    });
+
     const downstream = {
       listTools: vi.fn().mockResolvedValue(tools),
       compact: (capletServer: typeof server, tool: Tool) => ({
@@ -235,6 +303,7 @@ describe("generated tool handlers", () => {
         description: tool.description,
         annotations: tool.annotations,
         hasInputSchema: Boolean(tool.inputSchema),
+        hasOutputSchema: Boolean(tool.outputSchema),
       }),
       getTool: vi.fn().mockResolvedValue(tools[1]),
     } as unknown as DownstreamManager;
@@ -254,6 +323,7 @@ describe("generated tool handlers", () => {
           description: "Read files",
           annotations: undefined,
           hasInputSchema: true,
+          hasOutputSchema: true,
         },
         {
           server: "alpha",
@@ -261,6 +331,7 @@ describe("generated tool handlers", () => {
           description: "Write files",
           annotations: { destructiveHint: true },
           hasInputSchema: true,
+          hasOutputSchema: false,
         },
       ],
     });
@@ -290,6 +361,286 @@ describe("generated tool handlers", () => {
       downstream,
     );
     expect(result).toBe(downstreamResult);
+  });
+
+  it("projects call_tool results from structured content when fields are requested", async () => {
+    const downstreamResult = {
+      content: [{ type: "text" as const, text: "full output" }],
+      structuredContent: { message: "ok", extra: "hidden" },
+      isError: false,
+      _meta: { requestId: "req-1" },
+    };
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "read",
+        inputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: {
+            message: { type: "string" },
+            extra: { type: "string" },
+          },
+        },
+      }),
+      callTool: vi.fn().mockResolvedValue(downstreamResult),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+      registry,
+      downstream,
+    );
+
+    expect(result).toEqual({
+      ...downstreamResult,
+      content: [{ type: "text", text: '{\n  "message": "ok"\n}' }],
+      structuredContent: { message: "ok" },
+    });
+    expect(downstream.getTool).toHaveBeenCalledWith(server, "read");
+    expect(downstream.callTool).toHaveBeenCalledWith(server, "read", { path: "x" });
+  });
+
+  it("projects OpenAPI call_tool results through the shared wrapper", async () => {
+    const openApiConfig = parseConfig({
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath: "/tmp/openapi.json",
+          baseUrl: "https://api.example.com",
+          auth: { type: "none" },
+        },
+      },
+    });
+    const openApiRegistry = new ServerRegistry(openApiConfig);
+    const openApiServer = openApiConfig.openapiEndpoints.users!;
+    const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
+    const openapi = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "getUser",
+        inputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: {
+            body: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                email: { type: "string" },
+              },
+            },
+          },
+        },
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "full output" }],
+        structuredContent: { body: { name: "Ada", email: "ada@example.com" } },
+        isError: false,
+      }),
+    } as unknown as OpenApiManager;
+
+    const result = await handleServerTool(
+      openApiServer,
+      { operation: "call_tool", tool: "getUser", arguments: { id: "42" }, fields: ["body.name"] },
+      openApiRegistry,
+      downstream,
+      openapi,
+    );
+
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: '{\n  "body": {\n    "name": "Ada"\n  }\n}' }],
+      structuredContent: { body: { name: "Ada" } },
+    });
+    expect(openapi.getTool).toHaveBeenCalledWith(openApiServer, "getUser");
+    expect(openapi.callTool).toHaveBeenCalledWith(openApiServer, "getUser", { id: "42" });
+    expect(downstream.callTool).not.toHaveBeenCalled();
+  });
+
+  it("projects HTTP call_tool results through the shared wrapper", async () => {
+    const httpConfig = parseConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check internal service status through HTTP.",
+          baseUrl: "https://api.example.com",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    });
+    const httpRegistry = new ServerRegistry(httpConfig);
+    const httpServer = httpConfig.httpApis.status!;
+    const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
+    const http = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "check",
+        inputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            internal: { type: "string" },
+          },
+        },
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "full output" }],
+        structuredContent: { ok: true, internal: "hidden" },
+        isError: false,
+      }),
+    } as unknown as HttpActionManager;
+
+    const result = await handleServerTool(
+      httpServer,
+      { operation: "call_tool", tool: "check", arguments: { id: "42" }, fields: ["ok"] },
+      httpRegistry,
+      downstream,
+      undefined,
+      undefined,
+      http,
+    );
+
+    expect(result).toMatchObject({
+      content: [{ type: "text", text: '{\n  "ok": true\n}' }],
+      structuredContent: { ok: true },
+    });
+    expect(http.getTool).toHaveBeenCalledWith(httpServer, "check");
+    expect(http.callTool).toHaveBeenCalledWith(httpServer, "check", { id: "42" });
+    expect(downstream.callTool).not.toHaveBeenCalled();
+  });
+
+  it("projects object values without sharing mutable references to the original result", () => {
+    const downstreamResult = {
+      content: [{ type: "text" as const, text: "full output" }],
+      structuredContent: { body: { name: "Ada", email: "ada@example.com" } },
+      isError: false,
+    };
+
+    const result = projectCallToolResult(
+      downstreamResult,
+      {
+        type: "object",
+        properties: {
+          body: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              email: { type: "string" },
+            },
+          },
+        },
+      },
+      ["body"],
+    );
+
+    (result.structuredContent.body as { name: string }).name = "Grace";
+
+    expect(downstreamResult.structuredContent).toEqual({
+      body: { name: "Ada", email: "ada@example.com" },
+    });
+  });
+
+  it("preserves downstream isError results when fields are requested", async () => {
+    const downstreamResult = {
+      content: [{ type: "text" as const, text: "downstream failed with details" }],
+      isError: true,
+      _meta: { requestId: "req-err" },
+    };
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "read",
+        inputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: {
+            message: { type: "string" },
+          },
+        },
+      }),
+      callTool: vi.fn().mockResolvedValue(downstreamResult),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+      registry,
+      downstream,
+    );
+
+    expect(result).toBe(downstreamResult);
+    expect(result).toEqual(downstreamResult);
+  });
+
+  it("reports downstream protocol errors when field selection lacks structured output", async () => {
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "read",
+        inputSchema: { type: "object" },
+        outputSchema: { type: "object", properties: { message: { type: "string" } } },
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "message only" }],
+      }),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" } satisfies Partial<CapletsError>);
+  });
+
+  it("rejects fields before calling tools that do not expose an output schema", async () => {
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue(tools[1]),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "secret full output" }],
+        structuredContent: { secret: true },
+      }),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        { operation: "call_tool", tool: "write", arguments: {}, fields: ["secret"] },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
+    expect(downstream.callTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid field paths before calling tools with output schemas", async () => {
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "read",
+        inputSchema: { type: "object" },
+        outputSchema: {
+          type: "object",
+          properties: {
+            public: { type: "string" },
+          },
+        },
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "side effect already happened" }],
+        structuredContent: { public: "ok", secret: "hidden" },
+      }),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        { operation: "call_tool", tool: "read", arguments: {}, fields: ["secret"] },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
+    expect(downstream.callTool).not.toHaveBeenCalled();
   });
 
   it("routes GraphQL-backed Caplets to the GraphQL manager", async () => {
@@ -332,6 +683,43 @@ describe("generated tool handlers", () => {
     expect(result).toBe(graphqlResult);
     expect(graphql.callTool).toHaveBeenCalledWith(graphqlCaplet, "query_user", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
+  });
+
+  it("rejects GraphQL field projection", async () => {
+    const graphqlCaplet: GraphqlEndpointConfig = {
+      server: "graph",
+      backend: "graphql",
+      name: "Graph",
+      description: "Search graph project records.",
+      endpointUrl: "http://127.0.0.1/graphql",
+      schemaPath: "/tmp/schema.graphql",
+      auth: { type: "none" },
+      requestTimeoutMs: 60000,
+      operationCacheTtlMs: 30000,
+      selectionDepth: 2,
+      disabled: false,
+    };
+    const graphRegistry = {
+      config: { options: { maxSearchLimit: 50, defaultSearchLimit: 20 } },
+      detail: vi.fn(),
+    } as unknown as ServerRegistry;
+    const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
+    const graphql = { callTool: vi.fn() } as unknown as GraphQLManager;
+
+    await expect(
+      handleServerTool(
+        graphqlCaplet as never,
+        { operation: "call_tool", tool: "query_user", arguments: { id: "42" }, fields: ["user"] },
+        graphRegistry,
+        downstream,
+        undefined,
+        graphql,
+      ),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: graphqlFieldsUnsupportedMessage,
+    } satisfies Partial<CapletsError>);
+    expect(graphql.callTool).not.toHaveBeenCalled();
   });
 
   it("routes HTTP-backed Caplets to the HTTP action manager", async () => {

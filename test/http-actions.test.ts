@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { parseConfig, type HttpApiConfig } from "../src/config.js";
+import { DownstreamManager } from "../src/downstream.js";
 import { HttpActionManager } from "../src/http-actions.js";
 import { ServerRegistry } from "../src/registry.js";
+import { handleServerTool } from "../src/tools.js";
 
 describe("HttpActionManager", () => {
   let baseUrl = "";
@@ -87,6 +89,18 @@ describe("HttpActionManager", () => {
           method: "PATCH",
           path: "/users/{id}",
           inputSchema: { type: "object", required: ["id"] },
+          outputSchema: {
+            type: "object",
+            required: ["status", "body"],
+            properties: {
+              status: { type: "number" },
+              body: {
+                type: "object",
+                required: ["ok"],
+                properties: { ok: { type: "boolean" } },
+              },
+            },
+          },
         },
       },
     });
@@ -103,9 +117,95 @@ describe("HttpActionManager", () => {
       {
         name: "update_user",
         inputSchema: { type: "object", required: ["id"] },
+        outputSchema: {
+          type: "object",
+          required: ["status", "body"],
+          properties: {
+            status: { type: "number" },
+            body: {
+              type: "object",
+              required: ["ok"],
+              properties: { ok: { type: "boolean" } },
+            },
+          },
+        },
         annotations: { readOnlyHint: false, destructiveHint: false },
       },
     ]);
+  });
+
+  it("exposes output schemas through get_tool, compact metadata, and call_tool.fields", async () => {
+    requests.length = 0;
+    const config = parseConfig({
+      httpApis: {
+        http: {
+          name: "HTTP API",
+          description: "Call configured HTTP service actions.",
+          baseUrl,
+          auth: { type: "none" },
+          actions: {
+            ping: {
+              method: "GET",
+              path: "/ping",
+              outputSchema: {
+                type: "object",
+                required: ["status", "body"],
+                properties: {
+                  status: { type: "number" },
+                  body: {
+                    type: "object",
+                    required: ["ok"],
+                    properties: { ok: { type: "boolean" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    const caplet = config.httpApis.http!;
+    const registry = new ServerRegistry(config);
+    const http = new HttpActionManager(registry);
+    const downstream = new DownstreamManager(registry);
+
+    const tool = await http.getTool(caplet, "ping");
+    expect(tool.outputSchema).toMatchObject({
+      type: "object",
+      required: ["status", "body"],
+      properties: { body: { properties: { ok: { type: "boolean" } } } },
+    });
+    expect(http.compact(caplet, tool)).toMatchObject({
+      server: "http",
+      tool: "ping",
+      hasInputSchema: true,
+      hasOutputSchema: true,
+    });
+
+    const fetched = (await handleServerTool(
+      caplet,
+      { operation: "get_tool", tool: "ping" },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      http,
+    )) as any;
+    expect(fetched.structuredContent.result.tool.outputSchema).toMatchObject({
+      properties: { body: { properties: { ok: { type: "boolean" } } } },
+    });
+
+    const projected = (await handleServerTool(
+      caplet,
+      { operation: "call_tool", tool: "ping", arguments: {}, fields: ["body.ok"] },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      http,
+    )) as any;
+    expect(projected.structuredContent).toEqual({ body: { ok: true } });
+    expect(projected.content[0].text).toBe(JSON.stringify({ body: { ok: true } }, null, 2));
   });
 
   it("builds requests from path, query, header, and JSON body mappings", async () => {

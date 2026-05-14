@@ -220,6 +220,7 @@ export class GraphQLManager {
       ...(tool.description ? { description: tool.description } : {}),
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
+      hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 

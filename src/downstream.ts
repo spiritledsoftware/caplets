@@ -23,6 +23,7 @@ export type CompactTool = {
   description?: string;
   annotations?: unknown;
   hasInputSchema: boolean;
+  hasOutputSchema: boolean;
 };
 
 type ManagedConnection = {
@@ -159,6 +160,7 @@ export class DownstreamManager {
       ...(tool.description ? { description: tool.description } : {}),
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
+      hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 

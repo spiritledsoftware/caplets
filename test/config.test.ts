@@ -589,6 +589,18 @@ describe("config", () => {
                 method: "GET",
                 path: "/invoices/{invoiceId}",
                 inputSchema: { type: "object" },
+                outputSchema: {
+                  type: "object",
+                  required: ["status", "body"],
+                  properties: {
+                    status: { type: "number" },
+                    body: {
+                      type: "object",
+                      required: ["id"],
+                      properties: { id: { type: "string" } },
+                    },
+                  },
+                },
                 query: { expand: "$input.expand" },
               },
             },
@@ -629,6 +641,18 @@ describe("config", () => {
         invoice: {
           method: "GET",
           path: "/invoices/{invoiceId}",
+          outputSchema: {
+            type: "object",
+            required: ["status", "body"],
+            properties: {
+              status: { type: "number" },
+              body: {
+                type: "object",
+                required: ["id"],
+                properties: { id: { type: "string" } },
+              },
+            },
+          },
         },
       },
     });

@@ -140,6 +140,7 @@ export type HttpActionConfig = {
   path: string;
   description?: string | undefined;
   inputSchema?: Record<string, unknown> | undefined;
+  outputSchema?: Record<string, unknown> | undefined;
   query?: Record<string, string | number | boolean> | undefined;
   headers?: Record<string, string | number | boolean> | undefined;
   jsonBody?: unknown;
@@ -475,6 +476,10 @@ const httpActionSchema = z
       .record(z.string(), z.unknown())
       .optional()
       .describe("JSON Schema for call_tool arguments."),
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for structuredContent returned by this action."),
     query: httpScalarMappingSchema.optional().describe("Query parameter mapping."),
     headers: httpScalarMappingSchema.optional().describe("Request header mapping."),
     jsonBody: z.unknown().optional().describe("JSON request body mapping."),

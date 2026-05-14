@@ -126,6 +126,7 @@ export class HttpActionManager {
       ...(tool.description ? { description: tool.description } : {}),
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
+      hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 
@@ -145,6 +146,9 @@ export class HttpActionManager {
       name: operation.name,
       ...(operation.description ? { description: operation.description } : {}),
       inputSchema: (operation.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
+      ...(operation.outputSchema
+        ? { outputSchema: operation.outputSchema as Tool["outputSchema"] }
+        : {}),
       annotations: {
         readOnlyHint: operation.method === "GET",
         destructiveHint: operation.method === "DELETE",
