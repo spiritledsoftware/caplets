@@ -596,7 +596,7 @@ describe("progressive disclosure benchmark fixture", () => {
       const result = await opencodeRunner.run({
         task: { id: "example", prompt: "Do work" },
         candidateWorkspace: workspace,
-        mode: "caplets",
+        mode: "direct-flat",
         model: "openai/gpt-5.5",
         env: {
           CAPLETS_BENCH_LIVE: "1",
@@ -606,7 +606,7 @@ describe("progressive disclosure benchmark fixture", () => {
           if (options.args?.includes("--version")) {
             return { ...emptyProcessResult(options), stdout: "opencode 1.2.3\n" };
           }
-          expect(options.env?.OPENCODE_CONFIG_CONTENT).toContain("caplets");
+          expect(options.env?.OPENCODE_CONFIG_CONTENT).toContain("policy");
           expect(options.env?.OPENCODE_CONFIG_DIR).toContain("caplets-opencode-agent-");
           expect(options.env?.OPENCODE_CONFIG_DIR).toMatch(/opencode-config$/u);
           expect(options.env?.OPENCODE).toBeUndefined();
