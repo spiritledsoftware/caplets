@@ -928,6 +928,7 @@ describe("progressive disclosure benchmark fixture", () => {
     const options = parseLiveArgs([
       "--agent",
       "all",
+      "--",
       "--mode=direct-flat,caplets",
       "--model",
       "provider/model",
