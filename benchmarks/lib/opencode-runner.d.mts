@@ -32,7 +32,7 @@ export interface OpenCodeRunResult extends ProcessResult {
   commandLine: string;
   configPaths: Record<string, string>;
   activeConfigPath: string | null;
-  activeProjectConfigPath: string;
+  activeProjectConfigPath: string | null;
   openCodeStateDir: string;
   configAssumptions: string[];
   cleanedUp: boolean;

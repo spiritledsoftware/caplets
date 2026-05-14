@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -75,14 +75,9 @@ export async function runOpenCode({
     );
   }
 
-  const activeProjectConfigPath = join(
-    resolve(candidateWorkspace),
-    DEFAULT_OPENCODE_CONFIG_FILENAME,
-  );
   const openCodeStateDir = await mkdtemp(join(tmpdir(), "caplets-opencode-agent-"));
   let result;
   let cleanedUp = false;
-  let generatedProjectConfig = false;
   let generatedProjectConfigRemoved = false;
   try {
     const version = await detectOpenCodeCli({ command, runProcess });
@@ -92,7 +87,7 @@ export async function runOpenCode({
         mode,
         model,
         reason: version.reason,
-        activeProjectConfigPath,
+        activeProjectConfigPath: null,
         openCodeStateDir,
       });
       return result;
@@ -104,26 +99,11 @@ export async function runOpenCode({
       requireCapletsBuild: mode === "caplets",
     });
     const config = configResult.configs[mode];
-    if (await pathExists(activeProjectConfigPath)) {
-      result = configConflictResult({
-        command,
-        mode,
-        model,
-        version: version.version,
-        reason: `Refusing to overwrite existing OpenCode project config at ${activeProjectConfigPath}.`,
-        configResult,
-        activeConfigPath: config.path,
-        activeProjectConfigPath,
-        openCodeStateDir,
-      });
-      return result;
-    }
-    await writeFile(
-      activeProjectConfigPath,
-      `${JSON.stringify(configFileContents(config), null, 2)}\n`,
-      { flag: "wx" },
+    const openCodeConfigDir = join(openCodeStateDir, "opencode-config");
+    const xdgConfigHome = join(openCodeStateDir, "xdg-config");
+    await Promise.all(
+      [openCodeConfigDir, xdgConfigHome].map((dir) => mkdir(dir, { recursive: true })),
     );
-    generatedProjectConfig = true;
 
     const openCodeCommand = buildOpenCodeCommand({
       command,
@@ -137,7 +117,7 @@ export async function runOpenCode({
       command: openCodeCommand.command,
       args: openCodeCommand.args,
       cwd: candidateWorkspace,
-      env: isolatedOpenCodeEnv(env, openCodeStateDir),
+      env: isolatedOpenCodeEnv(env, configFileContents(config), openCodeConfigDir, xdgConfigHome),
       timeoutMs,
       outputMaxBytes,
     });
@@ -152,17 +132,13 @@ export async function runOpenCode({
       commandLine: [openCodeCommand.command, ...redactedArgs].map(shellQuote).join(" "),
       configPaths: configResult.configPaths,
       activeConfigPath: config.path,
-      activeProjectConfigPath,
+      activeProjectConfigPath: null,
       openCodeStateDir,
       configAssumptions: configResult.assumptions,
     };
     return result;
   } finally {
     if (!preserveArtifacts) {
-      if (generatedProjectConfig) {
-        await rm(activeProjectConfigPath, { force: true });
-        generatedProjectConfigRemoved = true;
-      }
       await rm(openCodeStateDir, { recursive: true, force: true });
       cleanedUp = true;
     }
@@ -187,7 +163,7 @@ export function buildOpenCodeCommand({
   if (!workspace) {
     throw new TypeError("buildOpenCodeCommand requires a workspace.");
   }
-  const args = ["run", "--format", "json"];
+  const args = ["run", "--format", "json", "--pure", "--dangerously-skip-permissions"];
   if (model) {
     args.push("--model", model);
   }
@@ -197,7 +173,7 @@ export function buildOpenCodeCommand({
 
 export async function createOpenCodeMcpConfigs({
   rootDir,
-  workspaceDir,
+  workspaceDir: _workspaceDir,
   requireCapletsBuild = false,
 } = {}) {
   const baseDir = rootDir
@@ -227,17 +203,16 @@ export async function createOpenCodeMcpConfigs({
       Object.entries(configs).map(([mode, config]) => [mode, config.path]),
     ),
     configs,
-    workspaceConfigPath: workspaceDir
-      ? join(resolve(workspaceDir), DEFAULT_OPENCODE_CONFIG_FILENAME)
-      : null,
+    workspaceConfigPath: null,
     assumptions: openCodeConfigAssumptions(),
   };
 }
 
 function openCodeConfigAssumptions() {
   return [
-    "OpenCode is expected to read project-local opencode.json from the --dir workspace.",
-    "XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME are redirected to the benchmark temp directory for best-effort isolation.",
+    "OpenCode benchmark MCP config is injected through OPENCODE_CONFIG_CONTENT.",
+    "OPENCODE_CONFIG_DIR is redirected to the benchmark temp directory to avoid loading user-global MCP servers.",
+    "User OpenCode provider credentials are preserved so subscription-backed models remain available.",
   ];
 }
 
@@ -266,7 +241,7 @@ async function capletsConfig(configRoot, { requireBuild = false } = {}) {
         enabled: true,
         command: capletsCommand,
         cwd: caplets.caplets.cwd,
-        env: caplets.caplets.env,
+        environment: caplets.caplets.env,
       },
     },
   };
@@ -295,15 +270,27 @@ function configFileContents(config) {
   return { mcp: config.mcp };
 }
 
-function isolatedOpenCodeEnv(env, openCodeStateDir) {
+function isolatedOpenCodeEnv(env, config, openCodeConfigDir, xdgConfigHome) {
   return {
-    ...env,
-    HOME: openCodeStateDir,
-    XDG_CONFIG_HOME: join(openCodeStateDir, "config"),
-    XDG_DATA_HOME: join(openCodeStateDir, "data"),
-    XDG_STATE_HOME: join(openCodeStateDir, "state"),
-    XDG_CACHE_HOME: join(openCodeStateDir, "cache"),
+    ...openCodeBaseEnv(env),
+    XDG_CONFIG_HOME: xdgConfigHome,
+    OPENCODE_CONFIG_DIR: openCodeConfigDir,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
   };
+}
+
+function openCodeBaseEnv(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => {
+      if (key === "OPENCODE" || key.startsWith("OPENCODE_")) {
+        return false;
+      }
+      if (key.startsWith("PLAYWRIGHT_MCP_") || key === "PLAYWRIGHT_CLI_SESSION") {
+        return false;
+      }
+      return true;
+    }),
+  );
 }
 
 function unavailableResult({
@@ -343,61 +330,6 @@ function unavailableResult({
     openCodeStateDir,
     configAssumptions: openCodeConfigAssumptions(),
   };
-}
-
-function configConflictResult({
-  command,
-  mode,
-  model,
-  version,
-  reason,
-  configResult,
-  activeConfigPath,
-  activeProjectConfigPath,
-  openCodeStateDir,
-}) {
-  return {
-    agent: "opencode",
-    mode,
-    model: model ?? null,
-    skipped: true,
-    configConflict: true,
-    reason,
-    command,
-    args: [],
-    envKeys: [],
-    stdout: "",
-    stderr: reason ?? "",
-    stdoutBytes: 0,
-    stderrBytes: Buffer.byteLength(reason ?? "", "utf8"),
-    stdoutTruncated: false,
-    stderrTruncated: false,
-    outputMaxBytes: 0,
-    exitCode: null,
-    signal: null,
-    timedOut: false,
-    durationMs: 0,
-    jsonEvents: [],
-    openCodeVersion: version ?? null,
-    commandLine: command,
-    configPaths: configResult.configPaths,
-    activeConfigPath,
-    activeProjectConfigPath,
-    openCodeStateDir,
-    configAssumptions: configResult.assumptions,
-  };
-}
-
-async function pathExists(path) {
-  try {
-    await access(path);
-    return true;
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
 }
 
 function redactArgs(args) {

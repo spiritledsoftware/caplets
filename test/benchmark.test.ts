@@ -421,8 +421,9 @@ describe("progressive disclosure benchmark fixture", () => {
       const result = await createOpenCodeMcpConfigs({ rootDir: root, workspaceDir: workspace });
 
       expect(Object.keys(result.configs).sort()).toEqual([...OPENCODE_CONFIG_MODES].sort());
-      expect(result.workspaceConfigPath).toBe(join(workspace, "opencode.json"));
-      expect(result.assumptions.join("\n")).toContain("project-local opencode.json");
+      expect(result.workspaceConfigPath).toBeNull();
+      expect(result.assumptions.join("\n")).toContain("OPENCODE_CONFIG_CONTENT");
+      expect(result.assumptions.join("\n")).toContain("OPENCODE_CONFIG_DIR");
       for (const mode of OPENCODE_CONFIG_MODES) {
         expect(result.configs[mode]?.path.startsWith(root)).toBe(true);
         expect(result.configs[mode]?.mcp).toBeTruthy();
@@ -442,7 +443,7 @@ describe("progressive disclosure benchmark fixture", () => {
       const caplets = result.configs.caplets?.mcp.caplets;
       expect(caplets.type).toBe("local");
       expect(caplets.command).toEqual([process.execPath, resolve("dist/index.js")]);
-      expect(caplets.env.CAPLETS_CONFIG).toBe(
+      expect(caplets.environment.CAPLETS_CONFIG).toBe(
         join(root, "opencode", "mcp", "caplets", "caplets.config.json"),
       );
       expect(caplets.cwd).toBe(join(root, "opencode", "mcp", "caplets", "support"));
@@ -471,6 +472,8 @@ describe("progressive disclosure benchmark fixture", () => {
       "run",
       "--format",
       "json",
+      "--pure",
+      "--dangerously-skip-permissions",
       "--model",
       "openai/gpt-5.5",
       "--dir",
@@ -513,7 +516,7 @@ describe("progressive disclosure benchmark fixture", () => {
         unavailable: true,
         exitCode: null,
         reason: "opencode CLI was not found in PATH.",
-        activeProjectConfigPath: join(workspace, "opencode.json"),
+        activeProjectConfigPath: null,
         cleanedUp: true,
         artifactsPreserved: false,
       });
@@ -524,7 +527,7 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
-  it("cleans up OpenCode runner-owned temp dirs and generated project config after success", async () => {
+  it("cleans up OpenCode runner-owned temp dirs after success", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "caplets-opencode-cleanup-test-"));
     const generatedConfigPath = join(workspace, "opencode.json");
     try {
@@ -542,8 +545,8 @@ describe("progressive disclosure benchmark fixture", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.activeProjectConfigPath).toBe(generatedConfigPath);
-      expect(result.generatedProjectConfigRemoved).toBe(true);
+      expect(result.activeProjectConfigPath).toBeNull();
+      expect(result.generatedProjectConfigRemoved).toBe(false);
       expect(result.cleanedUp).toBe(true);
       expect(result.artifactsPreserved).toBe(false);
       await expect(access(result.openCodeStateDir)).rejects.toThrow();
@@ -553,7 +556,7 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
-  it("preserves an existing OpenCode project config and refuses to run", async () => {
+  it("preserves an existing OpenCode project config while using inline config", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "caplets-opencode-existing-config-test-"));
     const existingConfigPath = join(workspace, "opencode.json");
     const existingConfig = '{"mcp":{"user-owned":{"type":"local"}}}\n';
@@ -569,17 +572,14 @@ describe("progressive disclosure benchmark fixture", () => {
           if (options.args?.includes("--version")) {
             return { ...emptyProcessResult(options), stdout: "opencode 1.2.3\n" };
           }
-          throw new Error("OpenCode run should not be spawned when opencode.json exists.");
+          return { ...emptyProcessResult(options), stdout: "done\n" };
         },
       });
 
       expect(result).toMatchObject({
         agent: "opencode",
         mode: "direct-flat",
-        skipped: true,
-        configConflict: true,
-        exitCode: null,
-        reason: `Refusing to overwrite existing OpenCode project config at ${existingConfigPath}.`,
+        exitCode: 0,
         cleanedUp: true,
         artifactsPreserved: false,
         generatedProjectConfigRemoved: false,
@@ -606,7 +606,15 @@ describe("progressive disclosure benchmark fixture", () => {
           if (options.args?.includes("--version")) {
             return { ...emptyProcessResult(options), stdout: "opencode 1.2.3\n" };
           }
+          expect(options.env?.OPENCODE_CONFIG_CONTENT).toContain("caplets");
+          expect(options.env?.OPENCODE_CONFIG_DIR).toContain("caplets-opencode-agent-");
+          expect(options.env?.OPENCODE_CONFIG_DIR).toMatch(/opencode-config$/u);
+          expect(options.env?.OPENCODE).toBeUndefined();
+          expect(options.env?.OPENCODE_PID).toBeUndefined();
+          expect(options.env?.PLAYWRIGHT_MCP_BROWSER).toBeUndefined();
           expect(options.env?.XDG_CONFIG_HOME).toContain("caplets-opencode-agent-");
+          expect(options.env?.XDG_CONFIG_HOME).toMatch(/xdg-config$/u);
+          expect(options.env?.HOME).toBeUndefined();
           return { ...emptyProcessResult(options), args: options.args };
         },
       });

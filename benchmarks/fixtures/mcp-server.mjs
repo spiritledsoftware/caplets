@@ -476,42 +476,19 @@ export function createMockMcpServer(serverName) {
 
 function startStdioMcpServer(serverName) {
   const tools = TOOLSETS[serverName];
-  let buffer = Buffer.alloc(0);
+  let buffer = "";
 
+  process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    buffer = processMcpBuffer(buffer, (message) => handleMcpMessage(serverName, tools, message));
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.trim()) {
+        handleMcpMessage(serverName, tools, JSON.parse(line));
+      }
+    }
   });
-}
-
-function processMcpBuffer(buffer, handleMessage) {
-  let cursor = buffer;
-
-  while (cursor.length > 0) {
-    const headerEnd = cursor.indexOf("\r\n\r\n");
-    if (headerEnd === -1) {
-      return cursor;
-    }
-
-    const header = cursor.subarray(0, headerEnd).toString("utf8");
-    const lengthMatch = /content-length:\s*(\d+)/i.exec(header);
-    if (!lengthMatch) {
-      throw new Error("Invalid MCP message: missing Content-Length header.");
-    }
-
-    const bodyStart = headerEnd + 4;
-    const bodyLength = Number(lengthMatch[1]);
-    const bodyEnd = bodyStart + bodyLength;
-    if (cursor.length < bodyEnd) {
-      return cursor;
-    }
-
-    const body = cursor.subarray(bodyStart, bodyEnd).toString("utf8");
-    handleMessage(JSON.parse(body));
-    cursor = cursor.subarray(bodyEnd);
-  }
-
-  return cursor;
 }
 
 function handleMcpMessage(serverName, tools, message) {
@@ -569,8 +546,7 @@ function handleMcpMessage(serverName, tools, message) {
 }
 
 function writeMcpMessage(message) {
-  const body = JSON.stringify(message);
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`);
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function parseArgs(argv) {
@@ -592,7 +568,7 @@ async function main() {
     return;
   }
 
-  createMockMcpServer(validServerName).connect();
+  await createMockMcpServer(validServerName).connect();
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

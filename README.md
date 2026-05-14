@@ -11,22 +11,50 @@ or call that backend's underlying tools or operations.
 This keeps the initial MCP tool list small, makes tool selection easier, and avoids
 flattened tool-name collisions across servers.
 
-## Benchmarks
+## Why It Matters
 
-Caplets includes reproducible coding-agent benchmarks that compare direct MCP exposure with Caplets progressive disclosure.
+Large MCP setups make agents worse before they make them better. If every downstream
+server exposes every tool up front, the model starts with a noisy flat list, duplicate
+tool names, and a bigger context surface before it knows which capability matters.
 
-In the deterministic benchmark fixture, Caplets reduces initially visible tools from 106 to 3, cuts the serialized initial MCP tool payload from 29546 bytes to 8358 bytes, and reduces the approximate initial context surface from 7387 tokens to 2090 tokens. That is 71.7% fewer payload bytes while preserving access to downstream tools through scoped discovery and `call_tool`.
+Caplets turns that flat tool wall into progressive disclosure: one capability card first,
+then scoped discovery only after the agent chooses the relevant domain.
 
-See [`docs/benchmarks/coding-agent.md`](docs/benchmarks/coding-agent.md) for methodology, deterministic results, live Pi/OpenCode benchmark instructions, and limitations.
+## Benchmark Results
 
-Live benchmarks are opt-in and model-dependent because they require local agent CLIs, credentials, configured models, and runtime behavior that can vary by provider, model, date, and agent release.
+In Caplets' reproducible coding-agent benchmark, the same three mock MCP servers are
+exposed two ways: direct flat MCP aggregation versus Caplets progressive disclosure.
+
+| Initial Agent Surface     |   Direct Flat MCP |      Caplets |     Reduction |
+| ------------------------- | ----------------: | -----------: | ------------: |
+| Visible tools             |               106 |            3 |   97.2% fewer |
+| Serialized MCP payload    |      29,546 bytes |  8,358 bytes | 71.7% smaller |
+| Approx. context surface   |      7,387 tokens | 2,090 tokens |   5,297 fewer |
+| Top-level name collisions | 3 duplicate names |            0 |    eliminated |
+
+The important part: Caplets does not remove access to the downstream tools. It hides
+them behind scoped discovery operations like `search_tools`, `get_tool`, and `call_tool`,
+so the agent sees less up front while still being able to reach the same capabilities.
+
+A local OpenCode live benchmark also completed the full benchmark matrix successfully:
+
+| Agent                          | Mode            | Tasks Passed |
+| ------------------------------ | --------------- | -----------: |
+| OpenCode `openai/gpt-5.5-fast` | Direct flat MCP |          2/2 |
+| OpenCode `openai/gpt-5.5-fast` | Caplets         |          2/2 |
+
+Live results are intentionally not committed as product claims because they depend on
+local agent CLIs, credentials, models, providers, and agent behavior. The deterministic
+surface benchmark is the reproducible claim.
+
+See [`docs/benchmarks/coding-agent.md`](docs/benchmarks/coding-agent.md) for methodology,
+limitations, and reproduction commands.
 
 ```sh
 pnpm benchmark
 pnpm benchmark:check
 pnpm build
-CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi
-CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode -- --model openai/gpt-5.5-fast
 ```
 
 ## Inspiration
