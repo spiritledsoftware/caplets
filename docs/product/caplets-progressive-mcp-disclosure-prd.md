@@ -4,7 +4,7 @@
 
 **Problem Statement**: MCP clients that connect directly to many servers receive a large, flat tool surface up front. This creates context bloat, weak tool selection, name-collision risk, and poor discoverability when an agent only needs to know which capability domain to inspect next.
 
-**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from `~/.caplets/config.json`, user-owned Markdown Caplet files from `~/.caplets`, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, or HTTP actions through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
+**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows, user-owned Markdown Caplet files from the user Caplets root, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, or HTTP actions through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
 
 **Success Criteria**:
 
@@ -25,7 +25,7 @@
 ### Primary User Flow
 
 1. User installs and configures Caplets as an MCP server in their MCP client.
-2. User creates either `~/.caplets/config.json` with downstream server, OpenAPI endpoint, GraphQL endpoint, or HTTP API action definitions and Caplets options, or Markdown Caplet files with exactly one executable backend.
+2. User creates either `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows with downstream server, OpenAPI endpoint, GraphQL endpoint, or HTTP API action definitions and Caplets options, or Markdown Caplet files with exactly one executable backend.
 3. Each downstream MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or Caplet file uses the supported backend configuration shape plus a required `description`.
 4. Client calls Caplets `tools/list` and sees one top-level tool per enabled downstream server, for example `linear`, `chrome-devtools`, and `context7`.
 5. Agent chooses the relevant Caplet tool based on its skill-like tool name and description.
@@ -39,8 +39,8 @@
 
 Acceptance Criteria:
 
-- Caplets reads `~/.caplets/config.json` from the current user's home directory by default.
-- Caplets reads user-owned Markdown Caplet files from `~/.caplets` by default.
+- Caplets reads `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows by default.
+- Caplets reads user-owned Markdown Caplet files from `${XDG_CONFIG_HOME:-~/.config}/caplets` on Unix-like platforms or `%APPDATA%\caplets` on Windows by default.
 - Caplets reads project Markdown Caplet files from `./.caplets` only when `CAPLETS_TRUST_PROJECT_CAPLETS` is set to `1`, `true`, or `yes`.
 - Caplets supports `mcpServers` for MCP backends, `openapiEndpoints` for native OpenAPI backends, `graphqlEndpoints` for native GraphQL backends, and `httpApis` for explicitly configured HTTP actions.
 - Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
@@ -112,7 +112,7 @@ Acceptance Criteria:
 - `caplets auth login <server>` performs OAuth setup for configured remote servers with `auth.type: "oauth2"`.
 - The command opens a browser-based authorization code flow with PKCE and receives the callback on a loopback URL.
 - `caplets auth login <server> --no-open` supports headless terminals and remote shells by printing the authorization URL and accepting manual completion input.
-- Successful auth writes a token bundle to `~/.caplets/auth/<server>.json` using owner-only file permissions where supported.
+- Successful auth writes a token bundle to `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms or `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows using owner-only file permissions where supported.
 - The Caplets MCP server uses stored OAuth tokens for subsequent HTTP/SSE requests without exposing tokens through MCP tools, generated descriptions, logs, or errors.
 - Auth failures are reported with structured, redacted errors.
 - Re-running `caplets auth login <server>` replaces the stored token bundle for that server atomically.
@@ -161,7 +161,7 @@ Generated Caplet tool input schema:
 
 ### Configuration
 
-MVP supports one documented config file at `~/.caplets/config.json`:
+MVP supports one documented user config file at `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows:
 
 ```json
 {
@@ -244,7 +244,8 @@ Requirements:
 - Manual OAuth completion must validate `state`, apply the stored PKCE verifier, reject mismatched callback URLs or codes, and redact pasted secrets from logs and errors.
 - OAuth authorization requests must include a state parameter and PKCE challenge. OAuth token requests must verify state and include the PKCE verifier.
 - For MCP-compliant OAuth servers, Caplets must include the target server resource indicator in authorization and token requests when required by the MCP authorization specification.
-- The default OAuth token store is `~/.caplets/auth/<server>.json`; files must be created with owner-only permissions when the platform supports it.
+- The default OAuth token store is `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms or `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows; files must be created with owner-only permissions when the platform supports it.
+- Relative `XDG_CONFIG_HOME` and `XDG_STATE_HOME` values are ignored.
 - Token bundles are runtime auth state, not server description state. They must not be embedded in generated MCP tool descriptions, `get_caplet`, logs, or structured errors.
 - The Caplets MCP server reads OAuth tokens from the auth store lazily before remote operations. Updating tokens with `caplets auth login <server>` should not require editing config and should be designed to work without restarting Caplets when practical.
 - `caplets auth list` reports configured OAuth remote servers as missing, authenticated, or expired and must not enumerate arbitrary orphan token files outside the configured server set.
@@ -342,7 +343,7 @@ Caplets runs as a local stdio MCP server.
 ```mermaid
 flowchart LR
   Client["MCP client / agent"] --> Caplets["Caplets MCP server"]
-  Caplets --> Config["~/.caplets/config.json"]
+  Caplets --> Config["user config"]
   Caplets --> Registry["Server registry"]
   Registry --> ClientManager["Lazy downstream client manager"]
   ClientManager --> ServerA["Downstream MCP server A"]
@@ -500,7 +501,7 @@ Requirements:
 
 ### Integration Points
 
-- File system: reads `~/.caplets/config.json`.
+- File system: reads `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows.
 - MCP SDK server: exposes Caplets over stdio.
 - MCP SDK client: connects to downstream stdio, Streamable HTTP, and legacy HTTP+SSE servers.
 - Node child process runtime: launches configured downstream commands.
@@ -509,7 +510,7 @@ Requirements:
 - Native fetch: executes configured HTTP actions with explicit Caplets auth.
 - Caplets CLI: runs `caplets auth login <server>` for OAuth-backed remote servers.
 - Browser/loopback OAuth: opens the authorization URL and receives the OAuth callback on localhost for configured OAuth servers.
-- Local auth store: reads and writes OAuth token bundles under `~/.caplets/auth`.
+- Local auth store: reads and writes OAuth token bundles under `${XDG_STATE_HOME:-~/.local/state}/caplets/auth` on Unix-like platforms or `%LOCALAPPDATA%\caplets\auth` on Windows.
 - Remote transport headers: preserves required MCP protocol-version and session headers for Streamable HTTP servers.
 
 ### Error Codes
@@ -555,7 +556,7 @@ Caplets errors should be structured and stable:
 
 Add automated tests for:
 
-- File system reads `~/.caplets/config.json`.
+- File system reads `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows.
 - Valid config loading from a temp home directory.
 - Optional config version defaulting to 1 and unsupported version rejection.
 - Unknown top-level and server config key rejection.
@@ -618,7 +619,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 
 **MVP: Local progressive MCP gateway**
 
-- Read `~/.caplets/config.json`.
+- Read `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows.
 - Validate `mcpServers` config with required descriptions.
 - Require restart after config changes while keeping config loading, registry construction, and downstream client lifecycle modular enough for later hot reload.
 - Expose one generated top-level MCP tool per enabled downstream server.

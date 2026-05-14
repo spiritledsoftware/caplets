@@ -168,6 +168,10 @@
                     "type": "string",
                     "format": "uri"
                   },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
                   "clientId": {
                     "type": "string",
                     "minLength": 1
@@ -219,6 +223,10 @@
                     "format": "uri"
                   },
                   "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
                     "type": "string",
                     "format": "uri"
                   },
@@ -403,6 +411,10 @@
                     "type": "string",
                     "format": "uri"
                   },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
                   "clientId": {
                     "type": "string",
                     "minLength": 1
@@ -454,6 +466,10 @@
                     "format": "uri"
                   },
                   "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
                     "type": "string",
                     "format": "uri"
                   },
@@ -670,6 +686,10 @@
                     "type": "string",
                     "format": "uri"
                   },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
                   "clientId": {
                     "type": "string",
                     "minLength": 1
@@ -721,6 +741,10 @@
                     "format": "uri"
                   },
                   "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
                     "type": "string",
                     "format": "uri"
                   },
@@ -896,6 +920,10 @@
                     "type": "string",
                     "format": "uri"
                   },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
                   "clientId": {
                     "type": "string",
                     "minLength": 1
@@ -947,6 +975,10 @@
                     "format": "uri"
                   },
                   "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
                     "type": "string",
                     "format": "uri"
                   },

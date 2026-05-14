@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const mockMcpAuth = vi.hoisted(() => vi.fn());
+
+vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@modelcontextprotocol/sdk/client/auth")>()),
+  auth: mockMcpAuth,
+}));
+
 import {
   classifyRemoteAuthError,
   genericOAuthHeaders,
@@ -7,15 +15,17 @@ import {
   authStorePath,
   oauthHeaders,
   readTokenBundle,
+  runOAuthFlow,
   runGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth.js";
 import { listAuth } from "../src/cli/auth.js";
 import { parseConfig } from "../src/config.js";
+import { DEFAULT_AUTH_DIR } from "../src/config/paths.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 
 describe("auth helpers", () => {
   it("extracts callback code and state together", () => {
@@ -86,6 +96,25 @@ describe("auth helpers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("stores remote auth under the shared default auth directory", () => {
+    expect(authStorePath("remote")).toBe(join(DEFAULT_AUTH_DIR, "remote.json"));
+  });
+
+  it("honors explicit auth directory overrides", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      expect(authStorePath("remote", dir)).toBe(join(dir, "remote.json"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors filesystem root as an explicit auth directory", () => {
+    const root = parse(process.cwd()).root;
+
+    expect(authStorePath("remote", root)).toBe(join(root, "remote.json"));
   });
 
   it("builds generic OAuth headers for OpenAPI and GraphQL auth targets", () => {
@@ -221,6 +250,50 @@ describe("auth helpers", () => {
     expect(params.get("client_id")).toBe("client");
     expect(params.has("client_secret")).toBe(false);
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+  });
+
+  it("exposes configured OAuth client metadata URL for URL-based client IDs", () => {
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: {
+            type: "oauth2",
+            clientMetadataUrl: "https://example.com/caplets/oauth-client-metadata.json",
+          },
+        },
+      },
+    }).mcpServers.remote!;
+    const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {});
+
+    expect(provider.clientMetadataUrl).toBe(
+      "https://example.com/caplets/oauth-client-metadata.json",
+    );
+    expect(provider.clientInformation()).toBeUndefined();
+  });
+
+  it("does not rewrite SDK dynamic-registration errors when MCP OAuth uses a client metadata URL", async () => {
+    const sdkError = new Error("server does not support dynamic client registration");
+    mockMcpAuth.mockRejectedValueOnce(sdkError);
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: {
+            type: "oauth2",
+            clientMetadataUrl: "https://example.com/caplets/oauth-client-metadata.json",
+          },
+        },
+      },
+    }).mcpServers.remote!;
+
+    await expect(runOAuthFlow(server, { noOpen: true })).rejects.toBe(sdkError);
   });
 
   it.each(["oauth2", "oidc"] as const)(
@@ -410,6 +483,123 @@ describe("auth helpers", () => {
         },
       ),
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+  });
+
+  it("uses configured client metadata URLs as URL-based client IDs for generic OAuth", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    let baseUrl = "";
+    let authorizationUrl = "";
+    let tokenRequestBody = "";
+    const clientMetadataUrl = "https://client.example.com/caplets/oauth-client-metadata.json";
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/token") {
+          tokenRequestBody = body;
+          response.end(JSON.stringify({ access_token: "metadata-url-token" }));
+          return;
+        }
+        response.end("{}");
+      });
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      baseUrl = `http://127.0.0.1:${address.port}`;
+
+      await expect(
+        runGenericOAuthFlow(
+          {
+            server: "users",
+            backend: "openapi",
+            url: baseUrl,
+            auth: {
+              type: "oauth2",
+              authorizationUrl: `${baseUrl}/authorize`,
+              tokenUrl: `${baseUrl}/token`,
+              clientMetadataUrl,
+              clientSecret: "metadata-url-secret",
+            },
+          },
+          {
+            authDir: dir,
+            noOpen: true,
+            print: (line) => {
+              authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
+            },
+            readManualInput: async () => {
+              const url = new URL(authorizationUrl);
+              return `http://127.0.0.1/callback?code=auth-code&state=${url.searchParams.get("state")}`;
+            },
+          },
+        ),
+      ).resolves.toMatchObject({ accessToken: "metadata-url-token", clientId: clientMetadataUrl });
+
+      expect(new URL(authorizationUrl).searchParams.get("client_id")).toBe(clientMetadataUrl);
+      expect(new URLSearchParams(tokenRequestBody).get("client_id")).toBe(clientMetadataUrl);
+      expect(new URLSearchParams(tokenRequestBody).get("client_secret")).toBe(
+        "metadata-url-secret",
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("matches generic OAuth token bundles against configured client metadata URLs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "metadata-url-token",
+          clientId: "https://client.example.com/caplets/oauth-client-metadata.json",
+          protectedResourceOrigin: "https://api.example.com",
+        },
+        dir,
+      );
+
+      expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "openapi",
+            url: "https://api.example.com/openapi.json",
+            auth: {
+              type: "oauth2",
+              clientMetadataUrl: "https://client.example.com/caplets/oauth-client-metadata.json",
+            },
+          },
+          dir,
+        ),
+      ).toEqual({ authorization: "Bearer metadata-url-token" });
+
+      expect(() =>
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "openapi",
+            url: "https://api.example.com/openapi.json",
+            auth: {
+              type: "oauth2",
+              clientMetadataUrl: "https://client.example.com/other-client.json",
+            },
+          },
+          dir,
+        ),
+      ).toThrow(expect.objectContaining({ code: "AUTH_REQUIRED" }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects insecure explicit OAuth discovery URLs instead of falling back", async () => {
