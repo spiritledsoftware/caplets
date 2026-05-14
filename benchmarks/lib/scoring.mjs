@@ -39,13 +39,15 @@ export async function scoreTaskRun({
   const events = agentResult?.jsonEvents ?? [];
 
   const finalStateValid = validation.success && hiddenValidation.success;
-  const processSuccess = agentResult ? isSuccessfulAgentProcess(agentResult) : true;
+  const processFailureReason = agentResult ? agentProcessFailureReason(agentResult) : undefined;
+  const processSuccess = !processFailureReason;
 
   return {
     taskId: task.id,
     success: finalStateValid && processSuccess,
     finalStateValid,
     processSuccess,
+    processFailureReason,
     validation,
     hiddenValidation,
     process: agentResult
@@ -66,15 +68,49 @@ export async function scoreTaskRun({
   };
 }
 
-function isSuccessfulAgentProcess(agentResult) {
+function agentProcessFailureReason(agentResult) {
+  if (agentResult.timedOut) {
+    return "agent timed out";
+  }
+  if (agentResult.signal) {
+    return `agent exited with signal ${agentResult.signal}`;
+  }
+  if (agentResult.skipped || agentResult.unavailable) {
+    return agentResult.reason ?? "agent unavailable";
+  }
+  if (agentResult.configConflict) {
+    return agentResult.reason ?? "agent config conflict";
+  }
+  const errorEvent = (agentResult.jsonEvents ?? []).find(isAgentErrorEvent);
+  if (errorEvent) {
+    return formatAgentErrorEvent(errorEvent);
+  }
+  if (agentResult.exitCode !== 0) {
+    return `agent exited with code ${agentResult.exitCode}`;
+  }
+  return undefined;
+}
+
+function isAgentErrorEvent(event) {
   return Boolean(
-    agentResult.exitCode === 0 &&
-    !agentResult.timedOut &&
-    !agentResult.signal &&
-    !agentResult.skipped &&
-    !agentResult.unavailable &&
-    !agentResult.configConflict,
+    event &&
+    typeof event === "object" &&
+    (event.type === "error" || event.event === "error" || event.error),
   );
+}
+
+function formatAgentErrorEvent(event) {
+  const error = event.error && typeof event.error === "object" ? event.error : event;
+  const name = typeof error.name === "string" ? error.name : "agent error";
+  const data = error.data && typeof error.data === "object" ? error.data : undefined;
+  const message =
+    typeof error.message === "string"
+      ? error.message
+      : typeof data?.message === "string"
+        ? data.message
+        : undefined;
+  const status = typeof data?.statusCode === "number" ? ` (${data.statusCode})` : "";
+  return message ? `${name}${status}: ${message}` : `${name}${status}`;
 }
 
 export function transcriptMetrics({ transcript = "", transcriptBytes, events = [] } = {}) {

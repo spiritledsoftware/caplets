@@ -492,6 +492,9 @@ function failureReason(result) {
   if (result.agentResult?.benchmarkHarnessCapturedError) {
     return result.agentResult.stderr;
   }
+  if (!result.score.processSuccess) {
+    return result.score.processFailureReason ?? "agent process failed";
+  }
   if (!result.score.validation.success) {
     return `validation failed with exit code ${result.score.validation.exitCode}`;
   }

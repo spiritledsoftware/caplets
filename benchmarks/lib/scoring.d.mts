@@ -63,6 +63,7 @@ export function scoreTaskRun(options: {
   };
   finalStateValid: boolean;
   processSuccess: boolean;
+  processFailureReason?: string;
   metrics: TranscriptMetrics;
 }>;
 

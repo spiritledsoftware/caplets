@@ -887,6 +887,43 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
+  it("does not count agent JSON error events as successful", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "caplets-benchmark-agent-error-test-"));
+    try {
+      await writeFile(
+        join(workspace, "validation.test.mjs"),
+        "import { test } from 'node:test';\ntest('ok', () => {});\n",
+      );
+
+      const score = await scoreTaskRun({
+        task: {
+          id: "example",
+          validationCommand: `${process.execPath} --test validation.test.mjs`,
+        },
+        candidateWorkspace: workspace,
+        agentResult: {
+          ...emptyProcessResult({ command: "agent" }),
+          jsonEvents: [
+            {
+              type: "error",
+              error: {
+                name: "APIError",
+                data: { message: "Insufficient Balance", statusCode: 402 },
+              },
+            },
+          ],
+        },
+      });
+
+      expect(score.finalStateValid).toBe(true);
+      expect(score.processSuccess).toBe(false);
+      expect(score.processFailureReason).toBe("APIError (402): Insufficient Balance");
+      expect(score.success).toBe(false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("parses live benchmark args and builds the supported agent/mode matrix", () => {
     const options = parseLiveArgs([
       "--agent",
