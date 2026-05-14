@@ -1,4 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const mockMcpAuth = vi.hoisted(() => vi.fn());
+
+vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@modelcontextprotocol/sdk/client/auth")>()),
+  auth: mockMcpAuth,
+}));
+
 import {
   classifyRemoteAuthError,
   genericOAuthHeaders,
@@ -7,6 +15,7 @@ import {
   authStorePath,
   oauthHeaders,
   readTokenBundle,
+  runOAuthFlow,
   runGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth.js";
@@ -264,6 +273,27 @@ describe("auth helpers", () => {
       "https://example.com/caplets/oauth-client-metadata.json",
     );
     expect(provider.clientInformation()).toBeUndefined();
+  });
+
+  it("does not rewrite SDK dynamic-registration errors when MCP OAuth uses a client metadata URL", async () => {
+    const sdkError = new Error("server does not support dynamic client registration");
+    mockMcpAuth.mockRejectedValueOnce(sdkError);
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: {
+            type: "oauth2",
+            clientMetadataUrl: "https://example.com/caplets/oauth-client-metadata.json",
+          },
+        },
+      },
+    }).mcpServers.remote!;
+
+    await expect(runOAuthFlow(server, { noOpen: true })).rejects.toBe(sdkError);
   });
 
   it.each(["oauth2", "oidc"] as const)(
