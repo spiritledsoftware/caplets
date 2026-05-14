@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import {
   DEFAULT_AUTH_DIR,
   resolveCapletsRoot,
@@ -24,6 +25,7 @@ type ConfigPaths = {
   userConfig: string;
   projectConfig: string;
   userRoot: string;
+  stateRoot: string;
   projectRoot: string;
   authDir: string;
   envConfig: string | null;
@@ -75,12 +77,14 @@ export function resolveCliConfigPaths(
   authDir?: string,
 ): ConfigPaths {
   const configPath = resolveConfigPath(envConfigPath);
+  const effectiveAuthDir = authDir ?? DEFAULT_AUTH_DIR;
   return {
     userConfig: configPath,
     projectConfig: resolveProjectConfigPath(),
     userRoot: resolveCapletsRoot(configPath),
+    stateRoot: dirname(effectiveAuthDir),
     projectRoot: resolveProjectCapletsRoot(),
-    authDir: authDir ?? DEFAULT_AUTH_DIR,
+    authDir: effectiveAuthDir,
     envConfig: envConfigPath ?? null,
     projectCapletsTrusted: isTrustedProjectCapletsEnabled(),
   };
@@ -92,6 +96,7 @@ export function formatConfigPaths(paths: ConfigPaths): string {
       `userConfig: ${paths.userConfig}`,
       `projectConfig: ${paths.projectConfig}`,
       `userRoot: ${paths.userRoot}`,
+      `stateRoot: ${paths.stateRoot}`,
       `projectRoot: ${paths.projectRoot}`,
       `authDir: ${paths.authDir}`,
       `envConfig: ${paths.envConfig ?? "unset"}`,

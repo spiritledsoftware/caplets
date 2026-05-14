@@ -8,8 +8,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { DEFAULT_AUTH_DIR } from "../config/paths.js";
 import { CapletsError } from "../errors.js";
 
 export type StoredOAuthTokenBundle = {
@@ -29,16 +29,14 @@ export type StoredOAuthTokenBundle = {
   metadata?: Record<string, unknown>;
 };
 
-export function authStorePath(
-  server: string,
-  authDir = join(homedir(), ".caplets", "auth"),
-): string {
+export function authStorePath(server: string, authDir = DEFAULT_AUTH_DIR): string {
   if (!server || server.includes("/") || server.includes("\\") || server.includes("..")) {
     throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
   }
   const authRoot = resolve(authDir);
   const candidate = resolve(authRoot, `${server}.json`);
-  if (candidate !== authRoot && candidate.startsWith(`${authRoot}${sep}`)) {
+  const relativePath = relative(authRoot, candidate);
+  if (relativePath && !relativePath.startsWith("..") && !isAbsolute(relativePath)) {
     return candidate;
   }
   throw new CapletsError("REQUEST_INVALID", `Invalid auth store server name ${server}`);
@@ -60,7 +58,7 @@ export function readTokenBundle(
 }
 
 export function listTokenBundles(authDir?: string): StoredOAuthTokenBundle[] {
-  const dir = authDir ?? join(homedir(), ".caplets", "auth");
+  const dir = authDir ?? DEFAULT_AUTH_DIR;
   if (!existsSync(dir)) {
     return [];
   }

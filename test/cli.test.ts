@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
 import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
 import { parseConfig, TRUST_PROJECT_CAPLETS_ENV } from "../src/config.js";
@@ -229,11 +229,43 @@ describe("cli init", () => {
         userConfig: configPath,
         projectConfig: join(process.cwd(), ".caplets", "config.json"),
         userRoot: dir,
+        stateRoot: dirname(authDir),
         projectRoot: join(process.cwd(), ".caplets"),
         authDir,
         envConfig: configPath,
         projectCapletsTrusted: true,
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints resolved config paths for humans", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-paths-"));
+    const configPath = join(dir, "custom.json");
+    const authDir = join(dir, "state", "auth");
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["config", "paths"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe(
+        [
+          `userConfig: ${configPath}`,
+          `projectConfig: ${join(process.cwd(), ".caplets", "config.json")}`,
+          `userRoot: ${dir}`,
+          `stateRoot: ${dirname(authDir)}`,
+          `projectRoot: ${join(process.cwd(), ".caplets")}`,
+          `authDir: ${authDir}`,
+          `envConfig: ${configPath}`,
+          "projectCapletsTrusted: false",
+          "",
+        ].join("\n"),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

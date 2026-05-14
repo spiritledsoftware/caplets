@@ -12,10 +12,11 @@ import {
 } from "../src/auth.js";
 import { listAuth } from "../src/cli/auth.js";
 import { parseConfig } from "../src/config.js";
+import { DEFAULT_AUTH_DIR } from "../src/config/paths.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 
 describe("auth helpers", () => {
   it("extracts callback code and state together", () => {
@@ -86,6 +87,25 @@ describe("auth helpers", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("stores remote auth under the shared default auth directory", () => {
+    expect(authStorePath("remote")).toBe(join(DEFAULT_AUTH_DIR, "remote.json"));
+  });
+
+  it("honors explicit auth directory overrides", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      expect(authStorePath("remote", dir)).toBe(join(dir, "remote.json"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors filesystem root as an explicit auth directory", () => {
+    const root = parse(process.cwd()).root;
+
+    expect(authStorePath("remote", root)).toBe(join(root, "remote.json"));
   });
 
   it("builds generic OAuth headers for OpenAPI and GraphQL auth targets", () => {

@@ -28,7 +28,7 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## What It Does
 
-- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from `~/.caplets/config.json`.
+- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from the user config file.
 - Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, or HTTP API.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
@@ -59,7 +59,7 @@ pnpm build
 
 ## Configure
 
-Create a starter `~/.caplets/config.json`:
+Create a starter user config at `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows:
 
 ```sh
 caplets init
@@ -143,7 +143,7 @@ you want Caplets to expose:
 }
 ```
 
-The default config path can be overridden with `CAPLETS_CONFIG`:
+The default config path is `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms and `%APPDATA%\caplets\config.json` on Windows. It can be overridden with `CAPLETS_CONFIG`:
 
 ```sh
 CAPLETS_CONFIG=/path/to/config.json caplets init
@@ -279,11 +279,13 @@ caplets install spiritledsoftware/caplets github linear
 ```
 
 `caplets install` accepts a GitHub `owner/repo` shorthand, a Git URL, or a local repository path.
-It installs into your user Caplets root, which is `~/.caplets` by default or the parent directory
-of `CAPLETS_CONFIG` when that environment variable is set. Existing Caplets are not overwritten
-unless `--force` is passed.
+It installs into your user Caplets root, which is `${XDG_CONFIG_HOME:-~/.config}/caplets` on Unix-like platforms,
+`%APPDATA%\caplets` on Windows, or the parent directory of `CAPLETS_CONFIG` when that environment variable is set.
+Existing Caplets are not overwritten unless `--force` is passed.
 
-Caplets always loads user Caplet files from `~/.caplets`. Project `./.caplets/config.json`
+On Unix-like platforms, relative `XDG_CONFIG_HOME` and `XDG_STATE_HOME` values are ignored.
+
+Caplets always loads user Caplet files from the user Caplets root. Project `./.caplets/config.json`
 is still loaded as project config, but project Markdown Caplet files are executable
 configuration and are ignored unless explicitly trusted:
 
@@ -511,10 +513,11 @@ For headless terminals:
 caplets auth login <server> --no-open
 ```
 
-OAuth/OIDC tokens are stored under `~/.caplets/auth/<server>.json` with owner-only file
-permissions where the platform supports them. Caplets supports well-known OAuth/OIDC
-discovery and dynamic client registration when advertised. When a token expires, run
-`caplets auth login <server>` again.
+OAuth/OIDC tokens are stored under `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json`
+on Unix-like platforms and `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows.
+Token files use owner-only file permissions where the platform supports them. Caplets supports
+well-known OAuth/OIDC discovery and dynamic client registration when advertised. When a token expires,
+run `caplets auth login <server>` again.
 
 To inspect or remove stored OAuth credentials:
 
