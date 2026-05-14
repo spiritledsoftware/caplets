@@ -496,6 +496,7 @@ describe("auth helpers", () => {
               authorizationUrl: `${baseUrl}/authorize`,
               tokenUrl: `${baseUrl}/token`,
               clientMetadataUrl,
+              clientSecret: "metadata-url-secret",
             },
           },
           {
@@ -514,8 +515,59 @@ describe("auth helpers", () => {
 
       expect(new URL(authorizationUrl).searchParams.get("client_id")).toBe(clientMetadataUrl);
       expect(new URLSearchParams(tokenRequestBody).get("client_id")).toBe(clientMetadataUrl);
+      expect(new URLSearchParams(tokenRequestBody).get("client_secret")).toBe(
+        "metadata-url-secret",
+      );
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("matches generic OAuth token bundles against configured client metadata URLs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "metadata-url-token",
+          clientId: "https://client.example.com/caplets/oauth-client-metadata.json",
+          protectedResourceOrigin: "https://api.example.com",
+        },
+        dir,
+      );
+
+      expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "openapi",
+            url: "https://api.example.com/openapi.json",
+            auth: {
+              type: "oauth2",
+              clientMetadataUrl: "https://client.example.com/caplets/oauth-client-metadata.json",
+            },
+          },
+          dir,
+        ),
+      ).toEqual({ authorization: "Bearer metadata-url-token" });
+
+      expect(() =>
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "openapi",
+            url: "https://api.example.com/openapi.json",
+            auth: {
+              type: "oauth2",
+              clientMetadataUrl: "https://client.example.com/other-client.json",
+            },
+          },
+          dir,
+        ),
+      ).toThrow(expect.objectContaining({ code: "AUTH_REQUIRED" }));
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

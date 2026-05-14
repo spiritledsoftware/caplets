@@ -665,6 +665,7 @@ async function resolveGenericClient(
   if (authConfig.clientMetadataUrl) {
     return {
       clientId: authConfig.clientMetadataUrl,
+      ...(authConfig.clientSecret ? { clientSecret: authConfig.clientSecret } : {}),
       dynamic: false,
     };
   }
@@ -776,11 +777,12 @@ function assertTokenBundleMatchesTarget(
   target: GenericAuthTarget,
   authConfig: OAuthLikeAuthConfig,
 ): void {
+  const configuredClientId = authConfig.clientId ?? authConfig.clientMetadataUrl;
   const expectedOrigin = protectedResourceOrigin(target, authConfig);
   const mismatch =
     bundle.authType !== authConfig.type ||
     (expectedOrigin && bundle.protectedResourceOrigin !== expectedOrigin) ||
-    (authConfig.clientId && bundle.clientId !== authConfig.clientId) ||
+    (configuredClientId && bundle.clientId !== configuredClientId) ||
     (authConfig.issuer && bundle.issuer !== authConfig.issuer);
   if (mismatch) {
     throw new CapletsError(
