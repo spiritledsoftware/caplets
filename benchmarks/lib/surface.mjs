@@ -28,6 +28,8 @@ export function directFlatTools() {
       description: tool.description,
       inputSchema: tool.inputSchema,
       annotations: tool.annotations,
+      hasOutputSchema: Boolean(tool.outputSchema),
+      outputSchema: tool.outputSchema,
       server: tool.server,
     })),
   );

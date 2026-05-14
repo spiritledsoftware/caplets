@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const SERVER_NAMES = ["policy", "tickets", "api"];
 
@@ -583,7 +585,11 @@ async function main() {
   await createMockMcpServer(validServerName).connect();
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const isMainModule =
+  typeof process.argv[1] === "string" &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (isMainModule) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -30,7 +30,12 @@ import {
   detectOpenCodeCli,
   opencodeRunner,
 } from "../benchmarks/lib/opencode-runner.mjs";
-import { buildLiveMatrix, parseLiveArgs, runLiveBenchmark } from "../benchmarks/run-live.mjs";
+import {
+  buildLiveMatrix,
+  loadTasks,
+  parseLiveArgs,
+  runLiveBenchmark,
+} from "../benchmarks/run-live.mjs";
 import { resolveInside, scoreTaskRun, transcriptMetrics } from "../benchmarks/lib/scoring.mjs";
 import {
   SURFACE_THRESHOLDS,
@@ -1027,6 +1032,24 @@ describe("progressive disclosure benchmark fixture", () => {
     );
   });
 
+  it("rejects duplicate live benchmark task ids", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-live-duplicate-tasks-test-"));
+    const tasksPath = join(root, "tasks.json");
+    try {
+      await writeFile(
+        tasksPath,
+        JSON.stringify([
+          { id: "duplicate", prompt: "One" },
+          { id: "duplicate", prompt: "Two" },
+        ]),
+      );
+
+      await expect(loadTasks(tasksPath)).rejects.toThrow("Duplicate benchmark task id: duplicate");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("runs live benchmark orchestration with fake runners and writes JSON/Markdown reports", async () => {
     const root = await mkdtemp(join(tmpdir(), "caplets-live-orchestrator-test-"));
     const fixtureRoot = join(root, "fixtures");
@@ -1079,6 +1102,7 @@ describe("progressive disclosure benchmark fixture", () => {
         runners: {
           opencode: {
             run: async ({ task, candidateWorkspace, mode }) => {
+              await access(outputDir);
               runnerTasks.push(task);
               await writeFile(join(candidateWorkspace, "answer.txt"), "fixed\n");
               return {

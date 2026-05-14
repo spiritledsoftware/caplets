@@ -116,6 +116,7 @@ export async function runLiveBenchmark({
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Refusing to run live benchmarks unless CAPLETS_BENCH_LIVE=1.");
   }
+  await mkdir(liveOptions.outputDir, { recursive: true });
 
   const tasks = selectTasks(await loadTasks(tasksPath), liveOptions.tasks);
   const matrix = buildLiveMatrix(liveOptions);
@@ -216,7 +217,6 @@ export async function runLiveBenchmark({
 
   const jsonPath = resolve(liveOptions.outputDir, `${timestamp}.json`);
   const markdownPath = resolve(liveOptions.outputDir, `${timestamp}.md`);
-  await mkdir(liveOptions.outputDir, { recursive: true });
   await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   await writeFile(markdownPath, renderLiveMarkdownReport(report), "utf8");
 
@@ -232,6 +232,13 @@ export async function loadTasks(tasksPath = defaultTasksPath) {
     if (!task?.id || !task.prompt) {
       throw new Error("Every benchmark task must include id and prompt.");
     }
+  }
+  const ids = new Set();
+  for (const task of tasks) {
+    if (ids.has(task.id)) {
+      throw new Error(`Duplicate benchmark task id: ${task.id}`);
+    }
+    ids.add(task.id);
   }
   return tasks;
 }

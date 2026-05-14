@@ -165,6 +165,12 @@ describe("projectStructuredContent", () => {
     );
   });
 
+  it("rejects non-string field selections", () => {
+    expect(() =>
+      projectStructuredContent({ id: "user-1" }, outputSchema, ["id", 1] as unknown as string[]),
+    ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }));
+  });
+
   it("omits selected runtime values that are absent", () => {
     expect(
       projectStructuredContent(
@@ -249,6 +255,20 @@ describe("projectStructuredContent", () => {
         expect.objectContaining({ code: "REQUEST_INVALID" }),
       );
     }
+  });
+
+  it("omits dangerous keys when projecting selected containers", () => {
+    const value = JSON.parse('{"safe":{"name":"Ada","__proto__":{"polluted":true}}}');
+    const schema = JSON.parse(
+      '{"type":"object","properties":{"safe":{"type":"object","properties":{"name":{"type":"string"},"__proto__":{"type":"object"}}}}}',
+    );
+
+    const projected = projectStructuredContent(value, schema, ["safe"]);
+
+    expect(projected).toEqual({ safe: { name: "Ada" } });
+    expect(Object.getPrototypeOf(projected)).toBeNull();
+    expect(Object.getPrototypeOf(projected.safe as object)).toBeNull();
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
   });
 
   it("does not validate inherited schema property names", () => {

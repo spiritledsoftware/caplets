@@ -200,7 +200,7 @@ describe("native OpenAPI Caplets", () => {
       });
       expect(tool.structuredContent.result.tool.outputSchema).toMatchObject({
         type: "object",
-        required: ["status", "statusText", "headers", "body"],
+        required: ["status", "statusText", "headers"],
         properties: {
           status: { type: "number" },
           statusText: { type: "string" },

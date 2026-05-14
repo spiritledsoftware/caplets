@@ -393,6 +393,7 @@ function outputSchemaFor(operation: Record<string, any>): Record<string, unknown
   if (!responses || typeof responses !== "object") {
     return undefined;
   }
+  const schemas = [];
   for (const [status, response] of Object.entries(responses)) {
     if (!/^2\d\d$/.test(status) || !response || typeof response !== "object") {
       continue;
@@ -409,9 +410,17 @@ function outputSchemaFor(operation: Record<string, any>): Record<string, unknown
     if (!schema) {
       continue;
     }
-    return structuredOutputSchema(schema);
+    schemas.push(schema);
   }
-  return undefined;
+  if (schemas.length === 0) {
+    return undefined;
+  }
+  const firstSchema = schemas[0]!;
+  const restSchemas = schemas.slice(1);
+  if (restSchemas.some((schema) => JSON.stringify(schema) !== JSON.stringify(firstSchema))) {
+    return undefined;
+  }
+  return structuredOutputSchema(firstSchema);
 }
 
 function actualSchema(value: unknown): Record<string, unknown> | undefined {
@@ -427,7 +436,7 @@ function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<str
   return {
     type: "object",
     additionalProperties: false,
-    required: ["status", "statusText", "headers", "body"],
+    required: ["status", "statusText", "headers"],
     properties: {
       status: { type: "number" },
       statusText: { type: "string" },

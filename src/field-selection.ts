@@ -18,7 +18,7 @@ export function projectStructuredContent(
     throwInvalid("Field selection requires object structured content");
   }
 
-  const result: JsonObject = {};
+  const result = createJsonObject();
   for (const field of fields) {
     const path = field.split(".");
     const projected = projectPath(value, outputSchema, path);
@@ -32,6 +32,9 @@ export function projectStructuredContent(
 export function validateFieldSelection(outputSchema: unknown, fields: string[]): void {
   if (!isPlainObject(outputSchema)) {
     throwInvalid("Field selection requires an output schema");
+  }
+  if (!Array.isArray(fields) || fields.some((field) => typeof field !== "string")) {
+    throwInvalid("Field selection requires an array of field paths");
   }
   for (const field of fields) {
     validateSchemaPath(outputSchema, field.split("."), field);
@@ -105,9 +108,9 @@ function pruneToSchema(value: unknown, schema: unknown): unknown {
     return cloneJsonValue(value);
   }
 
-  const result: JsonObject = {};
+  const result = createJsonObject();
   for (const [key, nestedSchema] of Object.entries(properties)) {
-    if (Object.prototype.hasOwnProperty.call(value, key)) {
+    if (isSupportedSegment(key) && Object.prototype.hasOwnProperty.call(value, key)) {
       result[key] = pruneToSchema(value[key], nestedSchema);
     }
   }
@@ -137,6 +140,9 @@ function mergeValue(target: JsonObject, value: unknown): void {
   }
 
   for (const [key, nested] of Object.entries(value)) {
+    if (!isSupportedSegment(key)) {
+      continue;
+    }
     target[key] = mergeNested(target[key], nested);
   }
 }
@@ -151,7 +157,7 @@ function mergeNested(existing: unknown, next: unknown): unknown {
     );
   }
   if (isPlainObject(existing) && isPlainObject(next)) {
-    const merged = { ...existing };
+    const merged = Object.assign(createJsonObject(), existing);
     mergeValue(merged, next);
     return merged;
   }
@@ -173,14 +179,22 @@ function isPlainObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function createJsonObject(): JsonObject {
+  return Object.create(null) as JsonObject;
+}
+
 function cloneJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(cloneJsonValue);
   }
   if (isPlainObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, cloneJsonValue(nested)]),
-    );
+    const result = createJsonObject();
+    for (const [key, nested] of Object.entries(value)) {
+      if (isSupportedSegment(key)) {
+        result[key] = cloneJsonValue(nested);
+      }
+    }
+    return result;
   }
   return value;
 }
