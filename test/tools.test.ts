@@ -572,6 +572,28 @@ describe("generated tool handlers", () => {
     expect(result).toEqual(downstreamResult);
   });
 
+  it("reports downstream protocol errors when field selection lacks structured output", async () => {
+    const downstream = {
+      getTool: vi.fn().mockResolvedValue({
+        name: "read",
+        inputSchema: { type: "object" },
+        outputSchema: { type: "object", properties: { message: { type: "string" } } },
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "message only" }],
+      }),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" } satisfies Partial<CapletsError>);
+  });
+
   it("rejects fields before calling tools that do not expose an output schema", async () => {
     const downstream = {
       getTool: vi.fn().mockResolvedValue(tools[1]),

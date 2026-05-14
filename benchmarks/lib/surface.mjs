@@ -76,6 +76,7 @@ export async function computeSurfaceBenchmark() {
   const initialToolReduction = 1 - caplets.toolCount / direct.toolCount;
 
   return {
+    // Fixed timestamp keeps deterministic benchmark reports reproducible.
     generatedAt: new Date(0).toISOString(),
     source: {
       servers: SERVER_NAMES,

@@ -222,11 +222,15 @@ export function projectCallToolResult<T extends object>(
     return result as T & CallToolResult;
   }
 
-  const projected = projectStructuredContent(
-    (result as { structuredContent?: unknown }).structuredContent,
-    outputSchema,
-    fields,
-  );
+  const structuredContent = (result as { structuredContent?: unknown }).structuredContent;
+  if (!isPlainObject(structuredContent)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Field selection requires the downstream tool to return object structuredContent",
+    );
+  }
+
+  const projected = projectStructuredContent(structuredContent, outputSchema, fields);
   return {
     ...result,
     content: [

@@ -416,9 +416,11 @@ function outputSchemaFor(operation: Record<string, any>): Record<string, unknown
 
 function actualSchema(value: unknown): Record<string, unknown> | undefined {
   rejectExternalRefs(value);
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const schema = value as Record<string, unknown>;
+  return typeof schema.$ref === "string" ? undefined : schema;
 }
 
 function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {
@@ -429,6 +431,7 @@ function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<str
     properties: {
       status: { type: "number" },
       statusText: { type: "string" },
+      // Keep generated headers intentionally small until response headers are modeled per operation.
       headers: {
         type: "object",
         additionalProperties: false,
