@@ -10,6 +10,7 @@ server.registerTool(
   {
     description: "Echo a message.",
     inputSchema: z.object({ message: z.string() }).strict(),
+    outputSchema: z.object({ message: z.string() }).strict(),
   },
   async ({ message }) => ({
     content: [{ type: "text", text: `echo:${message}` }],

@@ -8,6 +8,7 @@ import { DownstreamManager } from "../src/downstream.js";
 import { ServerRegistry } from "../src/registry.js";
 import { CapletsError } from "../src/errors.js";
 import { writeTokenBundle } from "../src/auth.js";
+import { handleServerTool } from "../src/tools.js";
 
 describe("downstream stdio lifecycle", () => {
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {
@@ -42,6 +43,44 @@ describe("downstream stdio lifecycle", () => {
       await expect(manager.callTool(server, "missing", {})).rejects.toMatchObject({
         code: "TOOL_NOT_FOUND",
       } satisfies Partial<CapletsError>);
+    } finally {
+      await manager.close();
+    }
+  });
+
+  it("projects MCP structured output when fields are requested", async () => {
+    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const config = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A useful fixture server.",
+          command: process.execPath,
+          args: [fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const manager = new DownstreamManager(registry);
+
+    try {
+      const result = (await handleServerTool(
+        config.mcpServers.fixture!,
+        {
+          operation: "call_tool",
+          tool: "echo",
+          arguments: { message: "hello" },
+          fields: ["message"],
+        },
+        registry,
+        manager,
+      )) as any;
+
+      expect(result).toMatchObject({
+        content: [{ type: "text", text: '{\n  "message": "hello"\n}' }],
+        structuredContent: { message: "hello" },
+      });
     } finally {
       await manager.close();
     }

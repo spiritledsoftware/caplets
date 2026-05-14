@@ -35,6 +35,7 @@ type OpenApiOperation = {
   summary?: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   requestBodyContentType?: string;
   baseUrl?: string;
 };
@@ -179,6 +180,7 @@ export class OpenApiManager {
       ...(tool.description ? { description: tool.description } : {}),
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
+      hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 
@@ -264,6 +266,9 @@ export class OpenApiManager {
         ? { description: operation.summary ?? operation.description }
         : {}),
       inputSchema: operation.inputSchema as Tool["inputSchema"],
+      ...(operation.outputSchema
+        ? { outputSchema: operation.outputSchema as Tool["outputSchema"] }
+        : {}),
       annotations: {
         readOnlyHint: operation.method === "get" || operation.method === "head",
         destructiveHint: operation.method === "delete",
@@ -340,6 +345,7 @@ function extractOperations(
         ...(Array.isArray(operation.parameters) ? operation.parameters : []),
       ];
       const requestBody = requestBodyFor(operation);
+      const outputSchema = outputSchemaFor(operation);
       const baseUrl = endpoint.baseUrl ?? firstServerUrl(document);
       validateOperationBaseUrl(endpoint, baseUrl);
       operations.push({
@@ -351,6 +357,7 @@ function extractOperations(
           ? { description: operation.description }
           : {}),
         inputSchema: inputSchemaFor(parameters, requestBody),
+        ...(outputSchema ? { outputSchema } : {}),
         ...(requestBody?.contentType ? { requestBodyContentType: requestBody.contentType } : {}),
         ...(baseUrl ? { baseUrl } : {}),
       });
@@ -378,6 +385,60 @@ function requestBodyFor(
     required: requestBody.required === true,
     schema: safeSchema(content[contentType]?.schema),
     contentType,
+  };
+}
+
+function outputSchemaFor(operation: Record<string, any>): Record<string, unknown> | undefined {
+  const responses = operation.responses;
+  if (!responses || typeof responses !== "object") {
+    return undefined;
+  }
+  for (const [status, response] of Object.entries(responses)) {
+    if (!/^2\d\d$/.test(status) || !response || typeof response !== "object") {
+      continue;
+    }
+    const content = (response as Record<string, any>).content;
+    if (!content || typeof content !== "object") {
+      continue;
+    }
+    const contentType = JSON_CONTENT_TYPES.find((candidate) => content[candidate]);
+    if (!contentType) {
+      continue;
+    }
+    const schema = actualSchema(content[contentType]?.schema);
+    if (!schema) {
+      continue;
+    }
+    return structuredOutputSchema(schema);
+  }
+  return undefined;
+}
+
+function actualSchema(value: unknown): Record<string, unknown> | undefined {
+  rejectExternalRefs(value);
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "statusText", "headers", "body"],
+    properties: {
+      status: { type: "number" },
+      statusText: { type: "string" },
+      headers: {
+        type: "object",
+        additionalProperties: false,
+        required: ["content-type"],
+        properties: {
+          "content-type": { type: "string" },
+        },
+      },
+      body: bodySchema,
+    },
   };
 }
 

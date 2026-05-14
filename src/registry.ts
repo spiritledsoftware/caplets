@@ -170,7 +170,8 @@ export function capabilityDescription(server: CapletConfig): string {
     '- Read one tool schema: {"operation":"get_tool","tool":"<tool name>"}',
     '- Invoke one downstream tool: {"operation":"call_tool","tool":"<tool name>","arguments":{...}}',
     "",
-    'Important: call_tool requires a top-level "arguments" JSON object containing the downstream tool inputs. Do not put downstream arguments at the top level of this wrapper request.',
+    'Important: Do not put downstream arguments at the top level; put them inside "arguments".',
+    'After get_tool shows outputSchema (non-GraphQL), call_tool may use fields: ["path.to.field"].',
   ].join("\n");
   return `${server.name}\n\n${server.description}\n\n${hint}`;
 }

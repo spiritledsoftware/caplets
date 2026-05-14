@@ -59,7 +59,7 @@ describe("native OpenAPI Caplets", () => {
         });
         response.setHeader("content-type", "application/json");
         if (request.url?.startsWith("/users/42?active=true")) {
-          response.end(JSON.stringify({ id: "42", active: true }));
+          response.end(JSON.stringify({ id: "42", active: true, name: "Ada" }));
           return;
         }
         if (request.url?.startsWith("/api/v1/users/42?active=true")) {
@@ -73,6 +73,10 @@ describe("native OpenAPI Caplets", () => {
         }
         if (request.url === "/invalid-json") {
           response.end("{not json");
+          return;
+        }
+        if (request.url === "/schema-less") {
+          response.end(JSON.stringify({ public: "ok", secret: "hidden" }));
           return;
         }
         if (request.url === "/protected") {
@@ -168,6 +172,11 @@ describe("native OpenAPI Caplets", () => {
       expect(
         list.structuredContent.result.tools.map((tool: { tool: string }) => tool.tool),
       ).toEqual(["createUser", "GET /users/{id}"]);
+      expect(
+        list.structuredContent.result.tools.find(
+          (candidate: { tool: string }) => candidate.tool === "GET /users/{id}",
+        ),
+      ).toMatchObject({ hasOutputSchema: true });
 
       const tool = (await handleServerTool(
         caplet,
@@ -189,6 +198,27 @@ describe("native OpenAPI Caplets", () => {
           },
         },
       });
+      expect(tool.structuredContent.result.tool.outputSchema).toMatchObject({
+        type: "object",
+        required: ["status", "statusText", "headers", "body"],
+        properties: {
+          status: { type: "number" },
+          statusText: { type: "string" },
+          headers: {
+            type: "object",
+            required: ["content-type"],
+            properties: { "content-type": { type: "string" } },
+          },
+          body: {
+            type: "object",
+            required: ["id", "name"],
+            properties: {
+              id: { type: "string" },
+              name: { type: "string" },
+            },
+          },
+        },
+      });
 
       const result = (await handleServerTool(
         caplet,
@@ -203,8 +233,22 @@ describe("native OpenAPI Caplets", () => {
       )) as any;
       expect(result.structuredContent).toMatchObject({
         status: 200,
-        body: { id: "42", active: true },
+        body: { id: "42", active: true, name: "Ada" },
       });
+
+      const projected = (await handleServerTool(
+        caplet,
+        {
+          operation: "call_tool",
+          tool: "GET /users/{id}",
+          arguments: { path: { id: "42" }, query: { active: true } },
+          fields: ["body.name"],
+        },
+        registry,
+        downstream,
+        openapi,
+      )) as any;
+      expect(projected.structuredContent).toEqual({ body: { name: "Ada" } });
 
       const create = (await handleServerTool(
         caplet,
@@ -221,6 +265,20 @@ describe("native OpenAPI Caplets", () => {
         status: 201,
         body: { created: "Ada" },
       });
+      await expect(
+        handleServerTool(
+          caplet,
+          {
+            operation: "call_tool",
+            tool: "createUser",
+            arguments: { body: { name: "Ada" } },
+            fields: ["body.created"],
+          },
+          registry,
+          downstream,
+          openapi,
+        ),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       expect(requests.some((request) => request.headers["x-api-key"] === "secret-key")).toBe(true);
 
       await expect(
@@ -454,6 +512,75 @@ describe("native OpenAPI Caplets", () => {
     }
   });
 
+  it("does not synthesize output schemas for JSON responses without actual schemas", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-schema-less-"));
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Schema-less API", version: "1.0.0" },
+        servers: [{ url: baseUrl }],
+        paths: {
+          "/schema-less": {
+            get: {
+              operationId: "schemaLess",
+              responses: {
+                "200": {
+                  description: "OK",
+                  content: {
+                    "application/json": {},
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    );
+    const config = parseConfig({
+      openapiEndpoints: {
+        schemaLess: {
+          name: "Schema-less API",
+          description: "Exercise JSON responses without schemas.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const caplet = config.openapiEndpoints.schemaLess!;
+    const openapi = new OpenApiManager(registry);
+    const downstream = new DownstreamManager(registry);
+
+    try {
+      const tool = (await handleServerTool(
+        caplet,
+        { operation: "get_tool", tool: "schemaLess" },
+        registry,
+        downstream,
+        openapi,
+      )) as any;
+      expect(tool.structuredContent.result.tool.outputSchema).toBeUndefined();
+
+      requests.length = 0;
+      await expect(
+        handleServerTool(
+          caplet,
+          { operation: "call_tool", tool: "schemaLess", arguments: {}, fields: ["body"] },
+          registry,
+          downstream,
+          openapi,
+        ),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+      expect(requests.some((request) => request.url === "/schema-less")).toBe(false);
+    } finally {
+      await downstream.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("loads remote specs with timeout, redirect, and size controls", async () => {
     const registry = new ServerRegistry(
       parseConfig({
@@ -659,7 +786,24 @@ function openApiSpec(baseUrl: string) {
               schema: { type: "boolean" },
             },
           ],
-          responses: { "200": { description: "OK" } },
+          responses: {
+            "200": {
+              description: "OK",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    required: ["id", "name"],
+                    properties: {
+                      id: { type: "string" },
+                      active: { type: "boolean" },
+                      name: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       "/users": {

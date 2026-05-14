@@ -1041,6 +1041,14 @@
                   },
                   "additionalProperties": {}
                 },
+                "outputSchema": {
+                  "description": "JSON Schema for structuredContent returned by this action.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
                 "query": {
                   "description": "Query parameter mapping.",
                   "type": "object",

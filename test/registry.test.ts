@@ -73,6 +73,9 @@ describe("registry", () => {
     expect(description).toContain(
       '{"operation":"call_tool","tool":"<tool name>","arguments":{...}}',
     );
+    expect(description).toContain(
+      'After get_tool shows outputSchema (non-GraphQL), call_tool may use fields: ["path.to.field"].',
+    );
     expect(description).toContain("Do not put downstream arguments at the top level");
     expect(description).not.toContain("secret-arg");
     expect(description).not.toContain("secret-env-value");
