@@ -1,5 +1,12 @@
 # caplets
 
+## 0.9.0
+
+### Minor Changes
+
+- 5657a01: Support configured OAuth/OIDC client metadata URLs for MCP, OpenAPI, GraphQL, and HTTP auth configs.
+- 5657a01: Default user config and OAuth token state locations now follow XDG conventions on Unix-like platforms and Windows platform conventions on Windows.
+
 ## 0.8.0
 
 ### Minor Changes
