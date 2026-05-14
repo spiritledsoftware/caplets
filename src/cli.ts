@@ -1,6 +1,7 @@
 import { Command, CommanderError } from "commander";
 import { version as packageJsonVersion } from "../package.json";
 import { loginAuth, logoutAuth, listAuth } from "./cli/auth.js";
+import { authorCliCaplet } from "./cli/author.js";
 import { initConfig } from "./cli/init.js";
 import {
   formatCapletList,
@@ -96,6 +97,35 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
       }
     });
+
+  const author = program.command("author").description("Generate reviewable Caplet files.");
+
+  author
+    .command("cli")
+    .description("Generate a CLI tools Caplet.")
+    .argument("<id>", "Caplet ID/display seed")
+    .option("--repo <path>", "repository path to inspect")
+    .option("--include <items>", "comma-separated generators to include: git,gh,package")
+    .option("--command <name>", "single CLI command template to generate")
+    .option("--output <path>", "output path, or - for stdout", "-")
+    .action(
+      (
+        id: string,
+        options: {
+          repo?: string;
+          include?: string;
+          command?: string;
+          output?: string;
+        },
+      ) => {
+        const result = authorCliCaplet(id, options);
+        if (result.path) {
+          writeOut(`Wrote CLI Caplet to ${result.path}\n`);
+          return;
+        }
+        writeOut(result.text);
+      },
+    );
 
   const config = program.command("config").description("Inspect Caplets config locations.");
 

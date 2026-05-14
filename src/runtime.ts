@@ -13,6 +13,7 @@ import {
   TRUST_PROJECT_CAPLETS_ENV,
   isTrustedEnvEnabled,
 } from "./config.js";
+import { CliToolsManager } from "./cli-tools.js";
 import { DownstreamManager } from "./downstream.js";
 import { errorResult, toSafeError } from "./errors.js";
 import { GraphQLManager } from "./graphql.js";
@@ -49,6 +50,7 @@ export class CapletsRuntime {
   private readonly openapi: OpenApiManager;
   private readonly graphql: GraphQLManager;
   private readonly http: HttpActionManager;
+  private readonly cli: CliToolsManager;
   private readonly tools = new Map<string, RegisteredTool>();
   private readonly paths: RuntimePaths;
   private readonly watchDebounceMs: number;
@@ -71,6 +73,7 @@ export class CapletsRuntime {
     this.openapi = new OpenApiManager(this.registry, selectAuthOptions(options.authDir));
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
     this.http = new HttpActionManager(this.registry, selectAuthOptions(options.authDir));
+    this.cli = new CliToolsManager(this.registry);
     this.server =
       options.server ??
       new McpServer({
@@ -170,6 +173,7 @@ export class CapletsRuntime {
     this.openapi.updateRegistry(nextRegistry);
     this.graphql.updateRegistry(nextRegistry);
     this.http.updateRegistry(nextRegistry);
+    this.cli.updateRegistry(nextRegistry);
     let invalidated = true;
     try {
       await this.invalidateChangedBackends(previousConfig, nextConfig);
@@ -254,6 +258,7 @@ export class CapletsRuntime {
         this.openapi,
         this.graphql,
         this.http,
+        this.cli,
       );
     } catch (error) {
       return errorResult(error);
@@ -286,6 +291,9 @@ export class CapletsRuntime {
       }
       if (before?.backend === "http" || after?.backend === "http" || !after) {
         this.http.invalidate(serverId);
+      }
+      if (before?.backend === "cli" || after?.backend === "cli" || !after) {
+        this.cli.invalidate(serverId);
       }
     }
   }
@@ -408,6 +416,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.openapiEndpoints),
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
+    ...Object.values(config.cliTools),
   ];
 }
 
@@ -420,7 +429,8 @@ function capletById(config: CapletsConfig, serverId: string): CapletConfig | und
     config.mcpServers[serverId] ??
     config.openapiEndpoints[serverId] ??
     config.graphqlEndpoints[serverId] ??
-    config.httpApis[serverId]
+    config.httpApis[serverId] ??
+    config.cliTools[serverId]
   );
 }
 

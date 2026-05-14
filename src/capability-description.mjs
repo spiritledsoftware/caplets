@@ -6,7 +6,9 @@ export function capabilityDescription(server) {
         ? "OpenAPI endpoint"
         : server.backend === "graphql"
           ? "GraphQL endpoint"
-          : "HTTP API";
+          : server.backend === "http"
+            ? "HTTP API"
+            : "CLI tools";
   const checkOperation = server.backend === "mcp" ? "check_mcp_server" : "check_backend";
   const hint = [
     `Use this Caplet to inspect and call tools from its ${backendName} backend.`,

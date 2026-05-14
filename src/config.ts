@@ -161,11 +161,52 @@ export type HttpApiConfig = {
   disabled: boolean;
 };
 
+export type CliToolOutputConfig = {
+  type: "text" | "json";
+};
+
+export type CliToolActionConfig = {
+  description?: string | undefined;
+  inputSchema?: Record<string, unknown> | undefined;
+  outputSchema?: Record<string, unknown> | undefined;
+  command: string;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  timeoutMs?: number | undefined;
+  maxOutputBytes?: number | undefined;
+  output?: CliToolOutputConfig | undefined;
+  annotations?:
+    | {
+        readOnlyHint?: boolean | undefined;
+        destructiveHint?: boolean | undefined;
+        idempotentHint?: boolean | undefined;
+        openWorldHint?: boolean | undefined;
+      }
+    | undefined;
+};
+
+export type CliToolsConfig = {
+  server: string;
+  backend: "cli";
+  name: string;
+  description: string;
+  tags?: string[] | undefined;
+  body?: string | undefined;
+  actions: Record<string, CliToolActionConfig>;
+  cwd?: string | undefined;
+  env?: Record<string, string> | undefined;
+  timeoutMs: number;
+  maxOutputBytes: number;
+  disabled: boolean;
+};
+
 export type CapletConfig =
   | CapletServerConfig
   | OpenApiEndpointConfig
   | GraphQlEndpointConfig
-  | HttpApiConfig;
+  | HttpApiConfig
+  | CliToolsConfig;
 
 export type CapletsOptions = {
   defaultSearchLimit: number;
@@ -179,6 +220,7 @@ export type CapletsConfig = {
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
   httpApis: Record<string, HttpApiConfig>;
+  cliTools: Record<string, CliToolsConfig>;
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
@@ -545,15 +587,109 @@ const normalizedHttpApiSchema = publicHttpApiSchema.extend({
   body: z.string().optional(),
 });
 
+const cliToolOutputSchema = z
+  .object({
+    type: z
+      .enum(["text", "json"])
+      .default("text")
+      .describe("How stdout should be represented in structuredContent."),
+  })
+  .strict();
+
+const cliToolAnnotationsSchema = z
+  .object({
+    readOnlyHint: z.boolean().optional(),
+    destructiveHint: z.boolean().optional(),
+    idempotentHint: z.boolean().optional(),
+    openWorldHint: z.boolean().optional(),
+  })
+  .strict();
+
+const cliToolActionSchema = z
+  .object({
+    description: z.string().min(1).optional().describe("Action capability description."),
+    inputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for call_tool arguments."),
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for structuredContent returned by this action."),
+    command: z.string().min(1).describe("Executable command to spawn without a shell."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the command."),
+    env: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe("Additional environment variables for the command."),
+    cwd: z.string().min(1).optional().describe("Working directory for this action."),
+    timeoutMs: z.number().int().positive().optional().describe("Command timeout in milliseconds."),
+    maxOutputBytes: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Maximum combined stdout and stderr bytes to keep."),
+    output: cliToolOutputSchema.optional(),
+    annotations: cliToolAnnotationsSchema.optional(),
+  })
+  .strict();
+
+const publicCliToolsSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).describe("Human-readable CLI tools display name."),
+    description: z
+      .string()
+      .describe("Capability description shown to agents before CLI actions are disclosed.")
+      .refine(
+        (value) => value.trim().length >= 10,
+        "description must contain at least 10 non-whitespace characters",
+      )
+      .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
+    actions: z
+      .record(z.string().regex(SERVER_ID_PATTERN), cliToolActionSchema)
+      .refine(
+        (actions) => Object.keys(actions).length > 0,
+        "CLI tools backend must define at least one action",
+      )
+      .describe("Configured CLI actions keyed by stable tool name."),
+    cwd: z.string().min(1).optional().describe("Default working directory for CLI actions."),
+    env: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe("Default environment variables for CLI actions."),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    timeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60_000)
+      .describe("Default timeout in milliseconds for CLI actions."),
+    maxOutputBytes: z
+      .number()
+      .int()
+      .positive()
+      .default(1_000_000)
+      .describe("Default maximum combined stdout and stderr bytes to keep."),
+    disabled: z.boolean().default(false).describe("When true, omit this CLI tools Caplet."),
+  })
+  .strict();
+
+const normalizedCliToolsSchema = publicCliToolsSchema.extend({
+  body: z.string().optional(),
+});
+
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
 type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
 type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpointSchema>;
 type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
+type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigInput = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
+  cliTools?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -562,6 +698,7 @@ function configSchemaFor(
   openApiEndpointValueSchema: z.ZodTypeAny,
   graphQlEndpointValueSchema: z.ZodTypeAny,
   httpApiValueSchema: z.ZodTypeAny,
+  cliToolsValueSchema: z.ZodTypeAny,
 ) {
   return z
     .object({
@@ -600,6 +737,10 @@ function configSchemaFor(
         .record(z.string().regex(SERVER_ID_PATTERN), httpApiValueSchema)
         .default({})
         .describe("HTTP APIs keyed by stable Caplet ID."),
+      cliTools: z
+        .record(z.string().regex(SERVER_ID_PATTERN), cliToolsValueSchema)
+        .default({})
+        .describe("CLI tools keyed by stable Caplet ID."),
     })
     .strict()
     .superRefine((config, ctx) => {
@@ -815,6 +956,42 @@ function configSchemaFor(
           }
         }
       }
+
+      for (const [server, rawValue] of Object.entries(config.cliTools)) {
+        const raw = rawValue as ConfigSchemaCliToolsValue;
+        const duplicateBackend = config.mcpServers[server]
+          ? "mcpServers"
+          : config.openapiEndpoints[server]
+            ? "openapiEndpoints"
+            : config.graphqlEndpoints[server]
+              ? "graphqlEndpoints"
+              : config.httpApis[server]
+                ? "httpApis"
+                : undefined;
+        if (duplicateBackend) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["cliTools", server],
+            message: `Caplet ID ${server} is already used by ${duplicateBackend}`,
+          });
+        }
+        if (!SERVER_ID_PATTERN.test(server)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["cliTools", server],
+            message: "CLI tools ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
+        for (const actionName of Object.keys(raw.actions)) {
+          if (!SERVER_ID_PATTERN.test(actionName)) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["cliTools", server, "actions", actionName],
+              message: "CLI action ID must match ^[a-zA-Z0-9_-]{1,64}$",
+            });
+          }
+        }
+      }
     });
 }
 
@@ -823,16 +1000,18 @@ export const configFileSchema = configSchemaFor(
   publicOpenApiEndpointSchema,
   publicGraphQlEndpointSchema,
   publicHttpApiSchema,
+  publicCliToolsSchema,
 );
 const normalizedConfigFileSchema = configSchemaFor(
   normalizedServerSchema,
   normalizedOpenApiEndpointSchema,
   normalizedGraphQlEndpointSchema,
   normalizedHttpApiSchema,
+  normalizedCliToolsSchema,
 );
 
 export function configJsonSchema(): unknown {
-  return patchHttpApiJsonSchema({
+  return patchConfigJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
     title: "Caplets config",
@@ -871,11 +1050,12 @@ export function loadConfig(
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
       Object.keys(config.graphqlEndpoints).length === 0 &&
-      Object.keys(config.httpApis).length === 0
+      Object.keys(config.httpApis).length === 0 &&
+      Object.keys(config.cliTools).length === 0
     ) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, or HTTP API",
+        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend",
       );
     }
     return config;
@@ -925,6 +1105,7 @@ function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
     ...input,
     openapiEndpoints: normalizeEndpointPaths(input.openapiEndpoints, baseDir, normalizeOpenApiPath),
     graphqlEndpoints: normalizeEndpointPaths(input.graphqlEndpoints, baseDir, normalizeGraphQlPath),
+    cliTools: normalizeEndpointPaths(input.cliTools, baseDir, normalizeCliToolsPaths),
   }) as ConfigInput;
 }
 
@@ -978,6 +1159,30 @@ function normalizeGraphQlPath(
   };
 }
 
+function normalizeCliToolsPaths(
+  endpoint: Record<string, unknown>,
+  baseDir: string,
+): Record<string, unknown> {
+  const actions = isPlainObject(endpoint.actions)
+    ? Object.fromEntries(
+        Object.entries(endpoint.actions).map(([name, action]) => [
+          name,
+          isPlainObject(action)
+            ? {
+                ...action,
+                cwd: normalizeLocalPath(action.cwd, baseDir),
+              }
+            : action,
+        ]),
+      )
+    : endpoint.actions;
+  return {
+    ...endpoint,
+    cwd: normalizeLocalPath(endpoint.cwd, baseDir),
+    actions,
+  };
+}
+
 function normalizeLocalPath(value: unknown, baseDir: string): unknown {
   if (typeof value !== "string" || !value || isAbsolute(value) || hasEnvReference(value)) {
     return value;
@@ -1002,6 +1207,12 @@ function rejectUntrustedProjectExecutableBackends(input: ConfigInput, path: stri
     throw new CapletsError(
       "CONFIG_INVALID",
       `Project config at ${path} cannot define httpApis; use trusted project Caplet files or user config`,
+    );
+  }
+  if (input.cliTools && Object.keys(input.cliTools).length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define cliTools; use trusted project Caplet files or user config`,
     );
   }
   return input;
@@ -1031,6 +1242,10 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       httpApis: {
         ...merged?.httpApis,
         ...input.httpApis,
+      },
+      cliTools: {
+        ...merged?.cliTools,
+        ...input.cliTools,
       },
     };
   }
@@ -1084,6 +1299,16 @@ export function parseConfig(input: unknown): CapletsConfig {
     }) as HttpApiConfig;
   }
 
+  const cliTools: Record<string, CliToolsConfig> = {};
+  for (const [server, raw] of Object.entries(parsed.data.cliTools)) {
+    const interpolated = raw as ConfigSchemaCliToolsValue;
+    cliTools[server] = stripUndefined({
+      ...interpolated,
+      server,
+      backend: "cli",
+    }) as CliToolsConfig;
+  }
+
   return {
     version: parsed.data.version,
     options: {
@@ -1094,6 +1319,7 @@ export function parseConfig(input: unknown): CapletsConfig {
     openapiEndpoints,
     graphqlEndpoints,
     httpApis,
+    cliTools,
   };
 }
 
@@ -1150,7 +1376,8 @@ function isPublicMetadataPath(path: string[]): boolean {
     (path[0] !== "mcpServers" &&
       path[0] !== "openapiEndpoints" &&
       path[0] !== "graphqlEndpoints" &&
-      path[0] !== "httpApis")
+      path[0] !== "httpApis" &&
+      path[0] !== "cliTools")
   ) {
     return false;
   }
@@ -1165,7 +1392,7 @@ function hasEnvReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
 
-function patchHttpApiJsonSchema<T>(schema: T): T {
+function patchConfigJsonSchema<T>(schema: T): T {
   const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
     "properties",
     "httpApis",
@@ -1179,6 +1406,16 @@ function patchHttpApiJsonSchema<T>(schema: T): T {
   const baseUrl = nestedSchema<Record<string, unknown>>(httpApiProperties, "baseUrl");
   if (baseUrl) {
     baseUrl.format = "uri";
+  }
+  const cliToolsProperties = schemaPath<Record<string, unknown>>(schema, [
+    "properties",
+    "cliTools",
+    "additionalProperties",
+    "properties",
+  ]);
+  const cliActions = nestedSchema<Record<string, unknown>>(cliToolsProperties, "actions");
+  if (cliActions) {
+    cliActions.minProperties = 1;
   }
   return schema;
 }

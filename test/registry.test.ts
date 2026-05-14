@@ -57,6 +57,15 @@ describe("registry", () => {
           },
         },
       },
+      cliTools: {
+        repo: {
+          name: "Repo CLI",
+          description: "Run curated repository CLI workflows.",
+          actions: {
+            status: { command: "git", args: ["status", "--short"] },
+          },
+        },
+      },
     });
     const registry = new ServerRegistry(config);
     expect(registry.enabledServers().map((server) => server.server)).toEqual([
@@ -65,6 +74,7 @@ describe("registry", () => {
       "users",
       "catalog",
       "status",
+      "repo",
     ]);
     expect(registry.get("disabled")).toBeUndefined();
     expect(registry.get("status")?.backend).toBe("http");
@@ -139,5 +149,22 @@ describe("registry", () => {
       },
     });
     expect(JSON.stringify(httpDetail)).not.toContain("secret-http");
+
+    const cliDescription = capabilityDescription(config.cliTools.repo!);
+    expect(cliDescription).toContain("CLI tools backend");
+    expect(cliDescription).toContain('"operation":"check_backend"');
+    const cliDetail = registry.detail(config.cliTools.repo!);
+    expect(cliDetail).toEqual({
+      caplet: "repo",
+      name: "Repo CLI",
+      description: "Run curated repository CLI workflows.",
+      backend: {
+        type: "cli",
+        disabled: false,
+        timeoutMs: 60000,
+        maxOutputBytes: 1000000,
+        configuredActions: 1,
+      },
+    });
   });
 });

@@ -66,6 +66,35 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("registers CLI tools Caplets", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      cliTools: {
+        repo: {
+          name: "Repo CLI",
+          description: "Run curated repository CLI workflows.",
+          actions: {
+            status: {
+              command: process.execPath,
+              args: ["--version"],
+            },
+          },
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+
+    expect(runtime.registeredToolIds()).toEqual(["repo"]);
+    expect(server.registerTool).toHaveBeenCalledWith(
+      "repo",
+      expect.objectContaining({ title: "Repo CLI" }),
+      expect.any(Function),
+    );
+
+    await runtime.close();
+  });
+
   it("adds, updates, and removes tools across successful reloads", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

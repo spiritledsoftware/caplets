@@ -647,6 +647,7 @@ describe("native OpenAPI Caplets", () => {
         openapiEndpoints: { remote: endpoint },
         graphqlEndpoints: {},
         httpApis: {},
+        cliTools: {},
       });
       const openapi = new OpenApiManager(registry, { authDir });
 

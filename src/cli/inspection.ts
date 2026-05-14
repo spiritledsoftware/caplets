@@ -58,6 +58,8 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
     ...Object.values(config.graphqlEndpoints),
+    ...Object.values(config.httpApis),
+    ...Object.values(config.cliTools),
   ];
 }
 

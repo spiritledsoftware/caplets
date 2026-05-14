@@ -53,6 +53,13 @@ export type CapletServerDetail = {
         disabled: boolean;
         requestTimeoutMs: number;
         configuredActions: number;
+      }
+    | {
+        type: "cli";
+        disabled: boolean;
+        timeoutMs: number;
+        maxOutputBytes: number;
+        configuredActions: number;
       };
   mcpServer?: {
     transport: CapletServerConfig["transport"];
@@ -86,7 +93,8 @@ export class ServerRegistry {
       this.config.mcpServers[serverId] ??
       this.config.openapiEndpoints[serverId] ??
       this.config.graphqlEndpoints[serverId] ??
-      this.config.httpApis[serverId];
+      this.config.httpApis[serverId] ??
+      this.config.cliTools[serverId];
     return server?.disabled ? undefined : server;
   }
 
@@ -147,6 +155,7 @@ export class ServerRegistry {
       ...Object.values(this.config.openapiEndpoints),
       ...Object.values(this.config.graphqlEndpoints),
       ...Object.values(this.config.httpApis),
+      ...Object.values(this.config.cliTools),
     ];
   }
 }
@@ -178,6 +187,16 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
       type: "http",
       disabled: server.disabled,
       requestTimeoutMs: server.requestTimeoutMs,
+      configuredActions: Object.keys(server.actions).length,
+    };
+  }
+
+  if (server.backend === "cli") {
+    return {
+      type: "cli",
+      disabled: server.disabled,
+      timeoutMs: server.timeoutMs,
+      maxOutputBytes: server.maxOutputBytes,
       configuredActions: Object.keys(server.actions).length,
     };
   }

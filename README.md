@@ -74,8 +74,8 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## What It Does
 
-- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from the user config file.
-- Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, or HTTP API.
+- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and curated CLI tool definitions from the user config file.
+- Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
 - Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
@@ -84,6 +84,7 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 - Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
 - Converts configured GraphQL operations into MCP-style tool metadata, and can auto-generate GraphQL tools from schema root query and mutation fields.
 - Converts explicitly configured HTTP actions into MCP-style tool metadata and executes HTTP calls directly.
+- Converts explicitly configured CLI actions into MCP-style tool metadata and executes commands directly without a shell.
 - Preserves downstream tool results instead of rewriting them into a custom format.
 - Redacts secrets from structured errors.
 - Supports static remote auth and OAuth token storage for remote servers.
@@ -218,7 +219,7 @@ the committed schema stays in sync with the Zod config validator.
 
 For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
 file must include exactly one executable backend: `mcpServer`, `openapiEndpoint`,
-`graphqlEndpoint`, or `httpApi`;
+`graphqlEndpoint`, `httpApi`, or `cliTools`;
 serverless Caplets are intentionally out of scope.
 
 Top-level files derive the Caplet ID from the filename:
@@ -301,6 +302,26 @@ httpApi:
 # Status API
 ```
 
+CLI-backed Caplet files use `cliTools`:
+
+```md
+---
+name: Repository CLI
+description: Run curated repository workflows through local CLI commands.
+cliTools:
+  cwd: /home/you/project
+  actions:
+    git_status:
+      description: Show concise Git working tree status.
+      command: git
+      args: ["status", "--short"]
+      annotations:
+        readOnlyHint: true
+---
+
+# Repository CLI
+```
+
 Top-level files derive their Caplet ID from the filename. Directory-style Caplets use
 `linear/CAPLET.md`, which is exposed as `linear`; sibling files can be referenced with
 normal Markdown links from `CAPLET.md`.
@@ -310,6 +331,8 @@ This repository includes polished working examples under [`caplets/`](caplets/):
 - `github`: GitHub's official MCP server container, using `GITHUB_PERSONAL_ACCESS_TOKEN`.
 - `linear`: Linear's hosted OAuth MCP endpoint.
 - `context7`: Context7 documentation lookup through `@upstash/context7-mcp`.
+- `repo-cli`: Read-oriented repository CLI workflows through `git` and package scripts.
+- `github-cli`: Read-oriented GitHub workflows through the `gh` CLI.
 
 Install every example from a repo's `caplets/` directory:
 
@@ -350,7 +373,7 @@ caplets init --force
 
 ### Caplet IDs
 
-Each key under `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, or `httpApis` is the
+Each key under `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, or `cliTools` is the
 stable Caplet ID. It becomes the generated MCP tool name exactly, so keep it short and specific:
 
 ```json
@@ -367,7 +390,7 @@ stable Caplet ID. It becomes the generated MCP tool name exactly, so keep it sho
 ```
 
 Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers`,
-`openapiEndpoints`, `graphqlEndpoints`, and `httpApis`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
+`openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
 
 ### Stdio Servers
 
@@ -536,6 +559,49 @@ GraphQL. Responses are returned as structured content with `status`, `statusText
 parsed `body` when present, and `elapsedMs`; non-2xx responses set `isError`, redirects are rejected,
 timeouts are enforced, response bodies are capped by `maxResponseBytes` (default `1000000`), and
 errors redact secrets.
+
+### CLI Tools
+
+Use `cliTools` for curated local command-line workflows. Each action is an explicitly configured
+tool; Caplets does not expose arbitrary shell access and always spawns `command` plus `args`
+without shell interpolation.
+
+```json
+{
+  "name": "Repository CLI",
+  "description": "Run curated repository workflows through local CLI commands.",
+  "cwd": "/home/you/project",
+  "timeoutMs": 60000,
+  "maxOutputBytes": 1000000,
+  "actions": {
+    "git_status": {
+      "description": "Show concise Git working tree status.",
+      "command": "git",
+      "args": ["status", "--short"],
+      "annotations": { "readOnlyHint": true }
+    },
+    "run_tests": {
+      "description": "Run the package test script.",
+      "command": "pnpm",
+      "args": ["run", "test"],
+      "timeoutMs": 120000,
+      "annotations": { "readOnlyHint": true }
+    }
+  }
+}
+```
+
+CLI actions can set `inputSchema`, `outputSchema`, `env`, action-level `cwd`, `timeoutMs`,
+`maxOutputBytes`, `output: {"type":"json"}`, and MCP annotations. `$input.field` references are
+supported inside `args`, `env`, and `cwd` strings. Caplets performs basic required-field and
+primitive-type validation before spawning. Results are returned as structured content with
+`exitCode`, `stdout`, `stderr`, and `elapsedMs`; non-zero exits set `isError`.
+
+Generate a reviewable CLI Caplet manifest from a repository:
+
+```sh
+caplets author cli repo-tools --repo . --include git,gh,package --output -
+```
 
 ### Authentication
 

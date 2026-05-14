@@ -11,7 +11,7 @@ export const operations = [
 export const generatedToolInputDescriptions = {
   operation: [
     "Caplets wrapper operation to perform for this configured Caplet backend.",
-    "Use get_caplet to read the full Caplet card, check_backend to check any backend, check_mcp_server to check an MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool or OpenAPI operation.",
+    "Use get_caplet to read the full Caplet card, check_backend to check any backend, check_mcp_server to check an MCP backend, list_tools or search_tools to discover downstream tools, get_tool to read a downstream input schema, and call_tool to run one downstream tool, operation, action, or CLI command.",
     'For call_tool, pass downstream inputs only inside the top-level "arguments" object.',
   ].join(" "),
   query:
