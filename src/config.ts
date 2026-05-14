@@ -46,6 +46,7 @@ export type RemoteAuthConfig =
       resourceMetadataUrl?: string | undefined;
       authorizationServerMetadataUrl?: string | undefined;
       openidConfigurationUrl?: string | undefined;
+      clientMetadataUrl?: string | undefined;
       clientId?: string | undefined;
       clientSecret?: string | undefined;
       scopes?: string[] | undefined;
@@ -59,6 +60,7 @@ export type RemoteAuthConfig =
       resourceMetadataUrl?: string | undefined;
       authorizationServerMetadataUrl?: string | undefined;
       openidConfigurationUrl?: string | undefined;
+      clientMetadataUrl?: string | undefined;
       clientId?: string | undefined;
       clientSecret?: string | undefined;
       scopes?: string[] | undefined;
@@ -196,6 +198,7 @@ const remoteAuthSchema = z
         resourceMetadataUrl: z.string().url().optional(),
         authorizationServerMetadataUrl: z.string().url().optional(),
         openidConfigurationUrl: z.string().url().optional(),
+        clientMetadataUrl: z.string().url().optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -211,6 +214,7 @@ const remoteAuthSchema = z
         resourceMetadataUrl: z.string().url().optional(),
         authorizationServerMetadataUrl: z.string().url().optional(),
         openidConfigurationUrl: z.string().url().optional(),
+        clientMetadataUrl: z.string().url().optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -230,6 +234,7 @@ const oauthLikeAuthSchema = z.union([
       resourceMetadataUrl: z.string().url().optional(),
       authorizationServerMetadataUrl: z.string().url().optional(),
       openidConfigurationUrl: z.string().url().optional(),
+      clientMetadataUrl: z.string().url().optional(),
       clientId: z.string().min(1).optional(),
       clientSecret: z.string().min(1).optional(),
       scopes: z.array(z.string().min(1)).optional(),
@@ -245,6 +250,7 @@ const oauthLikeAuthSchema = z.union([
       resourceMetadataUrl: z.string().url().optional(),
       authorizationServerMetadataUrl: z.string().url().optional(),
       openidConfigurationUrl: z.string().url().optional(),
+      clientMetadataUrl: z.string().url().optional(),
       clientId: z.string().min(1).optional(),
       clientSecret: z.string().min(1).optional(),
       scopes: z.array(z.string().min(1)).optional(),

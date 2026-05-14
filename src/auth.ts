@@ -38,6 +38,7 @@ type OAuthLikeAuthConfig = {
   resourceMetadataUrl?: string | undefined;
   authorizationServerMetadataUrl?: string | undefined;
   openidConfigurationUrl?: string | undefined;
+  clientMetadataUrl?: string | undefined;
   clientId?: string | undefined;
   clientSecret?: string | undefined;
   scopes?: string[] | undefined;
@@ -119,13 +120,21 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private verifier = base64url(randomBytes(32));
   private readonly stateValue = base64url(randomBytes(24));
   private clientInfo?: OAuthClientInformationMixed;
+  readonly clientMetadataUrl?: string;
 
   constructor(
     readonly server: CapletServerConfig,
     readonly redirectUrl: string,
     private readonly onRedirect: (url: URL) => void,
     private readonly authDir?: string,
-  ) {}
+  ) {
+    if (
+      (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
+      this.server.auth.clientMetadataUrl
+    ) {
+      this.clientMetadataUrl = this.server.auth.clientMetadataUrl;
+    }
+  }
 
   get clientMetadata(): OAuthClientMetadata {
     return {
@@ -315,9 +324,30 @@ export async function runOAuthFlow(
       authorizationCode: completion.code,
       ...(scope ? { scope } : {}),
     });
+  } catch (error) {
+    throw normalizeMcpOAuthError(server, error);
   } finally {
     await callback.close();
   }
+}
+
+function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unknown {
+  if (
+    (server.auth?.type === "oauth2" || server.auth?.type === "oidc") &&
+    !server.auth.clientId &&
+    error instanceof Error &&
+    error.message.includes("does not support dynamic client registration")
+  ) {
+    return new CapletsError(
+      "AUTH_FAILED",
+      "OAuth is not available for this server without a host-specific OAuth app or PAT auth",
+      {
+        server: server.server,
+        nextAction: "configure_bearer_auth_or_host_oauth_app",
+      },
+    );
+  }
+  return error;
 }
 
 type AuthorizationServerMetadata = {

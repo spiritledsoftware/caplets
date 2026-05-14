@@ -36,7 +36,7 @@ describe("config", () => {
     }
   });
 
-  it("loads ~/.caplets-compatible config from a path with defaults and interpolation", () => {
+  it("loads user config from a path with defaults and interpolation", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
     const path = join(dir, "config.json");
     writeFileSync(
@@ -511,6 +511,7 @@ describe("config", () => {
             auth: {
               type: "oidc",
               issuer: "https://login.example.com",
+              clientMetadataUrl: "https://client.example.com/caplets/oauth-client-metadata.json",
               clientId: "catalog-client",
             },
             operations: {
@@ -549,7 +550,11 @@ describe("config", () => {
       backend: "graphql",
       endpointUrl: "https://api.example.com/graphql",
       schemaPath: join(root, "catalog.graphql"),
-      auth: { type: "oidc", issuer: "https://login.example.com" },
+      auth: {
+        type: "oidc",
+        issuer: "https://login.example.com",
+        clientMetadataUrl: "https://client.example.com/caplets/oauth-client-metadata.json",
+      },
       operations: {
         product: {
           documentPath: join(root, "product.graphql"),

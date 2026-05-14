@@ -243,6 +243,29 @@ describe("auth helpers", () => {
     expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
   });
 
+  it("exposes configured OAuth client metadata URL for URL-based client IDs", () => {
+    const server = parseConfig({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "A useful remote server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: {
+            type: "oauth2",
+            clientMetadataUrl: "https://example.com/caplets/oauth-client-metadata.json",
+          },
+        },
+      },
+    }).mcpServers.remote!;
+    const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {});
+
+    expect(provider.clientMetadataUrl).toBe(
+      "https://example.com/caplets/oauth-client-metadata.json",
+    );
+    expect(provider.clientInformation()).toBeUndefined();
+  });
+
   it.each(["oauth2", "oidc"] as const)(
     "adds dynamically registered %s client information during SDK token exchange",
     async (authType) => {

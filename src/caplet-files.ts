@@ -35,6 +35,7 @@ const capletRemoteAuthSchema = z
         resourceMetadataUrl: z.string().min(1).optional(),
         authorizationServerMetadataUrl: z.string().min(1).optional(),
         openidConfigurationUrl: z.string().min(1).optional(),
+        clientMetadataUrl: z.string().min(1).optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -50,6 +51,7 @@ const capletRemoteAuthSchema = z
         resourceMetadataUrl: z.string().min(1).optional(),
         authorizationServerMetadataUrl: z.string().min(1).optional(),
         openidConfigurationUrl: z.string().min(1).optional(),
+        clientMetadataUrl: z.string().min(1).optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -75,6 +77,7 @@ const capletEndpointAuthSchema = z
         resourceMetadataUrl: z.string().min(1).optional(),
         authorizationServerMetadataUrl: z.string().min(1).optional(),
         openidConfigurationUrl: z.string().min(1).optional(),
+        clientMetadataUrl: z.string().min(1).optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -90,6 +93,7 @@ const capletEndpointAuthSchema = z
         resourceMetadataUrl: z.string().min(1).optional(),
         authorizationServerMetadataUrl: z.string().min(1).optional(),
         openidConfigurationUrl: z.string().min(1).optional(),
+        clientMetadataUrl: z.string().min(1).optional(),
         clientId: z.string().min(1).optional(),
         clientSecret: z.string().min(1).optional(),
         scopes: z.array(z.string().min(1)).optional(),
@@ -174,7 +178,13 @@ const capletMcpServerSchema = z
     }
 
     if (server.auth?.type === "oauth2") {
-      for (const field of ["authorizationUrl", "tokenUrl", "issuer", "redirectUri"] as const) {
+      for (const field of [
+        "authorizationUrl",
+        "tokenUrl",
+        "issuer",
+        "clientMetadataUrl",
+        "redirectUri",
+      ] as const) {
         const value = server.auth[field];
         if (value && !hasEnvReference(value) && !isUrl(value)) {
           ctx.addIssue({
