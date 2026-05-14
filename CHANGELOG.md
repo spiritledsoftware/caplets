@@ -1,5 +1,12 @@
 # caplets
 
+## 0.10.0
+
+### Minor Changes
+
+- 957e528: Add reproducible coding-agent benchmarks comparing direct MCP exposure with Caplets, including deterministic report checks and opt-in live Pi/OpenCode harnesses.
+- 957e528: Add schema-aware `call_tool.fields` projection for MCP, OpenAPI, and HTTP-backed tools that expose output schemas.
+
 ## 0.9.0
 
 ### Minor Changes
