@@ -116,6 +116,40 @@ describe("projectStructuredContent", () => {
     ).toEqual({ items: [{ title: "One" }, { title: "Two" }] });
   });
 
+  it("preserves selected open-object containers", () => {
+    expect(
+      projectStructuredContent(
+        {
+          metadata: { correlationId: "abc", region: "us-east-1" },
+        },
+        {
+          type: "object",
+          properties: {
+            metadata: { type: "object" },
+          },
+        },
+        ["metadata"],
+      ),
+    ).toEqual({ metadata: { correlationId: "abc", region: "us-east-1" } });
+  });
+
+  it("preserves selected additionalProperties-style containers", () => {
+    expect(
+      projectStructuredContent(
+        {
+          metadata: { correlationId: "abc", region: "us-east-1" },
+        },
+        {
+          type: "object",
+          properties: {
+            metadata: { type: "object", additionalProperties: true },
+          },
+        },
+        ["metadata"],
+      ),
+    ).toEqual({ metadata: { correlationId: "abc", region: "us-east-1" } });
+  });
+
   it("rejects unknown schema paths", () => {
     expect(() => projectStructuredContent({ profile: {} }, outputSchema, ["profile.age"])).toThrow(
       expect.objectContaining({ code: "REQUEST_INVALID" }),

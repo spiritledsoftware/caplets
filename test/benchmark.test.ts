@@ -709,6 +709,22 @@ describe("progressive disclosure benchmark fixture", () => {
     expect(servers.policy.directTools).toBe(true);
   });
 
+  it("returns a JSON-RPC parse error for malformed fixture MCP input", async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: [join(resolve("."), "benchmarks", "fixtures", "mcp-server.mjs"), "--server", "policy"],
+      stdin: "{not json}\n",
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: "Parse error" },
+    });
+  });
+
   it("redacts inherited process.env secret values from captured output", async () => {
     const previous = process.env.CAPLETS_SECRET_REVIEW_TOKEN;
     process.env.CAPLETS_SECRET_REVIEW_TOKEN = "inherited-review-secret";
@@ -932,6 +948,30 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
+  it("does not treat a missing agent exit code as a process failure", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "caplets-benchmark-missing-exit-code-test-"));
+    try {
+      await writeFile(
+        join(workspace, "validation.test.mjs"),
+        "import { test } from 'node:test';\ntest('ok', () => {});\n",
+      );
+
+      const score = await scoreTaskRun({
+        task: {
+          id: "example",
+          validationCommand: `${process.execPath} --test validation.test.mjs`,
+        },
+        candidateWorkspace: workspace,
+        agentResult: withoutExitCode(emptyProcessResult({ command: "agent" })),
+      });
+
+      expect(score.processSuccess).toBe(true);
+      expect(score.success).toBe(true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("parses live benchmark args and builds the supported agent/mode matrix", () => {
     const options = parseLiveArgs([
       "--agent",
@@ -978,6 +1018,12 @@ describe("progressive disclosure benchmark fixture", () => {
     ]);
     expect(() => buildLiveMatrix({ agent: "opencode", modes: ["pi-proxy"] })).toThrow(
       "opencode does not support benchmark mode pi-proxy",
+    );
+    expect(() => buildLiveMatrix({ agent: "opencode", runs: 0 })).toThrow(
+      "runs must be a positive integer",
+    );
+    expect(() => buildLiveMatrix({ agent: "opencode", timeoutMs: Number.NaN })).toThrow(
+      "timeoutMs must be a positive integer",
     );
   });
 
@@ -1179,4 +1225,9 @@ function emptyProcessResult(options: { command?: string; args?: string[] } = {})
     durationMs: 1,
     jsonEvents: [],
   };
+}
+
+function withoutExitCode<T extends { exitCode?: unknown }>(result: T): Omit<T, "exitCode"> {
+  const { exitCode: _exitCode, ...rest } = result;
+  return rest;
 }

@@ -102,7 +102,7 @@ function pruneToSchema(value: unknown, schema: unknown): unknown {
     ? (schema.properties as Record<string, unknown> | undefined)
     : undefined;
   if (!isPlainObject(properties)) {
-    return {};
+    return cloneJsonValue(value);
   }
 
   const result: JsonObject = {};

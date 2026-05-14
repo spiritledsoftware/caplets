@@ -81,11 +81,14 @@ function agentProcessFailureReason(agentResult) {
   if (agentResult.configConflict) {
     return agentResult.reason ?? "agent config conflict";
   }
+  if (agentResult.benchmarkHarnessCapturedError) {
+    return agentResult.stderr || "agent runner threw before scoring";
+  }
   const errorEvent = (agentResult.jsonEvents ?? []).find(isAgentErrorEvent);
   if (errorEvent) {
     return formatAgentErrorEvent(errorEvent);
   }
-  if (agentResult.exitCode !== 0) {
+  if (agentResult.exitCode != null && agentResult.exitCode !== 0) {
     return `agent exited with code ${agentResult.exitCode}`;
   }
   return undefined;

@@ -22,6 +22,6 @@ Generated modes:
 
 The OpenCode runner intentionally does not implement the Pi-only `pi-proxy` mode.
 
-`caplets` mode requires a built local CLI at `dist/index.js`; run `pnpm build` before live benchmarks. The runner checks this build artifact before checking whether the `opencode` CLI is available, so a missing build is reported as a harness/configuration error rather than a skipped agent result.
+`caplets` mode requires a built local CLI at `dist/index.js`; run `pnpm build` before live benchmarks. The runner checks whether the `opencode` CLI is available first, then validates the Caplets build artifact, so a missing CLI is reported as a skipped agent result while a missing build is reported later as a harness/configuration error.
 
 Actual live execution is gated by `CAPLETS_BENCH_LIVE=1` so normal tests only exercise detection and dry-run config creation. If the `opencode` CLI is unavailable even when live mode is enabled, the runner returns a structured skipped/unavailable result instead of spawning OpenCode.

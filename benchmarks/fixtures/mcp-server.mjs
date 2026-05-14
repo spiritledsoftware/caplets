@@ -484,9 +484,21 @@ function startStdioMcpServer(serverName) {
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
     for (const line of lines) {
-      if (line.trim()) {
-        handleMcpMessage(serverName, tools, JSON.parse(line));
+      if (!line.trim()) {
+        continue;
       }
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        writeMcpMessage({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "Parse error" },
+        });
+        continue;
+      }
+      handleMcpMessage(serverName, tools, message);
     }
   });
 }

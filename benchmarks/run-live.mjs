@@ -312,8 +312,11 @@ function validateLiveOptions(options) {
     modes,
     model: options.model,
     tasks: options.tasks?.length ? options.tasks : undefined,
-    runs: options.runs ?? DEFAULT_RUNS,
-    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    runs: options.runs === undefined ? DEFAULT_RUNS : parsePositiveInteger(options.runs, "runs"),
+    timeoutMs:
+      options.timeoutMs === undefined
+        ? DEFAULT_TIMEOUT_MS
+        : parsePositiveInteger(options.timeoutMs, "timeoutMs"),
     outputDir: resolve(options.outputDir ?? defaultOutputDir),
     preserveArtifacts: Boolean(options.preserveArtifacts),
   };
