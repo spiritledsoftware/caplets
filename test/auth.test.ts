@@ -455,6 +455,71 @@ describe("auth helpers", () => {
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
   });
 
+  it("uses configured client metadata URLs as URL-based client IDs for generic OAuth", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
+    let baseUrl = "";
+    let authorizationUrl = "";
+    let tokenRequestBody = "";
+    const clientMetadataUrl = "https://client.example.com/caplets/oauth-client-metadata.json";
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/token") {
+          tokenRequestBody = body;
+          response.end(JSON.stringify({ access_token: "metadata-url-token" }));
+          return;
+        }
+        response.end("{}");
+      });
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      baseUrl = `http://127.0.0.1:${address.port}`;
+
+      await expect(
+        runGenericOAuthFlow(
+          {
+            server: "users",
+            backend: "openapi",
+            url: baseUrl,
+            auth: {
+              type: "oauth2",
+              authorizationUrl: `${baseUrl}/authorize`,
+              tokenUrl: `${baseUrl}/token`,
+              clientMetadataUrl,
+            },
+          },
+          {
+            authDir: dir,
+            noOpen: true,
+            print: (line) => {
+              authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
+            },
+            readManualInput: async () => {
+              const url = new URL(authorizationUrl);
+              return `http://127.0.0.1/callback?code=auth-code&state=${url.searchParams.get("state")}`;
+            },
+          },
+        ),
+      ).resolves.toMatchObject({ accessToken: "metadata-url-token", clientId: clientMetadataUrl });
+
+      expect(new URL(authorizationUrl).searchParams.get("client_id")).toBe(clientMetadataUrl);
+      expect(new URLSearchParams(tokenRequestBody).get("client_id")).toBe(clientMetadataUrl);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects insecure explicit OAuth discovery URLs instead of falling back", async () => {
     await expect(
       runGenericOAuthFlow(

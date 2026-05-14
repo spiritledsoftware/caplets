@@ -177,7 +177,7 @@ const capletMcpServerSchema = z
       });
     }
 
-    if (server.auth?.type === "oauth2") {
+    if (server.auth?.type === "oauth2" || server.auth?.type === "oidc") {
       for (const field of [
         "authorizationUrl",
         "tokenUrl",

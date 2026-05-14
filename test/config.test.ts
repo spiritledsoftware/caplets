@@ -912,6 +912,29 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("rejects invalid OIDC URL fields in Caplet files", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    writeFileSync(
+      join(root, "bad-oidc.md"),
+      [
+        "---",
+        "name: Bad OIDC",
+        "description: Invalid OIDC settings.",
+        "mcpServer:",
+        "  transport: http",
+        "  url: https://example.com/mcp",
+        "  auth:",
+        "    type: oidc",
+        "    clientMetadataUrl: not-a-url",
+        "---",
+        "# Bad OIDC",
+      ].join("\n"),
+    );
+
+    expect(() => loadCapletFiles(root)).toThrow(CapletsError);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("rejects oversized Caplet files and bodies", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
     const root = join(dir, ".caplets");

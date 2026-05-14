@@ -336,6 +336,7 @@ function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unk
     (server.auth?.type === "oauth2" || server.auth?.type === "oidc") &&
     !server.auth.clientId &&
     error instanceof Error &&
+    // Matched from the MCP SDK dynamic-registration error text; update if the SDK changes it.
     error.message.includes("does not support dynamic client registration")
   ) {
     return new CapletsError(
@@ -658,6 +659,12 @@ async function resolveGenericClient(
     return {
       clientId: authConfig.clientId,
       ...(authConfig.clientSecret ? { clientSecret: authConfig.clientSecret } : {}),
+      dynamic: false,
+    };
+  }
+  if (authConfig.clientMetadataUrl) {
+    return {
+      clientId: authConfig.clientMetadataUrl,
       dynamic: false,
     };
   }
