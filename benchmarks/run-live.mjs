@@ -107,6 +107,7 @@ export async function runLiveBenchmark({
   fixtureWorkspaceRoot = defaultFixtureWorkspaceRoot,
   tasksPath = defaultTasksPath,
   now = () => new Date(),
+  onProgress,
 } = {}) {
   const liveOptions = validateLiveOptions(options ?? {});
   if (env.CAPLETS_BENCH_LIVE !== "1") {
@@ -118,6 +119,12 @@ export async function runLiveBenchmark({
   const startedAt = now();
   const timestamp = formatTimestamp(startedAt);
   const results = [];
+  const totalRuns = matrix.length * tasks.length * liveOptions.runs;
+  let completedRuns = 0;
+
+  onProgress?.(
+    `Starting ${totalRuns} live benchmark run${totalRuns === 1 ? "" : "s"} with ${liveOptions.timeoutMs}ms timeout each.`,
+  );
 
   for (const entry of matrix) {
     const runner = runners[entry.agent];
@@ -128,6 +135,8 @@ export async function runLiveBenchmark({
     for (const task of tasks) {
       for (let runIndex = 1; runIndex <= liveOptions.runs; runIndex += 1) {
         const candidateWorkspace = await createTempWorkspaceFromFixture(fixtureWorkspaceRoot);
+        const label = `${entry.agent}/${entry.mode} ${task.id} run ${runIndex}/${liveOptions.runs}`;
+        onProgress?.(`Running ${label} (${completedRuns + 1}/${totalRuns})...`);
         try {
           let agentResult;
           try {
@@ -175,6 +184,10 @@ export async function runLiveBenchmark({
             agentResult,
             score,
           });
+          completedRuns += 1;
+          onProgress?.(
+            `Finished ${label}: ${score.success ? "passed" : "failed"}${agentResult.timedOut ? " (timed out)" : ""}.`,
+          );
         } finally {
           if (!liveOptions.preserveArtifacts) {
             await rm(candidateWorkspace, { recursive: true, force: true });
@@ -490,7 +503,10 @@ function failureReason(result) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
-    const result = await runLiveBenchmark({ options: parseLiveArgs() });
+    const result = await runLiveBenchmark({
+      options: parseLiveArgs(),
+      onProgress: (message) => console.error(message),
+    });
     console.log(`Wrote ${result.jsonPath}`);
     console.log(`Wrote ${result.markdownPath}`);
   } catch (error) {
