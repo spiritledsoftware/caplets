@@ -38,6 +38,7 @@ type CliIO = {
   writeOut?: (value: string) => void;
   writeErr?: (value: string) => void;
   authDir?: string;
+  version?: string;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -63,7 +64,7 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .name("caplets")
     .description("Progressive-disclosure gateway for MCP servers.")
-    .version(packageJsonVersion)
+    .version(io.version ?? packageJsonVersion)
     .exitOverride()
     .configureOutput({
       writeOut,

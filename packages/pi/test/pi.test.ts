@@ -43,6 +43,12 @@ type MockService = NativeCapletsService & {
 };
 
 describe("@caplets/pi", () => {
+  it("only exposes the default extension function from the package entrypoint", async () => {
+    const exports = await import("../src/index.js");
+
+    expect(Object.keys(exports).sort()).toEqual(["default"]);
+  });
+
   it("registers prefixed native tools with explicit prompt guidance", async () => {
     const service = mockService([
       {

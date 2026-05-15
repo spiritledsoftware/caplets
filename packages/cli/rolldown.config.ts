@@ -8,5 +8,5 @@ export default defineConfig({
     banner: "#!/usr/bin/env node",
   },
   platform: "node",
-  external: ["@caplets/core", "@modelcontextprotocol/sdk/server/stdio"],
+  external: ["@caplets/core", "@modelcontextprotocol/sdk/server/stdio.js"],
 });
