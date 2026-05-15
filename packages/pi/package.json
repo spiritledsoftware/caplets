@@ -11,6 +11,9 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
     "prepack": "pnpm build",
