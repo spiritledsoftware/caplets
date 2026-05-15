@@ -1,0 +1,24 @@
+{
+  "name": "@caplets/benchmarks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "benchmark": "node run-deterministic.mjs",
+    "benchmark:check": "node run-deterministic.mjs --check",
+    "benchmark:live": "node run-live.mjs",
+    "benchmark:live:opencode": "node run-live.mjs --agent opencode",
+    "benchmark:live:pi": "node run-live.mjs --agent pi",
+    "build": "node -e \"process.exit(0)\"",
+    "typecheck": "node -e \"process.exit(0)\"",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@caplets/core": "workspace:*",
+    "caplets": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}

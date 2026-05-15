@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
+import { nativeCapletToolName } from "../src/native.js";
 import { CapletsRuntime } from "../src/runtime.js";
 
 describe("CapletsRuntime", () => {
@@ -36,6 +37,26 @@ describe("CapletsRuntime", () => {
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
     expect(server.registerTool).toHaveBeenCalledTimes(1);
+
+    await runtime.close();
+  });
+
+  it("keeps MCP tool names raw while native names are prefixed", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        "git-hub": {
+          name: "GitHub",
+          description: "Inspect GitHub repository work.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+
+    expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
+    expect(nativeCapletToolName("git-hub")).toBe("caplets_git_dash_hub");
 
     await runtime.close();
   });

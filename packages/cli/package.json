@@ -1,0 +1,55 @@
+{
+  "name": "caplets",
+  "version": "0.11.0",
+  "description": "Progressive disclosure gateway CLI for MCP servers and native Caplets adapters.",
+  "keywords": [
+    "caplets",
+    "gateway",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/caplets/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spiritledsoftware/caplets.git",
+    "directory": "packages/cli"
+  },
+  "bin": {
+    "caplets": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && rolldown -c",
+    "dev": "node ../../scripts/dev.mjs",
+    "prepack": "rm -f README.md && cp ../../README.md README.md",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@caplets/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "rolldown": "^1.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

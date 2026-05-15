@@ -1,2 +1,10 @@
+packages:
+  - "."
+  - "packages/*"
+
 allowBuilds:
+  "@google/genai": true
   esbuild: true
+  koffi: true
+  msgpackr-extract: set this to true or false
+  protobufjs: true

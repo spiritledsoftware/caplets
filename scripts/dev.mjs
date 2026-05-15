@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { watch } from "rolldown";
-import config from "../rolldown.config.ts";
+import config from "../packages/core/rolldown.config.ts";
 
 let child = null;
 let starting = false;
@@ -14,7 +14,7 @@ function startServer() {
     child = null;
   }
 
-  child = spawn("node", ["dist/index.js"], {
+  child = spawn("node", ["packages/cli/dist/index.js"], {
     stdio: "inherit",
     env: process.env,
   });
