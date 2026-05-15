@@ -2,6 +2,17 @@
   "name": "@caplets/opencode",
   "version": "0.1.1",
   "description": "Native OpenCode plugin for Caplets.",
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/caplets/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spiritledsoftware/caplets.git",
+    "directory": "packages/opencode"
+  },
   "files": [
     "dist",
     "README.md"
