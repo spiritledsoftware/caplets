@@ -6,5 +6,5 @@ allowBuilds:
   "@google/genai": true
   esbuild: true
   koffi: true
-  msgpackr-extract: set this to true or false
+  msgpackr-extract: true
   protobufjs: true
