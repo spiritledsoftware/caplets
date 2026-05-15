@@ -360,6 +360,19 @@ describe("@caplets/pi", () => {
     service.emitToolsChanged();
 
     expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub"]);
+    expect(service.close).not.toHaveBeenCalled();
+  });
+
+  it("closes owned services on Pi session shutdown", () => {
+    const service = mockService([]);
+    const { api } = mockPiApi();
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+
+    capletsPiExtension(api);
+    const shutdown = api.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1];
+    shutdown?.();
+
+    expect(service.close).toHaveBeenCalledOnce();
   });
 });
 

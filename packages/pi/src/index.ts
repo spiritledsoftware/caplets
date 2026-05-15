@@ -18,8 +18,9 @@ export type CapletsPiOptions = {
 };
 
 export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions = {}) {
+  const ownsService = !options.service;
   const service = options.service ?? createNativeCapletsService();
-  if (!options.service) {
+  if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
 
@@ -49,7 +50,12 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
 
   syncTools();
   const unsubscribe = service.onToolsChanged(syncTools);
-  pi.on?.("session_shutdown", unsubscribe);
+  pi.on?.("session_shutdown", () => {
+    unsubscribe();
+    if (ownsService) {
+      void service.close();
+    }
+  });
 }
 
 function piToolSignature(caplet: NativeCapletTool): string {
