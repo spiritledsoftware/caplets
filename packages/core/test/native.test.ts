@@ -36,16 +36,20 @@ describe("native Caplets service", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
-    expect(service.listTools()).toEqual([
-      expect.objectContaining({
-        caplet: "git-hub",
-        toolName: "caplets_git_dash_hub",
-        title: "GitHub",
-      }),
-    ]);
-    expect(service.listTools()[0]?.description).toContain("Native tool name: caplets_git_dash_hub");
-
-    await service.close();
+    try {
+      expect(service.listTools()).toEqual([
+        expect.objectContaining({
+          caplet: "git-hub",
+          toolName: "caplets_git_dash_hub",
+          title: "GitHub",
+        }),
+      ]);
+      expect(service.listTools()[0]?.description).toContain(
+        "Native tool name: caplets_git_dash_hub",
+      );
+    } finally {
+      await service.close();
+    }
   });
 
   it("executes get_caplet through the shared operation handler", async () => {
@@ -62,12 +66,14 @@ describe("native Caplets service", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
-    const result = await service.execute("alpha", { operation: "get_caplet" });
+    try {
+      const result = await service.execute("alpha", { operation: "get_caplet" });
 
-    expect(JSON.stringify(result)).toContain("Alpha");
-    expect(JSON.stringify(result)).not.toContain("super-secret");
-
-    await service.close();
+      expect(JSON.stringify(result)).toContain("Alpha");
+      expect(JSON.stringify(result)).not.toContain("super-secret");
+    } finally {
+      await service.close();
+    }
   });
 
   it("returns structured errors for unknown Caplets", async () => {
@@ -83,11 +89,13 @@ describe("native Caplets service", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
-    const result = await service.execute("missing", { operation: "get_caplet" });
+    try {
+      const result = await service.execute("missing", { operation: "get_caplet" });
 
-    expect(JSON.stringify(result)).toContain("server not found: missing");
-
-    await service.close();
+      expect(JSON.stringify(result)).toContain("server not found: missing");
+    } finally {
+      await service.close();
+    }
   });
 
   it("builds shared native system guidance", () => {

@@ -318,10 +318,10 @@ importers:
       '@caplets/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
       '@opencode-ai/plugin':
         specifier: ^1.14.48
         version: 1.14.48
-    devDependencies:
       '@types/node':
         specifier: ^25.7.0
         version: 25.7.0
@@ -341,7 +341,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@earendil-works/pi-coding-agent':
-        specifier: '>=0'
+        specifier: ^0.74.0
         version: 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
       '@sinclair/typebox':
         specifier: ^0.34.49

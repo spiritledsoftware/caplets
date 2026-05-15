@@ -18,10 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@caplets/core": "workspace:*",
-    "@opencode-ai/plugin": "^1.14.48"
+    "@caplets/core": "workspace:*"
   },
   "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.48",
     "@types/node": "^25.7.0",
     "rolldown": "^1.0.0",
     "typescript": "^6.0.3",

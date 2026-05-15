@@ -60,29 +60,29 @@ The smallest correct change is to extract the non-MCP execution path into a nati
 
 ### OpenCode Adapter Package
 
-- Create: `packages/caplets-opencode/package.json`
-- Create: `packages/caplets-opencode/rolldown.config.ts`
-- Create: `packages/caplets-opencode/tsconfig.json`
-- Create: `packages/caplets-opencode/src/index.ts`
+- Create: `packages/opencode/package.json`
+- Create: `packages/opencode/rolldown.config.ts`
+- Create: `packages/opencode/tsconfig.json`
+- Create: `packages/opencode/src/index.ts`
   - OpenCode plugin entrypoint.
-- Create: `packages/caplets-opencode/src/schema.ts`
+- Create: `packages/opencode/src/schema.ts`
   - Zod/OpenCode tool schema adapter.
-- Create: `packages/caplets-opencode/README.md`
+- Create: `packages/opencode/README.md`
   - Installation and config-free plugin usage.
-- Test: `packages/caplets-opencode/test/opencode.test.ts`
+- Test: `packages/opencode/test/opencode.test.ts`
 
 ### Pi Adapter Package
 
-- Create: `packages/caplets-pi/package.json`
-- Create: `packages/caplets-pi/rolldown.config.ts`
-- Create: `packages/caplets-pi/tsconfig.json`
-- Create: `packages/caplets-pi/src/index.ts`
+- Create: `packages/pi/package.json`
+- Create: `packages/pi/rolldown.config.ts`
+- Create: `packages/pi/tsconfig.json`
+- Create: `packages/pi/src/index.ts`
   - Pi extension entrypoint.
-- Create: `packages/caplets-pi/src/schema.ts`
+- Create: `packages/pi/src/schema.ts`
   - TypeBox schema adapter.
-- Create: `packages/caplets-pi/README.md`
+- Create: `packages/pi/README.md`
   - Installation and extension usage.
-- Test: `packages/caplets-pi/test/pi.test.ts`
+- Test: `packages/pi/test/pi.test.ts`
 
 ### Documentation And Benchmarks
 
@@ -348,15 +348,15 @@ Expected: no TypeScript errors.
 
 **Files:**
 
-- Create: `packages/caplets-opencode/package.json`
-- Create: `packages/caplets-opencode/rolldown.config.ts`
-- Create: `packages/caplets-opencode/tsconfig.json`
-- Create: `packages/caplets-opencode/src/schema.ts`
-- Create: `packages/caplets-opencode/src/index.ts`
-- Create: `packages/caplets-opencode/README.md`
-- Test: `packages/caplets-opencode/test/opencode.test.ts`
+- Create: `packages/opencode/package.json`
+- Create: `packages/opencode/rolldown.config.ts`
+- Create: `packages/opencode/tsconfig.json`
+- Create: `packages/opencode/src/schema.ts`
+- Create: `packages/opencode/src/index.ts`
+- Create: `packages/opencode/README.md`
+- Test: `packages/opencode/test/opencode.test.ts`
 
-- [ ] Create `packages/caplets-opencode/package.json`.
+- [ ] Create `packages/opencode/package.json`.
 
 Expected shape:
 
@@ -409,7 +409,7 @@ Behavior:
 - Add an `experimental.chat.system.transform` hook that pushes `nativeCapletsSystemGuidance(toolNames)` into `output.system`.
 - Do not write files or mutate OpenCode config.
 
-- [ ] Write `packages/caplets-opencode/test/opencode.test.ts`.
+- [ ] Write `packages/opencode/test/opencode.test.ts`.
 
 Test coverage:
 
@@ -433,7 +433,7 @@ Required documentation:
 
 Expected: adapter package builds successfully.
 
-- [ ] Run `pnpm test -- packages/caplets-opencode/test/opencode.test.ts`.
+- [ ] Run `pnpm test -- packages/opencode/test/opencode.test.ts`.
 
 Expected: OpenCode adapter tests pass.
 
@@ -443,15 +443,15 @@ Expected: OpenCode adapter tests pass.
 
 **Files:**
 
-- Create: `packages/caplets-pi/package.json`
-- Create: `packages/caplets-pi/rolldown.config.ts`
-- Create: `packages/caplets-pi/tsconfig.json`
-- Create: `packages/caplets-pi/src/schema.ts`
-- Create: `packages/caplets-pi/src/index.ts`
-- Create: `packages/caplets-pi/README.md`
-- Test: `packages/caplets-pi/test/pi.test.ts`
+- Create: `packages/pi/package.json`
+- Create: `packages/pi/rolldown.config.ts`
+- Create: `packages/pi/tsconfig.json`
+- Create: `packages/pi/src/schema.ts`
+- Create: `packages/pi/src/index.ts`
+- Create: `packages/pi/README.md`
+- Test: `packages/pi/test/pi.test.ts`
 
-- [ ] Create `packages/caplets-pi/package.json`.
+- [ ] Create `packages/pi/package.json`.
 
 Expected shape:
 
@@ -505,7 +505,7 @@ Behavior:
 - Return Pi-compatible `{ content, details }`, with `details.result` carrying structured result data when available.
 - Attach a best-effort process shutdown handler that calls `service.close()` once.
 
-- [ ] Write `packages/caplets-pi/test/pi.test.ts`.
+- [ ] Write `packages/pi/test/pi.test.ts`.
 
 Test coverage:
 
@@ -529,7 +529,7 @@ Required documentation:
 
 Expected: adapter package builds successfully.
 
-- [ ] Run `pnpm test -- packages/caplets-pi/test/pi.test.ts`.
+- [ ] Run `pnpm test -- packages/pi/test/pi.test.ts`.
 
 Expected: Pi adapter tests pass.
 
@@ -564,7 +564,7 @@ Commands:
 
 ```sh
 pnpm test -- test/native.test.ts test/runtime.test.ts test/tools.test.ts
-pnpm test -- packages/caplets-opencode/test/opencode.test.ts packages/caplets-pi/test/pi.test.ts
+pnpm test -- packages/opencode/test/opencode.test.ts packages/pi/test/pi.test.ts
 ```
 
 Expected: all focused tests pass.

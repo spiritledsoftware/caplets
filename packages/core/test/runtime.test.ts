@@ -55,10 +55,12 @@ describe("CapletsRuntime", () => {
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
 
-    expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
-    expect(nativeCapletToolName("git-hub")).toBe("caplets_git_dash_hub");
-
-    await runtime.close();
+    try {
+      expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
+      expect(nativeCapletToolName("git-hub")).toBe("caplets_git_dash_hub");
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("registers HTTP API Caplets", async () => {

@@ -4,6 +4,7 @@ export {
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
 } from "./native/service.js";
+export { registerNativeCapletsProcessCleanup } from "./native/process-cleanup.js";
 export {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,

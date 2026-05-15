@@ -2,13 +2,14 @@ import { tool, type Hooks, type Plugin, type PluginInput } from "@opencode-ai/pl
 import {
   createNativeCapletsService,
   nativeCapletsSystemGuidance,
+  registerNativeCapletsProcessCleanup,
   type NativeCapletsService,
 } from "@caplets/core/native";
 import { capletsOpenCodeArgs } from "./schema.js";
 
 const plugin: Plugin = async (_ctx: PluginInput) => {
   const service = createNativeCapletsService();
-  registerProcessCleanup(service);
+  registerNativeCapletsProcessCleanup(service);
   return createCapletsOpenCodeHooks(service);
 };
 
@@ -37,17 +38,3 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
 }
 
 export default plugin;
-
-function registerProcessCleanup(service: NativeCapletsService): void {
-  let closed = false;
-  const close = () => {
-    if (closed) {
-      return;
-    }
-    closed = true;
-    void service.close();
-  };
-  process.once("beforeExit", close);
-  process.once("SIGINT", close);
-  process.once("SIGTERM", close);
-}
