@@ -1,5 +1,11 @@
 # caplets
 
+## 0.11.0
+
+### Minor Changes
+
+- aa0c0b3: Add `cliTools` Caplet backends for typed, shell-free CLI actions plus `caplets author cli` for generating reviewable CLI Caplet manifests.
+
 ## 0.10.0
 
 ### Minor Changes
