@@ -1,6 +1,6 @@
 {
   "name": "@caplets/opencode",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Native OpenCode plugin for Caplets.",
   "files": [
     "dist",
