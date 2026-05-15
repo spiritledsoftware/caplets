@@ -42,6 +42,7 @@ describe("root agent plugin artifacts", () => {
     expect(codexManifest.version).toBe(cliPackage.version);
     expect(claudeManifest.version).toBe(cliPackage.version);
     expect(rootPackage.scripts["version-packages"]).toContain("scripts/sync-plugin-versions.mjs");
+    expect(rootPackage.scripts["version-packages"]).toContain("oxfmt");
   });
 
   it("declares a Claude Code marketplace entry using Claude's schema", async () => {
