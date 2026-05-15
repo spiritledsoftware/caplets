@@ -2,7 +2,7 @@ import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { version as packageJsonVersion } from "../package.json";
 import { type CapletConfig, type CapletsConfig } from "./config.js";
-import { CapletsEngine } from "./engine.js";
+import { CapletsEngine, type CapletsEngineOptions } from "./engine.js";
 import { capabilityDescription } from "./registry.js";
 import { generatedToolInputSchema } from "./tools.js";
 
@@ -23,13 +23,7 @@ export class CapletsRuntime {
   private readonly tools = new Map<string, RegisteredTool>();
 
   constructor(options: CapletsRuntimeOptions = {}) {
-    this.engine = new CapletsEngine({
-      configPath: options.configPath,
-      projectConfigPath: options.projectConfigPath,
-      authDir: options.authDir,
-      watchDebounceMs: options.watchDebounceMs,
-      writeErr: options.writeErr,
-    });
+    this.engine = new CapletsEngine(engineOptions(options));
     this.server =
       options.server ??
       new McpServer({
@@ -119,18 +113,14 @@ export class CapletsRuntime {
   }
 }
 
-function allCaplets(config: CapletsConfig): CapletConfig[] {
+function nextEnabledServers(config: CapletsConfig): CapletConfig[] {
   return [
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),
-  ];
-}
-
-function nextEnabledServers(config: CapletsConfig): CapletConfig[] {
-  return allCaplets(config).filter((server) => !server.disabled);
+  ].filter((server) => !server.disabled);
 }
 
 function capletById(config: CapletsConfig, serverId: string): CapletConfig | undefined {
@@ -145,4 +135,24 @@ function capletById(config: CapletsConfig, serverId: string): CapletConfig | und
 
 function serializeCaplet(caplet: CapletConfig | undefined): string {
   return JSON.stringify(caplet ?? null);
+}
+
+function engineOptions(options: CapletsRuntimeOptions): CapletsEngineOptions {
+  const engineOptions: CapletsEngineOptions = {};
+  if (options.configPath !== undefined) {
+    engineOptions.configPath = options.configPath;
+  }
+  if (options.projectConfigPath !== undefined) {
+    engineOptions.projectConfigPath = options.projectConfigPath;
+  }
+  if (options.authDir !== undefined) {
+    engineOptions.authDir = options.authDir;
+  }
+  if (options.watchDebounceMs !== undefined) {
+    engineOptions.watchDebounceMs = options.watchDebounceMs;
+  }
+  if (options.writeErr !== undefined) {
+    engineOptions.writeErr = options.writeErr;
+  }
+  return engineOptions;
 }

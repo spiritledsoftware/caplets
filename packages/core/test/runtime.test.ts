@@ -208,6 +208,92 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("reconciles tools when backend invalidation fails", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const errors: string[] = [];
+    const runtime = new CapletsRuntime({
+      configPath,
+      projectConfigPath,
+      server,
+      writeErr: (value) => errors.push(value),
+    });
+    const alpha = server.registered.get("alpha")!;
+    const engine = (runtime as unknown as { engine: unknown }).engine;
+    (engine as { invalidateChangedBackends: () => Promise<void> }).invalidateChangedBackends =
+      vi.fn(async () => {
+        throw new Error("close failed");
+      });
+
+    writeConfig(configPath, {
+      mcpServers: {
+        gamma: {
+          name: "Gamma",
+          description: "Search gamma project documents.",
+          command: "node",
+        },
+      },
+    });
+    const reloaded = await runtime.reload();
+
+    expect(reloaded).toBe(false);
+    expect(alpha.remove).toHaveBeenCalledTimes(1);
+    expect(runtime.registeredToolIds()).toEqual(["gamma"]);
+    expect(server.registered.get("gamma")).toBeDefined();
+    expect(errors.join("")).toContain("backend invalidation failed");
+
+    await runtime.close();
+  });
+
+  it("delegates watched paths to the engine", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server: mockServer() });
+
+    expect(runtime.watchedPaths()).toEqual([join(dir, "project", ".caplets"), join(dir, "user")]);
+
+    await runtime.close();
+  });
+
+  it("delegates scheduled reloads to the engine", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server: mockServer() });
+    const engine = (runtime as unknown as { engine: { scheduleReload: () => void } }).engine;
+    engine.scheduleReload = vi.fn();
+
+    runtime.scheduleReload();
+
+    expect(engine.scheduleReload).toHaveBeenCalledOnce();
+
+    await runtime.close();
+  });
+
   function tempConfig(config: unknown): {
     dir: string;
     configPath: string;

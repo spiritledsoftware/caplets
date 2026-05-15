@@ -221,6 +221,59 @@ describe("CapletsEngine", () => {
     await eventually(() => expect(reloads).toBeGreaterThan(0));
   });
 
+  it("watches nested Caplet files when the config dir is also the Caplets root", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const nestedFile = join(dir, "user", "nested", "notes.md");
+    mkdirSync(join(dir, "user", "nested"), { recursive: true });
+    writeFileSync(nestedFile, "before");
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watchDebounceMs: 10 });
+    engines.push(engine);
+    let reloads = 0;
+    (engine as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
+      reloads += 1;
+      return true;
+    });
+
+    writeFileSync(nestedFile, "after");
+
+    await eventually(() => expect(reloads).toBeGreaterThan(0));
+  });
+
+  it("watches project Caplet files without explicit trust", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const projectFile = join(dir, "project", ".caplets", "notes.txt");
+    writeFileSync(projectFile, "before");
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watchDebounceMs: 10 });
+    engines.push(engine);
+    let reloads = 0;
+    (engine as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
+      reloads += 1;
+      return true;
+    });
+
+    writeFileSync(projectFile, "after");
+
+    await eventually(() => expect(reloads).toBeGreaterThan(0));
+  });
+
   function tempConfig(config: unknown): {
     dir: string;
     configPath: string;
