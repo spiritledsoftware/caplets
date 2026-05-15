@@ -26,4 +26,9 @@ pnpm add -D @caplets/pi
 
 The extension reads your existing Caplets configuration through `@caplets/core`; it does not create or mutate Pi config files.
 
-New or removed Caplets are snapshotted at extension load. Restart Pi or reload extensions to refresh the native tool list.
+The extension hot reloads Caplets config and Caplet file edits. Existing tools execute against
+the latest valid backend config. Newly added Caplets are registered in the current Pi session;
+removed or disabled Caplets are deactivated with Pi's active-tool APIs when available. If Pi is
+running without `getActiveTools()` / `setActiveTools()`, stale tools may remain registered until
+Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' normal structured
+"server not found" error.

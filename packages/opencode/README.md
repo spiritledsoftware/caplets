@@ -10,4 +10,8 @@ This package exposes configured Caplets as native OpenCode tools named `caplets_
 }
 ```
 
-New or removed Caplets are snapshotted at plugin load. Restart OpenCode to refresh the native tool list.
+The plugin hot reloads Caplets config and Caplet file edits for already-registered tools, so
+existing native tools execute against the latest valid backend config and prompt guidance is
+rebuilt from current Caplets state for the tools registered when the plugin loaded. OpenCode's
+current plugin API snapshots `Hooks.tool` at plugin load, so adding, removing, or renaming native
+tools still requires restarting OpenCode; newly added tools are not advertised until restart.
