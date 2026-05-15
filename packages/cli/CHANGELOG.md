@@ -1,5 +1,13 @@
 # caplets
 
+## 0.12.3
+
+### Patch Changes
+
+- e9dd9e8: Fix monorepo package entrypoints so the CLI resolves MCP SDK subpaths on Node ESM, reports the CLI package version, and the OpenCode plugin exposes only its default plugin export.
+- Updated dependencies [e9dd9e8]
+  - @caplets/core@0.12.2
+
 ## 0.12.2
 
 ### Patch Changes
