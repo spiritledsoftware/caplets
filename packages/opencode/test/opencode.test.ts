@@ -16,8 +16,14 @@ vi.mock("@opencode-ai/plugin", () => ({
 }));
 
 describe("@caplets/opencode", () => {
+  it("only exposes the default plugin function from the package entrypoint", async () => {
+    const exports = await import("../src/index.js");
+
+    expect(Object.keys(exports).sort()).toEqual(["default"]);
+  });
+
   it("registers one prefixed native tool per Caplet", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     const service = {
       listTools: () => [
         {
@@ -50,7 +56,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when tool result serialization fails", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     const service = {
       listTools: () => [
         {
@@ -79,7 +85,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when JSON.stringify returns undefined", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     const service = {
       listTools: () => [
         {
@@ -107,7 +113,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("refreshes system guidance for remaining registered native tools", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     let tools = [
       {
         caplet: "git-hub",
@@ -151,7 +157,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("does not advertise newly added unregistered native tools", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     let tools = [
       {
         caplet: "git-hub",

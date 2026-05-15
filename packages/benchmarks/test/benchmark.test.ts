@@ -3,8 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseConfig } from "../../core/src/config.js";
-import { capabilityDescription, ServerRegistry } from "../../core/src/registry.js";
+import { capabilityDescription, parseConfig, ServerRegistry } from "@caplets/core";
 import {
   PROCESS_TERMINATION_BEHAVIOR,
   parseJsonEvents,

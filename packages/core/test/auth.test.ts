@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const mockMcpAuth = vi.hoisted(() => vi.fn());
 
-vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@modelcontextprotocol/sdk/client/auth")>()),
+vi.mock("@modelcontextprotocol/sdk/client/auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@modelcontextprotocol/sdk/client/auth.js")>()),
   auth: mockMcpAuth,
 }));
 

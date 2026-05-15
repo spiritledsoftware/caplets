@@ -1,9 +1,10 @@
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CapletsRuntime, runCli } from "@caplets/core";
+import { version as packageVersion } from "../package.json";
 
 async function main() {
   if (process.argv[2] && process.argv[2] !== "serve") {
-    await runCli(process.argv.slice(2));
+    await runCli(process.argv.slice(2), { version: packageVersion });
     return;
   }
 
