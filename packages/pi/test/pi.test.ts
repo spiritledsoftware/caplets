@@ -209,6 +209,7 @@ describe("@caplets/pi", () => {
     const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
 
     capletsPiExtension(api, { service });
+    expect(api.setActiveTools).toHaveBeenNthCalledWith(1, ["read", "caplets_git_hub"]);
     service.setTools([
       {
         caplet: "git-hub",

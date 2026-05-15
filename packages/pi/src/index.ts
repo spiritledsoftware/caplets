@@ -38,7 +38,9 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
     }
 
     if (pi.getActiveTools && pi.setActiveTools) {
-      const activeNonCaplets = pi.getActiveTools().filter((name) => !knownCapletTools.has(name));
+      const activeNonCaplets = pi
+        .getActiveTools()
+        .filter((name) => !knownCapletTools.has(name) && !nextCapletTools.has(name));
       pi.setActiveTools([...activeNonCaplets, ...nextCapletTools]);
     }
 
