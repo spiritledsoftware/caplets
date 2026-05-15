@@ -1,5 +1,11 @@
 # caplets
 
+## 0.12.2
+
+### Patch Changes
+
+- 6da71be: Add root-level Codex and Claude Code plugin artifacts that package Caplets MCP server configuration and shared agent skill guidance.
+
 ## 0.12.1
 
 ### Patch Changes
