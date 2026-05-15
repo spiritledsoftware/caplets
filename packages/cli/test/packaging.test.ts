@@ -10,6 +10,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("caplets package entrypoint", () => {
   it("can start far enough to print its version from the built bin", async () => {
+    await execFileAsync("pnpm", ["build"], { cwd: packageRoot });
+
     const { stdout } = await execFileAsync(process.execPath, ["dist/index.js", "--version"], {
       cwd: packageRoot,
     });
