@@ -269,6 +269,64 @@ describe("@caplets/pi", () => {
     expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
   });
 
+  it("refreshes existing tool definitions when backing Caplet changes", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+
+    capletsPiExtension(api, { service });
+    service.setTools([
+      {
+        caplet: "github-v2",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+  });
+
+  it("re-registers re-added tools after stale signature cleanup", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+
+    capletsPiExtension(api, { service });
+    service.setTools([]);
+    service.emitToolsChanged();
+    service.setTools([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+  });
+
   it("deactivates stale Caplets while preserving non-Caplets active tools", () => {
     const service = mockService([
       {
@@ -395,12 +453,15 @@ describe("@caplets/pi", () => {
 
 function mockPiApi(activeTools: string[] = []): { api: MockPiApi; registered: RegisteredTool[] } {
   const registered: RegisteredTool[] = [];
+  let currentActiveTools = [...activeTools];
   const api: MockPiApi = {
     registerTool: vi.fn((definition) => {
       registered.push(definition as RegisteredTool);
     }),
-    getActiveTools: vi.fn(() => activeTools),
-    setActiveTools: vi.fn(),
+    getActiveTools: vi.fn(() => [...currentActiveTools]),
+    setActiveTools: vi.fn((names) => {
+      currentActiveTools = [...names];
+    }),
     on: vi.fn(),
   };
   return { api, registered };

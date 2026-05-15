@@ -140,7 +140,7 @@ describe("native Caplets service", () => {
     }
   });
 
-  it("notifies native tool listeners on successful reload only", async () => {
+  it("notifies native tool listeners only when config parses successfully", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
         alpha: {
@@ -192,6 +192,56 @@ describe("native Caplets service", () => {
       );
       await expect(service.reload()).resolves.toBe(true);
       expect(events).toEqual([["gamma"]]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("notifies native tool listeners when backend invalidation fails", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const errors: string[] = [];
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    const engine = (service as unknown as { engine: unknown }).engine;
+    (engine as { invalidateChangedBackends: () => Promise<void> }).invalidateChangedBackends =
+      async () => {
+        throw new Error("close failed");
+      };
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => {
+      events.push(tools.map((tool) => tool.caplet));
+    });
+
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            beta: {
+              name: "Beta",
+              description: "Search beta project documents.",
+              command: process.execPath,
+            },
+          },
+        }),
+      );
+
+      await expect(service.reload()).resolves.toBe(false);
+      expect(events).toEqual([["beta"]]);
+      expect(errors.join("")).toContain("backend invalidation failed");
     } finally {
       await service.close();
     }

@@ -31,6 +31,11 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
 
   const syncTools = (caplets = service.listTools()) => {
     const nextCapletTools = new Set(caplets.map((caplet) => caplet.toolName));
+    for (const [toolName] of registeredCapletToolSignatures) {
+      if (!nextCapletTools.has(toolName)) {
+        registeredCapletToolSignatures.delete(toolName);
+      }
+    }
     for (const caplet of caplets) {
       const signature = piToolSignature(caplet);
       if (registeredCapletToolSignatures.get(caplet.toolName) === signature) {
@@ -62,6 +67,7 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
 
 function piToolSignature(caplet: NativeCapletTool): string {
   return JSON.stringify({
+    caplet: caplet.caplet,
     title: caplet.title,
     description: caplet.description,
     promptGuidance: caplet.promptGuidance,
