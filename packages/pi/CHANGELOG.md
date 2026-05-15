@@ -1,5 +1,11 @@
 # @caplets/pi
 
+## 0.1.2
+
+### Patch Changes
+
+- fac459f: Add repository metadata required for npm trusted publishing.
+
 ## 0.1.1
 
 ### Patch Changes
