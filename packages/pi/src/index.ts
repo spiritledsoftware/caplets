@@ -8,8 +8,9 @@ import { capletsPiParameters } from "./schema.js";
 
 export type PiExtensionApi = {
   registerTool(definition: unknown): void;
-  getActiveTools?(): Array<{ name: string }>;
+  getActiveTools?(): string[];
   setActiveTools?(names: string[]): void;
+  on?(event: "session_shutdown", handler: () => void): void;
 };
 
 export type CapletsPiOptions = {
@@ -36,10 +37,7 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
     }
 
     if (pi.getActiveTools && pi.setActiveTools) {
-      const activeNonCaplets = pi
-        .getActiveTools()
-        .map((tool) => tool.name)
-        .filter((name) => !knownCapletTools.has(name));
+      const activeNonCaplets = pi.getActiveTools().filter((name) => !knownCapletTools.has(name));
       pi.setActiveTools([...activeNonCaplets, ...nextCapletTools]);
     }
 
@@ -47,7 +45,8 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
   };
 
   syncTools();
-  service.onToolsChanged(syncTools);
+  const unsubscribe = service.onToolsChanged(syncTools);
+  pi.on?.("session_shutdown", unsubscribe);
 }
 
 function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): unknown {

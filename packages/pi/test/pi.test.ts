@@ -27,8 +27,9 @@ type RegisteredTool = {
 
 type MockPiApi = {
   registerTool: Mock<(definition: unknown) => void>;
-  getActiveTools: Mock<() => Array<{ name: string }>>;
+  getActiveTools: Mock<() => string[]>;
   setActiveTools: Mock<(names: string[]) => void>;
+  on: Mock<(event: "session_shutdown", handler: () => void) => void>;
 };
 
 type MockService = NativeCapletsService & {
@@ -290,14 +291,53 @@ describe("@caplets/pi", () => {
 
     expect(registered.map((tool) => tool.name)).toEqual(["caplets_linear"]);
   });
+
+  it("detaches the native listener on Pi session shutdown", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api, registered } = mockPiApi();
+
+    capletsPiExtension(api, { service });
+    const shutdown = api.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1];
+    shutdown?.();
+    service.setTools([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear Caplet",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub"]);
+  });
 });
 
 function mockPiApi(activeTools: string[] = []): { api: MockPiApi; registered: RegisteredTool[] } {
   const registered: RegisteredTool[] = [];
   const api: MockPiApi = {
-    registerTool: vi.fn((definition) => registered.push(definition as RegisteredTool)),
-    getActiveTools: vi.fn(() => activeTools.map((name) => ({ name }))),
+    registerTool: vi.fn((definition) => {
+      registered.push(definition as RegisteredTool);
+    }),
+    getActiveTools: vi.fn(() => activeTools),
     setActiveTools: vi.fn(),
+    on: vi.fn(),
   };
   return { api, registered };
 }
