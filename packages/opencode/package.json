@@ -13,13 +13,13 @@
   },
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
+    "prepack": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@caplets/core": "workspace:*",
-    "@opencode-ai/plugin": "^1.14.48",
-    "zod": "^4.4.3"
+    "@opencode-ai/plugin": "^1.14.48"
   },
   "devDependencies": {
     "@types/node": "^25.7.0",

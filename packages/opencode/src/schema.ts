@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { operations } from "../../core/src/generated-tool-input-schema.mjs";
+import { operations } from "@caplets/core/generated-tool-input-schema";
 
 export function capletsOpenCodeArgs() {
   return {

@@ -7,5 +7,10 @@ export default defineConfig({
     format: "esm",
   },
   platform: "node",
-  external: ["@caplets/core/native", "@sinclair/typebox"],
+  external: [
+    "@caplets/core/generated-tool-input-schema",
+    "@caplets/core/native",
+    "@earendil-works/pi-coding-agent",
+    "@sinclair/typebox",
+  ],
 });

@@ -27,6 +27,7 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
+    "./generated-tool-input-schema": "./dist/generated-tool-input-schema.js",
     "./native": "./dist/native.js"
   },
   "publishConfig": {

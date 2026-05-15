@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
+    "prepack": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

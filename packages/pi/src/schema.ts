@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { operations } from "../../core/src/generated-tool-input-schema.mjs";
+import { operations } from "@caplets/core/generated-tool-input-schema";
 
 export function capletsPiParameters() {
   return Type.Object(

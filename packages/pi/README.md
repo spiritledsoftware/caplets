@@ -12,7 +12,7 @@ Install the extension with Pi:
 pi install npm:@caplets/pi
 ```
 
-For package-manager based installs, install it in the same environment where Pi resolves extension packages:
+For package-manager-based installs, install it in the same environment where Pi resolves extension packages:
 
 ```sh
 npm install -g @caplets/pi
