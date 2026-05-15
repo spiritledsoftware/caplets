@@ -7,9 +7,11 @@ import { version as packageVersion } from "../package.json";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = resolve(packageRoot, "../..");
 
 describe("caplets package entrypoint", () => {
   it("can start far enough to print its version from the built bin", async () => {
+    await execFileAsync("pnpm", ["--filter", "@caplets/core", "build"], { cwd: repoRoot });
     await execFileAsync("pnpm", ["build"], { cwd: packageRoot });
 
     const { stdout } = await execFileAsync(process.execPath, ["dist/index.js", "--version"], {
