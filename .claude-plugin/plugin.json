@@ -1,6 +1,6 @@
 {
   "name": "caplets",
-  "version": "0.12.2",
+  "version": "0.12.3",
   "description": "Expose configured Caplets as progressive-disclosure tools in Claude Code.",
   "author": {
     "name": "Spirit-Led Software LLC"
