@@ -25,7 +25,9 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
   }
 
   const registeredCapletToolSignatures = new Map<string, string>();
-  let knownCapletTools = new Set<string>();
+  let knownCapletTools = new Set<string>(
+    pi.getActiveTools?.().filter((name) => name.startsWith("caplets_")) ?? [],
+  );
 
   const syncTools = (caplets = service.listTools()) => {
     const nextCapletTools = new Set(caplets.map((caplet) => caplet.toolName));

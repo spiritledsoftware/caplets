@@ -21,6 +21,7 @@ export class CapletsRuntime {
   readonly server: ToolServer;
   private readonly engine: CapletsEngine;
   private readonly tools = new Map<string, RegisteredTool>();
+  private readonly unsubscribeReload: () => void;
 
   constructor(options: CapletsRuntimeOptions = {}) {
     this.engine = new CapletsEngine(engineOptions(options));
@@ -30,7 +31,9 @@ export class CapletsRuntime {
         name: "caplets",
         version: packageJsonVersion,
       });
-    this.engine.onReload(({ previous, next }) => this.reconcileTools(previous, next));
+    this.unsubscribeReload = this.engine.onReload(({ previous, next }) =>
+      this.reconcileTools(previous, next),
+    );
     this.reconcileTools(undefined, this.engine.currentConfig());
   }
 
@@ -47,6 +50,7 @@ export class CapletsRuntime {
   }
 
   async close(): Promise<void> {
+    this.unsubscribeReload();
     try {
       await this.engine.close();
     } finally {

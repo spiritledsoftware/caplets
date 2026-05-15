@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
-import { dirname, parse } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { CliToolsManager } from "./cli-tools.js";
 import {
   type CapletConfig,
@@ -411,7 +411,7 @@ function discoverDirectories(root: string): string[] {
   const directories = [root];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      directories.push(...discoverDirectories(`${root}/${entry.name}`));
+      directories.push(...discoverDirectories(join(root, entry.name)));
     }
   }
   return directories;

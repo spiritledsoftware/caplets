@@ -303,6 +303,23 @@ describe("@caplets/pi", () => {
     expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "caplets_linear"]);
   });
 
+  it("deactivates stale Caplets that were active before extension load", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api } = mockPiApi(["read", "caplets_stale", "caplets_git_hub"]);
+
+    capletsPiExtension(api, { service });
+
+    expect(api.setActiveTools).toHaveBeenCalledWith(["read", "caplets_git_hub"]);
+  });
+
   it("works when Pi active-tool APIs are unavailable", () => {
     const service = mockService([]);
     const registered: RegisteredTool[] = [];
