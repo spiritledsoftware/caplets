@@ -23,16 +23,17 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
     registerNativeCapletsProcessCleanup(service);
   }
 
-  const registeredCapletTools = new Set<string>();
+  const registeredCapletToolSignatures = new Map<string, string>();
   let knownCapletTools = new Set<string>();
 
   const syncTools = (caplets = service.listTools()) => {
     const nextCapletTools = new Set(caplets.map((caplet) => caplet.toolName));
     for (const caplet of caplets) {
-      if (registeredCapletTools.has(caplet.toolName)) {
+      const signature = piToolSignature(caplet);
+      if (registeredCapletToolSignatures.get(caplet.toolName) === signature) {
         continue;
       }
-      registeredCapletTools.add(caplet.toolName);
+      registeredCapletToolSignatures.set(caplet.toolName, signature);
       pi.registerTool(createPiTool(service, caplet));
     }
 
@@ -47,6 +48,14 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
   syncTools();
   const unsubscribe = service.onToolsChanged(syncTools);
   pi.on?.("session_shutdown", unsubscribe);
+}
+
+function piToolSignature(caplet: NativeCapletTool): string {
+  return JSON.stringify({
+    title: caplet.title,
+    description: caplet.description,
+    promptGuidance: caplet.promptGuidance,
+  });
 }
 
 function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): unknown {

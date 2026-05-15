@@ -235,6 +235,39 @@ describe("@caplets/pi", () => {
     ]);
   });
 
+  it("refreshes existing tool definitions when metadata changes", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+
+    capletsPiExtension(api, { service });
+    service.setTools([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub Reloaded",
+        description: "Reloaded GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for reloaded GitHub."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
+    expect(registered[1]).toMatchObject({
+      label: "GitHub Reloaded",
+      description: "Reloaded GitHub Caplet",
+      promptGuidelines: ["Use caplets_git_hub for reloaded GitHub."],
+    });
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+  });
+
   it("deactivates stale Caplets while preserving non-Caplets active tools", () => {
     const service = mockService([
       {
