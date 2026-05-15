@@ -18,7 +18,7 @@ describe("root agent plugin artifacts", () => {
 
     expect(manifest.skills).toBe("./skills/");
     expect(manifest.mcpServers).toBe("./codex.mcp.json");
-    expect(manifest.hooks).toBe("./codex.hooks.json");
+    expect(manifest.hooks).toBeUndefined();
   });
 
   it("declares Claude Code plugin components using Claude-specific files", async () => {
@@ -28,7 +28,7 @@ describe("root agent plugin artifacts", () => {
 
     expect(manifest.skills).toBe("./skills/");
     expect(manifest.mcpServers).toBe("./claude.mcp.json");
-    expect(manifest.hooks).toBe("./claude.hooks.json");
+    expect(manifest.hooks).toBeUndefined();
   });
 
   it("keeps plugin manifest versions aligned with the CLI package", async () => {
@@ -104,21 +104,18 @@ describe("root agent plugin artifacts", () => {
     expect(JSON.stringify(claudeMcp)).not.toContain("caplets@");
   });
 
-  it("uses the shared root skill and keeps hooks agent-specific", async () => {
-    const [skill, codexHooks, claudeHooks] = await Promise.all([
-      readFile(path.join(repoRoot, "skills/caplets/SKILL.md"), "utf8"),
-      readJson<Record<string, unknown>>(path.join(repoRoot, "codex.hooks.json")),
-      readJson<Record<string, unknown>>(path.join(repoRoot, "claude.hooks.json")),
-    ]);
+  it("uses a strong shared root skill for automatic selection", async () => {
+    const skill = await readFile(path.join(repoRoot, "skills/caplets/SKILL.md"), "utf8");
 
     expect(skill).toContain("name: caplets");
+    expect(skill).toContain("when_to_use:");
+    expect(skill).toContain("external tools");
+    expect(skill).toContain("MCP servers");
+    expect(skill).toContain("OpenAPI");
+    expect(skill).toContain("GraphQL");
+    expect(skill).toContain("HTTP endpoints");
     expect(skill).toContain("call_tool");
-    expect(JSON.stringify(codexHooks)).toContain("node -e");
-    expect(JSON.stringify(claudeHooks)).toContain("node -e");
-    expect(JSON.stringify(codexHooks)).not.toContain("printf");
-    expect(JSON.stringify(claudeHooks)).not.toContain("printf");
-    expect(JSON.stringify(codexHooks)).toContain("statusMessage");
-    expect(JSON.stringify(claudeHooks)).not.toContain("statusMessage");
+    expect(skill).toContain("Skip this skill for normal local code edits");
   });
 
   it("keeps plugin metadata and components in documented locations", () => {
@@ -148,8 +145,6 @@ describe("root agent plugin artifacts", () => {
       ".agents/plugins/marketplace.json",
       "codex.mcp.json",
       "claude.mcp.json",
-      "codex.hooks.json",
-      "claude.hooks.json",
       "scripts/sync-plugin-versions.mjs",
       "skills/caplets/SKILL.md",
     ]) {

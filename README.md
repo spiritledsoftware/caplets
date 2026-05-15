@@ -51,13 +51,13 @@ only the backend it needs.
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
 your coding agent supports one.
 
-| Agent          | Install                                                                                             | What It Provides                                                          |
-| -------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Any MCP client | Add `caplets serve` as a stdio MCP server                                                           | Universal progressive-disclosure gateway                                  |
-| Claude Code    | `claude plugin marketplace add spiritledsoftware/caplets && claude plugin install caplets@caplets`  | Claude Code plugin metadata, MCP config, hooks, and shared skill guidance |
-| Codex          | `codex plugin marketplace add spiritledsoftware/caplets`, then install `caplets` from Codex plugins | Codex plugin metadata, MCP config, hooks, and shared skill guidance       |
-| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)                                          | Native `caplets_<id>` tools and prompt guidance hooks                     |
-| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                                                      | Native `caplets_<id>` tools with Pi prompt snippets/guidelines            |
+| Agent          | Install                                                                                             | What It Provides                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Any MCP client | Add `caplets serve` as a stdio MCP server                                                           | Universal progressive-disclosure gateway                           |
+| Claude Code    | `claude plugin marketplace add spiritledsoftware/caplets && claude plugin install caplets@caplets`  | Claude Code plugin metadata, MCP config, and shared skill guidance |
+| Codex          | `codex plugin marketplace add spiritledsoftware/caplets`, then install `caplets` from Codex plugins | Codex plugin metadata, MCP config, and shared skill guidance       |
+| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)                                          | Native `caplets_<id>` tools and prompt guidance hooks              |
+| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                                                      | Native `caplets_<id>` tools with Pi prompt snippets/guidelines     |
 
 Codex and Claude Code plugins are plugin-native but MCP-backed. Their manifests live in
 `.codex-plugin/` and `.claude-plugin/`; component files live at the plugin root so
