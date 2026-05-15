@@ -1,0 +1,14 @@
+{
+  "name": "caplets",
+  "owner": {
+    "name": "Spirit-Led Software LLC"
+  },
+  "plugins": [
+    {
+      "name": "caplets",
+      "source": "./",
+      "description": "Expose configured Caplets as progressive-disclosure tools in Claude Code.",
+      "category": "Developer Tools"
+    }
+  ]
+}

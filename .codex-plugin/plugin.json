@@ -1,0 +1,28 @@
+{
+  "name": "caplets",
+  "version": "0.12.1",
+  "description": "Expose configured Caplets as progressive-disclosure tools in Codex.",
+  "author": {
+    "name": "Spirit-Led Software LLC"
+  },
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "repository": "https://github.com/spiritledsoftware/caplets",
+  "license": "MIT",
+  "keywords": ["caplets", "mcp", "codex", "tools"],
+  "skills": "./skills/",
+  "mcpServers": "./codex.mcp.json",
+  "interface": {
+    "displayName": "Caplets",
+    "shortDescription": "Progressive disclosure for Caplets tools.",
+    "longDescription": "Use Caplets to discover and call configured MCP, OpenAPI, GraphQL, HTTP, and CLI tools without flattening every downstream tool into context.",
+    "developerName": "Spirit-Led Software LLC",
+    "category": "Developer Tools",
+    "capabilities": ["MCP", "Tools"],
+    "websiteURL": "https://github.com/spiritledsoftware/caplets",
+    "defaultPrompt": [
+      "Use Caplets to discover configured capability domains before calling downstream tools.",
+      "Use Caplets progressive discovery before calling downstream tools."
+    ],
+    "brandColor": "#4F46E5"
+  }
+}

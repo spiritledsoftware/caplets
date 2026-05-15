@@ -1,26 +1,99 @@
 # Caplets
 
-Caplets is a progressive-disclosure gateway for Model Context Protocol (MCP) servers,
-native OpenAPI endpoints, native GraphQL endpoints, and explicitly configured HTTP APIs.
+Caplets turns sprawling tool setups into focused capability cards for coding agents.
+Connect MCP servers, OpenAPI specs, GraphQL endpoints, HTTP actions, and curated CLI
+commands without flooding the model with every downstream operation up front.
 
-Instead of connecting an MCP client to many downstream servers or HTTP APIs and exposing
-every operation up front, Caplets exposes one top-level tool per configured capability.
-An agent first chooses a capability domain, then asks Caplets to list, search, inspect,
-or call that backend's underlying tools or operations.
+Instead of exposing a flat wall of tools, Caplets shows one top-level tool per capability.
+The agent chooses a domain first, then uses scoped operations like `search_tools`,
+`get_tool`, and `call_tool` only when it needs more detail.
 
-This keeps the initial MCP tool list small, makes tool selection easier, and avoids
-flattened tool-name collisions across servers.
+## Quick Start
+
+Caplets requires Node.js 22 or newer.
+
+```sh
+pnpm add -g caplets
+caplets init
+```
+
+Add a capability from an existing system:
+
+```sh
+# Wrap an MCP server
+caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
+
+# Convert useful repository commands into curated tools
+caplets add cli repo-tools --repo . --include git,gh,package
+
+# Install ready-made Caplets from a repository
+caplets install spiritledsoftware/caplets github linear context7
+```
+
+Connect Caplets to any MCP client:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Ask your agent to use Caplets. It will see a compact capability list first, then inspect
+only the backend it needs.
+
+## Agent Plugins
+
+Use Caplets as a normal MCP server everywhere, or install a native agent integration when
+your coding agent supports one.
+
+| Agent          | Install                                                                                             | What It Provides                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Any MCP client | Add `caplets serve` as a stdio MCP server                                                           | Universal progressive-disclosure gateway                           |
+| Claude Code    | `claude plugin marketplace add spiritledsoftware/caplets && claude plugin install caplets@caplets`  | Claude Code plugin metadata, MCP config, and shared skill guidance |
+| Codex          | `codex plugin marketplace add spiritledsoftware/caplets`, then install `caplets` from Codex plugins | Codex plugin metadata, MCP config, and shared skill guidance       |
+| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)                                          | Native `caplets_<id>` tools and prompt guidance hooks              |
+| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                                                      | Native `caplets_<id>` tools with Pi prompt snippets/guidelines     |
+
+Codex and Claude Code plugins are plugin-native but MCP-backed. Their manifests live in
+`.codex-plugin/` and `.claude-plugin/`; component files live at the plugin root so
+marketplace installs can copy and resolve them correctly.
+
+The Claude Code and Codex commands install from this GitHub repository through each agent's
+plugin marketplace flow; users do not need to clone the repository manually. Plugin MCP
+configs run `caplets serve` directly, so install the Caplets CLI globally first.
+
+## Convert Existing Tooling
+
+Caplets is designed to convert what you already use into agent-friendly capability domains.
+
+| Existing source          | Command                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Local MCP server         | `caplets add mcp local-tools --command node --arg ./server.mjs`                                                  |
+| Remote MCP server        | `caplets add mcp remote-tools --url https://mcp.example.com/mcp --transport http --token-env MCP_TOKEN`          |
+| OpenAPI service          | `caplets add openapi users --spec ./openapi.json --base-url https://api.example.com --token-env USERS_API_TOKEN` |
+| GraphQL endpoint         | `caplets add graphql catalog --endpoint-url https://api.example.com/graphql --schema ./schema.graphql`           |
+| Simple HTTP API          | `caplets add http status-api --base-url https://api.example.com --action get_status:GET:/status/{service}`       |
+| Repository CLI workflows | `caplets add cli repo-tools --repo . --include git,gh,package`                                                   |
+| Shared Caplet catalog    | `caplets install spiritledsoftware/caplets github linear context7`                                               |
+
+Generated Caplet files are written to `./.caplets` by default so teams can review,
+version, and customize them with the project.
 
 ## Why It Matters
 
-Large MCP setups make agents worse before they make them better. If every downstream
-server exposes every tool up front, the model starts with a noisy flat list, duplicate
-tool names, and a bigger context surface before it knows which capability matters.
+Large MCP setups can make agents harder to steer. If every downstream server exposes
+every tool up front, the model starts with a noisy flat list, duplicate tool names, and
+a larger context surface before it knows which capability matters.
 
 Caplets turns that flat tool wall into progressive disclosure: one capability card first,
 then scoped discovery only after the agent chooses the relevant domain.
 
-## Benchmark Results
+## Benchmark
 
 In Caplets' reproducible coding-agent benchmark, the same three mock MCP servers are
 exposed two ways: direct flat MCP aggregation versus Caplets progressive disclosure.
@@ -32,9 +105,9 @@ exposed two ways: direct flat MCP aggregation versus Caplets progressive disclos
 | Approx. context surface   |      8,023 tokens | 2,100 tokens |   5,923 fewer |
 | Top-level name collisions | 3 duplicate names |            0 |    eliminated |
 
-The important part: Caplets does not remove access to the downstream tools. It hides
-them behind scoped discovery operations like `search_tools`, `get_tool`, and `call_tool`,
-so the agent sees less up front while still being able to reach the same capabilities.
+Caplets does not remove access to downstream tools. It places them behind scoped
+discovery operations, so the agent sees less up front while retaining access to the same
+capabilities when needed.
 
 A local OpenCode live benchmark also completed the full benchmark matrix successfully:
 
@@ -57,10 +130,10 @@ pnpm build
 CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode -- --model openai/gpt-5.5-fast
 ```
 
-## Inspiration
+## Design Model
 
-Caplets is a mashup of two ideas that work well separately but leave a gap together:
-agent skills and MCP servers.
+Caplets combines two ideas that work well separately but leave a gap together: agent
+skills and MCP servers.
 
 Agent skills are great at progressive disclosure. They show an agent a compact capability
 card first, then let it read deeper instructions only when that skill is relevant. MCP
@@ -72,7 +145,7 @@ Caplets borrows the skill-shaped discovery model and applies it to MCP. Each dow
 server becomes a skill-like capability card first; its actual MCP tools stay hidden until
 the agent chooses that server and asks to search, list, inspect, or call them.
 
-## What It Does
+## Capabilities
 
 - Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and curated CLI tool definitions from the user config file.
 - Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend.
@@ -88,21 +161,6 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 - Preserves downstream tool results instead of rewriting them into a custom format.
 - Redacts secrets from structured errors.
 - Supports static remote auth and OAuth token storage for remote servers.
-
-## Install
-
-Caplets requires Node.js 22 or newer.
-
-```sh
-pnpm add -g caplets
-```
-
-For local development from this repository:
-
-```sh
-pnpm install
-pnpm build
-```
 
 ## Configure
 
@@ -706,11 +764,11 @@ top-level MCP tool list without restarting Caplets. When an MCP-backed Caplet ch
 removed, Caplets closes only that affected downstream connection; unrelated Caplets and
 their downstream connections keep running.
 
-## Native Agent Integrations
+## Additional Native Integrations
 
-Caplets can also run as native agent extensions when the host supports native tools. Native
-integrations expose one prefixed tool per configured Caplet, such as `caplets_github`, while
-reusing the same Caplets config and backend runtime.
+OpenCode and Pi support true native tool registration. Those integrations expose one
+prefixed tool per configured Caplet, such as `caplets_github`, while reusing the same
+Caplets config and backend runtime.
 
 - [`@caplets/opencode`](packages/opencode/README.md): OpenCode plugin that injects prompt guidance through plugin hooks instead of editing `opencode.json`.
 - [`@caplets/pi`](packages/pi/README.md): Pi extension installable with `pi install npm:@caplets/pi`, with guidance provided through Pi tool prompt snippets and guidelines.
