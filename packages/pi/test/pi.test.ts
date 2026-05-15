@@ -25,12 +25,20 @@ type RegisteredTool = {
   }>;
 };
 
+type MockPiApi = {
+  registerTool: Mock<(definition: unknown) => void>;
+  getActiveTools: Mock<() => Array<{ name: string }>>;
+  setActiveTools: Mock<(names: string[]) => void>;
+};
+
 type MockService = NativeCapletsService & {
   listTools: Mock<() => NativeCapletTool[]>;
   execute: Mock<NativeCapletsService["execute"]>;
   reload: Mock<NativeCapletsService["reload"]>;
   onToolsChanged: Mock<NativeCapletsService["onToolsChanged"]>;
   close: Mock<NativeCapletsService["close"]>;
+  setTools(tools: NativeCapletTool[]): void;
+  emitToolsChanged(): void;
 };
 
 describe("@caplets/pi", () => {
@@ -186,14 +194,131 @@ describe("@caplets/pi", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalled();
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
+
+  it("registers newly added tools when the native service changes", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+
+    capletsPiExtension(api, { service });
+    service.setTools([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear Caplet",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_linear"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith([
+      "read",
+      "caplets_git_hub",
+      "caplets_linear",
+    ]);
+  });
+
+  it("deactivates stale Caplets while preserving non-Caplets active tools", () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear Caplet",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ]);
+    const { api } = mockPiApi(["read", "bash", "caplets_git_hub", "caplets_linear"]);
+
+    capletsPiExtension(api, { service });
+    service.setTools([
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear Caplet",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "caplets_linear"]);
+  });
+
+  it("works when Pi active-tool APIs are unavailable", () => {
+    const service = mockService([]);
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as RegisteredTool) },
+      { service },
+    );
+
+    service.setTools([
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear Caplet",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ]);
+    service.emitToolsChanged();
+
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_linear"]);
+  });
 });
 
+function mockPiApi(activeTools: string[] = []): { api: MockPiApi; registered: RegisteredTool[] } {
+  const registered: RegisteredTool[] = [];
+  const api: MockPiApi = {
+    registerTool: vi.fn((definition) => registered.push(definition as RegisteredTool)),
+    getActiveTools: vi.fn(() => activeTools.map((name) => ({ name }))),
+    setActiveTools: vi.fn(),
+  };
+  return { api, registered };
+}
+
 function mockService(tools: NativeCapletTool[]): MockService {
+  let currentTools = tools;
+  const listeners = new Set<(tools: NativeCapletTool[]) => void>();
   return {
-    listTools: vi.fn<() => NativeCapletTool[]>(() => tools),
+    listTools: vi.fn<() => NativeCapletTool[]>(() => currentTools),
     execute: vi.fn(async () => ({ ok: true })),
     reload: vi.fn(async () => true),
-    onToolsChanged: vi.fn(() => () => {}),
+    onToolsChanged: vi.fn((listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }),
     close: vi.fn(async () => {}),
+    setTools(nextTools) {
+      currentTools = nextTools;
+    },
+    emitToolsChanged() {
+      for (const listener of listeners) listener(currentTools);
+    },
   };
 }
