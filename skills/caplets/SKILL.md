@@ -1,18 +1,18 @@
 ---
 name: caplets
-description: Use Caplets for any task that needs external tools, integrations, APIs, docs, repositories, project systems, MCP servers, OpenAPI, GraphQL, HTTP endpoints, or curated CLI commands exposed through Caplets. Invoke this before searching for or calling downstream tools so you can discover capability domains with progressive disclosure instead of loading a flat tool wall.
-when_to_use: Trigger when the user asks to use an integration, inspect available tools, call a configured service, query docs, work with GitHub/Linear/Context7 or other installed Caplets, access an MCP/OpenAPI/GraphQL/HTTP backend, run curated repository commands, or when a task appears to need a tool that is not directly visible in the current tool list. Do not use for ordinary local code edits that only need built-in file, shell, or search tools.
+description: Use Caplets to discover and call configured external tools through progressive disclosure before using downstream MCP, API, or CLI capabilities.
+when_to_use: Trigger when the user asks to use an integration, inspect available tools, call a configured service, query external information, access an MCP/OpenAPI/GraphQL/HTTP backend, run curated repository commands, or use a capability that may not appear as a direct top-level tool. Do not use for ordinary local code edits that only need built-in file, shell, or search tools.
 ---
 
 # Caplets
 
-Use Caplets before searching for or calling downstream tools that may be exposed through configured Caplets backends, including MCP servers, OpenAPI services, GraphQL endpoints, HTTP tools, documentation services, project-management systems, source-control services, or curated CLI commands.
+Use Caplets before searching for or calling downstream tools exposed through configured Caplets backends, including MCP servers, OpenAPI services, GraphQL endpoints, HTTP endpoints, external information services, project systems, source-control systems, or curated CLI commands.
 
 Caplets exposes progressive discovery operations instead of flattening every downstream tool into the agent context. Start with the configured capability domain, inspect only what you need, then call the specific downstream tool.
 
 ## Trigger Heuristics
 
-- Use this skill when the user mentions Caplets, configured tools, MCP, OpenAPI, GraphQL, HTTP tools, docs, GitHub, Linear, Context7, project systems, source-control systems, or other installed integration domains.
+- Use this skill when the user mentions Caplets, configured tools, MCP, OpenAPI, GraphQL, HTTP tools, external information, project systems, source-control systems, or other installed integration domains.
 - Use this skill when the task needs a capability that may exist behind Caplets but is not directly available as a top-level tool.
 - Use this skill before broad tool discovery so you can search Caplets capability domains first.
 - Skip this skill for normal local code edits, file reads, shell commands, or repository searches that do not need an external or configured Caplets backend.
