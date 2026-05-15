@@ -284,16 +284,18 @@ describe("CapletsRuntime", () => {
       server: mockServer(),
       watchDebounceMs: 10,
     });
-    let reloads = 0;
-    (runtime as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
-      reloads += 1;
-      return true;
-    });
+    try {
+      let reloads = 0;
+      (runtime as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
+        reloads += 1;
+        return true;
+      });
 
-    writeFileSync(projectFile, "after");
-    await eventually(() => expect(reloads).toBeGreaterThan(0));
-
-    await runtime.close();
+      writeFileSync(projectFile, "after");
+      await eventually(() => expect(reloads).toBeGreaterThan(0));
+    } finally {
+      await runtime.close();
+    }
   });
 
   it("runs a follow-up reload when another reload is requested mid-flight", async () => {

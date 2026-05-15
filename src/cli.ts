@@ -6,7 +6,6 @@ import {
   addHttpCaplet,
   addMcpCaplet,
   addOpenApiCaplet,
-  assertValidCapletId,
 } from "./cli/add.js";
 import { loginAuth, logoutAuth, listAuth } from "./cli/auth.js";
 import { initConfig } from "./cli/init.js";
@@ -146,7 +145,6 @@ export function createProgram(io: CliIO = {}): Command {
           force?: boolean;
         },
       ) => {
-        assertValidCapletId(id);
         const result = addCliCaplet(id, {
           ...options,
           destinationRoot: options.global

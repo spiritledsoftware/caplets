@@ -668,7 +668,10 @@ caplets list --json
 
 Human output includes a `source` column. JSON output includes each Caplet's `source`, `path`, and
 `shadows` metadata. If a project source overrides a user source, human output prints a warning such
-as `Warning: project Caplet github shadows global Caplet at /path/to/github.md`.
+as `Warning: project Caplet GitHub shadows global Caplet at /path/to/github.md`.
+
+For safety, `caplets add` and `caplets install` reject symlinked output paths and symlinked parent
+directories instead of following them.
 
 ### Optional Server Settings
 

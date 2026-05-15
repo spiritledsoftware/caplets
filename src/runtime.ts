@@ -9,7 +9,6 @@ import {
   loadConfig,
   resolveCapletsRoot,
   resolveConfigPath,
-  resolveProjectCapletsRoot,
   resolveProjectConfigPath,
 } from "./config.js";
 import { CliToolsManager } from "./cli-tools.js";
@@ -387,10 +386,7 @@ function watchedPaths(paths: RuntimePaths): WatchedPath[] {
     { path: dirname(paths.configPath), reason: "config" },
     { path: dirname(paths.projectConfigPath), reason: "config" },
     { path: resolveCapletsRoot(paths.configPath), reason: "caplets" },
-    {
-      path: resolveProjectCapletsRoot(dirname(dirname(paths.projectConfigPath))),
-      reason: "caplets",
-    },
+    { path: dirname(paths.projectConfigPath), reason: "caplets" },
   ];
 
   return uniqueWatchedPaths(entries);

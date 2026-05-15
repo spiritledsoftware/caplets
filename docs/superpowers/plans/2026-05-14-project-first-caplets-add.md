@@ -93,7 +93,7 @@
 
 - [ ] Change `caplets list` to use `loadConfigWithSources()`.
 - [ ] Add a `source` column to human table output.
-- [ ] Append short warning lines for shadowed Caplets, for example: `Warning: project Caplet github shadows global Caplet at /path/to/github.md`.
+- [ ] Append short warning lines for shadowed Caplets, for example: `Warning: project Caplet GitHub shadows global Caplet at /path/to/github.md`.
 - [ ] Add `source`, `path`, and `shadows` fields to `caplets list --json` output.
 - [ ] Keep disabled filtering behavior unchanged.
 - [ ] Add tests for human source output.

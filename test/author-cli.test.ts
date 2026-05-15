@@ -254,6 +254,24 @@ describe("CLI Caplet authoring", () => {
       }),
     ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
     expect(() =>
+      addMcpCaplet("bad-stdio-token", {
+        command: "node",
+        tokenEnv: "MCP_TOKEN",
+        print: true,
+        destinationRoot,
+      }),
+    ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+    expect(() =>
+      addMcpCaplet("bad-remote-stdio-flags", {
+        url: "https://mcp.example.com/mcp",
+        arg: ["server.js"],
+        cwd: dir,
+        env: ["TOKEN=value"],
+        print: true,
+        destinationRoot,
+      }),
+    ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+    expect(() =>
       addHttpCaplet("bad-http", {
         baseUrl: "https://api.example.com",
         action: ["missing-parts"],

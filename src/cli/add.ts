@@ -1,4 +1,14 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse, relative, resolve } from "node:path";
 import { validateCapletFile } from "../caplet-files.js";
@@ -70,7 +80,7 @@ export function addCliCaplet(
 
   const path = resolveAddOutputPath(id, options);
 
-  writeCapletOutput(path, text);
+  writeCapletOutput(path, text, Boolean(options.force));
   return { path, text };
 }
 
@@ -85,6 +95,12 @@ export function addMcpCaplet(id: string, options: AddMcpOptions): { path?: strin
   }
   if (options.transport && !hasUrl) {
     throw new CapletsError("REQUEST_INVALID", "--transport requires --url");
+  }
+  if (options.tokenEnv && !hasUrl) {
+    throw new CapletsError("REQUEST_INVALID", "--token-env requires --url");
+  }
+  if (hasUrl && (options.arg?.length || options.cwd || options.env?.length)) {
+    throw new CapletsError("REQUEST_INVALID", "--arg, --cwd, and --env require --command");
   }
   if (options.transport && options.transport !== "http" && options.transport !== "sse") {
     throw new CapletsError("REQUEST_INVALID", "--transport must be http or sse");
@@ -211,22 +227,24 @@ function writeGeneratedCaplet(
   if (options.print) {
     return { text };
   }
-  writeCapletOutput(path, text);
+  writeCapletOutput(path, text, Boolean(options.force));
   return { path, text };
 }
 
-function writeCapletOutput(path: string, text: string): void {
+function writeCapletOutput(path: string, text: string, force: boolean): void {
   try {
     rejectUnsafeDestinationParents(path);
     mkdirSync(dirname(path), { recursive: true });
     rejectUnsafeDestinationParents(path);
-    rejectSymlinkDestination(path);
-    writeFileSync(path, text);
+    if (force) {
+      removeExistingRegularFile(path);
+    }
+    writeFileNoFollow(path, text);
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;
     }
-    if (isFsError(error, "EEXIST") || isFsError(error, "EISDIR")) {
+    if (isFsError(error, "EEXIST") || isFsError(error, "EISDIR") || isFsError(error, "ELOOP")) {
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Output path ${path} already exists`,
@@ -238,6 +256,40 @@ function writeCapletOutput(path: string, text: string): void {
       `Could not write Caplet file at ${path}`,
       toSafeError(error),
     );
+  }
+}
+
+function removeExistingRegularFile(path: string): void {
+  const stats = lstatIfExists(path);
+  if (!stats) {
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Caplet file at ${path} is a symlink; remove it before writing`,
+    );
+  }
+  if (!stats.isFile()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Caplet file at ${path} exists but is not a regular file; choose --output`,
+    );
+  }
+  rmSync(path);
+}
+
+function writeFileNoFollow(path: string, text: string): void {
+  const noFollowFlag = constants.O_NOFOLLOW ?? 0;
+  const fd = openSync(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollowFlag,
+    0o600,
+  );
+  try {
+    writeSync(fd, text);
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -327,15 +379,6 @@ function localPathRelativeToOutput(path: string, outputDir: string): string {
     return absolutePath;
   }
   return rendered === "" ? "." : rendered;
-}
-
-function rejectSymlinkDestination(path: string): void {
-  if (lstatIfExists(path)?.isSymbolicLink()) {
-    throw new CapletsError(
-      "CONFIG_EXISTS",
-      `Caplet file at ${path} is a symlink; remove it before writing`,
-    );
-  }
 }
 
 function rejectUnsafeDestinationParents(path: string): void {

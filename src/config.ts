@@ -1289,7 +1289,7 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
 }
 
 function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | undefined>): {
-  input: ConfigInput | undefined;
+  input: ConfigInput;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
 } {
