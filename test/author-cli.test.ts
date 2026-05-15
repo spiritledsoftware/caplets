@@ -27,6 +27,7 @@ describe("CLI Caplet authoring", () => {
     expect(result.text).toContain("cliTools:");
     expect(result.text).toContain("git_status:");
     expect(result.text).toContain("package_test:");
+    expect(result.text).toContain("readOnlyHint: false");
     const path = join(repo, "CAPLET.md");
     writeFileSync(path, result.text);
     expect(() => validateCapletFile(path)).not.toThrow();
@@ -44,11 +45,11 @@ describe("CLI Caplet authoring", () => {
   });
 
   it("supports git and gh single command templates", () => {
-    const repo = tempRepo({});
+    const repo = tempRepo({ scripts: { test: "vitest run" } });
 
-    expect(authorCliCaplet("git-tools", { repo, command: "git", include: "" }).text).toContain(
-      "git_current_branch:",
-    );
+    const git = authorCliCaplet("git-tools", { repo, command: "git" }).text;
+    expect(git).toContain("git_current_branch:");
+    expect(git).not.toContain("package_test:");
     expect(authorCliCaplet("gh-tools", { repo, command: "gh", include: "" }).text).toContain(
       "gh_pr_status:",
     );

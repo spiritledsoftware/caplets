@@ -28,8 +28,8 @@ exposed two ways: direct flat MCP aggregation versus Caplets progressive disclos
 | Initial Agent Surface     |   Direct Flat MCP |      Caplets |     Reduction |
 | ------------------------- | ----------------: | -----------: | ------------: |
 | Visible tools             |               106 |            3 |   97.2% fewer |
-| Serialized MCP payload    |      32,090 bytes |  8,358 bytes | 74.0% smaller |
-| Approx. context surface   |      8,023 tokens | 2,090 tokens |   5,933 fewer |
+| Serialized MCP payload    |      32,090 bytes |  8,400 bytes | 73.8% smaller |
+| Approx. context surface   |      8,023 tokens | 2,100 tokens |   5,923 fewer |
 | Top-level name collisions | 3 duplicate names |            0 |    eliminated |
 
 The important part: Caplets does not remove access to the downstream tools. It hides

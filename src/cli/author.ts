@@ -32,7 +32,12 @@ export function authorCliCaplet(
   text: string;
 } {
   const repo = resolve(options.repo ?? process.cwd());
-  const include = parseInclude(options.include);
+  const include =
+    options.include !== undefined
+      ? parseInclude(options.include)
+      : options.command
+        ? new Set<string>()
+        : new Set(["git", "gh", "package"]);
   const actions: Record<string, CliAction> = {};
 
   if (include.has("git") || options.command === "git") {
@@ -74,7 +79,7 @@ export function authorCliCaplet(
 
 function parseInclude(value: string | undefined): Set<string> {
   if (!value) {
-    return new Set(["git", "gh", "package"]);
+    return new Set();
   }
   return new Set(
     value
@@ -158,7 +163,7 @@ function packageActions(
       command: manager,
       args: ["run", script],
       cwd: repo,
-      annotations: { readOnlyHint: script !== "build" },
+      annotations: { readOnlyHint: false },
       ...(script === "test" || script === "verify" ? { timeoutMs: 120_000 } : {}),
     } as CliAction;
   }

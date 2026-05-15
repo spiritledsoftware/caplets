@@ -30,8 +30,6 @@ cliTools:
         - run
         - test
       timeoutMs: 120000
-      annotations:
-        readOnlyHint: true
 ---
 
 # Repository CLI

@@ -29,14 +29,19 @@ export class CliToolsManager {
     const startedAt = Date.now();
     try {
       for (const action of actionsFor(config)) {
-        const cwd = interpolateString(action.cwd ?? config.cwd, {}, "cwd");
-        if (cwd && !existsSync(cwd)) {
-          throw new CapletsError(
-            "CONFIG_INVALID",
-            `CLI cwd does not exist for ${config.server}/${action.name}`,
-          );
+        const cwdTemplate = action.cwd ?? config.cwd;
+        if (cwdTemplate && !cwdTemplate.includes("$input")) {
+          const cwd = interpolateRequiredString(cwdTemplate, {}, "cwd");
+          if (!existsSync(cwd)) {
+            throw new CapletsError(
+              "CONFIG_INVALID",
+              `CLI cwd does not exist for ${config.server}/${action.name}`,
+            );
+          }
         }
-        resolveCommandPath(action.command);
+        if (!action.command.includes("$input")) {
+          resolveCommandPath(action.command);
+        }
       }
       this.registry.setStatus(config.server, "available");
       return {
@@ -79,7 +84,7 @@ export class CliToolsManager {
 
     try {
       const result = await spawnCommand(execution, controller.signal, () => Date.now() - startedAt);
-      const structured = parseStructuredResult(action, result);
+      const structured = parseStructuredResult(action, result, result.exitCode !== 0);
       return {
         content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
         structuredContent: structured,
@@ -274,7 +279,7 @@ function validateInput(action: CliToolAction, input: Record<string, unknown>): v
   }
   const required = Array.isArray(schema.required) ? schema.required : [];
   for (const key of required) {
-    if (typeof key === "string" && input[key] === undefined) {
+    if (typeof key === "string" && (input[key] === undefined || input[key] === null)) {
       throw new CapletsError("REQUEST_INVALID", `CLI tool ${action.name} requires input ${key}`);
     }
   }
@@ -353,6 +358,7 @@ function spawnCommand(
 function parseStructuredResult(
   action: CliToolAction,
   result: SpawnResult,
+  tolerateInvalidJson = false,
 ): Record<string, unknown> {
   const structured: Record<string, unknown> = {
     exitCode: result.exitCode,
@@ -365,6 +371,10 @@ function parseStructuredResult(
     try {
       structured.json = JSON.parse(result.stdout);
     } catch (error) {
+      if (tolerateInvalidJson) {
+        structured.jsonParseError = toSafeError(error);
+        return structured;
+      }
       throw new CapletsError(
         "DOWNSTREAM_PROTOCOL_ERROR",
         `CLI tool ${action.name} stdout was not valid JSON`,
@@ -376,7 +386,7 @@ function parseStructuredResult(
 }
 
 function resolveCommandPath(command: string): string {
-  if (isAbsolute(command) || command.includes("/")) {
+  if (isAbsolute(command) || /[\\/]/.test(command)) {
     assertExecutable(command);
     return command;
   }
@@ -416,10 +426,7 @@ function isExecutable(path: string): boolean {
 }
 
 function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "AbortError" || error.message.toLowerCase().includes("abort"))
-  );
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

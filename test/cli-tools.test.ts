@@ -26,10 +26,10 @@ describe("CliToolsManager", () => {
     expect(await manager.checkTools(caplet)).toMatchObject({
       server: "local",
       status: "available",
-      toolCount: 2,
+      toolCount: 3,
     });
     const tools = await manager.listTools(caplet);
-    expect(tools.map((tool) => tool.name)).toEqual(["echo_json", "fail"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["echo_json", "fail", "fail_json"]);
     expect(manager.search(caplet, tools, "echo", 5)).toMatchObject([{ tool: "echo_json" }]);
     expect(await manager.getTool(caplet, "echo_json")).toMatchObject({
       name: "echo_json",
@@ -38,16 +38,37 @@ describe("CliToolsManager", () => {
     });
   });
 
+  it("does not fail checks for runtime-templated commands", async () => {
+    const { config, caplet } = cliConfig();
+    caplet.actions.templated = {
+      command: "$input.command",
+      cwd: "$input.cwd",
+    };
+    const manager = new CliToolsManager(new ServerRegistry(config));
+
+    expect(await manager.checkTools(caplet)).toMatchObject({
+      status: "available",
+      toolCount: 4,
+    });
+  });
+
   it("spawns commands without a shell and returns parsed JSON output", async () => {
     const { config, caplet } = cliConfig();
     const manager = new CliToolsManager(new ServerRegistry(config));
 
     const result = await manager.callTool(caplet, "echo_json", { message: "hello" });
+    const literal = "$(echo owned) && rm -rf /";
+    const literalResult = await manager.callTool(caplet, "echo_json", { message: literal });
 
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toMatchObject({
       exitCode: 0,
       json: { message: "hello" },
+    });
+    expect(literalResult.isError).toBe(false);
+    expect(literalResult.structuredContent).toMatchObject({
+      exitCode: 0,
+      json: { message: literal },
     });
   });
 
@@ -65,6 +86,21 @@ describe("CliToolsManager", () => {
     });
   });
 
+  it("returns non-zero invalid JSON output as a tool error", async () => {
+    const { config, caplet } = cliConfig();
+    const manager = new CliToolsManager(new ServerRegistry(config));
+
+    const result = await manager.callTool(caplet, "fail_json", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      exitCode: 7,
+      stdout: "out\n",
+      stderr: "err\n",
+      jsonParseError: expect.objectContaining({ message: expect.any(String) }),
+    });
+  });
+
   it("validates basic input schemas before spawning", async () => {
     const { config, caplet } = cliConfig();
     const manager = new CliToolsManager(new ServerRegistry(config));
@@ -73,6 +109,9 @@ describe("CliToolsManager", () => {
       code: "REQUEST_INVALID",
     });
     await expect(manager.callTool(caplet, "echo_json", { message: 42 })).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+    });
+    await expect(manager.callTool(caplet, "echo_json", { message: null })).rejects.toMatchObject({
       code: "REQUEST_INVALID",
     });
   });
@@ -214,6 +253,12 @@ describe("CliToolsManager", () => {
               description: "Return a non-zero exit.",
               command: process.execPath,
               args: [script, "fail"],
+            },
+            fail_json: {
+              description: "Return a non-zero exit with invalid JSON.",
+              command: process.execPath,
+              args: [script, "fail"],
+              output: { type: "json" },
             },
           },
         },
