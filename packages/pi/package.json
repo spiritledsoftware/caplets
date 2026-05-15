@@ -1,6 +1,6 @@
 {
   "name": "@caplets/pi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native Pi extension for Caplets.",
   "files": [
     "dist",

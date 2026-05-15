@@ -1,5 +1,11 @@
 # @caplets/opencode
 
+## 0.1.1
+
+### Patch Changes
+
+- 4988e28: Fix npm publishing for public scoped integration packages.
+
 ## 0.1.0
 
 ### Minor Changes
