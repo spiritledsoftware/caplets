@@ -26,7 +26,13 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
           args: capletsOpenCodeArgs(),
           async execute(args) {
             const result = await service.execute(caplet.caplet, args);
-            return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+            if (typeof result === "string") return result;
+            try {
+              return JSON.stringify(result, null, 2) ?? "null";
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              return `[Serialization error: ${message}]`;
+            }
           },
         }),
       ]),

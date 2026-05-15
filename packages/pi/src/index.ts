@@ -42,7 +42,7 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
 
 function serializeResult(result: unknown): { text: string; serializationError?: string } {
   try {
-    return { text: JSON.stringify(result, null, 2) };
+    return { text: JSON.stringify(result, null, 2) ?? "null" };
   } catch (error) {
     const serializationError = error instanceof Error ? error.message : String(error);
     return { text: `[Serialization error: ${serializationError}]`, serializationError };

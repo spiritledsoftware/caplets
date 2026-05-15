@@ -36,10 +36,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_dash_hub",
+        toolName: "caplets_git_hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_dash_hub for GitHub."],
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
       },
     ]);
     const registered: RegisteredTool[] = [];
@@ -51,8 +51,8 @@ describe("@caplets/pi", () => {
 
     expect(registered).toHaveLength(1);
     const tool = registered[0];
-    expect(tool?.name).toBe("caplets_git_dash_hub");
-    expect(tool?.promptGuidelines[0]).toContain("caplets_git_dash_hub");
+    expect(tool?.name).toBe("caplets_git_hub");
+    expect(tool?.promptGuidelines[0]).toContain("caplets_git_hub");
 
     const result = await tool?.execute("call-1", { operation: "get_caplet" });
     expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
@@ -63,10 +63,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_dash_hub",
+        toolName: "caplets_git_hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_dash_hub for GitHub."],
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
       },
       {
         caplet: "linear",
@@ -83,9 +83,9 @@ describe("@caplets/pi", () => {
       { service },
     );
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_dash_hub", "caplets_linear"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_linear"]);
     expect(registered.map((tool) => tool.promptGuidelines[0])).toEqual([
-      "Use caplets_git_dash_hub for GitHub.",
+      "Use caplets_git_hub for GitHub.",
       "Use caplets_linear for Linear.",
     ]);
   });
@@ -108,10 +108,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_dash_hub",
+        toolName: "caplets_git_hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_dash_hub for GitHub."],
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
       },
     ]);
     const error = new Error("execution failed");
@@ -133,10 +133,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_dash_hub",
+        toolName: "caplets_git_hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_dash_hub for GitHub."],
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
       },
     ]);
     service.execute.mockResolvedValueOnce({ count: 1n });
@@ -150,6 +150,29 @@ describe("@caplets/pi", () => {
     const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
     expect(result?.content[0]?.text).toContain("Serialization error");
     expect(result?.details.serializationError).toContain("BigInt");
+  });
+
+  it("returns stable text when JSON.stringify returns undefined", async () => {
+    const service = mockService([
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce(undefined);
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as RegisteredTool) },
+      { service },
+    );
+
+    const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
+    expect(result?.content[0]?.text).toBe("null");
+    expect(result?.details).toEqual({ result: undefined });
   });
 
   it("registers process cleanup for owned services", () => {

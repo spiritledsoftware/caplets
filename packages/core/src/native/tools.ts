@@ -2,7 +2,7 @@ import type { CapletConfig } from "../config.js";
 import { capabilityDescription } from "../registry.js";
 
 export function nativeCapletToolName(capletId: string): string {
-  return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_dash_")}`;
+  return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_")}`;
 }
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {

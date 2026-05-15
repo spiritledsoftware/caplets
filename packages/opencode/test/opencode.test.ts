@@ -22,10 +22,10 @@ describe("@caplets/opencode", () => {
       listTools: () => [
         {
           caplet: "git-hub",
-          toolName: "caplets_git_dash_hub",
+          toolName: "caplets_git_hub",
           title: "GitHub",
           description: "GitHub\n\nUse this Caplet.",
-          promptGuidance: ["Use caplets_git_dash_hub for GitHub."],
+          promptGuidance: ["Use caplets_git_hub for GitHub."],
         },
       ],
       execute: vi.fn(async () => ({ ok: true })),
@@ -34,8 +34,8 @@ describe("@caplets/opencode", () => {
 
     const hooks = await createCapletsOpenCodeHooks(service);
 
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_dash_hub"]);
-    const capletsTool = hooks.tool!.caplets_git_dash_hub as {
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub"]);
+    const capletsTool = hooks.tool!.caplets_git_hub as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
     const result = await capletsTool.execute({ operation: "get_caplet" }, {} as never);
@@ -44,6 +44,59 @@ describe("@caplets/opencode", () => {
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
-    expect(output.system.join("\n")).toContain("caplets_git_dash_hub");
+    expect(output.system.join("\n")).toContain("caplets_git_hub");
+  });
+
+  it("returns stable text when tool result serialization fails", async () => {
+    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const service = {
+      listTools: () => [
+        {
+          caplet: "git-hub",
+          toolName: "caplets_git_hub",
+          title: "GitHub",
+          description: "GitHub\n\nUse this Caplet.",
+          promptGuidance: ["Use caplets_git_hub for GitHub."],
+        },
+      ],
+      execute: vi.fn(async () => ({ count: 1n })),
+      close: vi.fn(async () => {}),
+    };
+
+    const hooks = await createCapletsOpenCodeHooks(service);
+    const capletsTool = hooks.tool!.caplets_git_hub as {
+      execute(args: unknown, context: unknown): Promise<string>;
+    };
+
+    const result = await capletsTool.execute({ operation: "get_caplet" }, {} as never);
+
+    expect(result).toContain("Serialization error");
+    expect(result).toContain("BigInt");
+  });
+
+  it("returns stable text when JSON.stringify returns undefined", async () => {
+    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    const service = {
+      listTools: () => [
+        {
+          caplet: "git-hub",
+          toolName: "caplets_git_hub",
+          title: "GitHub",
+          description: "GitHub\n\nUse this Caplet.",
+          promptGuidance: ["Use caplets_git_hub for GitHub."],
+        },
+      ],
+      execute: vi.fn(async () => undefined),
+      close: vi.fn(async () => {}),
+    };
+
+    const hooks = await createCapletsOpenCodeHooks(service);
+    const capletsTool = hooks.tool!.caplets_git_hub as {
+      execute(args: unknown, context: unknown): Promise<string>;
+    };
+
+    await expect(capletsTool.execute({ operation: "get_caplet" }, {} as never)).resolves.toBe(
+      "null",
+    );
   });
 });

@@ -40,13 +40,11 @@ describe("native Caplets service", () => {
       expect(service.listTools()).toEqual([
         expect.objectContaining({
           caplet: "git-hub",
-          toolName: "caplets_git_dash_hub",
+          toolName: "caplets_git_hub",
           title: "GitHub",
         }),
       ]);
-      expect(service.listTools()[0]?.description).toContain(
-        "Native tool name: caplets_git_dash_hub",
-      );
+      expect(service.listTools()[0]?.description).toContain("Native tool name: caplets_git_hub");
     } finally {
       await service.close();
     }
@@ -99,9 +97,9 @@ describe("native Caplets service", () => {
   });
 
   it("builds shared native system guidance", () => {
-    expect(nativeCapletToolName("linear-api_v2")).toBe("caplets_linear_dash_api__v2");
-    expect(nativeCapletsSystemGuidance(["caplets_linear_dash_api__v2"])).toContain(
-      "caplets_linear_dash_api__v2",
+    expect(nativeCapletToolName("linear-api_v2")).toBe("caplets_linear_api__v2");
+    expect(nativeCapletsSystemGuidance(["caplets_linear_api__v2"])).toContain(
+      "caplets_linear_api__v2",
     );
   });
 

@@ -57,7 +57,7 @@ describe("CapletsRuntime", () => {
 
     try {
       expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
-      expect(nativeCapletToolName("git-hub")).toBe("caplets_git_dash_hub");
+      expect(nativeCapletToolName("git-hub")).toBe("caplets_git_hub");
     } finally {
       await runtime.close();
     }

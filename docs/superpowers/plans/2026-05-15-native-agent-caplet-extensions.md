@@ -26,12 +26,12 @@
 
 ## Current Code Context
 
-- `src/tools.ts` already owns the Caplets operation contract: `get_caplet`, `check_backend`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
-- `src/tools.ts` already delegates execution to `DownstreamManager`, `OpenApiManager`, `GraphQLManager`, `HttpActionManager`, and `CliToolsManager`.
-- `src/runtime.ts` couples that operation handling to MCP registration through `McpServer.registerTool`.
-- `src/registry.ts` already exposes safe Caplet summaries/details and `capabilityDescription`.
-- `src/generated-tool-input-schema.mjs` already defines the operation schema and user-facing field descriptions.
-- `benchmarks/lib/opencode-runner.mjs` and `benchmarks/lib/pi-runner.mjs` only exercise MCP modes today.
+- `packages/core/src/tools.ts` already owns the Caplets operation contract: `get_caplet`, `check_backend`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+- `packages/core/src/tools.ts` already delegates execution to `DownstreamManager`, `OpenApiManager`, `GraphQLManager`, `HttpActionManager`, and `CliToolsManager`.
+- `packages/core/src/runtime.ts` couples that operation handling to MCP registration through `McpServer.registerTool`.
+- `packages/core/src/registry.ts` already exposes safe Caplet summaries/details and `capabilityDescription`.
+- `packages/core/src/generated-tool-input-schema.mjs` already defines the operation schema and user-facing field descriptions.
+- `packages/benchmarks/lib/opencode-runner.mjs` and `packages/benchmarks/lib/pi-runner.mjs` only exercise MCP modes today.
 
 The smallest correct change is to extract the non-MCP execution path into a native service and make MCP runtime plus native adapters consume the same operation handler.
 
@@ -39,23 +39,23 @@ The smallest correct change is to extract the non-MCP execution path into a nati
 
 ## Target File Structure
 
-### Root Package
+### Core Package
 
-- Modify: `package.json`
+- Modify: `packages/core/package.json`
   - Add workspace-aware scripts.
   - Add package exports for `caplets/native`.
   - Keep the existing `caplets` CLI bin unchanged.
 - Create: `pnpm-workspace.yaml`
   - Include `.` and `packages/*`.
-- Modify: `rolldown.config.ts`
-  - Build both `src/index.ts` and `src/native.ts` as ESM outputs.
-- Create: `src/native.ts`
+- Modify: `packages/core/rolldown.config.ts`
+  - Build both `packages/core/src/index.ts` and `packages/core/src/native.ts` as ESM outputs.
+- Create: `packages/core/src/native.ts`
   - Public native service export surface for adapter packages.
-- Create: `src/native/service.ts`
+- Create: `packages/core/src/native/service.ts`
   - Shared in-process Caplets service that owns registry/managers and calls `handleServerTool`.
-- Create: `src/native/tools.ts`
+- Create: `packages/core/src/native/tools.ts`
   - Native tool naming, prompt text, schema shape, and result formatting helpers.
-- Test: `test/native.test.ts`
+- Test: `packages/core/test/native.test.ts`
   - Core native service behavior independent from OpenCode/Pi.
 
 ### OpenCode Adapter Package
@@ -90,11 +90,11 @@ The smallest correct change is to extract the non-MCP execution path into a nati
   - Add native adapter section after MCP install/config docs.
 - Modify: `docs/benchmarks/coding-agent.md`
   - Document that existing benchmark is MCP-mode only until native benchmark modes are added.
-- Modify: `benchmarks/lib/opencode-runner.mjs`
+- Modify: `packages/benchmarks/lib/opencode-runner.mjs`
   - Add `native-caplets` mode in a later task after adapter package exists.
-- Modify: `benchmarks/lib/pi-runner.mjs`
+- Modify: `packages/benchmarks/lib/pi-runner.mjs`
   - Add `native-caplets` mode in a later task after adapter package exists.
-- Modify: `test/benchmark.test.ts`
+- Modify: `packages/benchmarks/test/benchmark.test.ts`
   - Assert native benchmark config generation shape.
 
 ---
@@ -244,7 +244,7 @@ Expected export shape:
 }
 ```
 
-- [ ] Update `rolldown.config.ts` to emit both CLI and native entrypoints.
+- [ ] Update `packages/core/rolldown.config.ts` to emit both CLI and native entrypoints.
 
 Expected config shape:
 
@@ -275,12 +275,12 @@ Expected: build succeeds and emits `dist/index.js` plus `dist/native.js`.
 
 **Files:**
 
-- Create: `src/native.ts`
-- Create: `src/native/service.ts`
-- Create: `src/native/tools.ts`
-- Test: `test/native.test.ts`
+- Create: `packages/core/src/native.ts`
+- Create: `packages/core/src/native/service.ts`
+- Create: `packages/core/src/native/tools.ts`
+- Test: `packages/core/test/native.test.ts`
 
-- [ ] Write failing tests for native tool listing and prefixed naming in `test/native.test.ts`.
+- [ ] Write failing tests for native tool listing and prefixed naming in `packages/core/test/native.test.ts`.
 
 Test coverage:
 
@@ -299,7 +299,7 @@ Test coverage:
 - Invalid operation returns the same structured error result shape as MCP runtime.
 - `close()` closes downstream processes without throwing when nothing has started.
 
-- [ ] Implement `src/native/tools.ts`.
+- [ ] Implement `packages/core/src/native/tools.ts`.
 
 Implementation responsibilities:
 
@@ -308,7 +308,7 @@ Implementation responsibilities:
 - `nativeCapletPromptGuidance(toolName, caplet)`.
 - `nativeCapletToolDescription(caplet)` using existing `capabilityDescription(caplet)`.
 
-- [ ] Implement `src/native/service.ts`.
+- [ ] Implement `packages/core/src/native/service.ts`.
 
 Implementation responsibilities:
 
@@ -318,7 +318,7 @@ Implementation responsibilities:
 - Catch errors and return `errorResult(error)` for adapter consistency.
 - Keep service construction free of MCP SDK server registration.
 
-- [ ] Implement `src/native.ts` as the public export barrel.
+- [ ] Implement `packages/core/src/native.ts` as the public export barrel.
 
 Expected exports:
 
@@ -334,7 +334,7 @@ export { generatedToolInputSchema } from "./tools.js";
 export { generatedToolInputJsonSchema } from "./generated-tool-input-schema.mjs";
 ```
 
-- [ ] Run `pnpm test -- test/native.test.ts`.
+- [ ] Run `pnpm --filter @caplets/core test -- test/native.test.ts`.
 
 Expected: native service tests pass.
 
@@ -388,16 +388,16 @@ During implementation, replace `^0.0.0` with the current compatible `@opencode-a
 
 - [ ] Create package build config mirroring the root ESM Node build without a shebang.
 
-- [ ] Implement `src/schema.ts`.
+- [ ] Implement `packages/opencode/src/schema.ts`.
 
 Implementation responsibilities:
 
 - Convert the existing generated operation schema into OpenCode `tool.schema` fields.
-- Keep `operation` enum values identical to `operations` in `src/generated-tool-input-schema.mjs`.
+- Keep `operation` enum values identical to `operations` in `packages/core/src/generated-tool-input-schema.mjs`.
 - Keep `arguments` as a JSON object for `call_tool` only.
 - Keep optional `fields` as string array.
 
-- [ ] Implement `src/index.ts` OpenCode plugin.
+- [ ] Implement `packages/opencode/src/index.ts` OpenCode plugin.
 
 Behavior:
 
@@ -482,7 +482,7 @@ Expected shape:
 
 During implementation, replace placeholder versions with the current compatible versions resolved through package installation.
 
-- [ ] Implement `src/schema.ts`.
+- [ ] Implement `packages/pi/src/schema.ts`.
 
 Implementation responsibilities:
 
@@ -491,7 +491,7 @@ Implementation responsibilities:
 - Keep optional fields aligned with `generatedToolInputDescriptions`.
 - Preserve strict object behavior where Pi supports it.
 
-- [ ] Implement `src/index.ts` Pi extension.
+- [ ] Implement `packages/pi/src/index.ts` Pi extension.
 
 Behavior:
 
@@ -539,9 +539,9 @@ Expected: Pi adapter tests pass.
 
 **Files:**
 
-- Modify: `test/tools.test.ts` if schema expectations need native export coverage.
-- Modify: `test/registry.test.ts` only if prompt helper behavior moves.
-- Modify: `test/runtime.test.ts` only if refactoring changes MCP runtime construction.
+- Modify: `packages/core/test/tools.test.ts` if schema expectations need native export coverage.
+- Modify: `packages/core/test/registry.test.ts` only if prompt helper behavior moves.
+- Modify: `packages/core/test/runtime.test.ts` only if refactoring changes MCP runtime construction.
 
 - [ ] Add tests proving existing MCP runtime behavior is unchanged.
 
@@ -563,7 +563,7 @@ Expected:
 Commands:
 
 ```sh
-pnpm test -- test/native.test.ts test/runtime.test.ts test/tools.test.ts
+pnpm --filter @caplets/core test -- test/native.test.ts test/runtime.test.ts test/tools.test.ts
 pnpm test -- packages/opencode/test/opencode.test.ts packages/pi/test/pi.test.ts
 ```
 
@@ -575,11 +575,11 @@ Expected: all focused tests pass.
 
 **Files:**
 
-- Modify: `benchmarks/lib/opencode-runner.mjs`
-- Modify: `benchmarks/lib/pi-runner.mjs`
-- Modify: `benchmarks/live-config/opencode/README.md`
-- Modify: `benchmarks/live-config/pi/README.md`
-- Modify: `test/benchmark.test.ts`
+- Modify: `packages/benchmarks/lib/opencode-runner.mjs`
+- Modify: `packages/benchmarks/lib/pi-runner.mjs`
+- Modify: `packages/benchmarks/live-config/opencode/README.md`
+- Modify: `packages/benchmarks/live-config/pi/README.md`
+- Modify: `packages/benchmarks/test/benchmark.test.ts`
 
 - [ ] Add OpenCode `native-caplets` mode.
 
@@ -622,7 +622,7 @@ Docs must state:
 Command:
 
 ```sh
-pnpm test -- test/benchmark.test.ts
+pnpm --filter @caplets/benchmarks test -- test/benchmark.test.ts
 ```
 
 Expected: benchmark config tests pass.
