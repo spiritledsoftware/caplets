@@ -106,7 +106,7 @@ describe("@caplets/opencode", () => {
     );
   });
 
-  it("refreshes system guidance from the current native tool list", async () => {
+  it("refreshes system guidance for remaining registered native tools", async () => {
     const { createCapletsOpenCodeHooks } = await import("../src/index.js");
     let tools = [
       {
@@ -115,6 +115,13 @@ describe("@caplets/opencode", () => {
         title: "GitHub",
         description: "GitHub\n\nUse this Caplet.",
         promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear\n\nUse this Caplet.",
+        promptGuidance: ["Use caplets_linear for Linear."],
       },
     ];
     const service = {
@@ -141,5 +148,43 @@ describe("@caplets/opencode", () => {
 
     expect(output.system.join("\n")).toContain("caplets_linear");
     expect(output.system.join("\n")).not.toContain("caplets_git_hub");
+  });
+
+  it("does not advertise newly added unregistered native tools", async () => {
+    const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+    let tools = [
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub\n\nUse this Caplet.",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ];
+    const service = {
+      listTools: () => tools,
+      execute: vi.fn(async () => ({ ok: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    };
+
+    const hooks = await createCapletsOpenCodeHooks(service);
+    tools = [
+      ...tools,
+      {
+        caplet: "linear",
+        toolName: "caplets_linear",
+        title: "Linear",
+        description: "Linear\n\nUse this Caplet.",
+        promptGuidance: ["Use caplets_linear for Linear."],
+      },
+    ];
+
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]?.({} as never, output);
+
+    expect(output.system.join("\n")).toContain("caplets_git_hub");
+    expect(output.system.join("\n")).not.toContain("caplets_linear");
   });
 });

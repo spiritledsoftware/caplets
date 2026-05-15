@@ -15,6 +15,7 @@ const plugin: Plugin = async (_ctx: PluginInput) => {
 
 export async function createCapletsOpenCodeHooks(service: NativeCapletsService): Promise<Hooks> {
   const capletTools = service.listTools();
+  const registeredToolNames = new Set(capletTools.map((caplet) => caplet.toolName));
 
   return {
     tool: Object.fromEntries(
@@ -38,7 +39,12 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
     ),
     "experimental.chat.system.transform": async (_input, output) => {
       output.system.push(
-        nativeCapletsSystemGuidance(service.listTools().map((caplet) => caplet.toolName)),
+        nativeCapletsSystemGuidance(
+          service
+            .listTools()
+            .map((caplet) => caplet.toolName)
+            .filter((toolName) => registeredToolNames.has(toolName)),
+        ),
       );
     },
   };
