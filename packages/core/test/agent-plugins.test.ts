@@ -32,7 +32,8 @@ describe("root agent plugin artifacts", () => {
   });
 
   it("keeps plugin manifest versions aligned with the CLI package", async () => {
-    const [cliPackage, codexManifest, claudeManifest] = await Promise.all([
+    const [rootPackage, cliPackage, codexManifest, claudeManifest] = await Promise.all([
+      readJson<{ scripts: Record<string, string> }>(path.join(repoRoot, "package.json")),
       readJson<{ version: string }>(path.join(repoRoot, "packages/cli/package.json")),
       readJson<{ version: string }>(path.join(repoRoot, ".codex-plugin/plugin.json")),
       readJson<{ version: string }>(path.join(repoRoot, ".claude-plugin/plugin.json")),
@@ -40,6 +41,7 @@ describe("root agent plugin artifacts", () => {
 
     expect(codexManifest.version).toBe(cliPackage.version);
     expect(claudeManifest.version).toBe(cliPackage.version);
+    expect(rootPackage.scripts["version-packages"]).toContain("scripts/sync-plugin-versions.mjs");
   });
 
   it("declares a Claude Code marketplace entry using Claude's schema", async () => {
@@ -111,6 +113,10 @@ describe("root agent plugin artifacts", () => {
 
     expect(skill).toContain("name: caplets");
     expect(skill).toContain("call_tool");
+    expect(JSON.stringify(codexHooks)).toContain("node -e");
+    expect(JSON.stringify(claudeHooks)).toContain("node -e");
+    expect(JSON.stringify(codexHooks)).not.toContain("printf");
+    expect(JSON.stringify(claudeHooks)).not.toContain("printf");
     expect(JSON.stringify(codexHooks)).toContain("statusMessage");
     expect(JSON.stringify(claudeHooks)).not.toContain("statusMessage");
   });
@@ -144,6 +150,7 @@ describe("root agent plugin artifacts", () => {
       "claude.mcp.json",
       "codex.hooks.json",
       "claude.hooks.json",
+      "scripts/sync-plugin-versions.mjs",
       "skills/caplets/SKILL.md",
     ]) {
       expect(existsSync(path.join(repoRoot, requiredPath)), requiredPath).toBe(true);

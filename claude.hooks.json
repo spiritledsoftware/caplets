@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "printf '%s\\n' 'Caplets guidance: use the bundled caplets skill for progressive discovery. Start with get_caplet or search_tools, inspect schemas with get_tool, and pass downstream inputs inside call_tool.arguments.'"
+            "command": "node -e \"process.stdout.write('Caplets guidance: use the bundled caplets skill for progressive discovery. Start with get_caplet or search_tools, inspect schemas with get_tool, and pass downstream inputs inside call_tool.arguments.\\n')\""
           }
         ]
       }

@@ -24,7 +24,7 @@
     "typecheck": "pnpm -r --filter './packages/*' typecheck",
     "test": "pnpm -r --filter './packages/*' test",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
-    "version-packages": "changeset version"
+    "version-packages": "changeset version && node scripts/sync-plugin-versions.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
