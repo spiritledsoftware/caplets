@@ -1,14 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { loadCapletFiles } from "./caplet-files.js";
-import {
-  TRUST_PROJECT_CAPLETS_ENV,
-  isTrustedEnvEnabled,
-  resolveCapletsRoot,
-  resolveConfigPath,
-  resolveProjectConfigPath,
-} from "./config/paths.js";
+import { loadCapletFilesWithPaths } from "./caplet-files.js";
+import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths.js";
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
@@ -26,8 +20,6 @@ export {
   DEFAULT_AUTH_DIR,
   DEFAULT_CONFIG_PATH,
   PROJECT_CONFIG_FILE,
-  TRUST_PROJECT_CAPLETS_ENV,
-  isTrustedEnvEnabled,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
@@ -221,6 +213,19 @@ export type CapletsConfig = {
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
   httpApis: Record<string, HttpApiConfig>;
   cliTools: Record<string, CliToolsConfig>;
+};
+
+export type ConfigSourceKind = "global-config" | "global-file" | "project-config" | "project-file";
+
+export type ConfigSource = {
+  kind: ConfigSourceKind;
+  path: string;
+};
+
+export type ConfigWithSources = {
+  config: CapletsConfig;
+  sources: Record<string, ConfigSource>;
+  shadows: Record<string, ConfigSource[]>;
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
@@ -1024,15 +1029,23 @@ export function loadConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
 ): CapletsConfig {
+  return loadConfigWithSources(path, projectPath).config;
+}
+
+export function loadConfigWithSources(
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+): ConfigWithSources {
   const hasUserConfig = existsSync(path);
   const hasProjectConfig = existsSync(projectPath);
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
-  const userCaplets = loadCapletFiles(resolveCapletsRoot(path));
+  const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
   const projectConfig = hasProjectConfig
-    ? rejectUntrustedProjectExecutableBackends(readPublicConfigInput(projectPath), projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
     : undefined;
-  const projectCaplets = shouldLoadProjectCaplets()
-    ? loadCapletFiles(dirname(projectPath))
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadCapletFilesWithPaths(projectCapletsRoot)
     : undefined;
 
   if (!hasUserConfig && !hasProjectConfig && !userCaplets && !projectCaplets) {
@@ -1043,9 +1056,20 @@ export function loadConfig(
   }
 
   try {
-    const config = parseConfig(
-      mergeConfigInputs(userConfig, userCaplets, projectConfig, projectCaplets),
+    const { input, sources, shadows } = mergeConfigInputsWithSources(
+      { input: userConfig, source: { kind: "global-config", path } },
+      userCaplets
+        ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+        : undefined,
+      { input: projectConfig, source: { kind: "project-config", path: projectPath } },
+      projectCaplets
+        ? {
+            input: projectCaplets.config,
+            source: { kind: "project-file", path: projectCaplets.paths },
+          }
+        : undefined,
     );
+    const config = parseConfig(input);
     if (
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
@@ -1058,7 +1082,7 @@ export function loadConfig(
         "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend",
       );
     }
-    return config;
+    return { config, sources, shadows };
   } catch (error) {
     if (error instanceof CapletsError) {
       throw error;
@@ -1071,8 +1095,20 @@ export function loadConfig(
   }
 }
 
-function shouldLoadProjectCaplets(): boolean {
-  return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
+type ConfigSourceInput =
+  | { kind: ConfigSourceKind; path: string }
+  | { kind: ConfigSourceKind; path: Record<string, string> };
+
+type ConfigInputWithSource = {
+  input: ConfigInput | undefined;
+  source: ConfigSourceInput;
+};
+
+function resolveProjectCapletsRootForConfigPath(projectPath: string): string | undefined {
+  const root = dirname(projectPath);
+  return basename(root) === ".caplets" && basename(projectPath) === "config.json"
+    ? root
+    : undefined;
 }
 
 function readPublicConfigInput(path: string): ConfigInput {
@@ -1190,29 +1226,29 @@ function normalizeLocalPath(value: unknown, baseDir: string): unknown {
   return join(baseDir, value);
 }
 
-function rejectUntrustedProjectExecutableBackends(input: ConfigInput, path: string): ConfigInput {
+function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: string): ConfigInput {
   if (input.openapiEndpoints && Object.keys(input.openapiEndpoints).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      `Project config at ${path} cannot define openapiEndpoints; use trusted project Caplet files or user config`,
+      `Project config at ${path} cannot define executable backend map openapiEndpoints; use project Markdown Caplet files or user config instead`,
     );
   }
   if (input.graphqlEndpoints && Object.keys(input.graphqlEndpoints).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      `Project config at ${path} cannot define graphqlEndpoints; use trusted project Caplet files or user config`,
+      `Project config at ${path} cannot define executable backend map graphqlEndpoints; use project Markdown Caplet files or user config instead`,
     );
   }
   if (input.httpApis && Object.keys(input.httpApis).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      `Project config at ${path} cannot define httpApis; use trusted project Caplet files or user config`,
+      `Project config at ${path} cannot define executable backend map httpApis; use project Markdown Caplet files or user config instead`,
     );
   }
   if (input.cliTools && Object.keys(input.cliTools).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
-      `Project config at ${path} cannot define cliTools; use trusted project Caplet files or user config`,
+      `Project config at ${path} cannot define executable backend map cliTools; use project Markdown Caplet files or user config instead`,
     );
   }
   return input;
@@ -1250,6 +1286,67 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
     };
   }
   return merged;
+}
+
+function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | undefined>): {
+  input: ConfigInput | undefined;
+  sources: Record<string, ConfigSource>;
+  shadows: Record<string, ConfigSource[]>;
+} {
+  let merged: ConfigInput = {};
+  const sources: Record<string, ConfigSource> = {};
+  const shadows: Record<string, ConfigSource[]> = {};
+
+  for (const entry of inputs) {
+    if (entry?.input === undefined) {
+      continue;
+    }
+    for (const id of capletIds(entry.input)) {
+      const source = sourceForId(entry.source, id);
+      if (sources[id]) {
+        shadows[id] = [...(shadows[id] ?? []), sources[id]];
+      }
+      sources[id] = source;
+      merged = removeCapletId(merged, id);
+    }
+    merged = mergeConfigInputs(merged, entry.input) ?? {};
+  }
+
+  return { input: merged, sources, shadows };
+}
+
+function removeCapletId(input: ConfigInput, id: string): ConfigInput {
+  const { [id]: _mcpServer, ...mcpServers } = input.mcpServers ?? {};
+  const { [id]: _openapiEndpoint, ...openapiEndpoints } = input.openapiEndpoints ?? {};
+  const { [id]: _graphqlEndpoint, ...graphqlEndpoints } = input.graphqlEndpoints ?? {};
+  const { [id]: _httpApi, ...httpApis } = input.httpApis ?? {};
+  const { [id]: _cliTools, ...cliTools } = input.cliTools ?? {};
+
+  return {
+    ...input,
+    mcpServers,
+    openapiEndpoints,
+    graphqlEndpoints,
+    httpApis,
+    cliTools,
+  };
+}
+
+function capletIds(input: ConfigInput): string[] {
+  return [
+    ...Object.keys(input.mcpServers ?? {}),
+    ...Object.keys(input.openapiEndpoints ?? {}),
+    ...Object.keys(input.graphqlEndpoints ?? {}),
+    ...Object.keys(input.httpApis ?? {}),
+    ...Object.keys(input.cliTools ?? {}),
+  ];
+}
+
+function sourceForId(source: ConfigSourceInput, id: string): ConfigSource {
+  return {
+    kind: source.kind,
+    path: typeof source.path === "string" ? source.path : (source.path[id] ?? ""),
+  };
 }
 
 export function parseConfig(input: unknown): CapletsConfig {

@@ -4,15 +4,17 @@ import {
   constants,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  type Stats,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, parse, relative, resolve } from "node:path";
 import { discoverCapletFiles, validateCapletFile } from "../caplet-files.js";
-import { resolveCapletsRoot, resolveConfigPath } from "../config.js";
+import { resolveProjectCapletsRoot } from "../config.js";
 import { SERVER_ID_PATTERN } from "../config/validation.js";
 import { CapletsError, toSafeError } from "../errors.js";
 
@@ -43,7 +45,7 @@ export function installCaplets(
     }
 
     const selectedIds = new Set(options.capletIds ?? []);
-    const destinationRoot = options.destinationRoot ?? resolveCapletsRoot(resolveConfigPath());
+    const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
     const available =
       selectedIds.size === 0
         ? discoverCapletFiles(sourceRoot)
@@ -61,6 +63,7 @@ export function installCaplets(
     if (selected.length === 0) {
       throw new CapletsError("CONFIG_NOT_FOUND", `No Caplets found in ${sourceRoot}`);
     }
+    rejectDuplicateSourceIds(selected);
 
     for (const caplet of selected) {
       validateCapletFile(caplet.path);
@@ -115,10 +118,10 @@ function resolveInstallSource(repo: string): { id: string; repoRoot: string; cle
     return {
       id: normalizedRepo,
       repoRoot,
-      cleanup: () => rmSync(repoRoot, { recursive: true, force: true }),
+      cleanup: () => removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true),
     };
   } catch (error) {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true);
     throw new CapletsError("CONFIG_NOT_FOUND", `Could not clone repo ${repo}`, toSafeError(error));
   }
 }
@@ -136,26 +139,140 @@ function preflightInstallCaplets(
   options: { destinationRoot: string; force: boolean; repoRoot: string; sourceId: string },
 ): InstallPlan[] {
   const plans = caplets.map((caplet) => installPlan(caplet, options));
+  rejectUnsafeInstallParents(options.destinationRoot);
+  rejectUnsafeInstallRoot(options.destinationRoot);
   for (const plan of plans) {
-    if (existsSync(plan.destination) && !options.force) {
-      throw new CapletsError(
-        "CONFIG_EXISTS",
-        `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
-      );
-    }
+    rejectUnsafeInstallParents(plan.destination);
+    rejectUnsafeInstallDestination(plan, options.force);
+    rejectCrossKindDestinationCollision(plan, options.destinationRoot);
   }
 
   const writableRoot = nearestExistingParent(options.destinationRoot);
-  accessSync(writableRoot, constants.W_OK);
+  ensureWritable(writableRoot, `install destination parent ${writableRoot}`);
   for (const plan of plans) {
-    const destinationParent = existsSync(plan.destination)
+    const destinationParent = lstatIfExists(plan.destination)
       ? dirname(plan.destination)
       : nearestExistingParent(dirname(plan.destination));
-    accessSync(destinationParent, constants.W_OK);
+    ensureWritable(destinationParent, `install destination parent ${destinationParent}`);
   }
 
-  mkdirSync(options.destinationRoot, { recursive: true, mode: 0o700 });
+  makeInstallDirectory(options.destinationRoot);
   return plans;
+}
+
+function rejectUnsafeInstallRoot(destinationRoot: string): void {
+  const stats = lstatIfExists(destinationRoot);
+  if (!stats) {
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Install destination ${destinationRoot} already exists and is a symlink`,
+    );
+  }
+  if (!stats.isDirectory()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Install destination ${destinationRoot} already exists and is not a directory`,
+    );
+  }
+}
+
+function rejectUnsafeInstallParents(path: string): void {
+  const parent = dirname(resolve(path));
+  const root = parse(parent).root;
+  const segments = parent.slice(root.length).split(/[\\/]/).filter(Boolean);
+  let current = root;
+
+  for (const segment of segments) {
+    current = join(current, segment);
+    const stats = lstatIfExists(current);
+    if (!stats) {
+      return;
+    }
+    if (stats.isSymbolicLink()) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Install destination parent ${current} is a symlink; remove it before installing`,
+      );
+    }
+    if (!stats.isDirectory()) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Install destination parent ${current} is not a directory; choose another destination`,
+      );
+    }
+  }
+}
+
+function rejectUnsafeInstallDestination(plan: InstallPlan, force: boolean): void {
+  const stats = lstatIfExists(plan.destination);
+  if (!stats) {
+    return;
+  }
+
+  rejectSymlinkDestination(plan.id, plan.destination, stats);
+  if (plan.kind === "file" && !stats.isFile()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Cannot install file Caplet ${plan.id}; destination already exists and is not a file at ${plan.destination}`,
+    );
+  }
+  if (plan.kind === "directory" && !stats.isDirectory()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Cannot install directory Caplet ${plan.id}; destination already exists and is not a directory at ${plan.destination}`,
+    );
+  }
+  if (!force) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
+    );
+  }
+}
+
+function rejectDuplicateSourceIds(caplets: Array<{ id: string; path: string }>): void {
+  const byId = new Map<string, string>();
+  for (const caplet of caplets) {
+    const existing = byId.get(caplet.id);
+    if (existing) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Source repo contains multiple Caplets with ID ${caplet.id}: ${existing} and ${caplet.path}`,
+      );
+    }
+    byId.set(caplet.id, caplet.path);
+  }
+}
+
+function rejectCrossKindDestinationCollision(plan: InstallPlan, destinationRoot: string): void {
+  if (plan.kind === "file") {
+    const directoryPath = join(destinationRoot, plan.id);
+    const directoryCapletPath = join(directoryPath, "CAPLET.md");
+    const directoryStats = lstatIfExists(directoryPath);
+    const directoryCapletStats = lstatIfExists(directoryCapletPath);
+    rejectSymlinkDestination(plan.id, directoryPath, directoryStats);
+    rejectSymlinkDestination(plan.id, directoryCapletPath, directoryCapletStats);
+    if (directoryStats || directoryCapletStats) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Cannot install file Caplet ${plan.id}; directory Caplet destination already exists at ${directoryPath}`,
+      );
+    }
+    return;
+  }
+
+  const filePath = join(destinationRoot, `${plan.id}.md`);
+  const fileStats = lstatIfExists(filePath);
+  rejectSymlinkDestination(plan.id, filePath, fileStats);
+  if (fileStats) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Cannot install directory Caplet ${plan.id}; file Caplet destination already exists at ${filePath}`,
+    );
+  }
 }
 
 function installPlan(
@@ -179,21 +296,25 @@ function installPlan(
 }
 
 function installOneCaplet(plan: InstallPlan, options: { force: boolean }): InstallableCaplet {
-  if (existsSync(plan.destination)) {
-    if (!options.force) {
+  const stats = lstatIfExists(plan.destination);
+  if (stats) {
+    rejectSymlinkDestination(plan.id, plan.destination, stats);
+    if (!options.force || (plan.kind === "file" && !stats.isFile())) {
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
       );
     }
-    rmSync(plan.destination, { recursive: true, force: true });
+    if (plan.kind === "directory" && !stats.isDirectory()) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
+      );
+    }
+    removeInstallPath(plan.destination, `existing Caplet destination ${plan.destination}`, false);
   }
 
-  cpSync(plan.sourcePath, plan.destination, {
-    recursive: plan.kind === "directory",
-    force: false,
-    errorOnExist: true,
-  });
+  copyInstallPath(plan);
   return {
     id: plan.id,
     source: plan.source,
@@ -202,8 +323,94 @@ function installOneCaplet(plan: InstallPlan, options: { force: boolean }): Insta
   };
 }
 
+function rejectSymlinkDestination(id: string, path: string, stats: Stats | undefined): void {
+  if (stats?.isSymbolicLink()) {
+    throw new CapletsError(
+      "CONFIG_EXISTS",
+      `Cannot install Caplet ${id}; destination is a symlink at ${path}`,
+    );
+  }
+}
+
+function lstatIfExists(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (isFsError(error, "ENOENT")) {
+      return undefined;
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not inspect install destination ${path}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function ensureWritable(path: string, label: string): void {
+  try {
+    accessSync(path, constants.W_OK);
+  } catch (error) {
+    throw new CapletsError("CONFIG_INVALID", `Cannot write to ${label}`, toSafeError(error));
+  }
+}
+
+function makeInstallDirectory(path: string): void {
+  try {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    if (isFsError(error, "EEXIST")) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Install destination ${path} already exists and is not a directory`,
+        toSafeError(error),
+      );
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not create install destination ${path}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function removeInstallPath(path: string, label: string, force: boolean): void {
+  try {
+    rmSync(path, { recursive: true, force });
+  } catch (error) {
+    throw new CapletsError("CONFIG_INVALID", `Could not remove ${label}`, toSafeError(error));
+  }
+}
+
+function copyInstallPath(plan: InstallPlan): void {
+  try {
+    cpSync(plan.sourcePath, plan.destination, {
+      recursive: plan.kind === "directory",
+      force: false,
+      errorOnExist: true,
+    });
+  } catch (error) {
+    if (isFsError(error, "EEXIST") || isFsError(error, "EISDIR")) {
+      throw new CapletsError(
+        "CONFIG_EXISTS",
+        `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
+        toSafeError(error),
+      );
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not install Caplet ${plan.id} to ${plan.destination}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function isFsError(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
 function nearestExistingParent(path: string): string {
-  if (existsSync(path)) {
+  if (lstatIfExists(path)) {
     return path;
   }
   const parent = dirname(path);

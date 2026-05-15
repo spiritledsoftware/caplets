@@ -9,9 +9,8 @@ import {
   loadConfig,
   resolveCapletsRoot,
   resolveConfigPath,
+  resolveProjectCapletsRoot,
   resolveProjectConfigPath,
-  TRUST_PROJECT_CAPLETS_ENV,
-  isTrustedEnvEnabled,
 } from "./config.js";
 import { CliToolsManager } from "./cli-tools.js";
 import { DownstreamManager } from "./downstream.js";
@@ -388,10 +387,11 @@ function watchedPaths(paths: RuntimePaths): WatchedPath[] {
     { path: dirname(paths.configPath), reason: "config" },
     { path: dirname(paths.projectConfigPath), reason: "config" },
     { path: resolveCapletsRoot(paths.configPath), reason: "caplets" },
+    {
+      path: resolveProjectCapletsRoot(dirname(dirname(paths.projectConfigPath))),
+      reason: "caplets",
+    },
   ];
-  if (isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV])) {
-    entries.push({ path: dirname(paths.projectConfigPath), reason: "caplets" });
-  }
 
   return uniqueWatchedPaths(entries);
 }

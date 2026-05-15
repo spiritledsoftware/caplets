@@ -334,7 +334,8 @@ This repository includes polished working examples under [`caplets/`](caplets/):
 - `repo-cli`: Read-oriented repository CLI workflows through `git` and package scripts.
 - `github-cli`: Read-oriented GitHub workflows through the `gh` CLI.
 
-Install every example from a repo's `caplets/` directory:
+Install every example from a repo's `caplets/` directory into the current project's
+`./.caplets` directory:
 
 ```sh
 caplets install spiritledsoftware/caplets
@@ -348,22 +349,20 @@ caplets install spiritledsoftware/caplets github linear
 ```
 
 `caplets install` accepts a GitHub `owner/repo` shorthand, a Git URL, or a local repository path.
-It installs into your user Caplets root, which is `${XDG_CONFIG_HOME:-~/.config}/caplets` on Unix-like platforms,
-`%APPDATA%\caplets` on Windows, or the parent directory of `CAPLETS_CONFIG` when that environment variable is set.
-Existing Caplets are not overwritten unless `--force` is passed.
+By default it writes to `./.caplets`, creating that directory when needed. Pass `-g` or
+`--global` to write to your user Caplets root instead, which is
+`${XDG_CONFIG_HOME:-~/.config}/caplets` on Unix-like platforms, `%APPDATA%\caplets` on Windows,
+or the parent directory of `CAPLETS_CONFIG` when that environment variable is set. Existing
+Caplets are not overwritten unless `--force` is passed.
 
 On Unix-like platforms, relative `XDG_CONFIG_HOME` and `XDG_STATE_HOME` values are ignored.
 
-Caplets always loads user Caplet files from the user Caplets root. Project `./.caplets/config.json`
-is still loaded as project config, but project Markdown Caplet files are executable
-configuration and are ignored unless explicitly trusted:
-
-```sh
-CAPLETS_TRUST_PROJECT_CAPLETS=1 caplets serve
-```
-
-Later sources override earlier ones in this order: user `config.json`, user Caplet files,
-project `config.json`, and, only when trusted, project Caplet files.
+Caplets loads user Caplet files from the user Caplets root and project Caplet files from the
+current working directory's `./.caplets` directory. Later sources override earlier ones in this
+order: user `config.json`, user Caplet files, project `config.json`, and project Caplet files.
+That means a project-local Caplet can intentionally replace a user-level Caplet with the same ID.
+Use `caplets list` to see each Caplet's winning source; when a project Caplet shadows a user-level
+Caplet, the list output includes a warning naming the shadowed path.
 
 `caplets init` refuses to overwrite an existing config. To intentionally replace the file:
 
@@ -597,11 +596,32 @@ supported inside `args`, `env`, and `cwd` strings. Caplets performs basic requir
 primitive-type validation before spawning. Results are returned as structured content with
 `exitCode`, `stdout`, `stderr`, and `elapsedMs`; non-zero exits set `isError`.
 
-Generate a reviewable CLI Caplet manifest from a repository:
+Generate and add a CLI Caplet manifest from a repository:
 
 ```sh
-caplets author cli repo-tools --repo . --include git,gh,package --output -
+caplets add cli repo-tools --repo . --include git,gh,package
 ```
+
+`caplets add` writes generated Markdown Caplet files to `./.caplets/<id>.md` by default.
+Pass `-g` or `--global` to write to the user Caplets root, `--print` to review the generated
+manifest without writing, `--output <path>` for an explicit destination, or `--force` to overwrite
+an existing destination file.
+
+Add MCP, OpenAPI, GraphQL, and HTTP API Caplets with the same destination options:
+
+```sh
+caplets add mcp local-tools --command node --arg ./server.mjs
+caplets add mcp remote-tools --url https://mcp.example.com/mcp --transport http --token-env MCP_TOKEN
+caplets add openapi users --spec ./openapi.json --base-url https://api.example.com --token-env USERS_API_TOKEN
+caplets add graphql catalog --endpoint-url https://api.example.com/graphql --schema ./schema.graphql
+caplets add graphql catalog-live --endpoint-url https://api.example.com/graphql --introspection
+caplets add http status-api --base-url https://api.example.com --action get_status:GET:/status/{service}
+```
+
+For `caplets add mcp`, use `--command` with repeated `--arg`, optional `--cwd`, and repeated
+`--env KEY=VALUE` for stdio servers, or `--url` with `--transport http|sse` for remote servers.
+For HTTP authentication, pass `--token-env <ENV>` so generated manifests reference `$env:ENV`
+instead of embedding raw bearer tokens.
 
 ### Authentication
 
@@ -646,6 +666,10 @@ caplets list --all
 caplets list --json
 ```
 
+Human output includes a `source` column. JSON output includes each Caplet's `source`, `path`, and
+`shadows` metadata. If a project source overrides a user source, human output prints a warning such
+as `Warning: project Caplet github shadows global Caplet at /path/to/github.md`.
+
 ### Optional Server Settings
 
 Every server can set:
@@ -674,7 +698,7 @@ If your client starts the configured command directly, `caplets` without argumen
 starts the MCP server. `serve` is explicit and recommended for clarity.
 
 `caplets serve` watches the effective user config, project config, user Caplet files, and
-trusted project Caplet files. Adding, editing, disabling, or removing a Caplet updates the
+project Caplet files. Adding, editing, disabling, or removing a Caplet updates the
 top-level MCP tool list without restarting Caplets. When an MCP-backed Caplet changes or is
 removed, Caplets closes only that affected downstream connection; unrelated Caplets and
 their downstream connections keep running.

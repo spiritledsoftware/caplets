@@ -578,7 +578,16 @@ export type CapletFileConfig = {
   cliTools?: Record<string, unknown>;
 };
 
+export type CapletFileLoadResult = {
+  config: CapletFileConfig;
+  paths: Record<string, string>;
+};
+
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
+  return loadCapletFilesWithPaths(root)?.config;
+}
+
+export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | undefined {
   if (!existsSync(root)) {
     return undefined;
   }
@@ -588,6 +597,7 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const graphqlEndpoints: Record<string, unknown> = {};
   const httpApis: Record<string, unknown> = {};
   const cliTools: Record<string, unknown> = {};
+  const paths: Record<string, string> = {};
   for (const candidate of discoverCapletFiles(root)) {
     if (
       servers[candidate.id] ||
@@ -598,6 +608,7 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
     ) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
+    paths[candidate.id] = candidate.path;
     const config = readCapletFile(candidate.path);
     if (isPlainObject(config) && config.backend === "openapi") {
       const { backend: _backend, ...endpoint } = config;
@@ -623,11 +634,14 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const hasCliTools = Object.keys(cliTools).length > 0;
   return hasServers || hasOpenApi || hasGraphQl || hasHttpApis || hasCliTools
     ? {
-        ...(hasServers ? { mcpServers: servers } : {}),
-        ...(hasOpenApi ? { openapiEndpoints } : {}),
-        ...(hasGraphQl ? { graphqlEndpoints } : {}),
-        ...(hasHttpApis ? { httpApis } : {}),
-        ...(hasCliTools ? { cliTools } : {}),
+        config: {
+          ...(hasServers ? { mcpServers: servers } : {}),
+          ...(hasOpenApi ? { openapiEndpoints } : {}),
+          ...(hasGraphQl ? { graphqlEndpoints } : {}),
+          ...(hasHttpApis ? { httpApis } : {}),
+          ...(hasCliTools ? { cliTools } : {}),
+        },
+        paths,
       }
     : undefined;
 }

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { CapletsError } from "../errors.js";
 
 type AuthorCliOptions = {
   repo?: string;
@@ -60,7 +61,10 @@ export function authorCliCaplet(
   }
 
   if (Object.keys(actions).length === 0) {
-    throw new Error("No CLI actions could be generated for the requested options");
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "No CLI actions could be generated for the requested options",
+    );
   }
 
   const text = renderCaplet({
