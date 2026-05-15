@@ -1,13 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { configJsonSchema } from "../src/config.js";
-import { capletJsonSchema } from "../src/caplet-files.js";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { capletJsonSchema } from "../packages/core/src/caplet-files.js";
+import { configJsonSchema } from "../packages/core/src/config.js";
 
+const repoRoot = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 const schemas = [
-  { path: "schemas/caplets-config.schema.json", schema: configJsonSchema() },
-  { path: "schemas/caplet.schema.json", schema: capletJsonSchema() },
+  { path: join(repoRoot, "schemas/caplets-config.schema.json"), schema: configJsonSchema() },
+  { path: join(repoRoot, "schemas/caplet.schema.json"), schema: capletJsonSchema() },
 ];
 
 if (process.argv.includes("--check")) {
@@ -38,4 +40,16 @@ function formatJson(value: string): string {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function findRepoRoot(start: string): string {
+  let current = resolve(start);
+  while (!existsSync(join(current, "pnpm-workspace.yaml"))) {
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new Error(`Could not find repository root from ${start}`);
+    }
+    current = parent;
+  }
+  return current;
 }

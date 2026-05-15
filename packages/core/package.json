@@ -1,0 +1,63 @@
+{
+  "name": "@caplets/core",
+  "version": "0.11.0",
+  "description": "Core runtime library for Caplets progressive disclosure gateways.",
+  "keywords": [
+    "caplets",
+    "gateway",
+    "mcp",
+    "model-context-protocol",
+    "tools"
+  ],
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "bugs": {
+    "url": "https://github.com/spiritledsoftware/caplets/issues"
+  },
+  "license": "MIT",
+  "author": "Spirit-Led Software LLC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spiritledsoftware/caplets.git",
+    "directory": "packages/core"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./generated-tool-input-schema": "./dist/generated-tool-input-schema.js",
+    "./native": "./dist/native.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && rolldown -c",
+    "build:watch": "rolldown -c --watch",
+    "prepack": "pnpm build",
+    "schema:check": "rolldown -c rolldown.schema.config.ts && node dist-schema/generate-config-schema.js --check && rm -rf dist-schema",
+    "schema:generate": "rolldown -c rolldown.schema.config.ts && node dist-schema/generate-config-schema.js && rm -rf dist-schema",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^14.0.3",
+    "graphql": "^16.14.0",
+    "vfile": "^6.0.3",
+    "vfile-matter": "^5.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "rolldown": "^1.0.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

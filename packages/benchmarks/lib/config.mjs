@@ -4,15 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { benchmarkServerDefinitions } from "./surface.mjs";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const CAPLETS_CLI_PATH = join(REPO_ROOT, "dist", "index.js");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CAPLETS_CLI_PATH = resolve(REPO_ROOT, "../cli/dist/index.js");
 
 export function getBenchmarkPaths({ repoRoot = REPO_ROOT } = {}) {
   const absoluteRepoRoot = resolve(repoRoot);
   return {
     repoRoot: absoluteRepoRoot,
-    fixtureServerPath: join(absoluteRepoRoot, "benchmarks", "fixtures", "mcp-server.mjs"),
-    capletsCliPath: join(absoluteRepoRoot, "dist", "index.js"),
+    fixtureServerPath: join(absoluteRepoRoot, "fixtures", "mcp-server.mjs"),
+    capletsCliPath: resolve(absoluteRepoRoot, "../cli/dist/index.js"),
   };
 }
 

@@ -1,6 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { runCli } from "./cli.js";
-import { CapletsRuntime } from "./runtime.js";
+import { CapletsRuntime, runCli } from "@caplets/core";
 
 async function main() {
   if (process.argv[2] && process.argv[2] !== "serve") {

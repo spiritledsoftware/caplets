@@ -440,7 +440,7 @@ describe("config", () => {
     const originalGithubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
     delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
     try {
-      const examples = loadCapletFiles(join(import.meta.dirname, "..", "caplets"));
+      const examples = loadCapletFiles(join(import.meta.dirname, "../../..", "caplets"));
 
       const config = parseConfig(examples);
 
@@ -481,7 +481,7 @@ describe("config", () => {
   });
 
   it("keeps repository Caplet reference files linked from CAPLET.md", () => {
-    const examplesRoot = join(import.meta.dirname, "..", "caplets");
+    const examplesRoot = join(import.meta.dirname, "../../..", "caplets");
     const capletDirs = readdirSync(examplesRoot, { withFileTypes: true }).filter((entry) =>
       entry.isDirectory(),
     );
@@ -1188,10 +1188,19 @@ describe("config", () => {
   it("keeps the committed JSON Schema in sync with the Zod schema", () => {
     const configSchema = configJsonSchema();
     const capletSchema = capletJsonSchema();
-    expect(JSON.parse(readFileSync("schemas/caplets-config.schema.json", "utf8"))).toEqual(
-      configSchema,
-    );
-    expect(JSON.parse(readFileSync("schemas/caplet.schema.json", "utf8"))).toEqual(capletSchema);
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(import.meta.dirname, "../../..", "schemas/caplets-config.schema.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual(configSchema);
+    expect(
+      JSON.parse(
+        readFileSync(join(import.meta.dirname, "../../..", "schemas/caplet.schema.json"), "utf8"),
+      ),
+    ).toEqual(capletSchema);
     expect(findHttpActionsSchema(configSchema)?.minProperties).toBe(1);
     expect(findHttpActionsSchema(capletSchema)?.minProperties).toBe(1);
     expect(findCliActionsSchema(configSchema)?.minProperties).toBe(1);

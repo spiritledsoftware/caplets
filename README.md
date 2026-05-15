@@ -706,6 +706,18 @@ top-level MCP tool list without restarting Caplets. When an MCP-backed Caplet ch
 removed, Caplets closes only that affected downstream connection; unrelated Caplets and
 their downstream connections keep running.
 
+## Native Agent Integrations
+
+Caplets can also run as native agent extensions when the host supports native tools. Native
+integrations expose one prefixed tool per configured Caplet, such as `caplets_github`, while
+reusing the same Caplets config and backend runtime.
+
+- [`@caplets/opencode`](packages/opencode/README.md): OpenCode plugin that injects prompt guidance through plugin hooks instead of editing `opencode.json`.
+- [`@caplets/pi`](packages/pi/README.md): Pi extension installable with `pi install npm:@caplets/pi`, with guidance provided through Pi tool prompt snippets and guidelines.
+
+Native integrations snapshot configured Caplets at plugin or extension load. Restart the host
+agent or reload extensions after adding, removing, or renaming Caplets.
+
 ## How Agents Use It
 
 Caplets initially exposes one MCP tool per enabled Caplet. If the config has `filesystem`,

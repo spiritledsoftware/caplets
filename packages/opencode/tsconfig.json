@@ -1,0 +1,14 @@
+{
+  "extends": "../core/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@caplets/core/generated-tool-input-schema": [
+        "../core/src/generated-tool-input-schema.d.mts"
+      ],
+      "@caplets/core/native": ["../core/src/native.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

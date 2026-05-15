@@ -9,8 +9,7 @@ import {
 } from "./lib/surface.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "..");
-const reportPath = resolve(repoRoot, "docs/benchmarks/coding-agent.md");
+const reportPath = resolve(__dirname, "../../docs/benchmarks/coding-agent.md");
 
 const checkMode = process.argv.includes("--check");
 
@@ -30,12 +29,12 @@ if (checkMode) {
   try {
     current = readFileSync(reportPath, "utf8");
   } catch {
-    console.error(`${reportPath} does not exist. Run node benchmarks/run-deterministic.mjs.`);
+    console.error(`${reportPath} does not exist. Run pnpm --filter @caplets/benchmarks benchmark.`);
     process.exit(1);
   }
 
   if (current !== markdown) {
-    console.error(`${reportPath} is stale. Run node benchmarks/run-deterministic.mjs.`);
+    console.error(`${reportPath} is stale. Run pnpm --filter @caplets/benchmarks benchmark.`);
     process.exit(1);
   }
   console.log(`${reportPath} is up to date.`);
