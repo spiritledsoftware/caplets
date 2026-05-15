@@ -226,7 +226,12 @@ export class CapletsEngine {
 
   private emitReload(event: CapletsEngineReloadEvent): void {
     for (const listener of this.reloadListeners) {
-      listener(event);
+      try {
+        listener(event);
+      } catch (error) {
+        this.writeErr(`Caplets reload listener failed.\n`);
+        this.writeErr(`${JSON.stringify(toSafeError(error, "INTERNAL_ERROR"), null, 2)}\n`);
+      }
     }
   }
 

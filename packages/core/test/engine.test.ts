@@ -6,8 +6,10 @@ import { CapletsEngine } from "../src/engine.js";
 
 describe("CapletsEngine", () => {
   const dirs: string[] = [];
+  const engines: CapletsEngine[] = [];
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(engines.splice(0).map((engine) => engine.close()));
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -31,6 +33,7 @@ describe("CapletsEngine", () => {
     });
     dirs.push(dir);
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
     const events: Array<{ previous: string[]; next: string[]; invalidated: boolean }> = [];
     engine.onReload(({ previous, next, invalidated }) => {
       events.push({
@@ -86,8 +89,6 @@ describe("CapletsEngine", () => {
 
     await expect(engine.reload()).resolves.toBe(true);
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["gamma"]);
-
-    await engine.close();
   });
 
   it("keeps last known-good config when reload validation fails", async () => {
@@ -108,6 +109,7 @@ describe("CapletsEngine", () => {
       watch: false,
       writeErr: (value) => errors.push(value),
     });
+    engines.push(engine);
     const listener = vi.fn();
     engine.onReload(listener);
 
@@ -117,8 +119,47 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["alpha"]);
     expect(listener).not.toHaveBeenCalled();
     expect(errors.join("")).toContain("Caplets config reload failed");
+  });
 
-    await engine.close();
+  it("continues notifying reload listeners when one listener throws", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const errors: string[] = [];
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    engines.push(engine);
+    const secondListener = vi.fn();
+    engine.onReload(() => {
+      throw new Error("listener boom");
+    });
+    engine.onReload(secondListener);
+
+    writeConfig(configPath, {
+      mcpServers: {
+        beta: {
+          name: "Beta",
+          description: "Search beta project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+
+    await expect(engine.reload()).resolves.toBe(true);
+    expect(secondListener).toHaveBeenCalledOnce();
+    expect(errors.join("")).toContain("Caplets reload listener failed");
+    expect(errors.join("")).toContain("listener boom");
   });
 
   it("runs a follow-up reload when another reload is requested mid-flight", async () => {
@@ -133,6 +174,7 @@ describe("CapletsEngine", () => {
     });
     dirs.push(dir);
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
     let calls = 0;
 
     (engine as unknown as { reloadOnce: () => Promise<boolean> }).reloadOnce = vi.fn(async () => {
@@ -145,8 +187,6 @@ describe("CapletsEngine", () => {
 
     await engine.reload();
     expect(calls).toBe(2);
-
-    await engine.close();
   });
 
   it("watches config and Caplet paths when watch is enabled", async () => {
@@ -161,6 +201,7 @@ describe("CapletsEngine", () => {
     });
     dirs.push(dir);
     const engine = new CapletsEngine({ configPath, projectConfigPath, watchDebounceMs: 10 });
+    engines.push(engine);
     let reloads = 0;
     (engine as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
       reloads += 1;
@@ -178,7 +219,6 @@ describe("CapletsEngine", () => {
     });
 
     await eventually(() => expect(reloads).toBeGreaterThan(0));
-    await engine.close();
   });
 
   function tempConfig(config: unknown): {
