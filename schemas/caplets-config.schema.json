@@ -1130,6 +1130,180 @@
         "required": ["name", "description", "baseUrl", "auth", "actions"],
         "additionalProperties": false
       }
+    },
+    "cliTools": {
+      "default": {},
+      "description": "CLI tools keyed by stable Caplet ID.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Human-readable CLI tools display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "Capability description shown to agents before CLI actions are disclosed."
+          },
+          "actions": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "description": "Action capability description.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "inputSchema": {
+                  "description": "JSON Schema for call_tool arguments.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "outputSchema": {
+                  "description": "JSON Schema for structuredContent returned by this action.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "command": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Executable command to spawn without a shell."
+                },
+                "args": {
+                  "description": "Arguments passed to the command.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "env": {
+                  "description": "Additional environment variables for the command.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "cwd": {
+                  "description": "Working directory for this action.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "timeoutMs": {
+                  "description": "Command timeout in milliseconds.",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "maxOutputBytes": {
+                  "description": "Maximum combined stdout and stderr bytes to keep.",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "output": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "text",
+                      "description": "How stdout should be represented in structuredContent.",
+                      "type": "string",
+                      "enum": ["text", "json"]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "annotations": {
+                  "type": "object",
+                  "properties": {
+                    "readOnlyHint": {
+                      "type": "boolean"
+                    },
+                    "destructiveHint": {
+                      "type": "boolean"
+                    },
+                    "idempotentHint": {
+                      "type": "boolean"
+                    },
+                    "openWorldHint": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "required": ["command"],
+              "additionalProperties": false
+            },
+            "description": "Configured CLI actions keyed by stable tool name.",
+            "minProperties": 1
+          },
+          "cwd": {
+            "description": "Default working directory for CLI actions.",
+            "type": "string",
+            "minLength": 1
+          },
+          "env": {
+            "description": "Default environment variables for CLI actions.",
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "timeoutMs": {
+            "default": 60000,
+            "description": "Default timeout in milliseconds for CLI actions.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "maxOutputBytes": {
+            "default": 1000000,
+            "description": "Default maximum combined stdout and stderr bytes to keep.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "disabled": {
+            "default": false,
+            "description": "When true, omit this CLI tools Caplet.",
+            "type": "boolean"
+          }
+        },
+        "required": ["name", "description", "actions"],
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

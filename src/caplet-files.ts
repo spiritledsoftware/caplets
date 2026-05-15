@@ -451,6 +451,60 @@ const capletHttpApiSchema = z
     }
   });
 
+const capletCliToolOutputSchema = z
+  .object({
+    type: z.enum(["text", "json"]).optional(),
+  })
+  .strict();
+
+const capletCliToolAnnotationsSchema = z
+  .object({
+    readOnlyHint: z.boolean().optional(),
+    destructiveHint: z.boolean().optional(),
+    idempotentHint: z.boolean().optional(),
+    openWorldHint: z.boolean().optional(),
+  })
+  .strict();
+
+const capletCliToolActionSchema = z
+  .object({
+    description: z.string().min(1).optional().describe("Action capability description."),
+    inputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for call_tool arguments."),
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe("JSON Schema for structuredContent returned by this action."),
+    command: z.string().min(1).describe("Executable command to spawn without a shell."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the command."),
+    env: z.record(z.string(), z.string()).optional().describe("Additional environment variables."),
+    cwd: z.string().min(1).optional().describe("Working directory for this action."),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+    output: capletCliToolOutputSchema.optional(),
+    annotations: capletCliToolAnnotationsSchema.optional(),
+  })
+  .strict();
+
+const capletCliToolsSchema = z
+  .object({
+    actions: z
+      .record(z.string().regex(SERVER_ID_PATTERN), capletCliToolActionSchema)
+      .refine(
+        (actions) => Object.keys(actions).length > 0,
+        "CLI tools backend must define at least one action",
+      )
+      .describe("Configured CLI actions keyed by stable tool name."),
+    cwd: z.string().min(1).optional().describe("Default working directory for CLI actions."),
+    env: z.record(z.string(), z.string()).optional().describe("Default environment variables."),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+  })
+  .strict();
+
 export const capletFileSchema = z
   .object({
     $schema: z
@@ -483,6 +537,9 @@ export const capletFileSchema = z
     httpApi: capletHttpApiSchema
       .describe("HTTP API backend configuration for this Caplet.")
       .optional(),
+    cliTools: capletCliToolsSchema
+      .describe("CLI tools backend configuration for this Caplet.")
+      .optional(),
   })
   .strict()
   .superRefine((frontmatter, ctx) => {
@@ -490,12 +547,13 @@ export const capletFileSchema = z
       Number(Boolean(frontmatter.mcpServer)) +
       Number(Boolean(frontmatter.openapiEndpoint)) +
       Number(Boolean(frontmatter.graphqlEndpoint)) +
-      Number(Boolean(frontmatter.httpApi));
+      Number(Boolean(frontmatter.httpApi)) +
+      Number(Boolean(frontmatter.cliTools));
     if (backendCount !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, or httpApi",
+          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, httpApi, or cliTools",
       });
     }
   });
@@ -503,7 +561,7 @@ export const capletFileSchema = z
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 
 export function capletJsonSchema(): unknown {
-  return patchHttpApiJsonSchema({
+  return patchCapletJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
     $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json",
     title: "Caplet file frontmatter",
@@ -517,6 +575,7 @@ export type CapletFileConfig = {
   openapiEndpoints?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
+  cliTools?: Record<string, unknown>;
 };
 
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
@@ -528,12 +587,14 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const openapiEndpoints: Record<string, unknown> = {};
   const graphqlEndpoints: Record<string, unknown> = {};
   const httpApis: Record<string, unknown> = {};
+  const cliTools: Record<string, unknown> = {};
   for (const candidate of discoverCapletFiles(root)) {
     if (
       servers[candidate.id] ||
       openapiEndpoints[candidate.id] ||
       graphqlEndpoints[candidate.id] ||
-      httpApis[candidate.id]
+      httpApis[candidate.id] ||
+      cliTools[candidate.id]
     ) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
@@ -547,6 +608,9 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
     } else if (isPlainObject(config) && config.backend === "http") {
       const { backend: _backend, ...endpoint } = config;
       httpApis[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "cli") {
+      const { backend: _backend, ...endpoint } = config;
+      cliTools[candidate.id] = endpoint;
     } else {
       servers[candidate.id] = config;
     }
@@ -556,12 +620,14 @@ export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
   const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
   const hasHttpApis = Object.keys(httpApis).length > 0;
-  return hasServers || hasOpenApi || hasGraphQl || hasHttpApis
+  const hasCliTools = Object.keys(cliTools).length > 0;
+  return hasServers || hasOpenApi || hasGraphQl || hasHttpApis || hasCliTools
     ? {
         ...(hasServers ? { mcpServers: servers } : {}),
         ...(hasOpenApi ? { openapiEndpoints } : {}),
         ...(hasGraphQl ? { graphqlEndpoints } : {}),
         ...(hasHttpApis ? { httpApis } : {}),
+        ...(hasCliTools ? { cliTools } : {}),
       }
     : undefined;
 }
@@ -671,6 +737,19 @@ function capletToServerConfig(
     };
   }
 
+  if (frontmatter.cliTools) {
+    return {
+      ...frontmatter.cliTools,
+      cwd: normalizeLocalPath(frontmatter.cliTools.cwd, baseDir),
+      actions: normalizeCliToolActions(frontmatter.cliTools.actions, baseDir),
+      backend: "cli",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      body,
+    };
+  }
+
   return {
     ...frontmatter.mcpServer!,
     name: frontmatter.name,
@@ -678,6 +757,21 @@ function capletToServerConfig(
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
     body,
   };
+}
+
+function normalizeCliToolActions(
+  actions: z.infer<typeof capletCliToolsSchema>["actions"],
+  baseDir: string,
+): z.infer<typeof capletCliToolsSchema>["actions"] {
+  return Object.fromEntries(
+    Object.entries(actions).map(([name, action]) => [
+      name,
+      {
+        ...action,
+        cwd: normalizeLocalPath(action.cwd, baseDir) as string | undefined,
+      },
+    ]),
+  );
 }
 
 function normalizeGraphQlOperations(
@@ -768,7 +862,7 @@ function hasEnvReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
 }
 
-function patchHttpApiJsonSchema<T>(schema: T): T {
+function patchCapletJsonSchema<T>(schema: T): T {
   const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
     "properties",
     "httpApi",
@@ -781,6 +875,15 @@ function patchHttpApiJsonSchema<T>(schema: T): T {
   const baseUrl = nestedSchema<Record<string, unknown>>(httpApiProperties, "baseUrl");
   if (baseUrl) {
     baseUrl.format = "uri";
+  }
+  const cliToolsProperties = schemaPath<Record<string, unknown>>(schema, [
+    "properties",
+    "cliTools",
+    "properties",
+  ]);
+  const cliActions = nestedSchema<Record<string, unknown>>(cliToolsProperties, "actions");
+  if (cliActions) {
+    cliActions.minProperties = 1;
   }
   return schema;
 }

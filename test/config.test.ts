@@ -1060,6 +1060,8 @@ describe("config", () => {
     expect(JSON.parse(readFileSync("schemas/caplet.schema.json", "utf8"))).toEqual(capletSchema);
     expect(findHttpActionsSchema(configSchema)?.minProperties).toBe(1);
     expect(findHttpActionsSchema(capletSchema)?.minProperties).toBe(1);
+    expect(findCliActionsSchema(configSchema)?.minProperties).toBe(1);
+    expect(findCliActionsSchema(capletSchema)?.minProperties).toBe(1);
   });
 
   it("rejects unsupported versions and unknown keys", () => {
@@ -1247,6 +1249,18 @@ function findHttpActionsSchema(value: unknown): { minProperties?: number } | und
       "properties",
       "actions",
     ]) ?? schemaPath(value, ["properties", "httpApi", "properties", "actions"])
+  );
+}
+
+function findCliActionsSchema(value: unknown): { minProperties?: number } | undefined {
+  return (
+    schemaPath(value, [
+      "properties",
+      "cliTools",
+      "additionalProperties",
+      "properties",
+      "actions",
+    ]) ?? schemaPath(value, ["properties", "cliTools", "properties", "actions"])
   );
 }
 
