@@ -1,17 +1,4 @@
-import { CliToolsManager } from "../cli-tools.js";
-import {
-  type CapletsConfig,
-  loadConfig,
-  resolveConfigPath,
-  resolveProjectConfigPath,
-} from "../config.js";
-import { DownstreamManager } from "../downstream.js";
-import { errorResult } from "../errors.js";
-import { GraphQLManager } from "../graphql.js";
-import { HttpActionManager } from "../http-actions.js";
-import { OpenApiManager } from "../openapi.js";
-import { ServerRegistry } from "../registry.js";
-import { handleServerTool } from "../tools.js";
+import { CapletsEngine } from "../engine.js";
 import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
@@ -22,6 +9,9 @@ export type NativeCapletsServiceOptions = {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
+  watchDebounceMs?: number;
+  watch?: boolean;
+  writeErr?: (value: string) => void;
 };
 
 export type NativeCapletTool = {
@@ -32,9 +22,13 @@ export type NativeCapletTool = {
   promptGuidance: string[];
 };
 
+export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => void;
+
 export type NativeCapletsService = {
   listTools(): NativeCapletTool[];
   execute(capletId: string, request: unknown): Promise<unknown>;
+  reload(): Promise<boolean>;
+  onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void;
   close(): Promise<void>;
 };
 
@@ -45,29 +39,14 @@ export function createNativeCapletsService(
 }
 
 class DefaultNativeCapletsService implements NativeCapletsService {
-  private readonly config: CapletsConfig;
-  private readonly registry: ServerRegistry;
-  private readonly downstream: DownstreamManager;
-  private readonly openapi: OpenApiManager;
-  private readonly graphql: GraphQLManager;
-  private readonly http: HttpActionManager;
-  private readonly cli: CliToolsManager;
+  private readonly engine: CapletsEngine;
 
   constructor(options: NativeCapletsServiceOptions) {
-    const configPath = resolveConfigPath(options.configPath);
-    const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
-    this.config = loadConfig(configPath, projectConfigPath);
-    this.registry = new ServerRegistry(this.config);
-    const authOptions = options.authDir ? { authDir: options.authDir } : undefined;
-    this.downstream = new DownstreamManager(this.registry, authOptions);
-    this.openapi = new OpenApiManager(this.registry, authOptions);
-    this.graphql = new GraphQLManager(this.registry, authOptions);
-    this.http = new HttpActionManager(this.registry, authOptions);
-    this.cli = new CliToolsManager(this.registry);
+    this.engine = new CapletsEngine(options);
   }
 
   listTools(): NativeCapletTool[] {
-    return this.registry.enabledServers().map((caplet) => {
+    return this.engine.enabledServers().map((caplet) => {
       const toolName = nativeCapletToolName(caplet.server);
       return {
         caplet: caplet.server,
@@ -80,24 +59,18 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    try {
-      const caplet = this.registry.require(capletId);
-      return await handleServerTool(
-        caplet,
-        request,
-        this.registry,
-        this.downstream,
-        this.openapi,
-        this.graphql,
-        this.http,
-        this.cli,
-      );
-    } catch (error) {
-      return errorResult(error);
-    }
+    return await this.engine.execute(capletId, request);
+  }
+
+  async reload(): Promise<boolean> {
+    return await this.engine.reload();
+  }
+
+  onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void {
+    return this.engine.onReload(() => listener(this.listTools()));
   }
 
   async close(): Promise<void> {
-    await this.downstream.close();
+    await this.engine.close();
   }
 }

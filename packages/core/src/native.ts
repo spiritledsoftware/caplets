@@ -3,6 +3,7 @@ export {
   type NativeCapletTool,
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
+  type NativeCapletsToolsChangedListener,
 } from "./native/service.js";
 export { registerNativeCapletsProcessCleanup } from "./native/process-cleanup.js";
 export {
