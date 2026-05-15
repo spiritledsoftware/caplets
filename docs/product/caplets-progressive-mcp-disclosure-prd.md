@@ -4,7 +4,7 @@
 
 **Problem Statement**: MCP clients that connect directly to many servers receive a large, flat tool surface up front. This creates context bloat, weak tool selection, name-collision risk, and poor discoverability when an agent only needs to know which capability domain to inspect next.
 
-**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, and explicit HTTP API action definitions from `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows, user-owned Markdown Caplet files from the user Caplets root, project config from `./.caplets/config.json`, and explicitly trusted project Markdown Caplet files from `./.caplets`. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, or HTTP actions through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
+**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and explicit CLI tool/action definitions from `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows, user-owned Markdown Caplet files from the user Caplets root, project config from `./.caplets/config.json`, and project Markdown Caplet files from `./.caplets`. Project sources load by default and override global/user sources with the same Caplet ID, while inspection commands expose source metadata and shadow warnings. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, HTTP actions, or CLI tools/actions through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
 
 **Success Criteria**:
 
@@ -25,13 +25,13 @@
 ### Primary User Flow
 
 1. User installs and configures Caplets as an MCP server in their MCP client.
-2. User creates either `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows with downstream server, OpenAPI endpoint, GraphQL endpoint, or HTTP API action definitions and Caplets options, or Markdown Caplet files with exactly one executable backend.
-3. Each downstream MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or Caplet file uses the supported backend configuration shape plus a required `description`.
+2. User creates either `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows with downstream server, OpenAPI endpoint, GraphQL endpoint, HTTP API action, or CLI tool/action definitions and Caplets options, or Markdown Caplet files with exactly one executable backend.
+3. Each downstream MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tool/action set, or Caplet file uses the supported backend configuration shape plus a required `description`.
 4. Client calls Caplets `tools/list` and sees one top-level tool per enabled downstream server, for example `linear`, `chrome-devtools`, and `context7`.
 5. Agent chooses the relevant Caplet tool based on its skill-like tool name and description.
 6. Agent calls that Caplet tool with an operation such as `get_caplet`, `search_tools`, `list_tools`, or `get_tool`.
 7. Agent calls the same Caplet tool with `operation: "call_tool"`, an exact downstream tool name, and a JSON object of arguments.
-8. Caplets forwards the request to that server's downstream MCP process or executes the selected OpenAPI, GraphQL, or explicit HTTP action and returns the result.
+8. Caplets forwards the request to that server's downstream MCP process or executes the selected OpenAPI, GraphQL, explicit HTTP action, or explicit CLI action and returns the result.
 
 ### User Stories
 
@@ -41,9 +41,11 @@ Acceptance Criteria:
 
 - Caplets reads `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows by default.
 - Caplets reads user-owned Markdown Caplet files from `${XDG_CONFIG_HOME:-~/.config}/caplets` on Unix-like platforms or `%APPDATA%\caplets` on Windows by default.
-- Caplets reads project Markdown Caplet files from `./.caplets` only when `CAPLETS_TRUST_PROJECT_CAPLETS` is set to `1`, `true`, or `yes`.
-- Caplets supports `mcpServers` for MCP backends, `openapiEndpoints` for native OpenAPI backends, `graphqlEndpoints` for native GraphQL backends, and `httpApis` for explicitly configured HTTP actions.
-- Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
+- Caplets reads project Markdown Caplet files from `./.caplets` by default.
+- Project config and project Markdown Caplet files override global/user sources with the same Caplet ID.
+- `caplets list` and source inspection output expose the winning source and warn when a project source shadows a global/user source.
+- Caplets supports `mcpServers` for MCP backends, `openapiEndpoints` for native OpenAPI backends, `graphqlEndpoints` for native GraphQL backends, `httpApis` for explicitly configured HTTP actions, and `cliTools` for explicitly configured CLI tools.
+- Generated top-level tool names are unique across `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, and Markdown Caplet files; duplicate IDs reject with `CONFIG_INVALID`.
 - Every configured server requires a stable server key and non-empty `description`.
 - Caplets `tools/list` returns one generated top-level MCP tool per enabled server.
 - Each generated Caplet tool uses the configured server ID as the MCP tool name.
@@ -79,6 +81,7 @@ Acceptance Criteria:
 - For OpenAPI-backed Caplets, `call_tool.arguments` uses grouped HTTP inputs: `path`, `query`, `header`, and `body`.
 - For GraphQL-backed Caplets, configured operation `call_tool.arguments` is the GraphQL variables object directly; auto-generated operation `call_tool.arguments` is the root field arguments object directly.
 - For HTTP action Caplets, `call_tool.arguments` is the action input object directly; path placeholders read top-level argument fields and configured request mappings can reference `$input.field` or `$input`.
+- For CLI-backed Caplets, `call_tool.arguments` is the configured CLI action input object directly; Caplets maps those fields into configured argv, environment, stdin, or working-directory templates without shell interpolation.
 - `call_tool` requires the exact downstream tool name; Caplets does not use fuzzy matching, aliases, or auto-correction for execution.
 - The selected generated Caplet tool is the server namespace, so `call_tool` does not accept a `server` argument in MVP.
 - Caplets preserves downstream tool names exactly and does not support flattened namespaced identifiers such as `server.tool` in MVP.
@@ -208,7 +211,7 @@ Requirements:
 - `mcpServers` is optional when one or more valid Markdown Caplet files are present.
 - `$schema` is optional and exists only for JSON Schema-aware editor validation.
 - `version` is optional for MVP and defaults to 1 when omitted. If present, MVP accepts only `1` and rejects unsupported versions with `CONFIG_INVALID`.
-- Allowed top-level keys in MVP are `$schema`, `version`, `defaultSearchLimit`, `maxSearchLimit`, `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, and `httpApis`; unknown top-level keys are rejected with `CONFIG_INVALID`.
+- Allowed top-level keys in MVP are `$schema`, `version`, `defaultSearchLimit`, `maxSearchLimit`, `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`; unknown top-level keys are rejected with `CONFIG_INVALID`.
 - The committed JSON Schema lives at `schemas/caplets-config.schema.json`, is generated from the Zod runtime config schema, and CI must fail when the committed schema drifts from the generated output.
 - Unknown keys inside each server config are rejected with `CONFIG_INVALID`, except fields that belong to the tracked standard MCP server schema plus Caplets-owned additions documented here.
 - `mcpServers` is the only accepted top-level server configuration key for plain JSON downstream MCP servers in MVP.
@@ -223,7 +226,7 @@ Requirements:
 - `description` must be at most 1500 characters and is returned exactly as configured.
 - `description` may contain Markdown syntax because the primary reader is an LLM, but MVP treats it as opaque text: Caplets does not render, sanitize, transform, or interpret Markdown.
 - Caplets should reuse or closely track existing MCP server config validation semantics where practical rather than inventing a new dialect.
-- Markdown Caplet files are executable configuration because their required `mcpServer` backend can start a downstream server. User Caplet files are trusted by location. Project Caplet files require explicit process-level trust through `CAPLETS_TRUST_PROJECT_CAPLETS`.
+- Markdown Caplet files are executable configuration because they require exactly one backend among `mcpServer`, `openapiEndpoint`, `graphqlEndpoint`, `httpApi`, or `cliTools`, and some backends can start downstream processes. User Caplet files are trusted by location, and project Caplet files load by default from the current project's `./.caplets` directory. When a project Caplet shadows a global/user Caplet, CLI inspection must make the winning project source and shadowed source visible.
 - Each server config must define exactly one connection shape:
   - Stdio: `command` is required; optional `args`, `env`, and `cwd` are allowed.
   - Remote: `url` is required and `transport` must be `http` or `sse`.
@@ -264,6 +267,7 @@ Requirements:
 - OpenAPI backends support local `specPath` or remote `specUrl`, explicit `auth`, optional `baseUrl`, and native HTTP execution for standard OpenAPI methods.
 - GraphQL backends support local `schemaPath`, remote `schemaUrl`, or endpoint introspection, configured operations, auto-generated query/mutation tools, explicit `auth`, and native GraphQL HTTP execution.
 - HTTP action backends support explicit `httpApis` config or Markdown `httpApi` frontmatter with `baseUrl`, `auth`, and one or more named actions. Each action defines `method`, `path`, optional `description`, optional `inputSchema`, and optional `query`, `headers`, and `jsonBody` mappings.
+- CLI backends support explicit `cliTools` config or Markdown `cliTools` frontmatter with one or more named actions. Each action defines a command, optional fixed args, optional description, optional inputSchema, optional argument/environment/stdin mappings, optional cwd, timeout, and output byte limits; execution must avoid shell evaluation unless explicitly modeled as a command executable.
 - HTTP action `query` and `headers` mappings must resolve to object maps whose values are strings, numbers, or booleans. HTTP action `jsonBody` mappings support literal values, nested arrays/objects, `$input.field` references, and `$input` for the complete argument object. HTTP action paths may contain `{field}` placeholders resolved from top-level arguments.
 - HTTP action requests require HTTPS except loopback URLs, reject origin-changing paths and redirects, reject managed configured headers, enforce timeouts and response byte limits, and return structured `{ status, statusText, headers, body, elapsedMs }` content with `isError` set for non-2xx status.
 - OpenCode's `mcp` config shape is a compatibility reference, not Caplets' native MVP shape: OpenCode uses local/remote entries under `mcp`, local `command` as an array, `environment` instead of `env`, and `{env:NAME}`-style interpolation in its broader config system. Automatic OpenCode config import/normalization is deferred.
@@ -298,6 +302,7 @@ Downstream interactions required for MVP:
 - Resolve configured bearer/header auth and stored OAuth tokens before remote HTTP/SSE operations.
 - Call downstream `tools/list` for selected servers.
 - Call downstream `tools/call` for `operation: "call_tool"` inside a generated Caplet tool.
+- Execute selected OpenAPI operations, GraphQL operations, HTTP actions, and CLI actions for `operation: "call_tool"` inside a generated Caplet tool.
 - Refresh stale downstream tool metadata before `get_tool` and `call_tool` exact-name resolution according to `toolCacheTtlMs`.
 - Require downstream tools to be present in fresh-enough `tools/list` metadata before forwarding `call_tool`.
 - Preserve downstream schemas and result content.
@@ -374,6 +379,7 @@ Core modules:
 - `openapiEndpoints: Record<string, OpenApiEndpointConfig>`
 - `graphqlEndpoints: Record<string, GraphQlEndpointConfig>`
 - `httpApis: Record<string, HttpApiConfig>`
+- `cliTools: Record<string, CliToolConfig>`
 
 `CapletServerConfig`:
 
@@ -465,7 +471,7 @@ Core modules:
 - `description: string`
 - `tags?: string[]`
 - `body?: string`
-- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" } | { type: "graphql"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "schemaPath" | "schemaUrl" | "introspection"; configuredOperations: boolean } | { type: "http"; disabled: boolean; requestTimeoutMs: number; configuredActions: number }`
+- `backend: { type: "mcp"; transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number } | { type: "openapi"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "specPath" | "specUrl" } | { type: "graphql"; disabled: boolean; requestTimeoutMs: number; operationCacheTtlMs: number; source: "schemaPath" | "schemaUrl" | "introspection"; configuredOperations: boolean } | { type: "http"; disabled: boolean; requestTimeoutMs: number; configuredActions: number } | { type: "cli"; disabled: boolean; executionTimeoutMs: number; configuredActions: number }`
 - `mcpServer?: { transport: "stdio" | "http" | "sse"; disabled: boolean; startupTimeoutMs: number; callTimeoutMs: number; toolCacheTtlMs: number }`
 
 `CapletToolRef`:
@@ -620,7 +626,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 **MVP: Local progressive MCP gateway**
 
 - Read `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows.
-- Validate `mcpServers` config with required descriptions.
+- Validate all supported backend config maps with required descriptions: `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`.
 - Require restart after config changes while keeping config loading, registry construction, and downstream client lifecycle modular enough for later hot reload.
 - Expose one generated top-level MCP tool per enabled downstream server.
 - Support server-scoped diagnostics, tool listing, lexical search, tool metadata lookup, and explicit tool invocation through each generated Caplet tool.
@@ -650,7 +656,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 
 ### Technical Risks
 
-- **Config fragmentation**: MCP clients differ on config shape. MVP mitigates this by documenting and supporting exactly `mcpServers`.
+- **Config fragmentation**: MCP clients differ on config shape. MVP mitigates this by documenting and supporting exactly the configured backend keys, including `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`.
 - **Client expectations**: Some clients may expect every downstream tool in `tools/list`. MVP intentionally exposes one generated server/caplet tool per downstream server instead.
 - **Lifecycle cost**: Keeping downstream stdio servers running improves freshness but consumes local resources and may surface startup failures earlier. MVP mitigates this with bounded startup, process reuse, status reporting, and partial failures.
 - **Unsafe downstream behavior**: Downstream tools may be destructive. MVP mitigates this by avoiding safety claims and preserving MCP client confirmation flows.

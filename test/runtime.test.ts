@@ -265,6 +265,39 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("watches project Caplet files without explicit trust", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const projectFile = join(dir, "project", ".caplets", "notes.txt");
+    writeFileSync(projectFile, "before");
+    const runtime = new CapletsRuntime({
+      configPath,
+      projectConfigPath,
+      server: mockServer(),
+      watchDebounceMs: 10,
+    });
+    try {
+      let reloads = 0;
+      (runtime as unknown as { reload: () => Promise<boolean> }).reload = vi.fn(async () => {
+        reloads += 1;
+        return true;
+      });
+
+      writeFileSync(projectFile, "after");
+      await eventually(() => expect(reloads).toBeGreaterThan(0));
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("runs a follow-up reload when another reload is requested mid-flight", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

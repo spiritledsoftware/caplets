@@ -1,16 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
 import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
-import { parseConfig, TRUST_PROJECT_CAPLETS_ENV } from "../src/config.js";
+import { loadConfig, parseConfig } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 import { writeTokenBundle } from "../src/auth.js";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;
-  const originalTrustProjectCaplets = process.env[TRUST_PROJECT_CAPLETS_ENV];
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -18,11 +25,6 @@ describe("cli init", () => {
       delete process.env.CAPLETS_CONFIG;
     } else {
       process.env.CAPLETS_CONFIG = originalConfigPath;
-    }
-    if (originalTrustProjectCaplets === undefined) {
-      delete process.env[TRUST_PROJECT_CAPLETS_ENV];
-    } else {
-      process.env[TRUST_PROJECT_CAPLETS_ENV] = originalTrustProjectCaplets;
     }
   });
 
@@ -117,9 +119,11 @@ describe("cli init", () => {
 
       const text = out.join("");
       expect(text).toContain("server");
+      expect(text).toContain("source");
       expect(text).toContain("filesystem");
       expect(text).toContain("mcp");
       expect(text).toContain("not_started");
+      expect(text).toContain("global-config");
       expect(text).toContain("Project Files");
       expect(text).toContain("users");
       expect(text).toContain("openapi");
@@ -168,6 +172,9 @@ describe("cli init", () => {
         description: string;
         disabled: boolean;
         status: string;
+        source: string;
+        path: string | null;
+        shadows: Array<{ kind: string; path: string }>;
       }>;
       expect(rows).toEqual([
         expect.objectContaining({
@@ -175,23 +182,140 @@ describe("cli init", () => {
           backend: "graphql",
           disabled: false,
           status: "not_started",
+          source: "global-config",
+          path: configPath,
+          shadows: [],
         }),
         expect.objectContaining({
           server: "filesystem",
           backend: "mcp",
           disabled: false,
           status: "not_started",
+          source: "global-config",
+          path: configPath,
+          shadows: [],
         }),
         expect.objectContaining({
           server: "users",
           backend: "openapi",
           disabled: false,
           status: "not_started",
+          source: "global-config",
+          path: configPath,
+          shadows: [],
         }),
       ]);
       expect(out.join("")).not.toContain("secret-access-token");
       expect(out.join("")).not.toContain("openapi-client");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints source warnings when project Caplets shadow global Caplets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-sources-"));
+    const cwd = process.cwd();
+    const userRoot = join(dir, "user");
+    const projectRoot = join(dir, "project");
+    const configPath = join(userRoot, "config.json");
+    const projectCapletPath = join(projectRoot, ".caplets", "github.md");
+    const out: string[] = [];
+    try {
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(dirname(projectCapletPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub Global",
+              description: "Use GitHub globally.",
+              command: "global-github",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        projectCapletPath,
+        [
+          "---",
+          "name: GitHub Project",
+          "description: Use GitHub from this project.",
+          "mcpServer:",
+          "  command: project-github",
+          "---",
+          "# GitHub Project",
+        ].join("\n"),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      process.chdir(projectRoot);
+
+      await runCli(["list"], { writeOut: (value) => out.push(value) });
+
+      const text = out.join("");
+      expect(text).toContain("server");
+      expect(text).toContain("source");
+      expect(text).toContain("github");
+      expect(text).toContain("project-file");
+      expect(text).toContain(
+        `Warning: project Caplet github shadows global Caplet at ${configPath}`,
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints JSON source and shadow metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-json-sources-"));
+    const cwd = process.cwd();
+    const userRoot = join(dir, "user");
+    const projectRoot = join(dir, "project");
+    const configPath = join(userRoot, "config.json");
+    const projectCapletPath = join(projectRoot, ".caplets", "github.md");
+    const out: string[] = [];
+    try {
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(dirname(projectCapletPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub Global",
+              description: "Use GitHub globally.",
+              command: "global-github",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        projectCapletPath,
+        [
+          "---",
+          "name: GitHub Project",
+          "description: Use GitHub from this project.",
+          "mcpServer:",
+          "  command: project-github",
+          "---",
+          "# GitHub Project",
+        ].join("\n"),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      process.chdir(projectRoot);
+
+      await runCli(["list", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(JSON.parse(out.join(""))).toEqual([
+        expect.objectContaining({
+          server: "github",
+          source: "project-file",
+          path: projectCapletPath,
+          shadows: [{ kind: "global-config", path: configPath }],
+        }),
+      ]);
+    } finally {
+      process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -218,7 +342,6 @@ describe("cli init", () => {
     const out: string[] = [];
     try {
       process.env.CAPLETS_CONFIG = configPath;
-      process.env[TRUST_PROJECT_CAPLETS_ENV] = "yes";
 
       await runCli(["config", "paths", "--json"], {
         writeOut: (value) => out.push(value),
@@ -233,7 +356,6 @@ describe("cli init", () => {
         projectRoot: join(process.cwd(), ".caplets"),
         authDir,
         envConfig: configPath,
-        projectCapletsTrusted: true,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -262,7 +384,6 @@ describe("cli init", () => {
           `projectRoot: ${join(process.cwd(), ".caplets")}`,
           `authDir: ${authDir}`,
           `envConfig: ${configPath}`,
-          "projectCapletsTrusted: false",
           "",
         ].join("\n"),
       );
@@ -274,13 +395,46 @@ describe("cli init", () => {
   it("installs all Caplets from a local repo caplets directory", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
     const out: string[] = [];
     try {
       writeInstallableRepo(repo);
       process.env.CAPLETS_CONFIG = configPath;
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
 
       await runCli(["install", repo], { writeOut: (value) => out.push(value) });
+
+      expect(readFileSync(join(projectRoot, ".caplets", "filesystem.md"), "utf8")).toContain(
+        "name: Project Files",
+      );
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "CAPLET.md"), "utf8")).toContain(
+        "name: GitHub",
+      );
+      expect(out.join("")).toContain("Installed filesystem");
+      expect(out.join("")).toContain("Installed github");
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("installs all Caplets globally when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-global-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const configPath = join(dir, "user", "config.json");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.env.CAPLETS_CONFIG = configPath;
+      process.chdir(projectRoot);
+
+      await runCli(["install", "--global", repo], { writeOut: (value) => out.push(value) });
 
       expect(readFileSync(join(dir, "user", "filesystem.md"), "utf8")).toContain(
         "name: Project Files",
@@ -288,28 +442,606 @@ describe("cli init", () => {
       expect(readFileSync(join(dir, "user", "github", "CAPLET.md"), "utf8")).toContain(
         "name: GitHub",
       );
-      expect(out.join("")).toContain("Installed filesystem");
-      expect(out.join("")).toContain("Installed github");
+      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+      expect(out.join("")).toContain(
+        `Installed filesystem to ${join(dir, "user", "filesystem.md")}`,
+      );
+      expect(out.join("")).toContain(`Installed github to ${join(dir, "user", "github")}`);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds CLI Caplets to the project root by default", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const out: string[] = [];
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      const output = join(projectRoot, ".caplets", "repo-tools.md");
+      expect(readFileSync(output, "utf8")).toContain("package_test:");
+      expect(out.join("")).toBe(`Wrote CLI Caplet to ${output}\n`);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds CLI Caplets globally when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-global-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const configPath = join(dir, "user", "config.json");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.env.CAPLETS_CONFIG = configPath;
+      process.chdir(projectRoot);
+
+      await runCli(
+        ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--global"],
+        {
+          writeOut: () => {},
+        },
+      );
+
+      expect(readFileSync(join(dir, "user", "repo-tools.md"), "utf8")).toContain("package_test:");
+      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints added CLI Caplets without writing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-print-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const out: string[] = [];
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(
+        ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--print"],
+        {
+          writeOut: (value) => out.push(value),
+        },
+      );
+
+      expect(out.join("")).toContain("cliTools:");
+      expect(out.join("")).toContain("package_test:");
+      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects added CLI Caplets when no package scripts produce actions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-empty-"));
+    const repo = join(dir, "repo");
+    try {
+      mkdirSync(repo, { recursive: true });
+      writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", scripts: {} }));
+
+      await expect(
+        runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
+  it("prints added MCP and OpenAPI backend Caplets", async () => {
+    const out: string[] = [];
+
+    await runCli(
+      [
+        "add",
+        "mcp",
+        "remote-tools",
+        "--url",
+        "https://mcp.example.com/mcp",
+        "--transport",
+        "sse",
+        "--token-env",
+        "MCP_TOKEN",
+        "--print",
+      ],
+      { writeOut: (value) => out.push(value) },
+    );
+    await runCli(
+      [
+        "add",
+        "openapi",
+        "petstore",
+        "--spec",
+        "https://api.example.com/openapi.json",
+        "--base-url",
+        "https://api.example.com/v1",
+        "--print",
+      ],
+      { writeOut: (value) => out.push(value) },
+    );
+
+    expect(out.join("\n")).toContain("mcpServer:");
+    expect(out.join("\n")).toContain('transport: "sse"');
+    expect(out.join("\n")).toContain('token: "$env:MCP_TOKEN"');
+    expect(out.join("\n")).toContain("openapiEndpoint:");
+    expect(out.join("\n")).toContain('baseUrl: "https://api.example.com/v1"');
+  });
+
+  it("adds GraphQL and HTTP backend Caplets to the project root", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-backends-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(
+        [
+          "add",
+          "graphql",
+          "catalog",
+          "--endpoint-url",
+          "https://api.example.com/graphql",
+          "--introspection",
+        ],
+        { writeOut: () => {} },
+      );
+      await runCli(
+        [
+          "add",
+          "http",
+          "status-api",
+          "--base-url",
+          "https://api.example.com",
+          "--action",
+          "get_status:GET:/status",
+        ],
+        { writeOut: () => {} },
+      );
+
+      expect(readFileSync(join(projectRoot, ".caplets", "catalog.md"), "utf8")).toContain(
+        "graphqlEndpoint:",
+      );
+      expect(readFileSync(join(projectRoot, ".caplets", "status-api.md"), "utf8")).toContain(
+        "httpApi:",
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes OpenAPI local spec paths that load from the original project file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-openapi-path-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(join(projectRoot, "openapi.json"), JSON.stringify({ openapi: "3.1.0" }));
+      process.chdir(projectRoot);
+
+      await runCli(["add", "openapi", "users", "--spec", "./openapi.json"], {
+        writeOut: () => {},
+      });
+
+      const config = loadConfig(
+        join(dir, "user", "config.json"),
+        join(projectRoot, ".caplets", "config.json"),
+      );
+      expect(config.openapiEndpoints.users?.specPath).toBe(join(projectRoot, "openapi.json"));
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes GraphQL local schema paths that load from the original project file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-graphql-path-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(join(projectRoot, "schema.graphql"), "type Query { viewer: String }\n");
+      process.chdir(projectRoot);
+
+      await runCli(
+        [
+          "add",
+          "graphql",
+          "catalog",
+          "--endpoint-url",
+          "https://api.example.com/graphql",
+          "--schema",
+          "./schema.graphql",
+        ],
+        { writeOut: () => {} },
+      );
+
+      const config = loadConfig(
+        join(dir, "user", "config.json"),
+        join(projectRoot, ".caplets", "config.json"),
+      );
+      expect(config.graphqlEndpoints.catalog?.schemaPath).toBe(join(projectRoot, "schema.graphql"));
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid backend add options", async () => {
+    await expect(
+      runCli(
+        [
+          "add",
+          "graphql",
+          "bad-graphql",
+          "--endpoint-url",
+          "https://api.example.com/graphql",
+          "--schema",
+          "./schema.graphql",
+          "--introspection",
+          "--print",
+        ],
+        { writeOut: () => {}, writeErr: () => {} },
+      ),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+
+    await expect(
+      runCli(
+        ["add", "http", "bad-http", "--base-url", "https://api.example.com", "--action", "bad"],
+        { writeOut: () => {}, writeErr: () => {} },
+      ),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+
+    await expect(
+      runCli(
+        [
+          "add",
+          "http",
+          "duplicate-http",
+          "--base-url",
+          "https://api.example.com",
+          "--action",
+          "get_status:GET:/status",
+          "--action",
+          "get_status:POST:/status",
+          "--print",
+        ],
+        { writeOut: () => {}, writeErr: () => {} },
+      ),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+  });
+
+  it("adds CLI Caplets to an explicit output path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-output-"));
+    const repo = join(dir, "repo");
+    const output = join(dir, "custom", "tools.md");
+    try {
+      writeCliRepo(repo);
+
+      await runCli(
+        ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--output", output],
+        { writeOut: () => {} },
+      );
+
+      expect(readFileSync(output, "utf8")).toContain("package_test:");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a controlled error when an add output parent is a file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-output-parent-file-"));
+    const repo = join(dir, "repo");
+    const parent = join(dir, "custom");
+    const output = join(parent, "tools.md");
+    try {
+      writeCliRepo(repo);
+      writeFileSync(parent, "not a directory\n");
+
+      await expect(
+        runCli(
+          ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--output", output],
+          { writeOut: () => {}, writeErr: () => {} },
+        ),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects explicit add output paths that are directories even with force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-output-dir-"));
+    const repo = join(dir, "repo");
+    const output = join(dir, "custom");
+    try {
+      writeCliRepo(repo);
+      mkdirSync(output, { recursive: true });
+
+      await expect(
+        runCli(
+          [
+            "add",
+            "cli",
+            "repo-tools",
+            "--repo",
+            repo,
+            "--include",
+            "package",
+            "--output",
+            output,
+            "--force",
+          ],
+          { writeOut: () => {}, writeErr: () => {} },
+        ),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects explicit add output paths that are symlinks even with force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-output-symlink-"));
+    const repo = join(dir, "repo");
+    const target = join(dir, "outside.md");
+    const output = join(dir, "custom", "tools.md");
+    try {
+      writeCliRepo(repo);
+      writeFileSync(target, "protected\n");
+      mkdirSync(join(dir, "custom"), { recursive: true });
+      symlinkSync(target, output);
+
+      await expect(
+        runCli(
+          [
+            "add",
+            "cli",
+            "repo-tools",
+            "--repo",
+            repo,
+            "--include",
+            "package",
+            "--output",
+            output,
+            "--force",
+          ],
+          { writeOut: () => {}, writeErr: () => {} },
+        ),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(readFileSync(target, "utf8")).toBe("protected\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects explicit add output paths with symlinked parents", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-output-parent-symlink-"));
+    const repo = join(dir, "repo");
+    const realParent = join(dir, "real-parent");
+    const symlinkParent = join(dir, "custom");
+    const output = join(symlinkParent, "tools.md");
+    try {
+      writeCliRepo(repo);
+      mkdirSync(realParent, { recursive: true });
+      symlinkSync(realParent, symlinkParent);
+
+      await expect(
+        runCli(
+          ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--output", output],
+          { writeOut: () => {}, writeErr: () => {} },
+        ),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(existsSync(join(realParent, "tools.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("wraps unexpected lstat failures while inspecting add output paths", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-lstat-failure-"));
+    const repo = join(dir, "repo");
+    const output = join(dir, "a".repeat(300), "tools.md");
+    try {
+      writeCliRepo(repo);
+
+      await expect(
+        runCli(
+          ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--output", output],
+          { writeOut: () => {}, writeErr: () => {} },
+        ),
+      ).rejects.toThrow(
+        expect.objectContaining({
+          code: "CONFIG_INVALID",
+          message: `Could not inspect output path ${output}`,
+        }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects default add output paths with a symlinked .caplets root", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-root-symlink-"));
+    const projectRoot = join(dir, "project");
+    const realRoot = join(dir, "real-caplets");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      mkdirSync(realRoot, { recursive: true });
+      symlinkSync(realRoot, join(projectRoot, ".caplets"));
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(existsSync(join(realRoot, "repo-tools.md"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite added CLI Caplets without force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-overwrite-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
+        writeOut: () => {},
+      });
+
+      await expect(
+        runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
+          writeOut: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+
+      await runCli(
+        ["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--force"],
+        { writeOut: () => {} },
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects default add output paths that are symlinks even with force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-default-symlink-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const target = join(dir, "outside.md");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(join(projectRoot, ".caplets"), { recursive: true });
+      writeFileSync(target, "protected\n");
+      symlinkSync(target, join(projectRoot, ".caplets", "repo-tools.md"));
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--force"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(readFileSync(target, "utf8")).toBe("protected\n");
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses default add output when a directory Caplet exists for the same ID", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-directory-collision-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(join(projectRoot, ".caplets", "repo-tools"), { recursive: true });
+      writeFileSync(join(projectRoot, ".caplets", "repo-tools", "CAPLET.md"), "existing");
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package", "--force"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid add CLI Caplet IDs before deriving default destinations", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-cli-invalid-"));
+    const projectRoot = join(dir, "project");
+    const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    try {
+      writeCliRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["add", "cli", "bad name", "--repo", repo, "--include", "package"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+      await expect(
+        runCli(["add", "cli", "../escape", "--repo", repo, "--include", "package"], {
+          writeOut: () => {},
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+
+      expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose the removed author cli alias", async () => {
+    await expect(runCli(["author", "cli", "repo-tools"], { writeErr: () => {} })).rejects.toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
+  });
+
   it("installs selected Caplets from a local repo caplets directory", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
     const out: string[] = [];
     try {
       writeInstallableRepo(repo);
       process.env.CAPLETS_CONFIG = configPath;
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: (value) => out.push(value) });
 
-      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
-      expect(existsSync(join(dir, "user", "filesystem.md"))).toBe(false);
-      expect(out.join("")).toBe(`Installed github to ${join(dir, "user", "github")}\n`);
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(projectRoot, ".caplets", "filesystem.md"))).toBe(false);
+      expect(out.join("")).toBe(`Installed github to ${join(projectRoot, ".caplets", "github")}\n`);
     } finally {
+      process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -317,17 +1049,22 @@ describe("cli init", () => {
   it("installs a selected Caplet when an unrelated Caplet is invalid", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
     try {
       writeInstallableRepo(repo);
       writeFileSync(join(repo, "caplets", "broken.md"), "not frontmatter\n");
       process.env.CAPLETS_CONFIG = configPath;
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: () => {} });
 
-      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
-      expect(existsSync(join(dir, "user", "broken.md"))).toBe(false);
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(projectRoot, ".caplets", "broken.md"))).toBe(false);
     } finally {
+      process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -335,17 +1072,22 @@ describe("cli init", () => {
   it("installs a selected Caplet when an unrelated Caplet filename has an invalid ID", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
     try {
       writeInstallableRepo(repo);
       writeFileSync(join(repo, "caplets", "api.v2.md"), "not frontmatter\n");
       process.env.CAPLETS_CONFIG = configPath;
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: () => {} });
 
-      expect(existsSync(join(dir, "user", "github", "CAPLET.md"))).toBe(true);
-      expect(existsSync(join(dir, "user", "api.v2.md"))).toBe(false);
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+      expect(existsSync(join(projectRoot, ".caplets", "api.v2.md"))).toBe(false);
     } finally {
+      process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -353,10 +1095,14 @@ describe("cli init", () => {
   it("refuses to overwrite installed Caplets without force", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
+    const cwd = process.cwd();
+    const projectRoot = join(dir, "project");
     const configPath = join(dir, "user", "config.json");
     try {
       writeInstallableRepo(repo);
       process.env.CAPLETS_CONFIG = configPath;
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
 
       await runCli(["install", repo, "github"], { writeOut: () => {} });
 
@@ -365,6 +1111,184 @@ describe("cli init", () => {
       );
 
       await runCli(["install", repo, "github", "--force"], { writeOut: () => {} });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses file-vs-directory install destination collisions even with force", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-cross-kind-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(destinationRoot, { recursive: true });
+      writeFileSync(join(destinationRoot, "github.md"), "existing\n");
+      mkdirSync(join(destinationRoot, "filesystem"), { recursive: true });
+      writeFileSync(join(destinationRoot, "filesystem", "CAPLET.md"), "existing\n");
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["github"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(() =>
+        installCaplets(repo, { capletIds: ["filesystem"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(readFileSync(join(destinationRoot, "github.md"), "utf8")).toBe("existing\n");
+      expect(readFileSync(join(destinationRoot, "filesystem", "CAPLET.md"), "utf8")).toBe(
+        "existing\n",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses broken symlink file install destinations even with force", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-broken-file-symlink-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    const destination = join(destinationRoot, "filesystem.md");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(destinationRoot, { recursive: true });
+      symlinkSync(join(dir, "missing.md"), destination);
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["filesystem"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses broken symlink directory install destinations even with force", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-broken-dir-symlink-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    const destination = join(destinationRoot, "github");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(destinationRoot, { recursive: true });
+      symlinkSync(join(dir, "missing-directory"), destination);
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["github"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses symlink file-vs-directory install destination collisions even with force", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-cross-kind-symlink-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(destinationRoot, { recursive: true });
+      symlinkSync(join(dir, "missing.md"), join(destinationRoot, "github.md"));
+      symlinkSync(join(dir, "missing-directory"), join(destinationRoot, "filesystem"));
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["github"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+      expect(() =>
+        installCaplets(repo, { capletIds: ["filesystem"], destinationRoot, force: true }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a controlled error when the install destination root is a file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-root-file-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      writeFileSync(destinationRoot, "not a directory\n");
+
+      expect(() => installCaplets(repo, { capletIds: ["github"], destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects install destination roots under symlinked parents", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-root-parent-symlink-"));
+    const repo = join(dir, "repo");
+    const realParent = join(dir, "real-parent");
+    const symlinkParent = join(dir, "linked-parent");
+    const destinationRoot = join(symlinkParent, ".caplets");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(realParent, { recursive: true });
+      symlinkSync(realParent, symlinkParent);
+
+      expect(() => installCaplets(repo, { capletIds: ["github"], destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+      expect(existsSync(join(realParent, ".caplets"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects nested install destinations under symlinked parents", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-nested-parent-symlink-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    const realParent = join(dir, "real-parent");
+    const symlinkParent = join(destinationRoot, "github");
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(destinationRoot, { recursive: true });
+      mkdirSync(realParent, { recursive: true });
+      symlinkSync(realParent, symlinkParent);
+
+      expect(() => installCaplets(repo, { capletIds: ["github"], destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+      expect(existsSync(join(realParent, "CAPLET.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate source IDs before all-install copies anything", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-duplicate-all-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      writeFileSync(join(repo, "caplets", "github.md"), capletFixture("GitHub File"));
+
+      expect(() => installCaplets(repo, { destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+      expect(existsSync(join(destinationRoot, "filesystem.md"))).toBe(false);
+      expect(existsSync(join(destinationRoot, "github"))).toBe(false);
+      expect(existsSync(join(destinationRoot, "github.md"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate source IDs before selected-install copies anything", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-duplicate-selected-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+      writeFileSync(join(repo, "caplets", "github.md"), capletFixture("GitHub File"));
+
+      expect(() => installCaplets(repo, { capletIds: ["github"], destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_EXISTS" }) as CapletsError,
+      );
+      expect(existsSync(join(destinationRoot, "github"))).toBe(false);
+      expect(existsSync(join(destinationRoot, "github.md"))).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -699,4 +1623,32 @@ function writeInstallableRepo(repo: string): void {
     join(root, "github", "README.md"),
     "Extra files are copied with directory Caplets.\n",
   );
+}
+
+function capletFixture(name: string): string {
+  return [
+    "---",
+    `name: ${name}`,
+    "description: Test Caplet.",
+    "mcpServer:",
+    "  command: npx",
+    "  args:",
+    "    - -y",
+    "    - test-server",
+    "---",
+    `# ${name}`,
+  ].join("\n");
+}
+
+function writeCliRepo(repo: string): void {
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(
+    join(repo, "package.json"),
+    JSON.stringify({
+      name: "fixture",
+      packageManager: "pnpm@11.0.9",
+      scripts: { test: "vitest run" },
+    }),
+  );
+  writeFileSync(join(repo, "pnpm-lock.yaml"), "");
 }

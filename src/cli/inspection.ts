@@ -5,10 +5,10 @@ import {
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
-  TRUST_PROJECT_CAPLETS_ENV,
-  isTrustedEnvEnabled,
   type CapletConfig,
   type CapletsConfig,
+  type ConfigSource,
+  type ConfigWithSources,
 } from "../config.js";
 import type { ServerStatus } from "../registry.js";
 
@@ -19,6 +19,9 @@ type CapletListRow = {
   description: string;
   disabled: boolean;
   status: ServerStatus;
+  source: ConfigSource["kind"] | "unknown";
+  path: string | null;
+  shadows: ConfigSource[];
 };
 
 type ConfigPaths = {
@@ -29,14 +32,14 @@ type ConfigPaths = {
   projectRoot: string;
   authDir: string;
   envConfig: string | null;
-  projectCapletsTrusted: boolean;
 };
 
 export function listCaplets(
-  config: CapletsConfig,
+  configWithSources: ConfigWithSources,
   options: { includeDisabled: boolean },
 ): CapletListRow[] {
-  const rows = allCaplets(config)
+  const { config, sources, shadows } = configWithSources;
+  const rows: CapletListRow[] = allCaplets(config)
     .filter((server) => options.includeDisabled || !server.disabled)
     .map((server) => ({
       server: server.server,
@@ -45,6 +48,9 @@ export function listCaplets(
       description: server.description,
       disabled: server.disabled,
       status: initialServerStatus(server),
+      source: sources[server.server]?.kind ?? "unknown",
+      path: sources[server.server]?.path ?? null,
+      shadows: shadows[server.server] ?? [],
     }));
   return rows.sort((left, right) => left.server.localeCompare(right.server));
 }
@@ -68,10 +74,33 @@ export function formatCapletList(rows: CapletListRow[]): string {
     return "No configured Caplets found.\n";
   }
 
-  return `${formatTable([
-    ["server", "backend", "status", "name"],
-    ...rows.map((row) => [row.server, row.backend, row.status, row.name]),
-  ])}\n`;
+  const table = formatTable([
+    ["server", "backend", "status", "source", "name"],
+    ...rows.map((row) => [row.server, row.backend, row.status, row.source, row.name]),
+  ]);
+  const warnings = rows.flatMap((row) =>
+    row.shadows.map(
+      (shadow) =>
+        `Warning: ${formatSourceKind(row.source)} Caplet ${row.server} shadows ${formatSourceKind(
+          shadow.kind,
+        )} Caplet at ${shadow.path}`,
+    ),
+  );
+
+  if (warnings.length === 0) {
+    return `${table}\n`;
+  }
+  return `${table}\n${warnings.join("\n")}\n`;
+}
+
+function formatSourceKind(kind: ConfigSource["kind"] | "unknown"): string {
+  if (kind.startsWith("project")) {
+    return "project";
+  }
+  if (kind.startsWith("global")) {
+    return "global";
+  }
+  return kind;
 }
 
 export function resolveCliConfigPaths(
@@ -88,7 +117,6 @@ export function resolveCliConfigPaths(
     projectRoot: resolveProjectCapletsRoot(),
     authDir: effectiveAuthDir,
     envConfig: envConfigPath ?? null,
-    projectCapletsTrusted: isTrustedProjectCapletsEnabled(),
   };
 }
 
@@ -102,13 +130,8 @@ export function formatConfigPaths(paths: ConfigPaths): string {
       `projectRoot: ${paths.projectRoot}`,
       `authDir: ${paths.authDir}`,
       `envConfig: ${paths.envConfig ?? "unset"}`,
-      `projectCapletsTrusted: ${paths.projectCapletsTrusted}`,
     ].join("\n") + "\n"
   );
-}
-
-function isTrustedProjectCapletsEnabled(): boolean {
-  return isTrustedEnvEnabled(process.env[TRUST_PROJECT_CAPLETS_ENV]);
 }
 
 function formatTable(rows: string[][]): string {

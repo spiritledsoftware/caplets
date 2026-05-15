@@ -57,7 +57,6 @@ export function defaultAuthDir(
 export const DEFAULT_CONFIG_PATH = defaultConfigPath();
 export const DEFAULT_AUTH_DIR = defaultAuthDir();
 export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
-export const TRUST_PROJECT_CAPLETS_ENV = "CAPLETS_TRUST_PROJECT_CAPLETS";
 
 export function resolveConfigPath(path?: string): string {
   return path ?? DEFAULT_CONFIG_PATH;
@@ -73,8 +72,4 @@ export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
 
 export function resolveProjectCapletsRoot(cwd = process.cwd()): string {
   return join(cwd, ".caplets");
-}
-
-export function isTrustedEnvEnabled(value: string | undefined): boolean {
-  return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "yes";
 }

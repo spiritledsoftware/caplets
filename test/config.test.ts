@@ -11,16 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files.js";
-import { configJsonSchema, loadConfig, parseConfig } from "../src/config.js";
+import { configJsonSchema, loadConfig, loadConfigWithSources, parseConfig } from "../src/config.js";
 import { CapletsError } from "../src/errors.js";
 
 describe("config", () => {
   const originalEnv = process.env.EXAMPLE_TOKEN;
-  const originalTrustProjectCaplets = process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
 
   beforeEach(() => {
     process.env.EXAMPLE_TOKEN = "secret-value";
-    delete process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
   });
 
   afterEach(() => {
@@ -28,11 +26,6 @@ describe("config", () => {
       delete process.env.EXAMPLE_TOKEN;
     } else {
       process.env.EXAMPLE_TOKEN = originalEnv;
-    }
-    if (originalTrustProjectCaplets === undefined) {
-      delete process.env.CAPLETS_TRUST_PROJECT_CAPLETS;
-    } else {
-      process.env.CAPLETS_TRUST_PROJECT_CAPLETS = originalTrustProjectCaplets;
     }
   });
 
@@ -84,7 +77,7 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("rejects executable OpenAPI endpoint config from untrusted project config", () => {
+  it("rejects OpenAPI executable backend maps from project config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-openapi-"));
     const projectConfigPath = join(dir, ".caplets", "config.json");
     mkdirSync(join(dir, ".caplets"), { recursive: true });
@@ -110,16 +103,22 @@ describe("config", () => {
     );
 
     expect(() => loadConfig(join(dir, "missing-user-config.json"), projectConfigPath)).toThrow(
-      expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining(
+          "cannot define executable backend map openapiEndpoints; use project Markdown Caplet files or user config instead",
+        ) as string,
+      }) as CapletsError,
     );
     rmSync(dir, { recursive: true, force: true });
     delete process.env.PROJECT_OPENAPI_SECRET;
   });
 
-  it("rejects executable GraphQL endpoint config from untrusted project config", () => {
+  it("rejects GraphQL executable backend maps from project config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-graphql-"));
     const projectConfigPath = join(dir, ".caplets", "config.json");
     mkdirSync(join(dir, ".caplets"), { recursive: true });
+    process.env.PROJECT_GRAPHQL_SECRET = "must-not-leak";
     writeFileSync(
       projectConfigPath,
       JSON.stringify({
@@ -141,15 +140,22 @@ describe("config", () => {
     );
 
     expect(() => loadConfig(join(dir, "missing-user-config.json"), projectConfigPath)).toThrow(
-      expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining(
+          "cannot define executable backend map graphqlEndpoints; use project Markdown Caplet files or user config instead",
+        ) as string,
+      }) as CapletsError,
     );
     rmSync(dir, { recursive: true, force: true });
+    delete process.env.PROJECT_GRAPHQL_SECRET;
   });
 
-  it("rejects executable HTTP API config from untrusted project config", () => {
+  it("rejects HTTP executable backend maps from project config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-http-"));
     const projectConfigPath = join(dir, ".caplets", "config.json");
     mkdirSync(join(dir, ".caplets"), { recursive: true });
+    process.env.PROJECT_HTTP_SECRET = "must-not-leak";
     writeFileSync(
       projectConfigPath,
       JSON.stringify({
@@ -173,9 +179,15 @@ describe("config", () => {
     );
 
     expect(() => loadConfig(join(dir, "missing-user-config.json"), projectConfigPath)).toThrow(
-      expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining(
+          "cannot define executable backend map httpApis; use project Markdown Caplet files or user config instead",
+        ) as string,
+      }) as CapletsError,
     );
     rmSync(dir, { recursive: true, force: true });
+    delete process.env.PROJECT_HTTP_SECRET;
   });
 
   it("merges user config with project config and lets project config win", () => {
@@ -235,7 +247,6 @@ describe("config", () => {
     const projectRoot = join(dir, "project", ".caplets");
     mkdirSync(join(userRoot, "linear"), { recursive: true });
     mkdirSync(join(projectRoot, "linear"), { recursive: true });
-    process.env.CAPLETS_TRUST_PROJECT_CAPLETS = "1";
     writeFileSync(
       join(userRoot, "github.md"),
       [
@@ -299,6 +310,129 @@ describe("config", () => {
       command: "project-linear",
       body: "# Project Linear",
     });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reports project Caplet file sources and shadowed global files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-source-files-"));
+    const userRoot = join(dir, "user");
+    const projectRoot = join(dir, "project", ".caplets");
+    const globalPath = join(userRoot, "github.md");
+    const projectPath = join(projectRoot, "github.md");
+    mkdirSync(userRoot, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(
+      globalPath,
+      [
+        "---",
+        "name: GitHub Global",
+        "description: Use GitHub from the global Caplet file.",
+        "mcpServer:",
+        "  command: global-github",
+        "---",
+        "# GitHub Global",
+      ].join("\n"),
+    );
+    writeFileSync(
+      projectPath,
+      [
+        "---",
+        "name: GitHub Project",
+        "description: Use GitHub from the project Caplet file.",
+        "mcpServer:",
+        "  command: project-github",
+        "---",
+        "# GitHub Project",
+      ].join("\n"),
+    );
+
+    const { config, sources, shadows } = loadConfigWithSources(
+      join(userRoot, "config.json"),
+      join(projectRoot, "config.json"),
+    );
+
+    expect(config.mcpServers.github?.command).toBe("project-github");
+    expect(sources.github).toEqual({ kind: "project-file", path: projectPath });
+    expect(shadows.github).toContainEqual({ kind: "global-file", path: globalPath });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lets project Caplet files shadow global entries across backend maps", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cross-backend-source-files-"));
+    const userRoot = join(dir, "user");
+    const userConfigPath = join(userRoot, "config.json");
+    const projectRoot = join(dir, "project", ".caplets");
+    const projectPath = join(projectRoot, "github.md");
+    mkdirSync(userRoot, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(
+      userConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            name: "GitHub Global MCP",
+            description: "Use GitHub from global MCP config.",
+            command: "global-github",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      projectPath,
+      [
+        "---",
+        "name: GitHub Project API",
+        "description: Use GitHub from the project OpenAPI Caplet file.",
+        "openapiEndpoint:",
+        "  specPath: ./github-openapi.json",
+        "  auth:",
+        "    type: none",
+        "---",
+        "# GitHub Project API",
+      ].join("\n"),
+    );
+
+    const { config, sources, shadows } = loadConfigWithSources(
+      userConfigPath,
+      join(projectRoot, "config.json"),
+    );
+
+    expect(config.mcpServers.github).toBeUndefined();
+    expect(config.openapiEndpoints.github).toMatchObject({
+      name: "GitHub Project API",
+      specPath: join(projectRoot, "github-openapi.json"),
+    });
+    expect(sources.github).toEqual({ kind: "project-file", path: projectPath });
+    expect(shadows.github).toEqual([{ kind: "global-config", path: userConfigPath }]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("does not attribute global Caplet files as project files for nonstandard project config paths", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-nonstandard-project-path-"));
+    const userRoot = join(dir, ".caplets");
+    const globalPath = join(userRoot, "github.md");
+    mkdirSync(userRoot, { recursive: true });
+    writeFileSync(
+      globalPath,
+      [
+        "---",
+        "name: GitHub Global",
+        "description: Use GitHub from the global Caplet file.",
+        "mcpServer:",
+        "  command: global-github",
+        "---",
+        "# GitHub Global",
+      ].join("\n"),
+    );
+
+    const { config, sources, shadows } = loadConfigWithSources(
+      join(userRoot, "config.json"),
+      join(dir, "missing", "config.json"),
+    );
+
+    expect(config.mcpServers.github?.command).toBe("global-github");
+    expect(sources.github).toEqual({ kind: "global-file", path: globalPath });
+    expect(shadows.github).toBeUndefined();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -371,7 +505,7 @@ describe("config", () => {
     }
   });
 
-  it("does not load project Caplet files without explicit trust", () => {
+  it("loads project Caplet files without explicit trust", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
     const userRoot = join(dir, "user");
     const projectRoot = join(dir, "project", ".caplets");
@@ -383,7 +517,7 @@ describe("config", () => {
         mcpServers: {
           github: {
             name: "GitHub User",
-            description: "Use GitHub from trusted user config.",
+            description: "Use GitHub from user config.",
             command: "user-github",
           },
         },
@@ -394,7 +528,7 @@ describe("config", () => {
       [
         "---",
         "name: GitHub Project",
-        "description: Use GitHub from untrusted project Caplet.",
+        "description: Use GitHub from project Caplet.",
         "mcpServer:",
         "  command: project-github",
         "---",
@@ -403,8 +537,8 @@ describe("config", () => {
     );
 
     const config = loadConfig(join(userRoot, "config.json"), join(projectRoot, "config.json"));
-    expect(config.mcpServers.github?.name).toBe("GitHub User");
-    expect(config.mcpServers.github?.command).toBe("user-github");
+    expect(config.mcpServers.github?.name).toBe("GitHub Project");
+    expect(config.mcpServers.github?.command).toBe("project-github");
     rmSync(dir, { recursive: true, force: true });
   });
 
