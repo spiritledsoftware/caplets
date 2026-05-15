@@ -43,6 +43,8 @@ function mockService(close: () => Promise<void>): NativeCapletsService {
   return {
     listTools: vi.fn(() => []),
     execute: vi.fn(async () => ({})),
+    reload: vi.fn(async () => true),
+    onToolsChanged: vi.fn(() => () => {}),
     close: vi.fn(close),
   };
 }

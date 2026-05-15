@@ -29,6 +29,8 @@ describe("@caplets/opencode", () => {
         },
       ],
       execute: vi.fn(async () => ({ ok: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     };
 
@@ -60,6 +62,8 @@ describe("@caplets/opencode", () => {
         },
       ],
       execute: vi.fn(async () => ({ count: 1n })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     };
 
@@ -87,6 +91,8 @@ describe("@caplets/opencode", () => {
         },
       ],
       execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     };
 

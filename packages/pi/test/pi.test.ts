@@ -28,6 +28,8 @@ type RegisteredTool = {
 type MockService = NativeCapletsService & {
   listTools: Mock<() => NativeCapletTool[]>;
   execute: Mock<NativeCapletsService["execute"]>;
+  reload: Mock<NativeCapletsService["reload"]>;
+  onToolsChanged: Mock<NativeCapletsService["onToolsChanged"]>;
   close: Mock<NativeCapletsService["close"]>;
 };
 
@@ -190,6 +192,8 @@ function mockService(tools: NativeCapletTool[]): MockService {
   return {
     listTools: vi.fn<() => NativeCapletTool[]>(() => tools),
     execute: vi.fn(async () => ({ ok: true })),
+    reload: vi.fn(async () => true),
+    onToolsChanged: vi.fn(() => () => {}),
     close: vi.fn(async () => {}),
   };
 }

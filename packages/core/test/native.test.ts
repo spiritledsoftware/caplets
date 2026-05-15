@@ -197,6 +197,47 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("notifies native tool listeners when watched config changes", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      watchDebounceMs: 10,
+    });
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => {
+      events.push(tools.map((tool) => tool.caplet));
+    });
+
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            beta: {
+              name: "Beta",
+              description: "Search beta project documents.",
+              command: process.execPath,
+            },
+          },
+        }),
+      );
+
+      await expect.poll(() => events).toEqual([["beta"]]);
+    } finally {
+      await service.close();
+    }
+  });
+
   function tempConfig(config: unknown): {
     dir: string;
     configPath: string;
