@@ -715,8 +715,14 @@ reusing the same Caplets config and backend runtime.
 - [`@caplets/opencode`](packages/opencode/README.md): OpenCode plugin that injects prompt guidance through plugin hooks instead of editing `opencode.json`.
 - [`@caplets/pi`](packages/pi/README.md): Pi extension installable with `pi install npm:@caplets/pi`, with guidance provided through Pi tool prompt snippets and guidelines.
 
-Native integrations snapshot configured Caplets at plugin or extension load. Restart the host
-agent or reload extensions after adding, removing, or renaming Caplets.
+Native integrations hot reload config and Caplet file edits through the same runtime used by
+`caplets serve`. Existing native tools execute against the latest valid config without host
+restart. Pi also refreshes newly added Caplet tools at runtime and deactivates removed Caplet
+tools when Pi's active-tool APIs are available. OpenCode's current plugin API snapshots the
+tool inventory at plugin load, so adding, removing, or renaming OpenCode native tools still
+requires restarting OpenCode; already-registered tools execute against live Caplets state, and
+prompt guidance is rebuilt from current Caplets state for those initially registered tools only.
+Newly added OpenCode tools are not advertised until restart.
 
 ## How Agents Use It
 
