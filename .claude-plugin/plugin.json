@@ -1,0 +1,15 @@
+{
+  "name": "caplets",
+  "version": "0.12.1",
+  "description": "Expose configured Caplets as progressive-disclosure tools in Claude Code.",
+  "author": {
+    "name": "Spirit-Led Software LLC"
+  },
+  "homepage": "https://github.com/spiritledsoftware/caplets#readme",
+  "repository": "https://github.com/spiritledsoftware/caplets",
+  "license": "MIT",
+  "keywords": ["caplets", "mcp", "claude-code", "tools"],
+  "skills": "./skills/",
+  "mcpServers": "./claude.mcp.json",
+  "hooks": "./claude.hooks.json"
+}

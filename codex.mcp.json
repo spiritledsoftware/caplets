@@ -1,0 +1,8 @@
+{
+  "caplets": {
+    "command": "caplets",
+    "args": ["serve"],
+    "startup_timeout_sec": 20,
+    "tool_timeout_sec": 120
+  }
+}
