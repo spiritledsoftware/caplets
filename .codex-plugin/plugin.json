@@ -18,11 +18,12 @@
     "developerName": "Spirit-Led Software LLC",
     "category": "Developer Tools",
     "capabilities": ["MCP", "Tools"],
+    "composerIcon": "./assets/icon.png",
     "websiteURL": "https://github.com/spiritledsoftware/caplets",
     "defaultPrompt": [
       "Use Caplets to discover configured capability domains before calling downstream tools.",
       "Use Caplets progressive discovery before calling downstream tools."
     ],
-    "brandColor": "#4F46E5"
+    "brandColor": "#E0582F"
   }
 }
