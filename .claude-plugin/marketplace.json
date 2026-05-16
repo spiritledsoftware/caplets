@@ -1,14 +1,21 @@
 {
   "name": "caplets",
   "owner": {
-    "name": "Spirit-Led Software LLC"
+    "name": "Spirit-Led Software LLC",
+    "url": "https://github.com/spiritledsoftware"
   },
   "plugins": [
     {
       "name": "caplets",
-      "source": "./",
+      "source": "./plugins/caplets",
       "description": "Expose configured Caplets as progressive-disclosure tools in Claude Code.",
-      "category": "Developer Tools"
+      "category": "Developer Tools",
+      "author": {
+        "name": "Spirit Led Software LLC",
+        "url": "https://github.com/spiritledsoftware",
+        "email": "ianpascoe@spiritledsoftware.com"
+      },
+      "homepage": "https://github.com/spiritledsoftware/caplets"
     }
   ]
 }
