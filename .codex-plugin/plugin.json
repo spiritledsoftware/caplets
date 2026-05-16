@@ -21,8 +21,7 @@
     "composerIcon": "./assets/icon.png",
     "websiteURL": "https://github.com/spiritledsoftware/caplets",
     "defaultPrompt": [
-      "Use Caplets to discover configured capability domains before calling downstream tools.",
-      "Use Caplets progressive discovery before calling downstream tools."
+      "Use Caplets to discover configured capability domains via progressive discovery before calling downstream tools."
     ],
     "brandColor": "#E0582F"
   }

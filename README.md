@@ -608,10 +608,7 @@ shell snippets.
       "description": "Fetch status for one service.",
       "inputSchema": {
         "type": "object",
-        "properties": {
-          "service": { "type": "string" },
-          "verbose": { "type": "boolean" }
-        },
+        "properties": { "service": { "type": "string" }, "verbose": { "type": "boolean" } },
         "required": ["service"]
       },
       "query": { "verbose": "$input.verbose" }
