@@ -1,5 +1,11 @@
 # caplets
 
+## 0.12.4
+
+### Patch Changes
+
+- ddfe906: Refresh the README header, add the Caplets icon artwork, and update plugin metadata with the new icon and brand color.
+
 ## 0.12.3
 
 ### Patch Changes
