@@ -1,4 +1,26 @@
-# Caplets
+<div align="center">
+  <img src="assets/icon.png" alt="Caplets logo" width="140" height="140" />
+
+  <h1>Caplets</h1>
+
+  <p>
+    <strong>Capability cards for coding agents.</strong><br />
+    Wrap sprawling tool stacks behind focused, progressive-disclosure interfaces.
+  </p>
+
+  <p>
+    <a href="https://www.npmjs.com/package/caplets"><img alt="npm" src="https://img.shields.io/npm/v/caplets?style=flat-square&color=E0582F" /></a>
+    <a href="https://github.com/spiritledsoftware/caplets/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/spiritledsoftware/caplets/ci.yml?branch=main&style=flat-square&label=ci&color=E0582F" /></a>
+    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F6E8C8?style=flat-square&labelColor=1F2018" /></a>
+    <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-F6E8C8?style=flat-square&labelColor=1F2018" />
+  </p>
+
+  <p>
+    <code>MCP</code> · <code>OpenAPI</code> · <code>GraphQL</code> · <code>HTTP</code> · <code>CLI</code>
+  </p>
+</div>
+
+---
 
 Caplets turns sprawling tool setups into focused capability cards for coding agents.
 Connect MCP servers, OpenAPI specs, GraphQL endpoints, HTTP actions, and curated CLI
