@@ -1,0 +1,82 @@
+name: Bug report
+description: Report something broken or behaving unexpectedly.
+title: "bug: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Clear reproduction steps help us fix
+        issues faster.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and expected behavior.
+      placeholder: Caplets did X, but I expected Y.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include commands, config snippets, or a minimal repo.
+      placeholder: |
+        1. Create this .caplets/config.json...
+        2. Run `pnpm ...` or `caplets ...`
+        3. See the error...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste terminal output or stack traces. Redact secrets.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Caplets version or commit
+      description: Run `caplets --version` or paste the commit SHA.
+      placeholder: v0.0.0 or abc1234
+
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package or integration
+      multiple: true
+      options:
+        - caplets CLI
+        - "@caplets/core"
+        - "@caplets/opencode"
+        - "@caplets/pi"
+        - Benchmarks
+        - Plugin packaging
+        - Documentation
+        - Not sure
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Tell us about your OS, Node, pnpm, agent, and MCP setup.
+      value: |
+        - OS:
+        - Node:
+        - pnpm:
+        - Agent/integration:
+        - Config source (user/project):
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I removed or redacted secrets from logs and config.
+          required: true

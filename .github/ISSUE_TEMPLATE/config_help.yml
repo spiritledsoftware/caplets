@@ -1,0 +1,66 @@
+name: Config or integration help
+description: Ask for help with Caplets config, MCP servers, or integrations.
+title: "help: "
+labels: ["question", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when Caplets runs, but you need help with configuration or
+        an integration. Please redact tokens, keys, and private URLs.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the setup or workflow you want Caplets to support.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: Paste the smallest config snippet that shows the issue.
+      render: json
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Command output or agent behavior
+      description: Show what Caplets or your agent does with this config.
+      render: shell
+
+  - type: dropdown
+    id: integration
+    attributes:
+      label: Integration
+      multiple: true
+      options:
+        - Claude plugin
+        - Codex plugin
+        - OpenCode
+        - Pi
+        - Direct CLI
+        - Native API
+        - Not sure
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - OS:
+        - Node:
+        - pnpm:
+        - Caplets version/commit:
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: I redacted secrets and private service details.
+          required: true
