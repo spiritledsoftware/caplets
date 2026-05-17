@@ -8,7 +8,7 @@
       "name": "caplets",
       "source": {
         "source": "local",
-        "path": "./"
+        "path": "./plugins/caplets"
       },
       "policy": {
         "installation": "AVAILABLE",

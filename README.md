@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/icon.png" alt="Caplets logo" width="140" height="140" />
+  <img src="plugins/caplets/assets/icon.png" alt="Caplets logo" width="140" height="140" />
 
   <h1>Caplets</h1>
 
@@ -81,9 +81,11 @@ your coding agent supports one.
 | OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)                                          | Native `caplets_<id>` tools and prompt guidance hooks              |
 | Pi             | Install [`@caplets/pi`](packages/pi/README.md)                                                      | Native `caplets_<id>` tools with Pi prompt snippets/guidelines     |
 
-Codex and Claude Code plugins are plugin-native but MCP-backed. Their manifests live in
-`.codex-plugin/` and `.claude-plugin/`; component files live at the plugin root so
-marketplace installs can copy and resolve them correctly.
+Codex and Claude Code plugins are plugin-native but MCP-backed. The installable plugin
+lives under `plugins/caplets/`, with agent-specific manifests in `.codex-plugin/` and
+`.claude-plugin/`, a shared `skills/` directory, and shared `mcp.json` config. The
+repo-level `.agents/plugins/marketplace.json` and `.claude-plugin/marketplace.json`
+files only advertise that installable plugin root.
 
 The Claude Code and Codex commands install from this GitHub repository through each agent's
 plugin marketplace flow; users do not need to clone the repository manually. Plugin MCP

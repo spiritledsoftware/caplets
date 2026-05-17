@@ -10,7 +10,7 @@
   "license": "MIT",
   "keywords": ["caplets", "mcp", "codex", "tools"],
   "skills": "./skills/",
-  "mcpServers": "./codex.mcp.json",
+  "mcpServers": "./mcp.json",
   "interface": {
     "displayName": "Caplets",
     "shortDescription": "Progressive disclosure for Caplets tools.",

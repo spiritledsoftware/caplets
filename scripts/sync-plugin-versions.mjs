@@ -10,7 +10,10 @@ async function readJson(filePath) {
 
 const cliPackage = await readJson("packages/cli/package.json");
 
-for (const manifestPath of [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"]) {
+for (const manifestPath of [
+  "plugins/caplets/.codex-plugin/plugin.json",
+  "plugins/caplets/.claude-plugin/plugin.json",
+]) {
   const manifest = await readJson(manifestPath);
 
   if (typeof manifest.version !== "string") {

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,21 +13,21 @@ async function readJson<T>(filePath: string): Promise<T> {
 describe("root agent plugin artifacts", () => {
   it("declares Codex plugin components using Codex-specific files", async () => {
     const manifest = await readJson<Record<string, unknown>>(
-      path.join(repoRoot, ".codex-plugin/plugin.json"),
+      path.join(repoRoot, "plugins/caplets/.codex-plugin/plugin.json"),
     );
 
     expect(manifest.skills).toBe("./skills/");
-    expect(manifest.mcpServers).toBe("./codex.mcp.json");
+    expect(manifest.mcpServers).toBe("./mcp.json");
     expect(manifest.hooks).toBeUndefined();
   });
 
   it("declares Claude Code plugin components using Claude-specific files", async () => {
     const manifest = await readJson<Record<string, unknown>>(
-      path.join(repoRoot, ".claude-plugin/plugin.json"),
+      path.join(repoRoot, "plugins/caplets/.claude-plugin/plugin.json"),
     );
 
     expect(manifest.skills).toBe("./skills/");
-    expect(manifest.mcpServers).toBe("./claude.mcp.json");
+    expect(manifest.mcpServers).toBe("./mcp.json");
     expect(manifest.hooks).toBeUndefined();
   });
 
@@ -35,8 +35,12 @@ describe("root agent plugin artifacts", () => {
     const [rootPackage, cliPackage, codexManifest, claudeManifest] = await Promise.all([
       readJson<{ scripts: Record<string, string> }>(path.join(repoRoot, "package.json")),
       readJson<{ version: string }>(path.join(repoRoot, "packages/cli/package.json")),
-      readJson<{ version: string }>(path.join(repoRoot, ".codex-plugin/plugin.json")),
-      readJson<{ version: string }>(path.join(repoRoot, ".claude-plugin/plugin.json")),
+      readJson<{ version: string }>(
+        path.join(repoRoot, "plugins/caplets/.codex-plugin/plugin.json"),
+      ),
+      readJson<{ version: string }>(
+        path.join(repoRoot, "plugins/caplets/.claude-plugin/plugin.json"),
+      ),
     ]);
 
     expect(codexManifest.version).toBe(cliPackage.version);
@@ -60,7 +64,7 @@ describe("root agent plugin artifacts", () => {
     expect(marketplace.plugins).toEqual([
       expect.objectContaining({
         name: "caplets",
-        source: "./",
+        source: "./plugins/caplets",
       }),
     ]);
   });
@@ -78,35 +82,28 @@ describe("root agent plugin artifacts", () => {
     expect(marketplace.plugins).toEqual([
       expect.objectContaining({
         name: "caplets",
-        source: { source: "local", path: "./" },
+        source: { source: "local", path: "./plugins/caplets" },
       }),
     ]);
   });
 
   it("runs the globally installed Caplets CLI in both MCP configs", async () => {
-    const [codexMcp, claudeMcp] = await Promise.all([
-      readJson<{ caplets: { command: string; args: string[] } }>(
-        path.join(repoRoot, "codex.mcp.json"),
-      ),
-      readJson<{ mcpServers: { caplets: { command: string; args: string[] } } }>(
-        path.join(repoRoot, "claude.mcp.json"),
-      ),
-    ]);
+    const mcp = await readJson<{ mcpServers: { caplets: { command: string; args: string[] } } }>(
+      path.join(repoRoot, "plugins/caplets/mcp.json"),
+    );
 
-    expect(codexMcp.caplets).toMatchObject({
+    expect(mcp.mcpServers.caplets).toEqual({
       command: "caplets",
       args: ["serve"],
     });
-    expect(claudeMcp.mcpServers.caplets).toEqual({
-      command: "caplets",
-      args: ["serve"],
-    });
-    expect(JSON.stringify(codexMcp)).not.toContain("caplets@");
-    expect(JSON.stringify(claudeMcp)).not.toContain("caplets@");
+    expect(JSON.stringify(mcp)).not.toContain("caplets@");
   });
 
-  it("uses a strong shared root skill for automatic selection", async () => {
-    const skill = await readFile(path.join(repoRoot, "skills/caplets/SKILL.md"), "utf8");
+  it("uses a strong shared plugin skill for automatic selection", async () => {
+    const skill = await readFile(
+      path.join(repoRoot, "plugins/caplets/skills/caplets/SKILL.md"),
+      "utf8",
+    );
 
     expect(skill).toContain("name: caplets");
     expect(skill).toContain("when_to_use:");
@@ -119,35 +116,47 @@ describe("root agent plugin artifacts", () => {
     expect(skill).toContain("Skip this skill for normal local code edits");
   });
 
+  it("keeps the Codex marketplace source self-contained for plugin installs", () => {
+    const pluginRoot = path.join(repoRoot, "plugins/caplets");
+    const skillDir = path.join(pluginRoot, "skills");
+
+    expect(lstatSync(pluginRoot).isDirectory()).toBe(true);
+    expect(lstatSync(skillDir).isDirectory()).toBe(true);
+    expect(lstatSync(skillDir).isSymbolicLink()).toBe(false);
+    expect(existsSync(path.join(pluginRoot, ".codex-plugin/plugin.json"))).toBe(true);
+    expect(existsSync(path.join(pluginRoot, "skills/caplets/SKILL.md"))).toBe(true);
+    expect(existsSync(path.join(pluginRoot, "mcp.json"))).toBe(true);
+  });
+
   it("keeps plugin metadata and components in documented locations", () => {
     for (const forbiddenPath of [
       "packages/codex",
       "packages/claude-code",
       "packages/agent-plugin-shared",
-      "plugins",
+      ".codex-plugin",
+      ".codex-plugins",
       ".mcp.json",
       "hooks",
-      ".codex-plugin/.mcp.json",
+      ".claude-plugin/plugin.json",
       ".claude-plugin/.mcp.json",
       ".codex-plugin/hooks.json",
       ".claude-plugin/hooks.json",
       ".codex-plugin/hooks",
       ".claude-plugin/hooks",
-      ".codex-plugin/skills",
       ".claude-plugin/skills",
     ]) {
       expect(existsSync(path.join(repoRoot, forbiddenPath)), forbiddenPath).toBe(false);
     }
 
     for (const requiredPath of [
-      ".codex-plugin/plugin.json",
-      ".claude-plugin/plugin.json",
+      "plugins/caplets/.codex-plugin/plugin.json",
+      "plugins/caplets/.claude-plugin/plugin.json",
+      "plugins/caplets/mcp.json",
+      "plugins/caplets/skills/caplets/SKILL.md",
+      "plugins/caplets/assets/icon.png",
       ".claude-plugin/marketplace.json",
       ".agents/plugins/marketplace.json",
-      "codex.mcp.json",
-      "claude.mcp.json",
       "scripts/sync-plugin-versions.mjs",
-      "skills/caplets/SKILL.md",
     ]) {
       expect(existsSync(path.join(repoRoot, requiredPath)), requiredPath).toBe(true);
     }
