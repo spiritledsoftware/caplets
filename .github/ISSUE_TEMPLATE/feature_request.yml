@@ -1,0 +1,68 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "feat: "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping shape Caplets. Please focus on the problem first;
+        implementation ideas are welcome after that.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is hard today?
+      placeholder: I want to expose/use/configure..., but today...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, API, CLI, or config you want.
+      placeholder: Caplets should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other designs did you consider?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - CLI
+        - Core runtime
+        - MCP backends
+        - OpenAPI or HTTP backends
+        - GraphQL backends
+        - Agent integrations
+        - Plugin packaging
+        - Benchmarks
+        - Documentation
+        - Not sure
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: Example config or usage
+      description: Optional examples make the request easier to evaluate.
+      render: json
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
+        - label: This request is focused on one problem or capability.
+          required: true

@@ -1,0 +1,48 @@
+name: Documentation improvement
+description: Report missing, confusing, or outdated documentation.
+title: "docs: "
+labels: ["documentation", "needs triage"]
+body:
+  - type: textarea
+    id: location
+    attributes:
+      label: Documentation location
+      description: Link the page, section, README, or file path.
+      placeholder: README.md#..., docs/..., or URL
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: What should change?
+      description: Explain what is missing, confusing, or incorrect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording or structure
+      description: Optional draft text, examples, or outline.
+
+  - type: dropdown
+    id: audience
+    attributes:
+      label: Who is this for?
+      multiple: true
+      options:
+        - New users
+        - Agent integration users
+        - Plugin users
+        - Contributors
+        - Maintainers
+        - Not sure
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions.
+          required: true
