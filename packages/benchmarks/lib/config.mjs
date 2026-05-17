@@ -12,7 +12,7 @@ export function getBenchmarkPaths({ repoRoot = REPO_ROOT } = {}) {
   return {
     repoRoot: absoluteRepoRoot,
     fixtureServerPath: join(absoluteRepoRoot, "fixtures", "mcp-server.mjs"),
-    capletsCliPath: resolve(absoluteRepoRoot, "../cli/dist/index.js"),
+    capletsCliPath: CAPLETS_CLI_PATH,
   };
 }
 
