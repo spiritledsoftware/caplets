@@ -1304,6 +1304,76 @@
         "required": ["name", "description", "actions"],
         "additionalProperties": false
       }
+    },
+    "capletSets": {
+      "default": {},
+      "description": "Nested Caplet collections keyed by stable Caplet ID.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Human-readable Caplet set display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "Capability description shown before child Caplets are disclosed."
+          },
+          "configPath": {
+            "description": "Child Caplets config.json path.",
+            "type": "string",
+            "minLength": 1
+          },
+          "capletsRoot": {
+            "description": "Child Markdown Caplets root directory.",
+            "type": "string",
+            "minLength": 1
+          },
+          "defaultSearchLimit": {
+            "default": 20,
+            "description": "Default maximum number of child Caplet search results.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "maxSearchLimit": {
+            "default": 50,
+            "description": "Maximum accepted child Caplet search result limit.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 50
+          },
+          "toolCacheTtlMs": {
+            "default": 30000,
+            "description": "Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "disabled": {
+            "default": false,
+            "description": "When true, omit this Caplet set.",
+            "type": "boolean"
+          }
+        },
+        "required": ["name", "description"],
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

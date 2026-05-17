@@ -301,7 +301,7 @@ the committed schema stays in sync with the Zod config validator.
 
 For richer skill-like cards, add Markdown Caplet files beside `config.json`. Every Caplet
 file must include exactly one executable backend: `mcpServer`, `openapiEndpoint`,
-`graphqlEndpoint`, `httpApi`, or `cliTools`;
+`graphqlEndpoint`, `httpApi`, `cliTools`, or `capletSet`;
 serverless Caplets are intentionally out of scope.
 
 Top-level files derive the Caplet ID from the filename:
@@ -454,7 +454,7 @@ caplets init --force
 
 ### Caplet IDs
 
-Each key under `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, or `cliTools` is the
+Each key under `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, or `capletSets` is the
 stable Caplet ID. It becomes the generated MCP tool name exactly, so keep it short and specific:
 
 ```json
@@ -471,7 +471,7 @@ stable Caplet ID. It becomes the generated MCP tool name exactly, so keep it sho
 ```
 
 Caplet IDs must match `^[a-zA-Z0-9_-]{1,64}$` and must be unique across `mcpServers`,
-`openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
+`openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, and `capletSets`. Spaces, dots, slashes, colons, and Unicode IDs are rejected.
 
 ### Stdio Servers
 
@@ -689,6 +689,42 @@ Pass `-g` or `--global` to write to the user Caplets root, `--print` to review t
 manifest without writing, `--output <path>` for an explicit destination, or `--force` to overwrite
 an existing destination file.
 
+### Caplet Sets
+
+Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
+as one downstream tool, and that child tool accepts the same Caplets operation schema:
+`get_caplet`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+
+```json
+{
+  "capletSets": {
+    "team": {
+      "name": "Team Caplets",
+      "description": "Use the team's shared Caplets collection.",
+      "configPath": "./team-caplets/config.json",
+      "capletsRoot": "./team-caplets/caplets"
+    }
+  }
+}
+```
+
+`configPath` and `capletsRoot` are independently optional, but at least one is required. Child
+collections are isolated from the parent collection; they use their own config and Caplet files,
+with their own `defaultSearchLimit` and `maxSearchLimit` when set on the `capletSets` entry.
+Recursive nesting is supported, and repeated source paths are rejected as cycles.
+
+Markdown Caplet files use `capletSet` frontmatter:
+
+```yaml
+---
+name: Team Caplets
+description: Use the team's shared Caplets collection.
+capletSet:
+  configPath: ./team-caplets/config.json
+  capletsRoot: ./team-caplets/caplets
+---
+```
+
 Add MCP, OpenAPI, GraphQL, and HTTP API Caplets with the same destination options:
 
 ```sh
@@ -854,7 +890,7 @@ Call one exact downstream tool:
 Available operations:
 
 - `get_caplet`: return the configured capability card without starting the downstream server.
-- `check_backend`: verify the selected backend, whether MCP, OpenAPI, or GraphQL.
+- `check_backend`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
 - `check_mcp_server`: start or connect to an MCP server and verify its tool list.
 - `list_tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.

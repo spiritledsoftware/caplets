@@ -114,6 +114,34 @@ describe("config", () => {
     delete process.env.PROJECT_OPENAPI_SECRET;
   });
 
+  it("rejects Caplet set executable backend maps from project config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-project-capletsets-"));
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        capletSets: {
+          nested: {
+            name: "Nested",
+            description: "Attempt to load a nested project Caplet set.",
+            capletsRoot: "./child",
+          },
+        },
+      }),
+    );
+
+    expect(() => loadConfig(join(dir, "missing-user-config.json"), projectConfigPath)).toThrow(
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining(
+          "cannot define executable backend map capletSets; use project Markdown Caplet files or user config instead",
+        ) as string,
+      }) as CapletsError,
+    );
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("rejects GraphQL executable backend maps from project config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-graphql-"));
     const projectConfigPath = join(dir, ".caplets", "config.json");
@@ -1370,6 +1398,84 @@ describe("config", () => {
             transport: "http",
             url: "https://example.com/mcp",
             auth: { type: "headers", headers: { Connection: "close" } },
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
+  });
+
+  it("loads Caplet set config and Caplet files with normalized child source paths", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-set-config-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "nested.md"),
+      [
+        "---",
+        "name: Nested",
+        "description: Expose a nested child Caplet collection.",
+        "capletSet:",
+        "  configPath: ./child/config.json",
+        "  capletsRoot: ./child/caplets",
+        "  toolCacheTtlMs: 0",
+        "---",
+        "# Nested",
+      ].join("\n"),
+    );
+
+    const fileConfig = loadCapletFiles(root);
+    const parsedFileConfig = parseConfig(fileConfig);
+    expect(parsedFileConfig.capletSets.nested).toMatchObject({
+      backend: "caplets",
+      configPath: join(root, "child", "config.json"),
+      capletsRoot: join(root, "child", "caplets"),
+      toolCacheTtlMs: 0,
+    });
+
+    const parsedJsonConfig = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested",
+          description: "Expose a nested child Caplet collection.",
+          configPath: join(dir, "child-config.json"),
+        },
+      },
+    });
+    expect(parsedJsonConfig.capletSets.nested).toMatchObject({
+      backend: "caplets",
+      defaultSearchLimit: 20,
+      maxSearchLimit: 50,
+      toolCacheTtlMs: 30000,
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects invalid Caplet set sources and duplicate IDs", () => {
+    expect(() =>
+      parseConfig({
+        capletSets: {
+          nested: {
+            name: "Nested",
+            description: "Expose a nested child Caplet collection.",
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
+
+    expect(() =>
+      parseConfig({
+        cliTools: {
+          nested: {
+            name: "Nested CLI",
+            description: "Run nested CLI tools.",
+            actions: { status: { command: process.execPath } },
+          },
+        },
+        capletSets: {
+          nested: {
+            name: "Nested",
+            description: "Expose a nested child Caplet collection.",
+            capletsRoot: "/tmp/caplets",
           },
         },
       }),

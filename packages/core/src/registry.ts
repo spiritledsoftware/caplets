@@ -60,6 +60,12 @@ export type CapletServerDetail = {
         timeoutMs: number;
         maxOutputBytes: number;
         configuredActions: number;
+      }
+    | {
+        type: "caplets";
+        disabled: boolean;
+        source: "configPath" | "capletsRoot" | "both";
+        toolCacheTtlMs: number;
       };
   mcpServer?: {
     transport: CapletServerConfig["transport"];
@@ -94,7 +100,8 @@ export class ServerRegistry {
       this.config.openapiEndpoints[serverId] ??
       this.config.graphqlEndpoints[serverId] ??
       this.config.httpApis[serverId] ??
-      this.config.cliTools[serverId];
+      this.config.cliTools[serverId] ??
+      this.config.capletSets[serverId];
     return server?.disabled ? undefined : server;
   }
 
@@ -156,6 +163,7 @@ export class ServerRegistry {
       ...Object.values(this.config.graphqlEndpoints),
       ...Object.values(this.config.httpApis),
       ...Object.values(this.config.cliTools),
+      ...Object.values(this.config.capletSets),
     ];
   }
 }
@@ -200,6 +208,14 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
       configuredActions: Object.keys(server.actions).length,
     };
   }
+  if (server.backend === "caplets") {
+    return {
+      type: "caplets",
+      disabled: server.disabled,
+      source: capletSetSource(server),
+      toolCacheTtlMs: server.toolCacheTtlMs,
+    };
+  }
 
   return {
     type: "mcp",
@@ -209,6 +225,16 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
     callTimeoutMs: server.callTimeoutMs,
     toolCacheTtlMs: server.toolCacheTtlMs,
   };
+}
+
+function capletSetSource(
+  server: Extract<CapletConfig, { backend: "caplets" }>,
+): "configPath" | "capletsRoot" | "both" {
+  return server.configPath && server.capletsRoot
+    ? "both"
+    : server.configPath
+      ? "configPath"
+      : "capletsRoot";
 }
 
 function graphQlSource(

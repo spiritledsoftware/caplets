@@ -118,6 +118,30 @@ describe("CapletsRuntime", () => {
     await runtime.close();
   });
 
+  it("registers Caplet set Caplets", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          capletsRoot: join(tmpdir(), "caplets-child"),
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+
+    expect(runtime.registeredToolIds()).toEqual(["nested"]);
+    expect(server.registerTool).toHaveBeenCalledWith(
+      "nested",
+      expect.objectContaining({ title: "Nested Caplets" }),
+      expect.any(Function),
+    );
+
+    await runtime.close();
+  });
+
   it("adds, updates, and removes tools across successful reloads", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

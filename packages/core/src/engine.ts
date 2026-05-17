@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
+import { CapletSetManager } from "./caplet-sets.js";
 import { CliToolsManager } from "./cli-tools.js";
 import {
   type CapletConfig,
@@ -49,6 +50,7 @@ export class CapletsEngine {
   private readonly graphql: GraphQLManager;
   private readonly http: HttpActionManager;
   private readonly cli: CliToolsManager;
+  private readonly capletSets: CapletSetManager;
   private readonly paths: RuntimePaths;
   private readonly watchDebounceMs: number;
   private readonly watchEnabled: boolean;
@@ -73,6 +75,7 @@ export class CapletsEngine {
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
     this.http = new HttpActionManager(this.registry, selectAuthOptions(options.authDir));
     this.cli = new CliToolsManager(this.registry);
+    this.capletSets = new CapletSetManager(this.registry, selectAuthOptions(options.authDir));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -139,6 +142,7 @@ export class CapletsEngine {
         this.graphql,
         this.http,
         this.cli,
+        this.capletSets,
       );
     } catch (error) {
       return errorResult(error);
@@ -162,6 +166,7 @@ export class CapletsEngine {
     } finally {
       this.closeWatchers();
       await this.downstream.close();
+      await this.capletSets.close();
       this.reloadListeners.clear();
     }
   }
@@ -190,6 +195,7 @@ export class CapletsEngine {
     this.graphql.updateRegistry(nextRegistry);
     this.http.updateRegistry(nextRegistry);
     this.cli.updateRegistry(nextRegistry);
+    this.capletSets.updateRegistry(nextRegistry);
 
     let invalidated = true;
     try {
@@ -264,6 +270,9 @@ export class CapletsEngine {
       }
       if (before?.backend === "cli" || after?.backend === "cli" || !after) {
         this.cli.invalidate(serverId);
+      }
+      if (before?.backend === "caplets" || after?.backend === "caplets" || !after) {
+        this.capletSets.invalidate(serverId);
       }
     }
   }
@@ -381,6 +390,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),
+    ...Object.values(config.capletSets),
   ];
 }
 

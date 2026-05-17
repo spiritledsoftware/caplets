@@ -124,6 +124,7 @@ function nextEnabledServers(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),
+    ...Object.values(config.capletSets),
   ].filter((server) => !server.disabled);
 }
 
@@ -133,7 +134,8 @@ function capletById(config: CapletsConfig, serverId: string): CapletConfig | und
     config.openapiEndpoints[serverId] ??
     config.graphqlEndpoints[serverId] ??
     config.httpApis[serverId] ??
-    config.cliTools[serverId]
+    config.cliTools[serverId] ??
+    config.capletSets[serverId]
   );
 }
 

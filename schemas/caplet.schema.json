@@ -1142,6 +1142,42 @@
       "required": ["actions"],
       "additionalProperties": false,
       "description": "CLI tools backend configuration for this Caplet."
+    },
+    "capletSet": {
+      "type": "object",
+      "properties": {
+        "configPath": {
+          "description": "Child Caplets config.json path.",
+          "type": "string",
+          "minLength": 1
+        },
+        "capletsRoot": {
+          "description": "Child Markdown Caplets root directory.",
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultSearchLimit": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxSearchLimit": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 50
+        },
+        "toolCacheTtlMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "disabled": {
+          "description": "When true, omit this Caplet from discovery.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Nested Caplet collection backend configuration for this Caplet."
     }
   },
   "required": ["name", "description"],

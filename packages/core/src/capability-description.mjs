@@ -8,7 +8,9 @@ export function capabilityDescription(server) {
           ? "GraphQL endpoint"
           : server.backend === "http"
             ? "HTTP API"
-            : "CLI tools";
+            : server.backend === "cli"
+              ? "CLI tools"
+              : "nested Caplets";
   const checkOperation = server.backend === "mcp" ? "check_mcp_server" : "check_backend";
   const hint = [
     `Use this Caplet to inspect and call tools from its ${backendName} backend.`,
