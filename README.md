@@ -125,8 +125,8 @@ exposed two ways: direct flat MCP aggregation versus Caplets progressive disclos
 | Initial Agent Surface     |   Direct Flat MCP |      Caplets |     Reduction |
 | ------------------------- | ----------------: | -----------: | ------------: |
 | Visible tools             |               106 |            3 |   97.2% fewer |
-| Serialized MCP payload    |      32,090 bytes |  8,400 bytes | 73.8% smaller |
-| Approx. context surface   |      8,023 tokens | 2,100 tokens |   5,923 fewer |
+| Serialized MCP payload    |      32,090 bytes |  8,442 bytes | 73.7% smaller |
+| Approx. context surface   |      8,023 tokens | 2,111 tokens |   5,912 fewer |
 | Top-level name collisions | 3 duplicate names |            0 |    eliminated |
 
 Caplets does not remove access to downstream tools. It places them behind scoped
@@ -692,8 +692,8 @@ an existing destination file.
 ### Caplet Sets
 
 Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
-as one downstream tool, and that child tool accepts the same Caplets operation schema:
-`get_caplet`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+as one downstream tool and supports the full Caplets operation set: `get_caplet`, `check_backend`,
+`check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
 
 ```json
 {

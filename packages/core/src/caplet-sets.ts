@@ -26,6 +26,7 @@ type ChildRuntime = {
 
 export class CapletSetManager {
   private readonly children = new Map<string, ChildRuntime>();
+  private readonly childRefreshLocks = new Map<string, Promise<ChildRuntime>>();
 
   constructor(
     private registry: ServerRegistry,
@@ -156,6 +157,19 @@ export class CapletSetManager {
   }
 
   private async childRuntime(config: CapletSetConfig, force: boolean): Promise<ChildRuntime> {
+    const pending = this.childRefreshLocks.get(config.server);
+    if (pending) {
+      return pending;
+    }
+
+    const refresh = this.loadChildRuntime(config, force).finally(() => {
+      this.childRefreshLocks.delete(config.server);
+    });
+    this.childRefreshLocks.set(config.server, refresh);
+    return await refresh;
+  }
+
+  private async loadChildRuntime(config: CapletSetConfig, force: boolean): Promise<ChildRuntime> {
     const cacheKey = sourceKey(config);
     const existing = this.children.get(config.server);
     const now = Date.now();

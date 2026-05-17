@@ -116,6 +116,37 @@ describe("CapletSetManager", () => {
     ]);
   });
 
+  it("serializes concurrent refreshes for one parent Caplet set", async () => {
+    const { dir, childConfigPath } = childCliConfig();
+    dirs.push(dir);
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+          toolCacheTtlMs: 0,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config));
+    await manager.listTools(caplet);
+
+    let closeCalls = 0;
+    const target = manager as unknown as { closeChild: (serverId: string) => Promise<void> };
+    const originalCloseChild = target.closeChild.bind(manager);
+    target.closeChild = async (serverId: string) => {
+      closeCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await originalCloseChild(serverId);
+    };
+
+    await Promise.all([manager.listTools(caplet), manager.listTools(caplet)]);
+
+    expect(closeCalls).toBe(1);
+  });
+
   it("reports recursive source cycles through nested Caplet sets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-set-cycle-"));
     dirs.push(dir);
