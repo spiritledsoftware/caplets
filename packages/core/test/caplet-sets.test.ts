@@ -147,6 +147,46 @@ describe("CapletSetManager", () => {
     expect(closeCalls).toBe(1);
   });
 
+  it("waits for in-flight refreshes before closing child runtimes", async () => {
+    const { dir, childConfigPath } = childCliConfig();
+    dirs.push(dir);
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+          toolCacheTtlMs: 0,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config));
+
+    const target = manager as unknown as {
+      loadChildRuntime: (nextConfig: typeof caplet, force: boolean) => Promise<unknown>;
+      closeChild: (serverId: string) => Promise<void>;
+    };
+    const originalLoadChildRuntime = target.loadChildRuntime.bind(manager);
+    target.loadChildRuntime = async (nextConfig, force) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return await originalLoadChildRuntime(nextConfig, force);
+    };
+
+    let closeCalls = 0;
+    const originalCloseChild = target.closeChild.bind(manager);
+    target.closeChild = async (serverId: string) => {
+      closeCalls += 1;
+      await originalCloseChild(serverId);
+    };
+
+    const refresh = manager.listTools(caplet);
+    await manager.close();
+    await refresh;
+
+    expect(closeCalls).toBe(1);
+  });
+
   it("reports recursive source cycles through nested Caplet sets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-set-cycle-"));
     dirs.push(dir);

@@ -42,6 +42,7 @@ export class CapletSetManager {
   }
 
   async close(): Promise<void> {
+    await Promise.allSettled(this.childRefreshLocks.values());
     await Promise.allSettled(
       [...this.children.keys()].map((serverId) => this.closeChild(serverId)),
     );
