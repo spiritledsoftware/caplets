@@ -32,8 +32,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@caplets/core": "workspace:*",
-    "@sinclair/typebox": "^0.34.49"
+    "@caplets/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.7.0",
@@ -46,5 +45,10 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "dist/index.js"
+    ]
   }
 }

@@ -343,9 +343,6 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.74.0
         version: 0.74.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.20.0)(zod@4.4.3)
-      '@sinclair/typebox':
-        specifier: ^0.34.49
-        version: 0.34.49
     devDependencies:
       '@types/node':
         specifier: ^25.7.0

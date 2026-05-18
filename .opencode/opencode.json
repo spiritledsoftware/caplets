@@ -1,0 +1,3 @@
+{
+  "plugin": ["@caplets/opencode@file:./packages/opencode"]
+}
