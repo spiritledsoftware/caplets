@@ -17,7 +17,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     "",
     "Recommended flow:",
     '1. Call the relevant `caplets_<id>` tool with `operation: "get_caplet"` to read the full Caplet card.',
-    "2. Call `check_backend` or `check_mcp_server` only when availability is uncertain.",
+    "2. Call `check_backend` only when availability is uncertain.",
     "3. Use `search_tools` or `list_tools` to discover the selected Caplet's downstream operations.",
     "4. Use `get_tool` before `call_tool` when argument or output schema is unclear.",
     "5. For `call_tool`, put downstream inputs only inside the top-level `arguments` object.",
@@ -26,11 +26,10 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 }
 
 export function nativeCapletPromptGuidance(toolName: string, caplet: CapletConfig): string[] {
-  const checkOperation = caplet.backend === "mcp" ? "check_mcp_server" : "check_backend";
   return [
     `Use ${toolName} for the ${caplet.name} Caplet capability domain.`,
     `Call ${toolName} with operation get_caplet before using unfamiliar downstream tools.`,
-    `Call ${toolName} with operation ${checkOperation} only when backend availability is uncertain.`,
+    `Call ${toolName} with operation check_backend only when backend availability is uncertain.`,
     `Call ${toolName} with operation search_tools or list_tools to discover exact downstream tool names.`,
     `Call ${toolName} with operation call_tool only with exact downstream tool names and put downstream inputs in arguments.`,
   ];

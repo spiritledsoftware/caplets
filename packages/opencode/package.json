@@ -31,10 +31,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@caplets/core": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@caplets/core": "workspace:*",
     "@opencode-ai/plugin": "^1.14.48",
     "@types/node": "^25.7.0",
     "rolldown": "^1.0.0",

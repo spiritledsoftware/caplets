@@ -26,7 +26,7 @@
 
 ## Current Code Context
 
-- `packages/core/src/tools.ts` already owns the Caplets operation contract: `get_caplet`, `check_backend`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+- `packages/core/src/tools.ts` already owns the Caplets operation contract: `get_caplet`, `check_backend`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
 - `packages/core/src/tools.ts` already delegates execution to `DownstreamManager`, `OpenApiManager`, `GraphQLManager`, `HttpActionManager`, and `CliToolsManager`.
 - `packages/core/src/runtime.ts` couples that operation handling to MCP registration through `McpServer.registerTool`.
 - `packages/core/src/registry.ts` already exposes safe Caplet summaries/details and `capabilityDescription`.
@@ -170,7 +170,7 @@ Caplets tools are native wrappers around configured Caplet backends. Each tool i
 Recommended flow:
 
 1. Call the relevant `caplets_<id>` tool with `operation: "get_caplet"` to read the full Caplet card.
-2. Call `check_backend` or `check_mcp_server` only when availability is uncertain.
+2. Call `check_backend` only when availability is uncertain.
 3. Use `search_tools` or `list_tools` to discover the selected Caplet's downstream operations.
 4. Use `get_tool` before `call_tool` when argument or output schema is unclear.
 5. For `call_tool`, put downstream inputs only inside the top-level `arguments` object.

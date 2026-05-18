@@ -102,8 +102,8 @@ Acceptance Criteria:
 
 - Caplets validates config with clear errors before serving discovery results.
 - Unsupported transports or unsupported config fields produce actionable validation messages.
-- Each generated Caplet tool supports `operation: "check_mcp_server"`, verifies or starts/connects to that managed downstream server if needed, calls downstream `tools/list`, refreshes cached status and tool metadata, and returns server availability status, tool count when available, safe error details when unavailable, and elapsed timing data.
-- `check_mcp_server` must not invoke any downstream tool.
+- Each generated Caplet tool supports `operation: "check_backend"`, verifies or starts/connects to that managed downstream server if needed, calls downstream `tools/list`, refreshes cached status and tool metadata, and returns server availability status, tool count when available, safe error details when unavailable, and elapsed timing data.
+- `check_backend` must not invoke any downstream tool.
 - Env values, tokens, headers, and secret-looking fields are redacted from errors and logs.
 - Downstream server startup has a default timeout of 10 seconds and can be overridden per server.
 - Tool calls have a default timeout of 60 seconds and can be overridden per server.
@@ -139,7 +139,7 @@ Each generated Caplet tool supports these operations:
 
 - `get_caplet`: Returns the full configured capability card for the selected server without starting the downstream process.
 - `check_backend`: Validates that the selected backend is available. For MCP it checks the downstream tool list; for OpenAPI it validates the spec and executable base URL without invoking an operation.
-- `check_mcp_server`: Validates that the selected downstream server can start, initialize, and return its tool list without invoking any downstream tool.
+- `check_backend`: Validates that the selected downstream server can start, initialize, and return its tool list without invoking any downstream tool.
 - `list_tools`: Lists compact downstream tool entries for the selected server.
 - `search_tools`: Searches downstream tools for the selected server. Supports optional `limit`, defaults to 20 results, and rejects values above 50.
 - `get_tool`: Returns full metadata for one exact downstream tool.
@@ -147,11 +147,11 @@ Each generated Caplet tool supports these operations:
 
 Generated Caplet tool input schema:
 
-- `operation` is required and must be one of `get_caplet`, `check_backend`, `check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, or `call_tool`.
+- `operation` is required and must be one of `get_caplet`, `check_backend`, `list_tools`, `search_tools`, `get_tool`, or `call_tool`.
 - `get_caplet` accepts no extra fields.
 - `get_caplet` returns only configured capability-card data and does not start, initialize, or probe the downstream server.
 - `get_caplet` is intentionally provisional in MVP; it may be pruned later if generated top-level Caplet tool descriptions prove sufficient.
-- `check_mcp_server` accepts no extra fields.
+- `check_backend` accepts no extra fields.
 - `check_backend` accepts no extra fields.
 - `list_tools` accepts no extra fields.
 - `search_tools` requires `query` and accepts optional `limit`.
@@ -486,7 +486,7 @@ Core modules:
 
 `GeneratedServerToolRequest`:
 
-- `operation: "get_caplet" | "check_backend" | "check_mcp_server" | "list_tools" | "search_tools" | "get_tool" | "call_tool"`
+- `operation: "get_caplet" | "check_backend" | "check_backend" | "list_tools" | "search_tools" | "get_tool" | "call_tool"`
 - `query?: string`
 - `limit?: number`
 - `tool?: string`
@@ -558,7 +558,7 @@ Caplets errors should be structured and stable:
 - Caplets should avoid unnecessary restarts or repeated process churn once a downstream stdio server is successfully managed.
 - Caplets should terminate managed downstream stdio server processes when Caplets exits.
 - Caplets should cache each managed server's `tools/list` metadata for `toolCacheTtlMs` and refresh stale metadata on tool metadata operations.
-- `check_mcp_server` should always refresh downstream `tools/list` for the selected server and update cached metadata/status.
+- `check_backend` should always refresh downstream `tools/list` for the selected server and update cached metadata/status.
 
 ### Testing Requirements
 
@@ -596,7 +596,7 @@ Add automated tests for:
 - Server-scoped `search_tools` deterministic lexical matching.
 - Capped search result behavior: default `limit` 20, max `limit` 50, no pagination in MVP.
 - Server-scoped `search_tools` startup and failure behavior.
-- `check_mcp_server` success, unavailable server, timeout, and secret redaction behavior.
+- `check_backend` success, unavailable server, timeout, and secret redaction behavior.
 - `toolCacheTtlMs` behavior, including default TTL, stale refresh, and `0` refresh-every-time mode.
 - `get_tool` and `call_tool` refresh stale metadata before exact downstream tool-name resolution.
 - Disabled server behavior: omitted from generated `tools/list`, not callable, never returned by search, and never started.

@@ -102,6 +102,9 @@ describe("generated tool request validation", () => {
     expect(() => validateOperationRequest({ operation: "check_server" }, 50)).toThrow(
       expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
     );
+    expect(() => validateOperationRequest({ operation: "check_mcp_server" }, 50)).toThrow(
+      expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
+    );
   });
 
   it("exposes the Caplet-first operation enum", () => {
@@ -112,7 +115,6 @@ describe("generated tool request validation", () => {
     expect(schema.properties.operation?.enum).toEqual([
       "get_caplet",
       "check_backend",
-      "check_mcp_server",
       "list_tools",
       "search_tools",
       "get_tool",
@@ -279,7 +281,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = (await handleServerTool(
       server,
-      { operation: "check_mcp_server" },
+      { operation: "check_backend" },
       registry,
       downstream,
     )) as any;

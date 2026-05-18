@@ -12,12 +12,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@caplets/core": "workspace:*",
-    "caplets": "workspace:*",
     "commander": "^14.0.3"
   },
   "devDependencies": {
+    "@caplets/core": "workspace:*",
     "@types/node": "^25.7.0",
+    "caplets": "workspace:*",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }

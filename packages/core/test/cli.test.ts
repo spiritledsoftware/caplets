@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
 import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
-import { CapletsError } from "../src/errors";
+import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
@@ -390,6 +390,102 @@ describe("cli init", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("executes direct Caplet operation commands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["get-caplet", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["check-backend", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["list-tools", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["search-tools", "local", "echo", "--limit", "1"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["get-tool", "local.echo_json"], { writeOut: (value) => out.push(value) });
+      await runCli(
+        [
+          "call-tool",
+          "local.echo_json",
+          "--args",
+          '{"message":"hello"}',
+          "--field",
+          "json.message",
+        ],
+        { writeOut: (value) => out.push(value) },
+      );
+
+      const results = out.map((value) => JSON.parse(value));
+      expect(results[0].structuredContent.result.caplet).toBe("local");
+      expect(results[1].structuredContent.result).toMatchObject({
+        server: "local",
+        status: "available",
+        toolCount: 3,
+      });
+      expect(results[2].structuredContent.result.tools).toHaveLength(3);
+      expect(results[3].structuredContent.result).toMatchObject({ query: "echo" });
+      expect(results[3].structuredContent.result.tools).toHaveLength(1);
+      expect(results[4].structuredContent.result.tool.name).toBe("echo_json");
+      expect(results[5].structuredContent).toEqual({ json: { message: "hello" } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults omitted call-tool args to an empty object", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-default-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["call-tool", "local.no_args"], { writeOut: (value) => out.push(value) });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        isError: false,
+        structuredContent: { json: { ok: true } },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sets exit code for downstream tool errors after printing JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-error-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    const exitCodes: number[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["call-tool", "local.fail"], {
+        writeOut: (value) => out.push(value),
+        setExitCode: (code) => exitCodes.push(code),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({ isError: true });
+      expect(exitCodes).toEqual([1]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid direct call syntax and arguments", async () => {
+    await expect(runCli(["get-tool", "missingdot"], { writeErr: () => {} })).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+    });
+    await expect(
+      runCli(["call-tool", "local.tool", "--args", "{"], { writeErr: () => {} }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    await expect(
+      runCli(["call-tool", "local.tool", "--args", "[]"], { writeErr: () => {} }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 
   it("installs all Caplets from a local repo caplets directory", async () => {
@@ -1579,6 +1675,61 @@ function writeInspectionConfig(path: string): void {
           endpointUrl: "https://api.example.com/graphql",
           schemaPath: "/tmp/catalog.graphql",
           auth: { type: "none" },
+        },
+      },
+    }),
+  );
+}
+
+function writeCliOperationConfig(path: string): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, "tool.mjs");
+  writeFileSync(
+    script,
+    [
+      "const action = process.argv[2];",
+      "const message = process.argv[3];",
+      "if (action === 'fail') { console.log('out'); console.error('err'); process.exit(7); }",
+      "if (action === 'no_args') { console.log(JSON.stringify({ ok: message === undefined })); process.exit(0); }",
+      "console.log(JSON.stringify({ message }));",
+    ].join("\n"),
+  );
+  writeFileSync(
+    path,
+    JSON.stringify({
+      cliTools: {
+        local: {
+          name: "Local CLI",
+          description: "Run local CLI tools.",
+          actions: {
+            echo_json: {
+              command: process.execPath,
+              args: [script, "echo", "$input.message"],
+              inputSchema: {
+                type: "object",
+                properties: { message: { type: "string" } },
+                required: ["message"],
+                additionalProperties: false,
+              },
+              output: { type: "json" },
+              outputSchema: {
+                type: "object",
+                properties: {
+                  json: {
+                    type: "object",
+                    properties: { message: { type: "string" } },
+                  },
+                },
+              },
+            },
+            no_args: {
+              command: process.execPath,
+              args: [script, "no_args"],
+              output: { type: "json" },
+            },
+            fail: { command: process.execPath, args: [script, "fail"] },
+          },
         },
       },
     }),

@@ -56,14 +56,6 @@ export async function handleServerTool(
           server as never,
         ),
       );
-    case "check_mcp_server":
-      if (server.backend !== "mcp") {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "check_mcp_server is only valid for MCP-backed Caplets; use check_backend",
-        );
-      }
-      return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
@@ -158,7 +150,6 @@ export function validateOperationRequest(
   switch (value.operation) {
     case "get_caplet":
     case "check_backend":
-    case "check_mcp_server":
     case "list_tools":
       allowed([]);
       return { operation: value.operation };
@@ -207,7 +198,7 @@ function assertNever(value: never): never {
 }
 
 type RequiredOperationRequest =
-  | { operation: "get_caplet" | "check_backend" | "check_mcp_server" | "list_tools" }
+  | { operation: "get_caplet" | "check_backend" | "list_tools" }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
   | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] };

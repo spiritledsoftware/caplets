@@ -22,6 +22,7 @@ import {
   resolveConfigPath,
   resolveProjectCapletsRoot,
 } from "./config";
+import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
 
 export { initConfig, starterConfig } from "./cli/init";
@@ -39,6 +40,7 @@ type CliIO = {
   writeErr?: (value: string) => void;
   authDir?: string;
   version?: string;
+  setExitCode?: (code: number) => void;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -59,6 +61,11 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
 export function createProgram(io: CliIO = {}): Command {
   const writeOut = io.writeOut ?? ((value: string) => process.stdout.write(value));
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
+  const setExitCode =
+    io.setExitCode ??
+    ((code: number) => {
+      process.exitCode = code;
+    });
   const program = new Command();
 
   program
@@ -274,6 +281,93 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
+  program
+    .command("get-caplet")
+    .description("Print a configured Caplet card.")
+    .argument("<caplet>", "configured Caplet ID")
+    .action(async (caplet: string) => {
+      await executeOperation(
+        caplet,
+        { operation: "get_caplet" },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+      );
+    });
+
+  program
+    .command("check-backend")
+    .description("Check backend availability for a configured Caplet.")
+    .argument("<caplet>", "configured Caplet ID")
+    .action(async (caplet: string) => {
+      await executeOperation(
+        caplet,
+        { operation: "check_backend" },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+      );
+    });
+
+  program
+    .command("list-tools")
+    .description("List downstream tools for a configured Caplet.")
+    .argument("<caplet>", "configured Caplet ID")
+    .action(async (caplet: string) => {
+      await executeOperation(
+        caplet,
+        { operation: "list_tools" },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+      );
+    });
+
+  program
+    .command("search-tools")
+    .description("Search downstream tools for a configured Caplet.")
+    .argument("<caplet>", "configured Caplet ID")
+    .argument("<query>", "search query")
+    .option("--limit <n>", "maximum number of tools to return", parsePositiveInteger)
+    .action(async (caplet: string, query: string, options: { limit?: number }) => {
+      await executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "search_tools", query }
+          : { operation: "search_tools", query, limit: options.limit },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+      );
+    });
+
+  program
+    .command("get-tool")
+    .description("Print one downstream tool schema.")
+    .argument("<caplet.tool>", "qualified target, split on the first dot")
+    .action(async (target: string) => {
+      const { caplet, tool } = parseQualifiedTarget(target);
+      await executeOperation(
+        caplet,
+        { operation: "get_tool", tool },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+      );
+    });
+
+  program
+    .command("call-tool")
+    .description("Call one downstream tool.")
+    .argument("<caplet.tool>", "qualified target, split on the first dot")
+    .option("--args <json-object>", "JSON object of downstream tool arguments")
+    .option("--field <path>", "project a field from structured output", collect, [])
+    .action(async (target: string, options: { args?: string; field?: string[] }) => {
+      const { caplet, tool } = parseQualifiedTarget(target);
+      const request = {
+        operation: "call_tool",
+        tool,
+        arguments: parseCallToolArgs(options.args),
+        ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
+      };
+      await executeOperation(caplet, request, {
+        writeOut,
+        writeErr,
+        setExitCode,
+        authDir: io.authDir,
+      });
+    });
+
   const config = program.command("config").description("Inspect Caplets config locations.");
 
   config
@@ -356,6 +450,72 @@ type AddBackendCliOptions = {
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new CapletsError("REQUEST_INVALID", `Expected a positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
+function parseQualifiedTarget(target: string): { caplet: string; tool: string } {
+  const dot = target.indexOf(".");
+  if (dot <= 0 || dot === target.length - 1) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Expected qualified target in the form <caplet>.<tool>",
+    );
+  }
+  return { caplet: target.slice(0, dot), tool: target.slice(dot + 1) };
+}
+
+function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
+  if (value === undefined) {
+    return {};
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", "call-tool --args must be valid JSON", error);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", "call-tool --args must be a JSON object");
+  }
+  return parsed;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExitCode">> & {
+  authDir?: string | undefined;
+};
+
+async function executeOperation(
+  caplet: string,
+  request: Record<string, unknown>,
+  io: ExecuteOperationIO,
+): Promise<void> {
+  const configPath = envConfigPath();
+  const engine = new CapletsEngine({
+    ...(configPath ? { configPath } : {}),
+    ...(io.authDir ? { authDir: io.authDir } : {}),
+    watch: false,
+    writeErr: io.writeErr,
+  });
+  try {
+    const result = await engine.execute(caplet, request);
+    io.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    if (isPlainObject(result) && result.isError === true) {
+      io.setExitCode(1);
+    }
+  } finally {
+    await engine.close();
+  }
 }
 
 function addDestinationRoot(options: { global?: boolean }): string {
