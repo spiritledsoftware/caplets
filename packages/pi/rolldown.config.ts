@@ -11,6 +11,5 @@ export default defineConfig({
     "@caplets/core/generated-tool-input-schema",
     "@caplets/core/native",
     "@earendil-works/pi-coding-agent",
-    "@sinclair/typebox",
   ],
 });
