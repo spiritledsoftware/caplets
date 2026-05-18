@@ -211,7 +211,7 @@ Requirements:
 - `mcpServers` is optional when one or more valid Markdown Caplet files are present.
 - `$schema` is optional and exists only for JSON Schema-aware editor validation.
 - `version` is optional for MVP and defaults to 1 when omitted. If present, MVP accepts only `1` and rejects unsupported versions with `CONFIG_INVALID`.
-- Allowed top-level keys in MVP are `$schema`, `version`, `defaultSearchLimit`, `maxSearchLimit`, `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`; unknown top-level keys are rejected with `CONFIG_INVALID`.
+- Allowed top-level keys in MVP are `$schema`, `version`, `defaultSearchLimit`, `maxSearchLimit`, `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, and `capletSets`; unknown top-level keys are rejected with `CONFIG_INVALID`.
 - The committed JSON Schema lives at `schemas/caplets-config.schema.json`, is generated from the Zod runtime config schema, and CI must fail when the committed schema drifts from the generated output.
 - Unknown keys inside each server config are rejected with `CONFIG_INVALID`, except fields that belong to the tracked standard MCP server schema plus Caplets-owned additions documented here.
 - `mcpServers` is the only accepted top-level server configuration key for plain JSON downstream MCP servers in MVP.
@@ -226,7 +226,7 @@ Requirements:
 - `description` must be at most 1500 characters and is returned exactly as configured.
 - `description` may contain Markdown syntax because the primary reader is an LLM, but MVP treats it as opaque text: Caplets does not render, sanitize, transform, or interpret Markdown.
 - Caplets should reuse or closely track existing MCP server config validation semantics where practical rather than inventing a new dialect.
-- Markdown Caplet files are executable configuration because they require exactly one backend among `mcpServer`, `openapiEndpoint`, `graphqlEndpoint`, `httpApi`, or `cliTools`, and some backends can start downstream processes. User Caplet files are trusted by location, and project Caplet files load by default from the current project's `./.caplets` directory. When a project Caplet shadows a global/user Caplet, CLI inspection must make the winning project source and shadowed source visible.
+- Markdown Caplet files are executable configuration because they require exactly one backend among `mcpServer`, `openapiEndpoint`, `graphqlEndpoint`, `httpApi`, `cliTools`, or `capletSet`, and some backends can start downstream processes. User Caplet files are trusted by location, and project Caplet files load by default from the current project's `./.caplets` directory. When a project Caplet shadows a global/user Caplet, CLI inspection must make the winning project source and shadowed source visible.
 - Each server config must define exactly one connection shape:
   - Stdio: `command` is required; optional `args`, `env`, and `cwd` are allowed.
   - Remote: `url` is required and `transport` must be `http` or `sse`.
@@ -268,6 +268,7 @@ Requirements:
 - GraphQL backends support local `schemaPath`, remote `schemaUrl`, or endpoint introspection, configured operations, auto-generated query/mutation tools, explicit `auth`, and native GraphQL HTTP execution.
 - HTTP action backends support explicit `httpApis` config or Markdown `httpApi` frontmatter with `baseUrl`, `auth`, and one or more named actions. Each action defines `method`, `path`, optional `description`, optional `inputSchema`, and optional `query`, `headers`, and `jsonBody` mappings.
 - CLI backends support explicit `cliTools` config or Markdown `cliTools` frontmatter with one or more named actions. Each action defines a command, optional fixed args, optional description, optional inputSchema, optional argument/environment/stdin mappings, optional cwd, timeout, and output byte limits; execution must avoid shell evaluation unless explicitly modeled as a command executable.
+- Caplet set backends support explicit `capletSets` config or Markdown `capletSet` frontmatter with `configPath`, `capletsRoot`, or both. Each child Caplet is exposed as one downstream tool that accepts the normal Caplets operation schema; child collections are isolated from the parent, and recursive nesting must reject repeated source paths as cycles.
 - HTTP action `query` and `headers` mappings must resolve to object maps whose values are strings, numbers, or booleans. HTTP action `jsonBody` mappings support literal values, nested arrays/objects, `$input.field` references, and `$input` for the complete argument object. HTTP action paths may contain `{field}` placeholders resolved from top-level arguments.
 - HTTP action requests require HTTPS except loopback URLs, reject origin-changing paths and redirects, reject managed configured headers, enforce timeouts and response byte limits, and return structured `{ status, statusText, headers, body, elapsedMs }` content with `isError` set for non-2xx status.
 - OpenCode's `mcp` config shape is a compatibility reference, not Caplets' native MVP shape: OpenCode uses local/remote entries under `mcp`, local `command` as an array, `environment` instead of `env`, and `{env:NAME}`-style interpolation in its broader config system. Automatic OpenCode config import/normalization is deferred.
@@ -380,6 +381,7 @@ Core modules:
 - `graphqlEndpoints: Record<string, GraphQlEndpointConfig>`
 - `httpApis: Record<string, HttpApiConfig>`
 - `cliTools: Record<string, CliToolConfig>`
+- `capletSets: Record<string, CapletSetConfig>`
 
 `CapletServerConfig`:
 
@@ -626,7 +628,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 **MVP: Local progressive MCP gateway**
 
 - Read `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows.
-- Validate all supported backend config maps with required descriptions: `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`.
+- Validate all supported backend config maps with required descriptions: `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, and `capletSets`.
 - Require restart after config changes while keeping config loading, registry construction, and downstream client lifecycle modular enough for later hot reload.
 - Expose one generated top-level MCP tool per enabled downstream server.
 - Support server-scoped diagnostics, tool listing, lexical search, tool metadata lookup, and explicit tool invocation through each generated Caplet tool.
@@ -656,7 +658,7 @@ If no test runner exists yet, implementation must add one before claiming MVP co
 
 ### Technical Risks
 
-- **Config fragmentation**: MCP clients differ on config shape. MVP mitigates this by documenting and supporting exactly the configured backend keys, including `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, and `cliTools`.
+- **Config fragmentation**: MCP clients differ on config shape. MVP mitigates this by documenting and supporting exactly the configured backend keys, including `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`, `httpApis`, `cliTools`, and `capletSets`.
 - **Client expectations**: Some clients may expect every downstream tool in `tools/list`. MVP intentionally exposes one generated server/caplet tool per downstream server instead.
 - **Lifecycle cost**: Keeping downstream stdio servers running improves freshness but consumes local resources and may surface startup failures earlier. MVP mitigates this with bounded startup, process reuse, status reporting, and partial failures.
 - **Unsafe downstream behavior**: Downstream tools may be destructive. MVP mitigates this by avoiding safety claims and preserving MCP client confirmation flows.

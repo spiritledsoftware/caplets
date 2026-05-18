@@ -505,6 +505,36 @@ const capletCliToolsSchema = z
   })
   .strict();
 
+const capletSetSchema = z
+  .object({
+    configPath: z.string().min(1).optional().describe("Child Caplets config.json path."),
+    capletsRoot: z.string().min(1).optional().describe("Child Markdown Caplets root directory."),
+    defaultSearchLimit: z.number().int().positive().optional(),
+    maxSearchLimit: z.number().int().positive().max(50).optional(),
+    toolCacheTtlMs: z.number().int().nonnegative().optional(),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+  })
+  .strict()
+  .superRefine((set, ctx) => {
+    if (!set.configPath && !set.capletsRoot) {
+      ctx.addIssue({
+        code: "custom",
+        message: "capletSet must define at least one source: configPath or capletsRoot",
+      });
+    }
+    if (
+      set.defaultSearchLimit !== undefined &&
+      set.maxSearchLimit !== undefined &&
+      set.defaultSearchLimit > set.maxSearchLimit
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultSearchLimit"],
+        message: "defaultSearchLimit must be <= maxSearchLimit",
+      });
+    }
+  });
+
 export const capletFileSchema = z
   .object({
     $schema: z
@@ -540,6 +570,9 @@ export const capletFileSchema = z
     cliTools: capletCliToolsSchema
       .describe("CLI tools backend configuration for this Caplet.")
       .optional(),
+    capletSet: capletSetSchema
+      .describe("Nested Caplet collection backend configuration for this Caplet.")
+      .optional(),
   })
   .strict()
   .superRefine((frontmatter, ctx) => {
@@ -548,12 +581,13 @@ export const capletFileSchema = z
       Number(Boolean(frontmatter.openapiEndpoint)) +
       Number(Boolean(frontmatter.graphqlEndpoint)) +
       Number(Boolean(frontmatter.httpApi)) +
-      Number(Boolean(frontmatter.cliTools));
+      Number(Boolean(frontmatter.cliTools)) +
+      Number(Boolean(frontmatter.capletSet));
     if (backendCount !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, httpApi, or cliTools",
+          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, httpApi, cliTools, or capletSet",
       });
     }
   });
@@ -576,6 +610,7 @@ export type CapletFileConfig = {
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
   cliTools?: Record<string, unknown>;
+  capletSets?: Record<string, unknown>;
 };
 
 export type CapletFileLoadResult = {
@@ -597,6 +632,7 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
   const graphqlEndpoints: Record<string, unknown> = {};
   const httpApis: Record<string, unknown> = {};
   const cliTools: Record<string, unknown> = {};
+  const capletSets: Record<string, unknown> = {};
   const paths: Record<string, string> = {};
   for (const candidate of discoverCapletFiles(root)) {
     if (
@@ -604,7 +640,8 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
       openapiEndpoints[candidate.id] ||
       graphqlEndpoints[candidate.id] ||
       httpApis[candidate.id] ||
-      cliTools[candidate.id]
+      cliTools[candidate.id] ||
+      capletSets[candidate.id]
     ) {
       throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${candidate.id} under ${root}`);
     }
@@ -622,6 +659,9 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
     } else if (isPlainObject(config) && config.backend === "cli") {
       const { backend: _backend, ...endpoint } = config;
       cliTools[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "caplets") {
+      const { backend: _backend, ...endpoint } = config;
+      capletSets[candidate.id] = endpoint;
     } else {
       servers[candidate.id] = config;
     }
@@ -632,7 +672,8 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
   const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
   const hasHttpApis = Object.keys(httpApis).length > 0;
   const hasCliTools = Object.keys(cliTools).length > 0;
-  return hasServers || hasOpenApi || hasGraphQl || hasHttpApis || hasCliTools
+  const hasCapletSets = Object.keys(capletSets).length > 0;
+  return hasServers || hasOpenApi || hasGraphQl || hasHttpApis || hasCliTools || hasCapletSets
     ? {
         config: {
           ...(hasServers ? { mcpServers: servers } : {}),
@@ -640,6 +681,7 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
           ...(hasGraphQl ? { graphqlEndpoints } : {}),
           ...(hasHttpApis ? { httpApis } : {}),
           ...(hasCliTools ? { cliTools } : {}),
+          ...(hasCapletSets ? { capletSets } : {}),
         },
         paths,
       }
@@ -757,6 +799,19 @@ function capletToServerConfig(
       cwd: normalizeLocalPath(frontmatter.cliTools.cwd, baseDir),
       actions: normalizeCliToolActions(frontmatter.cliTools.actions, baseDir),
       backend: "cli",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      body,
+    };
+  }
+
+  if (frontmatter.capletSet) {
+    return {
+      ...frontmatter.capletSet,
+      configPath: normalizeLocalPath(frontmatter.capletSet.configPath, baseDir),
+      capletsRoot: normalizeLocalPath(frontmatter.capletSet.capletsRoot, baseDir),
+      backend: "caplets",
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),

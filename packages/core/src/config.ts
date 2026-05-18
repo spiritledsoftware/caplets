@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { loadCapletFilesWithPaths } from "./caplet-files.js";
+import { loadCapletFiles, loadCapletFilesWithPaths } from "./caplet-files.js";
 import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths.js";
 import {
   FORBIDDEN_HEADERS,
@@ -193,12 +193,28 @@ export type CliToolsConfig = {
   disabled: boolean;
 };
 
+export type CapletSetConfig = {
+  server: string;
+  backend: "caplets";
+  name: string;
+  description: string;
+  tags?: string[] | undefined;
+  body?: string | undefined;
+  configPath?: string | undefined;
+  capletsRoot?: string | undefined;
+  defaultSearchLimit: number;
+  maxSearchLimit: number;
+  toolCacheTtlMs: number;
+  disabled: boolean;
+};
+
 export type CapletConfig =
   | CapletServerConfig
   | OpenApiEndpointConfig
   | GraphQlEndpointConfig
   | HttpApiConfig
-  | CliToolsConfig;
+  | CliToolsConfig
+  | CapletSetConfig;
 
 export type CapletsOptions = {
   defaultSearchLimit: number;
@@ -213,6 +229,7 @@ export type CapletsConfig = {
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
   httpApis: Record<string, HttpApiConfig>;
   cliTools: Record<string, CliToolsConfig>;
+  capletSets: Record<string, CapletSetConfig>;
 };
 
 export type ConfigSourceKind = "global-config" | "global-file" | "project-config" | "project-file";
@@ -684,17 +701,75 @@ const normalizedCliToolsSchema = publicCliToolsSchema.extend({
   body: z.string().optional(),
 });
 
+const publicCapletSetSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).describe("Human-readable Caplet set display name."),
+    description: z
+      .string()
+      .describe("Capability description shown before child Caplets are disclosed.")
+      .refine(
+        (value) => value.trim().length >= 10,
+        "description must contain at least 10 non-whitespace characters",
+      )
+      .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
+    configPath: z.string().min(1).optional().describe("Child Caplets config.json path."),
+    capletsRoot: z.string().min(1).optional().describe("Child Markdown Caplets root directory."),
+    defaultSearchLimit: z
+      .number()
+      .int()
+      .positive()
+      .default(20)
+      .describe("Default maximum number of child Caplet search results."),
+    maxSearchLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(50)
+      .default(50)
+      .describe("Maximum accepted child Caplet search result limit."),
+    toolCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    disabled: z.boolean().default(false).describe("When true, omit this Caplet set."),
+  })
+  .strict()
+  .superRefine((set, ctx) => {
+    if (!set.configPath && !set.capletsRoot) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Caplet set must define at least one source: configPath or capletsRoot",
+      });
+    }
+    if (set.defaultSearchLimit > set.maxSearchLimit) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultSearchLimit"],
+        message: "defaultSearchLimit must be <= maxSearchLimit",
+      });
+    }
+  });
+
+const normalizedCapletSetSchema = publicCapletSetSchema.extend({
+  body: z.string().optional(),
+});
+
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
 type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
 type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpointSchema>;
 type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
+type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
   cliTools?: Record<string, unknown>;
+  capletSets?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -704,6 +779,7 @@ function configSchemaFor(
   graphQlEndpointValueSchema: z.ZodTypeAny,
   httpApiValueSchema: z.ZodTypeAny,
   cliToolsValueSchema: z.ZodTypeAny,
+  capletSetValueSchema: z.ZodTypeAny,
 ) {
   return z
     .object({
@@ -746,6 +822,10 @@ function configSchemaFor(
         .record(z.string().regex(SERVER_ID_PATTERN), cliToolsValueSchema)
         .default({})
         .describe("CLI tools keyed by stable Caplet ID."),
+      capletSets: z
+        .record(z.string().regex(SERVER_ID_PATTERN), capletSetValueSchema)
+        .default({})
+        .describe("Nested Caplet collections keyed by stable Caplet ID."),
     })
     .strict()
     .superRefine((config, ctx) => {
@@ -997,6 +1077,42 @@ function configSchemaFor(
           }
         }
       }
+
+      for (const [server, rawValue] of Object.entries(config.capletSets)) {
+        const raw = rawValue as ConfigSchemaCapletSetValue;
+        const duplicateBackend = config.mcpServers[server]
+          ? "mcpServers"
+          : config.openapiEndpoints[server]
+            ? "openapiEndpoints"
+            : config.graphqlEndpoints[server]
+              ? "graphqlEndpoints"
+              : config.httpApis[server]
+                ? "httpApis"
+                : config.cliTools[server]
+                  ? "cliTools"
+                  : undefined;
+        if (duplicateBackend) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["capletSets", server],
+            message: `Caplet ID ${server} is already used by ${duplicateBackend}`,
+          });
+        }
+        if (!SERVER_ID_PATTERN.test(server)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["capletSets", server],
+            message: "Caplet set ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
+        if (!raw.configPath && !raw.capletsRoot) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["capletSets", server],
+            message: "Caplet set must define at least one source: configPath or capletsRoot",
+          });
+        }
+      }
     });
 }
 
@@ -1006,6 +1122,7 @@ export const configFileSchema = configSchemaFor(
   publicGraphQlEndpointSchema,
   publicHttpApiSchema,
   publicCliToolsSchema,
+  publicCapletSetSchema,
 );
 const normalizedConfigFileSchema = configSchemaFor(
   normalizedServerSchema,
@@ -1013,6 +1130,7 @@ const normalizedConfigFileSchema = configSchemaFor(
   normalizedGraphQlEndpointSchema,
   normalizedHttpApiSchema,
   normalizedCliToolsSchema,
+  normalizedCapletSetSchema,
 );
 
 export function configJsonSchema(): unknown {
@@ -1075,11 +1193,12 @@ export function loadConfigWithSources(
       Object.keys(config.openapiEndpoints).length === 0 &&
       Object.keys(config.graphqlEndpoints).length === 0 &&
       Object.keys(config.httpApis).length === 0 &&
-      Object.keys(config.cliTools).length === 0
+      Object.keys(config.cliTools).length === 0 &&
+      Object.keys(config.capletSets).length === 0
     ) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend",
+        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
       );
     }
     return { config, sources, shadows };
@@ -1103,6 +1222,48 @@ type ConfigInputWithSource = {
   input: ConfigInput | undefined;
   source: ConfigSourceInput;
 };
+
+export function loadIsolatedConfig(options: {
+  configPath?: string;
+  capletsRoot?: string;
+  defaultSearchLimit: number;
+  maxSearchLimit: number;
+}): CapletsConfig {
+  if (!options.configPath && !options.capletsRoot) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Nested Caplet set must define at least one source: configPath or capletsRoot",
+    );
+  }
+
+  const configInput = options.configPath ? readPublicConfigInput(options.configPath) : undefined;
+  const capletInput = options.capletsRoot ? loadCapletFiles(options.capletsRoot) : undefined;
+  if (!configInput && !capletInput) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Nested Caplet set sources not found: ${[options.configPath, options.capletsRoot].filter(Boolean).join(", ")}`,
+    );
+  }
+
+  const config = parseConfig(
+    mergeConfigInputs(configInput, capletInput, {
+      version: 1,
+      defaultSearchLimit: options.defaultSearchLimit,
+      maxSearchLimit: options.maxSearchLimit,
+    }),
+  );
+  if (
+    Object.keys(config.mcpServers).length === 0 &&
+    Object.keys(config.openapiEndpoints).length === 0 &&
+    Object.keys(config.graphqlEndpoints).length === 0 &&
+    Object.keys(config.httpApis).length === 0 &&
+    Object.keys(config.cliTools).length === 0 &&
+    Object.keys(config.capletSets).length === 0
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "Nested Caplet set must define at least one Caplet");
+  }
+  return config;
+}
 
 function resolveProjectCapletsRootForConfigPath(projectPath: string): string | undefined {
   const root = dirname(projectPath);
@@ -1142,6 +1303,7 @@ function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
     openapiEndpoints: normalizeEndpointPaths(input.openapiEndpoints, baseDir, normalizeOpenApiPath),
     graphqlEndpoints: normalizeEndpointPaths(input.graphqlEndpoints, baseDir, normalizeGraphQlPath),
     cliTools: normalizeEndpointPaths(input.cliTools, baseDir, normalizeCliToolsPaths),
+    capletSets: normalizeEndpointPaths(input.capletSets, baseDir, normalizeCapletSetPaths),
   }) as ConfigInput;
 }
 
@@ -1219,6 +1381,17 @@ function normalizeCliToolsPaths(
   };
 }
 
+function normalizeCapletSetPaths(
+  endpoint: Record<string, unknown>,
+  baseDir: string,
+): Record<string, unknown> {
+  return {
+    ...endpoint,
+    configPath: normalizeLocalPath(endpoint.configPath, baseDir),
+    capletsRoot: normalizeLocalPath(endpoint.capletsRoot, baseDir),
+  };
+}
+
 function normalizeLocalPath(value: unknown, baseDir: string): unknown {
   if (typeof value !== "string" || !value || isAbsolute(value) || hasEnvReference(value)) {
     return value;
@@ -1249,6 +1422,12 @@ function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: stri
     throw new CapletsError(
       "CONFIG_INVALID",
       `Project config at ${path} cannot define executable backend map cliTools; use project Markdown Caplet files or user config instead`,
+    );
+  }
+  if (input.capletSets && Object.keys(input.capletSets).length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define executable backend map capletSets; use project Markdown Caplet files or user config instead`,
     );
   }
   return input;
@@ -1282,6 +1461,10 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       cliTools: {
         ...merged?.cliTools,
         ...input.cliTools,
+      },
+      capletSets: {
+        ...merged?.capletSets,
+        ...input.capletSets,
       },
     };
   }
@@ -1321,6 +1504,7 @@ function removeCapletId(input: ConfigInput, id: string): ConfigInput {
   const { [id]: _graphqlEndpoint, ...graphqlEndpoints } = input.graphqlEndpoints ?? {};
   const { [id]: _httpApi, ...httpApis } = input.httpApis ?? {};
   const { [id]: _cliTools, ...cliTools } = input.cliTools ?? {};
+  const { [id]: _capletSet, ...capletSets } = input.capletSets ?? {};
 
   return {
     ...input,
@@ -1329,6 +1513,7 @@ function removeCapletId(input: ConfigInput, id: string): ConfigInput {
     graphqlEndpoints,
     httpApis,
     cliTools,
+    capletSets,
   };
 }
 
@@ -1339,6 +1524,7 @@ function capletIds(input: ConfigInput): string[] {
     ...Object.keys(input.graphqlEndpoints ?? {}),
     ...Object.keys(input.httpApis ?? {}),
     ...Object.keys(input.cliTools ?? {}),
+    ...Object.keys(input.capletSets ?? {}),
   ];
 }
 
@@ -1406,6 +1592,16 @@ export function parseConfig(input: unknown): CapletsConfig {
     }) as CliToolsConfig;
   }
 
+  const capletSets: Record<string, CapletSetConfig> = {};
+  for (const [server, raw] of Object.entries(parsed.data.capletSets)) {
+    const interpolated = raw as ConfigSchemaCapletSetValue;
+    capletSets[server] = stripUndefined({
+      ...interpolated,
+      server,
+      backend: "caplets",
+    }) as CapletSetConfig;
+  }
+
   return {
     version: parsed.data.version,
     options: {
@@ -1417,6 +1613,7 @@ export function parseConfig(input: unknown): CapletsConfig {
     graphqlEndpoints,
     httpApis,
     cliTools,
+    capletSets,
   };
 }
 
@@ -1474,7 +1671,8 @@ function isPublicMetadataPath(path: string[]): boolean {
       path[0] !== "openapiEndpoints" &&
       path[0] !== "graphqlEndpoints" &&
       path[0] !== "httpApis" &&
-      path[0] !== "cliTools")
+      path[0] !== "cliTools" &&
+      path[0] !== "capletSets")
   ) {
     return false;
   }

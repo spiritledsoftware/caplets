@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CapletSetManager } from "./caplet-sets.js";
 import type { CapletConfig } from "./config.js";
 import { CliToolsManager } from "./cli-tools.js";
 import type { DownstreamManager } from "./downstream.js";
@@ -42,6 +43,7 @@ export async function handleServerTool(
   graphql?: GraphQLManager,
   http?: HttpActionManager,
   cli?: CliToolsManager,
+  caplets?: CapletSetManager,
 ): Promise<any> {
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
@@ -50,7 +52,9 @@ export async function handleServerTool(
       return jsonResult(registry.detail(server));
     case "check_backend":
       return jsonResult(
-        await backendFor(server, downstream, openapi, graphql, http, cli).check(server as never),
+        await backendFor(server, downstream, openapi, graphql, http, cli, caplets).check(
+          server as never,
+        ),
       );
     case "check_mcp_server":
       if (server.backend !== "mcp") {
@@ -61,7 +65,7 @@ export async function handleServerTool(
       }
       return jsonResult(await downstream.checkServer(server));
     case "list_tools": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli);
+      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
       return jsonResult({
         server: server.server,
@@ -69,7 +73,7 @@ export async function handleServerTool(
       });
     }
     case "search_tools": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli);
+      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult({
@@ -79,12 +83,12 @@ export async function handleServerTool(
       });
     }
     case "get_tool": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli);
+      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult({ server: server.server, tool });
     }
     case "call_tool": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli);
+      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       if (parsed.fields === undefined) {
         return backend.callTool(server as never, parsed.tool, parsed.arguments);
       }
@@ -256,6 +260,7 @@ function backendFor(
   graphql?: GraphQLManager,
   http?: HttpActionManager,
   cli?: CliToolsManager,
+  caplets?: CapletSetManager,
 ) {
   if (server.backend === "mcp") {
     return {
@@ -308,6 +313,19 @@ function backendFor(
       callTool: (...args: Parameters<CliToolsManager["callTool"]>) => cli.callTool(...args),
       compact: (...args: Parameters<CliToolsManager["compact"]>) => cli.compact(...args),
       search: (...args: Parameters<CliToolsManager["search"]>) => cli.search(...args),
+    };
+  }
+  if (server.backend === "caplets") {
+    if (!caplets) {
+      throw new CapletsError("INTERNAL_ERROR", "Caplet set manager is not configured");
+    }
+    return {
+      check: (...args: Parameters<CapletSetManager["checkSet"]>) => caplets.checkSet(...args),
+      listTools: (...args: Parameters<CapletSetManager["listTools"]>) => caplets.listTools(...args),
+      getTool: (...args: Parameters<CapletSetManager["getTool"]>) => caplets.getTool(...args),
+      callTool: (...args: Parameters<CapletSetManager["callTool"]>) => caplets.callTool(...args),
+      compact: (...args: Parameters<CapletSetManager["compact"]>) => caplets.compact(...args),
+      search: (...args: Parameters<CapletSetManager["search"]>) => caplets.search(...args),
     };
   }
   if (!openapi) {

@@ -66,6 +66,13 @@ describe("registry", () => {
           },
         },
       },
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          capletsRoot: "/tmp/caplets",
+        },
+      },
     });
     const registry = new ServerRegistry(config);
     expect(registry.enabledServers().map((server) => server.server)).toEqual([
@@ -75,6 +82,7 @@ describe("registry", () => {
       "catalog",
       "status",
       "repo",
+      "nested",
     ]);
     expect(registry.get("disabled")).toBeUndefined();
     expect(registry.get("status")?.backend).toBe("http");
@@ -164,6 +172,22 @@ describe("registry", () => {
         timeoutMs: 60000,
         maxOutputBytes: 1000000,
         configuredActions: 1,
+      },
+    });
+
+    const capletSetDescription = capabilityDescription(config.capletSets.nested!);
+    expect(capletSetDescription).toContain("nested Caplets backend");
+    expect(capletSetDescription).toContain('"operation":"check_backend"');
+    const capletSetDetail = registry.detail(config.capletSets.nested!);
+    expect(capletSetDetail).toEqual({
+      caplet: "nested",
+      name: "Nested Caplets",
+      description: "Expose child Caplets through a nested collection.",
+      backend: {
+        type: "caplets",
+        disabled: false,
+        source: "capletsRoot",
+        toolCacheTtlMs: 30000,
       },
     });
   });
