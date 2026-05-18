@@ -18,10 +18,10 @@ import {
   runOAuthFlow,
   runGenericOAuthFlow,
   writeTokenBundle,
-} from "../src/auth.js";
-import { listAuth } from "../src/cli/auth.js";
-import { parseConfig } from "../src/config.js";
-import { DEFAULT_AUTH_DIR } from "../src/config/paths.js";
+} from "../src/auth";
+import { listAuth } from "../src/cli/auth";
+import { parseConfig } from "../src/config";
+import { DEFAULT_AUTH_DIR } from "../src/config/paths";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

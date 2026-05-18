@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { parseConfig } from "../src/config.js";
-import { DownstreamManager } from "../src/downstream.js";
-import { ServerRegistry } from "../src/registry.js";
-import { CapletsError } from "../src/errors.js";
-import { writeTokenBundle } from "../src/auth.js";
-import { handleServerTool } from "../src/tools.js";
+import { parseConfig } from "../src/config";
+import { DownstreamManager } from "../src/downstream";
+import { ServerRegistry } from "../src/registry";
+import { CapletsError } from "../src/errors";
+import { writeTokenBundle } from "../src/auth";
+import { handleServerTool } from "../src/tools";
 
 describe("downstream stdio lifecycle", () => {
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {

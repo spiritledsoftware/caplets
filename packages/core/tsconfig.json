@@ -5,7 +5,7 @@
     "target": "esnext",
     "lib": ["esnext", "esnext.asynciterable"],
     "types": ["@types/node"],
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,

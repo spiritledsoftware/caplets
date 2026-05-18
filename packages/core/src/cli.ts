@@ -6,33 +6,33 @@ import {
   addHttpCaplet,
   addMcpCaplet,
   addOpenApiCaplet,
-} from "./cli/add.js";
-import { loginAuth, logoutAuth, listAuth } from "./cli/auth.js";
-import { initConfig } from "./cli/init.js";
+} from "./cli/add";
+import { loginAuth, logoutAuth, listAuth } from "./cli/auth";
+import { initConfig } from "./cli/init";
 import {
   formatCapletList,
   formatConfigPaths,
   listCaplets,
   resolveCliConfigPaths,
-} from "./cli/inspection.js";
-import { installCaplets } from "./cli/install.js";
+} from "./cli/inspection";
+import { installCaplets } from "./cli/install";
 import {
   loadConfigWithSources,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
-} from "./config.js";
-import { CapletsError } from "./errors.js";
+} from "./config";
+import { CapletsError } from "./errors";
 
-export { initConfig, starterConfig } from "./cli/init.js";
-export { installCaplets, normalizeGitRepo } from "./cli/install.js";
+export { initConfig, starterConfig } from "./cli/init";
+export { installCaplets, normalizeGitRepo } from "./cli/install";
 export {
   addCliCaplet,
   addGraphqlCaplet,
   addHttpCaplet,
   addMcpCaplet,
   addOpenApiCaplet,
-} from "./cli/add.js";
+} from "./cli/add";
 
 type CliIO = {
   writeOut?: (value: string) => void;

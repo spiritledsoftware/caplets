@@ -2,12 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CliToolsManager } from "../src/cli-tools.js";
-import { parseConfig } from "../src/config.js";
-import { CapletsError } from "../src/errors.js";
-import { ServerRegistry } from "../src/registry.js";
-import { handleServerTool } from "../src/tools.js";
-import { DownstreamManager } from "../src/downstream.js";
+import { CliToolsManager } from "../src/cli-tools";
+import { parseConfig } from "../src/config";
+import { CapletsError } from "../src/errors";
+import { ServerRegistry } from "../src/registry";
+import { handleServerTool } from "../src/tools";
+import { DownstreamManager } from "../src/downstream";
 
 describe("CliToolsManager", () => {
   const dirs: string[] = [];

@@ -11,10 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, parse, relative, resolve } from "node:path";
-import { validateCapletFile } from "../caplet-files.js";
-import { SERVER_ID_PATTERN } from "../config/validation.js";
-import { CapletsError, toSafeError } from "../errors.js";
-import { authorCliCaplet } from "./author.js";
+import { validateCapletFile } from "../caplet-files";
+import { SERVER_ID_PATTERN } from "../config/validation";
+import { CapletsError, toSafeError } from "../errors";
+import { authorCliCaplet } from "./author";
 
 type AddCliOptions = {
   repo?: string;

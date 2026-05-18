@@ -2,10 +2,11 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_TIMEOUT_MS } from "./lib/live-agent.mjs";
-import { opencodeRunner } from "./lib/opencode-runner.mjs";
-import { piRunner } from "./lib/pi-runner.mjs";
-import { createTempWorkspaceFromFixture, scoreTaskRun } from "./lib/scoring.mjs";
+import { Command, InvalidArgumentError } from "commander";
+import { DEFAULT_TIMEOUT_MS } from "./lib/live-agent";
+import { opencodeRunner } from "./lib/opencode-runner";
+import { piRunner } from "./lib/pi-runner";
+import { createTempWorkspaceFromFixture, scoreTaskRun } from "./lib/scoring";
 
 export const LIVE_AGENT_MODES = Object.freeze({
   pi: ["direct-flat", "pi-proxy", "caplets"],
@@ -28,78 +29,49 @@ const runnerByAgent = Object.freeze({
 });
 
 export function parseLiveArgs(argv = process.argv.slice(2)) {
-  const options = {
-    agent: DEFAULT_LIVE_AGENT,
-    modes: undefined,
-    model: undefined,
-    tasks: undefined,
-    runs: DEFAULT_RUNS,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
-    outputDir: defaultOutputDir,
-    preserveArtifacts: false,
-  };
+  const program = new Command();
+  program
+    .name("caplets-live-benchmark")
+    .description("Run live coding-agent benchmarks.")
+    .allowExcessArguments(false)
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    })
+    .option("--agent <agent>", "agent to run: pi, opencode, or all", DEFAULT_LIVE_AGENT)
+    .option("--mode <modes>", "comma-separated benchmark modes", splitCsv)
+    .option("--model <model>", "agent model identifier")
+    .option("--tasks <ids>", "comma-separated benchmark task ids", splitCsv)
+    .option("--runs <count>", "runs per task/mode", parseCommanderPositiveInteger, DEFAULT_RUNS)
+    .option(
+      "--timeout-ms <milliseconds>",
+      "timeout per agent run",
+      parseCommanderPositiveInteger,
+      DEFAULT_TIMEOUT_MS,
+    )
+    .option(
+      "--output-dir <dir>",
+      "directory for reports",
+      (value) => resolve(value),
+      defaultOutputDir,
+    )
+    .option("--preserve-artifacts", "keep candidate workspaces and agent artifacts", false);
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === "--") {
-      continue;
-    }
-    if (!arg?.startsWith("--")) {
-      throw new Error(`Unexpected positional argument: ${arg}`);
-    }
-
-    const equalsIndex = arg.indexOf("=");
-    const name = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
-    const inlineValue = equalsIndex === -1 ? undefined : arg.slice(equalsIndex + 1);
-    const readValue = () => {
-      if (inlineValue !== undefined) {
-        return inlineValue;
-      }
-      const value = argv[index + 1];
-      if (value === undefined || value.startsWith("--")) {
-        throw new Error(`${name} requires a value.`);
-      }
-      index += 1;
-      return value;
-    };
-
-    if (name === "--preserve-artifacts") {
-      options.preserveArtifacts = true;
-      continue;
-    }
-    if (name === "--agent") {
-      options.agent = readValue();
-      continue;
-    }
-    if (name === "--mode") {
-      options.modes = splitCsv(readValue());
-      continue;
-    }
-    if (name === "--model") {
-      options.model = readValue();
-      continue;
-    }
-    if (name === "--tasks") {
-      options.tasks = splitCsv(readValue());
-      continue;
-    }
-    if (name === "--runs") {
-      options.runs = parsePositiveInteger(readValue(), "--runs");
-      continue;
-    }
-    if (name === "--timeout-ms") {
-      options.timeoutMs = parsePositiveInteger(readValue(), "--timeout-ms");
-      continue;
-    }
-    if (name === "--output-dir") {
-      options.outputDir = resolve(readValue());
-      continue;
-    }
-
-    throw new Error(`Unknown argument: ${name}`);
+  try {
+    program.parse(
+      argv.filter((arg) => arg !== "--"),
+      { from: "user" },
+    );
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : String(error));
   }
 
-  return validateLiveOptions(options);
+  const parsedOptions = program.opts();
+  return validateLiveOptions({
+    ...parsedOptions,
+    modes: parsedOptions.mode,
+  });
 }
 
 export async function runLiveBenchmark({
@@ -111,7 +83,7 @@ export async function runLiveBenchmark({
   tasksPath = defaultTasksPath,
   now = () => new Date(),
   onProgress,
-} = {}) {
+}: any = {}) {
   const liveOptions = validateLiveOptions(options ?? {});
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Refusing to run live benchmarks unless CAPLETS_BENCH_LIVE=1.");
@@ -338,6 +310,14 @@ function splitCsv(value) {
     throw new Error("Expected at least one comma-separated value.");
   }
   return parts;
+}
+
+function parseCommanderPositiveInteger(value: string): number {
+  try {
+    return parsePositiveInteger(value, "value");
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function parsePositiveInteger(value, flag) {

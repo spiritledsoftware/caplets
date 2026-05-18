@@ -3,8 +3,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GraphQLManager, type GraphqlEndpointConfig } from "../src/graphql.js";
-import { ServerRegistry } from "../src/registry.js";
+import { GraphQLManager, type GraphqlEndpointConfig } from "../src/graphql";
+import { ServerRegistry } from "../src/registry";
 
 describe("GraphQLManager", () => {
   let baseUrl = "";

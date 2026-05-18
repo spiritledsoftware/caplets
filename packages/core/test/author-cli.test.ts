@@ -2,16 +2,16 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { authorCliCaplet } from "../src/cli/author.js";
+import { authorCliCaplet } from "../src/cli/author";
 import {
   addCliCaplet,
   addGraphqlCaplet,
   addHttpCaplet,
   addMcpCaplet,
   addOpenApiCaplet,
-} from "../src/cli/add.js";
-import { validateCapletFile } from "../src/caplet-files.js";
-import { CapletsError } from "../src/errors.js";
+} from "../src/cli/add";
+import { validateCapletFile } from "../src/caplet-files";
+import { CapletsError } from "../src/errors";
 
 describe("CLI Caplet authoring", () => {
   const dirs: string[] = [];

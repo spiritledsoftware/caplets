@@ -6,7 +6,7 @@ export const operations = [
   "search_tools",
   "get_tool",
   "call_tool",
-];
+] as const;
 
 export const generatedToolInputDescriptions = {
   operation: [
@@ -23,7 +23,7 @@ export const generatedToolInputDescriptions = {
     'Required JSON object only for call_tool. Put every downstream tool input inside this object. Example: {"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}. Do not send downstream inputs as top-level query, limit, url, path, or other fields.',
   fields:
     'Optional for call_tool after get_tool shows outputSchema on a non-GraphQL tool. Example: fields: ["path.to.field"].',
-};
+} as const;
 
 export function generatedToolInputJsonSchema() {
   return {
@@ -60,5 +60,5 @@ export function generatedToolInputJsonSchema() {
     },
     required: ["operation"],
     additionalProperties: false,
-  };
+  } as const;
 }

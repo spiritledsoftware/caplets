@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { watch } from "rolldown";
 import cliConfig from "../packages/cli/rolldown.config.ts";
 import coreConfig from "../packages/core/rolldown.config.ts";
 
-let child = null;
+let child: ChildProcess | null = null;
 let starting = false;
 
 function startServer() {

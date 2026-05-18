@@ -2,12 +2,12 @@ import { access, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { benchmarkServerDefinitions } from "./surface.mjs";
+import { benchmarkServerDefinitions } from "./surface";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CAPLETS_CLI_PATH = resolve(REPO_ROOT, "../cli/dist/index.js");
 
-export function getBenchmarkPaths({ repoRoot = REPO_ROOT } = {}) {
+export function getBenchmarkPaths({ repoRoot = REPO_ROOT }: any = {}) {
   const absoluteRepoRoot = resolve(repoRoot);
   return {
     repoRoot: absoluteRepoRoot,
@@ -22,7 +22,7 @@ export function createBenchmarkFixtureMcpServers({
   cwd,
   extra = {},
   ...inlineExtra
-} = {}) {
+}: any = {}) {
   const paths = getBenchmarkPaths({ repoRoot });
   const serverPath = resolve(fixtureServerPath ?? paths.fixtureServerPath);
   const serverCwd = resolve(cwd ?? paths.repoRoot);
@@ -45,7 +45,7 @@ export async function stageBenchmarkMcpSupportFiles({
   rootDir,
   repoRoot = REPO_ROOT,
   supportDir = rootDir ? join(resolve(rootDir), "support") : undefined,
-} = {}) {
+}: any = {}) {
   if (!supportDir) {
     throw new TypeError("stageBenchmarkMcpSupportFiles requires rootDir or supportDir.");
   }
@@ -67,7 +67,7 @@ export async function createBenchmarkCapletsConfig({
   repoRoot = REPO_ROOT,
   capletsCliPath,
   requireBuild = false,
-} = {}) {
+}: any = {}) {
   const baseDir = rootDir
     ? resolve(rootDir)
     : await mkdtemp(join(tmpdir(), "caplets-benchmark-config-"));

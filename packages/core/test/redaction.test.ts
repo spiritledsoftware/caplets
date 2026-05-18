@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CapletsError, redactSecrets, toSafeError } from "../src/errors.js";
+import { CapletsError, redactSecrets, toSafeError } from "../src/errors";
 
 describe("redaction", () => {
   it("redacts secret-looking fields and bearer values", () => {

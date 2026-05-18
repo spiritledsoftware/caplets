@@ -1,5 +1,5 @@
-export { CapletsRuntime } from "./runtime.js";
-export { runCli, createProgram } from "./cli.js";
-export { parseConfig, loadConfig } from "./config.js";
-export { capabilityDescription, ServerRegistry } from "./registry.js";
-export { generatedToolInputSchema, handleServerTool } from "./tools.js";
+export { CapletsRuntime } from "./runtime";
+export { runCli, createProgram } from "./cli";
+export { parseConfig, loadConfig } from "./config";
+export { capabilityDescription, ServerRegistry } from "./registry";
+export { generatedToolInputSchema, handleServerTool } from "./tools";

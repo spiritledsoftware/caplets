@@ -1,6 +1,9 @@
 {
   "extends": "../core/tsconfig.json",
   "compilerOptions": {
+    "strict": false,
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
     "paths": {
       "@caplets/core": ["../core/src/index.ts"],
       "@caplets/core/*": ["../core/src/*"]

@@ -1,15 +1,15 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { resolve } from "node:path";
-import { CliToolsManager } from "./cli-tools.js";
-import { type CapletConfig, type CapletSetConfig, loadIsolatedConfig } from "./config.js";
-import { DownstreamManager, type CompactTool } from "./downstream.js";
-import { CapletsError, errorResult, toSafeError } from "./errors.js";
-import { GraphQLManager } from "./graphql.js";
-import { HttpActionManager } from "./http-actions.js";
-import { OpenApiManager } from "./openapi.js";
-import { capabilityDescription, ServerRegistry } from "./registry.js";
-import { generatedToolInputJsonSchema } from "./generated-tool-input-schema.mjs";
-import { handleServerTool } from "./tools.js";
+import { CliToolsManager } from "./cli-tools";
+import { type CapletConfig, type CapletSetConfig, loadIsolatedConfig } from "./config";
+import { DownstreamManager, type CompactTool } from "./downstream";
+import { CapletsError, errorResult, toSafeError } from "./errors";
+import { GraphQLManager } from "./graphql";
+import { HttpActionManager } from "./http-actions";
+import { OpenApiManager } from "./openapi";
+import { capabilityDescription, ServerRegistry } from "./registry";
+import { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
+import { handleServerTool } from "./tools";
 
 type ChildRuntime = {
   registry: ServerRegistry;
@@ -254,7 +254,7 @@ export class CapletSetManager {
     return {
       name: caplet.server,
       description: capabilityDescription(caplet),
-      inputSchema: generatedToolInputJsonSchema() as Tool["inputSchema"],
+      inputSchema: generatedToolInputJsonSchema() as unknown as Tool["inputSchema"],
     };
   }
 }

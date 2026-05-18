@@ -10,9 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files.js";
-import { configJsonSchema, loadConfig, loadConfigWithSources, parseConfig } from "../src/config.js";
-import { CapletsError } from "../src/errors.js";
+import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files";
+import { configJsonSchema, loadConfig, loadConfigWithSources, parseConfig } from "../src/config";
+import { CapletsError } from "../src/errors";
 
 describe("config", () => {
   const originalEnv = process.env.EXAMPLE_TOKEN;

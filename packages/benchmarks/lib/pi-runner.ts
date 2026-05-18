@@ -5,8 +5,8 @@ import {
   createBenchmarkCapletsConfig,
   createBenchmarkFixtureMcpServers,
   stageBenchmarkMcpSupportFiles,
-} from "./config.mjs";
-import { createLiveAgentRunner, runProcess as defaultRunProcess } from "./live-agent.mjs";
+} from "./config";
+import { createLiveAgentRunner, runProcess as defaultRunProcess } from "./live-agent";
 
 export const PI_CONFIG_MODES = ["direct-flat", "pi-proxy", "caplets"];
 export const DEFAULT_PI_COMMAND = "pi";
@@ -24,7 +24,7 @@ export const piRunner = createLiveAgentRunner({
 export async function detectPiCli({
   command = DEFAULT_PI_COMMAND,
   runProcess = defaultRunProcess,
-} = {}) {
+}: any = {}) {
   try {
     const result = await runProcess({ command, args: ["--version"], timeoutMs: 10_000 });
     if (result.exitCode === 0) {
@@ -59,7 +59,7 @@ export async function runPi({
   outputMaxBytes,
   runProcess = defaultRunProcess,
   preserveArtifacts = env.CAPLETS_BENCH_PRESERVE_ARTIFACTS === "1",
-} = {}) {
+}: any = {}) {
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Pi live benchmark runs require CAPLETS_BENCH_LIVE=1.");
   }
@@ -150,7 +150,7 @@ export function buildPiCommand({
   model,
   mcpConfigPath,
   extraArgs = [],
-} = {}) {
+}: any = {}) {
   if (!prompt) {
     throw new TypeError("buildPiCommand requires a prompt.");
   }
@@ -165,13 +165,13 @@ export function buildPiCommand({
   return { command, args };
 }
 
-export async function createPiMcpConfigs({ rootDir, requireCapletsBuild = false } = {}) {
+export async function createPiMcpConfigs({ rootDir, requireCapletsBuild = false }: any = {}) {
   const baseDir = rootDir ? resolve(rootDir) : await mkdtemp(join(tmpdir(), "caplets-pi-config-"));
   const configRoot = join(baseDir, "pi", "mcp");
   await mkdir(configRoot, { recursive: true });
   const support = await stageBenchmarkMcpSupportFiles({ rootDir: configRoot });
 
-  const configs = {
+  const configs: Record<string, any> = {
     "direct-flat": directFlatConfig(configRoot, support),
     "pi-proxy": piProxyConfig(configRoot, support),
     caplets: await capletsConfig(configRoot, { requireBuild: requireCapletsBuild }),
@@ -234,7 +234,7 @@ function piProxyConfig(configRoot, support) {
   };
 }
 
-async function capletsConfig(configRoot, { requireBuild = false } = {}) {
+async function capletsConfig(configRoot, { requireBuild = false }: any = {}) {
   const dir = join(configRoot, "caplets");
   const caplets = await createBenchmarkCapletsConfig({ rootDir: dir, requireBuild });
   return {

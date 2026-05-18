@@ -34,7 +34,6 @@
   },
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
-    "dev": "node ../../scripts/dev.mjs",
     "prepack": "rm -f README.md && cp ../../README.md README.md",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"

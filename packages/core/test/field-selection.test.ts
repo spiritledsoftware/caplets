@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { CapletsError } from "../src/errors.js";
-import { projectStructuredContent } from "../src/field-selection.js";
+import { CapletsError } from "../src/errors";
+import { projectStructuredContent } from "../src/field-selection";
 
 describe("projectStructuredContent", () => {
   const outputSchema = {

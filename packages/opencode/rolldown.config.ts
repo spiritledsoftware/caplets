@@ -7,9 +7,6 @@ export default defineConfig({
     format: "esm",
   },
   platform: "node",
-  external: [
-    "@caplets/core/generated-tool-input-schema",
-    "@caplets/core/native",
-    "@opencode-ai/plugin",
-  ],
+  tsconfig: true,
+  external: ["@opencode-ai/plugin"],
 });

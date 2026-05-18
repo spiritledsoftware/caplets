@@ -9,35 +9,35 @@ import {
   parseJsonEvents,
   redactOutput,
   runProcess,
-} from "../lib/live-agent.mjs";
+} from "../lib/live-agent";
 import {
   createBenchmarkCapletsConfig,
   createBenchmarkFixtureMcpServers,
   getBenchmarkPaths,
-} from "../lib/config.mjs";
+} from "../lib/config";
 import {
   PI_CONFIG_MODES,
   buildPiCommand,
   createPiMcpConfigs,
   detectPiCli,
   piRunner,
-} from "../lib/pi-runner.mjs";
+} from "../lib/pi-runner";
 import {
   OPENCODE_CONFIG_MODES,
   buildOpenCodeCommand,
   createOpenCodeMcpConfigs,
   detectOpenCodeCli,
   opencodeRunner,
-} from "../lib/opencode-runner.mjs";
-import { buildLiveMatrix, loadTasks, parseLiveArgs, runLiveBenchmark } from "../run-live.mjs";
-import { resolveInside, scoreTaskRun, transcriptMetrics } from "../lib/scoring.mjs";
+} from "../lib/opencode-runner";
+import { buildLiveMatrix, loadTasks, parseLiveArgs, runLiveBenchmark } from "../run-live";
+import { resolveInside, scoreTaskRun, transcriptMetrics } from "../lib/scoring";
 import {
   SURFACE_THRESHOLDS,
   benchmarkServerDefinitions,
   computeSurfaceBenchmark,
   directFlatPayload,
   validateSurfaceBenchmark,
-} from "../lib/surface.mjs";
+} from "../lib/surface";
 
 function expectNoHiddenBenchmarkPaths(value: unknown, { allowCapletsDist = false } = {}) {
   const repoRoot = resolve(".");

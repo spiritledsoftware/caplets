@@ -1,11 +1,11 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import { genericOAuthHeaders } from "./auth.js";
-import type { HttpActionConfig, HttpApiConfig } from "./config.js";
-import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation.js";
-import type { CompactTool } from "./downstream.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
-import type { ServerRegistry } from "./registry.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import { genericOAuthHeaders } from "./auth";
+import type { HttpActionConfig, HttpApiConfig } from "./config";
+import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation";
+import type { CompactTool } from "./downstream";
+import { CapletsError, toSafeError } from "./errors";
+import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import type { ServerRegistry } from "./registry";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type HttpActionOperation = HttpActionConfig & { name: string };

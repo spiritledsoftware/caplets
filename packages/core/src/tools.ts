@@ -1,16 +1,16 @@
 import { z } from "zod";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { CapletSetManager } from "./caplet-sets.js";
-import type { CapletConfig } from "./config.js";
-import { CliToolsManager } from "./cli-tools.js";
-import type { DownstreamManager } from "./downstream.js";
-import { CapletsError } from "./errors.js";
-import type { GraphQLManager } from "./graphql.js";
-import type { HttpActionManager } from "./http-actions.js";
-import type { OpenApiManager } from "./openapi.js";
-import type { ServerRegistry } from "./registry.js";
-import { projectStructuredContent, validateFieldSelection } from "./field-selection.js";
-import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema.mjs";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
+import type { CapletSetManager } from "./caplet-sets";
+import type { CapletConfig } from "./config";
+import type { CliToolsManager } from "./cli-tools";
+import type { DownstreamManager } from "./downstream";
+import { CapletsError } from "./errors";
+import type { GraphQLManager } from "./graphql";
+import type { HttpActionManager } from "./http-actions";
+import type { OpenApiManager } from "./openapi";
+import type { ServerRegistry } from "./registry";
+import { projectStructuredContent, validateFieldSelection } from "./field-selection";
+import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema";
 
 const operationSchema = z.enum(operations);
 
@@ -199,6 +199,11 @@ export function validateOperationRequest(
             fields: value.fields,
           };
   }
+  return assertNever(value.operation);
+}
+
+function assertNever(value: never): never {
+  throw new CapletsError("INTERNAL_ERROR", `Unhandled operation: ${String(value)}`);
 }
 
 type RequiredOperationRequest =

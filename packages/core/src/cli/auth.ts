@@ -7,9 +7,9 @@ import {
   runGenericOAuthFlow,
   runOAuthFlow,
   type GenericAuthTarget,
-} from "../auth.js";
-import { loadConfig, type GraphQlEndpointConfig, type HttpApiConfig } from "../config.js";
-import { CapletsError, toSafeError } from "../errors.js";
+} from "../auth";
+import { loadConfig, type GraphQlEndpointConfig, type HttpApiConfig } from "../config";
+import { CapletsError, toSafeError } from "../errors";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
 

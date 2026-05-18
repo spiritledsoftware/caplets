@@ -1,4 +1,4 @@
-import type { NativeCapletsService } from "./service.js";
+import type { NativeCapletsService } from "./service";
 
 export function registerNativeCapletsProcessCleanup(service: NativeCapletsService): void {
   let closed = false;

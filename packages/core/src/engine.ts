@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
-import { CapletSetManager } from "./caplet-sets.js";
-import { CliToolsManager } from "./cli-tools.js";
+import { CapletSetManager } from "./caplet-sets";
+import { CliToolsManager } from "./cli-tools";
 import {
   type CapletConfig,
   type CapletsConfig,
@@ -9,14 +9,14 @@ import {
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
-} from "./config.js";
-import { DownstreamManager } from "./downstream.js";
-import { errorResult, toSafeError } from "./errors.js";
-import { GraphQLManager } from "./graphql.js";
-import { HttpActionManager } from "./http-actions.js";
-import { OpenApiManager } from "./openapi.js";
-import { ServerRegistry } from "./registry.js";
-import { handleServerTool } from "./tools.js";
+} from "./config";
+import { DownstreamManager } from "./downstream";
+import { errorResult, toSafeError } from "./errors";
+import { GraphQLManager } from "./graphql";
+import { HttpActionManager } from "./http-actions";
+import { OpenApiManager } from "./openapi";
+import { ServerRegistry } from "./registry";
+import { handleServerTool } from "./tools";
 
 export type CapletsEngineOptions = {
   configPath?: string;

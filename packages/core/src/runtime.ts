@@ -1,10 +1,10 @@
-import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { version as packageJsonVersion } from "../package.json";
-import { type CapletConfig, type CapletsConfig } from "./config.js";
-import { CapletsEngine, type CapletsEngineOptions } from "./engine.js";
-import { capabilityDescription } from "./registry.js";
-import { generatedToolInputSchema } from "./tools.js";
+import { type CapletConfig, type CapletsConfig } from "./config";
+import { CapletsEngine, type CapletsEngineOptions } from "./engine";
+import { capabilityDescription } from "./registry";
+import { generatedToolInputSchema } from "./tools";
 
 type ToolServer = Pick<McpServer, "registerTool" | "connect" | "close">;
 

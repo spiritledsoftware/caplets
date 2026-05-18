@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CapletsEngine } from "../src/engine.js";
+import { CapletsEngine } from "../src/engine";
 
 describe("CapletsEngine", () => {
   const dirs: string[] = [];

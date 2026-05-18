@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import {
   buildClientSchema,
   buildSchema,
@@ -27,13 +27,13 @@ import {
   type TypeNode,
   validate,
 } from "graphql";
-import { genericOAuthHeaders } from "./auth.js";
-import type { GraphQlEndpointConfig } from "./config.js";
-import { isAllowedRemoteUrl } from "./config/validation.js";
-import type { CompactTool } from "./downstream.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
-import type { ServerRegistry } from "./registry.js";
+import { genericOAuthHeaders } from "./auth";
+import type { GraphQlEndpointConfig } from "./config";
+import { isAllowedRemoteUrl } from "./config/validation";
+import type { CompactTool } from "./downstream";
+import { CapletsError, toSafeError } from "./errors";
+import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import type { ServerRegistry } from "./registry";
 
 const GRAPHQL_METHOD = "POST";
 const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
@@ -60,7 +60,7 @@ type ManagedGraphQl = {
   cacheKey: string;
 };
 
-export type { GraphQlEndpointConfig as GraphqlEndpointConfig } from "./config.js";
+export type { GraphQlEndpointConfig as GraphqlEndpointConfig } from "./config";
 
 export class GraphQLManager {
   private readonly cache = new Map<string, ManagedGraphQl>();

@@ -5,7 +5,7 @@ import {
   defaultConfigBaseDir,
   defaultConfigPath,
   defaultStateBaseDir,
-} from "../src/config/paths.js";
+} from "../src/config/paths";
 
 describe("config paths", () => {
   it("uses XDG-compatible Unix defaults", () => {

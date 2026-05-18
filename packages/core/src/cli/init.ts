@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { resolveConfigPath } from "../config.js";
-import { CapletsError } from "../errors.js";
+import { resolveConfigPath } from "../config";
+import { CapletsError } from "../errors";
 
 export function initConfig(options: { path?: string; force?: boolean } = {}): string {
   const path = resolveConfigPath(options.path);

@@ -1,4 +1,4 @@
-import { CapletsError } from "./errors.js";
+import { CapletsError } from "./errors";
 
 type JsonSchema = {
   type?: string;

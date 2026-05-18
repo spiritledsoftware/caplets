@@ -11,10 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli.js";
-import { loadConfig, parseConfig } from "../src/config.js";
-import { CapletsError } from "../src/errors.js";
-import { writeTokenBundle } from "../src/auth.js";
+import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli";
+import { loadConfig, parseConfig } from "../src/config";
+import { CapletsError } from "../src/errors";
+import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;

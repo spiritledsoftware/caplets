@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseConfig } from "../src/config.js";
-import { capabilityDescription, ServerRegistry } from "../src/registry.js";
+import { parseConfig } from "../src/config";
+import { capabilityDescription, ServerRegistry } from "../src/registry";
 
 describe("registry", () => {
   it("omits disabled servers and builds safe capability cards", () => {

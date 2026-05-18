@@ -9,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { DEFAULT_AUTH_DIR } from "../config/paths.js";
-import { CapletsError } from "../errors.js";
+import { DEFAULT_AUTH_DIR } from "../config/paths";
+import { CapletsError } from "../errors";
 
 export type StoredOAuthTokenBundle = {
   server: string;

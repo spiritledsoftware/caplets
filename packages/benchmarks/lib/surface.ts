@@ -1,6 +1,6 @@
-import { capabilityDescription } from "../../core/src/capability-description.mjs";
-import { generatedToolInputJsonSchema } from "../../core/src/generated-tool-input-schema.mjs";
-import { listToolMetadata, SERVER_NAMES } from "../fixtures/mcp-server.mjs";
+import { capabilityDescription } from "../../core/src/capability-description";
+import { generatedToolInputJsonSchema } from "../../core/src/generated-tool-input-schema";
+import { listToolMetadata, SERVER_NAMES } from "../fixtures/mcp-server";
 
 export const SURFACE_THRESHOLDS = {
   minInitialPayloadReduction: 0.7,

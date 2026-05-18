@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { CapletsError } from "../errors.js";
+import { CapletsError } from "../errors";
 
 type AuthorCliOptions = {
   repo?: string;
