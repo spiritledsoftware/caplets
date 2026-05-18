@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.13.0
+
+### Minor Changes
+
+- c349e62: Add the `capletSets` backend for nested Caplets collections.
+
 ## 0.12.2
 
 ### Patch Changes
