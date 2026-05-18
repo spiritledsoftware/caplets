@@ -1,5 +1,11 @@
 # caplets
 
+## 0.13.0
+
+### Minor Changes
+
+- 8a46771: Add direct Caplets CLI operation commands such as `caplets call-tool <caplet.tool> --args '{...}'` and remove the redundant `check_mcp_server` generated operation in favor of `check_backend`.
+
 ## 0.12.7
 
 ### Patch Changes
