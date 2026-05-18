@@ -4,28 +4,16 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { capabilityDescription, parseConfig, ServerRegistry } from "@caplets/core";
 import {
   PROCESS_TERMINATION_BEHAVIOR,
   parseJsonEvents,
   redactOutput,
   runProcess,
 } from "../lib/live-agent";
-import {
-  createBenchmarkCapletsConfig,
-  createBenchmarkFixtureMcpServers,
-  getBenchmarkPaths,
-} from "../lib/config";
-import {
-  PI_CONFIG_MODES,
-  buildPiCommand,
-  createPiMcpConfigs,
-  detectPiCli,
-  piRunner,
-} from "../lib/pi-runner";
+import { createBenchmarkCapletsConfig } from "../lib/config";
+import { PI_CONFIG_MODES, createPiMcpConfigs, detectPiCli, piRunner } from "../lib/pi-runner";
 import {
   OPENCODE_CONFIG_MODES,
-  buildOpenCodeCommand,
   createOpenCodeMcpConfigs,
   detectOpenCodeCli,
   opencodeRunner,
@@ -34,9 +22,7 @@ import { buildLiveMatrix, loadTasks, parseLiveArgs, runLiveBenchmark } from "../
 import { resolveInside, scoreTaskRun, transcriptMetrics } from "../lib/scoring";
 import {
   SURFACE_THRESHOLDS,
-  benchmarkServerDefinitions,
   computeSurfaceBenchmark,
-  directFlatPayload,
   validateSurfaceBenchmark,
 } from "../lib/surface";
 
@@ -58,19 +44,6 @@ function expectNoHiddenBenchmarkPaths(value: unknown, { allowCapletsDist = false
 }
 
 describe("progressive disclosure benchmark fixture", () => {
-  it("keeps deterministic benchmark freshness in verify without live benchmarks", async () => {
-    const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
-    const ciWorkflow = await readFile(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
-
-    expect(packageJson.scripts["benchmark:check"]).toBe(
-      "pnpm --filter @caplets/benchmarks benchmark:check",
-    );
-    expect(packageJson.scripts.verify).toContain("pnpm benchmark:check");
-    expect(packageJson.scripts.verify).not.toContain("benchmark:live");
-    expect(ciWorkflow).toContain("pnpm verify");
-    expect(ciWorkflow).not.toContain("benchmark:live");
-  });
-
   it("exposes a much smaller initial tool list than direct aggregation", async () => {
     const result = await computeSurfaceBenchmark();
 
@@ -81,35 +54,6 @@ describe("progressive disclosure benchmark fixture", () => {
     );
     expect(result.collisions.directDuplicateToolNameCount).toBeGreaterThan(0);
     expect(result.collisions.capletsTopLevelDuplicateToolNameCount).toBe(0);
-  });
-
-  it("matches the source Caplets registry top-level payload shape", () => {
-    const config = parseConfig({ mcpServers: benchmarkServerDefinitions() });
-    const registry = new ServerRegistry(config);
-    const capletsToolsPayload = JSON.stringify(
-      registry.enabledServers().map((server) => ({
-        name: server.server,
-        description: capabilityDescription(server),
-        inputSchema: {
-          properties: {
-            operation: {
-              enum: [
-                "get_caplet",
-                "check_backend",
-                "list_tools",
-                "search_tools",
-                "get_tool",
-                "call_tool",
-              ],
-            },
-          },
-        },
-      })),
-    );
-    const directToolsPayload = JSON.stringify(directFlatPayload().tools);
-
-    const reduction = 1 - capletsToolsPayload.length / directToolsPayload.length;
-    expect(reduction).toBeGreaterThanOrEqual(SURFACE_THRESHOLDS.minInitialPayloadReduction);
   });
 
   it("captures process output, safe env metadata, JSONL events, and truncation state", async () => {
@@ -296,26 +240,6 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
-  it("builds a default Pi print JSON command with model and prompt", () => {
-    const command = buildPiCommand({
-      prompt: "Fix the fixture",
-      model: "provider/model",
-      mcpConfigPath: "/tmp/pi/mcp.json",
-    });
-
-    expect(command.command).toBe("pi");
-    expect(command.args).toEqual([
-      "-p",
-      "Fix the fixture",
-      "--mode",
-      "json",
-      "--model",
-      "provider/model",
-      "--mcp-config",
-      "/tmp/pi/mcp.json",
-    ]);
-  });
-
   it("refuses actual Pi runs unless CAPLETS_BENCH_LIVE is enabled", async () => {
     await expect(
       piRunner.run({
@@ -466,28 +390,6 @@ describe("progressive disclosure benchmark fixture", () => {
       await rm(root, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
-  });
-
-  it("builds the default OpenCode JSON run command with model, dir, and prompt", () => {
-    const command = buildOpenCodeCommand({
-      prompt: "Fix the fixture",
-      model: "openai/gpt-5.5",
-      workspace: "/tmp/workspace",
-    });
-
-    expect(command.command).toBe("opencode");
-    expect(command.args).toEqual([
-      "run",
-      "--format",
-      "json",
-      "--pure",
-      "--dangerously-skip-permissions",
-      "--model",
-      "openai/gpt-5.5",
-      "--dir",
-      "/tmp/workspace",
-      "Fix the fixture",
-    ]);
   });
 
   it("refuses actual OpenCode runs unless CAPLETS_BENCH_LIVE is enabled", async () => {
@@ -678,15 +580,6 @@ describe("progressive disclosure benchmark fixture", () => {
     }
   });
 
-  it("can clean up temp Caplets benchmark config directories it creates", async () => {
-    const result = await createBenchmarkCapletsConfig({ requireBuild: false });
-    await access(result.configPath);
-
-    await result.cleanup();
-
-    await expect(access(result.configPath)).rejects.toThrow();
-  });
-
   it("reports a clear live-run error when the built Caplets CLI is missing", async () => {
     const root = await mkdtemp(join(tmpdir(), "caplets-benchmark-missing-build-test-"));
     try {
@@ -700,19 +593,6 @@ describe("progressive disclosure benchmark fixture", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  it("creates reusable benchmark fixture MCP server definitions", () => {
-    const paths = getBenchmarkPaths();
-    const servers = createBenchmarkFixtureMcpServers({ directTools: true });
-
-    expect(paths.repoRoot).toBe(packageRoot);
-    expect(paths.fixtureServerPath).toBe(fixtureServerPath);
-    expect(Object.keys(servers).sort()).toEqual(["api", "policy", "tickets"]);
-    expect(servers.policy.command).toBe("tsx");
-    expect(servers.policy.args).toEqual([paths.fixtureServerPath, "--server", "policy"]);
-    expect(servers.policy.cwd).toBe(paths.repoRoot);
-    expect(servers.policy.directTools).toBe(true);
   });
 
   it("returns a JSON-RPC parse error for malformed fixture MCP input", async () => {

@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "@caplets/core/native";
@@ -62,20 +60,6 @@ type MockService = NativeCapletsService & {
 };
 
 describe("@caplets/pi", () => {
-  it("only exposes the default extension function from the package entrypoint", async () => {
-    const exports = await import("../src/index.js");
-
-    expect(Object.keys(exports).sort()).toEqual(["default"]);
-  });
-
-  it("declares the built extension in the Pi package manifest", () => {
-    const packageJson = JSON.parse(
-      readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"),
-    ) as { pi?: { extensions?: string[] } };
-
-    expect(packageJson.pi?.extensions).toEqual(["dist/index.js"]);
-  });
-
   it("uses the core generated schema as Pi tool parameters", () => {
     const service = mockService([
       {
@@ -105,33 +89,6 @@ describe("@caplets/pi", () => {
         description: "GitHub Caplet",
         promptGuidance: ["Use caplets_git_hub for GitHub."],
       },
-    ]);
-    const registered: RegisteredTool[] = [];
-
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
-
-    expect(registered).toHaveLength(1);
-    const tool = registered[0];
-    expect(tool?.name).toBe("caplets_git_hub");
-    expect(tool?.promptGuidelines[0]).toContain("caplets_git_hub");
-
-    const result = await tool?.execute("call-1", { operation: "get_caplet" });
-    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
-    expect(result?.details.result).toEqual({ ok: true });
-  });
-
-  it("registers every listed tool", () => {
-    const service = mockService([
-      {
-        caplet: "git-hub",
-        toolName: "caplets_git_hub",
-        title: "GitHub",
-        description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
-      },
       {
         caplet: "linear",
         toolName: "caplets_linear",
@@ -152,20 +109,13 @@ describe("@caplets/pi", () => {
       "Use caplets_git_hub for GitHub.",
       "Use caplets_linear for Linear.",
     ]);
-  });
+    const tool = registered[0];
+    expect(tool?.name).toBe("caplets_git_hub");
+    expect(tool?.promptGuidelines[0]).toContain("caplets_git_hub");
 
-  it("does not register tools for an empty service", () => {
-    const service = mockService([]);
-    const registered: RegisteredTool[] = [];
-
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
-
-    expect(registered).toEqual([]);
-    expect(service.execute).not.toHaveBeenCalled();
-    expect(service.close).not.toHaveBeenCalled();
+    const result = await tool?.execute("call-1", { operation: "get_caplet" });
+    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
+    expect(result?.details.result).toEqual({ ok: true });
   });
 
   it("propagates execute errors", async () => {

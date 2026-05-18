@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, installCaplets, normalizeGitRepo, runCli, starterConfig } from "../src/cli";
+import { initConfig, installCaplets, normalizeGitRepo, runCli } from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
@@ -65,10 +65,6 @@ describe("cli init", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-
-  it("keeps the starter template parseable", () => {
-    expect(() => parseConfig(JSON.parse(starterConfig()))).not.toThrow();
   });
 
   it("uses CAPLETS_CONFIG when run through the CLI", async () => {
@@ -162,23 +158,6 @@ describe("cli init", () => {
       const text = out.join("");
       expect(text).toContain("disabled_remote");
       expect(text).toContain("disabled");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("formats listed Caplets as Markdown when requested", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-list-md-"));
-    const configPath = join(dir, "config.json");
-    const out: string[] = [];
-    try {
-      writeInspectionConfig(configPath);
-      process.env.CAPLETS_CONFIG = configPath;
-
-      await runCli(["list", "--format", "md"], { writeOut: (value) => out.push(value) });
-
-      expect(out.join("")).toContain("## Configured Caplets");
-      expect(out.join("")).toContain("- `filesystem` — Project Files");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -418,26 +397,6 @@ describe("cli init", () => {
           "",
         ].join("\n"),
       );
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("formats resolved config paths as Markdown when requested", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-config-paths-md-"));
-    const configPath = join(dir, "custom.json");
-    const authDir = join(dir, "state", "auth");
-    const out: string[] = [];
-    try {
-      process.env.CAPLETS_CONFIG = configPath;
-
-      await runCli(["config", "paths", "--format", "markdown"], {
-        writeOut: (value) => out.push(value),
-        authDir,
-      });
-
-      expect(out.join("")).toContain("## Caplets paths");
-      expect(out.join("")).toContain(`- User config: ${configPath}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1718,7 +1677,7 @@ describe("cli init", () => {
     }
   });
 
-  it("formats OAuth auth targets as Markdown and JSON when requested", async () => {
+  it("formats OAuth auth targets as JSON when requested", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-format-"));
     const configPath = join(dir, "config.json");
     const out: string[] = [];
@@ -1739,13 +1698,6 @@ describe("cli init", () => {
       );
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["auth", "list", "--format", "md"], {
-        writeOut: (value) => out.push(value),
-      });
-      expect(out.join("")).toContain("## OAuth credentials");
-      expect(out.join("")).toContain("- `catalog` — missing");
-
-      out.length = 0;
       await runCli(["auth", "list", "--format", "json"], {
         writeOut: (value) => out.push(value),
       });

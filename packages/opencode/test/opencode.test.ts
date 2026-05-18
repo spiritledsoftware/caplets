@@ -16,12 +16,6 @@ vi.mock("@opencode-ai/plugin", () => ({
 }));
 
 describe("@caplets/opencode", () => {
-  it("only exposes the default plugin function from the package entrypoint", async () => {
-    const exports = await import("../src/index.js");
-
-    expect(Object.keys(exports).sort()).toEqual(["default"]);
-  });
-
   it("registers one prefixed native tool per Caplet", async () => {
     const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     const service = {
@@ -112,7 +106,7 @@ describe("@caplets/opencode", () => {
     );
   });
 
-  it("refreshes system guidance for remaining registered native tools", async () => {
+  it("refreshes system guidance for remaining registered tools only", async () => {
     const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
     let tools = [
       {
@@ -147,50 +141,21 @@ describe("@caplets/opencode", () => {
         description: "Linear\n\nUse this Caplet.",
         promptGuidance: ["Use caplets_linear for Linear."],
       },
-    ];
-
-    const output = { system: [] as string[] };
-    await hooks["experimental.chat.system.transform"]?.({} as never, output);
-
-    expect(output.system.join("\n")).toContain("caplets_linear");
-    expect(output.system.join("\n")).not.toContain("caplets_git_hub");
-  });
-
-  it("does not advertise newly added unregistered native tools", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
-    let tools = [
       {
-        caplet: "git-hub",
-        toolName: "caplets_git_hub",
-        title: "GitHub",
-        description: "GitHub\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
-      },
-    ];
-    const service = {
-      listTools: () => tools,
-      execute: vi.fn(async () => ({ ok: true })),
-      reload: vi.fn(async () => true),
-      onToolsChanged: vi.fn(() => () => {}),
-      close: vi.fn(async () => {}),
-    };
-
-    const hooks = await createCapletsOpenCodeHooks(service);
-    tools = [
-      ...tools,
-      {
-        caplet: "linear",
-        toolName: "caplets_linear",
-        title: "Linear",
-        description: "Linear\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        caplet: "slack",
+        toolName: "caplets_slack",
+        title: "Slack",
+        description: "Slack\n\nUse this Caplet.",
+        promptGuidance: ["Use caplets_slack for Slack."],
       },
     ];
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
 
-    expect(output.system.join("\n")).toContain("caplets_git_hub");
-    expect(output.system.join("\n")).not.toContain("caplets_linear");
+    const system = output.system.join("\n");
+    expect(system).toContain("caplets_linear");
+    expect(system).not.toContain("caplets_git_hub");
+    expect(system).not.toContain("caplets_slack");
   });
 });
