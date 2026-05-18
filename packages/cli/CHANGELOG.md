@@ -1,5 +1,13 @@
 # caplets
 
+## 0.12.7
+
+### Patch Changes
+
+- 43127ff: Fix package resolution for native extensions and modernize everything to typescript
+- Updated dependencies [43127ff]
+  - @caplets/core@0.13.1
+
 ## 0.12.6
 
 ### Patch Changes

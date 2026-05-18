@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.13.1
+
+### Patch Changes
+
+- 43127ff: Fix package resolution for native extensions and modernize everything to typescript
+
 ## 0.13.0
 
 ### Minor Changes
