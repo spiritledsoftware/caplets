@@ -5,8 +5,8 @@ import {
   createBenchmarkCapletsConfig,
   createBenchmarkFixtureMcpServers,
   stageBenchmarkMcpSupportFiles,
-} from "./config.mjs";
-import { createLiveAgentRunner, runProcess as defaultRunProcess } from "./live-agent.mjs";
+} from "./config";
+import { createLiveAgentRunner, runProcess as defaultRunProcess } from "./live-agent";
 
 export const OPENCODE_CONFIG_MODES = ["direct-flat", "caplets"];
 export const DEFAULT_OPENCODE_COMMAND = "opencode";
@@ -24,7 +24,7 @@ export const opencodeRunner = createLiveAgentRunner({
 export async function detectOpenCodeCli({
   command = DEFAULT_OPENCODE_COMMAND,
   runProcess = defaultRunProcess,
-} = {}) {
+}: any = {}) {
   try {
     const result = await runProcess({ command, args: ["--version"], timeoutMs: 10_000 });
     if (result.exitCode === 0) {
@@ -59,7 +59,7 @@ export async function runOpenCode({
   outputMaxBytes,
   runProcess = defaultRunProcess,
   preserveArtifacts = env.CAPLETS_BENCH_PRESERVE_ARTIFACTS === "1",
-} = {}) {
+}: any = {}) {
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("OpenCode live benchmark runs require CAPLETS_BENCH_LIVE=1.");
   }
@@ -78,7 +78,7 @@ export async function runOpenCode({
   const openCodeStateDir = await mkdtemp(join(tmpdir(), "caplets-opencode-agent-"));
   let result;
   let cleanedUp = false;
-  let generatedProjectConfigRemoved = false;
+  const generatedProjectConfigRemoved = false;
   try {
     const version = await detectOpenCodeCli({ command, runProcess });
     if (!version.available) {
@@ -156,7 +156,7 @@ export function buildOpenCodeCommand({
   model,
   workspace,
   extraArgs = [],
-} = {}) {
+}: any = {}) {
   if (!prompt) {
     throw new TypeError("buildOpenCodeCommand requires a prompt.");
   }
@@ -175,7 +175,7 @@ export async function createOpenCodeMcpConfigs({
   rootDir,
   workspaceDir: _workspaceDir,
   requireCapletsBuild = false,
-} = {}) {
+}: any = {}) {
   const baseDir = rootDir
     ? resolve(rootDir)
     : await mkdtemp(join(tmpdir(), "caplets-opencode-config-"));
@@ -183,7 +183,7 @@ export async function createOpenCodeMcpConfigs({
   await mkdir(configRoot, { recursive: true });
   const support = await stageBenchmarkMcpSupportFiles({ rootDir: configRoot });
 
-  const configs = {
+  const configs: Record<string, any> = {
     "direct-flat": directFlatConfig(configRoot, support),
     caplets: await capletsConfig(configRoot, { requireBuild: requireCapletsBuild }),
   };
@@ -226,7 +226,7 @@ function directFlatConfig(configRoot, support) {
   };
 }
 
-async function capletsConfig(configRoot, { requireBuild = false } = {}) {
+async function capletsConfig(configRoot, { requireBuild = false }: any = {}) {
   const dir = join(configRoot, "caplets");
   const caplets = await createBenchmarkCapletsConfig({ rootDir: dir, requireBuild });
   const capletsCommand = [caplets.caplets.command, ...caplets.caplets.args];

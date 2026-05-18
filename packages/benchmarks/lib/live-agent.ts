@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 export const PROCESS_TERMINATION_BEHAVIOR =
@@ -11,7 +11,53 @@ export const DEFAULT_OUTPUT_MAX_BYTES = 1024 * 1024;
 const SECRET_KEY_PATTERN = /(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL|AUTH)/i;
 const SECRET_VALUE_PLACEHOLDER = "[REDACTED]";
 
-export function createLiveAgentRunner({ name, detect, run }) {
+export type RunProcessOptions = {
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  timeoutMs?: number;
+  killGraceMs?: number;
+  outputMaxBytes?: number;
+  stdin?: string;
+  shell?: boolean;
+};
+
+export type RunProcessResult = {
+  command?: string;
+  args?: string[];
+  envKeys?: string[];
+  cwd?: string | undefined;
+  stdout: string;
+  stderr: string;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  outputMaxBytes?: number;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  durationMs: number;
+  jsonEvents: unknown[];
+  [key: string]: unknown;
+};
+
+export type LiveAgentRunner = Readonly<{
+  name: string;
+  detect: (options?: any) => Promise<any> | any;
+  run: (options?: any) => Promise<any> | any;
+}>;
+
+export function createLiveAgentRunner({
+  name,
+  detect,
+  run,
+}: {
+  name: string;
+  detect: (options?: any) => Promise<any> | any;
+  run: (options?: any) => Promise<any> | any;
+}): LiveAgentRunner {
   if (!name || typeof name !== "string") {
     throw new TypeError("Live agent runner requires a string name.");
   }
@@ -34,7 +80,7 @@ export async function runProcess({
   outputMaxBytes = DEFAULT_OUTPUT_MAX_BYTES,
   stdin,
   shell = false,
-} = {}) {
+}: RunProcessOptions): Promise<RunProcessResult> {
   if (!command || typeof command !== "string") {
     throw new TypeError("runProcess requires a command string.");
   }
@@ -49,8 +95,8 @@ export async function runProcess({
   const stdoutCapture = createOutputCapture(outputMaxBytes, redactions);
   const stderrCapture = createOutputCapture(outputMaxBytes, redactions);
   let timedOut = false;
-  let timeout;
-  let graceTimeout;
+  let timeout: NodeJS.Timeout | undefined;
+  let graceTimeout: NodeJS.Timeout | undefined;
   let settled = false;
 
   return await new Promise((resolve, reject) => {
@@ -71,17 +117,17 @@ export async function runProcess({
         reject(error);
       }
     });
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
       stdoutCapture.append(chunk);
     });
-    child.stderr.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       stderrCapture.append(chunk);
     });
 
     if (stdin != null) {
-      child.stdin.end(stdin);
+      child.stdin?.end(stdin);
     }
 
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
@@ -128,14 +174,17 @@ export async function runProcess({
   });
 }
 
-export async function runCommandLine(commandLine, options = {}) {
+export async function runCommandLine(
+  commandLine: string,
+  options: Omit<RunProcessOptions, "command" | "args" | "shell"> = {},
+): Promise<RunProcessResult> {
   if (!commandLine || typeof commandLine !== "string") {
     throw new TypeError("runCommandLine requires a command line string.");
   }
   return await runProcess({ ...options, command: commandLine, args: [], shell: true });
 }
 
-export function parseJsonEvents(stdout) {
+export function parseJsonEvents(stdout: string): unknown[] {
   const text = stdout.trim();
   if (!text) {
     return [];
@@ -146,7 +195,7 @@ export function parseJsonEvents(stdout) {
     return Array.isArray(parsed.value) ? parsed.value : [parsed.value];
   }
 
-  const events = [];
+  const events: unknown[] = [];
   for (const line of text.split(/\r?\n/)) {
     const candidate = line.trim();
     if (!candidate) {
@@ -160,7 +209,10 @@ export function parseJsonEvents(stdout) {
   return events;
 }
 
-export function redactOutput(value, env = {}) {
+export function redactOutput(
+  value: unknown,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = {},
+): string {
   let redacted = String(value);
   for (const secret of secretRedactions(env)) {
     redacted = redacted.split(secret).join(SECRET_VALUE_PLACEHOLDER);
@@ -176,7 +228,7 @@ export function redactOutput(value, env = {}) {
   return redacted;
 }
 
-function killProcessTree(child, signal) {
+function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid) {
     child.kill(signal);
     return;
@@ -197,11 +249,11 @@ function killProcessTree(child, signal) {
   }
 }
 
-function createOutputCapture(maxBytes, redactions) {
-  const chunks = [];
+function createOutputCapture(maxBytes: number, redactions: string[]) {
+  const chunks: string[] = [];
   const limit = Number.isFinite(maxBytes) && maxBytes >= 0 ? maxBytes : DEFAULT_OUTPUT_MAX_BYTES;
   const redactionLookaheadBytes = redactions.reduce(
-    (max, secret) => Math.max(max, Buffer.byteLength(secret, "utf8")),
+    (max: number, secret: string) => Math.max(max, Buffer.byteLength(secret, "utf8")),
     0,
   );
   const rawCaptureLimit = limit + redactionLookaheadBytes + 256;
@@ -209,7 +261,7 @@ function createOutputCapture(maxBytes, redactions) {
   return {
     totalBytes: 0,
     truncated: false,
-    append(chunk) {
+    append(chunk: unknown) {
       const raw = String(chunk);
       const rawBytes = Buffer.byteLength(raw, "utf8");
       this.totalBytes += rawBytes;
@@ -234,7 +286,7 @@ function createOutputCapture(maxBytes, redactions) {
         output = output.split(secret).join(SECRET_VALUE_PLACEHOLDER);
       }
       output = redactOutput(output);
-      let truncatedOutput = truncateUtf8(output, limit);
+      const truncatedOutput = truncateUtf8(output, limit);
       this.truncated =
         this.truncated ||
         Buffer.byteLength(output, "utf8") > Buffer.byteLength(truncatedOutput, "utf8");
@@ -243,7 +295,7 @@ function createOutputCapture(maxBytes, redactions) {
   };
 }
 
-function sanitizeCappedOutput(value, redactions, limit) {
+function sanitizeCappedOutput(value: string, redactions: string[], limit: number): string {
   let output = value;
   for (let pass = 0; pass < 20; pass += 1) {
     const redacted = redactSecretFragments(output, redactions);
@@ -256,7 +308,7 @@ function sanitizeCappedOutput(value, redactions, limit) {
   return truncateUtf8(redactSecretFragments(output, redactions), limit);
 }
 
-function redactSecretFragments(value, secrets) {
+function redactSecretFragments(value: string, secrets: string[]): string {
   let redacted = value;
   for (const secret of secrets) {
     if (secret.length < 8) {
@@ -279,7 +331,7 @@ function redactSecretFragments(value, secrets) {
   return redacted;
 }
 
-function secretFragments(secret) {
+function secretFragments(secret: string): string[] {
   const threshold = 8;
   if (secret.length <= threshold) {
     return [secret];
@@ -296,7 +348,7 @@ function secretFragments(secret) {
   return [...fragments];
 }
 
-function truncateUtf8(value, maxBytes) {
+function truncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) {
     return "";
   }
@@ -313,14 +365,14 @@ function truncateUtf8(value, maxBytes) {
   return result;
 }
 
-function secretRedactions(env) {
+function secretRedactions(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string[] {
   return Object.entries(env)
     .filter(([key, value]) => SECRET_KEY_PATTERN.test(key) && value)
     .map(([, value]) => String(value))
     .filter((value) => value.length >= 3);
 }
 
-function parseJson(value) {
+function parseJson(value: string): { ok: true; value: unknown } | { ok: false; error: unknown } {
   try {
     return { ok: true, value: JSON.parse(value) };
   } catch (error) {

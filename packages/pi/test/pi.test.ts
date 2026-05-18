@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "@caplets/core/native";
-import capletsPiExtension, { type PiExtensionApi } from "../src/index.js";
+import capletsPiExtension, { type PiExtensionApi } from "../src/index";
 
 const nativeMocks = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn(),

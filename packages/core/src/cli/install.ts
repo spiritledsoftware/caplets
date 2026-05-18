@@ -13,10 +13,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, relative, resolve } from "node:path";
-import { discoverCapletFiles, validateCapletFile } from "../caplet-files.js";
-import { resolveProjectCapletsRoot } from "../config.js";
-import { SERVER_ID_PATTERN } from "../config/validation.js";
-import { CapletsError, toSafeError } from "../errors.js";
+import { discoverCapletFiles, validateCapletFile } from "../caplet-files";
+import { resolveProjectCapletsRoot } from "../config";
+import { SERVER_ID_PATTERN } from "../config/validation";
+import { CapletsError, toSafeError } from "../errors";
 
 type InstallableCaplet = {
   id: string;

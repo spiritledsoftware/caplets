@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { NativeCapletsService } from "../src/native.js";
-import { registerNativeCapletsProcessCleanup } from "../src/native.js";
+import type { NativeCapletsService } from "../src/native";
+import { registerNativeCapletsProcessCleanup } from "../src/native";
 
 describe("registerNativeCapletsProcessCleanup", () => {
   it("waits for async cleanup before exiting on SIGTERM", async () => {

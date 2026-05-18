@@ -1,25 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { parseConfig } from "../src/config.js";
-import { DownstreamManager } from "../src/downstream.js";
-import { ServerRegistry } from "../src/registry.js";
-import { CapletsError } from "../src/errors.js";
-import { writeTokenBundle } from "../src/auth.js";
-import { handleServerTool } from "../src/tools.js";
+import { parseConfig } from "../src/config";
+import { DownstreamManager } from "../src/downstream";
+import { ServerRegistry } from "../src/registry";
+import { CapletsError } from "../src/errors";
+import { writeTokenBundle } from "../src/auth";
+import { handleServerTool } from "../src/tools";
+
+const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
+const tsxImport = import.meta.resolve("tsx");
 
 describe("downstream stdio lifecycle", () => {
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.ts");
     const config = parseConfig({
       mcpServers: {
         fixture: {
           name: "Fixture",
           description: "A useful fixture server.",
           command: process.execPath,
-          args: [fixture],
+          args: ["--import", tsxImport, fixture],
           toolCacheTtlMs: 30_000,
         },
       },
@@ -49,14 +53,14 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("projects MCP structured output when fields are requested", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.ts");
     const config = parseConfig({
       mcpServers: {
         fixture: {
           name: "Fixture",
           description: "A useful fixture server.",
           command: process.execPath,
-          args: [fixture],
+          args: ["--import", tsxImport, fixture],
           toolCacheTtlMs: 30_000,
         },
       },
@@ -87,14 +91,14 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("closes one managed stdio server so the next operation reconnects", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.ts");
     const config = parseConfig({
       mcpServers: {
         fixture: {
           name: "Fixture",
           description: "A useful fixture server.",
           command: process.execPath,
-          args: [fixture],
+          args: ["--import", tsxImport, fixture],
           toolCacheTtlMs: 30_000,
         },
       },
@@ -118,14 +122,14 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("refuses stale server configs after the registry changes", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.ts");
     const initialConfig = parseConfig({
       mcpServers: {
         fixture: {
           name: "Fixture",
           description: "A useful fixture server.",
           command: process.execPath,
-          args: [fixture],
+          args: ["--import", tsxImport, fixture],
           toolCacheTtlMs: 30_000,
         },
       },

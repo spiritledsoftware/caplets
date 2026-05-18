@@ -1,5 +1,5 @@
-import type { CapletConfig } from "../config.js";
-import { capabilityDescription } from "../registry.js";
+import type { CapletConfig } from "../config";
+import { capabilityDescription } from "../registry";
 
 export function nativeCapletToolName(capletId: string): string {
   return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_")}`;

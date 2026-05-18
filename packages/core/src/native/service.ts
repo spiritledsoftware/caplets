@@ -1,9 +1,9 @@
-import { CapletsEngine } from "../engine.js";
+import { CapletsEngine } from "../engine";
 import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
-} from "./tools.js";
+} from "./tools";
 
 export type NativeCapletsServiceOptions = {
   configPath?: string;

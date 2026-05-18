@@ -1,3 +1,10 @@
 {
-  "plugin": ["@caplets/opencode@file:./packages/opencode"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["@caplets/opencode@file:./packages/opencode"],
+  "permission": {
+    "external_directory": {
+      "~/.config/caplets/": "allow",
+      "~/.config/caplets/*": "allow"
+    }
+  }
 }

@@ -4,13 +4,13 @@ export {
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
   type NativeCapletsToolsChangedListener,
-} from "./native/service.js";
-export { registerNativeCapletsProcessCleanup } from "./native/process-cleanup.js";
+} from "./native/service";
+export { registerNativeCapletsProcessCleanup } from "./native/process-cleanup";
 export {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
-} from "./native/tools.js";
-export { generatedToolInputSchema } from "./tools.js";
-export { generatedToolInputJsonSchema } from "./generated-tool-input-schema.mjs";
+} from "./native/tools";
+export { generatedToolInputSchema } from "./tools";
+export { generatedToolInputJsonSchema } from "./generated-tool-input-schema";

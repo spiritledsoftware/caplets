@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capletJsonSchema } from "../packages/core/src/caplet-files.js";
-import { configJsonSchema } from "../packages/core/src/config.js";
+import { capletJsonSchema } from "../packages/core/src/caplet-files";
+import { configJsonSchema } from "../packages/core/src/config";
 
 const repoRoot = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 const schemas = [

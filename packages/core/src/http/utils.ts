@@ -1,4 +1,4 @@
-import { CapletsError } from "../errors.js";
+import { CapletsError } from "../errors";
 
 export const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 

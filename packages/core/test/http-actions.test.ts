@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { parseConfig, type HttpApiConfig } from "../src/config.js";
-import { DownstreamManager } from "../src/downstream.js";
-import { HttpActionManager } from "../src/http-actions.js";
-import { ServerRegistry } from "../src/registry.js";
-import { handleServerTool } from "../src/tools.js";
+import { parseConfig, type HttpApiConfig } from "../src/config";
+import { DownstreamManager } from "../src/downstream";
+import { HttpActionManager } from "../src/http-actions";
+import { ServerRegistry } from "../src/registry";
+import { handleServerTool } from "../src/tools";
 
 describe("HttpActionManager", () => {
   let baseUrl = "";

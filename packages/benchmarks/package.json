@@ -3,18 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "benchmark": "node run-deterministic.mjs",
-    "benchmark:check": "node run-deterministic.mjs --check",
-    "benchmark:live": "node run-live.mjs",
-    "benchmark:live:opencode": "node run-live.mjs --agent opencode",
-    "benchmark:live:pi": "node run-live.mjs --agent pi",
-    "build": "node -e \"process.exit(0)\"",
-    "typecheck": "node -e \"process.exit(0)\"",
+    "benchmark": "tsx run-deterministic.ts",
+    "benchmark:check": "tsx run-deterministic.ts --check",
+    "benchmark:live": "tsx run-live.ts",
+    "benchmark:live:opencode": "tsx run-live.ts --agent opencode",
+    "benchmark:live:pi": "tsx run-live.ts --agent pi",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@caplets/core": "workspace:*",
-    "caplets": "workspace:*"
+    "caplets": "workspace:*",
+    "commander": "^14.0.3"
   },
   "devDependencies": {
     "@types/node": "^25.7.0",

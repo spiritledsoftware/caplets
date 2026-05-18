@@ -6,7 +6,7 @@ import {
   createNativeCapletsService,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
-} from "../src/native.js";
+} from "../src/native";
 
 describe("native Caplets service", () => {
   const dirs: string[] = [];

@@ -1,6 +1,6 @@
-import { capabilityDescription } from "../../core/src/capability-description.mjs";
-import { generatedToolInputJsonSchema } from "../../core/src/generated-tool-input-schema.mjs";
-import { listToolMetadata, SERVER_NAMES } from "../fixtures/mcp-server.mjs";
+import { capabilityDescription } from "../../core/src/capability-description.js";
+import { generatedToolInputJsonSchema } from "../../core/src/generated-tool-input-schema.js";
+import { listToolMetadata, SERVER_NAMES } from "../fixtures/mcp-server.js";
 
 export const SURFACE_THRESHOLDS = {
   minInitialPayloadReduction: 0.7,
@@ -13,8 +13,8 @@ export function benchmarkServerDefinitions() {
       {
         name: benchmarkServerName(server),
         description: benchmarkServerDescription(server),
-        command: "node",
-        args: ["fixtures/mcp-server.mjs", "--server", server],
+        command: "tsx",
+        args: ["fixtures/mcp-server.ts", "--server", server],
       },
     ]),
   );

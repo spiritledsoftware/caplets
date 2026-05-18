@@ -3,7 +3,7 @@ import {
   createNativeCapletsService,
   registerNativeCapletsProcessCleanup,
 } from "@caplets/core/native";
-import { createCapletsOpenCodeHooks } from "./hooks.js";
+import { createCapletsOpenCodeHooks } from "./hooks";
 
 const plugin: Plugin = async (_ctx: PluginInput) => {
   const service = createNativeCapletsService();

@@ -1,6 +1,6 @@
 import { tool, type Hooks } from "@opencode-ai/plugin";
 import { nativeCapletsSystemGuidance, type NativeCapletsService } from "@caplets/core/native";
-import { capletsOpenCodeArgs } from "./schema.js";
+import { capletsOpenCodeArgs } from "./schema";
 
 export async function createCapletsOpenCodeHooks(service: NativeCapletsService): Promise<Hooks> {
   const capletTools = service.listTools();

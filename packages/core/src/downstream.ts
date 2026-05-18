@@ -7,15 +7,15 @@ import {
   type CompatibilityCallToolResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { CapletServerConfig } from "./config.js";
+import type { CapletServerConfig } from "./config";
 import {
   classifyRemoteAuthError,
   FileOAuthProvider,
   readTokenBundle,
   staticRemoteHeaders,
-} from "./auth.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import type { ServerRegistry } from "./registry.js";
+} from "./auth";
+import { CapletsError, toSafeError } from "./errors";
+import type { ServerRegistry } from "./registry";
 
 export type CompactTool = {
   server: string;

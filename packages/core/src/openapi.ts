@@ -1,12 +1,12 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import { genericOAuthHeaders } from "./auth.js";
-import type { OpenApiEndpointConfig } from "./config.js";
-import { isAllowedRemoteUrl } from "./config/validation.js";
-import type { CompactTool } from "./downstream.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils.js";
-import type { ServerRegistry } from "./registry.js";
+import { genericOAuthHeaders } from "./auth";
+import type { OpenApiEndpointConfig } from "./config";
+import { isAllowedRemoteUrl } from "./config/validation";
+import type { CompactTool } from "./downstream";
+import { CapletsError, toSafeError } from "./errors";
+import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import type { ServerRegistry } from "./registry";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];

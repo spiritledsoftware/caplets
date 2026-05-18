@@ -7,9 +7,6 @@ export default defineConfig({
     format: "esm",
   },
   platform: "node",
-  external: [
-    "@caplets/core/generated-tool-input-schema",
-    "@caplets/core/native",
-    "@earendil-works/pi-coding-agent",
-  ],
+  tsconfig: true,
+  external: ["@earendil-works/pi-coding-agent"],
 });

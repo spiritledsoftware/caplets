@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedRemoteUrl } from "../src/config/validation.js";
+import { isAllowedRemoteUrl } from "../src/config/validation";
 
 describe("config validation helpers", () => {
   it("returns false for malformed remote URLs", () => {

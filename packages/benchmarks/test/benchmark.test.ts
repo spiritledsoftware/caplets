@@ -3,45 +3,50 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { capabilityDescription, parseConfig, ServerRegistry } from "@caplets/core";
 import {
   PROCESS_TERMINATION_BEHAVIOR,
   parseJsonEvents,
   redactOutput,
   runProcess,
-} from "../lib/live-agent.mjs";
+} from "../lib/live-agent";
 import {
   createBenchmarkCapletsConfig,
   createBenchmarkFixtureMcpServers,
   getBenchmarkPaths,
-} from "../lib/config.mjs";
+} from "../lib/config";
 import {
   PI_CONFIG_MODES,
   buildPiCommand,
   createPiMcpConfigs,
   detectPiCli,
   piRunner,
-} from "../lib/pi-runner.mjs";
+} from "../lib/pi-runner";
 import {
   OPENCODE_CONFIG_MODES,
   buildOpenCodeCommand,
   createOpenCodeMcpConfigs,
   detectOpenCodeCli,
   opencodeRunner,
-} from "../lib/opencode-runner.mjs";
-import { buildLiveMatrix, loadTasks, parseLiveArgs, runLiveBenchmark } from "../run-live.mjs";
-import { resolveInside, scoreTaskRun, transcriptMetrics } from "../lib/scoring.mjs";
+} from "../lib/opencode-runner";
+import { buildLiveMatrix, loadTasks, parseLiveArgs, runLiveBenchmark } from "../run-live";
+import { resolveInside, scoreTaskRun, transcriptMetrics } from "../lib/scoring";
 import {
   SURFACE_THRESHOLDS,
   benchmarkServerDefinitions,
   computeSurfaceBenchmark,
   directFlatPayload,
   validateSurfaceBenchmark,
-} from "../lib/surface.mjs";
+} from "../lib/surface";
+
+const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
+const capletsCliPath = join(repoRoot, "packages", "cli", "dist", "index.js");
+const fixtureServerPath = join(packageRoot, "fixtures", "mcp-server.ts");
 
 function expectNoHiddenBenchmarkPaths(value: unknown, { allowCapletsDist = false } = {}) {
-  const repoRoot = resolve(".");
-  const distPath = join(repoRoot, "dist", "index.js");
+  const distPath = join(repoRoot, "packages", "cli", "dist", "index.js");
   let serialized = JSON.stringify(value) ?? "";
   if (allowCapletsDist) {
     serialized = serialized.split(distPath).join("<caplets-dist>");
@@ -54,8 +59,8 @@ function expectNoHiddenBenchmarkPaths(value: unknown, { allowCapletsDist = false
 
 describe("progressive disclosure benchmark fixture", () => {
   it("keeps deterministic benchmark freshness in verify without live benchmarks", async () => {
-    const packageJson = JSON.parse(await readFile(resolve("../../package.json"), "utf8"));
-    const ciWorkflow = await readFile(resolve("../../.github/workflows/ci.yml"), "utf8");
+    const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+    const ciWorkflow = await readFile(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
 
     expect(packageJson.scripts["benchmark:check"]).toBe(
       "pnpm --filter @caplets/benchmarks benchmark:check",
@@ -232,15 +237,19 @@ describe("progressive disclosure benchmark fixture", () => {
         expect(result.configs[mode]?.mcpServers).toBeTruthy();
       }
       const directPolicy = result.configs["direct-flat"]?.mcpServers.policy;
-      expect(directPolicy.command).toBe(process.execPath);
+      expect(directPolicy.command).toBe("tsx");
       expect(isAbsolute(directPolicy.args[0])).toBe(true);
-      expect(directPolicy.args[0]).toBe(join(root, "pi", "mcp", "support", "mcp-server.mjs"));
+      expect(directPolicy.args).toEqual([
+        join(root, "pi", "mcp", "support", "mcp-server.ts"),
+        "--server",
+        "policy",
+      ]);
       expect(isAbsolute(directPolicy.cwd)).toBe(true);
       expect(directPolicy.cwd).toBe(join(root, "pi", "mcp", "support"));
       expect(directPolicy.directTools).toBe(true);
 
       const proxyPolicy = result.configs["pi-proxy"]?.mcpServers.policy;
-      expect(proxyPolicy.command).toBe(process.execPath);
+      expect(proxyPolicy.command).toBe("tsx");
       expect(proxyPolicy.args.join(" ")).not.toContain("experimental-pi-proxy");
       expect(result.configs["pi-proxy"]?.settings?.directTools).toBe(false);
       expect(proxyPolicy.directTools).toBe(false);
@@ -250,7 +259,7 @@ describe("progressive disclosure benchmark fixture", () => {
 
       const caplets = result.configs.caplets?.mcpServers.caplets;
       expect(caplets.command).toBe(process.execPath);
-      expect(caplets.args).toEqual([resolve("../cli/dist/index.js")]);
+      expect(caplets.args).toEqual([capletsCliPath]);
       expect(caplets.env.CAPLETS_CONFIG).toBe(
         join(root, "pi", "mcp", "caplets", "caplets.config.json"),
       );
@@ -273,10 +282,10 @@ describe("progressive disclosure benchmark fixture", () => {
       const projectMcp = JSON.parse(await readFile(projectMcpPath, "utf8"));
 
       expect(projectMcp.settings.directTools).toBe(false);
-      expect(projectMcp.mcpServers.policy.command).toBe(process.execPath);
+      expect(projectMcp.mcpServers.policy.command).toBe("tsx");
       expect(isAbsolute(projectMcp.mcpServers.policy.args[0])).toBe(true);
       expect(projectMcp.mcpServers.policy.args[0]).toBe(
-        join(root, "pi", "mcp", "support", "mcp-server.mjs"),
+        join(root, "pi", "mcp", "support", "mcp-server.ts"),
       );
       expect(isAbsolute(projectMcp.mcpServers.policy.cwd)).toBe(true);
       expect(projectMcp.mcpServers.policy.cwd).toBe(join(root, "pi", "mcp", "support"));
@@ -431,17 +440,17 @@ describe("progressive disclosure benchmark fixture", () => {
       const directPolicy = result.configs["direct-flat"]?.mcp.policy;
       expect(directPolicy.type).toBe("local");
       expect(directPolicy.enabled).toBe(true);
-      expect(directPolicy.command[0]).toBe(process.execPath);
+      expect(directPolicy.command[0]).toBe("tsx");
       expect(isAbsolute(directPolicy.command[1])).toBe(true);
       expect(directPolicy.command[1]).toBe(
-        join(root, "opencode", "mcp", "support", "mcp-server.mjs"),
+        join(root, "opencode", "mcp", "support", "mcp-server.ts"),
       );
       expect(isAbsolute(directPolicy.cwd)).toBe(true);
       expect(directPolicy.cwd).toBe(join(root, "opencode", "mcp", "support"));
 
       const caplets = result.configs.caplets?.mcp.caplets;
       expect(caplets.type).toBe("local");
-      expect(caplets.command).toEqual([process.execPath, resolve("../cli/dist/index.js")]);
+      expect(caplets.command).toEqual([process.execPath, capletsCliPath]);
       expect(caplets.environment.CAPLETS_CONFIG).toBe(
         join(root, "opencode", "mcp", "caplets", "caplets.config.json"),
       );
@@ -636,23 +645,23 @@ describe("progressive disclosure benchmark fixture", () => {
       expect(result.configPath).toBe(join(root, "caplets.config.json"));
       expect(result.cleanupPath).toBe(root);
       expect(typeof result.cleanup).toBe("function");
-      expect(result.repoRoot).toBe(resolve("."));
+      expect(result.repoRoot).toBe(packageRoot);
       expect(result.supportDir).toBe(join(root, "support"));
-      expect(result.fixtureServerPath).toBe(join(root, "support", "mcp-server.mjs"));
+      expect(result.fixtureServerPath).toBe(join(root, "support", "mcp-server.ts"));
       expect(result.caplets.command).toBe(process.execPath);
-      expect(result.caplets.args).toEqual([resolve("../cli/dist/index.js")]);
+      expect(result.caplets.args).toEqual([capletsCliPath]);
       expect(result.caplets.cwd).toBe(join(root, "support"));
       expect(result.caplets.env).toEqual({ CAPLETS_CONFIG: result.configPath });
       expect(result.caplets.mcpServer).toEqual({
         command: process.execPath,
-        args: [resolve("../cli/dist/index.js")],
+        args: [capletsCliPath],
         cwd: join(root, "support"),
         env: { CAPLETS_CONFIG: result.configPath },
       });
 
       for (const [server, definition] of Object.entries(result.config.mcpServers)) {
         expect(["policy", "tickets", "api"]).toContain(server);
-        expect(definition.command).toBe(process.execPath);
+        expect(definition.command).toBe("tsx");
         expect(definition.args).toEqual([result.fixtureServerPath, "--server", server]);
         expect(definition.cwd).toBe(result.supportDir);
         expect(isAbsolute(definition.args[0])).toBe(true);
@@ -697,10 +706,10 @@ describe("progressive disclosure benchmark fixture", () => {
     const paths = getBenchmarkPaths();
     const servers = createBenchmarkFixtureMcpServers({ directTools: true });
 
-    expect(paths.repoRoot).toBe(resolve("."));
-    expect(paths.fixtureServerPath).toBe(join(resolve("."), "fixtures", "mcp-server.mjs"));
+    expect(paths.repoRoot).toBe(packageRoot);
+    expect(paths.fixtureServerPath).toBe(fixtureServerPath);
     expect(Object.keys(servers).sort()).toEqual(["api", "policy", "tickets"]);
-    expect(servers.policy.command).toBe(process.execPath);
+    expect(servers.policy.command).toBe("tsx");
     expect(servers.policy.args).toEqual([paths.fixtureServerPath, "--server", "policy"]);
     expect(servers.policy.cwd).toBe(paths.repoRoot);
     expect(servers.policy.directTools).toBe(true);
@@ -709,7 +718,7 @@ describe("progressive disclosure benchmark fixture", () => {
   it("returns a JSON-RPC parse error for malformed fixture MCP input", async () => {
     const result = await runProcess({
       command: process.execPath,
-      args: [join(resolve("."), "fixtures", "mcp-server.mjs"), "--server", "policy"],
+      args: ["--import", import.meta.resolve("tsx"), fixtureServerPath, "--server", "policy"],
       stdin: "{not json}\n",
       timeoutMs: 5_000,
     });
@@ -838,6 +847,8 @@ describe("progressive disclosure benchmark fixture", () => {
       expect(score.process?.envKeys).toEqual(["API_KEY"]);
       expect(score.hiddenValidation.command).toBe(process.execPath);
       expect(score.hiddenValidation.args).toEqual([
+        "--import",
+        import.meta.resolve("tsx"),
         "--test",
         join(fixtureRoot, "hidden-validator.mjs"),
       ]);

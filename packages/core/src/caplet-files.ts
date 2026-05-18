@@ -12,9 +12,9 @@ import {
   isAllowedRemoteUrl,
   isUrl,
   validateHttpActionHeaders,
-} from "./config/validation.js";
-import { CapletsError, redactSecrets } from "./errors.js";
-import { nestedSchema, schemaPath } from "./schema-utils.js";
+} from "./config/validation";
+import { CapletsError, redactSecrets } from "./errors";
+import { nestedSchema, schemaPath } from "./schema-utils";
 
 const MAX_CAPLET_FILE_BYTES = 128 * 1024;
 const MAX_CAPLET_BODY_CHARS = 64 * 1024;

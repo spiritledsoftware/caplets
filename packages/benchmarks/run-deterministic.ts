@@ -6,7 +6,7 @@ import {
   computeSurfaceBenchmark,
   renderMarkdownReport,
   validateSurfaceBenchmark,
-} from "./lib/surface.mjs";
+} from "./lib/surface";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const reportPath = resolve(__dirname, "../../docs/benchmarks/coding-agent.md");

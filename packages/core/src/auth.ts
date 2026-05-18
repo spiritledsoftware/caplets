@@ -16,9 +16,9 @@ import {
   readTokenBundle,
   writeTokenBundle,
   type StoredOAuthTokenBundle,
-} from "./auth/store.js";
-import type { CapletServerConfig } from "./config.js";
-import { CapletsError, redactSecrets } from "./errors.js";
+} from "./auth/store";
+import type { CapletServerConfig } from "./config";
+import { CapletsError, redactSecrets } from "./errors";
 
 export {
   authStorePath,
@@ -28,7 +28,7 @@ export {
   readTokenBundle,
   writeTokenBundle,
   type StoredOAuthTokenBundle,
-} from "./auth/store.js";
+} from "./auth/store";
 
 type OAuthLikeAuthConfig = {
   type: "oauth2" | "oidc";

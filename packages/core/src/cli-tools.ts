@@ -2,10 +2,10 @@ import { constants, existsSync, accessSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { CliToolActionConfig, CliToolsConfig } from "./config.js";
-import type { CompactTool } from "./downstream.js";
-import { CapletsError, toSafeError } from "./errors.js";
-import type { ServerRegistry } from "./registry.js";
+import type { CliToolActionConfig, CliToolsConfig } from "./config";
+import type { CompactTool } from "./downstream";
+import { CapletsError, toSafeError } from "./errors";
+import type { ServerRegistry } from "./registry";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type CliToolAction = CliToolActionConfig & { name: string };

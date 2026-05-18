@@ -45,7 +45,7 @@ describe("root agent plugin artifacts", () => {
 
     expect(codexManifest.version).toBe(cliPackage.version);
     expect(claudeManifest.version).toBe(cliPackage.version);
-    expect(rootPackage.scripts["version-packages"]).toContain("scripts/sync-plugin-versions.mjs");
+    expect(rootPackage.scripts["version-packages"]).toContain("scripts/sync-plugin-versions.ts");
     expect(rootPackage.scripts["version-packages"]).toContain("oxfmt");
   });
 
@@ -156,7 +156,7 @@ describe("root agent plugin artifacts", () => {
       "plugins/caplets/assets/icon.png",
       ".claude-plugin/marketplace.json",
       ".agents/plugins/marketplace.json",
-      "scripts/sync-plugin-versions.mjs",
+      "scripts/sync-plugin-versions.ts",
     ]) {
       expect(existsSync(path.join(repoRoot, requiredPath)), requiredPath).toBe(true);
     }

@@ -3,12 +3,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseConfig } from "../src/config.js";
-import { ServerRegistry } from "../src/registry.js";
-import { DownstreamManager } from "../src/downstream.js";
-import { OpenApiManager } from "../src/openapi.js";
-import { handleServerTool } from "../src/tools.js";
-import { writeTokenBundle } from "../src/auth.js";
+import { parseConfig } from "../src/config";
+import { ServerRegistry } from "../src/registry";
+import { DownstreamManager } from "../src/downstream";
+import { OpenApiManager } from "../src/openapi";
+import { handleServerTool } from "../src/tools";
+import { writeTokenBundle } from "../src/auth";
 
 describe("native OpenAPI Caplets", () => {
   let baseUrl = "";

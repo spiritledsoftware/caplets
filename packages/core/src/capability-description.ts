@@ -1,4 +1,6 @@
-export function capabilityDescription(server) {
+import type { CapletConfig } from "./config";
+
+export function capabilityDescription(server: CapletConfig): string {
   const backendName =
     server.backend === "mcp"
       ? "MCP server"

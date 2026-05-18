@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CapletSetManager } from "../src/caplet-sets.js";
-import { parseConfig } from "../src/config.js";
-import { ServerRegistry } from "../src/registry.js";
+import { CapletSetManager } from "../src/caplet-sets";
+import { parseConfig } from "../src/config";
+import { ServerRegistry } from "../src/registry";
 
 describe("CapletSetManager", () => {
   const dirs: string[] = [];

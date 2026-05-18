@@ -9,8 +9,8 @@ import {
   type CapletsConfig,
   type ConfigSource,
   type ConfigWithSources,
-} from "../config.js";
-import type { ServerStatus } from "../registry.js";
+} from "../config";
+import type { ServerStatus } from "../registry";
 
 type CapletListRow = {
   server: string;

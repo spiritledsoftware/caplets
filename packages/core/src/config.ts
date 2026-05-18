@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { loadCapletFiles, loadCapletFilesWithPaths } from "./caplet-files.js";
-import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths.js";
+import { loadCapletFiles, loadCapletFilesWithPaths } from "./caplet-files";
+import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths";
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
@@ -12,9 +12,9 @@ import {
   isAllowedRemoteUrl,
   isUrl,
   validateHttpActionHeaders,
-} from "./config/validation.js";
-import { CapletsError, redactSecrets } from "./errors.js";
-import { nestedSchema, schemaPath } from "./schema-utils.js";
+} from "./config/validation";
+import { CapletsError, redactSecrets } from "./errors";
+import { nestedSchema, schemaPath } from "./schema-utils";
 
 export {
   DEFAULT_AUTH_DIR,
@@ -24,7 +24,7 @@ export {
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
-} from "./config/paths.js";
+} from "./config/paths";
 
 export type RemoteAuthConfig =
   | { type: "none" }

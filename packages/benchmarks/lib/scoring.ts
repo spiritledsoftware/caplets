@@ -1,7 +1,9 @@
 import { cp, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { runCommandLine, runProcess } from "./live-agent.mjs";
+import { runCommandLine, runProcess } from "./live-agent";
+
+const TSX_IMPORT = import.meta.resolve("tsx");
 
 export const DEFAULT_VALIDATION_TIMEOUT_MS = 60_000;
 
@@ -20,7 +22,7 @@ export async function scoreTaskRun({
   fixtureRoot,
   agentResult,
   validationTimeoutMs = DEFAULT_VALIDATION_TIMEOUT_MS,
-} = {}) {
+}: any = {}): Promise<any> {
   if (!task) {
     throw new TypeError("scoreTaskRun requires a task.");
   }
@@ -116,7 +118,7 @@ function formatAgentErrorEvent(event) {
   return message ? `${name}${status}: ${message}` : `${name}${status}`;
 }
 
-export function transcriptMetrics({ transcript = "", transcriptBytes, events = [] } = {}) {
+export function transcriptMetrics({ transcript = "", transcriptBytes, events = [] }: any = {}) {
   const bytes = transcriptBytes ?? Buffer.byteLength(transcript, "utf8");
   return {
     transcriptBytes: bytes,
@@ -161,7 +163,7 @@ async function runHiddenValidator(task, candidateWorkspace, fixtureRoot, { timeo
     const validatorPath = resolveInside(fixtureRoot, task.hiddenValidator);
     const result = await runProcess({
       command: process.execPath,
-      args: ["--test", validatorPath],
+      args: ["--import", TSX_IMPORT, "--test", validatorPath],
       cwd: candidateWorkspace,
       timeoutMs,
     });

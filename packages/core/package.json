@@ -37,8 +37,6 @@
     "build": "rm -rf dist && rolldown -c",
     "build:watch": "rolldown -c --watch",
     "prepack": "pnpm build",
-    "schema:check": "rolldown -c rolldown.schema.config.ts && node dist-schema/generate-config-schema.js --check && rm -rf dist-schema",
-    "schema:generate": "rolldown -c rolldown.schema.config.ts && node dist-schema/generate-config-schema.js && rm -rf dist-schema",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

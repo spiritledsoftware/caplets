@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseHttpBody } from "../src/http/utils.js";
+import { parseHttpBody } from "../src/http/utils";
 
 describe("http utils", () => {
   it("parses JSON and structured JSON media types", () => {

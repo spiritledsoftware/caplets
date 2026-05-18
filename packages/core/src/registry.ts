@@ -3,9 +3,9 @@ import type {
   CapletsConfig,
   CapletServerConfig,
   GraphQlEndpointConfig,
-} from "./config.js";
-import type { SafeErrorSummary } from "./errors.js";
-export { capabilityDescription } from "./capability-description.mjs";
+} from "./config";
+import type { SafeErrorSummary } from "./errors";
+export { capabilityDescription } from "./capability-description";
 
 export type ServerStatus = "disabled" | "not_started" | "starting" | "available" | "unavailable";
 

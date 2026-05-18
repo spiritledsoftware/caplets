@@ -1,19 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { parseConfig } from "../src/config.js";
-import { DownstreamManager } from "../src/downstream.js";
-import { CapletsError } from "../src/errors.js";
-import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql.js";
-import type { HttpActionManager } from "../src/http-actions.js";
-import type { OpenApiManager } from "../src/openapi.js";
-import { ServerRegistry } from "../src/registry.js";
+import { parseConfig } from "../src/config";
+import { DownstreamManager } from "../src/downstream";
+import { CapletsError } from "../src/errors";
+import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql";
+import type { HttpActionManager } from "../src/http-actions";
+import type { OpenApiManager } from "../src/openapi";
+import { ServerRegistry } from "../src/registry";
 import {
   generatedToolInputSchema,
   handleServerTool,
   projectCallToolResult,
   validateOperationRequest,
-} from "../src/tools.js";
+} from "../src/tools";
 
 describe("generated tool request validation", () => {
   it("rejects operation-specific extra fields", () => {

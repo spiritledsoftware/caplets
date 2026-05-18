@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { nativeCapletToolName } from "../src/native.js";
-import { CapletsRuntime } from "../src/runtime.js";
+import { nativeCapletToolName } from "../src/native";
+import { CapletsRuntime } from "../src/runtime";
 
 describe("CapletsRuntime", () => {
   const dirs: string[] = [];
