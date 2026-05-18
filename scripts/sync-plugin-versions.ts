@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-async function readJson(filePath) {
+async function readJson(filePath: string) {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {

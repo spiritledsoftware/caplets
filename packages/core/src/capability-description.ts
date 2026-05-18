@@ -15,13 +15,12 @@ export function capabilityDescription(server: CapletConfig): string {
               : server.backend === "caplets"
                 ? "nested Caplets"
                 : "backend";
-  const checkOperation = server.backend === "mcp" ? "check_mcp_server" : "check_backend";
   const hint = [
     `Use this Caplet to inspect and call tools from its ${backendName} backend.`,
     "",
     "Recommended flow:",
     '- Read the full Caplet card: {"operation":"get_caplet"}',
-    `- Check the backend: {"operation":"${checkOperation}"}`,
+    '- Check the backend: {"operation":"check_backend"}',
     '- Discover tools: {"operation":"list_tools"} or {"operation":"search_tools","query":"<what you need>"}',
     '- Read one tool schema: {"operation":"get_tool","tool":"<tool name>"}',
     '- Invoke one downstream tool: {"operation":"call_tool","tool":"<tool name>","arguments":{...}}',

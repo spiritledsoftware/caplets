@@ -151,7 +151,13 @@ describe("native Caplets service", () => {
       },
     });
     dirs.push(dir);
-    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const errors: string[] = [];
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
     const events: string[][] = [];
     const unsubscribe = service.onToolsChanged((tools) => {
       events.push(tools.map((tool) => tool.caplet));
@@ -161,6 +167,7 @@ describe("native Caplets service", () => {
       writeFileSync(configPath, "{ invalid json");
       await expect(service.reload()).resolves.toBe(false);
       expect(events).toEqual([]);
+      expect(errors.join("")).toContain("Caplets config reload failed");
 
       writeFileSync(
         configPath,

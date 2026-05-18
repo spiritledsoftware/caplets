@@ -68,6 +68,18 @@ Connect Caplets to any MCP client:
 Ask your agent to use Caplets. It will see a compact capability list first, then inspect
 only the backend it needs.
 
+You can also invoke configured Caplets directly from the CLI for agent-friendly scripts and smoke tests:
+
+```sh
+caplets get-caplet context7
+caplets list-tools context7
+caplets get-tool context7.resolve-library-id
+caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}'
+caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}' --field result.id --format json
+```
+
+Direct CLI operation commands print Markdown summaries by default. Add `--format plain` for plain text or `--format json` for machine-readable JSON (`md` is accepted as an alias for `markdown`). If a downstream tool returns `isError: true`, Caplets still exits with status code 1.
+
 ## Agent Plugins
 
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
@@ -610,7 +622,10 @@ shell snippets.
       "description": "Fetch status for one service.",
       "inputSchema": {
         "type": "object",
-        "properties": { "service": { "type": "string" }, "verbose": { "type": "boolean" } },
+        "properties": {
+          "service": { "type": "string" },
+          "verbose": { "type": "boolean" }
+        },
         "required": ["service"]
       },
       "query": { "verbose": "$input.verbose" }
@@ -693,7 +708,7 @@ an existing destination file.
 
 Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
 as one downstream tool and supports the full Caplets operation set: `get_caplet`, `check_backend`,
-`check_mcp_server`, `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+`list_tools`, `search_tools`, `get_tool`, and `call_tool`.
 
 ```json
 {
@@ -891,7 +906,6 @@ Available operations:
 
 - `get_caplet`: return the configured capability card without starting the downstream server.
 - `check_backend`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
-- `check_mcp_server`: start or connect to an MCP server and verify its tool list.
 - `list_tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.
 - `get_tool`: return full metadata for one exact downstream tool.

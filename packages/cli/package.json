@@ -34,16 +34,18 @@
   },
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
+    "build:watch": "rm -rf dist && rolldown -c --watch",
     "prepack": "rm -f README.md && cp ../../README.md README.md",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@caplets/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
+    "@caplets/core": "workspace:*",
     "@types/node": "^25.7.0",
+    "@typescript/native-preview": "7.0.0-dev.20260515.1",
     "rolldown": "^1.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"

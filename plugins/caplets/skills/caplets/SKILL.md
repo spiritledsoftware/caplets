@@ -20,7 +20,7 @@ Caplets exposes progressive discovery operations instead of flattening every dow
 ## Workflow
 
 1. Read the caplet card with `get_caplet` when you need to understand what a configured Caplet provides.
-2. Check backend availability with `check_mcp_server`, `check_backend`, or the equivalent operation before relying on a backend.
+2. Check backend availability with `check_backend` or the equivalent operation before relying on a backend.
 3. Discover tools with `list_tools` or `search_tools`.
 4. Inspect a downstream tool schema with `get_tool` before calling it.
 5. Call downstream tools with `call_tool`, putting downstream inputs inside the top-level `arguments` object.

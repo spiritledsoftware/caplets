@@ -11,24 +11,17 @@ async function readJson<T>(filePath: string): Promise<T> {
 }
 
 describe("root agent plugin artifacts", () => {
-  it("declares Codex plugin components using Codex-specific files", async () => {
-    const manifest = await readJson<Record<string, unknown>>(
-      path.join(repoRoot, "plugins/caplets/.codex-plugin/plugin.json"),
-    );
+  it("declares agent plugin components using agent-specific files", async () => {
+    for (const pluginManifest of [
+      "plugins/caplets/.codex-plugin/plugin.json",
+      "plugins/caplets/.claude-plugin/plugin.json",
+    ]) {
+      const manifest = await readJson<Record<string, unknown>>(path.join(repoRoot, pluginManifest));
 
-    expect(manifest.skills).toBe("./skills/");
-    expect(manifest.mcpServers).toBe("./mcp.json");
-    expect(manifest.hooks).toBeUndefined();
-  });
-
-  it("declares Claude Code plugin components using Claude-specific files", async () => {
-    const manifest = await readJson<Record<string, unknown>>(
-      path.join(repoRoot, "plugins/caplets/.claude-plugin/plugin.json"),
-    );
-
-    expect(manifest.skills).toBe("./skills/");
-    expect(manifest.mcpServers).toBe("./mcp.json");
-    expect(manifest.hooks).toBeUndefined();
+      expect(manifest.skills).toBe("./skills/");
+      expect(manifest.mcpServers).toBe("./mcp.json");
+      expect(manifest.hooks).toBeUndefined();
+    }
   });
 
   it("keeps plugin manifest versions aligned with the CLI package", async () => {

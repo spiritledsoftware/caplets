@@ -11,6 +11,7 @@ import { ServerRegistry } from "../src/registry";
 import {
   generatedToolInputSchema,
   handleServerTool,
+  jsonResult,
   projectCallToolResult,
   validateOperationRequest,
 } from "../src/tools";
@@ -102,6 +103,9 @@ describe("generated tool request validation", () => {
     expect(() => validateOperationRequest({ operation: "check_server" }, 50)).toThrow(
       expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
     );
+    expect(() => validateOperationRequest({ operation: "check_mcp_server" }, 50)).toThrow(
+      expect.objectContaining({ code: "UNKNOWN_OPERATION" }),
+    );
   });
 
   it("exposes the Caplet-first operation enum", () => {
@@ -112,11 +116,21 @@ describe("generated tool request validation", () => {
     expect(schema.properties.operation?.enum).toEqual([
       "get_caplet",
       "check_backend",
-      "check_mcp_server",
       "list_tools",
       "search_tools",
       "get_tool",
       "call_tool",
+    ]);
+  });
+
+  it("returns concise wrapper content while preserving structured result", () => {
+    const result = jsonResult({ server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
+
+    expect(result.structuredContent).toEqual({
+      result: { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: "Result available in structuredContent.result." },
     ]);
   });
 
@@ -279,7 +293,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = (await handleServerTool(
       server,
-      { operation: "check_mcp_server" },
+      { operation: "check_backend" },
       registry,
       downstream,
     )) as any;
