@@ -171,7 +171,7 @@ describe("auth helpers", () => {
 
       listAuth({ configPath, writeOut: (value) => output.push(value) });
 
-      expect(output.join("")).toContain("status\tmissing");
+      expect(output.join("")).toContain("status\n  Status: missing");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

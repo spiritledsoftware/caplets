@@ -12,6 +12,7 @@ import { loadConfig, type GraphQlEndpointConfig, type HttpApiConfig } from "../c
 import { CapletsError, toSafeError } from "../errors";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
+type AuthListFormat = "plain" | "markdown" | "json";
 
 export async function loginAuth(
   serverId: string,
@@ -39,7 +40,7 @@ export async function loginAuth(
     } else {
       await runGenericOAuthFlow(server, flowOptions);
     }
-    options.writeOut(`Authenticated ${serverId}\n`);
+    options.writeOut(`Authenticated \`${serverId}\`.\n`);
   } catch (error) {
     options.writeErr(`${JSON.stringify(toSafeError(error, "AUTH_FAILED"), null, 2)}\n`);
     process.exitCode = 1;
@@ -54,9 +55,9 @@ export function logoutAuth(
   assertLoginTarget(target, serverId);
 
   if (deleteTokenBundle(serverId, options.authDir)) {
-    options.writeOut(`Deleted OAuth credentials for ${serverId}\n`);
+    options.writeOut(`Deleted OAuth credentials for \`${serverId}\`.\n`);
   } else {
-    options.writeOut(`No OAuth credentials found for ${serverId}\n`);
+    options.writeOut(`No OAuth credentials found for \`${serverId}\`.\n`);
   }
 }
 
@@ -64,30 +65,67 @@ export function listAuth(options: {
   authDir?: string;
   configPath?: string;
   writeOut: (value: string) => void;
+  format?: AuthListFormat;
 }): void {
   const config = loadConfig(options.configPath);
   const servers = authTargets(config).sort((left, right) =>
     left.server.localeCompare(right.server),
   );
 
-  if (servers.length === 0) {
-    options.writeOut("No configured remote OAuth servers found.\n");
+  const format = options.format ?? "plain";
+  if (format === "json") {
+    const rows = servers.map((server) => {
+      const bundle = readTokenBundle(server.server, options.authDir);
+      const status = !bundle
+        ? "missing"
+        : isTokenBundleExpired(bundle)
+          ? "expired"
+          : "authenticated";
+      return {
+        server: server.server,
+        status,
+        ...(bundle?.expiresAt ? { expiresAt: bundle.expiresAt } : {}),
+        ...(bundle?.scope ? { scope: bundle.scope } : {}),
+      };
+    });
+    options.writeOut(`${JSON.stringify(rows, null, 2)}\n`);
     return;
+  }
+  if (servers.length === 0) {
+    options.writeOut(
+      format === "markdown"
+        ? "## OAuth credentials\n\nNo configured remote OAuth servers found.\n"
+        : "No configured remote OAuth servers found.\n",
+    );
+    return;
+  }
+  if (format === "markdown") {
+    options.writeOut("## OAuth credentials\n\n");
+  } else {
+    options.writeOut("OAuth credentials\n\n");
   }
   for (const server of servers) {
     const bundle = readTokenBundle(server.server, options.authDir);
     const status = !bundle ? "missing" : isTokenBundleExpired(bundle) ? "expired" : "authenticated";
+    const details = [
+      bundle?.expiresAt ? `expires ${bundle.expiresAt}` : undefined,
+      bundle?.scope ? `scope ${bundle.scope}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("; ");
+    if (format === "markdown") {
+      options.writeOut(`- \`${server.server}\` — ${status}${details ? ` (${details})` : ""}\n`);
+      continue;
+    }
     options.writeOut(
       [
         server.server,
-        status,
-        bundle?.expiresAt ? `expires ${bundle.expiresAt}` : undefined,
-        bundle?.scope ? `scope ${bundle.scope}` : undefined,
-      ]
-        .filter(Boolean)
-        .join("\t"),
+        `  Status: ${status}`,
+        ...(bundle?.expiresAt ? [`  Expires: ${bundle.expiresAt}`] : []),
+        ...(bundle?.scope ? [`  Scope: ${bundle.scope}`] : []),
+      ].join("\n"),
     );
-    options.writeOut("\n");
+    options.writeOut("\n\n");
   }
 }
 

@@ -69,14 +69,33 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
   ];
 }
 
-export function formatCapletList(rows: CapletListRow[]): string {
+type CliOutputFormat = "markdown" | "plain" | "json";
+
+export function formatCapletList(
+  rows: CapletListRow[],
+  format: Exclude<CliOutputFormat, "json"> = "plain",
+): string {
+  return format === "markdown" ? formatCapletListMarkdown(rows) : formatCapletListPlain(rows);
+}
+
+function formatCapletListMarkdown(rows: CapletListRow[]): string {
   if (rows.length === 0) {
-    return "No configured Caplets found.\n";
+    return "## Configured Caplets\n\nNo configured Caplets found.\n";
   }
 
-  const table = formatTable([
-    ["server", "backend", "status", "source", "name"],
-    ...rows.map((row) => [row.server, row.backend, row.status, row.source, row.name]),
+  const heading = [
+    "## Configured Caplets",
+    "",
+    `${rows.length} ${rows.length === 1 ? "Caplet" : "Caplets"} shown.`,
+    "",
+  ];
+  const entries = rows.flatMap((row) => [
+    `- \`${row.server}\` — ${row.name}`,
+    `  - Backend: ${row.backend}`,
+    `  - Status: ${row.status}`,
+    `  - Source: ${row.source}`,
+    ...(row.disabled ? ["  - Disabled: true"] : []),
+    ...(row.path ? [`  - Path: ${row.path}`] : []),
   ]);
   const warnings = rows.flatMap((row) =>
     row.shadows.map(
@@ -88,9 +107,42 @@ export function formatCapletList(rows: CapletListRow[]): string {
   );
 
   if (warnings.length === 0) {
-    return `${table}\n`;
+    return `${[...heading, ...entries].join("\n")}\n`;
   }
-  return `${table}\n${warnings.join("\n")}\n`;
+  return `${[...heading, ...entries, "", "Warnings:", ...warnings.map((warning) => `- ${warning}`)].join("\n")}\n`;
+}
+
+function formatCapletListPlain(rows: CapletListRow[]): string {
+  if (rows.length === 0) {
+    return "No configured Caplets found.\n";
+  }
+
+  const entries = rows
+    .map((row) =>
+      [
+        row.server,
+        `  Name: ${row.name}`,
+        `  Backend: ${row.backend}`,
+        `  Status: ${row.status}`,
+        `  Source: ${row.source}`,
+        ...(row.disabled ? ["  Disabled: true"] : []),
+        ...(row.path ? [`  Path: ${row.path}`] : []),
+      ].join("\n"),
+    )
+    .join("\n\n");
+  const warnings = rows.flatMap((row) =>
+    row.shadows.map(
+      (shadow) =>
+        `Warning: ${formatSourceKind(row.source)} Caplet ${row.server} shadows ${formatSourceKind(
+          shadow.kind,
+        )} Caplet at ${shadow.path}`,
+    ),
+  );
+
+  if (warnings.length === 0) {
+    return `Configured Caplets (${rows.length})\n\n${entries}\n`;
+  }
+  return `Configured Caplets (${rows.length})\n\n${entries}\n\n${warnings.join("\n")}\n`;
 }
 
 function formatSourceKind(kind: ConfigSource["kind"] | "unknown"): string {
@@ -120,41 +172,44 @@ export function resolveCliConfigPaths(
   };
 }
 
-export function formatConfigPaths(paths: ConfigPaths): string {
+export function formatConfigPaths(
+  paths: ConfigPaths,
+  format: Exclude<CliOutputFormat, "json"> = "plain",
+): string {
+  if (format === "markdown") {
+    return formatConfigPathsMarkdown(paths);
+  }
+  return formatConfigPathsPlain(paths);
+}
+
+function formatConfigPathsMarkdown(paths: ConfigPaths): string {
   return (
     [
-      `userConfig: ${paths.userConfig}`,
-      `projectConfig: ${paths.projectConfig}`,
-      `userRoot: ${paths.userRoot}`,
-      `stateRoot: ${paths.stateRoot}`,
-      `projectRoot: ${paths.projectRoot}`,
-      `authDir: ${paths.authDir}`,
-      `envConfig: ${paths.envConfig ?? "unset"}`,
+      "## Caplets paths",
+      "",
+      `- User config: ${paths.userConfig}`,
+      `- Project config: ${paths.projectConfig}`,
+      `- User Caplets root: ${paths.userRoot}`,
+      `- State root: ${paths.stateRoot}`,
+      `- Project Caplets root: ${paths.projectRoot}`,
+      `- Auth directory: ${paths.authDir}`,
+      `- CAPLETS_CONFIG: ${paths.envConfig ?? "unset"}`,
     ].join("\n") + "\n"
   );
 }
 
-function formatTable(rows: string[][]): string {
-  const firstRow = rows[0];
-  if (!firstRow) {
-    return "";
-  }
-
-  const widths = firstRow.map((_, column) =>
-    Math.max(...rows.map((row) => row[column]?.length ?? 0)),
+function formatConfigPathsPlain(paths: ConfigPaths): string {
+  return (
+    [
+      "Caplets paths",
+      "",
+      `User config: ${paths.userConfig}`,
+      `Project config: ${paths.projectConfig}`,
+      `User root: ${paths.userRoot}`,
+      `State root: ${paths.stateRoot}`,
+      `Project root: ${paths.projectRoot}`,
+      `Auth directory: ${paths.authDir}`,
+      `CAPLETS_CONFIG: ${paths.envConfig ?? "unset"}`,
+    ].join("\n") + "\n"
   );
-
-  return rows.map((row) => formatTableRow(row, widths)).join("\n");
-}
-
-function formatTableRow(row: string[], widths: number[]): string {
-  return row
-    .map((value, column) => {
-      if (column === row.length - 1) {
-        return value;
-      }
-      return value.padEnd((widths[column] ?? 0) + 2);
-    })
-    .join("")
-    .trimEnd();
 }

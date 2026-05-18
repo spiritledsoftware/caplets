@@ -49,7 +49,11 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
     await program.parseAsync(["node", "caplets", ...args]);
   } catch (error) {
     if (error instanceof CommanderError) {
-      if (error.code === "commander.helpDisplayed" || error.code === "commander.version") {
+      if (
+        error.code === "commander.helpDisplayed" ||
+        error.code === "commander.version" ||
+        error.message === "(outputHelp)"
+      ) {
         return;
       }
       throw new CapletsError("REQUEST_INVALID", error.message);
@@ -97,14 +101,15 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List configured Caplets.")
     .option("--all", "include disabled Caplets")
     .option("--json", "print JSON output")
-    .action((options: { all?: boolean; json?: boolean }) => {
+    .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
+    .action((options: { all?: boolean; json?: boolean; format?: CliOutputFormat }) => {
       const config = loadConfigWithSources(envConfigPath());
       const rows = listCaplets(config, { includeDisabled: Boolean(options.all) });
-      if (options.json) {
+      if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
         return;
       }
-      writeOut(formatCapletList(rows));
+      writeOut(formatCapletList(rows, options.format ?? "plain"));
     });
 
   program
@@ -399,13 +404,14 @@ export function createProgram(io: CliIO = {}): Command {
     .command("paths")
     .description("Print resolved Caplets config, root, and auth paths.")
     .option("--json", "print JSON output")
-    .action((options: { json?: boolean }) => {
+    .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
+    .action((options: { json?: boolean; format?: CliOutputFormat }) => {
       const paths = resolveCliConfigPaths(envConfigPath(), io.authDir);
-      if (options.json) {
+      if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(paths, null, 2)}\n`);
         return;
       }
-      writeOut(formatConfigPaths(paths));
+      writeOut(formatConfigPaths(paths, options.format ?? "plain"));
     });
 
   const auth = program.command("auth").description("Manage OAuth credentials for remote servers.");
@@ -442,10 +448,15 @@ export function createProgram(io: CliIO = {}): Command {
   auth
     .command("list")
     .description("List servers with stored OAuth credentials.")
-    .action(() => {
+    .option("--json", "print JSON output")
+    .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
+    .action((options: { json?: boolean; format?: CliOutputFormat }) => {
       const configPath = envConfigPath();
+      const format =
+        options.json || options.format === "json" ? "json" : (options.format ?? "plain");
       listAuth({
         writeOut,
+        format,
         ...(configPath ? { configPath } : {}),
         ...(io.authDir ? { authDir: io.authDir } : {}),
       });

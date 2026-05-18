@@ -99,6 +99,18 @@ describe("cli init", () => {
     );
   });
 
+  it("prints parent command help without throwing", async () => {
+    const out: string[] = [];
+
+    await runCli(["config"], {
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("Usage: caplets config");
+    expect(out.join("")).toContain("Commands:");
+  });
+
   it("prints the package version", async () => {
     const out: string[] = [];
 
@@ -118,8 +130,8 @@ describe("cli init", () => {
       await runCli(["list"], { writeOut: (value) => out.push(value) });
 
       const text = out.join("");
-      expect(text).toContain("server");
-      expect(text).toContain("source");
+      expect(text).toContain("Configured Caplets (3)");
+      expect(text).toContain("Source:");
       expect(text).toContain("filesystem");
       expect(text).toContain("mcp");
       expect(text).toContain("not_started");
@@ -150,6 +162,23 @@ describe("cli init", () => {
       const text = out.join("");
       expect(text).toContain("disabled_remote");
       expect(text).toContain("disabled");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("formats listed Caplets as Markdown when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-md-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["list", "--format", "md"], { writeOut: (value) => out.push(value) });
+
+      expect(out.join("")).toContain("## Configured Caplets");
+      expect(out.join("")).toContain("- `filesystem` — Project Files");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -253,8 +282,8 @@ describe("cli init", () => {
       await runCli(["list"], { writeOut: (value) => out.push(value) });
 
       const text = out.join("");
-      expect(text).toContain("server");
-      expect(text).toContain("source");
+      expect(text).toContain("Configured Caplets (1)");
+      expect(text).toContain("Source:");
       expect(text).toContain("github");
       expect(text).toContain("project-file");
       expect(text).toContain(
@@ -377,16 +406,38 @@ describe("cli init", () => {
 
       expect(out.join("")).toBe(
         [
-          `userConfig: ${configPath}`,
-          `projectConfig: ${join(process.cwd(), ".caplets", "config.json")}`,
-          `userRoot: ${dir}`,
-          `stateRoot: ${dirname(authDir)}`,
-          `projectRoot: ${join(process.cwd(), ".caplets")}`,
-          `authDir: ${authDir}`,
-          `envConfig: ${configPath}`,
+          "Caplets paths",
+          "",
+          `User config: ${configPath}`,
+          `Project config: ${join(process.cwd(), ".caplets", "config.json")}`,
+          `User root: ${dir}`,
+          `State root: ${dirname(authDir)}`,
+          `Project root: ${join(process.cwd(), ".caplets")}`,
+          `Auth directory: ${authDir}`,
+          `CAPLETS_CONFIG: ${configPath}`,
           "",
         ].join("\n"),
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("formats resolved config paths as Markdown when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-paths-md-"));
+    const configPath = join(dir, "custom.json");
+    const authDir = join(dir, "state", "auth");
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["config", "paths", "--format", "markdown"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toContain("## Caplets paths");
+      expect(out.join("")).toContain(`- User config: ${configPath}`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1625,9 +1676,11 @@ describe("cli init", () => {
       await runCli(["auth", "list"], { writeOut: (value) => out.push(value), authDir });
 
       const text = out.join("");
-      expect(text).toContain("remote\tauthenticated\texpires 2999-01-01T00:00:00.000Z");
-      expect(text).toContain("expired\texpired\texpires 2000-01-01T00:00:00.000Z");
-      expect(text).toContain("users\tmissing");
+      expect(text).toContain(
+        "remote\n  Status: authenticated\n  Expires: 2999-01-01T00:00:00.000Z\n  Scope: mcp:tools",
+      );
+      expect(text).toContain("expired\n  Status: expired\n  Expires: 2000-01-01T00:00:00.000Z");
+      expect(text).toContain("users\n  Status: missing");
       expect(text).not.toContain("stdio");
       expect(text).not.toContain("secret-access-token");
       expect(text).not.toContain("openapi-client");
@@ -1659,7 +1712,44 @@ describe("cli init", () => {
 
       await runCli(["auth", "list"], { writeOut: (value) => out.push(value) });
 
-      expect(out.join("")).toContain("catalog\tmissing");
+      expect(out.join("")).toContain("catalog\n  Status: missing");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("formats OAuth auth targets as Markdown and JSON when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-format-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          graphqlEndpoints: {
+            catalog: {
+              name: "Catalog",
+              description: "Query catalog data through GraphQL.",
+              endpointUrl: "https://api.example.com/graphql",
+              introspection: true,
+              auth: { type: "oauth2", issuer: "https://issuer.example" },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["auth", "list", "--format", "md"], {
+        writeOut: (value) => out.push(value),
+      });
+      expect(out.join("")).toContain("## OAuth credentials");
+      expect(out.join("")).toContain("- `catalog` — missing");
+
+      out.length = 0;
+      await runCli(["auth", "list", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
+      expect(JSON.parse(out.join(""))).toEqual([{ server: "catalog", status: "missing" }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1693,7 +1783,7 @@ describe("cli init", () => {
         authDir,
       });
 
-      expect(out.join("")).toBe("Deleted OAuth credentials for remote\n");
+      expect(out.join("")).toBe("Deleted OAuth credentials for `remote`.\n");
       out.length = 0;
 
       await runCli(["auth", "logout", "remote"], {
@@ -1701,7 +1791,7 @@ describe("cli init", () => {
         authDir,
       });
 
-      expect(out.join("")).toBe("No OAuth credentials found for remote\n");
+      expect(out.join("")).toBe("No OAuth credentials found for `remote`.\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1734,7 +1824,7 @@ describe("cli init", () => {
         authDir,
       });
 
-      expect(out.join("")).toBe("Deleted OAuth credentials for users\n");
+      expect(out.join("")).toBe("Deleted OAuth credentials for `users`.\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
