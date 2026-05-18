@@ -1,5 +1,5 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";

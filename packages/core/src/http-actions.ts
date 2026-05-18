@@ -1,4 +1,4 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { genericOAuthHeaders } from "./auth";
 import type { HttpActionConfig, HttpApiConfig } from "./config";
 import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation";

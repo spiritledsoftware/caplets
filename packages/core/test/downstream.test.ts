@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,9 +11,11 @@ import { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 import { handleServerTool } from "../src/tools";
 
+const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
+
 describe("downstream stdio lifecycle", () => {
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.mjs");
     const config = parseConfig({
       mcpServers: {
         fixture: {
@@ -49,7 +52,7 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("projects MCP structured output when fields are requested", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.mjs");
     const config = parseConfig({
       mcpServers: {
         fixture: {
@@ -87,7 +90,7 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("closes one managed stdio server so the next operation reconnects", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.mjs");
     const config = parseConfig({
       mcpServers: {
         fixture: {
@@ -118,7 +121,7 @@ describe("downstream stdio lifecycle", () => {
   });
 
   it("refuses stale server configs after the registry changes", async () => {
-    const fixture = join(process.cwd(), "test", "fixtures", "stdio-server.mjs");
+    const fixture = join(fixturesDir, "stdio-server.mjs");
     const initialConfig = parseConfig({
       mcpServers: {
         fixture: {

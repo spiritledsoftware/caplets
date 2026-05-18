@@ -1,12 +1,12 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   CompatibilityCallToolResultSchema,
   type CompatibilityCallToolResult,
   type Tool,
-} from "@modelcontextprotocol/sdk/types";
+} from "@modelcontextprotocol/sdk/types.js";
 import type { CapletServerConfig } from "./config";
 import {
   classifyRemoteAuthError,

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   buildClientSchema,
   buildSchema,

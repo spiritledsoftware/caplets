@@ -1,4 +1,4 @@
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CapletsRuntime, runCli } from "@caplets/core";
 import { version as packageVersion } from "../package.json";
 

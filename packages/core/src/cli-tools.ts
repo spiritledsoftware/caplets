@@ -1,7 +1,7 @@
 import { constants, existsSync, accessSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CliToolActionConfig, CliToolsConfig } from "./config";
 import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";

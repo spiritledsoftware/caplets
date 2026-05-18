@@ -1,5 +1,5 @@
-import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { version as packageJsonVersion } from "../package.json";
 import { type CapletConfig, type CapletsConfig } from "./config";
 import { CapletsEngine, type CapletsEngineOptions } from "./engine";

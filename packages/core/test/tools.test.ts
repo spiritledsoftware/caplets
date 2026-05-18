@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Tool } from "@modelcontextprotocol/sdk/types";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletSetManager } from "./caplet-sets";
 import type { CapletConfig } from "./config";
 import type { CliToolsManager } from "./cli-tools";
