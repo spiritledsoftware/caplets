@@ -11,6 +11,7 @@ import { ServerRegistry } from "../src/registry";
 import {
   generatedToolInputSchema,
   handleServerTool,
+  jsonResult,
   projectCallToolResult,
   validateOperationRequest,
 } from "../src/tools";
@@ -119,6 +120,17 @@ describe("generated tool request validation", () => {
       "search_tools",
       "get_tool",
       "call_tool",
+    ]);
+  });
+
+  it("returns concise wrapper content while preserving structured result", () => {
+    const result = jsonResult({ server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
+
+    expect(result.structuredContent).toEqual({
+      result: { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+    });
+    expect(result.content).toEqual([
+      { type: "text", text: "Result available in structuredContent.result." },
     ]);
   });
 

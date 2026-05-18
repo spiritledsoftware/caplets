@@ -285,11 +285,12 @@ export function createProgram(io: CliIO = {}): Command {
     .command("get-caplet")
     .description("Print a configured Caplet card.")
     .argument("<caplet>", "configured Caplet ID")
-    .action(async (caplet: string) => {
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
         { operation: "get_caplet" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
       );
     });
 
@@ -297,11 +298,12 @@ export function createProgram(io: CliIO = {}): Command {
     .command("check-backend")
     .description("Check backend availability for a configured Caplet.")
     .argument("<caplet>", "configured Caplet ID")
-    .action(async (caplet: string) => {
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
         { operation: "check_backend" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
       );
     });
 
@@ -309,11 +311,12 @@ export function createProgram(io: CliIO = {}): Command {
     .command("list-tools")
     .description("List downstream tools for a configured Caplet.")
     .argument("<caplet>", "configured Caplet ID")
-    .action(async (caplet: string) => {
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
         { operation: "list_tools" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
       );
     });
 
@@ -323,26 +326,34 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .argument("<query>", "search query")
     .option("--limit <n>", "maximum number of tools to return", parsePositiveInteger)
-    .action(async (caplet: string, query: string, options: { limit?: number }) => {
-      await executeOperation(
-        caplet,
-        options.limit === undefined
-          ? { operation: "search_tools", query }
-          : { operation: "search_tools", query, limit: options.limit },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir },
-      );
-    });
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        query: string,
+        options: { limit?: number; format?: CliOutputFormat },
+      ) => {
+        await executeOperation(
+          caplet,
+          options.limit === undefined
+            ? { operation: "search_tools", query }
+            : { operation: "search_tools", query, limit: options.limit },
+          { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+        );
+      },
+    );
 
   program
     .command("get-tool")
     .description("Print one downstream tool schema.")
     .argument("<caplet.tool>", "qualified target, split on the first dot")
-    .action(async (target: string) => {
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (target: string, options: { format?: CliOutputFormat }) => {
       const { caplet, tool } = parseQualifiedTarget(target);
       await executeOperation(
         caplet,
         { operation: "get_tool", tool },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir },
+        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
       );
     });
 
@@ -352,21 +363,28 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet.tool>", "qualified target, split on the first dot")
     .option("--args <json-object>", "JSON object of downstream tool arguments")
     .option("--field <path>", "project a field from structured output", collect, [])
-    .action(async (target: string, options: { args?: string; field?: string[] }) => {
-      const { caplet, tool } = parseQualifiedTarget(target);
-      const request = {
-        operation: "call_tool",
-        tool,
-        arguments: parseCallToolArgs(options.args),
-        ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
-      };
-      await executeOperation(caplet, request, {
-        writeOut,
-        writeErr,
-        setExitCode,
-        authDir: io.authDir,
-      });
-    });
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        target: string,
+        options: { args?: string; field?: string[]; format?: CliOutputFormat },
+      ) => {
+        const { caplet, tool } = parseQualifiedTarget(target);
+        const request = {
+          operation: "call_tool",
+          tool,
+          arguments: parseCallToolArgs(options.args),
+          ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
+        };
+        await executeOperation(caplet, request, {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          format: options.format,
+        });
+      },
+    );
 
   const config = program.command("config").description("Inspect Caplets config locations.");
 
@@ -460,6 +478,25 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
+type CliOutputFormat = "markdown" | "plain" | "json";
+
+function parseOutputFormat(value: string): CliOutputFormat {
+  switch (value.toLocaleLowerCase()) {
+    case "markdown":
+    case "md":
+      return "markdown";
+    case "plain":
+      return "plain";
+    case "json":
+      return "json";
+    default:
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        `Expected output format markdown, md, plain, or json; got ${value}`,
+      );
+  }
+}
+
 function parseQualifiedTarget(target: string): { caplet: string; tool: string } {
   const dot = target.indexOf(".");
   if (dot <= 0 || dot === target.length - 1) {
@@ -493,6 +530,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExitCode">> & {
   authDir?: string | undefined;
+  format?: CliOutputFormat | undefined;
 };
 
 async function executeOperation(
@@ -509,13 +547,352 @@ async function executeOperation(
   });
   try {
     const result = await engine.execute(caplet, request);
-    io.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+    const output = cliOutputForOperation(result, { ...request, caplet }, io.format ?? "markdown");
+    io.writeOut(
+      typeof output === "string" ? `${output}\n` : `${JSON.stringify(output, null, 2)}\n`,
+    );
     if (isPlainObject(result) && result.isError === true) {
       io.setExitCode(1);
     }
   } finally {
     await engine.close();
   }
+}
+
+function cliOutputForOperation(
+  result: unknown,
+  request: Record<string, unknown>,
+  format: CliOutputFormat,
+): unknown {
+  if (format === "json" || !isPlainObject(result)) {
+    return jsonPayloadForOperation(result, request.operation);
+  }
+  return format === "markdown"
+    ? markdownSummaryForOperation(result, request)
+    : plainSummaryForOperation(result, request);
+}
+
+function jsonPayloadForOperation(result: unknown, operation: unknown): unknown {
+  if (operation === "call_tool" || !isPlainObject(result)) {
+    return result;
+  }
+  const structuredContent = result.structuredContent;
+  if (!isPlainObject(structuredContent) || !("result" in structuredContent)) {
+    return result;
+  }
+  return structuredContent.result;
+}
+
+function markdownSummaryForOperation(result: unknown, request: Record<string, unknown>): string {
+  const operation = request.operation;
+  const payload = jsonPayloadForOperation(result, operation);
+  if (!isPlainObject(payload)) {
+    return String(payload);
+  }
+  switch (operation) {
+    case "get_caplet":
+      return [
+        `## Caplet \`${String(payload.caplet ?? "unknown")}\``,
+        "",
+        `**Name:** ${String(payload.name ?? "Unnamed")}`,
+        `**Description:** ${String(payload.description ?? "No description.")}`,
+        payload.backend ? `**Backend:** ${backendType(payload.backend)}` : undefined,
+        "",
+        "Next:",
+        `- List tools: \`caplets list-tools ${String(payload.caplet ?? "<caplet>")}\``,
+        `- Search tools: \`caplets search-tools ${String(payload.caplet ?? "<caplet>")} <query>\``,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+    case "check_backend":
+      return [
+        `## Backend \`${String(payload.server ?? "caplet")}\``,
+        "",
+        `- Status: ${String(payload.status ?? "unknown")}`,
+        typeof payload.toolCount === "number" ? `- Tools: ${payload.toolCount}` : undefined,
+        typeof payload.elapsedMs === "number" ? `- Elapsed: ${payload.elapsedMs}ms` : undefined,
+        "",
+        "Next:",
+        `- List tools: \`caplets list-tools ${String(payload.server ?? "<caplet>")}\``,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+    case "list_tools": {
+      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      return [
+        `## Tools for \`${String(payload.server ?? "caplet")}\``,
+        "",
+        `${tools.length} ${tools.length === 1 ? "tool" : "tools"} found.`,
+        "",
+        ...formatToolLines(tools, "markdown"),
+        "",
+        "Next:",
+        `- Inspect a tool: \`caplets get-tool ${String(payload.server ?? "<caplet>")}.<tool>\``,
+        `- Call a tool: \`caplets call-tool ${String(payload.server ?? "<caplet>")}.<tool> --args '{...}'\``,
+        "- Machine output: add `--format json`",
+      ].join("\n");
+    }
+    case "search_tools": {
+      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      return [
+        `## Matches for ${JSON.stringify(String(payload.query ?? ""))} in \`${String(payload.server ?? "caplet")}\``,
+        "",
+        `${tools.length} ${tools.length === 1 ? "match" : "matches"} found.`,
+        "",
+        ...formatToolLines(tools, "markdown"),
+        "",
+        "Next:",
+        tools.length > 0
+          ? `- Inspect the first match: \`caplets get-tool ${String(payload.server ?? "<caplet>")}.${firstToolName(tools) ?? "<tool>"}\``
+          : `- Try a broader query or list tools: \`caplets list-tools ${String(payload.server ?? "<caplet>")}\``,
+      ].join("\n");
+    }
+    case "get_tool": {
+      const tool = isPlainObject(payload.tool) ? payload.tool : {};
+      const target = `${String(payload.server ?? "<caplet>")}.${String(tool.name ?? "<tool>")}`;
+      return [
+        `## Tool \`${target}\``,
+        "",
+        tool.description ? compactDescription(String(tool.description)) : undefined,
+        "",
+        "Input:",
+        `- ${schemaSummary(tool.inputSchema)}`,
+        "",
+        "Output:",
+        `- ${tool.outputSchema ? schemaSummary(tool.outputSchema) : "not declared"}`,
+        "",
+        "Next:",
+        `- Call: \`caplets call-tool ${target} --args '{...}'\``,
+        "- Full schema: add `--format json`",
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+    }
+    case "call_tool": {
+      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.tool ?? "unknown")}`;
+      return [
+        `## Call \`${callTarget}\``,
+        "",
+        `- Status: ${payload.isError === true ? "failed" : "succeeded"}`,
+        callStatusLine(payload) ? `- ${callStatusLine(payload)}` : undefined,
+        `- Result: ${summarizeCallResult(payload)}`,
+        "",
+        "Use `--format json` to inspect the full structured result.",
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+    }
+    default:
+      return JSON.stringify(payload, null, 2);
+  }
+}
+
+function plainSummaryForOperation(result: unknown, request: Record<string, unknown>): string {
+  const operation = request.operation;
+  const payload = jsonPayloadForOperation(result, operation);
+  if (!isPlainObject(payload)) {
+    return String(payload);
+  }
+  switch (operation) {
+    case "get_caplet":
+      return [
+        `Caplet: ${String(payload.caplet ?? "unknown")}`,
+        `Name: ${String(payload.name ?? "Unnamed")}`,
+        `Description: ${String(payload.description ?? "No description.")}`,
+        payload.backend ? `Backend: ${backendType(payload.backend)}` : undefined,
+        `Next: caplets list-tools ${String(payload.caplet ?? "<caplet>")} or caplets search-tools ${String(payload.caplet ?? "<caplet>")} <query>`,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    case "check_backend":
+      return [
+        `Backend: ${String(payload.server ?? "caplet")} is ${String(payload.status ?? "unknown")}`,
+        typeof payload.toolCount === "number" ? `Tools: ${payload.toolCount}` : undefined,
+        typeof payload.elapsedMs === "number" ? `Elapsed: ${payload.elapsedMs}ms` : undefined,
+        `Next: caplets list-tools ${String(payload.server ?? "<caplet>")}`,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    case "list_tools": {
+      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      return [
+        `Tools for ${String(payload.server ?? "caplet")} (${tools.length}):`,
+        ...formatToolLines(tools, "plain"),
+        `Next: caplets get-tool ${String(payload.server ?? "<caplet>")}.<tool> or caplets call-tool ${String(payload.server ?? "<caplet>")}.<tool> --args '{...}'`,
+      ].join("\n");
+    }
+    case "search_tools": {
+      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      return [
+        `Matches for ${JSON.stringify(String(payload.query ?? ""))} in ${String(payload.server ?? "caplet")} (${tools.length}):`,
+        ...formatToolLines(tools, "plain"),
+        tools.length > 0
+          ? `Next: caplets get-tool ${String(payload.server ?? "<caplet>")}.${firstToolName(tools) ?? "<tool>"}`
+          : `Next: try caplets list-tools ${String(payload.server ?? "<caplet>")} or a broader query.`,
+      ].join("\n");
+    }
+    case "get_tool": {
+      const tool = isPlainObject(payload.tool) ? payload.tool : {};
+      const target = `${String(payload.server ?? "<caplet>")}.${String(tool.name ?? "<tool>")}`;
+      return [
+        `Tool: ${target}`,
+        tool.description
+          ? `Description: ${compactDescription(String(tool.description))}`
+          : undefined,
+        `Input: ${schemaSummary(tool.inputSchema)}`,
+        `Output: ${tool.outputSchema ? schemaSummary(tool.outputSchema) : "not declared"}`,
+        `Next: caplets call-tool ${target} --args '{...}'`,
+        "Use --format json to inspect full schemas and descriptions.",
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    }
+    case "call_tool": {
+      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.tool ?? "unknown")}`;
+      return [
+        `Call ${callTarget} ${payload.isError === true ? "failed" : "succeeded"}.`,
+        callStatusLine(payload),
+        `Result: ${summarizeCallResult(payload)}`,
+        "Use --format json to inspect the full structured result.",
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n");
+    }
+    default:
+      return JSON.stringify(payload, null, 2);
+  }
+}
+
+function formatToolLines(tools: unknown[], format: "markdown" | "plain"): string[] {
+  if (tools.length === 0) {
+    return ["- none"];
+  }
+  return tools.map((tool) => {
+    if (!isPlainObject(tool)) {
+      return `- ${String(tool)}`;
+    }
+    const name = String(tool.tool ?? tool.name ?? "unknown");
+    const displayName = format === "markdown" ? `\`${name}\`` : name;
+    const flags = [
+      tool.hasInputSchema ? "input" : undefined,
+      tool.hasOutputSchema ? "output" : undefined,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const suffix = flags ? ` (${flags})` : "";
+    return `- ${displayName}${suffix}${tool.description ? ` — ${compactDescription(String(tool.description))}` : ""}`;
+  });
+}
+
+function compactDescription(value: string): string {
+  const firstParagraph = value.trim().split(/\n\s*\n/u)[0] ?? "";
+  const firstSentence = firstParagraph.match(/^.*?(?:[.!?](?=\s|$)|$)/u)?.[0] ?? firstParagraph;
+  const collapsed = firstSentence.replace(/\s+/gu, " ").trim();
+  return collapsed.length > 140 ? `${collapsed.slice(0, 137).trimEnd()}...` : collapsed;
+}
+
+function firstToolName(tools: unknown[]): string | undefined {
+  const first = tools[0];
+  return isPlainObject(first) && typeof first.tool === "string" ? first.tool : undefined;
+}
+
+function backendType(value: unknown): string {
+  return isPlainObject(value) && typeof value.type === "string" ? value.type : "unknown";
+}
+
+function callStatusLine(payload: Record<string, unknown>): string | undefined {
+  const structured = isPlainObject(payload.structuredContent) ? payload.structuredContent : payload;
+  return typeof structured.exitCode === "number" ? `Exit code: ${structured.exitCode}` : undefined;
+}
+
+function summarizeCallResult(payload: Record<string, unknown>): string {
+  const structured = isPlainObject(payload.structuredContent) ? payload.structuredContent : payload;
+  const preview = previewValue(preferredPreviewValue(structured));
+  if (preview) {
+    return preview;
+  }
+  const keys = Object.keys(structured).filter((key) => key !== "elapsedMs");
+  return keys.length > 0 ? `structured keys: ${keys.join(", ")}` : "no structured content";
+}
+
+function preferredPreviewValue(value: unknown): unknown {
+  if (!isPlainObject(value)) {
+    return value;
+  }
+  if ("result" in value) {
+    return value.result;
+  }
+  if ("json" in value) {
+    return value.json;
+  }
+  if (typeof value.text === "string") {
+    return value.text;
+  }
+  if (typeof value.stdout === "string" && value.stdout.trim()) {
+    return value.stdout.trim();
+  }
+  return value;
+}
+
+function previewValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return truncatePreview(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return truncatePreview(JSON.stringify(value));
+  }
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value).slice(0, 4);
+    if (entries.length === 0) {
+      return "empty object";
+    }
+    return truncatePreview(
+      entries.map(([key, entryValue]) => `${key}: ${previewScalar(entryValue)}`).join(", "),
+    );
+  }
+  return undefined;
+}
+
+function previewScalar(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(truncatePreview(value, 80));
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.length} item${value.length === 1 ? "" : "s"}]`;
+  }
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value).slice(0, 3).join(", ")}${Object.keys(value).length > 3 ? ", ..." : ""}}`;
+  }
+  return typeof value;
+}
+
+function truncatePreview(value: string, maxLength = 180): string {
+  const collapsed = value.replace(/\s+/gu, " ").trim();
+  return collapsed.length > maxLength
+    ? `${collapsed.slice(0, maxLength - 3).trimEnd()}...`
+    : collapsed;
+}
+
+function schemaSummary(schema: unknown): string {
+  if (!isPlainObject(schema)) {
+    return "not declared";
+  }
+  const properties = isPlainObject(schema.properties) ? Object.keys(schema.properties) : [];
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((value): value is string => typeof value === "string")
+    : [];
+  const parts = [
+    typeof schema.type === "string" ? `type ${schema.type}` : undefined,
+    properties.length > 0 ? `properties ${properties.join(", ")}` : "no declared properties",
+    required.length > 0 ? `required ${required.join(", ")}` : "no required fields",
+  ];
+  return parts.filter((part): part is string => Boolean(part)).join("; ");
 }
 
 function addDestinationRoot(options: { global?: boolean }): string {

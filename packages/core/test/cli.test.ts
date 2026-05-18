@@ -400,13 +400,21 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["get-caplet", "local"], { writeOut: (value) => out.push(value) });
-      await runCli(["check-backend", "local"], { writeOut: (value) => out.push(value) });
-      await runCli(["list-tools", "local"], { writeOut: (value) => out.push(value) });
-      await runCli(["search-tools", "local", "echo", "--limit", "1"], {
+      await runCli(["get-caplet", "local", "--format", "json"], {
         writeOut: (value) => out.push(value),
       });
-      await runCli(["get-tool", "local.echo_json"], { writeOut: (value) => out.push(value) });
+      await runCli(["check-backend", "local", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["list-tools", "local", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["search-tools", "local", "echo", "--limit", "1", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["get-tool", "local.echo_json", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
       await runCli(
         [
           "call-tool",
@@ -415,22 +423,86 @@ describe("cli init", () => {
           '{"message":"hello"}',
           "--field",
           "json.message",
+          "--format",
+          "json",
         ],
         { writeOut: (value) => out.push(value) },
       );
 
       const results = out.map((value) => JSON.parse(value));
-      expect(results[0].structuredContent.result.caplet).toBe("local");
-      expect(results[1].structuredContent.result).toMatchObject({
+      expect(results[0].caplet).toBe("local");
+      expect(results[1]).toMatchObject({
         server: "local",
         status: "available",
         toolCount: 3,
       });
-      expect(results[2].structuredContent.result.tools).toHaveLength(3);
-      expect(results[3].structuredContent.result).toMatchObject({ query: "echo" });
-      expect(results[3].structuredContent.result.tools).toHaveLength(1);
-      expect(results[4].structuredContent.result.tool.name).toBe("echo_json");
+      expect(results[2].tools).toHaveLength(3);
+      expect(results[3]).toMatchObject({ query: "echo" });
+      expect(results[3].tools).toHaveLength(1);
+      expect(results[4].tool.name).toBe("echo_json");
       expect(results[5].structuredContent).toEqual({ json: { message: "hello" } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints agent-first summaries by default for direct Caplet operation commands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-summary-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["get-caplet", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["check-backend", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["list-tools", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["search-tools", "local", "echo", "--limit", "1"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["get-tool", "local.echo_json"], { writeOut: (value) => out.push(value) });
+      await runCli(["call-tool", "local.no_args"], { writeOut: (value) => out.push(value) });
+
+      expect(out.join("\n")).toContain("## Caplet `local`");
+      expect(out.join("\n")).toContain("**Name:** Local CLI");
+      expect(out.join("\n")).toContain("**Description:** Run local CLI tools.");
+      expect(out.join("\n")).toContain("## Backend `local`");
+      expect(out.join("\n")).toContain("- Status: available");
+      expect(out.join("\n")).toContain("## Tools for `local`");
+      expect(out.join("\n")).toContain("- `echo_json`");
+      expect(out.join("\n")).toContain("Print JSON from the provided message");
+      expect(out[2]).not.toContain("Second sentence should not appear");
+      expect(out[3]).not.toContain("Second sentence should not appear");
+      expect(out.join("\n")).toContain('## Matches for "echo" in `local`');
+      expect(out.join("\n")).toContain("## Tool `local.echo_json`");
+      expect(out.join("\n")).toContain("- type object; properties message; required message");
+      expect(out.join("\n")).toContain("- type object; properties json; no required fields");
+      expect(out.join("\n")).toContain("- Full schema: add `--format json`");
+      expect(out.join("\n")).toContain("## Call `local.no_args`");
+      expect(out.join("\n")).toContain("- Result: ok: true");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports plain and md format aliases for direct Caplet operation commands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-format-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["get-caplet", "local", "--format", "plain"], {
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["list-tools", "local", "--format", "md"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(out[0]).toContain("Caplet: local");
+      expect(out[0]).not.toContain("## Caplet");
+      expect(out[1]).toContain("## Tools for `local`");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -444,12 +516,39 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["call-tool", "local.no_args"], { writeOut: (value) => out.push(value) });
+      await runCli(["call-tool", "local.no_args", "--format", "json"], {
+        writeOut: (value) => out.push(value),
+      });
 
       expect(JSON.parse(out.join(""))).toMatchObject({
         isError: false,
         structuredContent: { json: { ok: true } },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sets exit code for downstream tool errors after printing a default summary", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-call-error-summary-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    const exitCodes: number[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      process.env.CAPLETS_CONFIG = configPath;
+
+      await runCli(["call-tool", "local.fail"], {
+        writeOut: (value) => out.push(value),
+        setExitCode: (code) => exitCodes.push(code),
+      });
+
+      expect(out.join("")).toContain("## Call `local.fail`");
+      expect(out.join("")).toContain("- Status: failed");
+      expect(out.join("")).toContain("Exit code: 7");
+      expect(out.join("")).toContain("- Result: out");
+      expect(out.join("")).toContain("Use `--format json` to inspect the full structured result.");
+      expect(exitCodes).toEqual([1]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -464,7 +563,7 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["call-tool", "local.fail"], {
+      await runCli(["call-tool", "local.fail", "--format", "json"], {
         writeOut: (value) => out.push(value),
         setExitCode: (code) => exitCodes.push(code),
       });
@@ -485,6 +584,9 @@ describe("cli init", () => {
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
     await expect(
       runCli(["call-tool", "local.tool", "--args", "[]"], { writeErr: () => {} }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    await expect(
+      runCli(["list-tools", "local", "--format", "xml"], { writeErr: () => {} }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 
@@ -1704,6 +1806,8 @@ function writeCliOperationConfig(path: string): void {
           description: "Run local CLI tools.",
           actions: {
             echo_json: {
+              description:
+                "Print JSON from the provided message. Second sentence should not appear in list output because it is only for get-tool detail.",
               command: process.execPath,
               args: [script, "echo", "$input.message"],
               inputSchema: {

@@ -28,19 +28,20 @@
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
     "prepack": "pnpm build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsgo --noEmit",
     "test": "vitest run"
   },
   "dependencies": {},
   "devDependencies": {
     "@caplets/core": "workspace:*",
     "@types/node": "^25.7.0",
+    "@typescript/native-preview": "7.0.0-dev.20260515.1",
     "rolldown": "^1.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.74.0"
+    "@earendil-works/pi-coding-agent": ">=0"
   },
   "engines": {
     "node": ">=22"

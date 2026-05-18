@@ -28,7 +28,7 @@
   "scripts": {
     "build": "rm -rf dist && rolldown -c",
     "prepack": "pnpm build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsgo --noEmit",
     "test": "vitest run"
   },
   "dependencies": {},
@@ -36,12 +36,13 @@
     "@caplets/core": "workspace:*",
     "@opencode-ai/plugin": "^1.14.48",
     "@types/node": "^25.7.0",
+    "@typescript/native-preview": "7.0.0-dev.20260515.1",
     "rolldown": "^1.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=0.13.0"
+    "@opencode-ai/plugin": ">=1"
   },
   "engines": {
     "node": ">=22"

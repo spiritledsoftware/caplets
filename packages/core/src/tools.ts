@@ -208,7 +208,7 @@ export function jsonResult(value: unknown): CallToolResult {
     content: [
       {
         type: "text",
-        text: JSON.stringify(value, null, 2),
+        text: "Result available in structuredContent.result.",
       },
     ],
     structuredContent: { result: value as Record<string, unknown> },

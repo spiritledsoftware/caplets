@@ -68,18 +68,17 @@ Connect Caplets to any MCP client:
 Ask your agent to use Caplets. It will see a compact capability list first, then inspect
 only the backend it needs.
 
-You can also invoke configured Caplets directly from the CLI for scripts and smoke tests:
+You can also invoke configured Caplets directly from the CLI for agent-friendly scripts and smoke tests:
 
 ```sh
 caplets get-caplet context7
 caplets list-tools context7
 caplets get-tool context7.resolve-library-id
 caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}'
-caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}' --field result.id
+caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}' --field result.id --format json
 ```
 
-Direct CLI calls print the full JSON MCP result. If a downstream tool returns `isError: true`,
-Caplets still prints that JSON result and exits with status code 1.
+Direct CLI operation commands print Markdown summaries by default. Add `--format plain` for plain text or `--format json` for machine-readable JSON (`md` is accepted as an alias for `markdown`). If a downstream tool returns `isError: true`, Caplets still exits with status code 1.
 
 ## Agent Plugins
 
