@@ -38,6 +38,14 @@ export class CapletSetManager {
   }
 
   invalidate(serverId: string): void {
+    const pending = this.childRefreshLocks.get(serverId);
+    if (pending) {
+      void pending.then(
+        () => this.closeChild(serverId),
+        () => this.closeChild(serverId),
+      );
+      return;
+    }
     void this.closeChild(serverId);
   }
 
@@ -183,10 +191,6 @@ export class CapletSetManager {
     if (existing && !force && isFresh) {
       return existing;
     }
-    if (existing) {
-      await this.closeChild(config.server);
-    }
-
     const ancestry = this.options.ancestry ?? new Set<string>();
     if (ancestry.has(cacheKey)) {
       throw new CapletsError("CONFIG_INVALID", "Nested Caplet set cycle detected", {
@@ -196,30 +200,42 @@ export class CapletSetManager {
       });
     }
 
-    const childConfig = loadIsolatedConfig({
-      ...(config.configPath ? { configPath: config.configPath } : {}),
-      ...(config.capletsRoot ? { capletsRoot: config.capletsRoot } : {}),
-      defaultSearchLimit: config.defaultSearchLimit,
-      maxSearchLimit: config.maxSearchLimit,
-    });
-    const registry = new ServerRegistry(childConfig);
-    const authOptions = this.options.authDir ? { authDir: this.options.authDir } : {};
-    const childAncestry = new Set([...ancestry, cacheKey]);
-    const child: ChildRuntime = {
-      registry,
-      downstream: new DownstreamManager(registry, authOptions),
-      openapi: new OpenApiManager(registry, authOptions),
-      graphql: new GraphQLManager(registry, authOptions),
-      http: new HttpActionManager(registry, authOptions),
-      cli: new CliToolsManager(registry),
-      capletSets: new CapletSetManager(registry, {
-        ...authOptions,
-        ancestry: childAncestry,
-      }),
-      cacheKey,
-      configFingerprint: JSON.stringify(config),
-      loadedAt: now,
-    };
+    let child: ChildRuntime;
+    try {
+      const childConfig = loadIsolatedConfig({
+        ...(config.configPath ? { configPath: config.configPath } : {}),
+        ...(config.capletsRoot ? { capletsRoot: config.capletsRoot } : {}),
+        defaultSearchLimit: config.defaultSearchLimit,
+        maxSearchLimit: config.maxSearchLimit,
+      });
+      const registry = new ServerRegistry(childConfig);
+      const authOptions = this.options.authDir ? { authDir: this.options.authDir } : {};
+      const childAncestry = new Set([...ancestry, cacheKey]);
+      child = {
+        registry,
+        downstream: new DownstreamManager(registry, authOptions),
+        openapi: new OpenApiManager(registry, authOptions),
+        graphql: new GraphQLManager(registry, authOptions),
+        http: new HttpActionManager(registry, authOptions),
+        cli: new CliToolsManager(registry),
+        capletSets: new CapletSetManager(registry, {
+          ...authOptions,
+          ancestry: childAncestry,
+        }),
+        cacheKey,
+        configFingerprint: JSON.stringify(config),
+        loadedAt: now,
+      };
+    } catch (error) {
+      if (existing) {
+        return existing;
+      }
+      throw error;
+    }
+
+    if (existing) {
+      await this.closeChild(config.server);
+    }
     this.children.set(config.server, child);
     this.registry.setStatus(config.server, "available");
     return child;

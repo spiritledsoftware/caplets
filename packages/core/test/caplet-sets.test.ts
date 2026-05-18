@@ -187,6 +187,62 @@ describe("CapletSetManager", () => {
     expect(closeCalls).toBe(1);
   });
 
+  it("does not let in-flight refreshes repopulate invalidated child runtimes", async () => {
+    const { dir, childConfigPath } = childCliConfig();
+    dirs.push(dir);
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+          toolCacheTtlMs: 0,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config));
+
+    const target = manager as unknown as {
+      loadChildRuntime: (nextConfig: typeof caplet, force: boolean) => Promise<unknown>;
+      children: Map<string, unknown>;
+    };
+    const originalLoadChildRuntime = target.loadChildRuntime.bind(manager);
+    target.loadChildRuntime = async (nextConfig, force) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return await originalLoadChildRuntime(nextConfig, force);
+    };
+
+    const refresh = manager.listTools(caplet);
+    manager.invalidate(caplet.server);
+    await refresh;
+    await Promise.resolve();
+
+    expect(target.children.has(caplet.server)).toBe(false);
+  });
+
+  it("keeps serving the last known-good child runtime when reload config is invalid", async () => {
+    const { dir, childConfigPath } = childCliConfig();
+    dirs.push(dir);
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+          toolCacheTtlMs: 0,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config));
+    await expect(manager.listTools(caplet)).resolves.toMatchObject([{ name: "echoes" }]);
+
+    writeFileSync(childConfigPath, "{");
+
+    await expect(manager.listTools(caplet)).resolves.toMatchObject([{ name: "echoes" }]);
+  });
+
   it("reports recursive source cycles through nested Caplet sets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-set-cycle-"));
     dirs.push(dir);
