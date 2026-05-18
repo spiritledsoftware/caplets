@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Small dependency-free fixture repo for coding-agent benchmark tasks.",
+  "type": "module",
   "scripts": {
     "test": "node --test test/*.node-test.js",
     "test:discount": "node --test test/discount.node-test.js",

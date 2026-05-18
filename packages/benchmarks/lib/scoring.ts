@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { runCommandLine, runProcess } from "./live-agent";
 
+const TSX_IMPORT = import.meta.resolve("tsx");
+
 export const DEFAULT_VALIDATION_TIMEOUT_MS = 60_000;
 
 export async function createTempWorkspaceFromFixture(fixtureWorkspaceRoot) {
@@ -161,7 +163,7 @@ async function runHiddenValidator(task, candidateWorkspace, fixtureRoot, { timeo
     const validatorPath = resolveInside(fixtureRoot, task.hiddenValidator);
     const result = await runProcess({
       command: process.execPath,
-      args: ["--test", validatorPath],
+      args: ["--import", TSX_IMPORT, "--test", validatorPath],
       cwd: candidateWorkspace,
       timeoutMs,
     });

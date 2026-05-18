@@ -11,7 +11,7 @@ export function getBenchmarkPaths({ repoRoot = REPO_ROOT }: any = {}) {
   const absoluteRepoRoot = resolve(repoRoot);
   return {
     repoRoot: absoluteRepoRoot,
-    fixtureServerPath: join(absoluteRepoRoot, "fixtures", "mcp-server.mjs"),
+    fixtureServerPath: join(absoluteRepoRoot, "fixtures", "mcp-server.ts"),
     capletsCliPath: CAPLETS_CLI_PATH,
   };
 }
@@ -33,7 +33,7 @@ export function createBenchmarkFixtureMcpServers({
       {
         ...definition,
         ...serverExtra,
-        command: process.execPath,
+        command: "tsx",
         args: [serverPath, "--server", server],
         cwd: serverCwd,
       },
@@ -51,7 +51,7 @@ export async function stageBenchmarkMcpSupportFiles({
   }
   const paths = getBenchmarkPaths({ repoRoot });
   const absoluteSupportDir = resolve(supportDir);
-  const fixtureServerPath = join(absoluteSupportDir, "mcp-server.mjs");
+  const fixtureServerPath = join(absoluteSupportDir, "mcp-server.ts");
 
   await mkdir(absoluteSupportDir, { recursive: true });
   await copyFile(paths.fixtureServerPath, fixtureServerPath);
