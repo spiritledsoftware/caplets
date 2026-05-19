@@ -58,7 +58,8 @@ options are supplied:
       "url": "https://caplets.example.com/mcp",
       "user": "caplets"
     },
-    "statusWidget": true
+    "statusWidget": true,
+    "nerdFontIcons": true
   }
 }
 ```
@@ -66,8 +67,9 @@ options are supplied:
 Only this top-level `caplets` settings form is read from Pi settings. Object package entries
 with `args` or `native` are ignored.
 
-When remote mode is active, Pi shows a small footer status (`Caplets: remote connected` or
-`Caplets: remote offline`). Set `"statusWidget": false` under top-level `caplets` to hide it.
+When remote mode is active, Pi shows a compact footer status such as `󰖟 caplets ✓` or
+`󰖟 caplets ×`. Set `"statusWidget": false` under top-level `caplets` to hide it, or
+`"nerdFontIcons": false` to use plain `caplets ✓` / `caplets ×` text.
 Programmatic or inline embedding can pass explicit native options with the exported factory
 helper instead of relying on Pi package-loader args:
 

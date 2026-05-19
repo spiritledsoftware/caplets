@@ -32,6 +32,7 @@ type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote
 
 type PiCapletsSettings = PiNativeCapletsOptions & {
   statusWidget?: boolean;
+  nerdFontIcons?: boolean;
 };
 
 export type CapletsPiOptions = {
@@ -118,6 +119,7 @@ async function registerCapletsPiExtension(
     serviceOptions,
     options.statusWidget ?? settingsArgs?.statusWidget,
   );
+  const useNerdFontIcons = settingsArgs?.nerdFontIcons !== false;
   if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
@@ -133,10 +135,7 @@ async function registerCapletsPiExtension(
     if (!showStatusWidget || !statusCtx) {
       return;
     }
-    statusCtx.ui.setStatus(
-      "caplets",
-      remoteStatus === "connected" ? "Caplets: remote connected" : "Caplets: remote offline",
-    );
+    statusCtx.ui.setStatus("caplets", capletsRemoteStatusText(remoteStatus, useNerdFontIcons));
   };
 
   const syncToolRegistrations = (caplets = service.listTools()) => {
@@ -253,6 +252,11 @@ function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
     if (typeof statusWidget !== "boolean") return undefined;
     result.statusWidget = statusWidget;
   }
+  const nerdFontIcons = (value as Record<string, unknown>).nerdFontIcons;
+  if (nerdFontIcons !== undefined) {
+    if (typeof nerdFontIcons !== "boolean") return undefined;
+    result.nerdFontIcons = nerdFontIcons;
+  }
   const remote = objectProperty(value, "remote");
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
@@ -271,6 +275,13 @@ function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
     result.remote = parsedRemote;
   }
   return result;
+}
+
+function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {
+  if (nerdFontIcons) {
+    return status === "connected" ? "󰖟 caplets ✓" : "󰖟 caplets ×";
+  }
+  return status === "connected" ? "caplets ✓" : "caplets ×";
 }
 
 function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOptions {

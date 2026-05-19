@@ -1022,7 +1022,29 @@ describe("@caplets/pi", () => {
     await capletsPiExtension(api as unknown as PiExtensionApi);
     triggerSessionStart(api, { ui: { setStatus } });
 
-    expect(setStatus).toHaveBeenCalledWith("caplets", "Caplets: remote connected");
+    expect(setStatus).toHaveBeenCalledWith("caplets", "󰖟 caplets ✓");
+  });
+
+  it("can disable nerd font icons in the remote status widget", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: { url: "https://caplets.example.com/mcp" },
+          nerdFontIcons: false,
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+    const setStatus = vi.fn();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+    triggerSessionStart(api, { ui: { setStatus } });
+
+    expect(setStatus).toHaveBeenCalledWith("caplets", "caplets ✓");
   });
 
   it("can disable the remote status widget from settings", async () => {
@@ -1063,7 +1085,7 @@ describe("@caplets/pi", () => {
     await capletsPiExtension(api as unknown as PiExtensionApi);
     triggerSessionStart(api, { ui: { setStatus } });
 
-    expect(setStatus).toHaveBeenCalledWith("caplets", "Caplets: remote offline");
+    expect(setStatus).toHaveBeenCalledWith("caplets", "󰖟 caplets ×");
   });
 
   it("programmatic args override Pi settings without reading the settings file", async () => {
