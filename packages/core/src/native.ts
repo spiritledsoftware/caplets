@@ -23,3 +23,11 @@ export {
   type NativeRemoteCapletsOptions,
   type ResolvedNativeCapletsServiceOptions,
 } from "./native/options";
+export {
+  createSdkRemoteCapletsClient,
+  RemoteNativeCapletsService,
+  type RemoteCapletsClient,
+  type RemoteCapletsClientOptions,
+  type RemoteCapletsTool,
+  type RemoteNativeCapletsServiceOptions,
+} from "./native/remote";
