@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
+import { CapletsError } from "../errors";
 import type { ResolvedNativeCapletsServiceOptions } from "./options";
 import type {
   NativeCapletsService,
@@ -29,6 +30,7 @@ export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
 
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
+  clientFactory?: () => RemoteCapletsClient;
   pollIntervalMs: number;
   writeErr?: (value: string) => void;
 };
@@ -74,6 +76,7 @@ export function createSdkRemoteCapletsClient(
     },
     async close() {
       listeners.clear();
+      await transport.terminateSession().catch(() => undefined);
       await client.close();
     },
   };
@@ -82,14 +85,16 @@ export function createSdkRemoteCapletsClient(
 export class RemoteNativeCapletsService implements NativeCapletsService {
   private tools: NativeCapletTool[] = [];
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
-  private readonly unsubscribeRemote: () => void;
+  private readonly clientFactory: () => RemoteCapletsClient;
+  private client: RemoteCapletsClient;
+  private unsubscribeRemote: () => void;
   private readonly pollTimer: ReturnType<typeof setInterval>;
   private closed = false;
 
   constructor(private readonly options: RemoteNativeCapletsServiceOptions) {
-    this.unsubscribeRemote = options.client.onToolsChanged(() => {
-      void this.reload();
-    });
+    this.client = options.client;
+    this.clientFactory = options.clientFactory ?? (() => options.client);
+    this.unsubscribeRemote = this.subscribeRemote(this.client);
     this.pollTimer = setInterval(() => {
       void this.reload();
     }, options.pollIntervalMs);
@@ -101,7 +106,17 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    return await this.options.client.callTool(capletId, request);
+    try {
+      return await this.client.callTool(capletId, request);
+    } catch (error) {
+      if (isAuthFailure(error)) {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          "Remote Caplets authentication failed; check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+        );
+      }
+      throw error;
+    }
   }
 
   async reload(): Promise<boolean> {
@@ -109,14 +124,19 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       return false;
     }
     try {
-      const tools = (await this.options.client.listTools()).map(remoteToolToNativeTool);
-      const changed = JSON.stringify(tools) !== JSON.stringify(this.tools);
-      this.tools = tools;
-      if (changed) {
-        this.emitToolsChanged();
-      }
+      await this.reloadFromClient();
       return true;
     } catch (error) {
+      if (isSessionFailure(error)) {
+        try {
+          await this.resetClient();
+          await this.reloadFromClient();
+          return true;
+        } catch (retryError) {
+          this.warn(`Could not reload remote Caplets tools: ${errorMessage(retryError)}\n`);
+          return false;
+        }
+      }
       this.warn(`Could not reload remote Caplets tools: ${errorMessage(error)}\n`);
       return false;
     }
@@ -135,7 +155,29 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
     clearInterval(this.pollTimer);
     this.unsubscribeRemote();
     this.listeners.clear();
-    await this.options.client.close();
+    await this.client.close();
+  }
+
+  private async reloadFromClient(): Promise<void> {
+    const tools = (await this.client.listTools()).map(remoteToolToNativeTool);
+    const changed = JSON.stringify(tools) !== JSON.stringify(this.tools);
+    this.tools = tools;
+    if (changed) {
+      this.emitToolsChanged();
+    }
+  }
+
+  private subscribeRemote(client: RemoteCapletsClient): () => void {
+    return client.onToolsChanged(() => {
+      void this.reload();
+    });
+  }
+
+  private async resetClient(): Promise<void> {
+    this.unsubscribeRemote();
+    await this.client.close().catch(() => undefined);
+    this.client = this.clientFactory();
+    this.unsubscribeRemote = this.subscribeRemote(this.client);
   }
 
   private emitToolsChanged(): void {
@@ -172,4 +214,27 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isSessionFailure(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return /session|transport|connection|connect|closed|invalid/u.test(message);
+}
+
+function isAuthFailure(error: unknown): boolean {
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown };
+  const status = typeof candidate?.status === "number" ? candidate.status : undefined;
+  const statusCode = typeof candidate?.statusCode === "number" ? candidate.statusCode : undefined;
+  const code = typeof candidate?.code === "number" ? candidate.code : undefined;
+  if (
+    status === 401 ||
+    status === 403 ||
+    statusCode === 401 ||
+    statusCode === 403 ||
+    code === 401 ||
+    code === 403
+  ) {
+    return true;
+  }
+  return /\b(401|403|unauthorized|forbidden)\b/iu.test(errorMessage(error));
 }

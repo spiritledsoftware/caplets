@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { CapletsError } from "../src/errors";
 import { RemoteNativeCapletsService, type RemoteCapletsClient } from "../src/native/remote";
 import { createNativeCapletsService } from "../src/native/service";
 
@@ -101,6 +102,80 @@ describe("RemoteNativeCapletsService", () => {
       expect.stringContaining("Could not reload remote Caplets tools"),
     );
     await service.close();
+  });
+
+  it("reconnects once for invalid remote sessions and keeps last known-good tools if retry fails", async () => {
+    const first = client([{ name: "alpha", description: "Alpha" }]);
+    const second = client([{ name: "beta", description: "Beta" }]);
+    const writeErr = vi.fn();
+    second.api.listTools = vi.fn(async () => {
+      throw new Error("still closed connection");
+    });
+    const factory = vi.fn(() => second.api);
+    const service = new RemoteNativeCapletsService({
+      client: first.api,
+      clientFactory: factory,
+      pollIntervalMs: 60_000,
+      writeErr,
+    });
+    await service.reload();
+    first.api.listTools = vi.fn(async () => {
+      throw new Error("invalid session");
+    });
+
+    await expect(service.reload()).resolves.toBe(false);
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(first.api.close).toHaveBeenCalledTimes(1);
+    expect(service.listTools()).toEqual([expect.objectContaining({ caplet: "alpha" })]);
+    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("still closed connection"));
+    await service.close();
+  });
+
+  it("reconnects once for invalid remote sessions and reloads from the new client", async () => {
+    const first = client([{ name: "alpha", description: "Alpha" }]);
+    const second = client([{ name: "beta", description: "Beta" }]);
+    const service = new RemoteNativeCapletsService({
+      client: first.api,
+      clientFactory: vi.fn(() => second.api),
+      pollIntervalMs: 60_000,
+    });
+    await service.reload();
+    first.api.listTools = vi.fn(async () => {
+      throw new Error("transport connection closed");
+    });
+
+    await expect(service.reload()).resolves.toBe(true);
+
+    expect(service.listTools()).toEqual([expect.objectContaining({ caplet: "beta" })]);
+    await service.close();
+  });
+
+  it("classifies remote auth failures with credential guidance", async () => {
+    const fixture = client();
+    fixture.api.callTool = vi.fn(async () => {
+      throw new Error("403 Forbidden");
+    });
+    const service = new RemoteNativeCapletsService({ client: fixture.api, pollIntervalMs: 60_000 });
+
+    await expect(service.execute("alpha", {})).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: expect.stringContaining("CAPLETS_REMOTE_USER"),
+    } satisfies Partial<CapletsError>);
+
+    await service.close();
+  });
+
+  it("polls the remote service as a fallback for tool changes", async () => {
+    vi.useFakeTimers();
+    const fixture = client([{ name: "alpha", description: "Alpha" }]);
+    const service = new RemoteNativeCapletsService({ client: fixture.api, pollIntervalMs: 1_000 });
+
+    vi.advanceTimersByTime(1_000);
+    await vi.waitFor(() => expect(fixture.api.listTools).toHaveBeenCalledTimes(1));
+
+    await service.close();
+    vi.useRealTimers();
   });
 
   it("cleans up subscriptions, polling, listeners, and client close idempotently", async () => {

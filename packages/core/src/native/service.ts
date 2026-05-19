@@ -53,6 +53,8 @@ export function createNativeCapletsService(
     const client = (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(resolved.remote);
     return new RemoteNativeCapletsService({
       client,
+      clientFactory: () =>
+        (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(resolved.remote),
       pollIntervalMs: resolved.remote.pollIntervalMs,
       ...(options.writeErr ? { writeErr: options.writeErr } : {}),
     });
