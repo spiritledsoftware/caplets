@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { keyText, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
@@ -22,23 +25,57 @@ export type CapletsPiOptions = {
   native?: PiNativeCapletsOptions;
 };
 
+type InternalCapletsPiOptions = CapletsPiOptions & {
+  loadSettings?: boolean;
+  settingsPath?: string;
+  readSettingsFile?: (path: string) => Promise<string>;
+  writeWarning?: (message: string) => void;
+};
+
 export function createCapletsPiExtension(
   options: CapletsPiOptions,
 ): (pi: PiExtensionApi) => void | Promise<void> {
   return (pi) => registerCapletsPiExtension(pi, options);
 }
 
-export default function capletsPiExtension(pi: PiExtensionApi): void | Promise<void> {
-  return registerCapletsPiExtension(pi, {});
+export async function loadPiSettingsArgs(
+  options: {
+    settingsPath?: string;
+    readSettingsFile?: (path: string) => Promise<string>;
+    writeWarning?: (message: string) => void;
+  } = {},
+): Promise<PiNativeCapletsOptions> {
+  const settingsPath = options.settingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
+  const readSettingsFile = options.readSettingsFile ?? readFileUtf8;
+  const writeWarning = options.writeWarning ?? ((message) => process.stderr.write(`${message}\n`));
+  try {
+    const content = await readSettingsFile(settingsPath);
+    return extractPiSettingsArgs(JSON.parse(content), writeWarning);
+  } catch (error) {
+    if (isFileNotFoundError(error)) {
+      return {};
+    }
+    writeWarning(`[caplets/pi] Ignoring Pi settings args: ${safeErrorMessage(error)}`);
+    return {};
+  }
 }
 
-function registerCapletsPiExtension(
+export default async function capletsPiExtension(pi: PiExtensionApi): Promise<void> {
+  return registerCapletsPiExtension(pi, { loadSettings: true });
+}
+
+async function registerCapletsPiExtension(
   pi: PiExtensionApi,
-  options: CapletsPiOptions,
-): void | Promise<void> {
+  options: InternalCapletsPiOptions,
+): Promise<void> {
   const ownsService = !options.service;
+  const explicitNativeOptions = options.native ?? options.args;
+  const settingsArgs =
+    ownsService && !explicitNativeOptions && options.loadSettings
+      ? await loadPiSettingsArgs(options)
+      : undefined;
   const service =
-    options.service ?? createNativeCapletsService(options.native ?? options.args ?? {});
+    options.service ?? createNativeCapletsService(explicitNativeOptions ?? settingsArgs ?? {});
   if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
@@ -101,9 +138,100 @@ function registerCapletsPiExtension(
     }
   });
   if (ownsService) {
-    return service.reload().then(() => startSync());
+    await service.reload();
+    startSync();
+    return;
   }
   startSync();
+}
+
+function extractPiSettingsArgs(
+  settings: unknown,
+  writeWarning: (message: string) => void,
+  path = "settings.packages",
+): PiNativeCapletsOptions {
+  const packages =
+    settings && typeof settings === "object"
+      ? (settings as Record<string, unknown>).packages
+      : undefined;
+  const entries = Array.isArray(packages)
+    ? packages.map((entry, index) => [String(index), entry] as const)
+    : packages && typeof packages === "object"
+      ? Object.entries(packages)
+      : [];
+  if (entries.length === 0) {
+    return {};
+  }
+  let matchedArgs: PiNativeCapletsOptions | undefined;
+  for (const [key, entry] of entries) {
+    if (typeof entry === "string") {
+      continue;
+    }
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const source = stringProperty(entry, "source") ?? key;
+    if (!isCapletsPiPackageSource(source)) {
+      continue;
+    }
+    const argsValue = objectProperty(entry, "native") ?? objectProperty(entry, "args") ?? {};
+    const parsed = parsePiNativeOptions(argsValue);
+    if (!parsed) {
+      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path} entry shape`);
+      return {};
+    }
+    matchedArgs = parsed;
+  }
+  return matchedArgs ?? {};
+}
+
+function parsePiNativeOptions(value: unknown): PiNativeCapletsOptions | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: PiNativeCapletsOptions = {};
+  const mode = (value as Record<string, unknown>).mode;
+  if (mode !== undefined) {
+    if (mode !== "auto" && mode !== "local" && mode !== "remote") return undefined;
+    result.mode = mode;
+  }
+  const remote = objectProperty(value, "remote");
+  if (remote) {
+    const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
+    for (const key of ["url", "user", "password"] as const) {
+      const field = remote[key];
+      if (field !== undefined) {
+        if (typeof field !== "string") return undefined;
+        parsedRemote[key] = field;
+      }
+    }
+    const pollIntervalMs = remote.pollIntervalMs;
+    if (pollIntervalMs !== undefined) {
+      if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
+      parsedRemote.pollIntervalMs = pollIntervalMs;
+    }
+    result.remote = parsedRemote;
+  }
+  return result;
+}
+
+function isCapletsPiPackageSource(source: string): boolean {
+  return source.includes("@caplets/pi") || source.includes("npm:@caplets/pi");
+}
+
+async function readFileUtf8(path: string): Promise<string> {
+  return readFile(path, "utf8");
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/(password|token|secret)(["'\s:=]+)([^\s,"'}]+)/giu, "$1$2[redacted]");
 }
 
 function piToolSignature(caplet: NativeCapletTool): string {

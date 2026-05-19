@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import type {
@@ -13,8 +13,12 @@ const nativeMocks = vi.hoisted(() => ({
   registerNativeCapletsProcessCleanup: vi.fn(),
 }));
 
-vi.mock("@caplets/core/native", () => nativeMocks);
+const fsMocks = vi.hoisted(() => ({
+  readFile: vi.fn(),
+}));
 
+vi.mock("@caplets/core/native", () => nativeMocks);
+vi.mock("node:fs/promises", () => fsMocks);
 type RenderTheme = {
   bold(text: string): string;
   fg(_key: string, text: string): string;
@@ -65,6 +69,9 @@ type MockService = NativeCapletsService & {
 };
 
 describe("@caplets/pi", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
   it("uses the core generated schema as Pi tool parameters", () => {
     const service = mockService([
       {
@@ -551,11 +558,12 @@ describe("@caplets/pi", () => {
     expect(api.setActiveTools).not.toHaveBeenCalled();
   });
 
-  it("registers process cleanup for owned services", () => {
+  it("registers process cleanup for owned services", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
 
-    capletsPiExtension({ registerTool: vi.fn() });
+    await capletsPiExtension({ registerTool: vi.fn() });
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({});
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
@@ -849,12 +857,91 @@ describe("@caplets/pi", () => {
     expect(service.close).not.toHaveBeenCalled();
   });
 
-  it("closes owned services on Pi session shutdown", () => {
+  it("default export loads Pi settings args for the native service", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: {
+          first: "npm:@caplets/pi",
+          caplets: {
+            source: "npm:@caplets/pi",
+            args: {
+              mode: "remote",
+              remote: {
+                url: "https://caplets.example.com",
+                user: "ian",
+                password: "secret",
+                pollIntervalMs: 250,
+              },
+            },
+          },
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(fsMocks.readFile).toHaveBeenCalledWith(
+      expect.stringContaining(".pi/agent/settings.json"),
+      "utf8",
+    );
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "remote",
+      remote: {
+        url: "https://caplets.example.com",
+        user: "ian",
+        password: "secret",
+        pollIntervalMs: 250,
+      },
+    });
+    expect(service.reload).toHaveBeenCalledOnce();
+  });
+
+  it("default export falls back to empty args when Pi settings are missing", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
+  });
+
+  it("warns and falls back to empty args when Pi settings are malformed", async () => {
+    const service = mockService([]);
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce("{ not json");
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("Ignoring Pi settings args"));
+    write.mockRestore();
+  });
+
+  it("programmatic args override Pi settings without reading the settings file", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    const { api } = mockPiApi();
+
+    await createCapletsPiExtension({ args: { mode: "local" } })(api as unknown as PiExtensionApi);
+
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({ mode: "local" });
+  });
+
+  it("closes owned services on Pi session shutdown", async () => {
     const service = mockService([]);
     const { api } = mockPiApi();
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
 
-    capletsPiExtension(api as unknown as PiExtensionApi);
+    await capletsPiExtension(api as unknown as PiExtensionApi);
     const shutdown = api.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1];
     shutdown?.();
 

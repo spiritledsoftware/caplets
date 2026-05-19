@@ -45,16 +45,28 @@ export CAPLETS_REMOTE_USER="caplets"
 export CAPLETS_REMOTE_PASSWORD # set in your shell or secret manager
 ```
 
-Current Pi extension loading calls extension factories with the Pi API only; it does not pass
-arbitrary package args to this extension. Configure remote package loading with environment
-variables before starting Pi. If you manage extensions in Pi settings, use Pi's documented
-`packages` array/object form only to install/enable the package, for example:
+Pi currently calls extension factories with the Pi API only, so this extension reads its package
+args from `~/.pi/agent/settings.json` when no programmatic options are supplied. Use Pi's
+documented `packages` form, for example:
 
 ```json
 {
-  "packages": ["@caplets/pi"]
+  "packages": {
+    "caplets": {
+      "source": "npm:@caplets/pi",
+      "args": {
+        "mode": "remote",
+        "remote": {
+          "url": "https://caplets.example.com/mcp",
+          "user": "caplets"
+        }
+      }
+    }
+  }
 }
 ```
+
+String entries such as `"npm:@caplets/pi"` enable the package without Caplets-specific args.
 
 Programmatic or inline embedding can pass explicit native options with the exported factory
 helper instead of relying on Pi package-loader args:
