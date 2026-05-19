@@ -148,12 +148,18 @@ async function registerCapletsPiExtension(
 function extractPiSettingsArgs(
   settings: unknown,
   writeWarning: (message: string) => void,
-  path = "settings.packages",
+  path = "settings",
 ): PiNativeCapletsOptions {
-  const packages =
-    settings && typeof settings === "object"
-      ? (settings as Record<string, unknown>).packages
-      : undefined;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return {};
+  }
+  const settingsObject = settings as Record<string, unknown>;
+  const topLevelArgs = topLevelCapletsOptions(settingsObject, writeWarning, path);
+  if (topLevelArgs !== undefined) {
+    return topLevelArgs;
+  }
+
+  const packages = settingsObject.packages;
   const entries = Array.isArray(packages)
     ? packages.map((entry, index) => [String(index), entry] as const)
     : packages && typeof packages === "object"
@@ -177,12 +183,33 @@ function extractPiSettingsArgs(
     const argsValue = objectProperty(entry, "native") ?? objectProperty(entry, "args") ?? {};
     const parsed = parsePiNativeOptions(argsValue);
     if (!parsed) {
-      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path} entry shape`);
+      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path}.packages entry shape`);
       return {};
     }
     matchedArgs = parsed;
   }
   return matchedArgs ?? {};
+}
+
+function topLevelCapletsOptions(
+  settings: Record<string, unknown>,
+  writeWarning: (message: string) => void,
+  path: string,
+): PiNativeCapletsOptions | undefined {
+  for (const key of ["caplets", "@caplets/pi", "capletsPi", "caplets-pi"]) {
+    const value = objectProperty(settings, key);
+    if (!value) {
+      continue;
+    }
+    const argsValue = objectProperty(value, "native") ?? objectProperty(value, "args") ?? value;
+    const parsed = parsePiNativeOptions(argsValue);
+    if (!parsed) {
+      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path}.${key} shape`);
+      return {};
+    }
+    return parsed;
+  }
+  return undefined;
 }
 
 function parsePiNativeOptions(value: unknown): PiNativeCapletsOptions | undefined {

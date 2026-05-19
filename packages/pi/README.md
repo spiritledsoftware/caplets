@@ -45,29 +45,26 @@ export CAPLETS_REMOTE_USER="caplets"
 export CAPLETS_REMOTE_PASSWORD # set in your shell or secret manager
 ```
 
-Pi currently calls extension factories with the Pi API only, so this extension reads its package
-args from `~/.pi/agent/settings.json` when no programmatic options are supplied. Use Pi's
-documented `packages` form, for example:
+Pi currently calls extension factories with the Pi API only, so this extension reads its remote
+settings from the top-level `caplets` key in `~/.pi/agent/settings.json` when no programmatic
+options are supplied:
 
 ```json
 {
-  "packages": {
-    "caplets": {
-      "source": "npm:@caplets/pi",
-      "args": {
-        "mode": "remote",
-        "remote": {
-          "url": "https://caplets.example.com/mcp",
-          "user": "caplets"
-        }
-      }
+  "packages": ["npm:@caplets/pi"],
+  "caplets": {
+    "mode": "remote",
+    "remote": {
+      "url": "https://caplets.example.com/mcp",
+      "user": "caplets"
     }
   }
 }
 ```
 
-String entries such as `"npm:@caplets/pi"` enable the package without Caplets-specific args.
-
+This matches Pi's common top-level package settings pattern. For compatibility, object package
+entries with `args` or `native` are also supported, but top-level `caplets` settings take
+precedence when both are present.
 Programmatic or inline embedding can pass explicit native options with the exported factory
 helper instead of relying on Pi package-loader args:
 

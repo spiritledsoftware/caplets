@@ -857,6 +857,65 @@ describe("@caplets/pi", () => {
     expect(service.close).not.toHaveBeenCalled();
   });
 
+  it("default export loads top-level Pi settings for the native service", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: {
+            url: "https://caplets.example.com/mcp",
+            user: "ian",
+            pollIntervalMs: 1_000,
+          },
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "remote",
+      remote: {
+        url: "https://caplets.example.com/mcp",
+        user: "ian",
+        pollIntervalMs: 1_000,
+      },
+    });
+  });
+
+  it("top-level Pi settings override package args", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: [
+          {
+            source: "npm:@caplets/pi",
+            args: { mode: "local" },
+          },
+        ],
+        caplets: {
+          native: {
+            mode: "remote",
+            remote: { url: "https://top-level.example.com/mcp" },
+          },
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "remote",
+      remote: { url: "https://top-level.example.com/mcp" },
+    });
+  });
+
   it("default export loads Pi settings args for the native service", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
