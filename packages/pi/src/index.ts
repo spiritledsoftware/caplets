@@ -12,17 +12,33 @@ import {
   type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
+type PiExtensionContext = {
+  ui: {
+    setStatus(key: string, text: string | undefined): void;
+  };
+};
+
 export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
-  Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools" | "on">>;
+  Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">> & {
+    on?: (
+      event: "session_start" | "session_shutdown",
+      handler: (event?: unknown, ctx?: PiExtensionContext) => void,
+    ) => void;
+  };
 
 type PiToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
 
 type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
 
+type PiCapletsSettings = PiNativeCapletsOptions & {
+  statusWidget?: boolean;
+};
+
 export type CapletsPiOptions = {
   service?: NativeCapletsService;
   args?: PiNativeCapletsOptions;
   native?: PiNativeCapletsOptions;
+  statusWidget?: boolean;
 };
 
 type InternalCapletsPiOptions = CapletsPiOptions & {
@@ -44,7 +60,7 @@ export async function loadPiSettingsArgs(
     readSettingsFile?: (path: string) => Promise<string>;
     writeWarning?: (message: string) => void;
   } = {},
-): Promise<PiNativeCapletsOptions> {
+): Promise<PiCapletsSettings> {
   const settingsPath = options.settingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
   const readSettingsFile = options.readSettingsFile ?? readFileUtf8;
   const writeWarning = options.writeWarning ?? ((message) => process.stderr.write(`${message}\n`));
@@ -74,8 +90,13 @@ async function registerCapletsPiExtension(
     ownsService && !explicitNativeOptions && options.loadSettings
       ? await loadPiSettingsArgs(options)
       : undefined;
+  const serviceOptions = explicitNativeOptions ?? settingsArgs ?? {};
   const service =
-    options.service ?? createNativeCapletsService(explicitNativeOptions ?? settingsArgs ?? {});
+    options.service ?? createNativeCapletsService(nativeServiceOptions(serviceOptions));
+  const showStatusWidget = shouldShowStatusWidget(
+    serviceOptions,
+    options.statusWidget ?? settingsArgs?.statusWidget,
+  );
   if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
@@ -84,6 +105,18 @@ async function registerCapletsPiExtension(
   let currentCapletTools = new Set<string>();
   let knownCapletTools = new Set<string>();
   let canSyncActiveTools = false;
+  let statusCtx: PiExtensionContext | undefined;
+  let remoteStatus: "connected" | "offline" = "offline";
+
+  const syncStatusWidget = () => {
+    if (!showStatusWidget || !statusCtx) {
+      return;
+    }
+    statusCtx.ui.setStatus(
+      "caplets",
+      remoteStatus === "connected" ? "Caplets: remote connected" : "Caplets: remote offline",
+    );
+  };
 
   const syncToolRegistrations = (caplets = service.listTools()) => {
     const nextCapletTools = new Set(caplets.map((caplet) => caplet.toolName));
@@ -121,10 +154,14 @@ async function registerCapletsPiExtension(
   const startSync = () => {
     currentCapletTools = syncToolRegistrations();
     unsubscribe = service.onToolsChanged((caplets) => {
+      remoteStatus = "connected";
+      syncStatusWidget();
       syncActiveTools(syncToolRegistrations(caplets));
     });
   };
-  pi.on?.("session_start", () => {
+  pi.on?.("session_start", (_event, ctx) => {
+    statusCtx = ctx;
+    syncStatusWidget();
     canSyncActiveTools = true;
     knownCapletTools = new Set(
       pi.getActiveTools?.().filter((name) => name.startsWith("caplets_")) ?? [],
@@ -132,13 +169,15 @@ async function registerCapletsPiExtension(
     syncActiveTools();
   });
   pi.on?.("session_shutdown", () => {
+    statusCtx?.ui.setStatus("caplets", undefined);
+    statusCtx = undefined;
     unsubscribe?.();
     if (ownsService) {
       void service.close();
     }
   });
   if (ownsService) {
-    await service.reload();
+    remoteStatus = (await service.reload()) ? "connected" : "offline";
     startSync();
     return;
   }
@@ -149,7 +188,7 @@ function extractPiSettingsArgs(
   settings: unknown,
   writeWarning: (message: string) => void,
   path = "settings",
-): PiNativeCapletsOptions {
+): PiCapletsSettings {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
     return {};
   }
@@ -161,7 +200,7 @@ function topLevelCapletsOptions(
   settings: Record<string, unknown>,
   writeWarning: (message: string) => void,
   path: string,
-): PiNativeCapletsOptions | undefined {
+): PiCapletsSettings | undefined {
   for (const key of ["caplets", "@caplets/pi", "capletsPi", "caplets-pi"]) {
     const value = objectProperty(settings, key);
     if (!value) {
@@ -178,15 +217,20 @@ function topLevelCapletsOptions(
   return undefined;
 }
 
-function parsePiNativeOptions(value: unknown): PiNativeCapletsOptions | undefined {
+function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
-  const result: PiNativeCapletsOptions = {};
+  const result: PiCapletsSettings = {};
   const mode = (value as Record<string, unknown>).mode;
   if (mode !== undefined) {
     if (mode !== "auto" && mode !== "local" && mode !== "remote") return undefined;
     result.mode = mode;
+  }
+  const statusWidget = (value as Record<string, unknown>).statusWidget;
+  if (statusWidget !== undefined) {
+    if (typeof statusWidget !== "boolean") return undefined;
+    result.statusWidget = statusWidget;
   }
   const remote = objectProperty(value, "remote");
   if (remote) {
@@ -206,6 +250,27 @@ function parsePiNativeOptions(value: unknown): PiNativeCapletsOptions | undefine
     result.remote = parsedRemote;
   }
   return result;
+}
+
+function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOptions {
+  return {
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.remote ? { remote: options.remote } : {}),
+  };
+}
+
+function shouldShowStatusWidget(
+  options: PiNativeCapletsOptions,
+  statusWidget: boolean | undefined,
+): boolean {
+  if (statusWidget === false) {
+    return false;
+  }
+  return (
+    options.mode === "remote" ||
+    !!options.remote?.url ||
+    process.env.CAPLETS_REMOTE_URL !== undefined
+  );
 }
 
 async function readFileUtf8(path: string): Promise<string> {

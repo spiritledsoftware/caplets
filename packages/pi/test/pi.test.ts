@@ -55,7 +55,15 @@ type MockPiApi = {
   registerTool: Mock<(definition: unknown) => void>;
   getActiveTools: Mock<() => string[]>;
   setActiveTools: Mock<(names: string[]) => void>;
-  on: Mock<(event: "session_start" | "session_shutdown", handler: () => void) => void>;
+  on: Mock<
+    (
+      event: "session_start" | "session_shutdown",
+      handler: (
+        event?: unknown,
+        ctx?: { ui: { setStatus: Mock<(key: string, text: string | undefined) => void> } },
+      ) => void,
+    ) => void
+  >;
 };
 
 type MockService = NativeCapletsService & {
@@ -932,6 +940,86 @@ describe("@caplets/pi", () => {
     write.mockRestore();
   });
 
+  it("does not show a status widget for local settings", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: { mode: "local" },
+      }),
+    );
+    const { api } = mockPiApi();
+    const setStatus = vi.fn();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+    triggerSessionStart(api, { ui: { setStatus } });
+
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows a remote status widget by default for remote settings", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: { url: "https://caplets.example.com/mcp" },
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+    const setStatus = vi.fn();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+    triggerSessionStart(api, { ui: { setStatus } });
+
+    expect(setStatus).toHaveBeenCalledWith("caplets", "Caplets: remote connected");
+  });
+
+  it("can disable the remote status widget from settings", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: { url: "https://caplets.example.com/mcp" },
+          statusWidget: false,
+        },
+      }),
+    );
+    const { api } = mockPiApi();
+    const setStatus = vi.fn();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+    triggerSessionStart(api, { ui: { setStatus } });
+
+    expect(setStatus).not.toHaveBeenCalled();
+  });
+
+  it("shows remote offline when initial reload fails", async () => {
+    const service = mockService([]);
+    service.reload.mockResolvedValueOnce(false);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: { mode: "remote", remote: { url: "https://caplets.example.com/mcp" } },
+      }),
+    );
+    const { api } = mockPiApi();
+    const setStatus = vi.fn();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+    triggerSessionStart(api, { ui: { setStatus } });
+
+    expect(setStatus).toHaveBeenCalledWith("caplets", "Caplets: remote offline");
+  });
+
   it("programmatic args override Pi settings without reading the settings file", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
@@ -966,9 +1054,12 @@ function renderText(component: RenderComponent | undefined): string {
   return component?.render(120).join("\n") ?? "";
 }
 
-function triggerSessionStart(api: MockPiApi): void {
+function triggerSessionStart(
+  api: MockPiApi,
+  ctx?: { ui: { setStatus: Mock<(key: string, text: string | undefined) => void> } },
+): void {
   const sessionStart = api.on.mock.calls.find(([event]) => event === "session_start")?.[1];
-  sessionStart?.();
+  sessionStart?.(undefined, ctx);
 }
 
 function mockPiApi(activeTools: string[] = []): { api: MockPiApi; registered: RegisteredTool[] } {
