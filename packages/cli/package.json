@@ -1,6 +1,6 @@
 {
   "name": "caplets",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Progressive disclosure gateway CLI for MCP servers and native Caplets adapters.",
   "keywords": [
     "caplets",

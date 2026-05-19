@@ -1,5 +1,17 @@
 # @caplets/core
 
+## 0.15.0
+
+### Minor Changes
+
+- 3765837: Improve Caplets agent-facing result metadata and rendering.
+
+  Discovery operations now include Caplet metadata alongside `structuredContent.result`, direct `call_tool` results preserve the downstream shape while adding `_meta.caplets`, compact tool metadata includes stable schema hashes, and browser-style artifact links are surfaced as structured metadata. The Pi integration now renders concise Caplet-aware result summaries with artifact lines and truncated previews.
+
+### Patch Changes
+
+- 3765837: Build and publish TypeScript declaration files for core package consumers.
+
 ## 0.14.0
 
 ### Minor Changes
