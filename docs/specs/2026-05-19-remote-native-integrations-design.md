@@ -34,12 +34,14 @@ Universal environment variables:
 
 Resolution rules:
 
-1. Integration-specific config, when available, overrides environment variables.
-2. `CAPLETS_NATIVE_MODE=local` forces current local behavior and ignores remote URL variables.
-3. `CAPLETS_NATIVE_MODE=remote` requires a remote URL.
-4. `CAPLETS_NATIVE_MODE=auto` or unset uses remote mode when a remote URL is configured, otherwise local mode.
-5. Remote URLs must be `https:` except loopback `http://localhost`, `http://127.0.0.1`, and `http://[::1]` for development.
-6. Basic Auth is enabled only when a password is present. `user` without `password` fails fast with a clear error.
+1. Integration-specific config overrides environment variables.
+2. OpenCode integration-specific config is read from the plugin factory's second argument and translated into `NativeCapletsServiceOptions`.
+3. Pi integration-specific config is read from package/extension args passed through Pi settings. The implementation should consume args passed by Pi rather than parsing settings files directly; examples use Pi's current documented user settings path (`~/.pi/agent/settings.json`) and should be adjusted if the active runtime path is `~/.pi/agents/settings.json`.
+4. `CAPLETS_NATIVE_MODE=local` forces current local behavior and ignores remote URL variables.
+5. `CAPLETS_NATIVE_MODE=remote` requires a remote URL.
+6. `CAPLETS_NATIVE_MODE=auto` or unset uses remote mode when a remote URL is configured, otherwise local mode.
+7. Remote URLs must be `https:` except loopback `http://localhost`, `http://127.0.0.1`, and `http://[::1]` for development.
+8. Basic Auth is enabled only when a password is present. `user` without `password` fails fast with a clear error.
 
 ## Core architecture
 
@@ -114,7 +116,26 @@ No logs may include Basic Auth credentials or full `Authorization` headers.
 
 ### OpenCode
 
-`@caplets/opencode` calls `createNativeCapletsService()` as it does today. Remote mode is selected by environment variables or future plugin config. README examples should show:
+`@caplets/opencode` should accept remote configuration through the plugin factory's second argument while preserving environment-variable fallback:
+
+```ts
+type CapletsOpenCodeConfig = {
+  mode?: "auto" | "local" | "remote";
+  remote?: {
+    url?: string;
+    user?: string;
+    password?: string;
+    pollIntervalMs?: number;
+  };
+};
+
+const plugin: Plugin = async (_ctx, config?: CapletsOpenCodeConfig) => {
+  const service = createNativeCapletsService(nativeOptionsFromOpenCodeConfig(config));
+  // existing hook registration continues
+};
+```
+
+OpenCode config values override environment variables. README examples should show both environment-variable configuration and second-argument/plugin configuration in whichever JSON/TypeScript shape OpenCode currently documents for plugin config. The second-argument config is the preferred non-secret location for `url`, `mode`, and `user`; `password` should still usually come from `CAPLETS_REMOTE_PASSWORD` unless OpenCode provides a secure secret mechanism.
 
 ```sh
 CAPLETS_REMOTE_URL=http://127.0.0.1:5387/mcp opencode
@@ -126,7 +147,28 @@ opencode
 
 ### Pi
 
-`@caplets/pi` continues to accept an injected `service` for tests and advanced users. It should also accept optional native service options so Pi-specific config can pass a remote URL without environment variables when Pi exposes an extension config surface.
+`@caplets/pi` continues to accept an injected `service` for tests and advanced users. It should also accept native service options from Pi package/extension args loaded from Pi settings, so users can configure remote mode in Pi user settings without relying only on environment variables.
+
+Example target shape:
+
+```json
+{
+  "packages": [
+    {
+      "source": "npm:@caplets/pi",
+      "args": {
+        "mode": "remote",
+        "remote": {
+          "url": "https://caplets.example.com/mcp",
+          "user": "caplets"
+        }
+      }
+    }
+  ]
+}
+```
+
+Pi args override environment variables. As with OpenCode, `password` should normally come from `CAPLETS_REMOTE_PASSWORD` unless Pi adds a secure secret surface. The extension API should keep the current test seam by accepting `{ service }`, and it should merge that with `{ native?: NativeCapletsServiceOptions }` or `{ args?: NativeCapletsServiceOptions }` without breaking existing callers.
 
 ### Codex and Claude Code
 
@@ -183,8 +225,8 @@ Core tests:
 
 Integration tests:
 
-- OpenCode passes native service options and preserves native tool registration behavior.
-- Pi passes native service options and keeps existing dynamic registration behavior.
+- OpenCode passes second-argument plugin config into native service options, with config overriding env vars, and preserves native tool registration behavior.
+- Pi passes settings/package args into native service options, with args overriding env vars, and keeps existing dynamic registration behavior.
 - Codex/Claude plugin tests verify bundled local config remains valid and docs include remote config examples.
 
 Verification:
@@ -196,6 +238,6 @@ Verification:
 
 ## Implementation constraints
 
-- Environment variables are required in v1. Integration-specific host config is additive and should be implemented only where the current host APIs expose a stable config surface.
+- Environment variables are required in v1, but OpenCode second-argument config and Pi settings/package args are also required integration config surfaces.
 - Codex/Claude examples should avoid promising interpolation behavior that their current MCP config schemas do not support. Use agent-specific documented override mechanisms when available; otherwise document manual config edits.
 - Poll interval defaults to 30 seconds and is configurable through core options. Add an environment override only if implementation finds a clear cross-agent need.
