@@ -1,25 +1,122 @@
-import { keyText, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import {
+  keyText,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import {
   createNativeCapletsService,
   registerNativeCapletsProcessCleanup,
   type NativeCapletTool,
   type NativeCapletsService,
+  type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
-export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
-  Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools" | "on">>;
+type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
 
-type PiToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
+export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
+  Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">> & {
+    on?: (
+      event: "session_start" | "session_shutdown",
+      handler: (event?: unknown, ctx?: ExtensionContext) => void,
+    ) => void;
+  };
+
+type PiCapletsSettings = PiNativeCapletsOptions & {
+  statusWidget?: boolean;
+  nerdFontIcons?: boolean;
+};
 
 export type CapletsPiOptions = {
   service?: NativeCapletsService;
+  args?: PiNativeCapletsOptions;
+  native?: PiNativeCapletsOptions;
+  statusWidget?: boolean;
 };
 
-export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions = {}) {
+type InternalCapletsPiOptions = CapletsPiOptions & {
+  loadSettings?: boolean;
+  settingsPath?: string;
+  readSettingsFile?: (path: string) => Promise<string>;
+  writeWarning?: (message: string) => void;
+};
+
+export function createCapletsPiExtension(
+  options: CapletsPiOptions,
+): (pi: PiExtensionApi) => void | Promise<void> {
+  return (pi) => registerCapletsPiExtension(pi, options);
+}
+
+export async function loadPiSettingsArgs(
+  options: {
+    settingsPath?: string;
+    projectSettingsPath?: string;
+    readSettingsFile?: (path: string) => Promise<string>;
+    writeWarning?: (message: string) => void;
+  } = {},
+): Promise<PiCapletsSettings> {
+  const settingsPath = options.settingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
+  const projectSettingsPath =
+    options.projectSettingsPath ?? join(process.cwd(), ".pi", "settings.json");
+  const readSettingsFile = options.readSettingsFile ?? readFileUtf8;
+  const writeWarning = options.writeWarning ?? ((message) => process.stderr.write(`${message}\n`));
+  const userSettings = await readPiSettingsFile(settingsPath, readSettingsFile, writeWarning);
+  const projectSettings = await readPiSettingsFile(
+    projectSettingsPath,
+    readSettingsFile,
+    writeWarning,
+  );
+  return {
+    ...extractPiSettingsArgs(userSettings, writeWarning),
+    ...extractPiSettingsArgs(projectSettings, writeWarning),
+  };
+}
+
+async function readPiSettingsFile(
+  settingsPath: string,
+  readSettingsFile: (path: string) => Promise<string>,
+  writeWarning: (message: string) => void,
+): Promise<unknown> {
+  try {
+    return JSON.parse(await readSettingsFile(settingsPath));
+  } catch (error) {
+    if (isFileNotFoundError(error)) {
+      return {};
+    }
+    writeWarning(
+      `[caplets/pi] Ignoring Pi settings args from ${settingsPath}: ${safeErrorMessage(error)}`,
+    );
+    return {};
+  }
+}
+
+export default async function capletsPiExtension(pi: PiExtensionApi): Promise<void> {
+  return registerCapletsPiExtension(pi, { loadSettings: true });
+}
+
+async function registerCapletsPiExtension(
+  pi: PiExtensionApi,
+  options: InternalCapletsPiOptions,
+): Promise<void> {
   const ownsService = !options.service;
-  const service = options.service ?? createNativeCapletsService();
+  const explicitNativeOptions = options.native ?? options.args;
+  const settingsArgs =
+    ownsService && !explicitNativeOptions && options.loadSettings
+      ? await loadPiSettingsArgs(options)
+      : undefined;
+  const serviceOptions = explicitNativeOptions ?? settingsArgs ?? {};
+  const service =
+    options.service ?? createNativeCapletsService(nativeServiceOptions(serviceOptions));
+  const showStatusWidget = shouldShowStatusWidget(
+    serviceOptions,
+    options.statusWidget ?? settingsArgs?.statusWidget,
+  );
+  const useNerdFontIcons = settingsArgs?.nerdFontIcons !== false;
   if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
@@ -28,6 +125,27 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
   let currentCapletTools = new Set<string>();
   let knownCapletTools = new Set<string>();
   let canSyncActiveTools = false;
+  let statusCtx: ExtensionContext | undefined;
+  let remoteStatus: "connected" | "offline" = "offline";
+
+  const syncStatusWidget = () => {
+    if (!showStatusWidget || !statusCtx) {
+      return;
+    }
+    statusCtx.ui.setWidget(
+      "caplets",
+      (_tui, theme) =>
+        new Text(
+          theme.fg(
+            remoteStatus === "connected" ? "success" : "error",
+            capletsRemoteStatusText(remoteStatus, useNerdFontIcons),
+          ),
+          0,
+          0,
+        ),
+      { placement: "belowEditor" },
+    );
+  };
 
   const syncToolRegistrations = (caplets = service.listTools()) => {
     const nextCapletTools = new Set(caplets.map((caplet) => caplet.toolName));
@@ -61,11 +179,25 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
     knownCapletTools = nextCapletTools;
   };
 
-  currentCapletTools = syncToolRegistrations();
-  const unsubscribe = service.onToolsChanged((caplets) => {
-    syncActiveTools(syncToolRegistrations(caplets));
-  });
-  pi.on?.("session_start", () => {
+  let unsubscribe: (() => void) | undefined;
+  let isShutdown = false;
+  const startSync = () => {
+    if (isShutdown) {
+      return;
+    }
+    currentCapletTools = syncToolRegistrations();
+    unsubscribe = service.onToolsChanged((caplets) => {
+      if (isShutdown) {
+        return;
+      }
+      remoteStatus = "connected";
+      syncStatusWidget();
+      syncActiveTools(syncToolRegistrations(caplets));
+    });
+  };
+  pi.on?.("session_start", (_event, ctx) => {
+    statusCtx = ctx;
+    syncStatusWidget();
     canSyncActiveTools = true;
     knownCapletTools = new Set(
       pi.getActiveTools?.().filter((name) => name.startsWith("caplets_")) ?? [],
@@ -73,11 +205,138 @@ export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsP
     syncActiveTools();
   });
   pi.on?.("session_shutdown", () => {
-    unsubscribe();
+    isShutdown = true;
+    statusCtx?.ui.setWidget("caplets", undefined);
+    statusCtx = undefined;
+    unsubscribe?.();
     if (ownsService) {
       void service.close();
     }
   });
+  if (ownsService) {
+    remoteStatus = (await service.reload()) ? "connected" : "offline";
+    if (!isShutdown) {
+      startSync();
+    }
+    return;
+  }
+  startSync();
+}
+
+function extractPiSettingsArgs(
+  settings: unknown,
+  writeWarning: (message: string) => void,
+  path = "settings",
+): PiCapletsSettings {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return {};
+  }
+  const settingsObject = settings as Record<string, unknown>;
+  return topLevelCapletsOptions(settingsObject, writeWarning, path) ?? {};
+}
+
+function topLevelCapletsOptions(
+  settings: Record<string, unknown>,
+  writeWarning: (message: string) => void,
+  path: string,
+): PiCapletsSettings | undefined {
+  for (const key of ["caplets", "@caplets/pi", "capletsPi", "caplets-pi"]) {
+    const value = objectProperty(settings, key);
+    if (!value) {
+      continue;
+    }
+    const argsValue = objectProperty(value, "native") ?? objectProperty(value, "args") ?? value;
+    const parsed = parsePiNativeOptions(argsValue);
+    if (!parsed) {
+      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path}.${key} shape`);
+      return {};
+    }
+    return parsed;
+  }
+  return undefined;
+}
+
+function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: PiCapletsSettings = {};
+  const mode = (value as Record<string, unknown>).mode;
+  if (mode !== undefined) {
+    if (mode !== "auto" && mode !== "local" && mode !== "remote") return undefined;
+    result.mode = mode;
+  }
+  const statusWidget = (value as Record<string, unknown>).statusWidget;
+  if (statusWidget !== undefined) {
+    if (typeof statusWidget !== "boolean") return undefined;
+    result.statusWidget = statusWidget;
+  }
+  const nerdFontIcons = (value as Record<string, unknown>).nerdFontIcons;
+  if (nerdFontIcons !== undefined) {
+    if (typeof nerdFontIcons !== "boolean") return undefined;
+    result.nerdFontIcons = nerdFontIcons;
+  }
+  const remote = objectProperty(value, "remote");
+  if (remote) {
+    const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
+    for (const key of ["url", "user", "password"] as const) {
+      const field = remote[key];
+      if (field !== undefined) {
+        if (typeof field !== "string") return undefined;
+        parsedRemote[key] = field;
+      }
+    }
+    const pollIntervalMs = remote.pollIntervalMs;
+    if (pollIntervalMs !== undefined) {
+      if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
+      parsedRemote.pollIntervalMs = pollIntervalMs;
+    }
+    result.remote = parsedRemote;
+  }
+  return result;
+}
+
+function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {
+  if (nerdFontIcons) {
+    return status === "connected" ? "󰖟 caplets ✓" : "󰖟 caplets ×";
+  }
+  return status === "connected" ? "caplets ✓" : "caplets ×";
+}
+
+function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOptions {
+  return {
+    ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.remote ? { remote: options.remote } : {}),
+  };
+}
+
+function shouldShowStatusWidget(
+  options: PiNativeCapletsOptions,
+  statusWidget: boolean | undefined,
+): boolean {
+  if (statusWidget === false) {
+    return false;
+  }
+  return (
+    options.mode === "remote" ||
+    !!options.remote?.url ||
+    process.env.CAPLETS_REMOTE_URL !== undefined
+  );
+}
+
+async function readFileUtf8(path: string): Promise<string> {
+  return readFile(path, "utf8");
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/(password|token|secret)(["'\s:=]+)([^\s,"'}]+)/giu, "$1$2[redacted]");
 }
 
 function piToolSignature(caplet: NativeCapletTool): string {
@@ -89,14 +348,14 @@ function piToolSignature(caplet: NativeCapletTool): string {
   });
 }
 
-function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): PiToolDefinition {
+function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): ToolDefinition {
   return {
     name: caplet.toolName,
     label: caplet.title,
     description: caplet.description,
     promptSnippet: `Use ${caplet.toolName} for the ${caplet.title} Caplet capability domain.`,
     promptGuidelines: caplet.promptGuidance,
-    parameters: generatedToolInputJsonSchema() as PiToolDefinition["parameters"],
+    parameters: generatedToolInputJsonSchema() as ToolDefinition["parameters"],
     async execute(_toolCallId, params) {
       const result = await service.execute(caplet.caplet, params);
       const serialized = serializeResult(result);

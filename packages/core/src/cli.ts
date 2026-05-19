@@ -24,6 +24,7 @@ import {
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
+import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -41,11 +42,16 @@ type CliIO = {
   authDir?: string;
   version?: string;
   setExitCode?: (code: number) => void;
+  serve?: (options: ServeOptions) => Promise<void>;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   const program = createProgram(io);
   try {
+    if (args.length === 0) {
+      program.outputHelp();
+      return;
+    }
     await program.parseAsync(["node", "caplets", ...args]);
   } catch (error) {
     if (error instanceof CommanderError) {
@@ -82,6 +88,46 @@ export function createProgram(io: CliIO = {}): Command {
       writeErr,
       outputError: (value, write) => write(value),
     });
+
+  program
+    .command("serve")
+    .description("Serve configured Caplets as an MCP server.")
+    .option("--transport <transport>", "server transport: stdio or http")
+    .option("--host <host>", "HTTP bind host")
+    .option("--port <port>", "HTTP bind port")
+    .option("--path <path>", "HTTP MCP endpoint path")
+    .option("--user <user>", "HTTP Basic Auth username")
+    .option("--password <password>", "HTTP Basic Auth password")
+    .option(
+      "--allow-unauthenticated-http",
+      "allow unauthenticated HTTP serving on non-loopback hosts",
+    )
+    .action(
+      async (options: {
+        transport?: string;
+        host?: string;
+        port?: string;
+        path?: string;
+        user?: string;
+        password?: string;
+        allowUnauthenticatedHttp?: boolean;
+      }) => {
+        const resolved = resolveServeOptions(options);
+        const configPath = envConfigPath();
+        const runner =
+          io.serve ??
+          ((serveOptions: ServeOptions) =>
+            serveResolvedCaplets(
+              serveOptions,
+              {
+                ...(configPath ? { configPath } : {}),
+                ...(io.authDir ? { authDir: io.authDir } : {}),
+              },
+              writeErr,
+            ));
+        await runner(resolved);
+      },
+    );
 
   program
     .command("init")

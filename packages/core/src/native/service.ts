@@ -1,3 +1,10 @@
+import type { NativeCapletsServiceResolutionInput } from "./options";
+import { resolveNativeCapletsServiceOptions } from "./options";
+import {
+  createSdkRemoteCapletsClient,
+  RemoteNativeCapletsService,
+  type RemoteCapletsClient,
+} from "./remote";
 import { CapletsEngine } from "../engine";
 import {
   nativeCapletPromptGuidance,
@@ -5,13 +12,19 @@ import {
   nativeCapletToolName,
 } from "./tools";
 
-export type NativeCapletsServiceOptions = {
+export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
+  remoteClientFactory?: (
+    options: Extract<
+      ReturnType<typeof resolveNativeCapletsServiceOptions>,
+      { mode: "remote" }
+    >["remote"],
+  ) => RemoteCapletsClient;
 };
 
 export type NativeCapletTool = {
@@ -35,6 +48,17 @@ export type NativeCapletsService = {
 export function createNativeCapletsService(
   options: NativeCapletsServiceOptions = {},
 ): NativeCapletsService {
+  const resolved = resolveNativeCapletsServiceOptions(options);
+  if (resolved.mode === "remote") {
+    const client = (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(resolved.remote);
+    return new RemoteNativeCapletsService({
+      client,
+      clientFactory: () =>
+        (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(resolved.remote),
+      pollIntervalMs: resolved.remote.pollIntervalMs,
+      ...(options.writeErr ? { writeErr: options.writeErr } : {}),
+    });
+  }
   return new DefaultNativeCapletsService(options);
 }
 

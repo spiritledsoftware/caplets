@@ -32,3 +32,60 @@ removed or disabled Caplets are deactivated with Pi's active-tool APIs when avai
 running without `getActiveTools()` / `setActiveTools()`, stale tools may remain registered until
 Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' normal structured
 "server not found" error.
+
+## Remote Caplets service
+
+By default the extension uses the local Caplets native service. To connect Pi to a remote
+`caplets serve --transport http` service, prefer environment variables for connection details,
+especially the password:
+
+```sh
+export CAPLETS_REMOTE_URL="https://caplets.example.com/mcp"
+export CAPLETS_REMOTE_USER="caplets"
+export CAPLETS_REMOTE_PASSWORD="..." # or load from your shell/secret manager
+```
+
+Pi currently calls extension factories with the Pi API only, so this extension reads its remote
+settings from the top-level `caplets` key in `~/.pi/agent/settings.json` when no programmatic
+options are supplied:
+
+```json
+{
+  "packages": ["npm:@caplets/pi"],
+  "caplets": {
+    "mode": "remote",
+    "remote": {
+      "url": "https://caplets.example.com/mcp",
+      "user": "caplets"
+    },
+    "statusWidget": true,
+    "nerdFontIcons": true
+  }
+}
+```
+
+Only this top-level `caplets` settings form is read from Pi settings. Object package entries
+with `args` or `native` are ignored.
+
+When remote mode is active, Pi shows a compact footer status such as `󰖟 caplets ✓` or
+`󰖟 caplets ×`. Set `"statusWidget": false` under top-level `caplets` to hide it, or
+`"nerdFontIcons": false` to use plain `caplets ✓` / `caplets ×` text.
+Programmatic or inline embedding can pass explicit native options with the exported factory
+helper instead of relying on Pi package-loader args:
+
+```ts
+import { createCapletsPiExtension } from "@caplets/pi";
+
+export default createCapletsPiExtension({
+  args: {
+    mode: "remote",
+    remote: {
+      url: "https://caplets.example.com/mcp",
+      user: "caplets",
+    },
+  },
+});
+```
+
+Prefer environment variables for `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
+settings files or source code.

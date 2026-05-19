@@ -18,6 +18,8 @@ import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;
+  const originalServerUser = process.env.CAPLETS_SERVER_USER;
+  const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -25,6 +27,16 @@ describe("cli init", () => {
       delete process.env.CAPLETS_CONFIG;
     } else {
       process.env.CAPLETS_CONFIG = originalConfigPath;
+    }
+    if (originalServerUser === undefined) {
+      delete process.env.CAPLETS_SERVER_USER;
+    } else {
+      process.env.CAPLETS_SERVER_USER = originalServerUser;
+    }
+    if (originalServerPassword === undefined) {
+      delete process.env.CAPLETS_SERVER_PASSWORD;
+    } else {
+      process.env.CAPLETS_SERVER_PASSWORD = originalServerPassword;
     }
   });
 
@@ -113,6 +125,65 @@ describe("cli init", () => {
     await runCli(["--version"], { writeOut: (value) => out.push(value) });
 
     expect(out.join("")).toBe(`${packageJsonVersion}\n`);
+  });
+
+  it("prints top-level help for no arguments", async () => {
+    const out: string[] = [];
+
+    await runCli([], {
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("Usage: caplets");
+    expect(out.join("")).toContain("Commands:");
+    expect(out.join("")).toContain("serve");
+  });
+
+  it("resolves serve defaults to stdio", async () => {
+    const served: unknown[] = [];
+
+    delete process.env.CAPLETS_SERVER_USER;
+    delete process.env.CAPLETS_SERVER_PASSWORD;
+
+    await runCli(["serve"], {
+      writeOut: () => {},
+      serve: async (options) => {
+        served.push(options);
+      },
+    });
+
+    expect(served).toEqual([{ transport: "stdio" }]);
+  });
+
+  it("resolves HTTP serve defaults", async () => {
+    const served: unknown[] = [];
+
+    delete process.env.CAPLETS_SERVER_USER;
+    delete process.env.CAPLETS_SERVER_PASSWORD;
+
+    await runCli(["serve", "--transport", "http"], {
+      writeOut: () => {},
+      serve: async (options) => {
+        served.push(options);
+      },
+    });
+
+    expect(served).toEqual([
+      expect.objectContaining({
+        transport: "http",
+        host: "127.0.0.1",
+        port: 5387,
+        path: "/mcp",
+        auth: { enabled: false, user: "caplets" },
+      }),
+    ]);
+  });
+
+  it("rejects HTTP-only serve options with stdio", async () => {
+    await expect(
+      runCli(["serve", "--transport", "stdio", "--port", "5387"], { writeErr: () => {} }),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
   it("lists enabled Caplets by default", async () => {
