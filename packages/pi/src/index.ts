@@ -154,41 +154,7 @@ function extractPiSettingsArgs(
     return {};
   }
   const settingsObject = settings as Record<string, unknown>;
-  const topLevelArgs = topLevelCapletsOptions(settingsObject, writeWarning, path);
-  if (topLevelArgs !== undefined) {
-    return topLevelArgs;
-  }
-
-  const packages = settingsObject.packages;
-  const entries = Array.isArray(packages)
-    ? packages.map((entry, index) => [String(index), entry] as const)
-    : packages && typeof packages === "object"
-      ? Object.entries(packages)
-      : [];
-  if (entries.length === 0) {
-    return {};
-  }
-  let matchedArgs: PiNativeCapletsOptions | undefined;
-  for (const [key, entry] of entries) {
-    if (typeof entry === "string") {
-      continue;
-    }
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      continue;
-    }
-    const source = stringProperty(entry, "source") ?? key;
-    if (!isCapletsPiPackageSource(source)) {
-      continue;
-    }
-    const argsValue = objectProperty(entry, "native") ?? objectProperty(entry, "args") ?? {};
-    const parsed = parsePiNativeOptions(argsValue);
-    if (!parsed) {
-      writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path}.packages entry shape`);
-      return {};
-    }
-    matchedArgs = parsed;
-  }
-  return matchedArgs ?? {};
+  return topLevelCapletsOptions(settingsObject, writeWarning, path) ?? {};
 }
 
 function topLevelCapletsOptions(
@@ -240,10 +206,6 @@ function parsePiNativeOptions(value: unknown): PiNativeCapletsOptions | undefine
     result.remote = parsedRemote;
   }
   return result;
-}
-
-function isCapletsPiPackageSource(source: string): boolean {
-  return source.includes("@caplets/pi") || source.includes("npm:@caplets/pi");
 }
 
 async function readFileUtf8(path: string): Promise<string> {

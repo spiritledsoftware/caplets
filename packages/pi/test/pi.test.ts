@@ -887,7 +887,7 @@ describe("@caplets/pi", () => {
     });
   });
 
-  it("top-level Pi settings override package args", async () => {
+  it("ignores package entry args and uses empty settings without top-level caplets config", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
@@ -895,67 +895,16 @@ describe("@caplets/pi", () => {
         packages: [
           {
             source: "npm:@caplets/pi",
-            args: { mode: "local" },
+            args: { mode: "remote", remote: { url: "https://ignored.example.com/mcp" } },
           },
         ],
-        caplets: {
-          native: {
-            mode: "remote",
-            remote: { url: "https://top-level.example.com/mcp" },
-          },
-        },
       }),
     );
     const { api } = mockPiApi();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
-      mode: "remote",
-      remote: { url: "https://top-level.example.com/mcp" },
-    });
-  });
-
-  it("default export loads Pi settings args for the native service", async () => {
-    const service = mockService([]);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
-    fsMocks.readFile.mockResolvedValueOnce(
-      JSON.stringify({
-        packages: {
-          first: "npm:@caplets/pi",
-          caplets: {
-            source: "npm:@caplets/pi",
-            args: {
-              mode: "remote",
-              remote: {
-                url: "https://caplets.example.com",
-                user: "ian",
-                password: "secret",
-                pollIntervalMs: 1_000,
-              },
-            },
-          },
-        },
-      }),
-    );
-    const { api } = mockPiApi();
-
-    await capletsPiExtension(api as unknown as PiExtensionApi);
-
-    expect(fsMocks.readFile).toHaveBeenCalledWith(
-      expect.stringContaining(".pi/agent/settings.json"),
-      "utf8",
-    );
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
-      mode: "remote",
-      remote: {
-        url: "https://caplets.example.com",
-        user: "ian",
-        password: "secret",
-        pollIntervalMs: 1_000,
-      },
-    });
-    expect(service.reload).toHaveBeenCalledOnce();
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
   });
 
   it("default export falls back to empty args when Pi settings are missing", async () => {

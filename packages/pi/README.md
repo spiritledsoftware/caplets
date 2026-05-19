@@ -62,9 +62,8 @@ options are supplied:
 }
 ```
 
-This matches Pi's common top-level package settings pattern. For compatibility, object package
-entries with `args` or `native` are also supported, but top-level `caplets` settings take
-precedence when both are present.
+Only this top-level `caplets` settings form is read from Pi settings. Object package entries
+with `args` or `native` are ignored.
 Programmatic or inline embedding can pass explicit native options with the exported factory
 helper instead of relying on Pi package-loader args:
 
