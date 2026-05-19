@@ -22,7 +22,15 @@ export type CapletsPiOptions = {
   native?: PiNativeCapletsOptions;
 };
 
-export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions = {}) {
+export function createCapletsPiExtension(options: CapletsPiOptions): (pi: PiExtensionApi) => void {
+  return (pi) => registerCapletsPiExtension(pi, options);
+}
+
+export default function capletsPiExtension(pi: PiExtensionApi) {
+  registerCapletsPiExtension(pi, {});
+}
+
+function registerCapletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions) {
   const ownsService = !options.service;
   const service =
     options.service ?? createNativeCapletsService(options.native ?? options.args ?? {});

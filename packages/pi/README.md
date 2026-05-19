@@ -45,25 +45,33 @@ export CAPLETS_REMOTE_USER="caplets"
 export CAPLETS_REMOTE_PASSWORD # set in your shell or secret manager
 ```
 
-You can also pass native service args from Pi package settings. Current Pi docs show package
-configuration in `~/.pi/agent/settings.json`; use your active Pi settings path if it differs.
-Prefer environment variables for `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
-settings files.
+Current Pi extension loading calls extension factories with the Pi API only; it does not pass
+arbitrary package args to this extension. Configure remote package loading with environment
+variables before starting Pi. If you manage extensions in Pi settings, use Pi's documented
+`packages` array/object form only to install/enable the package, for example:
 
 ```json
 {
-  "packages": {
-    "@caplets/pi": {
-      "args": {
-        "mode": "remote",
-        "remote": {
-          "url": "https://caplets.example.com/mcp",
-          "user": "caplets"
-        }
-      }
-    }
-  }
+  "packages": ["@caplets/pi"]
 }
 ```
 
-The extension only consumes args/options passed by Pi and does not parse Pi settings files directly.
+Programmatic or inline embedding can pass explicit native options with the exported factory
+helper instead of relying on Pi package-loader args:
+
+```ts
+import { createCapletsPiExtension } from "@caplets/pi";
+
+export default createCapletsPiExtension({
+  args: {
+    mode: "remote",
+    remote: {
+      url: "https://caplets.example.com/mcp",
+      user: "caplets",
+    },
+  },
+});
+```
+
+Prefer environment variables for `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
+settings files or source code.

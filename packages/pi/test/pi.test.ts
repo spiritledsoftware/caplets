@@ -6,7 +6,7 @@ import type {
   NativeCapletsService,
   NativeCapletsServiceOptions,
 } from "@caplets/core/native";
-import capletsPiExtension, { type PiExtensionApi } from "../src/index";
+import capletsPiExtension, { createCapletsPiExtension, type PiExtensionApi } from "../src/index";
 
 const nativeMocks = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn(),
@@ -77,10 +77,9 @@ describe("@caplets/pi", () => {
     ]);
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     expect(registered[0]?.parameters).toEqual(generatedToolInputJsonSchema());
   });
@@ -104,10 +103,9 @@ describe("@caplets/pi", () => {
     ]);
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_linear"]);
     expect(registered.map((tool) => tool.promptGuidelines[0])).toEqual([
@@ -137,10 +135,9 @@ describe("@caplets/pi", () => {
     service.execute.mockRejectedValueOnce(error);
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     await expect(registered[0]?.execute("call-1", { operation: "get_caplet" })).rejects.toThrow(
       "execution failed",
@@ -161,10 +158,9 @@ describe("@caplets/pi", () => {
     service.execute.mockResolvedValueOnce({ count: 1n });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
     expect(result?.content[0]?.text).toContain("Serialization error");
@@ -184,10 +180,9 @@ describe("@caplets/pi", () => {
     service.execute.mockResolvedValueOnce(undefined);
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
     expect(result?.content[0]?.text).toBe("null");
@@ -216,10 +211,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", {
@@ -259,10 +253,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", { operation: "call_tool", tool: "query-docs" });
@@ -302,10 +295,9 @@ describe("@caplets/pi", () => {
       });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const browserResult = await registered[0]?.execute("call-1", {
       operation: "call_tool",
@@ -369,10 +361,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", {
@@ -416,10 +407,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", {
@@ -468,10 +458,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", {
@@ -515,10 +504,9 @@ describe("@caplets/pi", () => {
     });
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     const tool = registered[0];
     const result = await tool?.execute("call-1", { operation: "list_tools" });
@@ -555,7 +543,9 @@ describe("@caplets/pi", () => {
       on: vi.fn(),
     };
 
-    expect(() => capletsPiExtension(api as unknown as PiExtensionApi, { service })).not.toThrow();
+    expect(() =>
+      createCapletsPiExtension({ service })(api as unknown as PiExtensionApi),
+    ).not.toThrow();
     expect(api.registerTool).toHaveBeenCalledOnce();
     expect(api.getActiveTools).not.toHaveBeenCalled();
     expect(api.setActiveTools).not.toHaveBeenCalled();
@@ -567,11 +557,11 @@ describe("@caplets/pi", () => {
 
     capletsPiExtension({ registerTool: vi.fn() });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalled();
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({});
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 
-  it("passes Pi args to owned native service creation", () => {
+  it("passes explicit factory args to owned native service creation", () => {
     const service = mockService([]);
     const args = {
       mode: "remote",
@@ -579,7 +569,7 @@ describe("@caplets/pi", () => {
     } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
 
-    capletsPiExtension({ registerTool: vi.fn() }, { args });
+    createCapletsPiExtension({ args })({ registerTool: vi.fn() });
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(args);
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
@@ -597,7 +587,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     expect(api.setActiveTools).toHaveBeenNthCalledWith(1, ["read", "caplets_git_hub"]);
     service.setTools([
@@ -638,7 +628,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
@@ -672,7 +662,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
@@ -701,7 +691,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([]);
     service.emitToolsChanged();
@@ -739,7 +729,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api } = mockPiApi(["read", "bash", "caplets_git_hub", "caplets_linear"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
@@ -767,7 +757,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api } = mockPiApi(["read", "caplets_stale", "caplets_git_hub"]);
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
 
     expect(api.setActiveTools).toHaveBeenCalledWith(["read", "caplets_git_hub"]);
@@ -777,10 +767,9 @@ describe("@caplets/pi", () => {
     const service = mockService([]);
     const registered: RegisteredTool[] = [];
 
-    capletsPiExtension(
-      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
-      { service },
-    );
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
 
     service.setTools([
       {
@@ -808,7 +797,7 @@ describe("@caplets/pi", () => {
     ]);
     const { api, registered } = mockPiApi();
 
-    capletsPiExtension(api as unknown as PiExtensionApi, { service });
+    createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     const shutdown = api.on.mock.calls.find(([event]) => event === "session_shutdown")?.[1];
     shutdown?.();
