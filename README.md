@@ -107,16 +107,16 @@ configs run `caplets serve` directly, so install the Caplets CLI globally first.
 
 OpenCode and Pi can use native `caplets_<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
 
-Start the remote service:
+Start a local HTTP service:
 
 ```sh
 caplets serve --transport http --host 127.0.0.1 --port 5387 --path /mcp
 ```
 
-For authenticated network use, configure Basic Auth on the server and keep credentials out of plugin manifests:
+`caplets serve --transport http` serves plain HTTP. For non-loopback or network access, expose it only through HTTPS/TLS (for example, a reverse proxy or secure tunnel) and enable Basic Auth; Basic Auth over plain HTTP exposes credentials. Keep credentials out of plugin manifests:
 
 ```sh
-CAPLETS_SERVER_PASSWORD=... caplets serve --transport http --host 0.0.0.0
+CAPLETS_SERVER_PASSWORD=... caplets serve --transport http --host 127.0.0.1 --port 5387 --path /mcp
 ```
 
 Native integrations read remote client settings from environment variables:

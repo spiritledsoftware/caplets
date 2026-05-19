@@ -98,6 +98,7 @@ describe("root agent plugin artifacts", () => {
     expect(readme).toContain("CAPLETS_REMOTE_URL");
     expect(readme).toContain("caplets serve --transport http");
     expect(readme).toContain("https://caplets.example.com/mcp");
+    expect(readme).toMatch(/HTTPS\/TLS|TLS|HTTPS/);
   });
 
   it("uses a strong shared plugin skill for automatic selection", async () => {
