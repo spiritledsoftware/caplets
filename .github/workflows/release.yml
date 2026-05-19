@@ -11,6 +11,11 @@ permissions:
   pull-requests: write
   id-token: write
 
+env:
+  # CI runs explicit quality gates; do not let Changesets' git pushes invoke
+  # Husky pre-push and start another pnpm verify in the release workspace.
+  HUSKY: 0
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
