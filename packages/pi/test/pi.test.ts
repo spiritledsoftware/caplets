@@ -575,6 +575,32 @@ describe("@caplets/pi", () => {
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 
+  it("awaits owned service reload before initial tool registration", async () => {
+    const tools = [
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ];
+    let reloaded = false;
+    const service = mockService([]);
+    service.listTools.mockImplementation(() => (reloaded ? tools : []));
+    service.reload.mockImplementation(async () => {
+      reloaded = true;
+      return true;
+    });
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    const { api, registered } = mockPiApi();
+
+    await createCapletsPiExtension({ args: { mode: "remote" } })(api as unknown as PiExtensionApi);
+
+    expect(service.reload).toHaveBeenCalledOnce();
+    expect(service.listTools).toHaveBeenCalledAfter(service.reload);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub"]);
+  });
   it("registers newly added tools when the native service changes", () => {
     const service = mockService([
       {

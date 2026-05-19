@@ -22,15 +22,20 @@ export type CapletsPiOptions = {
   native?: PiNativeCapletsOptions;
 };
 
-export function createCapletsPiExtension(options: CapletsPiOptions): (pi: PiExtensionApi) => void {
+export function createCapletsPiExtension(
+  options: CapletsPiOptions,
+): (pi: PiExtensionApi) => void | Promise<void> {
   return (pi) => registerCapletsPiExtension(pi, options);
 }
 
-export default function capletsPiExtension(pi: PiExtensionApi) {
-  registerCapletsPiExtension(pi, {});
+export default function capletsPiExtension(pi: PiExtensionApi): void | Promise<void> {
+  return registerCapletsPiExtension(pi, {});
 }
 
-function registerCapletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions) {
+function registerCapletsPiExtension(
+  pi: PiExtensionApi,
+  options: CapletsPiOptions,
+): void | Promise<void> {
   const ownsService = !options.service;
   const service =
     options.service ?? createNativeCapletsService(options.native ?? options.args ?? {});
@@ -75,10 +80,13 @@ function registerCapletsPiExtension(pi: PiExtensionApi, options: CapletsPiOption
     knownCapletTools = nextCapletTools;
   };
 
-  currentCapletTools = syncToolRegistrations();
-  const unsubscribe = service.onToolsChanged((caplets) => {
-    syncActiveTools(syncToolRegistrations(caplets));
-  });
+  let unsubscribe: (() => void) | undefined;
+  const startSync = () => {
+    currentCapletTools = syncToolRegistrations();
+    unsubscribe = service.onToolsChanged((caplets) => {
+      syncActiveTools(syncToolRegistrations(caplets));
+    });
+  };
   pi.on?.("session_start", () => {
     canSyncActiveTools = true;
     knownCapletTools = new Set(
@@ -87,11 +95,15 @@ function registerCapletsPiExtension(pi: PiExtensionApi, options: CapletsPiOption
     syncActiveTools();
   });
   pi.on?.("session_shutdown", () => {
-    unsubscribe();
+    unsubscribe?.();
     if (ownsService) {
       void service.close();
     }
   });
+  if (ownsService) {
+    return service.reload().then(() => startSync());
+  }
+  startSync();
 }
 
 function piToolSignature(caplet: NativeCapletTool): string {

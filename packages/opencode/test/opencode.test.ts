@@ -195,4 +195,40 @@ describe("@caplets/opencode", () => {
       },
     });
   });
+
+  it("awaits initial native service reload before creating hooks", async () => {
+    vi.resetModules();
+    const tools = [
+      {
+        caplet: "git-hub",
+        toolName: "caplets_git_hub",
+        title: "GitHub",
+        description: "GitHub Caplet",
+        promptGuidance: ["Use caplets_git_hub for GitHub."],
+      },
+    ];
+    let reloaded = false;
+    const service = {
+      listTools: vi.fn(() => (reloaded ? tools : [])),
+      execute: vi.fn(async () => ({})),
+      reload: vi.fn(async () => {
+        reloaded = true;
+        return true;
+      }),
+      onToolsChanged: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => service),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index.js")).default;
+
+    const hooks = await plugin({} as never, undefined as never);
+
+    expect(service.reload).toHaveBeenCalledOnce();
+    expect(service.listTools).toHaveBeenCalledAfter(service.reload);
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub"]);
+  });
 });
