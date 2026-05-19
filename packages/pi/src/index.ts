@@ -57,21 +57,42 @@ export function createCapletsPiExtension(
 export async function loadPiSettingsArgs(
   options: {
     settingsPath?: string;
+    projectSettingsPath?: string;
     readSettingsFile?: (path: string) => Promise<string>;
     writeWarning?: (message: string) => void;
   } = {},
 ): Promise<PiCapletsSettings> {
   const settingsPath = options.settingsPath ?? join(homedir(), ".pi", "agent", "settings.json");
+  const projectSettingsPath =
+    options.projectSettingsPath ?? join(process.cwd(), ".pi", "settings.json");
   const readSettingsFile = options.readSettingsFile ?? readFileUtf8;
   const writeWarning = options.writeWarning ?? ((message) => process.stderr.write(`${message}\n`));
+  const userSettings = await readPiSettingsFile(settingsPath, readSettingsFile, writeWarning);
+  const projectSettings = await readPiSettingsFile(
+    projectSettingsPath,
+    readSettingsFile,
+    writeWarning,
+  );
+  return {
+    ...extractPiSettingsArgs(userSettings, writeWarning),
+    ...extractPiSettingsArgs(projectSettings, writeWarning),
+  };
+}
+
+async function readPiSettingsFile(
+  settingsPath: string,
+  readSettingsFile: (path: string) => Promise<string>,
+  writeWarning: (message: string) => void,
+): Promise<unknown> {
   try {
-    const content = await readSettingsFile(settingsPath);
-    return extractPiSettingsArgs(JSON.parse(content), writeWarning);
+    return JSON.parse(await readSettingsFile(settingsPath));
   } catch (error) {
     if (isFileNotFoundError(error)) {
       return {};
     }
-    writeWarning(`[caplets/pi] Ignoring Pi settings args: ${safeErrorMessage(error)}`);
+    writeWarning(
+      `[caplets/pi] Ignoring Pi settings args from ${settingsPath}: ${safeErrorMessage(error)}`,
+    );
     return {};
   }
 }
