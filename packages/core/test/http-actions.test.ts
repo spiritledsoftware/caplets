@@ -176,7 +176,7 @@ describe("HttpActionManager", () => {
       properties: { body: { properties: { ok: { type: "boolean" } } } },
     });
     expect(http.compact(caplet, tool)).toMatchObject({
-      server: "http",
+      id: "http",
       tool: "ping",
       hasInputSchema: true,
       hasOutputSchema: true,

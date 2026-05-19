@@ -73,7 +73,7 @@ export async function handleServerTool(
       const limit = parsed.limit ?? tools.length;
       return jsonResult(
         {
-          server: server.server,
+          id: server.server,
           name: server.name,
           tools: tools.slice(0, limit).map((tool) => backend.compact(server as never, tool)),
         },
@@ -86,7 +86,7 @@ export async function handleServerTool(
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       return jsonResult(
         {
-          server: server.server,
+          id: server.server,
           name: server.name,
           query: parsed.query,
           tools: backend.search(server as never, tools, parsed.query, limit),
@@ -98,7 +98,7 @@ export async function handleServerTool(
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult(
-        { server: server.server, tool },
+        { id: server.server, tool },
         metadataFor(server, "get_tool", parsed.tool, startedAt),
       );
     }
@@ -249,7 +249,7 @@ export type CapletArtifact = {
 };
 
 export type CapletResultMetadata = {
-  caplet: string;
+  id: string;
   name: string;
   backend: string;
   operation: RequiredOperationRequest["operation"];
@@ -266,7 +266,7 @@ export function metadataFor(
   startedAt?: number,
 ): CapletResultMetadata {
   return {
-    caplet: server.server,
+    id: server.server,
     name: server.name,
     backend: server.backend,
     operation,

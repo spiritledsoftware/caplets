@@ -103,7 +103,7 @@ describe("registry", () => {
     expect(openApiDescription).toContain("Use get_caplet for details when needed");
     const openApiDetail = registry.detail(config.openapiEndpoints.users!);
     expect(openApiDetail).toEqual({
-      caplet: "users",
+      id: "users",
       name: "Users API",
       description: "Manage users through the internal HTTP API.",
       backend: {
@@ -120,7 +120,7 @@ describe("registry", () => {
     expect(graphQlDescription).toContain("Use get_caplet for details when needed");
     const graphQlDetail = registry.detail(config.graphqlEndpoints.catalog!);
     expect(graphQlDetail).toEqual({
-      caplet: "catalog",
+      id: "catalog",
       name: "Catalog GraphQL",
       description: "Query catalog data through GraphQL.",
       backend: {
@@ -138,7 +138,7 @@ describe("registry", () => {
     expect(httpDescription).toContain("Use get_caplet for details when needed");
     const httpDetail = registry.detail(config.httpApis.status!);
     expect(httpDetail).toEqual({
-      caplet: "status",
+      id: "status",
       name: "Status HTTP",
       description: "Check internal service status through HTTP.",
       backend: {
@@ -154,7 +154,7 @@ describe("registry", () => {
     expect(cliDescription).toContain("Use get_caplet for details when needed");
     const cliDetail = registry.detail(config.cliTools.repo!);
     expect(cliDetail).toEqual({
-      caplet: "repo",
+      id: "repo",
       name: "Repo CLI",
       description: "Run curated repository CLI workflows.",
       backend: {
@@ -170,7 +170,7 @@ describe("registry", () => {
     expect(capletSetDescription).toContain("Use get_caplet for details when needed");
     const capletSetDetail = registry.detail(config.capletSets.nested!);
     expect(capletSetDetail).toEqual({
-      caplet: "nested",
+      id: "nested",
       name: "Nested Caplets",
       description: "Expose child Caplets through a nested collection.",
       backend: {

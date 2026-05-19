@@ -25,7 +25,7 @@ export class HttpActionManager {
   invalidate(_serverId: string): void {}
 
   async checkApi(api: HttpApiConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -41,7 +41,7 @@ export class HttpActionManager {
       }
       this.registry.setStatus(api.server, "available");
       return {
-        server: api.server,
+        id: api.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -50,7 +50,7 @@ export class HttpActionManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(api.server, "unavailable", safe);
       return {
-        server: api.server,
+        id: api.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -123,7 +123,7 @@ export class HttpActionManager {
 
   compact(api: HttpApiConfig, tool: Tool): CompactTool {
     return {
-      server: api.server,
+      id: api.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),

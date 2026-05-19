@@ -58,7 +58,7 @@ export class CapletSetManager {
   }
 
   async checkSet(config: CapletSetConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -70,7 +70,7 @@ export class CapletSetManager {
       const childCaplets = child.registry.enabledServers();
       this.registry.setStatus(config.server, "available");
       return {
-        server: config.server,
+        id: config.server,
         status: "available",
         toolCount: childCaplets.length,
         elapsedMs: Date.now() - startedAt,
@@ -79,7 +79,7 @@ export class CapletSetManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(config.server, "unavailable", safe);
       return {
-        server: config.server,
+        id: config.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -146,7 +146,7 @@ export class CapletSetManager {
 
   compact(config: CapletSetConfig, tool: Tool): CompactTool {
     return {
-      server: config.server,
+      id: config.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),

@@ -916,8 +916,10 @@ Requests are strict: operation-specific extra fields are rejected, and `call_too
 
 Discovery operations (`get_caplet`, `check_backend`, `list_tools`, `search_tools`, and
 `get_tool`) return wrapper-generated results whose `structuredContent.caplets` field
-identifies the Caplet, backend, operation, status, and elapsed time when available. Compact
-`list_tools` and `search_tools` entries may include input/output schema hashes; treat those
+identifies the Caplet with `id`, plus backend, operation, status, and elapsed time when
+available. Discovery result objects and compact tool entries also use `id` for the
+configured Caplet identity. Compact `list_tools` and `search_tools` entries may include
+input/output schema hashes; treat those
 hashes as reuse hints for a schema you have already inspected, not as a replacement for
 `get_tool` when arguments, output, or semantics are unclear.
 

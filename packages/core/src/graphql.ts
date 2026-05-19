@@ -81,7 +81,7 @@ export class GraphQLManager {
   }
 
   async checkEndpoint(endpoint: GraphQlEndpointConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -92,7 +92,7 @@ export class GraphQLManager {
       const operations = await this.refreshOperations(endpoint, true);
       this.registry.setStatus(endpoint.server, "available");
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -101,7 +101,7 @@ export class GraphQLManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(endpoint.server, "unavailable", safe);
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -217,7 +217,7 @@ export class GraphQLManager {
 
   compact(endpoint: GraphQlEndpointConfig, tool: Tool): CompactTool {
     return {
-      server: endpoint.server,
+      id: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),

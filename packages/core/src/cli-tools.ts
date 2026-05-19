@@ -22,7 +22,7 @@ export class CliToolsManager {
   invalidate(_serverId: string): void {}
 
   async checkTools(config: CliToolsConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -47,7 +47,7 @@ export class CliToolsManager {
       }
       this.registry.setStatus(config.server, "available");
       return {
-        server: config.server,
+        id: config.server,
         status: "available",
         toolCount: Object.keys(config.actions).length,
         elapsedMs: Date.now() - startedAt,
@@ -56,7 +56,7 @@ export class CliToolsManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(config.server, "unavailable", safe);
       return {
-        server: config.server,
+        id: config.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -114,7 +114,7 @@ export class CliToolsManager {
 
   compact(config: CliToolsConfig, tool: Tool): CompactTool {
     return {
-      server: config.server,
+      id: config.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),

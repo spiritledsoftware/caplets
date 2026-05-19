@@ -24,7 +24,7 @@ describe("CliToolsManager", () => {
     const manager = new CliToolsManager(registry);
 
     expect(await manager.checkTools(caplet)).toMatchObject({
-      server: "local",
+      id: "local",
       status: "available",
       toolCount: 3,
     });

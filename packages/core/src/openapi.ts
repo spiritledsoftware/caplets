@@ -65,7 +65,7 @@ export class OpenApiManager {
   }
 
   async checkEndpoint(endpoint: OpenApiEndpointConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -76,7 +76,7 @@ export class OpenApiManager {
       const operations = await this.refreshOperations(endpoint, true);
       this.registry.setStatus(endpoint.server, "available");
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -85,7 +85,7 @@ export class OpenApiManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(endpoint.server, "unavailable", safe);
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -172,7 +172,7 @@ export class OpenApiManager {
 
   compact(endpoint: OpenApiEndpointConfig, tool: Tool): CompactTool {
     return {
-      server: endpoint.server,
+      id: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),

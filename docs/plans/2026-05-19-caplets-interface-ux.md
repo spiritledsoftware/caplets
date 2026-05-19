@@ -82,14 +82,14 @@ Discovery operations keep the existing `structuredContent.result` shape and add 
   ],
   "structuredContent": {
     "caplets": {
-      "caplet": "browser",
+      "id": "browser",
       "name": "Browser",
       "backend": "mcp",
       "operation": "list_tools",
       "status": "ok"
     },
     "result": {
-      "server": "browser",
+      "id": "browser",
       "tools": []
     }
   }
@@ -106,7 +106,7 @@ Direct downstream results are not enveloped. Caplets metadata is attached under 
   "structuredContent": { "ok": true },
   "_meta": {
     "caplets": {
-      "caplet": "browser",
+      "id": "browser",
       "name": "Browser",
       "backend": "mcp",
       "operation": "call_tool",
@@ -130,7 +130,7 @@ Compact tool metadata gains stable schema hashes:
 
 ```json
 {
-  "server": "browser",
+  "id": "browser",
   "tool": "browser_navigate",
   "description": "Navigate to a URL",
   "hasInputSchema": true,

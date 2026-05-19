@@ -134,16 +134,16 @@ describe("generated tool request validation", () => {
   });
 
   it("returns concise wrapper content while preserving structured result", () => {
-    const result = jsonResult({ server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
+    const result = jsonResult({ id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
 
     expect(result.structuredContent).toEqual({
-      result: { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+      result: { id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
     });
     expect(result.content).toEqual([
       {
         type: "text",
         text: JSON.stringify(
-          { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+          { id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
           null,
           2,
         ),
@@ -214,7 +214,7 @@ describe("generated tool handlers", () => {
       downstream,
     )) as any;
     expect(result.structuredContent?.caplets).toEqual({
-      caplet: "alpha",
+      id: "alpha",
       name: "Alpha",
       backend: "mcp",
       operation: "get_caplet",
@@ -222,7 +222,7 @@ describe("generated tool handlers", () => {
       elapsedMs: expect.any(Number),
     });
     expect(result.structuredContent?.result).toEqual({
-      caplet: "alpha",
+      id: "alpha",
       name: "Alpha",
       description: "Search alpha project documents.",
       backend: {
@@ -260,7 +260,7 @@ describe("generated tool handlers", () => {
     )) as any;
 
     expect(result.structuredContent?.result).toMatchObject({
-      caplet: "users",
+      id: "users",
       backend: {
         type: "openapi",
         source: "specPath",
@@ -291,7 +291,7 @@ describe("generated tool handlers", () => {
     )) as any;
 
     expect(result.structuredContent?.result).toMatchObject({
-      caplet: "status",
+      id: "status",
       backend: {
         type: "http",
         configuredActions: 1,
@@ -300,7 +300,7 @@ describe("generated tool handlers", () => {
   });
 
   it("checks the MCP server backend", async () => {
-    const status = { server: "alpha", status: "available", toolCount: 2, elapsedMs: 5 };
+    const status = { id: "alpha", status: "available", toolCount: 2, elapsedMs: 5 };
     const downstream = {
       checkServer: vi.fn().mockResolvedValue(status),
       listTools: vi.fn(),
@@ -361,7 +361,7 @@ describe("generated tool handlers", () => {
     const downstream = {
       listTools: vi.fn().mockResolvedValue(tools),
       compact: (capletServer: typeof server, tool: Tool) => ({
-        server: capletServer.server,
+        id: capletServer.server,
         tool: tool.name,
         description: tool.description,
         annotations: tool.annotations,
@@ -379,7 +379,7 @@ describe("generated tool handlers", () => {
     )) as any;
     expect(list.content[0]?.text).toContain("read");
     expect(list.structuredContent?.caplets).toEqual({
-      caplet: "alpha",
+      id: "alpha",
       name: "Alpha",
       backend: "mcp",
       operation: "list_tools",
@@ -387,11 +387,11 @@ describe("generated tool handlers", () => {
       elapsedMs: expect.any(Number),
     });
     expect(list.structuredContent?.result).toEqual({
-      server: "alpha",
+      id: "alpha",
       name: "Alpha",
       tools: [
         {
-          server: "alpha",
+          id: "alpha",
           tool: "read",
           description: "Read files",
           annotations: undefined,
@@ -399,7 +399,7 @@ describe("generated tool handlers", () => {
           hasOutputSchema: true,
         },
         {
-          server: "alpha",
+          id: "alpha",
           tool: "write",
           description: "Write files",
           annotations: { destructiveHint: true },
@@ -416,7 +416,7 @@ describe("generated tool handlers", () => {
       downstream,
     )) as any;
     expect(full.structuredContent?.caplets).toEqual({
-      caplet: "alpha",
+      id: "alpha",
       name: "Alpha",
       backend: "mcp",
       operation: "get_tool",
@@ -424,7 +424,7 @@ describe("generated tool handlers", () => {
       status: "ok",
       elapsedMs: expect.any(Number),
     });
-    expect(full.structuredContent?.result).toEqual({ server: "alpha", tool: tools[1] });
+    expect(full.structuredContent?.result).toEqual({ id: "alpha", tool: tools[1] });
   });
 
   it("limits listed tools", async () => {
@@ -509,7 +509,7 @@ describe("generated tool handlers", () => {
       ...originalDownstreamResult,
       _meta: {
         caplets: {
-          caplet: "alpha",
+          id: "alpha",
           name: "Alpha",
           backend: "mcp",
           operation: "call_tool",
@@ -542,7 +542,7 @@ describe("generated tool handlers", () => {
         requestId: "req-1",
         nested: { ok: true },
         caplets: {
-          caplet: "alpha",
+          id: "alpha",
           name: "Alpha",
           backend: "mcp",
           operation: "call_tool",
@@ -575,7 +575,7 @@ describe("generated tool handlers", () => {
       _meta: {
         requestId: "req-2",
         caplets: {
-          caplet: "alpha",
+          id: "alpha",
           name: "Alpha",
           backend: "mcp",
           operation: "call_tool",
@@ -744,7 +744,7 @@ describe("generated tool handlers", () => {
       _meta: {
         requestId: "req-1",
         caplets: {
-          caplet: "alpha",
+          id: "alpha",
           name: "Alpha",
           backend: "mcp",
           operation: "call_tool",
@@ -936,7 +936,7 @@ describe("generated tool handlers", () => {
       _meta: {
         requestId: "req-err",
         caplets: {
-          caplet: "alpha",
+          id: "alpha",
           name: "Alpha",
           backend: "mcp",
           operation: "call_tool",
@@ -1066,7 +1066,7 @@ describe("generated tool handlers", () => {
       ...graphqlResult,
       _meta: {
         caplets: {
-          caplet: "graph",
+          id: "graph",
           name: "Graph",
           backend: "graphql",
           operation: "call_tool",
@@ -1163,7 +1163,7 @@ describe("generated tool handlers", () => {
       ...httpResult,
       _meta: {
         caplets: {
-          caplet: "status",
+          id: "status",
           name: "Status HTTP",
           backend: "http",
           operation: "call_tool",
