@@ -14,3 +14,12 @@ export {
 } from "./native/tools";
 export { generatedToolInputSchema } from "./tools";
 export { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
+export {
+  resolveNativeCapletsServiceOptions,
+  type NativeCapletsEnv,
+  type NativeCapletsMode,
+  type NativeCapletsServiceResolutionInput,
+  type NativeRemoteAuthOptions,
+  type NativeRemoteCapletsOptions,
+  type ResolvedNativeCapletsServiceOptions,
+} from "./native/options";
