@@ -15,3 +15,41 @@ existing native tools execute against the latest valid backend config and prompt
 rebuilt from current Caplets state for the tools registered when the plugin loaded. OpenCode's
 current plugin API snapshots `Hooks.tool` at plugin load, so adding, removing, or renaming native
 tools still requires restarting OpenCode; newly added tools are not advertised until restart.
+
+## Remote Caplets service
+
+By default the plugin reads local Caplets config. To use a remote `caplets serve --transport http` service, set environment variables:
+
+```sh
+CAPLETS_REMOTE_URL=http://127.0.0.1:5387/mcp opencode
+```
+
+For authenticated remote services, keep the password in the environment:
+
+```sh
+CAPLETS_REMOTE_URL=https://caplets.example.com/mcp \
+CAPLETS_REMOTE_USER=caplets \
+CAPLETS_REMOTE_PASSWORD=... \
+opencode
+```
+
+OpenCode plugin config can also pass non-secret settings as the plugin factory's second argument:
+
+```ts
+export default {
+  plugin: [
+    [
+      "@caplets/opencode",
+      {
+        mode: "remote",
+        remote: {
+          url: "https://caplets.example.com/mcp",
+          user: "caplets",
+        },
+      },
+    ],
+  ],
+};
+```
+
+Plugin config overrides environment variables. Prefer `CAPLETS_REMOTE_PASSWORD` for the Basic Auth password unless your OpenCode setup provides secure secret storage.

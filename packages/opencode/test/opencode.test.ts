@@ -158,4 +158,41 @@ describe("@caplets/opencode", () => {
     expect(system).not.toContain("caplets_git_hub");
     expect(system).not.toContain("caplets_slack");
   });
+
+  it("passes second-argument config into the native service", async () => {
+    vi.resetModules();
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => ({
+        listTools: () => [],
+        execute: vi.fn(async () => ({})),
+        reload: vi.fn(async () => true),
+        onToolsChanged: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      })),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index.js")).default;
+
+    await plugin(
+      {} as never,
+      {
+        mode: "remote",
+        remote: {
+          url: "https://caplets.example.com/mcp",
+          user: "caplets",
+          pollIntervalMs: 5_000,
+        },
+      } as never,
+    );
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      mode: "remote",
+      remote: {
+        url: "https://caplets.example.com/mcp",
+        user: "caplets",
+        pollIntervalMs: 5_000,
+      },
+    });
+  });
 });
