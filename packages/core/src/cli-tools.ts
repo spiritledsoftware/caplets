@@ -6,6 +6,7 @@ import type { CliToolActionConfig, CliToolsConfig } from "./config";
 import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
+import { schemaHash } from "./schema-hash";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type CliToolAction = CliToolActionConfig & { name: string };
@@ -118,6 +119,8 @@ export class CliToolsManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

@@ -7,6 +7,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { schemaHash } from "./schema-hash";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];
@@ -181,6 +182,8 @@ export class OpenApiManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

@@ -199,6 +199,13 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     )) as any;
+    expect(result.structuredContent?.caplets).toEqual({
+      caplet: "alpha",
+      name: "Alpha",
+      backend: "mcp",
+      operation: "get_caplet",
+      status: "ok",
+    });
     expect(result.structuredContent?.result).toEqual({
       caplet: "alpha",
       name: "Alpha",
@@ -304,6 +311,45 @@ describe("generated tool handlers", () => {
     expect(downstream.callTool).not.toHaveBeenCalled();
   });
 
+  it("uses Caplet names in discovery text to disambiguate identical downstream tools", async () => {
+    const browserConfig = parseConfig({
+      mcpServers: {
+        browser: { name: "Browser", description: "Browser automation", command: "node" },
+        stealth: { name: "Stealth Browser", description: "Stealth automation", command: "node" },
+      },
+    });
+    const browserRegistry = new ServerRegistry(browserConfig);
+    const downstream = {
+      listTools: vi.fn().mockResolvedValue([{ name: "browser_click", inputSchema: {} }]),
+      compact: (_capletServer: typeof server, tool: Tool) => ({ tool: tool.name }),
+    } as unknown as DownstreamManager;
+
+    const browser = (await handleServerTool(
+      browserConfig.mcpServers.browser!,
+      { operation: "list_tools" },
+      browserRegistry,
+      downstream,
+    )) as any;
+    const stealth = (await handleServerTool(
+      browserConfig.mcpServers.stealth!,
+      { operation: "list_tools" },
+      browserRegistry,
+      downstream,
+    )) as any;
+
+    expect(browser.content).toEqual([
+      { type: "text", text: "Browser list_tools result available in structuredContent.result." },
+    ]);
+    expect(stealth.content).toEqual([
+      {
+        type: "text",
+        text: "Stealth Browser list_tools result available in structuredContent.result.",
+      },
+    ]);
+    expect(browser.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
+    expect(stealth.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
+  });
+
   it("lists compact metadata and preserves full get_tool metadata", async () => {
     expect(new DownstreamManager(registry).compact(server, tools[0]!)).toMatchObject({
       hasOutputSchema: true,
@@ -328,6 +374,16 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     )) as any;
+    expect(list.content).toEqual([
+      { type: "text", text: "Alpha list_tools result available in structuredContent.result." },
+    ]);
+    expect(list.structuredContent?.caplets).toEqual({
+      caplet: "alpha",
+      name: "Alpha",
+      backend: "mcp",
+      operation: "list_tools",
+      status: "ok",
+    });
     expect(list.structuredContent?.result).toEqual({
       server: "alpha",
       tools: [
@@ -356,14 +412,88 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     )) as any;
+    expect(full.structuredContent?.caplets).toEqual({
+      caplet: "alpha",
+      name: "Alpha",
+      backend: "mcp",
+      operation: "get_tool",
+      tool: "write",
+      status: "ok",
+    });
     expect(full.structuredContent?.result).toEqual({ server: "alpha", tool: tools[1] });
   });
 
-  it("forwards call_tool result without transformation", async () => {
+  it("annotates call_tool result metadata without changing downstream shape", async () => {
     const downstreamResult = {
       content: [{ type: "text" as const, text: "ok" }],
       structuredContent: { ok: true },
       isError: false,
+    };
+    const originalDownstreamResult = structuredClone(downstreamResult);
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue(downstreamResult),
+    } as unknown as DownstreamManager;
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", tool: "read", arguments: { path: "x" } },
+      registry,
+      downstream,
+    );
+    expect(result).not.toBe(downstreamResult);
+    expect(downstreamResult).toEqual(originalDownstreamResult);
+    expect(result).toEqual({
+      ...originalDownstreamResult,
+      _meta: {
+        caplets: {
+          caplet: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "read",
+          status: "ok",
+        },
+      },
+    });
+  });
+
+  it("preserves downstream _meta values and overwrites downstream caplets metadata", async () => {
+    const downstreamResult = {
+      content: [{ type: "text" as const, text: "ok" }],
+      structuredContent: { ok: true },
+      _meta: { requestId: "req-1", nested: { ok: true }, caplets: { downstream: true } },
+    };
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue(downstreamResult),
+    } as unknown as DownstreamManager;
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", tool: "write", arguments: {} },
+      registry,
+      downstream,
+    );
+    expect(result).toEqual({
+      ...downstreamResult,
+      _meta: {
+        requestId: "req-1",
+        nested: { ok: true },
+        caplets: {
+          caplet: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "write",
+          status: "ok",
+        },
+      },
+    });
+  });
+
+  it("annotates downstream error call_tool results without changing content", async () => {
+    const downstreamResult = {
+      content: [{ type: "text" as const, text: "failed" }],
+      structuredContent: { error: "nope" },
+      isError: true,
+      _meta: { requestId: "req-2" },
     };
     const downstream = {
       callTool: vi.fn().mockResolvedValue(downstreamResult),
@@ -374,8 +504,142 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     );
-    expect(result).toBe(downstreamResult);
+    expect(result).toEqual({
+      ...downstreamResult,
+      _meta: {
+        requestId: "req-2",
+        caplets: {
+          caplet: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "read",
+          status: "error",
+        },
+      },
+    });
   });
+
+  it("extracts screenshot artifact links from call_tool text", async () => {
+    const result = await callToolWithText("Saved [Screenshot of viewport](./file.png)");
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "screenshot",
+        displayPath: "./file.png",
+        pathResolution: "relative-to-mcp-server",
+      },
+    ]);
+  });
+
+  it("extracts snapshot artifact links from call_tool text", async () => {
+    const result = await callToolWithText("Saved [ARIA snapshot](./snapshot.yaml)");
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "snapshot",
+        displayPath: "./snapshot.yaml",
+        pathResolution: "relative-to-mcp-server",
+      },
+    ]);
+  });
+
+  it("extracts console-log artifact links from call_tool text", async () => {
+    const result = await callToolWithText("Console output: [log](./browser-console.txt)");
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "console-log",
+        displayPath: "./browser-console.txt",
+        pathResolution: "relative-to-mcp-server",
+      },
+    ]);
+  });
+
+  it("extracts multiple artifact links and absolute local paths", async () => {
+    const result = await callToolWithText(
+      "Saved [Screenshot](./screen.png), [Network log](/tmp/network.har), and [Download](files/report.pdf)",
+    );
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "screenshot",
+        displayPath: "./screen.png",
+        pathResolution: "relative-to-mcp-server",
+      },
+      {
+        kind: "network-log",
+        displayPath: "/tmp/network.har",
+        pathResolution: "absolute",
+      },
+      {
+        kind: "file",
+        displayPath: "files/report.pdf",
+        pathResolution: "relative-to-mcp-server",
+      },
+    ]);
+  });
+
+  it("extracts artifact links with spaces, title attributes, and parentheses", async () => {
+    const result = await callToolWithText(
+      'Saved artifact [Screenshot](./screenshots/final view.png), file [Trace](./trace.zip "trace"), and artifact [Archive](./run(1).zip)',
+    );
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "screenshot",
+        displayPath: "./screenshots/final view.png",
+        pathResolution: "relative-to-mcp-server",
+      },
+      {
+        kind: "file",
+        displayPath: "./trace.zip",
+        pathResolution: "relative-to-mcp-server",
+      },
+      {
+        kind: "file",
+        displayPath: "./run(1).zip",
+        pathResolution: "relative-to-mcp-server",
+      },
+    ]);
+  });
+
+  it("ignores ordinary local documentation links and unsupported schemes", async () => {
+    const result = await callToolWithText(
+      "Read [README](README.md), see [details](docs/result.md), [data](data:text/plain,hi), and [js](javascript:alert(1))",
+    );
+
+    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+  });
+
+  it("omits artifacts metadata when call_tool text has no artifact links", async () => {
+    const result = await callToolWithText("No files were saved.");
+
+    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+  });
+
+  it("ignores external and fragment-only markdown links", async () => {
+    const result = await callToolWithText(
+      "Ignored [site](https://example.com/a.png), [mail](mailto:a@example.com), [section](#details), [http](http://example.com/a.png)",
+    );
+
+    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+  });
+
+  async function callToolWithText(text: string): Promise<any> {
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text }],
+        structuredContent: { ok: true },
+      }),
+    } as unknown as DownstreamManager;
+    return handleServerTool(
+      server,
+      { operation: "call_tool", tool: "read", arguments: {} },
+      registry,
+      downstream,
+    );
+  }
 
   it("projects call_tool results from structured content when fields are requested", async () => {
     const downstreamResult = {
@@ -410,6 +674,17 @@ describe("generated tool handlers", () => {
       ...downstreamResult,
       content: [{ type: "text", text: '{\n  "message": "ok"\n}' }],
       structuredContent: { message: "ok" },
+      _meta: {
+        requestId: "req-1",
+        caplets: {
+          caplet: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "read",
+          status: "ok",
+        },
+      },
     });
     expect(downstream.getTool).toHaveBeenCalledWith(server, "read");
     expect(downstream.callTool).toHaveBeenCalledWith(server, "read", { path: "x" });
@@ -582,8 +857,26 @@ describe("generated tool handlers", () => {
       downstream,
     );
 
-    expect(result).toBe(downstreamResult);
-    expect(result).toEqual(downstreamResult);
+    expect(result).not.toBe(downstreamResult);
+    expect(downstreamResult).toEqual({
+      content: [{ type: "text", text: "downstream failed with details" }],
+      isError: true,
+      _meta: { requestId: "req-err" },
+    });
+    expect(result).toEqual({
+      ...downstreamResult,
+      _meta: {
+        requestId: "req-err",
+        caplets: {
+          caplet: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "read",
+          status: "error",
+        },
+      },
+    });
   });
 
   it("reports downstream protocol errors when field selection lacks structured output", async () => {
@@ -694,7 +987,25 @@ describe("generated tool handlers", () => {
       graphql,
     );
 
-    expect(result).toBe(graphqlResult);
+    expect(result).not.toBe(graphqlResult);
+    expect(graphqlResult).toEqual({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    });
+    expect(result).toEqual({
+      ...graphqlResult,
+      _meta: {
+        caplets: {
+          caplet: "graph",
+          name: "Graph",
+          backend: "graphql",
+          operation: "call_tool",
+          tool: "query_user",
+          status: "ok",
+        },
+      },
+    });
     expect(graphql.callTool).toHaveBeenCalledWith(graphqlCaplet, "query_user", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
   });
@@ -772,7 +1083,25 @@ describe("generated tool handlers", () => {
       http,
     );
 
-    expect(result).toBe(httpResult);
+    expect(result).not.toBe(httpResult);
+    expect(httpResult).toEqual({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    });
+    expect(result).toEqual({
+      ...httpResult,
+      _meta: {
+        caplets: {
+          caplet: "status",
+          name: "Status HTTP",
+          backend: "http",
+          operation: "call_tool",
+          tool: "check",
+          status: "ok",
+        },
+      },
+    });
     expect(http.callTool).toHaveBeenCalledWith(httpCaplet, "check", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
   });

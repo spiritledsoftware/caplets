@@ -6,6 +6,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { schemaHash } from "./schema-hash";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type HttpActionOperation = HttpActionConfig & { name: string };
@@ -127,6 +128,8 @@ export class HttpActionManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

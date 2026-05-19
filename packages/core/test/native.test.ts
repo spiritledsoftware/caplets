@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createNativeCapletsService,
+  nativeCapletPromptGuidance,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
 } from "../src/native";
@@ -98,9 +99,48 @@ describe("native Caplets service", () => {
 
   it("builds shared native system guidance", () => {
     expect(nativeCapletToolName("linear-api_v2")).toBe("caplets_linear_api__v2");
-    expect(nativeCapletsSystemGuidance(["caplets_linear_api__v2"])).toContain(
-      "caplets_linear_api__v2",
+    const guidance = nativeCapletsSystemGuidance(["caplets_linear_api__v2"]);
+
+    expect(guidance).toContain("caplets_linear_api__v2");
+    expect(guidance).toContain(
+      "Use `get_caplet` when choosing a Caplet for an unfamiliar task or when its capability is unclear.",
     );
+    expect(guidance).toContain(
+      "Use `get_tool` before `call_tool` when a downstream tool is unfamiliar or its argument or output schema is unclear.",
+    );
+    expect(guidance).toContain(
+      "Schema hashes from `list_tools` can identify matching schemas across Caplets when you already understand that exact hash.",
+    );
+    expect(guidance).toContain(
+      "For `call_tool`, put downstream inputs only inside the top-level `arguments` object.",
+    );
+    expect(guidance).toContain(
+      "Do not invent downstream tool names; execute only exact names returned by `list_tools`, `search_tools`, or `get_tool`.",
+    );
+  });
+
+  it("builds concise per-Caplet prompt guidance with safe discovery", () => {
+    const guidance = nativeCapletPromptGuidance("caplets_browser", {
+      name: "Browser",
+      description: "Drive a browser.",
+      server: "browser",
+      backend: "mcp",
+      transport: "stdio",
+      command: process.execPath,
+      startupTimeoutMs: 1_000,
+      callTimeoutMs: 1_000,
+      toolCacheTtlMs: 1_000,
+      disabled: false,
+    }).join("\n");
+
+    expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
+    expect(guidance).toContain(
+      "For unfamiliar tasks, discover safely with get_caplet, then search_tools or list_tools, then get_tool when schemas are unclear.",
+    );
+    expect(guidance).toContain(
+      "Call call_tool only with exact downstream tool names and keep downstream inputs inside arguments.",
+    );
+    expect(guidance).not.toContain("Call caplets_browser with operation get_caplet before");
   });
 
   it("reloads native tool metadata after config changes", async () => {

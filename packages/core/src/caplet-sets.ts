@@ -9,6 +9,7 @@ import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
 import { capabilityDescription, ServerRegistry } from "./registry";
 import { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
+import { schemaHash } from "./schema-hash";
 import { handleServerTool } from "./tools";
 
 type ChildRuntime = {
@@ -151,6 +152,8 @@ export class CapletSetManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

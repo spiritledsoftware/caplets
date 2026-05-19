@@ -1,5 +1,17 @@
+# Build & Deps
 dist/
 node_modules/
-.turbo/
+
+# Benchmark results
 benchmark-results/
+
+# Turbo
+.turbo/
+
+# Pi
 .pi-lens/
+!.pi-lens/semgrep.json
+
+# Playwright
+.playwright-mcp/
+.playwright-cli/

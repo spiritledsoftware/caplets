@@ -16,6 +16,7 @@ import {
 } from "./auth";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
+import { schemaHash } from "./schema-hash";
 
 export type CompactTool = {
   server: string;
@@ -24,6 +25,8 @@ export type CompactTool = {
   annotations?: unknown;
   hasInputSchema: boolean;
   hasOutputSchema: boolean;
+  inputSchemaHash: string | null;
+  outputSchemaHash: string | null;
 };
 
 type ManagedConnection = {
@@ -161,6 +164,8 @@ export class DownstreamManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

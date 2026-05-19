@@ -7,10 +7,10 @@ import {
   getNamedType,
   GraphQLEnumType,
   GraphQLInputObjectType,
-  GraphQLInterfaceType,
+  type GraphQLInterfaceType,
   GraphQLList,
   GraphQLNonNull,
-  GraphQLObjectType,
+  type GraphQLObjectType,
   GraphQLScalarType,
   type GraphQLField,
   type GraphQLArgument,
@@ -34,6 +34,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { schemaHash } from "./schema-hash";
 
 const GRAPHQL_METHOD = "POST";
 const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
@@ -221,6 +222,8 @@ export class GraphQLManager {
       ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      inputSchemaHash: schemaHash(tool.inputSchema),
+      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 

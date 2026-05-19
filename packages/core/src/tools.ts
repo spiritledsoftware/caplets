@@ -49,40 +49,54 @@ export async function handleServerTool(
 
   switch (parsed.operation) {
     case "get_caplet":
-      return jsonResult(registry.detail(server));
+      return jsonResult(registry.detail(server), metadataFor(server, "get_caplet"));
     case "check_backend":
       return jsonResult(
         await backendFor(server, downstream, openapi, graphql, http, cli, caplets).check(
           server as never,
         ),
+        metadataFor(server, "check_backend"),
       );
     case "list_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
-      return jsonResult({
-        server: server.server,
-        tools: tools.map((tool) => backend.compact(server as never, tool)),
-      });
+      return jsonResult(
+        {
+          server: server.server,
+          tools: tools.map((tool) => backend.compact(server as never, tool)),
+        },
+        metadataFor(server, "list_tools"),
+      );
     }
     case "search_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
-      return jsonResult({
-        server: server.server,
-        query: parsed.query,
-        tools: backend.search(server as never, tools, parsed.query, limit),
-      });
+      return jsonResult(
+        {
+          server: server.server,
+          query: parsed.query,
+          tools: backend.search(server as never, tools, parsed.query, limit),
+        },
+        metadataFor(server, "search_tools"),
+      );
     }
     case "get_tool": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tool = await backend.getTool(server as never, parsed.tool);
-      return jsonResult({ server: server.server, tool });
+      return jsonResult(
+        { server: server.server, tool },
+        metadataFor(server, "get_tool", parsed.tool),
+      );
     }
     case "call_tool": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const metadata = metadataFor(server, "call_tool", parsed.tool);
       if (parsed.fields === undefined) {
-        return backend.callTool(server as never, parsed.tool, parsed.arguments);
+        return annotateCallToolResult(
+          await backend.callTool(server as never, parsed.tool, parsed.arguments),
+          metadata,
+        );
       }
       if (server.backend === "graphql") {
         throw new CapletsError(
@@ -97,10 +111,13 @@ export async function handleServerTool(
       }
       validateFieldSelection(tool.outputSchema, parsed.fields);
 
-      return projectCallToolResult(
-        await backend.callTool(server as never, parsed.tool, parsed.arguments),
-        tool.outputSchema,
-        parsed.fields,
+      return annotateCallToolResult(
+        projectCallToolResult(
+          await backend.callTool(server as never, parsed.tool, parsed.arguments),
+          tool.outputSchema,
+          parsed.fields,
+        ),
+        metadata,
       );
     }
   }
@@ -203,16 +220,77 @@ type RequiredOperationRequest =
   | { operation: "get_tool"; tool: string }
   | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] };
 
-export function jsonResult(value: unknown): CallToolResult {
+export type CapletArtifact = {
+  kind: "screenshot" | "snapshot" | "console-log" | "network-log" | "file";
+  displayPath: string;
+  pathResolution: "absolute" | "relative-to-mcp-server";
+};
+
+export type CapletResultMetadata = {
+  caplet: string;
+  name: string;
+  backend: string;
+  operation: RequiredOperationRequest["operation"];
+  tool?: string;
+  status: "ok" | "error";
+  elapsedMs?: number;
+  artifacts?: CapletArtifact[];
+};
+
+export function metadataFor(
+  server: CapletConfig,
+  operation: RequiredOperationRequest["operation"],
+  tool?: string,
+  startedAt?: number,
+): CapletResultMetadata {
+  return {
+    caplet: server.server,
+    name: server.name,
+    backend: server.backend,
+    operation,
+    ...(tool === undefined ? {} : { tool }),
+    status: "ok",
+    ...(startedAt === undefined ? {} : { elapsedMs: Date.now() - startedAt }),
+  };
+}
+
+export function jsonResult(value: unknown, metadata?: CapletResultMetadata): CallToolResult {
   return {
     content: [
       {
         type: "text",
-        text: "Result available in structuredContent.result.",
+        text:
+          metadata === undefined
+            ? "Result available in structuredContent.result."
+            : `${metadata.name} ${metadata.operation} result available in structuredContent.result.`,
       },
     ],
-    structuredContent: { result: value as Record<string, unknown> },
+    structuredContent: {
+      ...(metadata === undefined ? {} : { caplets: metadata }),
+      result: value as Record<string, unknown>,
+    },
   };
+}
+
+export function annotateCallToolResult<T extends object>(
+  result: T,
+  metadata: CapletResultMetadata,
+): T & CallToolResult {
+  const existingMeta = (result as { _meta?: unknown })._meta;
+  const artifacts = extractArtifacts(result);
+  const annotatedMetadata = {
+    ...metadata,
+    status: (result as { isError?: unknown }).isError === true ? "error" : metadata.status,
+    ...(artifacts.length === 0 ? {} : { artifacts }),
+  };
+
+  return {
+    ...result,
+    _meta: {
+      ...(isPlainObject(existingMeta) ? existingMeta : {}),
+      caplets: annotatedMetadata,
+    },
+  } as T & CallToolResult;
 }
 
 export function projectCallToolResult<T extends object>(
@@ -243,6 +321,197 @@ export function projectCallToolResult<T extends object>(
     ],
     structuredContent: projected,
   } as T & CallToolResult;
+}
+
+export function extractArtifacts(result: unknown): CapletArtifact[] {
+  if (!isPlainObject(result) || !Array.isArray(result.content)) {
+    return [];
+  }
+
+  const artifacts: CapletArtifact[] = [];
+  const seen = new Set<string>();
+  for (const item of result.content) {
+    if (!isPlainObject(item) || item.type !== "text" || typeof item.text !== "string") {
+      continue;
+    }
+
+    const text = item.text;
+    for (const link of parseMarkdownLinks(text)) {
+      const label = link.label;
+      const displayPath = link.destination;
+      const matchStart = link.start;
+      const matchEnd = link.end;
+      const start = Math.max(
+        text.lastIndexOf(".", matchStart - 1),
+        text.lastIndexOf(";", matchStart - 1),
+        text.lastIndexOf(",", matchStart - 1),
+        text.lastIndexOf("\n", matchStart - 1),
+        0,
+      );
+      const followingDelimiters = [".", ";", ",", "\n"]
+        .map((delimiter) => text.indexOf(delimiter, matchEnd))
+        .filter((index) => index >= 0);
+      const end = followingDelimiters.length === 0 ? text.length : Math.min(...followingDelimiters);
+      const surroundingText = text.slice(start, end);
+      if (
+        !isLocalArtifactPath(displayPath) ||
+        seen.has(displayPath) ||
+        !isArtifactLink(displayPath, label, surroundingText)
+      ) {
+        continue;
+      }
+      seen.add(displayPath);
+      artifacts.push({
+        kind: artifactKind(displayPath, label, surroundingText),
+        displayPath,
+        pathResolution: isAbsoluteLocalPath(displayPath) ? "absolute" : "relative-to-mcp-server",
+      });
+    }
+  }
+  return artifacts;
+}
+
+type MarkdownLink = {
+  label: string;
+  destination: string;
+  start: number;
+  end: number;
+};
+
+function parseMarkdownLinks(text: string): MarkdownLink[] {
+  const links: MarkdownLink[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const labelStart = text.indexOf("[", index);
+    if (labelStart < 0) {
+      break;
+    }
+    const labelEnd = text.indexOf("](", labelStart + 1);
+    if (labelEnd < 0) {
+      break;
+    }
+    const destinationStart = labelEnd + 2;
+    const parsed = parseMarkdownLinkDestination(text, destinationStart);
+    if (parsed !== undefined) {
+      links.push({
+        label: text.slice(labelStart + 1, labelEnd),
+        destination: parsed.destination,
+        start: labelStart,
+        end: parsed.end,
+      });
+      index = parsed.end;
+      continue;
+    }
+    index = destinationStart;
+  }
+  return links;
+}
+
+function parseMarkdownLinkDestination(
+  text: string,
+  start: number,
+): { destination: string; end: number } | undefined {
+  let index = start;
+  while (/\s/.test(text[index] ?? "")) {
+    index += 1;
+  }
+  const destinationStart = index;
+  let parenDepth = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === "(") {
+      parenDepth += 1;
+    } else if (char === ")") {
+      if (parenDepth === 0) {
+        return { destination: text.slice(destinationStart, index), end: index + 1 };
+      }
+      parenDepth -= 1;
+    } else if (/\s/.test(char ?? "") && parenDepth === 0) {
+      const titleStart = skipWhitespace(text, index + 1);
+      if (text[titleStart] === '"' || text[titleStart] === "'") {
+        const titleEnd = findMarkdownLinkTitleEnd(text, titleStart);
+        return titleEnd === undefined
+          ? undefined
+          : { destination: text.slice(destinationStart, index), end: titleEnd };
+      }
+    }
+    index += 1;
+  }
+  return undefined;
+}
+
+function skipWhitespace(text: string, start: number): number {
+  let index = start;
+  while (/\s/.test(text[index] ?? "")) {
+    index += 1;
+  }
+  return index;
+}
+
+function findMarkdownLinkTitleEnd(text: string, start: number): number | undefined {
+  const quote = text[start];
+  for (let index = start + 1; index < text.length; index += 1) {
+    if (text[index] === quote) {
+      const end = skipWhitespace(text, index + 1);
+      return text[end] === ")" ? end + 1 : undefined;
+    }
+  }
+  return undefined;
+}
+
+function isLocalArtifactPath(path: string): boolean {
+  if (path.startsWith("#")) {
+    return false;
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path) && !/^[A-Za-z]:[\\/]/.test(path)) {
+    return false;
+  }
+  return path.length > 0;
+}
+
+function isArtifactLink(path: string, label: string, surroundingText: string): boolean {
+  const text = `${path} ${label} ${surroundingText}`.toLowerCase();
+  if (
+    /artifact|screenshot|screen[-_ ]?shot|snapshot|console|network|trace|archive|download|saved|file/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  return /\.(?:png|jpe?g|gif|webp|zip|tar|tgz|gz|har|log|txt|pdf|yaml|json)$/i.test(path);
+}
+
+function isAbsoluteLocalPath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+function artifactKind(
+  path: string,
+  label: string,
+  surroundingText: string,
+): CapletArtifact["kind"] {
+  const directText = `${path} ${label}`.toLowerCase();
+  const directKind = artifactKindFromText(directText);
+  if (directKind !== "file") {
+    return directKind;
+  }
+  return artifactKindFromText(surroundingText.toLowerCase());
+}
+
+function artifactKindFromText(text: string): CapletArtifact["kind"] {
+  if (/screenshot|screen[-_ ]?shot|viewport/.test(text)) {
+    return "screenshot";
+  }
+  if (/snapshot|aria[-_ ]?snapshot/.test(text)) {
+    return "snapshot";
+  }
+  if (/console[-_ ]?(?:log)?|browser[-_ ]?console/.test(text)) {
+    return "console-log";
+  }
+  if (/network[-_ ]?(?:log)?|har\b/.test(text)) {
+    return "network-log";
+  }
+  return "file";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

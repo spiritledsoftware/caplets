@@ -914,6 +914,24 @@ Available operations:
 Requests are strict: operation-specific extra fields are rejected, and `call_tool` requires
 `arguments` to be a JSON object.
 
+Discovery operations (`get_caplet`, `check_backend`, `list_tools`, `search_tools`, and
+`get_tool`) return wrapper-generated results whose `structuredContent.caplets` field
+identifies the Caplet, backend, operation, status, and elapsed time when available. Compact
+`list_tools` and `search_tools` entries may include input/output schema hashes; treat those
+hashes as reuse hints for a schema you have already inspected, not as a replacement for
+`get_tool` when arguments, output, or semantics are unclear.
+
+Direct `call_tool` preserves the downstream tool result shape instead of wrapping it in
+`structuredContent.result`. When the result can carry MCP metadata, Caplets adds
+`_meta.caplets` with the same call context and status. It may also include artifact metadata
+for paths mentioned by downstream content, such as screenshots, snapshots, logs, downloads,
+or other saved files. Artifact `displayPath` values are either absolute local paths or
+relative to the downstream MCP server process, not necessarily relative to the current
+project or Caplets process.
+
+For first use, the explicit progressive-discovery path is still safest: choose a Caplet,
+`search_tools` or `list_tools`, inspect uncertain tools with `get_tool`, then `call_tool`.
+
 ## Development
 
 ```sh

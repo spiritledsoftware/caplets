@@ -7,12 +7,53 @@ import { tmpdir } from "node:os";
 import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
-import { CapletsError } from "../src/errors";
+import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 import { handleServerTool } from "../src/tools";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
+
+describe("compact schema fingerprints", () => {
+  it("returns stable schema hashes and null for missing schemas", () => {
+    const config = parseConfig({
+      mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
+    });
+    const server = config.mcpServers.alpha!;
+    const manager = new DownstreamManager(new ServerRegistry(config));
+    const schema = {
+      type: "object",
+      properties: { value: { type: "string" }, count: { type: "number" } },
+    };
+
+    const first = manager.compact(server, { name: "first", inputSchema: schema } as Tool);
+    const second = manager.compact(server, { name: "second", inputSchema: schema } as Tool);
+
+    expect(first.inputSchemaHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(second.inputSchemaHash).toBe(first.inputSchemaHash);
+    expect(first.outputSchemaHash).toBeNull();
+  });
+
+  it("ignores object key order when hashing schemas", () => {
+    const config = parseConfig({
+      mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
+    });
+    const server = config.mcpServers.alpha!;
+    const manager = new DownstreamManager(new ServerRegistry(config));
+
+    const first = manager.compact(server, {
+      name: "first",
+      inputSchema: { type: "object", properties: { a: { type: "string" }, b: { type: "number" } } },
+    } as Tool);
+    const second = manager.compact(server, {
+      name: "second",
+      inputSchema: { properties: { b: { type: "number" }, a: { type: "string" } }, type: "object" },
+    } as Tool);
+
+    expect(second.inputSchemaHash).toBe(first.inputSchemaHash);
+  });
+});
 
 describe("downstream stdio lifecycle", () => {
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {

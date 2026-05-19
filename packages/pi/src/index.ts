@@ -120,20 +120,26 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
         return textComponent(theme.fg("warning", `${caplet.title} running...`));
       }
 
-      const output = result.content
-        .filter((item) => item.type === "text")
-        .map((item) => item.text)
-        .join("\n");
+      const metadata = capletsMetadata(result.details) ?? { name: caplet.title, artifacts: [] };
+      const header = capletsResultHeader(metadata);
       if (expanded) {
+        const artifactLines = metadata.artifacts.map(
+          (artifact) =>
+            `Artifact: ${artifact.kind} ${artifact.displayPath} (${artifact.pathResolution})`,
+        );
+        const preview = resultPreview(result.details, result.content);
         return textComponent(
-          theme.fg("success", `✓ ${caplet.title} complete`) +
-            theme.fg("dim", ` (${toolExpandKeyText()} to collapse)`) +
-            (output ? `\n${theme.fg("toolOutput", output)}` : ""),
+          [
+            theme.fg("success", `✓ ${header} complete`) +
+              theme.fg("dim", ` (${toolExpandKeyText()} to collapse)`),
+            ...artifactLines.map((line) => theme.fg("toolOutput", line)),
+            ...(preview ? [theme.fg("toolOutput", `Output preview:\n${preview}`)] : []),
+          ].join("\n"),
         );
       }
 
       return textComponent(
-        theme.fg("success", `✓ ${caplet.title} complete`) +
+        theme.fg("success", `✓ ${header} complete`) +
           theme.fg("dim", ` (${toolExpandKeyText()} to expand)`),
       );
     },
@@ -151,6 +157,93 @@ function textComponent(text: string): { render(width: number): string[]; invalid
     },
     invalidate() {},
   };
+}
+
+type CapletsResultArtifact = {
+  kind: string;
+  displayPath: string;
+  pathResolution: string;
+};
+
+type CapletsResultMetadata = {
+  name?: string;
+  operation?: string;
+  tool?: string;
+  artifacts: CapletsResultArtifact[];
+};
+
+function capletsResultHeader(metadata: CapletsResultMetadata): string {
+  return [metadata.name, metadata.operation, metadata.tool].filter(Boolean).join(" ");
+}
+
+function capletsMetadata(details: unknown): CapletsResultMetadata | undefined {
+  const result = objectProperty(details, "result");
+  const metadata =
+    objectProperty(objectProperty(result, "_meta"), "caplets") ??
+    objectProperty(objectProperty(result, "structuredContent"), "caplets");
+  if (!metadata) {
+    return undefined;
+  }
+  const resultMetadata: CapletsResultMetadata = { artifacts: [] };
+  const name = stringProperty(metadata, "name");
+  const operation = stringProperty(metadata, "operation");
+  const tool = stringProperty(metadata, "tool");
+  if (name) {
+    resultMetadata.name = name;
+  }
+  if (operation) {
+    resultMetadata.operation = operation;
+  }
+  if (tool) {
+    resultMetadata.tool = tool;
+  }
+  resultMetadata.artifacts = arrayProperty(metadata, "artifacts")
+    .map((artifact) => {
+      const kind = stringProperty(artifact, "kind");
+      const displayPath = stringProperty(artifact, "displayPath");
+      const pathResolution = stringProperty(artifact, "pathResolution");
+      return kind && displayPath && pathResolution
+        ? { kind, displayPath, pathResolution }
+        : undefined;
+    })
+    .filter((artifact): artifact is CapletsResultArtifact => Boolean(artifact));
+  return resultMetadata;
+}
+
+function resultPreview(
+  details: unknown,
+  content: Array<{ type: string; text?: string }>,
+  maxLength = 600,
+): string {
+  const rawContent = arrayProperty(objectProperty(details, "result"), "content");
+  const resultContent = rawContent.length > 0 ? rawContent : content;
+  const output = resultContent
+    .filter((item) => stringProperty(item, "type") === "text")
+    .map((item) => stringProperty(item, "text"))
+    .filter((text): text is string => Boolean(text))
+    .join("\n");
+  if (!output) {
+    return "";
+  }
+  return output.length > maxLength ? `${output.slice(0, maxLength).trimEnd()}…` : output;
+}
+
+function arrayProperty(value: unknown, key: string): unknown[] {
+  if (!value || typeof value !== "object" || !(key in value)) {
+    return [];
+  }
+  const property = (value as Record<string, unknown>)[key];
+  return Array.isArray(property) ? property : [];
+}
+
+function objectProperty(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || !(key in value)) {
+    return undefined;
+  }
+  const property = (value as Record<string, unknown>)[key];
+  return property && typeof property === "object" && !Array.isArray(property)
+    ? (property as Record<string, unknown>)
+    : undefined;
 }
 
 function stringProperty(value: unknown, key: string): string | undefined {
