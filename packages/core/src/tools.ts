@@ -46,18 +46,27 @@ export async function handleServerTool(
   cli?: CliToolsManager,
   caplets?: CapletSetManager,
 ): Promise<any> {
+  const startedAt = Date.now();
   const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
 
   switch (parsed.operation) {
     case "get_caplet":
-      return jsonResult(registry.detail(server), metadataFor(server, "get_caplet"));
-    case "check_backend":
       return jsonResult(
-        await backendFor(server, downstream, openapi, graphql, http, cli, caplets).check(
-          server as never,
-        ),
-        metadataFor(server, "check_backend"),
+        registry.detail(server),
+        metadataFor(server, "get_caplet", undefined, startedAt),
       );
+    case "check_backend": {
+      const result = await backendFor(
+        server,
+        downstream,
+        openapi,
+        graphql,
+        http,
+        cli,
+        caplets,
+      ).check(server as never);
+      return jsonResult(result, metadataFor(server, "check_backend", undefined, startedAt));
+    }
     case "list_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
@@ -67,7 +76,7 @@ export async function handleServerTool(
           server: server.server,
           tools: tools.slice(0, limit).map((tool) => backend.compact(server as never, tool)),
         },
-        metadataFor(server, "list_tools"),
+        metadataFor(server, "list_tools", undefined, startedAt),
       );
     }
     case "search_tools": {
@@ -80,7 +89,7 @@ export async function handleServerTool(
           query: parsed.query,
           tools: backend.search(server as never, tools, parsed.query, limit),
         },
-        metadataFor(server, "search_tools"),
+        metadataFor(server, "search_tools", undefined, startedAt),
       );
     }
     case "get_tool": {
@@ -88,16 +97,16 @@ export async function handleServerTool(
       const tool = await backend.getTool(server as never, parsed.tool);
       return jsonResult(
         { server: server.server, tool },
-        metadataFor(server, "get_tool", parsed.tool),
+        metadataFor(server, "get_tool", parsed.tool, startedAt),
       );
     }
     case "call_tool": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
-      const metadata = metadataFor(server, "call_tool", parsed.tool);
       if (parsed.fields === undefined) {
+        const result = await backend.callTool(server as never, parsed.tool, parsed.arguments);
         return annotateCallToolResult(
-          await backend.callTool(server as never, parsed.tool, parsed.arguments),
-          metadata,
+          result,
+          metadataFor(server, "call_tool", parsed.tool, startedAt),
         );
       }
       if (server.backend === "graphql") {
@@ -113,13 +122,14 @@ export async function handleServerTool(
       }
       validateFieldSelection(tool.outputSchema, parsed.fields);
 
+      const result = projectCallToolResult(
+        await backend.callTool(server as never, parsed.tool, parsed.arguments),
+        tool.outputSchema,
+        parsed.fields,
+      );
       return annotateCallToolResult(
-        projectCallToolResult(
-          await backend.callTool(server as never, parsed.tool, parsed.arguments),
-          tool.outputSchema,
-          parsed.fields,
-        ),
-        metadata,
+        result,
+        metadataFor(server, "call_tool", parsed.tool, startedAt),
       );
     }
   }

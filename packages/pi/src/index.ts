@@ -125,6 +125,7 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
 
       const metadata = capletsMetadata(result.details) ?? { name: caplet.title, artifacts: [] };
       const header = capletsResultHeader(metadata);
+      const statusView = capletsStatusView(metadata.status);
       if (expanded) {
         const artifactLines = metadata.artifacts.map(
           (artifact) =>
@@ -133,7 +134,7 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
         const output = resultFullContent(result.content);
         return textComponent(
           [
-            theme.fg("success", `✓ ${header} complete`) +
+            theme.fg(statusView.tone, `${statusView.icon} ${header} ${statusView.label}`) +
               theme.fg("dim", ` (${toolExpandKeyText()} to collapse)`),
             ...artifactLines.map((line) => theme.fg("toolOutput", line)),
             ...(output ? [theme.fg("toolOutput", output)] : []),
@@ -144,7 +145,7 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
       const preview = resultPreview(result.details, result.content);
       return textComponent(
         [
-          theme.fg("success", `✓ ${header} complete`) +
+          theme.fg(statusView.tone, `${statusView.icon} ${header} ${statusView.label}`) +
             theme.fg("dim", ` (${toolExpandKeyText()} to expand)`),
           ...(preview ? [theme.fg("toolOutput", preview)] : []),
         ].join("\n"),
@@ -183,8 +184,20 @@ type CapletsResultMetadata = {
   name?: string;
   operation?: string;
   tool?: string;
+  status?: string;
   artifacts: CapletsResultArtifact[];
 };
+
+function capletsStatusView(status?: string): {
+  tone: "success" | "error";
+  icon: string;
+  label: string;
+} {
+  if (status === "error" || status === "failed") {
+    return { tone: "error", icon: "✗", label: "failed" };
+  }
+  return { tone: "success", icon: "✓", label: status && status !== "ok" ? status : "complete" };
+}
 
 function capletsResultHeader(metadata: CapletsResultMetadata): string {
   return [metadata.name, metadata.operation, metadata.tool].filter(Boolean).join(" ");
@@ -202,6 +215,7 @@ function capletsMetadata(details: unknown): CapletsResultMetadata | undefined {
   const name = stringProperty(metadata, "name");
   const operation = stringProperty(metadata, "operation");
   const tool = stringProperty(metadata, "tool");
+  const status = stringProperty(metadata, "status");
   if (name) {
     resultMetadata.name = name;
   }
@@ -210,6 +224,9 @@ function capletsMetadata(details: unknown): CapletsResultMetadata | undefined {
   }
   if (tool) {
     resultMetadata.tool = tool;
+  }
+  if (status) {
+    resultMetadata.status = status;
   }
   resultMetadata.artifacts = arrayProperty(metadata, "artifacts")
     .map((artifact) => {

@@ -231,6 +231,43 @@ describe("@caplets/pi", () => {
     ).toBe("✓ Context7 call_tool query-docs complete (ctrl+o to expand)\nvery long docs");
   });
 
+  it("renders caplet error status as failed", async () => {
+    const service = mockService([
+      {
+        caplet: "context7",
+        toolName: "caplets_context7",
+        title: "Context7",
+        description: "Context7 Caplet",
+        promptGuidance: ["Use caplets_context7 for Context7."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "request failed" }],
+      isError: true,
+      _meta: {
+        caplets: {
+          name: "Context7",
+          operation: "call_tool",
+          tool: "query-docs",
+          status: "error",
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", { operation: "call_tool", tool: "query-docs" });
+
+    expect(
+      renderText(tool?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)),
+    ).toBe("✗ Context7 call_tool query-docs failed (ctrl+o to expand)\nrequest failed");
+  });
+
   it("disambiguates identical downstream tool names by Caplet title", async () => {
     const service = mockService([
       {

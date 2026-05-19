@@ -219,6 +219,7 @@ describe("generated tool handlers", () => {
       backend: "mcp",
       operation: "get_caplet",
       status: "ok",
+      elapsedMs: expect.any(Number),
     });
     expect(result.structuredContent?.result).toEqual({
       caplet: "alpha",
@@ -381,6 +382,7 @@ describe("generated tool handlers", () => {
       backend: "mcp",
       operation: "list_tools",
       status: "ok",
+      elapsedMs: expect.any(Number),
     });
     expect(list.structuredContent?.result).toEqual({
       server: "alpha",
@@ -417,6 +419,7 @@ describe("generated tool handlers", () => {
       operation: "get_tool",
       tool: "write",
       status: "ok",
+      elapsedMs: expect.any(Number),
     });
     expect(full.structuredContent?.result).toEqual({ server: "alpha", tool: tools[1] });
   });
@@ -502,6 +505,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "read",
           status: "ok",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -534,6 +538,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "write",
           status: "ok",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -566,6 +571,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "read",
           status: "error",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -734,6 +740,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "read",
           status: "ok",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -925,6 +932,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "read",
           status: "error",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -1054,6 +1062,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "query_user",
           status: "ok",
+          elapsedMs: expect.any(Number),
         },
       },
     });
@@ -1150,6 +1159,7 @@ describe("generated tool handlers", () => {
           operation: "call_tool",
           tool: "check",
           status: "ok",
+          elapsedMs: expect.any(Number),
         },
       },
     });
