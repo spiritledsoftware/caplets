@@ -16,7 +16,7 @@ const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
 
 describe("compact schema fingerprints", () => {
-  it("returns stable schema hashes and null for missing schemas", () => {
+  it("returns compact schema presence flags", () => {
     const config = parseConfig({
       mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
     });
@@ -28,30 +28,33 @@ describe("compact schema fingerprints", () => {
     };
 
     const first = manager.compact(server, { name: "first", inputSchema: schema } as Tool);
-    const second = manager.compact(server, { name: "second", inputSchema: schema } as Tool);
+    const second = manager.compact(server, {
+      name: "second",
+      inputSchema: schema,
+      outputSchema: schema,
+    } as Tool);
 
-    expect(first.inputSchemaHash).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(second.inputSchemaHash).toBe(first.inputSchemaHash);
-    expect(first.outputSchemaHash).toBeNull();
+    expect(first).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
+    expect(first).not.toHaveProperty("inputSchemaHash");
+    expect(second).not.toHaveProperty("outputSchemaHash");
   });
 
-  it("ignores object key order when hashing schemas", () => {
+  it("does not include schema hashes in compact metadata", () => {
     const config = parseConfig({
       mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
     });
     const server = config.mcpServers.alpha!;
     const manager = new DownstreamManager(new ServerRegistry(config));
 
-    const first = manager.compact(server, {
+    const compact = manager.compact(server, {
       name: "first",
       inputSchema: { type: "object", properties: { a: { type: "string" }, b: { type: "number" } } },
     } as Tool);
-    const second = manager.compact(server, {
-      name: "second",
-      inputSchema: { properties: { b: { type: "number" }, a: { type: "string" } }, type: "object" },
-    } as Tool);
 
-    expect(second.inputSchemaHash).toBe(first.inputSchemaHash);
+    expect(compact).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(compact).not.toHaveProperty("inputSchemaHash");
+    expect(compact).not.toHaveProperty("outputSchemaHash");
   });
 });
 
@@ -123,7 +126,7 @@ describe("downstream stdio lifecycle", () => {
       )) as any;
 
       expect(result).toMatchObject({
-        content: [{ type: "text", text: '{\n  "message": "hello"\n}' }],
+        content: [{ type: "text", text: "structured keys: message" }],
         structuredContent: { message: "hello" },
       });
     } finally {

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "@caplets/core/native";
 import capletsPiExtension, { type PiExtensionApi } from "../src/index";
@@ -227,7 +228,7 @@ describe("@caplets/pi", () => {
     ).toBe("Context7 call_tool query-docs");
     expect(
       renderText(tool?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)),
-    ).toBe("✓ Context7 call_tool query-docs complete (ctrl+o to expand)");
+    ).toBe("✓ Context7 call_tool query-docs complete (ctrl+o to expand)\nvery long docs");
   });
 
   it("disambiguates identical downstream tool names by Caplet title", async () => {
@@ -292,7 +293,7 @@ describe("@caplets/pi", () => {
           plainTheme,
         ),
       ),
-    ).toBe("✓ Browser call_tool browser_click complete (ctrl+o to expand)");
+    ).toBe("✓ Browser call_tool browser_click complete (ctrl+o to expand)\nclicked");
     expect(
       renderText(
         registered[1]?.renderResult(
@@ -301,7 +302,7 @@ describe("@caplets/pi", () => {
           plainTheme,
         ),
       ),
-    ).toBe("✓ Stealth Browser call_tool browser_click complete (ctrl+o to expand)");
+    ).toBe("✓ Stealth Browser call_tool browser_click complete (ctrl+o to expand)\nclicked");
   });
 
   it("keeps collapsed output concise when caplet result content contains a large snapshot", async () => {
@@ -341,13 +342,59 @@ describe("@caplets/pi", () => {
       ?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)
       .render(120);
 
-    expect(renderedLines).toEqual([
+    expect(renderedLines?.[0]).toBe(
       "✓ Browser call_tool browser_snapshot complete (ctrl+o to expand)",
-    ]);
-    expect(renderedLines?.join("\n")).not.toContain("button[name='Buy now']");
+    );
+    expect(renderedLines?.[1]).toContain("# Page snapshot");
+    expect(renderedLines?.join("\n").length).toBeLessThan(750);
     expect(result?.details.result).toMatchObject({
       content: [{ type: "text", text: largeSnapshot }],
     });
+  });
+
+  it("truncates custom render lines to the requested terminal width", async () => {
+    const service = mockService([
+      {
+        caplet: "browser",
+        toolName: "caplets_browser",
+        title: "Browser",
+        description: "Browser Caplet",
+        promptGuidance: ["Use caplets_browser for Browser."],
+      },
+    ]);
+    const longToolName = "browser_" + "x".repeat(120);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "snapshot " + "y".repeat(120) }],
+      _meta: {
+        caplets: {
+          name: "Browser",
+          operation: "call_tool",
+          tool: longToolName,
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", {
+      operation: "call_tool",
+      tool: longToolName,
+    });
+    const callLines = tool
+      ?.renderCall({ operation: "call_tool", tool: longToolName }, plainTheme)
+      .render(40);
+    const resultLines = tool
+      ?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)
+      .render(40);
+
+    expect([...callLines!, ...resultLines!].map((line) => visibleWidth(line))).toEqual([
+      40, 40, 40,
+    ]);
   });
 
   it("renders screenshot artifact metadata before a concise expanded output preview", async () => {
@@ -398,11 +445,11 @@ describe("@caplets/pi", () => {
     expect(rendered).toContain(
       "Artifact: screenshot ./browser-caplet-localhost-4199.png (relative-to-mcp-server)",
     );
-    expect(rendered).toContain("Output preview:");
-    expect(rendered).toContain("…");
-    expect(rendered.length).toBeLessThan(900);
+    expect(rendered).toContain("# Page snapshot");
+    expect(rendered).not.toContain("Result summary:");
+    expect(rendered.length).toBeGreaterThan(900);
     expect(rendered.indexOf("Artifact: screenshot")).toBeLessThan(
-      rendered.indexOf("Output preview:"),
+      rendered.indexOf("# Page snapshot"),
     );
   });
 
@@ -439,9 +486,10 @@ describe("@caplets/pi", () => {
     );
 
     expect(rendered).toContain("✓ Context7 list_tools complete (ctrl+o to collapse)");
-    expect(rendered).toContain("Output preview:\nvery long docs");
+    expect(rendered).toContain("\nvery long docs");
+    expect(rendered).not.toContain("Result summary:");
     expect(rendered.indexOf("✓ Context7 list_tools complete")).toBeLessThan(
-      rendered.indexOf("Output preview:"),
+      rendered.indexOf("very long docs"),
     );
   });
 

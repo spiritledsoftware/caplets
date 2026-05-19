@@ -44,9 +44,9 @@
     "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
-    "@types/node": "^25.7.0",
-    "@typescript/native-preview": "7.0.0-dev.20260515.1",
-    "rolldown": "^1.0.0",
+    "@types/node": "^25.9.0",
+    "@typescript/native-preview": "7.0.0-dev.20260518.1",
+    "rolldown": "^1.0.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   },

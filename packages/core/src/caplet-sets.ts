@@ -9,7 +9,7 @@ import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
 import { capabilityDescription, ServerRegistry } from "./registry";
 import { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
-import { schemaHash } from "./schema-hash";
+import { searchToolList } from "./tool-search";
 import { handleServerTool } from "./tools";
 
 type ChildRuntime = {
@@ -149,23 +149,13 @@ export class CapletSetManager {
       server: config.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
-      inputSchemaHash: schemaHash(tool.inputSchema),
-      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 
   search(config: CapletSetConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(config, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(config, tool));
   }
 
   private async childRuntime(config: CapletSetConfig, force: boolean): Promise<ChildRuntime> {

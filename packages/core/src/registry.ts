@@ -23,7 +23,6 @@ export type CapletServerDetail = {
   name: string;
   description: string;
   tags?: string[];
-  body?: string;
   backend:
     | {
         type: "mcp";
@@ -67,13 +66,6 @@ export type CapletServerDetail = {
         source: "configPath" | "capletsRoot" | "both";
         toolCacheTtlMs: number;
       };
-  mcpServer?: {
-    transport: CapletServerConfig["transport"];
-    disabled: boolean;
-    startupTimeoutMs: number;
-    callTimeoutMs: number;
-    toolCacheTtlMs: number;
-  };
 };
 
 export class ServerRegistry {
@@ -140,19 +132,7 @@ export class ServerRegistry {
       name: server.name,
       description: server.description,
       ...(server.tags ? { tags: server.tags } : {}),
-      ...(server.body ? { body: server.body } : {}),
       backend,
-      ...(server.backend === "mcp"
-        ? {
-            mcpServer: {
-              transport: server.transport,
-              disabled: server.disabled,
-              startupTimeoutMs: server.startupTimeoutMs,
-              callTimeoutMs: server.callTimeoutMs,
-              toolCacheTtlMs: server.toolCacheTtlMs,
-            },
-          }
-        : {}),
     };
   }
 

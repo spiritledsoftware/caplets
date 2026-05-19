@@ -76,6 +76,7 @@ export async function computeSurfaceBenchmark() {
   const topLevelCollisions = duplicateNameCollisions(capletsPayload.tools);
   const initialPayloadReduction = 1 - caplets.bytes / direct.bytes;
   const initialToolReduction = 1 - caplets.toolCount / direct.toolCount;
+  const runtime = runtimeResultStats();
 
   return {
     // Fixed timestamp keeps deterministic benchmark reports reproducible.
@@ -110,6 +111,7 @@ export async function computeSurfaceBenchmark() {
         total: 4,
       },
     },
+    runtime,
     thresholds: SURFACE_THRESHOLDS,
   };
 }
@@ -226,6 +228,39 @@ Both live commands accept benchmark runner options after \`--\`, for example \`-
 - Caplets adds scoped discovery calls before invoking a downstream tool; the benchmark reports this expected path length but does not claim it is always faster wall-clock.
 - Live benchmark results are model-dependent and should be compared only with the recorded agent, model, command, and run metadata.
 `;
+}
+
+function runtimeResultStats() {
+  const structured = {
+    status: 200,
+    statusText: "OK",
+    headers: { "content-type": "application/json" },
+    body: {
+      items: Array.from({ length: 20 }, (_, index) => ({
+        id: `item-${index}`,
+        title: `Example item ${index}`,
+        description:
+          "Representative downstream payload content used for token surface measurement.",
+      })),
+    },
+    elapsedMs: 42,
+  };
+  const duplicated = {
+    content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
+    structuredContent: structured,
+  };
+  const compact = {
+    content: [{ type: "text", text: "status 200; OK; body" }],
+    structuredContent: structured,
+  };
+  const duplicatedBytes = Buffer.byteLength(JSON.stringify(duplicated), "utf8");
+  const compactBytes = Buffer.byteLength(JSON.stringify(compact), "utf8");
+  return {
+    duplicatedStructuredContentBytes: duplicatedBytes,
+    compactStructuredContentBytes: compactBytes,
+    compactReduction: 1 - compactBytes / duplicatedBytes,
+    compactReductionPercent: percent(1 - compactBytes / duplicatedBytes),
+  };
 }
 
 function surfaceStats(payload) {

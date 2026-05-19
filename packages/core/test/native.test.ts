@@ -102,20 +102,9 @@ describe("native Caplets service", () => {
     const guidance = nativeCapletsSystemGuidance(["caplets_linear_api__v2"]);
 
     expect(guidance).toContain("caplets_linear_api__v2");
+    expect(guidance).toContain("Flow: get_caplet when the domain is unfamiliar");
     expect(guidance).toContain(
-      "Use `get_caplet` when choosing a Caplet for an unfamiliar task or when its capability is unclear.",
-    );
-    expect(guidance).toContain(
-      "Use `get_tool` before `call_tool` when a downstream tool is unfamiliar or its argument or output schema is unclear.",
-    );
-    expect(guidance).toContain(
-      "Schema hashes from `list_tools` can identify matching schemas across Caplets when you already understand that exact hash.",
-    );
-    expect(guidance).toContain(
-      "For `call_tool`, put downstream inputs only inside the top-level `arguments` object.",
-    );
-    expect(guidance).toContain(
-      "Do not invent downstream tool names; execute only exact names returned by `list_tools`, `search_tools`, or `get_tool`.",
+      "Use fields on call_tool when a non-GraphQL downstream outputSchema allows",
     );
   });
 
@@ -134,12 +123,7 @@ describe("native Caplets service", () => {
     }).join("\n");
 
     expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
-    expect(guidance).toContain(
-      "For unfamiliar tasks, discover safely with get_caplet, then search_tools or list_tools, then get_tool when schemas are unclear.",
-    );
-    expect(guidance).toContain(
-      "Call call_tool only with exact downstream tool names and keep downstream inputs inside arguments.",
-    );
+    expect(guidance).not.toContain("For unfamiliar tasks, discover safely");
     expect(guidance).not.toContain("Call caplets_browser with operation get_caplet before");
   });
 

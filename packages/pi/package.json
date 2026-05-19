@@ -35,14 +35,15 @@
     "@caplets/core": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.7.0",
-    "@typescript/native-preview": "7.0.0-dev.20260515.1",
-    "rolldown": "^1.0.0",
+    "@types/node": "^25.9.0",
+    "@typescript/native-preview": "7.0.0-dev.20260518.1",
+    "rolldown": "^1.0.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0"
+    "@earendil-works/pi-coding-agent": ">=0",
+    "@earendil-works/pi-tui": ">=0"
   },
   "engines": {
     "node": ">=22"

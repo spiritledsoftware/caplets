@@ -1115,7 +1115,7 @@
             "maximum": 9007199254740991
           },
           "maxResponseBytes": {
-            "default": 1000000,
+            "default": 200000,
             "description": "Maximum HTTP action response body bytes to read.",
             "type": "integer",
             "exclusiveMinimum": 0,
@@ -1289,7 +1289,7 @@
             "maximum": 9007199254740991
           },
           "maxOutputBytes": {
-            "default": 1000000,
+            "default": 200000,
             "description": "Default maximum combined stdout and stderr bytes to keep.",
             "type": "integer",
             "exclusiveMinimum": 0,

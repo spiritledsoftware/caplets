@@ -205,7 +205,7 @@ describe("HttpActionManager", () => {
       http,
     )) as any;
     expect(projected.structuredContent).toEqual({ body: { ok: true } });
-    expect(projected.content[0].text).toBe(JSON.stringify({ body: { ok: true } }, null, 2));
+    expect(projected.content[0].text).toBe("body");
   });
 
   it("builds requests from path, query, header, and JSON body mappings", async () => {

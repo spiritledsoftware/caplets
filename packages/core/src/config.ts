@@ -599,7 +599,7 @@ const publicHttpApiSchema = z
       .number()
       .int()
       .positive()
-      .default(1_000_000)
+      .default(200_000)
       .describe("Maximum HTTP action response body bytes to read."),
     disabled: z.boolean().default(false).describe("When true, omit this HTTP API Caplet."),
   })
@@ -691,7 +691,7 @@ const publicCliToolsSchema = z
       .number()
       .int()
       .positive()
-      .default(1_000_000)
+      .default(200_000)
       .describe("Default maximum combined stdout and stderr bytes to keep."),
     disabled: z.boolean().default(false).describe("When true, omit this CLI tools Caplet."),
   })

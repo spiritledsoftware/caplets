@@ -6,7 +6,8 @@ import type { CliToolActionConfig, CliToolsConfig } from "./config";
 import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
-import { schemaHash } from "./schema-hash";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type CliToolAction = CliToolActionConfig & { name: string };
@@ -87,7 +88,7 @@ export class CliToolsManager {
       const result = await spawnCommand(execution, controller.signal, () => Date.now() - startedAt);
       const structured = parseStructuredResult(action, result, result.exitCode !== 0);
       return {
-        content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
+        content: compactStructuredContent(structured),
         structuredContent: structured,
         isError: result.exitCode !== 0,
       };
@@ -116,23 +117,13 @@ export class CliToolsManager {
       server: config.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
-      inputSchemaHash: schemaHash(tool.inputSchema),
-      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 
   search(config: CliToolsConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(config, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(config, tool));
   }
 
   private toTool(action: CliToolAction): Tool {

@@ -179,7 +179,7 @@ describe("CliToolsManager", () => {
     expect(config.cliTools.local).toMatchObject({
       backend: "cli",
       timeoutMs: 60000,
-      maxOutputBytes: 1000000,
+      maxOutputBytes: 200000,
       actions: {
         echo_json: {
           command: process.execPath,

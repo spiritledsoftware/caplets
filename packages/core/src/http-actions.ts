@@ -6,7 +6,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { schemaHash } from "./schema-hash";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type HttpActionOperation = HttpActionConfig & { name: string };
@@ -96,7 +97,7 @@ export class HttpActionManager {
       }
       const parsed = await readResponse(response, api, Date.now() - startedAt);
       return {
-        content: [{ type: "text", text: JSON.stringify(parsed, null, 2) }],
+        content: compactStructuredContent(parsed),
         structuredContent: parsed,
         isError: !response.ok,
       };
@@ -125,23 +126,13 @@ export class HttpActionManager {
       server: api.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
-      inputSchemaHash: schemaHash(tool.inputSchema),
-      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 
   search(api: HttpApiConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(api, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(api, tool));
   }
 
   private toTool(operation: HttpActionOperation): Tool {

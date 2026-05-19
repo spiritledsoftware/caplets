@@ -11,6 +11,7 @@ import type { OpenApiManager } from "./openapi";
 import type { ServerRegistry } from "./registry";
 import { projectStructuredContent, validateFieldSelection } from "./field-selection";
 import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema";
+import { compactStructuredContent } from "./result-content";
 
 const operationSchema = z.enum(operations);
 
@@ -60,10 +61,11 @@ export async function handleServerTool(
     case "list_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
+      const limit = parsed.limit ?? tools.length;
       return jsonResult(
         {
           server: server.server,
-          tools: tools.map((tool) => backend.compact(server as never, tool)),
+          tools: tools.slice(0, limit).map((tool) => backend.compact(server as never, tool)),
         },
         metadataFor(server, "list_tools"),
       );
@@ -167,9 +169,16 @@ export function validateOperationRequest(
   switch (value.operation) {
     case "get_caplet":
     case "check_backend":
-    case "list_tools":
       allowed([]);
       return { operation: value.operation };
+    case "list_tools":
+      allowed(["limit"]);
+      if (value.limit !== undefined && value.limit > maxSearchLimit) {
+        throw new CapletsError("REQUEST_INVALID", `list_tools limit must be <= ${maxSearchLimit}`);
+      }
+      return value.limit === undefined
+        ? { operation: "list_tools" }
+        : { operation: "list_tools", limit: value.limit };
     case "search_tools":
       allowed(["query", "limit"]);
       if (!value.query) {
@@ -215,7 +224,8 @@ function assertNever(value: never): never {
 }
 
 type RequiredOperationRequest =
-  | { operation: "get_caplet" | "check_backend" | "list_tools" }
+  | { operation: "get_caplet" | "check_backend" }
+  | { operation: "list_tools"; limit?: number }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
   | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] };
@@ -259,10 +269,7 @@ export function jsonResult(value: unknown, metadata?: CapletResultMetadata): Cal
     content: [
       {
         type: "text",
-        text:
-          metadata === undefined
-            ? "Result available in structuredContent.result."
-            : `${metadata.name} ${metadata.operation} result available in structuredContent.result.`,
+        text: JSON.stringify(value, null, 2),
       },
     ],
     structuredContent: {
@@ -313,12 +320,7 @@ export function projectCallToolResult<T extends object>(
   const projected = projectStructuredContent(structuredContent, outputSchema, fields);
   return {
     ...result,
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(projected, null, 2),
-      },
-    ],
+    content: compactStructuredContent(projected),
     structuredContent: projected,
   } as T & CallToolResult;
 }

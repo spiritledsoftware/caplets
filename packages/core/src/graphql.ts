@@ -34,7 +34,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { schemaHash } from "./schema-hash";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const GRAPHQL_METHOD = "POST";
 const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
@@ -188,7 +189,7 @@ export class GraphQLManager {
         body,
       };
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: compactStructuredContent(result),
         structuredContent: result,
         isError:
           !response.ok ||
@@ -219,11 +220,8 @@ export class GraphQLManager {
       server: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
-      inputSchemaHash: schemaHash(tool.inputSchema),
-      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 
@@ -233,14 +231,7 @@ export class GraphQLManager {
     query: string,
     limit: number,
   ): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(endpoint, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(endpoint, tool));
   }
 
   private async getOperation(

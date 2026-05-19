@@ -42,6 +42,16 @@ describe("generated tool request validation", () => {
     );
   });
 
+  it("validates list_tools limit", () => {
+    expect(validateOperationRequest({ operation: "list_tools", limit: 2 }, 50)).toEqual({
+      operation: "list_tools",
+      limit: 2,
+    });
+    expect(() => validateOperationRequest({ operation: "list_tools", limit: 51 }, 50)).toThrow(
+      CapletsError,
+    );
+  });
+
   it("accepts top-level field selection only for call_tool", () => {
     expect(
       validateOperationRequest(
@@ -130,7 +140,14 @@ describe("generated tool request validation", () => {
       result: { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
     });
     expect(result.content).toEqual([
-      { type: "text", text: "Result available in structuredContent.result." },
+      {
+        type: "text",
+        text: JSON.stringify(
+          { server: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+          null,
+          2,
+        ),
+      },
     ]);
   });
 
@@ -147,12 +164,9 @@ describe("generated tool request validation", () => {
     expect(operationDescription).toContain("call_tool");
     expect(toolDescription).toContain("Exact downstream tool name");
     expect(argumentsDescription).toContain("arguments");
-    expect(argumentsDescription).toContain(
-      '"operation":"call_tool","tool":"web_search_exa","arguments":{"query":"latest MCP docs","numResults":3}}',
-    );
-    expect(argumentsDescription).toContain("top-level query");
+    expect(argumentsDescription).toContain("downstream inputs");
     expect(fieldsDescription).toBe(
-      'Optional for call_tool after get_tool shows outputSchema on a non-GraphQL tool. Example: fields: ["path.to.field"].',
+      "Optional call_tool structured output paths when outputSchema allows it.",
     );
   });
 });
@@ -212,13 +226,6 @@ describe("generated tool handlers", () => {
       description: "Search alpha project documents.",
       backend: {
         type: "mcp",
-        transport: "stdio",
-        disabled: false,
-        startupTimeoutMs: 10000,
-        callTimeoutMs: 60000,
-        toolCacheTtlMs: 30000,
-      },
-      mcpServer: {
         transport: "stdio",
         disabled: false,
         startupTimeoutMs: 10000,
@@ -337,15 +344,8 @@ describe("generated tool handlers", () => {
       downstream,
     )) as any;
 
-    expect(browser.content).toEqual([
-      { type: "text", text: "Browser list_tools result available in structuredContent.result." },
-    ]);
-    expect(stealth.content).toEqual([
-      {
-        type: "text",
-        text: "Stealth Browser list_tools result available in structuredContent.result.",
-      },
-    ]);
+    expect(browser.content[0]?.text).toContain("browser_click");
+    expect(stealth.content[0]?.text).toContain("browser_click");
     expect(browser.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
     expect(stealth.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
   });
@@ -374,9 +374,7 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     )) as any;
-    expect(list.content).toEqual([
-      { type: "text", text: "Alpha list_tools result available in structuredContent.result." },
-    ]);
+    expect(list.content[0]?.text).toContain("read");
     expect(list.structuredContent?.caplets).toEqual({
       caplet: "alpha",
       name: "Alpha",
@@ -421,6 +419,59 @@ describe("generated tool handlers", () => {
       status: "ok",
     });
     expect(full.structuredContent?.result).toEqual({ server: "alpha", tool: tools[1] });
+  });
+
+  it("limits listed tools", async () => {
+    const downstream = {
+      listTools: vi.fn().mockResolvedValue(tools),
+      compact: (_capletServer: typeof server, tool: Tool) => ({ tool: tool.name }),
+    } as unknown as DownstreamManager;
+
+    const list = (await handleServerTool(
+      server,
+      { operation: "list_tools", limit: 1 },
+      registry,
+      downstream,
+    )) as any;
+
+    expect(list.structuredContent?.result.tools).toEqual([{ tool: "read" }]);
+  });
+
+  it("searches tools by any query token", async () => {
+    const browserTools: Tool[] = [
+      {
+        name: "browser_navigate",
+        description: "Navigate to a URL",
+        inputSchema: { type: "object" },
+      },
+      {
+        name: "browser_take_screenshot",
+        description: "Take a screenshot",
+        inputSchema: { type: "object" },
+      },
+      {
+        name: "browser_click",
+        description: "Perform click on a page",
+        inputSchema: { type: "object" },
+      },
+      {
+        name: "browser_snapshot",
+        description: "Capture accessibility snapshot",
+        inputSchema: { type: "object" },
+      },
+      {
+        name: "browser_console_messages",
+        description: "Returns console messages",
+        inputSchema: { type: "object" },
+      },
+    ];
+    const downstream = new DownstreamManager(registry);
+
+    expect(
+      downstream
+        .search(server, browserTools, "navigate screenshot click snapshot type", 10)
+        .map((tool) => tool.tool),
+    ).toEqual(["browser_click", "browser_navigate", "browser_snapshot", "browser_take_screenshot"]);
   });
 
   it("annotates call_tool result metadata without changing downstream shape", async () => {
@@ -672,7 +723,7 @@ describe("generated tool handlers", () => {
 
     expect(result).toEqual({
       ...downstreamResult,
-      content: [{ type: "text", text: '{\n  "message": "ok"\n}' }],
+      content: [{ type: "text", text: "structured keys: message" }],
       structuredContent: { message: "ok" },
       _meta: {
         requestId: "req-1",
@@ -738,7 +789,7 @@ describe("generated tool handlers", () => {
     );
 
     expect(result).toMatchObject({
-      content: [{ type: "text", text: '{\n  "body": {\n    "name": "Ada"\n  }\n}' }],
+      content: [{ type: "text", text: "body" }],
       structuredContent: { body: { name: "Ada" } },
     });
     expect(openapi.getTool).toHaveBeenCalledWith(openApiServer, "getUser");
@@ -791,7 +842,7 @@ describe("generated tool handlers", () => {
     );
 
     expect(result).toMatchObject({
-      content: [{ type: "text", text: '{\n  "ok": true\n}' }],
+      content: [{ type: "text", text: "structured keys: ok" }],
       structuredContent: { ok: true },
     });
     expect(http.getTool).toHaveBeenCalledWith(httpServer, "check");

@@ -1,4 +1,5 @@
 import { keyText, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import {
   createNativeCapletsService,
@@ -100,7 +101,9 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
       const result = await service.execute(caplet.caplet, params);
       const serialized = serializeResult(result);
       return {
-        content: [{ type: "text", text: serialized.text }],
+        content: serialized.serializationError
+          ? [{ type: "text", text: serialized.text }]
+          : agentContent(result),
         details: serialized.serializationError
           ? { result, serializationError: serialized.serializationError }
           : { result },
@@ -127,20 +130,24 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
           (artifact) =>
             `Artifact: ${artifact.kind} ${artifact.displayPath} (${artifact.pathResolution})`,
         );
-        const preview = resultPreview(result.details, result.content);
+        const output = resultFullContent(result.content);
         return textComponent(
           [
             theme.fg("success", `✓ ${header} complete`) +
               theme.fg("dim", ` (${toolExpandKeyText()} to collapse)`),
             ...artifactLines.map((line) => theme.fg("toolOutput", line)),
-            ...(preview ? [theme.fg("toolOutput", `Output preview:\n${preview}`)] : []),
+            ...(output ? [theme.fg("toolOutput", output)] : []),
           ].join("\n"),
         );
       }
 
+      const preview = resultPreview(result.details, result.content);
       return textComponent(
-        theme.fg("success", `✓ ${header} complete`) +
-          theme.fg("dim", ` (${toolExpandKeyText()} to expand)`),
+        [
+          theme.fg("success", `✓ ${header} complete`) +
+            theme.fg("dim", ` (${toolExpandKeyText()} to expand)`),
+          ...(preview ? [theme.fg("toolOutput", preview)] : []),
+        ].join("\n"),
       );
     },
   };
@@ -152,11 +159,18 @@ function toolExpandKeyText(): string {
 
 function textComponent(text: string): { render(width: number): string[]; invalidate(): void } {
   return {
-    render(_width) {
-      return text.split("\n");
+    render(width) {
+      return text.split("\n").map((line) => fitLineToWidth(line, width));
     },
     invalidate() {},
   };
+}
+
+function fitLineToWidth(line: string, width: number): string {
+  if (width <= 0 || visibleWidth(line) <= width) {
+    return line;
+  }
+  return truncateToWidth(line, width);
 }
 
 type CapletsResultArtifact = {
@@ -213,19 +227,26 @@ function capletsMetadata(details: unknown): CapletsResultMetadata | undefined {
 function resultPreview(
   details: unknown,
   content: Array<{ type: string; text?: string }>,
-  maxLength = 600,
+  maxLength = 96,
 ): string {
-  const rawContent = arrayProperty(objectProperty(details, "result"), "content");
-  const resultContent = rawContent.length > 0 ? rawContent : content;
-  const output = resultContent
+  const result = objectProperty(details, "result");
+  if (result) {
+    return compactResultText(result, maxLength);
+  }
+  const output = content
     .filter((item) => stringProperty(item, "type") === "text")
     .map((item) => stringProperty(item, "text"))
     .filter((text): text is string => Boolean(text))
     .join("\n");
-  if (!output) {
-    return "";
-  }
-  return output.length > maxLength ? `${output.slice(0, maxLength).trimEnd()}…` : output;
+  return compactText(output, maxLength);
+}
+
+function resultFullContent(content: Array<{ type: string; text?: string }>): string {
+  return content
+    .filter((item) => stringProperty(item, "type") === "text")
+    .map((item) => stringProperty(item, "text"))
+    .filter((text): text is string => Boolean(text))
+    .join("\n");
 }
 
 function arrayProperty(value: unknown, key: string): unknown[] {
@@ -256,9 +277,81 @@ function stringProperty(value: unknown, key: string): string | undefined {
 
 function serializeResult(result: unknown): { text: string; serializationError?: string } {
   try {
-    return { text: JSON.stringify(result, null, 2) ?? "null" };
+    JSON.stringify(result);
+    return { text: compactResultText(result) };
   } catch (error) {
     const serializationError = error instanceof Error ? error.message : String(error);
     return { text: `[Serialization error: ${serializationError}]`, serializationError };
   }
+}
+
+function agentContent(result: unknown): Array<{ type: "text"; text: string }> {
+  const content = arrayProperty(result, "content")
+    .filter((item) => stringProperty(item, "type") === "text")
+    .map((item) => ({ type: "text" as const, text: stringProperty(item, "text") }))
+    .filter((item): item is { type: "text"; text: string } => Boolean(item.text));
+  if (content.length > 0) {
+    return content;
+  }
+  return [{ type: "text", text: JSON.stringify(result, null, 2) ?? "null" }];
+}
+
+function compactResultText(result: unknown, maxLength = 600): string {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return compactText(String(result ?? "null"), maxLength);
+  }
+  const structured = objectProperty(result, "structuredContent");
+  const payload = objectProperty(structured, "result");
+  if (payload) {
+    return compactPayloadSummary(payload, maxLength);
+  }
+  const content = arrayProperty(result, "content")
+    .filter((item) => stringProperty(item, "type") === "text")
+    .map((item) => stringProperty(item, "text"))
+    .filter((text): text is string => Boolean(text));
+  if (content.length > 0) {
+    return compactText(content.join("\n"), maxLength);
+  }
+  return "Caplets result";
+}
+
+function compactPayloadSummary(payload: Record<string, unknown>, maxLength = 600): string {
+  const tools = arrayProperty(payload, "tools");
+  if (tools.length > 0) {
+    const names = tools
+      .map((tool) => stringProperty(tool, "tool") ?? stringProperty(tool, "name"))
+      .filter((name): name is string => Boolean(name));
+    const suffix = names.length > 0 ? `: ${names.join(", ")}` : "";
+    return compactText(`${tools.length} tools${suffix}`, maxLength);
+  }
+  const tool = objectProperty(payload, "tool");
+  if (tool) {
+    const name = stringProperty(tool, "name") ?? stringProperty(payload, "tool");
+    const inputSchema = objectProperty(tool, "inputSchema");
+    const required = arrayProperty(inputSchema, "required")
+      .filter((value): value is string => typeof value === "string")
+      .join(", ");
+    return compactText(
+      [name, required ? `requires: ${required}` : undefined].filter(Boolean).join(" · "),
+      maxLength,
+    );
+  }
+  const caplet = stringProperty(payload, "caplet");
+  if (caplet) {
+    const name = stringProperty(payload, "name") ?? caplet;
+    const backend = objectProperty(payload, "backend");
+    const backendType = stringProperty(backend, "type");
+    return compactText(
+      [name, backendType ? `${backendType} backend` : undefined].filter(Boolean).join(" · "),
+      maxLength,
+    );
+  }
+  return compactText(JSON.stringify(payload), maxLength);
+}
+
+function compactText(value: string, maxLength = 600): string {
+  const collapsed = value.replace(/\s+/gu, " ").trim();
+  return collapsed.length > maxLength
+    ? `${collapsed.slice(0, maxLength - 1).trimEnd()}…`
+    : collapsed;
 }

@@ -7,7 +7,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { schemaHash } from "./schema-hash";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];
@@ -145,12 +146,7 @@ export class OpenApiManager {
       }
       const parsed = await readResponse(response);
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(parsed, null, 2),
-          },
-        ],
+        content: compactStructuredContent(parsed),
         structuredContent: parsed as Record<string, unknown>,
         isError: response.ok ? false : true,
       };
@@ -179,11 +175,8 @@ export class OpenApiManager {
       server: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
-      inputSchemaHash: schemaHash(tool.inputSchema),
-      outputSchemaHash: schemaHash(tool.outputSchema),
     };
   }
 
@@ -193,14 +186,7 @@ export class OpenApiManager {
     query: string,
     limit: number,
   ): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(endpoint, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(endpoint, tool));
   }
 
   private async getOperation(
