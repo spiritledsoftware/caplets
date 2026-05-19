@@ -1,5 +1,18 @@
 # caplets
 
+## 0.15.0
+
+### Minor Changes
+
+- 9e3b6c5: Add `caplets serve` transport options, including opt-in Hono Streamable HTTP MCP serving with optional Basic Auth, health/info endpoints, and no-arg help behavior.
+
+### Patch Changes
+
+- 9e3b6c5: Add remote Caplets service support for native integrations, including remote-backed OpenCode and Pi native tools plus documentation for MCP-backed Codex and Claude Code remote connections.
+- Updated dependencies [9e3b6c5]
+- Updated dependencies [9e3b6c5]
+  - @caplets/core@0.16.0
+
 ## 0.14.0
 
 ### Minor Changes
