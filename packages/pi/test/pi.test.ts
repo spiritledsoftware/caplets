@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
-import type { NativeCapletTool, NativeCapletsService } from "@caplets/core/native";
+import type {
+  NativeCapletTool,
+  NativeCapletsService,
+  NativeCapletsServiceOptions,
+} from "@caplets/core/native";
 import capletsPiExtension, { type PiExtensionApi } from "../src/index";
 
 const nativeMocks = vi.hoisted(() => ({
@@ -564,6 +568,20 @@ describe("@caplets/pi", () => {
     capletsPiExtension({ registerTool: vi.fn() });
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalled();
+    expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
+  });
+
+  it("passes Pi args to owned native service creation", () => {
+    const service = mockService([]);
+    const args = {
+      mode: "remote",
+      remote: { url: "https://caplets.example.com/mcp", user: "pi-user" },
+    } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+
+    capletsPiExtension({ registerTool: vi.fn() }, { args });
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(args);
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 

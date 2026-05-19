@@ -32,3 +32,38 @@ removed or disabled Caplets are deactivated with Pi's active-tool APIs when avai
 running without `getActiveTools()` / `setActiveTools()`, stale tools may remain registered until
 Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' normal structured
 "server not found" error.
+
+## Remote Caplets service
+
+By default the extension uses the local Caplets native service. To connect Pi to a remote
+`caplets serve --transport http` service, prefer environment variables for connection details,
+especially the password:
+
+```sh
+export CAPLETS_REMOTE_URL="https://caplets.example.com/mcp"
+export CAPLETS_REMOTE_USER="caplets"
+export CAPLETS_REMOTE_PASSWORD # set in your shell or secret manager
+```
+
+You can also pass native service args from Pi package settings. Current Pi docs show package
+configuration in `~/.pi/agent/settings.json`; use your active Pi settings path if it differs.
+Prefer environment variables for `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
+settings files.
+
+```json
+{
+  "packages": {
+    "@caplets/pi": {
+      "args": {
+        "mode": "remote",
+        "remote": {
+          "url": "https://caplets.example.com/mcp",
+          "user": "caplets"
+        }
+      }
+    }
+  }
+}
+```
+
+The extension only consumes args/options passed by Pi and does not parse Pi settings files directly.

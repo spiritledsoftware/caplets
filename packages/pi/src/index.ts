@@ -6,6 +6,7 @@ import {
   registerNativeCapletsProcessCleanup,
   type NativeCapletTool,
   type NativeCapletsService,
+  type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
 export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
@@ -13,13 +14,18 @@ export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
 
 type PiToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
 
+type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+
 export type CapletsPiOptions = {
   service?: NativeCapletsService;
+  args?: PiNativeCapletsOptions;
+  native?: PiNativeCapletsOptions;
 };
 
 export default function capletsPiExtension(pi: PiExtensionApi, options: CapletsPiOptions = {}) {
   const ownsService = !options.service;
-  const service = options.service ?? createNativeCapletsService();
+  const service =
+    options.service ?? createNativeCapletsService(options.native ?? options.args ?? {});
   if (ownsService) {
     registerNativeCapletsProcessCleanup(service);
   }
