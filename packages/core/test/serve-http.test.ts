@@ -40,6 +40,24 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("logs basic HTTP requests to stderr", async () => {
+    const { engine } = testEngine();
+    const logs: string[] = [];
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: (value) => logs.push(value),
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/healthz");
+
+    expect(response.status).toBe(200);
+    expect(logs.join("")).toContain("<-- GET /healthz");
+    const plainLogs = logs.join("").replaceAll(String.fromCharCode(27), "");
+    expect(plainLogs).toContain("--> GET /healthz");
+    expect(plainLogs).toContain("200");
+
+    await engine.close();
+  });
+
   it("requires Basic Auth on MCP path when password is configured", async () => {
     const { engine } = testEngine();
     const testPassword = ["test", "password"].join("-");

@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
+import { logger } from "hono/logger";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
@@ -26,6 +27,13 @@ export function createHttpServeApp(
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
+  const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
+  app.use(
+    "*",
+    logger((message, ...rest) => {
+      writeErr(`${[message, ...rest].join(" ")}\n`);
+    }),
+  );
 
   app.get("/", (c) =>
     c.json({
@@ -102,7 +110,7 @@ export function createHttpServeApp(
   };
 
   if (options.warnUnauthenticatedNetwork) {
-    (io.writeErr ?? process.stderr.write.bind(process.stderr))(
+    writeErr(
       `Warning: Caplets MCP HTTP server is listening on ${options.host} without authentication.\n`,
     );
   }
