@@ -115,6 +115,59 @@ describe("cli init", () => {
     expect(out.join("")).toBe(`${packageJsonVersion}\n`);
   });
 
+  it("prints top-level help for no arguments", async () => {
+    const out: string[] = [];
+
+    await runCli([], {
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("Usage: caplets");
+    expect(out.join("")).toContain("Commands:");
+    expect(out.join("")).toContain("serve");
+  });
+
+  it("resolves serve defaults to stdio", async () => {
+    const served: unknown[] = [];
+
+    await runCli(["serve"], {
+      writeOut: () => {},
+      serve: async (options) => {
+        served.push(options);
+      },
+    });
+
+    expect(served).toEqual([{ transport: "stdio" }]);
+  });
+
+  it("resolves HTTP serve defaults", async () => {
+    const served: unknown[] = [];
+
+    await runCli(["serve", "--transport", "http"], {
+      writeOut: () => {},
+      serve: async (options) => {
+        served.push(options);
+      },
+    });
+
+    expect(served).toEqual([
+      expect.objectContaining({
+        transport: "http",
+        host: "127.0.0.1",
+        port: 5387,
+        path: "/mcp",
+        auth: { enabled: false, user: "caplets" },
+      }),
+    ]);
+  });
+
+  it("rejects HTTP-only serve options with stdio", async () => {
+    await expect(
+      runCli(["serve", "--transport", "stdio", "--port", "5387"], { writeErr: () => {} }),
+    ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+  });
+
   it("lists enabled Caplets by default", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-list-"));
     const configPath = join(dir, "config.json");
