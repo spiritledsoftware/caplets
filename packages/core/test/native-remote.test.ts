@@ -65,6 +65,38 @@ describe("RemoteNativeCapletsService", () => {
     await service.close();
   });
 
+  it("reconnects once and retries executions after session-like failures", async () => {
+    const first = client();
+    const second = client();
+    first.api.callTool = vi.fn(async () => {
+      throw new Error("transport connection closed");
+    });
+    second.api.callTool = vi.fn(async (name: string, args: unknown) => ({
+      name,
+      args,
+      client: "second",
+    }));
+    const factory = vi.fn(() => second.api);
+    const service = new RemoteNativeCapletsService({
+      client: first.api,
+      clientFactory: factory,
+      pollIntervalMs: 60_000,
+    });
+
+    await expect(service.execute("alpha", { input: true })).resolves.toEqual({
+      name: "alpha",
+      args: { input: true },
+      client: "second",
+    });
+
+    expect(first.api.callTool).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(first.api.close).toHaveBeenCalledTimes(1);
+    expect(second.api.callTool).toHaveBeenCalledWith("alpha", { input: true });
+
+    await service.close();
+  });
+
   it("notifies listeners when remote tool list changes", async () => {
     const fixture = client([{ name: "alpha", description: "Alpha" }]);
     const service = new RemoteNativeCapletsService({ client: fixture.api, pollIntervalMs: 60_000 });

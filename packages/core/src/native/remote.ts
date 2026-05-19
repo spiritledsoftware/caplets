@@ -110,10 +110,18 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       return await this.client.callTool(capletId, request);
     } catch (error) {
       if (isAuthFailure(error)) {
-        throw new CapletsError(
-          "AUTH_FAILED",
-          "Remote Caplets authentication failed; check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
-        );
+        throw remoteAuthError();
+      }
+      if (isSessionFailure(error)) {
+        await this.resetClient();
+        try {
+          return await this.client.callTool(capletId, request);
+        } catch (retryError) {
+          if (isAuthFailure(retryError)) {
+            throw remoteAuthError();
+          }
+          throw retryError;
+        }
       }
       throw error;
     }
@@ -214,6 +222,13 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function remoteAuthError(): CapletsError {
+  return new CapletsError(
+    "AUTH_FAILED",
+    "Remote Caplets authentication failed; check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+  );
 }
 
 function isSessionFailure(error: unknown): boolean {
