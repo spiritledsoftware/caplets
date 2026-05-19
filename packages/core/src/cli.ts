@@ -600,53 +600,54 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
   if (!isPlainObject(payload)) {
     return String(payload);
   }
+  const id = payloadId(payload);
   switch (operation) {
     case "get_caplet":
       return [
-        `## Caplet \`${String(payload.caplet ?? "unknown")}\``,
+        `## Caplet \`${id}\``,
         "",
         `**Name:** ${String(payload.name ?? "Unnamed")}`,
         `**Description:** ${String(payload.description ?? "No description.")}`,
         payload.backend ? `**Backend:** ${backendType(payload.backend)}` : undefined,
         "",
         "Next:",
-        `- List tools: \`caplets list-tools ${String(payload.caplet ?? "<caplet>")}\``,
-        `- Search tools: \`caplets search-tools ${String(payload.caplet ?? "<caplet>")} <query>\``,
+        `- List tools: \`caplets list-tools ${id}\``,
+        `- Search tools: \`caplets search-tools ${id} <query>\``,
       ]
         .filter((line): line is string => line !== undefined)
         .join("\n");
     case "check_backend":
       return [
-        `## Backend \`${String(payload.server ?? "caplet")}\``,
+        `## Backend \`${id}\``,
         "",
         `- Status: ${String(payload.status ?? "unknown")}`,
         typeof payload.toolCount === "number" ? `- Tools: ${payload.toolCount}` : undefined,
         typeof payload.elapsedMs === "number" ? `- Elapsed: ${payload.elapsedMs}ms` : undefined,
         "",
         "Next:",
-        `- List tools: \`caplets list-tools ${String(payload.server ?? "<caplet>")}\``,
+        `- List tools: \`caplets list-tools ${id}\``,
       ]
         .filter((line): line is string => line !== undefined)
         .join("\n");
     case "list_tools": {
       const tools = Array.isArray(payload.tools) ? payload.tools : [];
       return [
-        `## Tools for \`${String(payload.server ?? "caplet")}\``,
+        `## Tools for \`${id}\``,
         "",
         `${tools.length} ${tools.length === 1 ? "tool" : "tools"} found.`,
         "",
         ...formatToolLines(tools, "markdown"),
         "",
         "Next:",
-        `- Inspect a tool: \`caplets get-tool ${String(payload.server ?? "<caplet>")}.<tool>\``,
-        `- Call a tool: \`caplets call-tool ${String(payload.server ?? "<caplet>")}.<tool> --args '{...}'\``,
+        `- Inspect a tool: \`caplets get-tool ${id}.<tool>\``,
+        `- Call a tool: \`caplets call-tool ${id}.<tool> --args '{...}'\``,
         "- Machine output: add `--format json`",
       ].join("\n");
     }
     case "search_tools": {
       const tools = Array.isArray(payload.tools) ? payload.tools : [];
       return [
-        `## Matches for ${JSON.stringify(String(payload.query ?? ""))} in \`${String(payload.server ?? "caplet")}\``,
+        `## Matches for ${JSON.stringify(String(payload.query ?? ""))} in \`${id}\``,
         "",
         `${tools.length} ${tools.length === 1 ? "match" : "matches"} found.`,
         "",
@@ -654,13 +655,13 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         "",
         "Next:",
         tools.length > 0
-          ? `- Inspect the first match: \`caplets get-tool ${String(payload.server ?? "<caplet>")}.${firstToolName(tools) ?? "<tool>"}\``
-          : `- Try a broader query or list tools: \`caplets list-tools ${String(payload.server ?? "<caplet>")}\``,
+          ? `- Inspect the first match: \`caplets get-tool ${id}.${firstToolName(tools) ?? "<tool>"}\``
+          : `- Try a broader query or list tools: \`caplets list-tools ${id}\``,
       ].join("\n");
     }
     case "get_tool": {
       const tool = isPlainObject(payload.tool) ? payload.tool : {};
-      const target = `${String(payload.server ?? "<caplet>")}.${String(tool.name ?? "<tool>")}`;
+      const target = `${id}.${String(tool.name ?? "<tool>")}`;
       return [
         `## Tool \`${target}\``,
         "",
@@ -704,47 +705,48 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
   if (!isPlainObject(payload)) {
     return String(payload);
   }
+  const id = payloadId(payload);
   switch (operation) {
     case "get_caplet":
       return [
-        `Caplet: ${String(payload.caplet ?? "unknown")}`,
+        `Caplet: ${id}`,
         `Name: ${String(payload.name ?? "Unnamed")}`,
         `Description: ${String(payload.description ?? "No description.")}`,
         payload.backend ? `Backend: ${backendType(payload.backend)}` : undefined,
-        `Next: caplets list-tools ${String(payload.caplet ?? "<caplet>")} or caplets search-tools ${String(payload.caplet ?? "<caplet>")} <query>`,
+        `Next: caplets list-tools ${id} or caplets search-tools ${id} <query>`,
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n");
     case "check_backend":
       return [
-        `Backend: ${String(payload.server ?? "caplet")} is ${String(payload.status ?? "unknown")}`,
+        `Backend: ${id} is ${String(payload.status ?? "unknown")}`,
         typeof payload.toolCount === "number" ? `Tools: ${payload.toolCount}` : undefined,
         typeof payload.elapsedMs === "number" ? `Elapsed: ${payload.elapsedMs}ms` : undefined,
-        `Next: caplets list-tools ${String(payload.server ?? "<caplet>")}`,
+        `Next: caplets list-tools ${id}`,
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n");
     case "list_tools": {
       const tools = Array.isArray(payload.tools) ? payload.tools : [];
       return [
-        `Tools for ${String(payload.server ?? "caplet")} (${tools.length}):`,
+        `Tools for ${id} (${tools.length}):`,
         ...formatToolLines(tools, "plain"),
-        `Next: caplets get-tool ${String(payload.server ?? "<caplet>")}.<tool> or caplets call-tool ${String(payload.server ?? "<caplet>")}.<tool> --args '{...}'`,
+        `Next: caplets get-tool ${id}.<tool> or caplets call-tool ${id}.<tool> --args '{...}'`,
       ].join("\n");
     }
     case "search_tools": {
       const tools = Array.isArray(payload.tools) ? payload.tools : [];
       return [
-        `Matches for ${JSON.stringify(String(payload.query ?? ""))} in ${String(payload.server ?? "caplet")} (${tools.length}):`,
+        `Matches for ${JSON.stringify(String(payload.query ?? ""))} in ${id} (${tools.length}):`,
         ...formatToolLines(tools, "plain"),
         tools.length > 0
-          ? `Next: caplets get-tool ${String(payload.server ?? "<caplet>")}.${firstToolName(tools) ?? "<tool>"}`
-          : `Next: try caplets list-tools ${String(payload.server ?? "<caplet>")} or a broader query.`,
+          ? `Next: caplets get-tool ${id}.${firstToolName(tools) ?? "<tool>"}`
+          : `Next: try caplets list-tools ${id} or a broader query.`,
       ].join("\n");
     }
     case "get_tool": {
       const tool = isPlainObject(payload.tool) ? payload.tool : {};
-      const target = `${String(payload.server ?? "<caplet>")}.${String(tool.name ?? "<tool>")}`;
+      const target = `${id}.${String(tool.name ?? "<tool>")}`;
       return [
         `Tool: ${target}`,
         tool.description
@@ -772,6 +774,10 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
     default:
       return JSON.stringify(payload, null, 2);
   }
+}
+
+function payloadId(payload: Record<string, unknown>): string {
+  return String(payload.id ?? payload.caplet ?? payload.server ?? "<caplet>");
 }
 
 function formatToolLines(tools: unknown[], format: "markdown" | "plain"): string[] {

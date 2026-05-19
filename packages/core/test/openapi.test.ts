@@ -122,7 +122,7 @@ describe("native OpenAPI Caplets", () => {
     expect(registry.enabledServers().map((caplet) => caplet.server)).toEqual(["users"]);
     expect(config.openapiEndpoints.users?.backend).toBe("openapi");
     expect(registry.detail(config.openapiEndpoints.users!)).toEqual({
-      caplet: "users",
+      id: "users",
       name: "Users API",
       description: "Manage users through the internal HTTP API.",
       backend: {

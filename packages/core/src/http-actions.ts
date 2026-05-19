@@ -6,6 +6,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
 type HttpActionOperation = HttpActionConfig & { name: string };
@@ -23,7 +25,7 @@ export class HttpActionManager {
   invalidate(_serverId: string): void {}
 
   async checkApi(api: HttpApiConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -39,7 +41,7 @@ export class HttpActionManager {
       }
       this.registry.setStatus(api.server, "available");
       return {
-        server: api.server,
+        id: api.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -48,7 +50,7 @@ export class HttpActionManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(api.server, "unavailable", safe);
       return {
-        server: api.server,
+        id: api.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -95,7 +97,7 @@ export class HttpActionManager {
       }
       const parsed = await readResponse(response, api, Date.now() - startedAt);
       return {
-        content: [{ type: "text", text: JSON.stringify(parsed, null, 2) }],
+        content: compactStructuredContent(parsed),
         structuredContent: parsed,
         isError: !response.ok,
       };
@@ -121,24 +123,16 @@ export class HttpActionManager {
 
   compact(api: HttpApiConfig, tool: Tool): CompactTool {
     return {
-      server: api.server,
+      id: api.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 
   search(api: HttpApiConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(api, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(api, tool));
   }
 
   private toTool(operation: HttpActionOperation): Tool {

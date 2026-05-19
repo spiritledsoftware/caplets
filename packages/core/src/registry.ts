@@ -10,7 +10,7 @@ export { capabilityDescription } from "./capability-description";
 export type ServerStatus = "disabled" | "not_started" | "starting" | "available" | "unavailable";
 
 export type CapletServerSummary = {
-  server: string;
+  id: string;
   name: string;
   description: string;
   disabled?: boolean;
@@ -19,11 +19,10 @@ export type CapletServerSummary = {
 };
 
 export type CapletServerDetail = {
-  caplet: string;
+  id: string;
   name: string;
   description: string;
   tags?: string[];
-  body?: string;
   backend:
     | {
         type: "mcp";
@@ -67,13 +66,6 @@ export type CapletServerDetail = {
         source: "configPath" | "capletsRoot" | "both";
         toolCacheTtlMs: number;
       };
-  mcpServer?: {
-    transport: CapletServerConfig["transport"];
-    disabled: boolean;
-    startupTimeoutMs: number;
-    callTimeoutMs: number;
-    toolCacheTtlMs: number;
-  };
 };
 
 export class ServerRegistry {
@@ -124,7 +116,7 @@ export class ServerRegistry {
   summary(server: CapletConfig): CapletServerSummary {
     const status = this.statuses.get(server.server);
     return {
-      server: server.server,
+      id: server.server,
       name: server.name,
       description: server.description,
       ...(server.disabled ? { disabled: true } : {}),
@@ -136,23 +128,11 @@ export class ServerRegistry {
   detail(server: CapletConfig): CapletServerDetail {
     const backend = backendDetail(server);
     return {
-      caplet: server.server,
+      id: server.server,
       name: server.name,
       description: server.description,
       ...(server.tags ? { tags: server.tags } : {}),
-      ...(server.body ? { body: server.body } : {}),
       backend,
-      ...(server.backend === "mcp"
-        ? {
-            mcpServer: {
-              transport: server.transport,
-              disabled: server.disabled,
-              startupTimeoutMs: server.startupTimeoutMs,
-              callTimeoutMs: server.callTimeoutMs,
-              toolCacheTtlMs: server.toolCacheTtlMs,
-            },
-          }
-        : {}),
     };
   }
 

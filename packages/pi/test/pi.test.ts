@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "@caplets/core/native";
 import capletsPiExtension, { type PiExtensionApi } from "../src/index";
@@ -199,7 +200,16 @@ describe("@caplets/pi", () => {
         promptGuidance: ["Use caplets_context7 for Context7."],
       },
     ]);
-    service.execute.mockResolvedValueOnce({ content: [{ type: "text", text: "very long docs" }] });
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "very long docs" }],
+      _meta: {
+        caplets: {
+          name: "Context7",
+          operation: "call_tool",
+          tool: "query-docs",
+        },
+      },
+    });
     const registered: RegisteredTool[] = [];
 
     capletsPiExtension(
@@ -218,10 +228,10 @@ describe("@caplets/pi", () => {
     ).toBe("Context7 call_tool query-docs");
     expect(
       renderText(tool?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)),
-    ).toBe("✓ Context7 complete (ctrl+o to expand)");
+    ).toBe("✓ Context7 call_tool query-docs complete (ctrl+o to expand)\nvery long docs");
   });
 
-  it("renders expanded caplet results with serialized output", async () => {
+  it("renders caplet error status as failed", async () => {
     const service = mockService([
       {
         caplet: "context7",
@@ -231,7 +241,18 @@ describe("@caplets/pi", () => {
         promptGuidance: ["Use caplets_context7 for Context7."],
       },
     ]);
-    service.execute.mockResolvedValueOnce({ content: [{ type: "text", text: "very long docs" }] });
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "request failed" }],
+      isError: true,
+      _meta: {
+        caplets: {
+          name: "Context7",
+          operation: "call_tool",
+          tool: "query-docs",
+          status: "error",
+        },
+      },
+    });
     const registered: RegisteredTool[] = [];
 
     capletsPiExtension(
@@ -240,14 +261,273 @@ describe("@caplets/pi", () => {
     );
 
     const tool = registered[0];
-    const result = await tool?.execute("call-1", { operation: "call_tool" });
+    const result = await tool?.execute("call-1", { operation: "call_tool", tool: "query-docs" });
 
     expect(
-      renderText(tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme)),
-    ).toContain('"very long docs"');
+      renderText(tool?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)),
+    ).toBe("✗ Context7 call_tool query-docs failed (ctrl+o to expand)\nrequest failed");
+  });
+
+  it("disambiguates identical downstream tool names by Caplet title", async () => {
+    const service = mockService([
+      {
+        caplet: "browser",
+        toolName: "caplets_browser",
+        title: "Browser",
+        description: "Browser Caplet",
+        promptGuidance: ["Use caplets_browser for Browser."],
+      },
+      {
+        caplet: "stealth-browser",
+        toolName: "caplets_stealth_browser",
+        title: "Stealth Browser",
+        description: "Stealth Browser Caplet",
+        promptGuidance: ["Use caplets_stealth_browser for Stealth Browser."],
+      },
+    ]);
+    service.execute
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: "clicked" }],
+        _meta: { caplets: { name: "Browser", operation: "call_tool", tool: "browser_click" } },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: "text", text: "clicked" }],
+        _meta: {
+          caplets: { name: "Stealth Browser", operation: "call_tool", tool: "browser_click" },
+        },
+      });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const browserResult = await registered[0]?.execute("call-1", {
+      operation: "call_tool",
+      tool: "browser_click",
+    });
+    const stealthResult = await registered[1]?.execute("call-2", {
+      operation: "call_tool",
+      tool: "browser_click",
+    });
+
     expect(
-      renderText(tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme)),
-    ).toContain("(ctrl+o to collapse)");
+      renderText(
+        registered[0]?.renderCall({ operation: "call_tool", tool: "browser_click" }, plainTheme),
+      ),
+    ).toBe("Browser call_tool browser_click");
+    expect(
+      renderText(
+        registered[1]?.renderCall({ operation: "call_tool", tool: "browser_click" }, plainTheme),
+      ),
+    ).toBe("Stealth Browser call_tool browser_click");
+    expect(
+      renderText(
+        registered[0]?.renderResult(
+          browserResult!,
+          { expanded: false, isPartial: false },
+          plainTheme,
+        ),
+      ),
+    ).toBe("✓ Browser call_tool browser_click complete (ctrl+o to expand)\nclicked");
+    expect(
+      renderText(
+        registered[1]?.renderResult(
+          stealthResult!,
+          { expanded: false, isPartial: false },
+          plainTheme,
+        ),
+      ),
+    ).toBe("✓ Stealth Browser call_tool browser_click complete (ctrl+o to expand)\nclicked");
+  });
+
+  it("keeps collapsed output concise when caplet result content contains a large snapshot", async () => {
+    const service = mockService([
+      {
+        caplet: "browser",
+        toolName: "caplets_browser",
+        title: "Browser",
+        description: "Browser Caplet",
+        promptGuidance: ["Use caplets_browser for Browser."],
+      },
+    ]);
+    const largeSnapshot = "# Page snapshot\n" + "button[name='Buy now']\n".repeat(500);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: largeSnapshot }],
+      _meta: {
+        caplets: {
+          name: "Browser",
+          operation: "call_tool",
+          tool: "browser_snapshot",
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", {
+      operation: "call_tool",
+      tool: "browser_snapshot",
+    });
+    const renderedLines = tool
+      ?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)
+      .render(120);
+
+    expect(renderedLines?.[0]).toBe(
+      "✓ Browser call_tool browser_snapshot complete (ctrl+o to expand)",
+    );
+    expect(renderedLines?.[1]).toContain("# Page snapshot");
+    expect(renderedLines?.join("\n").length).toBeLessThan(750);
+    expect(result?.details.result).toMatchObject({
+      content: [{ type: "text", text: largeSnapshot }],
+    });
+  });
+
+  it("truncates custom render lines to the requested terminal width", async () => {
+    const service = mockService([
+      {
+        caplet: "browser",
+        toolName: "caplets_browser",
+        title: "Browser",
+        description: "Browser Caplet",
+        promptGuidance: ["Use caplets_browser for Browser."],
+      },
+    ]);
+    const longToolName = "browser_" + "x".repeat(120);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "snapshot " + "y".repeat(120) }],
+      _meta: {
+        caplets: {
+          name: "Browser",
+          operation: "call_tool",
+          tool: longToolName,
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", {
+      operation: "call_tool",
+      tool: longToolName,
+    });
+    const callLines = tool
+      ?.renderCall({ operation: "call_tool", tool: longToolName }, plainTheme)
+      .render(40);
+    const resultLines = tool
+      ?.renderResult(result!, { expanded: false, isPartial: false }, plainTheme)
+      .render(40);
+
+    expect([...callLines!, ...resultLines!].map((line) => visibleWidth(line))).toEqual([
+      40, 40, 40,
+    ]);
+  });
+
+  it("renders screenshot artifact metadata before a concise expanded output preview", async () => {
+    const service = mockService([
+      {
+        caplet: "browser",
+        toolName: "caplets_browser",
+        title: "Browser",
+        description: "Browser Caplet",
+        promptGuidance: ["Use caplets_browser for Browser."],
+      },
+    ]);
+    const largeSnapshot = "# Page snapshot\n" + "main > section > article\n".repeat(500);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: largeSnapshot }],
+      _meta: {
+        caplets: {
+          name: "Browser",
+          operation: "call_tool",
+          tool: "browser_take_screenshot",
+          artifacts: [
+            {
+              kind: "screenshot",
+              displayPath: "./browser-caplet-localhost-4199.png",
+              pathResolution: "relative-to-mcp-server",
+            },
+          ],
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", {
+      operation: "call_tool",
+      tool: "browser_take_screenshot",
+    });
+    const rendered = renderText(
+      tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme),
+    );
+
+    expect(rendered).toContain("✓ Browser call_tool browser_take_screenshot complete");
+    expect(rendered).toContain(
+      "Artifact: screenshot ./browser-caplet-localhost-4199.png (relative-to-mcp-server)",
+    );
+    expect(rendered).toContain("# Page snapshot");
+    expect(rendered).not.toContain("Result summary:");
+    expect(rendered.length).toBeGreaterThan(900);
+    expect(rendered.indexOf("Artifact: screenshot")).toBeLessThan(
+      rendered.indexOf("# Page snapshot"),
+    );
+  });
+
+  it("renders expanded caplet results with a metadata header before serialized output", async () => {
+    const service = mockService([
+      {
+        caplet: "context7",
+        toolName: "caplets_context7",
+        title: "Context7",
+        description: "Context7 Caplet",
+        promptGuidance: ["Use caplets_context7 for Context7."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "very long docs" }],
+      structuredContent: {
+        caplets: {
+          name: "Context7",
+          operation: "list_tools",
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    capletsPiExtension(
+      { registerTool: (definition) => registered.push(definition as unknown as RegisteredTool) },
+      { service },
+    );
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", { operation: "list_tools" });
+    const rendered = renderText(
+      tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme),
+    );
+
+    expect(rendered).toContain("✓ Context7 list_tools complete (ctrl+o to collapse)");
+    expect(rendered).toContain("\nvery long docs");
+    expect(rendered).not.toContain("Result summary:");
+    expect(rendered.indexOf("✓ Context7 list_tools complete")).toBeLessThan(
+      rendered.indexOf("very long docs"),
+    );
   });
 
   it("does not execute active-tool actions during extension loading", () => {

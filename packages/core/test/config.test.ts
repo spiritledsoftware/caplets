@@ -798,7 +798,7 @@ describe("config", () => {
       baseUrl: "https://api.example.com/billing",
       auth: { type: "none" },
       requestTimeoutMs: 60000,
-      maxResponseBytes: 1000000,
+      maxResponseBytes: 200000,
       actions: {
         invoice: {
           method: "GET",
@@ -1044,7 +1044,7 @@ describe("config", () => {
     const capletSchema = JSON.stringify(capletJsonSchema());
 
     expect(configSchema).toContain('"maxResponseBytes"');
-    expect(configSchema).toContain('"default":1000000');
+    expect(configSchema).toContain('"default":200000');
     expect(configSchema).toContain('"pattern":"^\\\\/"');
     expect(configSchema).toContain("[^?#]*");
     expect(capletSchema).toContain('"maxResponseBytes"');

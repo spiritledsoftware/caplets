@@ -16,12 +16,12 @@ import {
 } from "./auth";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
+import { searchToolList } from "./tool-search";
 
 export type CompactTool = {
-  server: string;
+  id: string;
   tool: string;
   description?: string;
-  annotations?: unknown;
   hasInputSchema: boolean;
   hasOutputSchema: boolean;
 };
@@ -72,7 +72,7 @@ export class DownstreamManager {
   }
 
   async checkServer(server: CapletServerConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -83,7 +83,7 @@ export class DownstreamManager {
       const tools = await this.refreshTools(server, true);
       this.registry.setStatus(server.server, "available");
       return {
-        server: server.server,
+        id: server.server,
         status: "available",
         toolCount: tools.length,
         elapsedMs: Date.now() - startedAt,
@@ -92,7 +92,7 @@ export class DownstreamManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(server.server, "unavailable", safe);
       return {
-        server: server.server,
+        id: server.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -155,24 +155,16 @@ export class DownstreamManager {
 
   compact(server: CapletServerConfig, tool: Tool): CompactTool {
     return {
-      server: server.server,
+      id: server.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
     };
   }
 
   search(server: CapletServerConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(server, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(server, tool));
   }
 
   private async refreshTools(server: CapletServerConfig, force: boolean): Promise<Tool[]> {

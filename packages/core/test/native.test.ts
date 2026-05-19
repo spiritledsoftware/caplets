@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createNativeCapletsService,
+  nativeCapletPromptGuidance,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
 } from "../src/native";
@@ -98,9 +99,32 @@ describe("native Caplets service", () => {
 
   it("builds shared native system guidance", () => {
     expect(nativeCapletToolName("linear-api_v2")).toBe("caplets_linear_api__v2");
-    expect(nativeCapletsSystemGuidance(["caplets_linear_api__v2"])).toContain(
-      "caplets_linear_api__v2",
+    const guidance = nativeCapletsSystemGuidance(["caplets_linear_api__v2"]);
+
+    expect(guidance).toContain("caplets_linear_api__v2");
+    expect(guidance).toContain("Flow: get_caplet when the domain is unfamiliar");
+    expect(guidance).toContain(
+      "Use fields on call_tool when a non-GraphQL downstream outputSchema allows",
     );
+  });
+
+  it("builds concise per-Caplet prompt guidance with safe discovery", () => {
+    const guidance = nativeCapletPromptGuidance("caplets_browser", {
+      name: "Browser",
+      description: "Drive a browser.",
+      server: "browser",
+      backend: "mcp",
+      transport: "stdio",
+      command: process.execPath,
+      startupTimeoutMs: 1_000,
+      callTimeoutMs: 1_000,
+      toolCacheTtlMs: 1_000,
+      disabled: false,
+    }).join("\n");
+
+    expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
+    expect(guidance).not.toContain("For unfamiliar tasks, discover safely");
+    expect(guidance).not.toContain("Call caplets_browser with operation get_caplet before");
   });
 
   it("reloads native tool metadata after config changes", async () => {

@@ -7,7 +7,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const packagesRoot = resolve(repoRoot, "packages");
 
 const scannedExtensions = new Set([".ts", ".mjs"]);
-const ignoredDirectories = new Set(["dist", "dist-schema", "node_modules"]);
+const ignoredDirectories = new Set(["dist", "node_modules"]);
 
 describe("package boundaries", () => {
   it("uses Node ESM-safe MCP SDK subpath imports", () => {
@@ -45,6 +45,27 @@ describe("package boundaries", () => {
     });
 
     expect(violations).toEqual([]);
+  });
+
+  it("declares type definitions for every published core export", () => {
+    const missingTypeDefinitions = Object.entries(corePackage.exports).flatMap(
+      ([specifier, target]) => {
+        if (typeof target !== "object" || target === null || !("types" in target)) {
+          return [`@caplets/core ${specifier} export is missing a types condition`];
+        }
+
+        const typesTarget = (target as { types?: unknown }).types;
+        if (typeof typesTarget !== "string" || !typesTarget.endsWith(".d.ts")) {
+          return [
+            `@caplets/core ${specifier} export has invalid types target ${String(typesTarget)}`,
+          ];
+        }
+
+        return [];
+      },
+    );
+
+    expect(missingTypeDefinitions).toEqual([]);
   });
 });
 

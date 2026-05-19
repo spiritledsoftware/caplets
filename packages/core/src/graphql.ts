@@ -7,10 +7,10 @@ import {
   getNamedType,
   GraphQLEnumType,
   GraphQLInputObjectType,
-  GraphQLInterfaceType,
+  type GraphQLInterfaceType,
   GraphQLList,
   GraphQLNonNull,
-  GraphQLObjectType,
+  type GraphQLObjectType,
   GraphQLScalarType,
   type GraphQLField,
   type GraphQLArgument,
@@ -34,6 +34,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const GRAPHQL_METHOD = "POST";
 const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
@@ -79,7 +81,7 @@ export class GraphQLManager {
   }
 
   async checkEndpoint(endpoint: GraphQlEndpointConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -90,7 +92,7 @@ export class GraphQLManager {
       const operations = await this.refreshOperations(endpoint, true);
       this.registry.setStatus(endpoint.server, "available");
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -99,7 +101,7 @@ export class GraphQLManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(endpoint.server, "unavailable", safe);
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -187,7 +189,7 @@ export class GraphQLManager {
         body,
       };
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        content: compactStructuredContent(result),
         structuredContent: result,
         isError:
           !response.ok ||
@@ -215,10 +217,9 @@ export class GraphQLManager {
 
   compact(endpoint: GraphQlEndpointConfig, tool: Tool): CompactTool {
     return {
-      server: endpoint.server,
+      id: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
     };
@@ -230,14 +231,7 @@ export class GraphQLManager {
     query: string,
     limit: number,
   ): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(endpoint, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(endpoint, tool));
   }
 
   private async getOperation(

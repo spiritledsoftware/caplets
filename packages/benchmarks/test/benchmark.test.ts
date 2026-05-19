@@ -54,6 +54,14 @@ describe("progressive disclosure benchmark fixture", () => {
     );
     expect(result.collisions.directDuplicateToolNameCount).toBeGreaterThan(0);
     expect(result.collisions.capletsTopLevelDuplicateToolNameCount).toBe(0);
+    expect(result.runtime).toMatchObject({
+      duplicatedStructuredContentBytes: expect.any(Number),
+      compactStructuredContentBytes: expect.any(Number),
+    });
+    expect(result.runtime.compactStructuredContentBytes).toBeLessThan(
+      result.runtime.duplicatedStructuredContentBytes,
+    );
+    expect(result.runtime.compactReduction).toBeGreaterThan(0.5);
   });
 
   it("captures process output, safe env metadata, JSONL events, and truncation state", async () => {

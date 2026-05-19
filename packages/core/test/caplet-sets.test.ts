@@ -33,7 +33,7 @@ describe("CapletSetManager", () => {
     const manager = new CapletSetManager(registry);
 
     await expect(manager.checkSet(caplet)).resolves.toMatchObject({
-      server: "nested",
+      id: "nested",
       status: "available",
       toolCount: 1,
     });
@@ -50,7 +50,7 @@ describe("CapletSetManager", () => {
     const listed = await manager.callTool(caplet, "echoes", { operation: "list_tools" });
     expect(listed.structuredContent).toMatchObject({
       result: {
-        server: "echoes",
+        id: "echoes",
         tools: [{ tool: "echo_json" }],
       },
     });

@@ -1,11 +1,14 @@
 import { defineConfig } from "rolldown";
 
 export default defineConfig({
-  input: "src/index.ts",
+  input: {
+    index: "src/index.ts",
+    "generated-tool-input-schema": "src/generated-tool-input-schema.ts",
+    native: "src/native.ts",
+  },
   output: {
     dir: "./dist",
     format: "esm",
   },
   platform: "node",
-  tsconfig: true,
 });

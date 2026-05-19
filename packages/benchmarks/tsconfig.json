@@ -3,11 +3,7 @@
   "compilerOptions": {
     "strict": false,
     "noUncheckedIndexedAccess": false,
-    "exactOptionalPropertyTypes": false,
-    "paths": {
-      "@caplets/core": ["../core/src/index.ts"],
-      "@caplets/core/*": ["../core/src/*"]
-    }
+    "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

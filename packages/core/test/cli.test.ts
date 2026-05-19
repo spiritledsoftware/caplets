@@ -440,9 +440,9 @@ describe("cli init", () => {
       );
 
       const results = out.map((value) => JSON.parse(value));
-      expect(results[0].caplet).toBe("local");
+      expect(results[0].id).toBe("local");
       expect(results[1]).toMatchObject({
-        server: "local",
+        id: "local",
         status: "available",
         toolCount: 3,
       });

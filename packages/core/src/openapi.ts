@@ -7,6 +7,8 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
+import { compactStructuredContent } from "./result-content";
+import { searchToolList } from "./tool-search";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
 const JSON_CONTENT_TYPES = ["application/json"];
@@ -63,7 +65,7 @@ export class OpenApiManager {
   }
 
   async checkEndpoint(endpoint: OpenApiEndpointConfig): Promise<{
-    server: string;
+    id: string;
     status: string;
     toolCount?: number;
     elapsedMs: number;
@@ -74,7 +76,7 @@ export class OpenApiManager {
       const operations = await this.refreshOperations(endpoint, true);
       this.registry.setStatus(endpoint.server, "available");
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "available",
         toolCount: operations.length,
         elapsedMs: Date.now() - startedAt,
@@ -83,7 +85,7 @@ export class OpenApiManager {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(endpoint.server, "unavailable", safe);
       return {
-        server: endpoint.server,
+        id: endpoint.server,
         status: "unavailable",
         elapsedMs: Date.now() - startedAt,
         error: safe,
@@ -144,12 +146,7 @@ export class OpenApiManager {
       }
       const parsed = await readResponse(response);
       return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(parsed, null, 2),
-          },
-        ],
+        content: compactStructuredContent(parsed),
         structuredContent: parsed as Record<string, unknown>,
         isError: response.ok ? false : true,
       };
@@ -175,10 +172,9 @@ export class OpenApiManager {
 
   compact(endpoint: OpenApiEndpointConfig, tool: Tool): CompactTool {
     return {
-      server: endpoint.server,
+      id: endpoint.server,
       tool: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.annotations ? { annotations: tool.annotations } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
     };
@@ -190,14 +186,7 @@ export class OpenApiManager {
     query: string,
     limit: number,
   ): CompactTool[] {
-    const needle = query.toLocaleLowerCase();
-    return tools
-      .filter((tool) =>
-        `${tool.name}\n${tool.description ?? ""}`.toLocaleLowerCase().includes(needle),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .slice(0, limit)
-      .map((tool) => this.compact(endpoint, tool));
+    return searchToolList(tools, query, limit, (tool) => this.compact(endpoint, tool));
   }
 
   private async getOperation(
