@@ -22,7 +22,9 @@ const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
     normalizeOpenCodeConfig(config) as NativeCapletsServiceOptions,
   );
   registerNativeCapletsProcessCleanup(service);
-  await service.reload();
+  if (!(await service.reload())) {
+    throw new Error("Failed to initialize Caplets native service.");
+  }
   return createCapletsOpenCodeHooks(service);
 }) as Plugin;
 

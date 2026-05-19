@@ -18,6 +18,8 @@ import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;
+  const originalServerUser = process.env.CAPLETS_SERVER_USER;
+  const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -25,6 +27,16 @@ describe("cli init", () => {
       delete process.env.CAPLETS_CONFIG;
     } else {
       process.env.CAPLETS_CONFIG = originalConfigPath;
+    }
+    if (originalServerUser === undefined) {
+      delete process.env.CAPLETS_SERVER_USER;
+    } else {
+      process.env.CAPLETS_SERVER_USER = originalServerUser;
+    }
+    if (originalServerPassword === undefined) {
+      delete process.env.CAPLETS_SERVER_PASSWORD;
+    } else {
+      process.env.CAPLETS_SERVER_PASSWORD = originalServerPassword;
     }
   });
 
@@ -131,6 +143,9 @@ describe("cli init", () => {
   it("resolves serve defaults to stdio", async () => {
     const served: unknown[] = [];
 
+    delete process.env.CAPLETS_SERVER_USER;
+    delete process.env.CAPLETS_SERVER_PASSWORD;
+
     await runCli(["serve"], {
       writeOut: () => {},
       serve: async (options) => {
@@ -143,6 +158,9 @@ describe("cli init", () => {
 
   it("resolves HTTP serve defaults", async () => {
     const served: unknown[] = [];
+
+    delete process.env.CAPLETS_SERVER_USER;
+    delete process.env.CAPLETS_SERVER_PASSWORD;
 
     await runCli(["serve", "--transport", "http"], {
       writeOut: () => {},

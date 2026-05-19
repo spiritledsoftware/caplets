@@ -217,10 +217,14 @@ function installHttpSignalHandlers(
   engine: CapletsEngine,
   writeErr: (value: string) => void,
 ): void {
+  let closing: Promise<void> | undefined;
   const close = async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await app.closeCapletsSessions();
-    await engine.close();
+    closing ??= (async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await app.closeCapletsSessions();
+      await engine.close();
+    })();
+    return closing;
   };
   process.once(
     "SIGINT",

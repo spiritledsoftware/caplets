@@ -94,6 +94,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   private unsubscribeRemote: () => void;
   private readonly pollTimer: ReturnType<typeof setInterval>;
   private closed = false;
+  private resetInFlight: Promise<boolean> | undefined;
 
   constructor(private readonly options: RemoteNativeCapletsServiceOptions) {
     this.client = options.client;
@@ -190,6 +191,18 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   }
 
   private async resetClient(): Promise<boolean> {
+    if (this.resetInFlight) {
+      return await this.resetInFlight;
+    }
+    this.resetInFlight = this.doResetClient();
+    try {
+      return await this.resetInFlight;
+    } finally {
+      this.resetInFlight = undefined;
+    }
+  }
+
+  private async doResetClient(): Promise<boolean> {
     if (this.closed) {
       return false;
     }

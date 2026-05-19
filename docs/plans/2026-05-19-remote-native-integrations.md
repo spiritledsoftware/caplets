@@ -1059,8 +1059,7 @@ export default {
 
 Plugin config overrides environment variables. Prefer `CAPLETS_REMOTE_PASSWORD` for the Basic Auth password unless your OpenCode setup provides secure secret storage.
 
-````
-
+````md
 - [ ] **Step 5: Run OpenCode tests**
 
 Run:
@@ -1068,6 +1067,7 @@ Run:
 ```bash
 pnpm --filter @caplets/opencode test -- test/opencode.test.ts
 pnpm --filter @caplets/opencode typecheck
+```
 ````
 
 Expected: PASS.
@@ -1213,8 +1213,7 @@ You can also pass non-secret remote settings through Pi package args in your Pi 
 
 Package args override environment variables. Prefer `CAPLETS_REMOTE_PASSWORD` for the Basic Auth password unless your Pi setup provides secure secret storage.
 
-````
-
+````md
 - [ ] **Step 5: Run Pi tests**
 
 Run:
@@ -1222,6 +1221,7 @@ Run:
 ```bash
 pnpm --filter @caplets/pi test -- test/pi.test.ts
 pnpm --filter @caplets/pi typecheck
+```
 ````
 
 Expected: PASS.
@@ -1293,14 +1293,14 @@ opencode
 
 For MCP-backed Codex or Claude Code configs, point the agent's MCP server entry at the remote URL using that agent's supported HTTP MCP configuration. If Basic Auth is needed, use the agent's secure secret or environment interpolation mechanism rather than hardcoding credentials.
 
-````
-
+````md
 - [ ] **Step 3: Update Caplets skill guidance**
 
 In `plugins/caplets/skills/caplets/SKILL.md`, add one bullet under “Guidance”:
 
 ```md
 - When Caplets is configured as a remote MCP HTTP service, treat connection/auth failures as remote-service issues and ask the user to verify `CAPLETS_REMOTE_URL`, Basic Auth credentials, and that `caplets serve --transport http` is running.
+```
 ````
 
 - [ ] **Step 4: Run docs/plugin tests**

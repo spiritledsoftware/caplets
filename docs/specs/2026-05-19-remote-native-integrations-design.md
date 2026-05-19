@@ -193,7 +193,7 @@ Add a documented remote variant users can copy into their agent config:
     "caplets": {
       "url": "https://caplets.example.com/mcp",
       "headers": {
-        "Authorization": "Basic ${CAPLETS_REMOTE_BASIC_AUTH}"
+        "Authorization": "Basic ${base64(CAPLETS_REMOTE_USER + ':' + CAPLETS_REMOTE_PASSWORD)}"
       }
     }
   }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved design from grilling session. Implementation plan not yet written.
+Approved design from grilling session. Implementation plan included in this PR stack.
 
 ## Goal
 
@@ -12,7 +12,7 @@ Add opt-in HTTP MCP serving to `caplets serve` while preserving stdio serving as
 
 - Do not make HTTP the default transport.
 - Do not support deprecated HTTP+SSE endpoints in v1.
-- Do not require authentication for non-loopback hosts; warn instead.
+- Do not allow unauthenticated non-loopback HTTP serving unless the operator explicitly opts in.
 - Do not keep no-arg `caplets` as an implicit MCP stdio server.
 
 ## CLI behavior
@@ -40,6 +40,7 @@ Serve options:
 --path <path>       # HTTP only, default /mcp
 --user <user>       # HTTP only, optional; defaults to env or caplets when password is set
 --password <pass>   # HTTP only, optional; enables Basic Auth
+--allow-unauthenticated-http  # HTTP only, required for unauthenticated non-loopback serving
 ```
 
 Validation rules:
@@ -47,7 +48,7 @@ Validation rules:
 - Unknown transport errors.
 - Port must be a valid TCP port.
 - Path must start with `/`, contain no query string or fragment, and normalize trailing slashes except for root.
-- `--host`, `--port`, `--path`, `--user`, and `--password` are invalid with stdio transport.
+- `--host`, `--port`, `--path`, `--user`, `--password`, and `--allow-unauthenticated-http` are invalid with stdio transport.
 - `caplets` with no arguments prints help and exits successfully.
 - `caplets serve` remains quiet in stdio mode to preserve MCP framing.
 
@@ -109,7 +110,7 @@ Credential resolution:
 - If an explicit user is provided via `--user` or `CAPLETS_SERVER_USER` but no password exists, fail fast with a clear error asking for `--password` or `CAPLETS_SERVER_PASSWORD`.
 - Never log the password.
 
-Non-loopback and wildcard hosts may run without authentication, but HTTP startup must warn when auth is disabled.
+Non-loopback and wildcard hosts may run without authentication only when the operator explicitly passes `--allow-unauthenticated-http`; otherwise HTTP startup must fail fast. When explicit unauthenticated non-loopback serving is allowed, startup must still warn.
 
 ## DNS rebinding protection
 
@@ -121,7 +122,7 @@ For loopback serving, configure `StreamableHTTPTransport` with:
 - `allowedHosts` containing the expected loopback host and host-with-port values.
 - `allowedOrigins` for matching localhost origins when practical.
 
-For non-loopback hosts, do not enable strict host validation by default. Rely on the non-loopback unauthenticated warning when Basic Auth is disabled.
+For non-loopback hosts, do not enable strict host validation by default. Require Basic Auth unless `--allow-unauthenticated-http` is present, and warn when explicit unauthenticated non-loopback serving is used.
 
 ## Session model
 

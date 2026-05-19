@@ -98,6 +98,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--path <path>", "HTTP MCP endpoint path")
     .option("--user <user>", "HTTP Basic Auth username")
     .option("--password <password>", "HTTP Basic Auth password")
+    .option(
+      "--allow-unauthenticated-http",
+      "allow unauthenticated HTTP serving on non-loopback hosts",
+    )
     .action(
       async (options: {
         transport?: string;
@@ -106,6 +110,7 @@ export function createProgram(io: CliIO = {}): Command {
         path?: string;
         user?: string;
         password?: string;
+        allowUnauthenticatedHttp?: boolean;
       }) => {
         const resolved = resolveServeOptions(options);
         const configPath = envConfigPath();

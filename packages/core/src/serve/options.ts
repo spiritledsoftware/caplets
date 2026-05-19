@@ -9,6 +9,7 @@ export type RawServeOptions = {
   path?: string;
   user?: string;
   password?: string;
+  allowUnauthenticatedHttp?: boolean;
 };
 
 export type StdioServeOptions = {
@@ -33,7 +34,14 @@ export type ServeOptions = StdioServeOptions | HttpServeOptions;
 
 export type ServeEnv = Partial<Record<"CAPLETS_SERVER_USER" | "CAPLETS_SERVER_PASSWORD", string>>;
 
-const HTTP_ONLY_OPTIONS = ["host", "port", "path", "user", "password"] as const;
+const HTTP_ONLY_OPTIONS = [
+  "host",
+  "port",
+  "path",
+  "user",
+  "password",
+  "allowUnauthenticatedHttp",
+] as const;
 
 export function resolveServeOptions(
   raw: RawServeOptions,
@@ -71,13 +79,23 @@ export function resolveServeOptions(
   }
 
   const loopback = isLoopbackHost(host);
+  const auth =
+    password === undefined
+      ? { enabled: false as const, user }
+      : { enabled: true as const, user, password };
+  if (!loopback && !auth.enabled && raw.allowUnauthenticatedHttp !== true) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Unauthenticated HTTP serving on non-loopback hosts requires --allow-unauthenticated-http.",
+    );
+  }
   return {
     transport,
     host,
     port,
     path,
-    auth: password === undefined ? { enabled: false, user } : { enabled: true, user, password },
-    warnUnauthenticatedNetwork: !loopback && password === undefined,
+    auth,
+    warnUnauthenticatedNetwork: !loopback && !auth.enabled,
     loopback,
   };
 }

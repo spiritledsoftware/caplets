@@ -180,9 +180,16 @@ async function registerCapletsPiExtension(
   };
 
   let unsubscribe: (() => void) | undefined;
+  let isShutdown = false;
   const startSync = () => {
+    if (isShutdown) {
+      return;
+    }
     currentCapletTools = syncToolRegistrations();
     unsubscribe = service.onToolsChanged((caplets) => {
+      if (isShutdown) {
+        return;
+      }
       remoteStatus = "connected";
       syncStatusWidget();
       syncActiveTools(syncToolRegistrations(caplets));
@@ -198,6 +205,7 @@ async function registerCapletsPiExtension(
     syncActiveTools();
   });
   pi.on?.("session_shutdown", () => {
+    isShutdown = true;
     statusCtx?.ui.setWidget("caplets", undefined);
     statusCtx = undefined;
     unsubscribe?.();
@@ -207,7 +215,9 @@ async function registerCapletsPiExtension(
   });
   if (ownsService) {
     remoteStatus = (await service.reload()) ? "connected" : "offline";
-    startSync();
+    if (!isShutdown) {
+      startSync();
+    }
     return;
   }
   startSync();

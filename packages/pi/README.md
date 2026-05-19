@@ -42,7 +42,7 @@ especially the password:
 ```sh
 export CAPLETS_REMOTE_URL="https://caplets.example.com/mcp"
 export CAPLETS_REMOTE_USER="caplets"
-export CAPLETS_REMOTE_PASSWORD # set in your shell or secret manager
+export CAPLETS_REMOTE_PASSWORD="..." # or load from your shell/secret manager
 ```
 
 Pi currently calls extension factories with the Pi API only, so this extension reads its remote

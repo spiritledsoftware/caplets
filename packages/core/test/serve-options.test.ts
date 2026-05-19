@@ -52,6 +52,26 @@ describe("resolveServeOptions", () => {
     );
   });
 
+  it("requires explicit opt-in for unauthenticated non-loopback HTTP serving", () => {
+    expect(() => resolveServeOptions({ transport: "http", host: "0.0.0.0" }, {})).toThrow(
+      /requires --allow-unauthenticated-http/u,
+    );
+  });
+
+  it("allows unauthenticated non-loopback HTTP serving with explicit opt-in", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", host: "0.0.0.0", allowUnauthenticatedHttp: true },
+        {},
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "0.0.0.0",
+      auth: { enabled: false, user: "caplets" },
+      warnUnauthenticatedNetwork: true,
+    });
+  });
+
   it("rejects HTTP-only options for stdio", () => {
     expect(() => resolveServeOptions({ transport: "stdio", host: "127.0.0.1" }, {})).toThrow(
       /only valid with --transport http/u,

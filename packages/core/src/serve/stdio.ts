@@ -23,10 +23,21 @@ export async function serveStdio(options: ServeStdioOptions = {}): Promise<void>
     }
   };
 
+  let sigintHandler: (() => void) | undefined;
+  let sigtermHandler: (() => void) | undefined;
+
   if (options.signalHandling !== false) {
-    process.once("SIGINT", () => void close().finally(() => process.exit(130)));
-    process.once("SIGTERM", () => void close().finally(() => process.exit(143)));
+    sigintHandler = () => void close().finally(() => process.exit(130));
+    sigtermHandler = () => void close().finally(() => process.exit(143));
+    process.once("SIGINT", sigintHandler);
+    process.once("SIGTERM", sigtermHandler);
   }
 
-  await session.connect(new StdioServerTransport());
+  try {
+    await session.connect(new StdioServerTransport());
+  } finally {
+    if (sigintHandler) process.off("SIGINT", sigintHandler);
+    if (sigtermHandler) process.off("SIGTERM", sigtermHandler);
+    await close();
+  }
 }
