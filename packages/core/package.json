@@ -52,9 +52,12 @@
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
+    "@hono/mcp": "^0.3.0",
+    "@hono/node-server": "^1.19.14",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^14.0.3",
     "graphql": "^16.14.0",
+    "hono": "^4.12.19",
     "vfile": "^6.0.3",
     "vfile-matter": "^5.0.1",
     "zod": "^4.4.3"
