@@ -119,7 +119,13 @@ function parseRemoteUrl(value: string): URL {
   try {
     url = new URL(value);
   } catch {
-    throw new CapletsError("REQUEST_INVALID", `Invalid remote Caplets URL: ${value}`);
+    throw new CapletsError("REQUEST_INVALID", "Invalid remote Caplets URL.");
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote Caplets URL must not include username or password; use CAPLETS_REMOTE_USER/CAPLETS_REMOTE_PASSWORD or remote.user/remote.password instead.",
+    );
   }
   if (url.protocol === "https:") {
     return url;

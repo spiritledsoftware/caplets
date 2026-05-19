@@ -45,6 +45,28 @@ describe("resolveNativeCapletsServiceOptions", () => {
     ).toThrow(/https/u);
   });
 
+  it("does not echo invalid credential-bearing remote URL inputs", () => {
+    const rawUrl = "https://caplets:secret@exa mple.com/mcp";
+
+    expect(() => resolveNativeCapletsServiceOptions({ remote: { url: rawUrl } }, {})).toThrowError(
+      expect.not.stringContaining(rawUrl),
+    );
+  });
+
+  it("rejects remote URLs with embedded username or password", () => {
+    for (const url of [
+      "https://caplets:secret@caplets.example.com/mcp",
+      "http://caplets:secret@127.0.0.1:5387/mcp",
+    ]) {
+      expect(() => resolveNativeCapletsServiceOptions({ remote: { url } }, {})).toThrow(
+        /must not include username or password/u,
+      );
+      expect(() => resolveNativeCapletsServiceOptions({ remote: { url } }, {})).toThrow(
+        /CAPLETS_REMOTE_USER\/CAPLETS_REMOTE_PASSWORD or remote\.user\/remote\.password/u,
+      );
+    }
+  });
+
   it("lets config override env vars", () => {
     const configPassword = ["config", "password"].join("-");
     expect(
