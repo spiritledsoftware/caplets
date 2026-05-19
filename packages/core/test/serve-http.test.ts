@@ -73,6 +73,74 @@ describe("createHttpServeApp", () => {
 
     await engine.close();
   });
+
+  it("initializes an MCP HTTP session and lists Caplet tools", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:5387",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1.0.0" },
+        },
+      }),
+    });
+
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:5387",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": sessionId!,
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    });
+
+    const tools = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:5387",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": sessionId!,
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    });
+
+    expect(tools.status).toBe(200);
+    const body = await tools.text();
+    expect(body).toContain("status");
+
+    const deleted = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "DELETE",
+      headers: {
+        "mcp-session-id": sessionId!,
+        "mcp-protocol-version": "2025-03-26",
+        host: "127.0.0.1:5387",
+      },
+    });
+    expect(deleted.status).toBe(200);
+
+    await engine.close();
+  });
 });
 
 function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOptions {

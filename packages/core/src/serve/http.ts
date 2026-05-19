@@ -185,11 +185,12 @@ function safeEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function dnsRebindingOptions(options: HttpServeOptions): {
+type DnsRebindingOptions = {
   enableDnsRebindingProtection: true;
   allowedHosts: string[];
-  allowedOrigins: string[];
-} {
+};
+
+function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
   return {
     enableDnsRebindingProtection: true,
@@ -199,7 +200,6 @@ function dnsRebindingOptions(options: HttpServeOptions): {
       `${hostForHeader}:${options.port}`,
       `localhost:${options.port}`,
     ],
-    allowedOrigins: [`http://${hostForHeader}:${options.port}`, `http://localhost:${options.port}`],
   };
 }
 
