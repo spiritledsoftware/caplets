@@ -52,7 +52,9 @@ import { resolveNativeCapletsServiceOptions } from "../src/native/options";
 
 describe("resolveNativeCapletsServiceOptions", () => {
   it("defaults to local mode without remote configuration", () => {
-    expect(resolveNativeCapletsServiceOptions({}, {})).toEqual({ mode: "local" });
+    expect(resolveNativeCapletsServiceOptions({}, {})).toEqual({
+      mode: "local",
+    });
   });
 
   it("uses remote mode in auto when a remote URL is configured", () => {
@@ -139,7 +141,13 @@ describe("resolveNativeCapletsServiceOptions", () => {
   it("builds request headers without logging credentials", () => {
     const password = ["remote", "password"].join("-");
     const resolved = resolveNativeCapletsServiceOptions(
-      { remote: { url: "https://caplets.example.com/mcp", user: "caplets", password } },
+      {
+        remote: {
+          url: "https://caplets.example.com/mcp",
+          user: "caplets",
+          password,
+        },
+      },
       {},
     );
     expect(resolved.mode).toBe("remote");
@@ -428,7 +436,9 @@ describe("RemoteNativeCapletsService", () => {
 
     const result = await service.execute("linear", { operation: "get_caplet" });
 
-    expect(client.callTool).toHaveBeenCalledWith("linear", { operation: "get_caplet" });
+    expect(client.callTool).toHaveBeenCalledWith("linear", {
+      operation: "get_caplet",
+    });
     expect(result).toEqual({ content: [{ type: "text", text: "ok" }] });
 
     await service.close();
@@ -722,7 +732,10 @@ export function createSdkRemoteCapletsClient(options: {
         return result.tools;
       },
       async callTool(name, arguments_) {
-        return await client.callTool({ name, arguments: arguments_ as Record<string, unknown> });
+        return await client.callTool({
+          name,
+          arguments: arguments_ as Record<string, unknown>,
+        });
       },
       onToolsChanged(listener) {
         client.setNotificationHandler(
@@ -732,7 +745,9 @@ export function createSdkRemoteCapletsClient(options: {
           },
         );
         return () =>
-          client.removeNotificationHandler({ method: "notifications/tools/list_changed" } as never);
+          client.removeNotificationHandler({
+            method: "notifications/tools/list_changed",
+          } as never);
       },
       async close() {
         await transport.terminateSession().catch(() => undefined);
@@ -929,13 +944,21 @@ it("passes second-argument config into the native service", async () => {
     {} as never,
     {
       mode: "remote",
-      remote: { url: "https://caplets.example.com/mcp", user: "caplets", pollIntervalMs: 5_000 },
+      remote: {
+        url: "https://caplets.example.com/mcp",
+        user: "caplets",
+        pollIntervalMs: 5_000,
+      },
     } as never,
   );
 
   expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
     mode: "remote",
-    remote: { url: "https://caplets.example.com/mcp", user: "caplets", pollIntervalMs: 5_000 },
+    remote: {
+      url: "https://caplets.example.com/mcp",
+      user: "caplets",
+      pollIntervalMs: 5_000,
+    },
   });
 });
 ```
@@ -1081,13 +1104,21 @@ it("passes Pi args into the native service", () => {
   capletsPiExtension(pi, {
     args: {
       mode: "remote",
-      remote: { url: "https://caplets.example.com/mcp", user: "caplets", pollIntervalMs: 5_000 },
+      remote: {
+        url: "https://caplets.example.com/mcp",
+        user: "caplets",
+        pollIntervalMs: 5_000,
+      },
     },
   });
 
   expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
     mode: "remote",
-    remote: { url: "https://caplets.example.com/mcp", user: "caplets", pollIntervalMs: 5_000 },
+    remote: {
+      url: "https://caplets.example.com/mcp",
+      user: "caplets",
+      pollIntervalMs: 5_000,
+    },
   });
 });
 ```
