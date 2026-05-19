@@ -30,6 +30,16 @@ function client(
   };
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("RemoteNativeCapletsService", () => {
   it("maps remote MCP tools to native Caplet tools", async () => {
     const fixture = client([{ name: "git-hub", title: undefined, description: "GitHub tools" }]);
@@ -162,6 +172,41 @@ describe("RemoteNativeCapletsService", () => {
     expect(service.listTools()).toEqual([expect.objectContaining({ caplet: "alpha" })]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("still closed connection"));
     await service.close();
+  });
+
+  it("does not create or retain a new client when closed during failed reconnect", async () => {
+    const first = client([{ name: "alpha", description: "Alpha" }]);
+    const second = client([{ name: "beta", description: "Beta" }]);
+    const firstClose = deferred();
+    const writeErr = vi.fn();
+    first.api.close = vi.fn(async (): Promise<undefined> => {
+      await firstClose.promise;
+      return undefined;
+    });
+    first.api.listTools = vi.fn(async () => {
+      throw new Error("transport connection closed");
+    });
+    const factory = vi.fn(() => second.api);
+    const service = new RemoteNativeCapletsService({
+      client: first.api,
+      clientFactory: factory,
+      pollIntervalMs: 60_000,
+      writeErr,
+    });
+
+    const reload = service.reload();
+    await vi.waitFor(() => expect(first.api.close).toHaveBeenCalledTimes(1));
+    const closing = service.close();
+    firstClose.resolve();
+
+    await expect(reload).resolves.toBe(false);
+    await closing;
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(second.api.onToolsChanged).not.toHaveBeenCalled();
+    expect(second.listenerCount()).toBe(0);
+    expect(second.api.close).not.toHaveBeenCalled();
+    expect(writeErr).not.toHaveBeenCalled();
   });
 
   it("reconnects once for invalid remote sessions and reloads from the new client", async () => {

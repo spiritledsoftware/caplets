@@ -43,7 +43,10 @@ export function createSdkRemoteCapletsClient(
     requestInit: options.requestInit,
     ...(options.fetch ? { fetch: options.fetch } : {}),
   });
+  // The SDK transport type is narrower than StreamableHTTPClientTransport at compile time,
+  // but this is the documented transport used by the streamable HTTP client.
   const ready = client.connect(transport as never);
+  const readyObserved = ready.catch(() => undefined);
   const listeners = new Set<() => void>();
 
   client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
@@ -76,6 +79,7 @@ export function createSdkRemoteCapletsClient(
     },
     async close() {
       listeners.clear();
+      await readyObserved;
       await transport.terminateSession().catch(() => undefined);
       await client.close();
     },
@@ -113,7 +117,9 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
         throw remoteAuthError();
       }
       if (isSessionFailure(error)) {
-        await this.resetClient();
+        if (!(await this.resetClient()) || this.closed) {
+          throw error;
+        }
         try {
           return await this.client.callTool(capletId, request);
         } catch (retryError) {
@@ -137,9 +143,11 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
     } catch (error) {
       if (isSessionFailure(error)) {
         try {
-          await this.resetClient();
+          if (!(await this.resetClient()) || this.closed) {
+            return false;
+          }
           await this.reloadFromClient();
-          return true;
+          return !this.closed;
         } catch (retryError) {
           this.warn(`Could not reload remote Caplets tools: ${errorMessage(retryError)}\n`);
           return false;
@@ -181,11 +189,23 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
     });
   }
 
-  private async resetClient(): Promise<void> {
+  private async resetClient(): Promise<boolean> {
+    if (this.closed) {
+      return false;
+    }
     this.unsubscribeRemote();
     await this.client.close().catch(() => undefined);
-    this.client = this.clientFactory();
+    if (this.closed) {
+      return false;
+    }
+    const nextClient = this.clientFactory();
+    if (this.closed) {
+      await nextClient.close().catch(() => undefined);
+      return false;
+    }
+    this.client = nextClient;
     this.unsubscribeRemote = this.subscribeRemote(this.client);
+    return true;
   }
 
   private emitToolsChanged(): void {
