@@ -60,7 +60,9 @@ type MockPiApi = {
       event: "session_start" | "session_shutdown",
       handler: (
         event?: unknown,
-        ctx?: { ui: { setStatus: Mock<(key: string, text: string | undefined) => void> } },
+        ctx?: {
+          ui: { setWidget: Mock<(key: string, content: unknown, options?: unknown) => void> };
+        },
       ) => void,
     ) => void
   >;
@@ -996,12 +998,12 @@ describe("@caplets/pi", () => {
       }),
     );
     const { api } = mockPiApi();
-    const setStatus = vi.fn();
+    const setWidget = vi.fn();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
-    triggerSessionStart(api, { ui: { setStatus } });
+    triggerSessionStart(api, { ui: { setWidget } });
 
-    expect(setStatus).not.toHaveBeenCalled();
+    expect(setWidget).not.toHaveBeenCalled();
   });
 
   it("shows a remote status widget by default for remote settings", async () => {
@@ -1017,12 +1019,15 @@ describe("@caplets/pi", () => {
       }),
     );
     const { api } = mockPiApi();
-    const setStatus = vi.fn();
+    const setWidget = vi.fn();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
-    triggerSessionStart(api, { ui: { setStatus } });
+    triggerSessionStart(api, { ui: { setWidget } });
 
-    expect(setStatus).toHaveBeenCalledWith("caplets", "󰖟 caplets ✓");
+    expect(setWidget).toHaveBeenCalledWith("caplets", expect.any(Function), {
+      placement: "belowEditor",
+    });
+    expect(renderStatusWidget(setWidget)).toBe("<success>󰖟 caplets ✓</success>");
   });
 
   it("can disable nerd font icons in the remote status widget", async () => {
@@ -1039,12 +1044,15 @@ describe("@caplets/pi", () => {
       }),
     );
     const { api } = mockPiApi();
-    const setStatus = vi.fn();
+    const setWidget = vi.fn();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
-    triggerSessionStart(api, { ui: { setStatus } });
+    triggerSessionStart(api, { ui: { setWidget } });
 
-    expect(setStatus).toHaveBeenCalledWith("caplets", "caplets ✓");
+    expect(setWidget).toHaveBeenCalledWith("caplets", expect.any(Function), {
+      placement: "belowEditor",
+    });
+    expect(renderStatusWidget(setWidget)).toBe("<success>caplets ✓</success>");
   });
 
   it("can disable the remote status widget from settings", async () => {
@@ -1061,12 +1069,12 @@ describe("@caplets/pi", () => {
       }),
     );
     const { api } = mockPiApi();
-    const setStatus = vi.fn();
+    const setWidget = vi.fn();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
-    triggerSessionStart(api, { ui: { setStatus } });
+    triggerSessionStart(api, { ui: { setWidget } });
 
-    expect(setStatus).not.toHaveBeenCalled();
+    expect(setWidget).not.toHaveBeenCalled();
   });
 
   it("shows remote offline when initial reload fails", async () => {
@@ -1080,12 +1088,15 @@ describe("@caplets/pi", () => {
       }),
     );
     const { api } = mockPiApi();
-    const setStatus = vi.fn();
+    const setWidget = vi.fn();
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
-    triggerSessionStart(api, { ui: { setStatus } });
+    triggerSessionStart(api, { ui: { setWidget } });
 
-    expect(setStatus).toHaveBeenCalledWith("caplets", "󰖟 caplets ×");
+    expect(setWidget).toHaveBeenCalledWith("caplets", expect.any(Function), {
+      placement: "belowEditor",
+    });
+    expect(renderStatusWidget(setWidget)).toBe("<error>󰖟 caplets ×</error>");
   });
 
   it("programmatic args override Pi settings without reading the settings file", async () => {
@@ -1118,13 +1129,26 @@ const plainTheme: RenderTheme = {
   fg: (_key, text) => text,
 };
 
+function renderStatusWidget(setWidget: Mock): string {
+  const factory = setWidget.mock.calls.at(-1)?.[1] as
+    | ((tui: unknown, theme: { fg(key: string, text: string): string }) => RenderComponent)
+    | undefined;
+  if (!factory) {
+    return "";
+  }
+  return factory({} as never, { fg: (key, text) => `<${key}>${text}</${key}>` })
+    .render(80)
+    .join("\n")
+    .trimEnd();
+}
+
 function renderText(component: RenderComponent | undefined): string {
   return component?.render(120).join("\n") ?? "";
 }
 
 function triggerSessionStart(
   api: MockPiApi,
-  ctx?: { ui: { setStatus: Mock<(key: string, text: string | undefined) => void> } },
+  ctx?: { ui: { setWidget: Mock<(key: string, content: unknown, options?: unknown) => void> } },
 ): void {
   const sessionStart = api.on.mock.calls.find(([event]) => event === "session_start")?.[1];
   sessionStart?.(undefined, ctx);
