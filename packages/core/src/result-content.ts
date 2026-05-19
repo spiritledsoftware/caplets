@@ -11,7 +11,7 @@ export function textContent(text: string): TextContentBlock[] {
 }
 
 export function compactJsonText(value: unknown, maxLength = 600): string {
-  return compactText(JSON.stringify(value), maxLength);
+  return compactText(JSON.stringify(value) ?? String(value), maxLength);
 }
 
 export function compactText(value: string, maxLength = 600): string {

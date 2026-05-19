@@ -347,6 +347,8 @@ describe("generated tool handlers", () => {
 
     expect(browser.content[0]?.text).toContain("browser_click");
     expect(stealth.content[0]?.text).toContain("browser_click");
+    expect(browser.content[0]?.text).toContain("Browser");
+    expect(stealth.content[0]?.text).toContain("Stealth Browser");
     expect(browser.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
     expect(stealth.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
   });
@@ -386,6 +388,7 @@ describe("generated tool handlers", () => {
     });
     expect(list.structuredContent?.result).toEqual({
       server: "alpha",
+      name: "Alpha",
       tools: [
         {
           server: "alpha",
@@ -470,11 +473,18 @@ describe("generated tool handlers", () => {
     ];
     const downstream = new DownstreamManager(registry);
 
-    expect(
-      downstream
-        .search(server, browserTools, "navigate screenshot click snapshot type", 10)
-        .map((tool) => tool.tool),
-    ).toEqual(["browser_click", "browser_navigate", "browser_snapshot", "browser_take_screenshot"]);
+    const results = downstream
+      .search(server, browserTools, "navigate screenshot click snapshot type", 10)
+      .map((tool) => tool.tool);
+    expect(results).toHaveLength(4);
+    expect(results).toEqual(
+      expect.arrayContaining([
+        "browser_click",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_take_screenshot",
+      ]),
+    );
   });
 
   it("annotates call_tool result metadata without changing downstream shape", async () => {

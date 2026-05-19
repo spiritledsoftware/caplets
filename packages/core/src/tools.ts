@@ -74,6 +74,7 @@ export async function handleServerTool(
       return jsonResult(
         {
           server: server.server,
+          name: server.name,
           tools: tools.slice(0, limit).map((tool) => backend.compact(server as never, tool)),
         },
         metadataFor(server, "list_tools", undefined, startedAt),
@@ -86,6 +87,7 @@ export async function handleServerTool(
       return jsonResult(
         {
           server: server.server,
+          name: server.name,
           query: parsed.query,
           tools: backend.search(server as never, tools, parsed.query, limit),
         },
