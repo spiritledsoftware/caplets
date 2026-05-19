@@ -31,10 +31,10 @@
     "typecheck": "tsgo --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@caplets/core": "workspace:*"
+  },
   "devDependencies": {
-    "@caplets/core": "workspace:*",
-    "@opencode-ai/plugin": "^1.14.48",
     "@types/node": "^25.7.0",
     "@typescript/native-preview": "7.0.0-dev.20260515.1",
     "rolldown": "^1.0.0",

@@ -31,9 +31,10 @@
     "typecheck": "tsgo --noEmit",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@caplets/core": "workspace:*"
+  },
   "devDependencies": {
-    "@caplets/core": "workspace:*",
     "@types/node": "^25.7.0",
     "@typescript/native-preview": "7.0.0-dev.20260515.1",
     "rolldown": "^1.0.0",
