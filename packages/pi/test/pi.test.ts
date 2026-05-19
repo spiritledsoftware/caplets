@@ -872,7 +872,7 @@ describe("@caplets/pi", () => {
                 url: "https://caplets.example.com",
                 user: "ian",
                 password: "secret",
-                pollIntervalMs: 250,
+                pollIntervalMs: 1_000,
               },
             },
           },
@@ -893,7 +893,7 @@ describe("@caplets/pi", () => {
         url: "https://caplets.example.com",
         user: "ian",
         password: "secret",
-        pollIntervalMs: 250,
+        pollIntervalMs: 1_000,
       },
     });
     expect(service.reload).toHaveBeenCalledOnce();
