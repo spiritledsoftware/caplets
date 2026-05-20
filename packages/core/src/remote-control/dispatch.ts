@@ -179,9 +179,12 @@ async function completeRemoteAuthLogin(
   if (!flow) {
     throw new CapletsError("REQUEST_INVALID", `Unknown auth flow ${flowId}`);
   }
-  await flow.complete(callbackUrl);
-  context.authFlowStore?.delete(flowId);
-  return { server: flow.server, authenticated: true };
+  try {
+    await flow.complete(callbackUrl);
+    return { server: flow.server, authenticated: true };
+  } finally {
+    context.authFlowStore?.delete(flowId);
+  }
 }
 
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {

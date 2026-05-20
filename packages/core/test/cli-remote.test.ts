@@ -451,6 +451,35 @@ describe("remote CLI routing", () => {
 
     expect(out.join("")).toBe("Authenticated `remote`.\n");
   });
+
+  it("prints pending instructions instead of authenticated when remote auth needs browser completion", async () => {
+    const out: string[] = [];
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: {
+          server: "remote",
+          flowId: "flow-1",
+          authorizationUrl: "https://auth.example/authorize",
+        },
+      }),
+    );
+
+    await runCli(["auth", "login", "remote", "--no-open"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe(
+      "Open this URL to authorize remote:\n" +
+        "https://auth.example/authorize\n" +
+        "Complete authentication in your browser. The server callback will store credentials.\n",
+    );
+  });
 });
 
 async function runRemoteAdd(args: string[]): Promise<unknown> {

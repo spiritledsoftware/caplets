@@ -346,6 +346,47 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response).toEqual({ ok: true, result: { server: "remote", authenticated: true } });
     expect(create).not.toHaveBeenCalled();
   });
+
+  it("expires stale remote auth flows", () => {
+    let now = 1_000;
+    const authFlowStore = new RemoteAuthFlowStore({ ttlMs: 100, now: () => now });
+    const flow = authFlowStore.create({
+      server: "remote",
+      authorizationUrl: "https://auth.example/authorize",
+      complete: async () => {},
+    });
+
+    expect(authFlowStore.get(flow.id)).toBe(flow);
+
+    now = 1_101;
+    expect(authFlowStore.get(flow.id)).toBeUndefined();
+  });
+
+  it("removes remote auth flows after failed completion", async () => {
+    const authFlowStore = new RemoteAuthFlowStore();
+    const flow = authFlowStore.create({
+      server: "remote",
+      authorizationUrl: "https://auth.example/authorize",
+      complete: async () => {
+        throw new Error("callback failed");
+      },
+    });
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: { flowId: flow.id, callbackUrl: "http://127.0.0.1/callback?code=bad" },
+      },
+      {
+        ...testContext(),
+        authFlowStore,
+        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+      },
+    );
+
+    expect(response).toMatchObject({ ok: false });
+    expect(authFlowStore.get(flow.id)).toBeUndefined();
+  });
 });
 
 function testContext(options: { writeConfig?: boolean } = {}) {

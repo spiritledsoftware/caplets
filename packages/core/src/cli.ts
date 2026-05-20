@@ -612,11 +612,17 @@ export function createProgram(io: CliIO = {}): Command {
         };
         if (started.authorizationUrl) {
           writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
+          if (options.open !== false) {
+            await openBrowser(started.authorizationUrl);
+          }
+          writeOut(
+            "Complete authentication in your browser. The server callback will store credentials.\n",
+          );
+          return;
         }
-        if (started.authorizationUrl && options.open !== false) {
-          await openBrowser(started.authorizationUrl);
+        if (started.authenticated) {
+          writeOut(`Authenticated \`${serverId}\`.\n`);
         }
-        writeOut(`Authenticated \`${serverId}\`.\n`);
         return;
       }
       const configPath = currentConfigPath();
