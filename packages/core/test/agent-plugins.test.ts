@@ -95,9 +95,10 @@ describe("root agent plugin artifacts", () => {
   it("documents remote Caplets service configuration for MCP-backed plugins", async () => {
     const readme = await readFile(path.join(repoRoot, "README.md"), "utf8");
 
-    expect(readme).toContain("CAPLETS_REMOTE_URL");
+    expect(readme).toContain("CAPLETS_SERVER_URL");
     expect(readme).toContain("caplets serve --transport http");
-    expect(readme).toContain("https://caplets.example.com/mcp");
+    expect(readme).toContain("https://caplets.example.com/caplets");
+    expect(readme).toContain("/control");
     expect(readme).toMatch(/HTTPS\/TLS|TLS|HTTPS/);
   });
 
