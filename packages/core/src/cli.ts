@@ -248,7 +248,11 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const remote = remoteClientForCli(io);
         if (remote) {
-          const result = await remote.request("add", { kind: "cli", id, options });
+          const result = await remote.request("add", {
+            kind: "cli",
+            id,
+            options: remoteAddOptions(options),
+          });
           writeAddResult(writeOut, "CLI", result as AddCliResult);
           return;
         }
@@ -296,7 +300,11 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const remote = remoteClientForCli(io);
         if (remote) {
-          const result = await remote.request("add", { kind: "mcp", id, options });
+          const result = await remote.request("add", {
+            kind: "mcp",
+            id,
+            options: remoteAddOptions(options),
+          });
           writeAddResult(writeOut, "MCP", result as AddCliResult);
           return;
         }
@@ -326,7 +334,11 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const remote = remoteClientForCli(io);
         if (remote) {
-          const result = await remote.request("add", { kind: "openapi", id, options });
+          const result = await remote.request("add", {
+            kind: "openapi",
+            id,
+            options: remoteAddOptions(options),
+          });
           writeAddResult(writeOut, "OpenAPI", result as AddCliResult);
           return;
         }
@@ -362,7 +374,11 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const remote = remoteClientForCli(io);
         if (remote) {
-          const result = await remote.request("add", { kind: "graphql", id, options });
+          const result = await remote.request("add", {
+            kind: "graphql",
+            id,
+            options: remoteAddOptions(options),
+          });
           writeAddResult(writeOut, "GraphQL", result as AddCliResult);
           return;
         }
@@ -392,7 +408,11 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const remote = remoteClientForCli(io);
         if (remote) {
-          const result = await remote.request("add", { kind: "http", id, options });
+          const result = await remote.request("add", {
+            kind: "http",
+            id,
+            options: remoteAddOptions(options),
+          });
           writeAddResult(writeOut, "HTTP", result as AddCliResult);
           return;
         }
@@ -662,6 +682,17 @@ type AddBackendCliOptions = {
 };
 
 type AddCliResult = { path?: string; text: string; remote?: boolean };
+
+function remoteAddOptions<T extends Record<string, unknown>>(
+  options: T,
+): Omit<T, "global" | "print" | "output" | "destinationRoot"> {
+  const { output, print, global, destinationRoot, ...remoteOptions } = options;
+  void output;
+  void print;
+  void global;
+  void destinationRoot;
+  return remoteOptions;
+}
 
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);

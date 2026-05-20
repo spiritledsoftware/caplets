@@ -190,6 +190,115 @@ describe("remote CLI routing", () => {
     );
   });
 
+  it("strips local destination fields from remote add mcp requests", async () => {
+    const request = await runRemoteAdd([
+      "mcp",
+      "github",
+      "--url",
+      "https://mcp.example.com/mcp",
+      "--transport",
+      "http",
+      "--arg",
+      "--verbose",
+      "--env",
+      "TOKEN=secret",
+      "--token-env",
+      "GITHUB_TOKEN",
+      "--global",
+      "--print",
+      "--output",
+      "/tmp/github.md",
+      "--force",
+    ]);
+
+    expect(request).toEqual({
+      command: "add",
+      arguments: {
+        kind: "mcp",
+        id: "github",
+        options: {
+          arg: ["--verbose"],
+          env: ["TOKEN=secret"],
+          url: "https://mcp.example.com/mcp",
+          transport: "http",
+          tokenEnv: "GITHUB_TOKEN",
+          force: true,
+        },
+      },
+    });
+  });
+
+  it.each([
+    [
+      "cli",
+      ["cli", "repo-tools", "--repo", "/work/repo", "--command", "git"],
+      { repo: "/work/repo", command: "git" },
+    ],
+    [
+      "openapi",
+      [
+        "openapi",
+        "users",
+        "--spec",
+        "./openapi.yaml",
+        "--base-url",
+        "https://api.example.com",
+        "--token-env",
+        "API_TOKEN",
+      ],
+      { spec: "./openapi.yaml", baseUrl: "https://api.example.com", tokenEnv: "API_TOKEN" },
+    ],
+    [
+      "graphql",
+      [
+        "graphql",
+        "catalog",
+        "--endpoint-url",
+        "https://api.example.com/graphql",
+        "--schema",
+        "./schema.graphql",
+        "--introspection",
+        "--token-env",
+        "GRAPHQL_TOKEN",
+      ],
+      {
+        endpointUrl: "https://api.example.com/graphql",
+        schema: "./schema.graphql",
+        introspection: true,
+        tokenEnv: "GRAPHQL_TOKEN",
+      },
+    ],
+    [
+      "http",
+      [
+        "http",
+        "users",
+        "--base-url",
+        "https://api.example.com",
+        "--action",
+        "list:GET:/users",
+        "--token-env",
+        "HTTP_TOKEN",
+      ],
+      {
+        action: ["list:GET:/users"],
+        baseUrl: "https://api.example.com",
+        tokenEnv: "HTTP_TOKEN",
+      },
+    ],
+  ])("routes add %s through remote control", async (kind, args, options) => {
+    const request = await runRemoteAdd(args);
+
+    expect(request).toEqual({
+      command: "add",
+      arguments: {
+        kind,
+        id: args[1],
+        options,
+      },
+    });
+  });
+
   it("routes install through remote control", async () => {
     const out: string[] = [];
     const fetchMock = vi.fn(
@@ -266,3 +375,33 @@ describe("remote CLI routing", () => {
     );
   });
 });
+
+async function runRemoteAdd(args: string[]): Promise<unknown> {
+  const requests: unknown[] = [];
+  const fetchMock = vi.fn(
+    async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      requests.push({ url: String(url), body: String(init?.body) });
+      return Response.json({
+        ok: true,
+        result: {
+          remote: true,
+          path: "/srv/caplets/.caplets/generated.md",
+          text: "generated\n",
+        },
+      });
+    },
+  );
+
+  await runCli(["add", ...args], {
+    env: {
+      CAPLETS_MODE: "remote",
+      CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+    },
+    fetch: fetchMock as typeof fetch,
+    writeOut: () => {},
+  });
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ url: "http://127.0.0.1:5387/control" });
+  return JSON.parse((requests[0] as { body: string }).body);
+}
