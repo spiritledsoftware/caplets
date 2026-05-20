@@ -231,41 +231,30 @@ describe("remote CLI routing", () => {
     }
   });
 
-  it("strips local destination fields from remote add mcp requests", async () => {
-    const request = await runRemoteAdd([
-      "mcp",
-      "github",
-      "--url",
-      "https://mcp.example.com/mcp",
-      "--transport",
-      "http",
-      "--arg",
-      "--verbose",
-      "--env",
-      "TOKEN=secret",
-      "--token-env",
-      "GITHUB_TOKEN",
-      "--global",
-      "--print",
-      "--output",
-      "/tmp/github.md",
-      "--force",
-    ]);
-
-    expect(request).toEqual({
-      command: "add",
-      arguments: {
-        kind: "mcp",
-        id: "github",
-        options: {
-          arg: ["--verbose"],
-          env: ["TOKEN=secret"],
-          url: "https://mcp.example.com/mcp",
-          transport: "http",
-          tokenEnv: "GITHUB_TOKEN",
-          force: true,
-        },
-      },
+  it("rejects local destination fields for remote add mcp requests", async () => {
+    await expect(
+      runRemoteAdd([
+        "mcp",
+        "github",
+        "--url",
+        "https://mcp.example.com/mcp",
+        "--transport",
+        "http",
+        "--arg",
+        "--verbose",
+        "--env",
+        "TOKEN=secret",
+        "--token-env",
+        "GITHUB_TOKEN",
+        "--global",
+        "--print",
+        "--output",
+        "/tmp/github.md",
+        "--force",
+      ]),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: expect.stringContaining("--global is not supported in remote mode"),
     });
   });
 
@@ -386,6 +375,31 @@ describe("remote CLI routing", () => {
         }),
       }),
     );
+  });
+
+  it("warns when remote install receives --global", async () => {
+    const err: string[] = [];
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: {
+          remote: true,
+          installed: [{ id: "github", destination: "/srv/caplets/.caplets/github" }],
+        },
+      }),
+    );
+
+    await runCli(["install", "spiritledsoftware/caplets", "github", "--global"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeErr: (value) => err.push(value),
+      writeOut: () => {},
+    });
+
+    expect(err.join("")).toContain("--global is not supported in remote mode");
   });
 
   it("routes init through remote control", async () => {

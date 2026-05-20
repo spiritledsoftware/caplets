@@ -197,6 +197,11 @@ export function createProgram(io: CliIO = {}): Command {
       async (repo: string, capletIds: string[], options: { global?: boolean; force?: boolean }) => {
         const remote = remoteClientForCli(io);
         if (remote) {
+          if (options.global) {
+            writeErr(
+              "Warning: --global is not supported in remote mode; the server controls the installation destination.\n",
+            );
+          }
           const result = (await remote.request("install", {
             repo,
             capletIds,
@@ -740,9 +745,24 @@ function remoteAddOptions<T extends Record<string, unknown>>(
   options: T,
 ): Omit<T, "global" | "print" | "output" | "destinationRoot"> {
   const { output, print, global, destinationRoot, ...remoteOptions } = options;
-  void output;
-  void print;
-  void global;
+  if (global) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--global is not supported in remote mode; the server controls the add destination.",
+    );
+  }
+  if (print) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--print is not supported in remote mode; the server controls add output.",
+    );
+  }
+  if (output !== undefined) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--output is not supported in remote mode; the server controls the add destination.",
+    );
+  }
   void destinationRoot;
   return remoteOptions;
 }

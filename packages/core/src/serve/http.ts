@@ -135,7 +135,9 @@ export function createHttpServeApp(
     return c.json(
       await dispatchRemoteCliRequest(
         request,
-        controlContext(io, writeErr, authFlowStore, c.req.url, paths.control),
+        controlContext(io, writeErr, authFlowStore, c.req.url, paths.control, (name) =>
+          c.req.header(name),
+        ),
       ),
     );
   });
@@ -144,7 +146,9 @@ export function createHttpServeApp(
     const flowId = c.req.param("flowId");
     const result = await dispatchRemoteCliRequest(
       { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
-      controlContext(io, writeErr, authFlowStore, c.req.url, paths.control),
+      controlContext(io, writeErr, authFlowStore, c.req.url, paths.control, (name) =>
+        c.req.header(name),
+      ),
     );
     if (!result.ok) {
       writeErr(`Caplets authentication failed for flow ${flowId}: ${result.error.message}\n`);
@@ -180,14 +184,37 @@ function controlContext(
   authFlowStore: RemoteAuthFlowStore,
   requestUrl: string,
   controlPath: string,
+  header: (name: string) => string | undefined,
 ): RemoteControlDispatchContext {
   return {
     ...io.control,
     projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
     authFlowStore,
-    controlCallbackBaseUrl: new URL(controlPath, requestUrl).toString(),
+    controlCallbackBaseUrl: new URL(
+      controlPath,
+      publicRequestOrigin(requestUrl, header),
+    ).toString(),
     writeErr,
   };
+}
+
+function publicRequestOrigin(
+  requestUrl: string,
+  header: (name: string) => string | undefined,
+): string {
+  const url = new URL(requestUrl);
+  const forwardedProto = firstForwardedValue(header("x-forwarded-proto"));
+  const forwardedHost = firstForwardedValue(header("x-forwarded-host"));
+  const proto =
+    forwardedProto === "http" || forwardedProto === "https"
+      ? forwardedProto
+      : url.protocol.slice(0, -1);
+  const host = forwardedHost ?? header("host") ?? url.host;
+  return `${proto}://${host}`;
+}
+
+function firstForwardedValue(value: string | undefined): string | undefined {
+  return value?.split(",", 1)[0]?.trim() || undefined;
 }
 
 export async function serveHttp(
