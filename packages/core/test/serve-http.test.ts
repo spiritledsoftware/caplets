@@ -87,6 +87,38 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("requires Basic Auth on control path and dispatches authenticated list requests", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const testPassword = ["test", "password"].join("-");
+    const app = createHttpServeApp(
+      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
+      engine,
+      { writeErr: () => {}, control: context },
+    );
+
+    const missing = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
+    expect(missing.status).toBe(401);
+    expect(missing.headers.get("www-authenticate")).toContain("Basic");
+
+    const listed = await app.request("http://127.0.0.1:5387/control", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "list", arguments: {} }),
+    });
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({ ok: true });
+
+    await engine.close();
+  });
+
   it("mounts service routes under a base path", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
@@ -201,6 +233,21 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
 }
 
 function testEngine(): { engine: CapletsEngine } {
+  const context = testContext();
+  return {
+    engine: new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    }),
+  };
+}
+
+function testContext(): {
+  configPath: string;
+  projectConfigPath: string;
+  projectCapletsRoot: string;
+} {
   const dir = mkdtempSync(join(tmpdir(), "caplets-http-"));
   dirs.push(dir);
   const userRoot = join(dir, "user");
@@ -223,5 +270,5 @@ function testEngine(): { engine: CapletsEngine } {
       },
     }),
   );
-  return { engine: new CapletsEngine({ configPath, projectConfigPath, watch: false }) };
+  return { configPath, projectConfigPath, projectCapletsRoot: projectRoot };
 }

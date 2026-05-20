@@ -3,12 +3,19 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
+import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import {
+  dispatchRemoteCliRequest,
+  type RemoteControlDispatchContext,
+} from "../remote-control/dispatch";
+import type { RemoteCliRequest } from "../remote-control/types";
 import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
+  control?: Omit<RemoteControlDispatchContext, "writeErr">;
 };
 
 type HttpSession = {
@@ -104,6 +111,17 @@ export function createHttpServeApp(
     return session.transport.handleRequest(c);
   });
 
+  app.post(paths.control, basicAuth(options.auth), async (c) => {
+    const request = (await c.req.json()) as RemoteCliRequest;
+    return c.json(
+      await dispatchRemoteCliRequest(request, {
+        ...io.control,
+        projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
+        writeErr,
+      }),
+    );
+  });
+
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.closeCapletsSessions = async () => {
@@ -130,7 +148,10 @@ export async function serveHttp(
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
   const engine = new CapletsEngine(engineOptions);
-  const app = createHttpServeApp(options, engine, { writeErr });
+  const app = createHttpServeApp(options, engine, {
+    writeErr,
+    control: { ...engineOptions, projectCapletsRoot: resolveProjectCapletsRoot() },
+  });
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
