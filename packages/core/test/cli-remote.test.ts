@@ -139,4 +139,130 @@ describe("remote CLI routing", () => {
       authDir: "/tmp/caplets-auth",
     });
   });
+  it("routes add mcp through remote control and labels the remote path", async () => {
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              remote: true,
+              label: "MCP",
+              path: "/srv/caplets/.caplets/github.md",
+              text: "mcpServer:\n",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    await runCli(
+      ["add", "mcp", "github", "--url", "https://mcp.example.com/mcp", "--transport", "http"],
+      {
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        },
+        fetch: fetchMock as typeof fetch,
+        writeOut: (value) => out.push(value),
+      },
+    );
+
+    expect(out.join("")).toBe("Wrote remote MCP Caplet to /srv/caplets/.caplets/github.md\n");
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5387/control"),
+      expect.objectContaining({
+        body: JSON.stringify({
+          command: "add",
+          arguments: {
+            kind: "mcp",
+            id: "github",
+            options: {
+              arg: [],
+              env: [],
+              url: "https://mcp.example.com/mcp",
+              transport: "http",
+            },
+          },
+        }),
+      }),
+    );
+  });
+
+  it("routes install through remote control", async () => {
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              remote: true,
+              installed: [
+                {
+                  id: "github",
+                  destination: "/srv/caplets/.caplets/github",
+                  source: "repo#caplets/github",
+                  kind: "directory",
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    await runCli(["install", "spiritledsoftware/caplets", "github"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe("Installed github to remote /srv/caplets/.caplets/github\n");
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5387/control"),
+      expect.objectContaining({
+        body: JSON.stringify({
+          command: "install",
+          arguments: {
+            repo: "spiritledsoftware/caplets",
+            capletIds: ["github"],
+            force: false,
+          },
+        }),
+      }),
+    );
+  });
+
+  it("routes init through remote control", async () => {
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ ok: true, result: { remote: true, path: "/srv/caplets/config.json" } }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    await runCli(["init", "--force"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe("Created remote Caplets config at /srv/caplets/config.json\n");
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5387/control"),
+      expect.objectContaining({
+        body: JSON.stringify({ command: "init", arguments: { force: true } }),
+      }),
+    );
+  });
 });

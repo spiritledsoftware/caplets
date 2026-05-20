@@ -140,7 +140,15 @@ export function createProgram(io: CliIO = {}): Command {
     .command("init")
     .description("Create a starter Caplets config file.")
     .option("--force", "overwrite an existing config file")
-    .action((options: { force?: boolean }) => {
+    .action(async (options: { force?: boolean }) => {
+      const remote = remoteClientForCli(io);
+      if (remote) {
+        const result = (await remote.request("init", {
+          force: Boolean(options.force),
+        })) as { path: string; remote: true };
+        writeOut(`Created remote Caplets config at ${result.path}\n`);
+        return;
+      }
       const configPath = currentConfigPath();
       const path = initConfig({
         ...(configPath ? { path: configPath } : {}),
@@ -185,18 +193,32 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("[caplets...]", "optional Caplet IDs to install")
     .option("-g, --global", "install to the user Caplets root")
     .option("--force", "overwrite installed Caplets")
-    .action((repo: string, capletIds: string[], options: { global?: boolean; force?: boolean }) => {
-      const result = installCaplets(repo, {
-        capletIds,
-        force: Boolean(options.force),
-        destinationRoot: options.global
-          ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-          : resolveProjectCapletsRoot(),
-      });
-      for (const caplet of result.installed) {
-        writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
-      }
-    });
+    .action(
+      async (repo: string, capletIds: string[], options: { global?: boolean; force?: boolean }) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = (await remote.request("install", {
+            repo,
+            capletIds,
+            force: Boolean(options.force),
+          })) as { installed: Array<{ id: string; destination: string }> };
+          for (const caplet of result.installed) {
+            writeOut(`Installed ${caplet.id} to remote ${caplet.destination}\n`);
+          }
+          return;
+        }
+        const result = installCaplets(repo, {
+          capletIds,
+          force: Boolean(options.force),
+          destinationRoot: options.global
+            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
+            : resolveProjectCapletsRoot(),
+        });
+        for (const caplet of result.installed) {
+          writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
+        }
+      },
+    );
 
   const add = program.command("add").description("Add generated Caplet files.");
 
@@ -212,7 +234,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
     .action(
-      (
+      async (
         id: string,
         options: {
           repo?: string;
@@ -224,6 +246,12 @@ export function createProgram(io: CliIO = {}): Command {
           force?: boolean;
         },
       ) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = await remote.request("add", { kind: "cli", id, options });
+          writeAddResult(writeOut, "CLI", result as AddCliResult);
+          return;
+        }
         const result = addCliCaplet(id, {
           ...options,
           destinationRoot: options.global
@@ -254,7 +282,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
     .action(
-      (
+      async (
         id: string,
         options: AddBackendCliOptions & {
           command?: string;
@@ -266,6 +294,12 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = await remote.request("add", { kind: "mcp", id, options });
+          writeAddResult(writeOut, "MCP", result as AddCliResult);
+          return;
+        }
         const result = addMcpCaplet(id, {
           ...options,
           destinationRoot: addDestinationRoot(options, currentConfigPath()),
@@ -286,10 +320,16 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
     .action(
-      (
+      async (
         id: string,
         options: AddBackendCliOptions & { spec?: string; baseUrl?: string; tokenEnv?: string },
       ) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = await remote.request("add", { kind: "openapi", id, options });
+          writeAddResult(writeOut, "OpenAPI", result as AddCliResult);
+          return;
+        }
         const result = addOpenApiCaplet(id, {
           ...options,
           destinationRoot: addDestinationRoot(options, currentConfigPath()),
@@ -311,7 +351,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
     .action(
-      (
+      async (
         id: string,
         options: AddBackendCliOptions & {
           endpointUrl?: string;
@@ -320,6 +360,12 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = await remote.request("add", { kind: "graphql", id, options });
+          writeAddResult(writeOut, "GraphQL", result as AddCliResult);
+          return;
+        }
         const result = addGraphqlCaplet(id, {
           ...options,
           destinationRoot: addDestinationRoot(options, currentConfigPath()),
@@ -340,10 +386,16 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
     .action(
-      (
+      async (
         id: string,
         options: AddBackendCliOptions & { baseUrl?: string; action?: string[]; tokenEnv?: string },
       ) => {
+        const remote = remoteClientForCli(io);
+        if (remote) {
+          const result = await remote.request("add", { kind: "http", id, options });
+          writeAddResult(writeOut, "HTTP", result as AddCliResult);
+          return;
+        }
         const result = addHttpCaplet(id, {
           ...options,
           destinationRoot: addDestinationRoot(options, currentConfigPath()),
@@ -608,6 +660,8 @@ type AddBackendCliOptions = {
   output?: string;
   force?: boolean;
 };
+
+type AddCliResult = { path?: string; text: string; remote?: boolean };
 
 function collect(value: string, previous: string[]): string[] {
   previous.push(value);
@@ -1069,10 +1123,10 @@ function addDestinationRoot(options: { global?: boolean }, configPath?: string):
 function writeAddResult(
   writeOut: (value: string) => void,
   label: string,
-  result: { path?: string; text: string },
+  result: AddCliResult,
 ): void {
   if (result.path) {
-    writeOut(`Wrote ${label} Caplet to ${result.path}\n`);
+    writeOut(`Wrote ${result.remote ? "remote " : ""}${label} Caplet to ${result.path}\n`);
     return;
   }
   writeOut(result.text);
