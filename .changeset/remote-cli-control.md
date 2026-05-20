@@ -5,4 +5,4 @@
 "@caplets/pi": minor
 ---
 
-Document the unified remote CLI control mode using `CAPLETS_MODE` and `CAPLETS_SERVER_*` settings, with service-base URL endpoint derivation for MCP, control, and health routes.
+Add unified server configuration with `CAPLETS_MODE` and `CAPLETS_SERVER_*`, plus remote CLI control support using service-base URL endpoint derivation for MCP, control, and health routes.

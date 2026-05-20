@@ -811,11 +811,14 @@ For headless terminals:
 caplets auth login <server> --no-open
 ```
 
-OAuth/OIDC tokens are stored under `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json`
-on Unix-like platforms and `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows.
-Token files use owner-only file permissions where the platform supports them. Caplets supports
-well-known OAuth/OIDC discovery and dynamic client registration when advertised. When a token expires,
-run `caplets auth login <server>` again.
+In local mode, OAuth/OIDC tokens are stored under
+`${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms and
+`%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows. Token files use owner-only file
+permissions where the platform supports them. In `CAPLETS_MODE=remote`, `caplets auth list`,
+`caplets auth login <server>`, and `caplets auth logout <server>` operate on the configured Caplets
+server instead. Downstream OAuth/OIDC credentials are stored server-side and are not returned to the
+local client. Caplets supports well-known OAuth/OIDC discovery and dynamic client registration when
+advertised. When a token expires, run `caplets auth login <server>` again.
 
 To inspect or remove stored OAuth credentials:
 
