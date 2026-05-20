@@ -103,7 +103,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {
   const kind = requiredString(args, "kind") as AddKind;
   const id = requiredString(args, "id");
-  const options = optionalObject(args, "options");
+  const options = remoteAddOptions(kind, optionalObject(args, "options"));
   switch (kind) {
     case "cli":
       return {
@@ -191,6 +191,106 @@ function optionalObject(args: Record<string, unknown>, key: string): Record<stri
   }
   assertObject(value, key);
   return value;
+}
+
+function remoteAddOptions(
+  kind: AddKind,
+  options: Record<string, unknown>,
+): Record<string, unknown> {
+  rejectServerOwnedAddOptions(options);
+  switch (kind) {
+    case "cli":
+      return pickOptions(options, {
+        repo: "string",
+        include: "string",
+        command: "string",
+        force: "boolean",
+      });
+    case "mcp":
+      return pickOptions(options, {
+        command: "string",
+        arg: "string-array",
+        cwd: "string",
+        env: "string-array",
+        url: "string",
+        transport: "string",
+        tokenEnv: "string",
+        force: "boolean",
+      });
+    case "openapi":
+      return pickOptions(options, {
+        spec: "string",
+        baseUrl: "string",
+        tokenEnv: "string",
+        force: "boolean",
+      });
+    case "graphql":
+      return pickOptions(options, {
+        endpointUrl: "string",
+        schema: "string",
+        introspection: "boolean",
+        tokenEnv: "string",
+        force: "boolean",
+      });
+    case "http":
+      return pickOptions(options, {
+        baseUrl: "string",
+        action: "string-array",
+        tokenEnv: "string",
+        force: "boolean",
+      });
+    default:
+      return options;
+  }
+}
+
+type RemoteAddOptionType = "string" | "boolean" | "string-array";
+
+function pickOptions(
+  options: Record<string, unknown>,
+  schema: Record<string, RemoteAddOptionType>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [key, type] of Object.entries(schema)) {
+    const value = options[key];
+    if (value === undefined) {
+      continue;
+    }
+    validateOptionType(key, value, type);
+    next[key] = value;
+  }
+  return next;
+}
+
+function rejectServerOwnedAddOptions(options: Record<string, unknown>): void {
+  if ("output" in options) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote add output is not supported remotely; the server owns destinationRoot and output path selection",
+    );
+  }
+  for (const key of ["destinationRoot", "print"]) {
+    if (key in options) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        `Remote add ${key} is not supported remotely; the server owns destinationRoot and print behavior`,
+      );
+    }
+  }
+}
+
+function validateOptionType(key: string, value: unknown, type: RemoteAddOptionType): void {
+  if (type === "string" && typeof value !== "string") {
+    throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be a string`);
+  }
+  if (type === "boolean" && typeof value !== "boolean") {
+    throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be a boolean`);
+  }
+  if (type === "string-array") {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw new CapletsError("REQUEST_INVALID", `add.options.${key} must be an array of strings`);
+    }
+  }
 }
 
 function optionalBoolean(args: Record<string, unknown>, key: string): boolean {

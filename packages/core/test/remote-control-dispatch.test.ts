@@ -69,6 +69,70 @@ describe("dispatchRemoteCliRequest", () => {
     expect(readFileSync(capletPath, "utf8")).toContain("mcpServer:");
   });
 
+  it("rejects remote add output because the server owns the destination", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "add",
+        arguments: {
+          kind: "mcp",
+          id: "remote_escape",
+          options: { command: "node", output: join(context.tempRoot, "outside.md") },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("output is not supported remotely"),
+      },
+    });
+  });
+
+  it("rejects invalid remote add option types before calling helpers", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "add",
+        arguments: {
+          kind: "mcp",
+          id: "remote_bad_force",
+          options: { command: "node", force: "yes" },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID", message: expect.stringContaining("force") },
+    });
+  });
+
+  it("accepts valid remote add nested options", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "add",
+        arguments: {
+          kind: "mcp",
+          id: "remote_valid",
+          options: { command: "node", arg: ["server.js"], env: ["A=B"], force: true },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({ ok: true, result: { remote: true, label: "MCP" } });
+    expect(existsSync(join(context.projectCapletsRoot, "remote_valid.md"))).toBe(true);
+  });
+
   it("marks init and install mutation responses as remote", async () => {
     const initContext = testContext({ writeConfig: false });
 
