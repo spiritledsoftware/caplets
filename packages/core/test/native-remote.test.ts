@@ -237,7 +237,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("alpha", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_REMOTE_USER"),
+      message: expect.stringContaining("CAPLETS_SERVER_USER"),
     } satisfies Partial<CapletsError>);
 
     await service.close();
@@ -277,7 +277,7 @@ describe("createNativeCapletsService remote mode", () => {
     const fixture = client();
     const service = createNativeCapletsService({
       mode: "remote",
-      remote: { url: "http://127.0.0.1:5387/mcp" },
+      server: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
     });
 
@@ -286,7 +286,7 @@ describe("createNativeCapletsService remote mode", () => {
 
   it("fails fast for invalid remote config", () => {
     expect(() =>
-      createNativeCapletsService({ mode: "remote", remote: { url: "http://example.com/mcp" } }),
+      createNativeCapletsService({ mode: "remote", server: { url: "http://example.com" } }),
     ).toThrow(/https/u);
   });
 });

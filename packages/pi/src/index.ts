@@ -17,7 +17,7 @@ import {
   type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
-type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "server" | "remote">;
 
 export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
   Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">> & {
@@ -279,19 +279,24 @@ function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
   const remote = objectProperty(value, "remote");
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
-    for (const key of ["url", "user", "password"] as const) {
-      const field = remote[key];
-      if (field !== undefined) {
-        if (typeof field !== "string") return undefined;
-        parsedRemote[key] = field;
-      }
-    }
     const pollIntervalMs = remote.pollIntervalMs;
     if (pollIntervalMs !== undefined) {
       if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
       parsedRemote.pollIntervalMs = pollIntervalMs;
     }
     result.remote = parsedRemote;
+  }
+  const server = objectProperty(value, "server");
+  if (server) {
+    const parsedServer: NonNullable<PiNativeCapletsOptions["server"]> = {};
+    for (const key of ["url", "user", "password"] as const) {
+      const field = server[key];
+      if (field !== undefined) {
+        if (typeof field !== "string") return undefined;
+        parsedServer[key] = field;
+      }
+    }
+    result.server = parsedServer;
   }
   return result;
 }
@@ -306,6 +311,7 @@ function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons:
 function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOptions {
   return {
     ...(options.mode ? { mode: options.mode } : {}),
+    ...(options.server ? { server: options.server } : {}),
     ...(options.remote ? { remote: options.remote } : {}),
   };
 }
@@ -319,8 +325,8 @@ function shouldShowStatusWidget(
   }
   return (
     options.mode === "remote" ||
-    !!options.remote?.url ||
-    process.env.CAPLETS_REMOTE_URL !== undefined
+    !!options.server?.url ||
+    process.env.CAPLETS_SERVER_URL !== undefined
   );
 }
 
