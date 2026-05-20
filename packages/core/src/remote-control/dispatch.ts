@@ -156,6 +156,9 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
           redirectUri,
           ...optionalProp("authDir", context.authDir),
         });
+  if (!started.authorizationUrl) {
+    return { server: serverId, authenticated: true };
+  }
   const flow = context.authFlowStore.create(
     {
       server: serverId,

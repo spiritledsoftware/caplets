@@ -236,6 +236,36 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("uses the mounted control path when auth login starts under a base path containing control", async () => {
+    const context = testContext({ oauth: true });
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions({ path: "/control-api" }), engine, {
+      writeErr: () => {},
+      control: context,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/control-api/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(expect.objectContaining({ ok: true }));
+    const result = (body as { result: { authorizationUrl: string } }).result;
+    const authorizationUrl = new URL(result.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
+      /^http:\/\/127\.0\.0\.1:5387\/control-api\/control\/auth\/callback\//u,
+    );
+
+    await engine.close();
+  });
+
   it("returns 404 for nested MCP paths", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
@@ -339,7 +369,7 @@ function testEngine(): { engine: CapletsEngine } {
   };
 }
 
-function testContext(): {
+function testContext(options: { oauth?: boolean } = {}): {
   configPath: string;
   projectConfigPath: string;
   projectCapletsRoot: string;
@@ -354,17 +384,36 @@ function testContext(): {
   const projectConfigPath = join(projectRoot, "config.json");
   writeFileSync(
     configPath,
-    JSON.stringify({
-      httpApis: {
-        status: {
-          name: "Status",
-          description: "Status API.",
-          baseUrl: "http://127.0.0.1:1",
-          auth: { type: "none" },
-          actions: { check: { method: "GET", path: "/check" } },
-        },
-      },
-    }),
+    JSON.stringify(
+      options.oauth
+        ? {
+            httpApis: {
+              remote: {
+                name: "Remote",
+                description: "Remote OAuth API.",
+                baseUrl: "http://127.0.0.1:1",
+                auth: {
+                  type: "oauth2",
+                  clientId: "client",
+                  authorizationUrl: "https://auth.example/authorize",
+                  tokenUrl: "https://auth.example/token",
+                },
+                actions: { check: { method: "GET", path: "/check" } },
+              },
+            },
+          }
+        : {
+            httpApis: {
+              status: {
+                name: "Status",
+                description: "Status API.",
+                baseUrl: "http://127.0.0.1:1",
+                auth: { type: "none" },
+                actions: { check: { method: "GET", path: "/check" } },
+              },
+            },
+          },
+    ),
   );
   return { configPath, projectConfigPath, projectCapletsRoot: projectRoot };
 }

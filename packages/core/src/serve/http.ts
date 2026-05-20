@@ -134,7 +134,7 @@ export function createHttpServeApp(
     return c.json(
       await dispatchRemoteCliRequest(
         request,
-        controlContext(io, writeErr, authFlowStore, c.req.url),
+        controlContext(io, writeErr, authFlowStore, c.req.url, paths.control),
       ),
     );
   });
@@ -143,7 +143,7 @@ export function createHttpServeApp(
     const flowId = c.req.param("flowId");
     const result = await dispatchRemoteCliRequest(
       { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
-      controlContext(io, writeErr, authFlowStore, c.req.url),
+      controlContext(io, writeErr, authFlowStore, c.req.url, paths.control),
     );
     return result.ok
       ? c.text("Caplets authentication complete. You can return to your terminal.")
@@ -175,24 +175,15 @@ function controlContext(
   writeErr: (value: string) => void,
   authFlowStore: RemoteAuthFlowStore,
   requestUrl: string,
+  controlPath: string,
 ): RemoteControlDispatchContext {
   return {
     ...io.control,
     projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
     authFlowStore,
-    controlCallbackBaseUrl: new URL(
-      servicePathsFromRequest(requestUrl).control,
-      requestUrl,
-    ).toString(),
+    controlCallbackBaseUrl: new URL(controlPath, requestUrl).toString(),
     writeErr,
   };
-}
-
-function servicePathsFromRequest(requestUrl: string): { control: string } {
-  const path = new URL(requestUrl).pathname;
-  const marker = "/control";
-  const index = path.indexOf(marker);
-  return { control: index < 0 ? marker : path.slice(0, index + marker.length) };
 }
 
 export async function serveHttp(

@@ -433,6 +433,24 @@ describe("remote CLI routing", () => {
       }),
     );
   });
+
+  it("does not print or open an auth URL when remote auth is already complete", async () => {
+    const out: string[] = [];
+    const fetchMock = vi.fn(async () =>
+      Response.json({ ok: true, result: { server: "remote", authenticated: true } }),
+    );
+
+    await runCli(["auth", "login", "remote"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe("Authenticated `remote`.\n");
+  });
 });
 
 async function runRemoteAdd(args: string[]): Promise<unknown> {

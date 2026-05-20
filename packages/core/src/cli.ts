@@ -606,11 +606,14 @@ export function createProgram(io: CliIO = {}): Command {
       if (remote) {
         const started = (await remote.request("auth_login_start", { server: serverId })) as {
           server: string;
-          flowId: string;
-          authorizationUrl: string;
+          flowId?: string;
+          authorizationUrl?: string;
+          authenticated?: boolean;
         };
-        writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
-        if (options.open !== false) {
+        if (started.authorizationUrl) {
+          writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
+        }
+        if (started.authorizationUrl && options.open !== false) {
           await openBrowser(started.authorizationUrl);
         }
         writeOut(`Authenticated \`${serverId}\`.\n`);

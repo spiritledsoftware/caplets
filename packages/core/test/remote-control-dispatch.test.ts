@@ -1,9 +1,17 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const mockMcpAuth = vi.hoisted(() => vi.fn());
+
+vi.mock("@modelcontextprotocol/sdk/client/auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@modelcontextprotocol/sdk/client/auth.js")>()),
+  auth: mockMcpAuth,
+}));
 
 import { writeTokenBundle } from "../src/auth";
+import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 
 const dirs: string[] = [];
@@ -318,6 +326,25 @@ describe("dispatchRemoteCliRequest", () => {
       ok: true,
       result: { server: "remote", deleted: true },
     });
+  });
+
+  it("does not create a pending auth flow when MCP auth is already authorized", async () => {
+    const fixture = remoteFixtureWithOAuth();
+    const authFlowStore = new RemoteAuthFlowStore();
+    const create = vi.spyOn(authFlowStore, "create");
+    mockMcpAuth.mockResolvedValueOnce("AUTHORIZED");
+
+    const response = await dispatchRemoteCliRequest(
+      { command: "auth_login_start", arguments: { server: "remote" } },
+      {
+        ...fixture.context,
+        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+        authFlowStore,
+      },
+    );
+
+    expect(response).toEqual({ ok: true, result: { server: "remote", authenticated: true } });
+    expect(create).not.toHaveBeenCalled();
   });
 });
 
