@@ -36,7 +36,10 @@ describe("dispatchRemoteCliRequest", () => {
     const context = testContext();
 
     const response = await dispatchRemoteCliRequest(
-      { command: "get_caplet", arguments: { caplet: "server_status" } },
+      {
+        command: "get_caplet",
+        arguments: { caplet: "server_status", request: { operation: "get_caplet" } },
+      },
       context,
     );
 
@@ -44,6 +47,31 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response.ok && response.result).toMatchObject({
       structuredContent: {
         result: { id: "server_status", backend: { type: "http" }, name: "Server Status" },
+      },
+    });
+  });
+
+  it("executes nested search_tools requests through the server engine", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "search_tools",
+        arguments: {
+          caplet: "server_status",
+          request: { operation: "search_tools", query: "check", limit: 1 },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({ ok: true });
+    expect(response.ok && response.result).toMatchObject({
+      structuredContent: {
+        result: {
+          query: "check",
+          tools: [expect.objectContaining({ tool: "check" })],
+        },
       },
     });
   });

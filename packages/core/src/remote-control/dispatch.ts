@@ -60,10 +60,10 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
-    const { caplet: _caplet, ...toolRequest } = request.arguments;
+    const toolRequest = optionalObject(request.arguments, "request");
     const engine = new CapletsEngine(context);
     try {
-      return await engine.execute(caplet, { ...toolRequest, operation: request.command });
+      return await engine.execute(caplet, toolRequest);
     } finally {
       await engine.close();
     }

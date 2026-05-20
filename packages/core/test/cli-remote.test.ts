@@ -116,4 +116,27 @@ describe("remote CLI routing", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(out.join("")).toBe("/tmp/caplets-local-config.json\n");
   });
+
+  it("keeps config paths local-only in remote mode", async () => {
+    const fetch = vi.fn(async () => Response.json({ ok: true, result: null }));
+    const out: string[] = [];
+
+    await runCli(["config", "paths", "--json"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_CONFIG: "/tmp/caplets-local-config.json",
+      },
+      fetch,
+      authDir: "/tmp/caplets-auth",
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      userConfig: "/tmp/caplets-local-config.json",
+      envConfig: "/tmp/caplets-local-config.json",
+      authDir: "/tmp/caplets-auth",
+    });
+  });
 });
