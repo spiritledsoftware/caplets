@@ -1,5 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
+import { CapletsEngine } from "../src/engine";
+import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
+import type { HttpServeOptions } from "../src/serve/options";
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("remote CLI routing", () => {
   it("routes list --json through remote control in remote mode", async () => {
@@ -188,6 +202,31 @@ describe("remote CLI routing", () => {
         }),
       }),
     );
+  });
+
+  it("uses a remote in-process control app without mutating local config", async () => {
+    const remote = remoteServerFixture();
+    const local = clientFixture();
+    const out: string[] = [];
+
+    try {
+      await runCli(["add", "mcp", "remote-tools", "--url", "https://mcp.example.com/mcp"], {
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+          CAPLETS_CONFIG: local.configPath,
+        },
+        fetch: async (input, init) => remote.app.fetch(new Request(input, init)),
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(existsSync(join(remote.projectCapletsRoot, "remote-tools.md"))).toBe(true);
+      expect(existsSync(join(local.projectCapletsRoot, "remote-tools.md"))).toBe(false);
+      expect(out.join("")).toContain("remote");
+    } finally {
+      await remote.app.closeCapletsSessions();
+      await remote.engine.close();
+    }
   });
 
   it("strips local destination fields from remote add mcp requests", async () => {
@@ -510,4 +549,71 @@ async function runRemoteAdd(args: string[]): Promise<unknown> {
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({ url: "http://127.0.0.1:5387/control" });
   return JSON.parse((requests[0] as { body: string }).body);
+}
+
+function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOptions {
+  return {
+    transport: "http",
+    host: "127.0.0.1",
+    port: 5387,
+    path: "/caplets",
+    auth: { enabled: false, user: "caplets" },
+    warnUnauthenticatedNetwork: false,
+    loopback: true,
+    ...overrides,
+  };
+}
+
+function remoteServerFixture(): {
+  app: CapletsHttpApp;
+  engine: CapletsEngine;
+  projectCapletsRoot: string;
+} {
+  const context = testContext("caplets-cli-remote-server-");
+  const engine = new CapletsEngine({
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    watch: false,
+  });
+  const app = createHttpServeApp(httpOptions(), engine, {
+    writeErr: () => {},
+    control: context,
+  });
+  return { app, engine, projectCapletsRoot: context.projectCapletsRoot };
+}
+
+function clientFixture(): { configPath: string; projectCapletsRoot: string } {
+  const context = testContext("caplets-cli-remote-client-");
+  return { configPath: context.configPath, projectCapletsRoot: context.projectCapletsRoot };
+}
+
+function testContext(prefix: string): {
+  configPath: string;
+  projectConfigPath: string;
+  projectCapletsRoot: string;
+  watch: false;
+} {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  const userRoot = join(dir, "user");
+  const projectCapletsRoot = join(dir, "project", ".caplets");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectCapletsRoot, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectCapletsRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "Fixture server.",
+          transport: "stdio",
+          command: "node",
+          disabled: true,
+        },
+      },
+    }),
+  );
+  return { configPath, projectConfigPath, projectCapletsRoot, watch: false };
 }
