@@ -5,6 +5,7 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
 import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { CapletsError, toSafeError } from "../errors";
 import {
   dispatchRemoteCliRequest,
   type RemoteControlDispatchContext,
@@ -112,7 +113,21 @@ export function createHttpServeApp(
   });
 
   app.post(paths.control, basicAuth(options.auth), async (c) => {
-    const request = (await c.req.json()) as RemoteCliRequest;
+    let request: RemoteCliRequest;
+    try {
+      const parsed = await c.req.json();
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new CapletsError("REQUEST_INVALID", "Control request JSON must be an object");
+      }
+      request = parsed as RemoteCliRequest;
+    } catch (error) {
+      const requestError =
+        error instanceof CapletsError
+          ? error
+          : new CapletsError("REQUEST_INVALID", "Control request body must be valid JSON", error);
+      const safe = toSafeError(requestError, "REQUEST_INVALID");
+      return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
+    }
     return c.json(
       await dispatchRemoteCliRequest(request, {
         ...io.control,

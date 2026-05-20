@@ -140,6 +140,69 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("mounts authenticated control dispatch under a base path", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const testPassword = ["test", "password"].join("-");
+    const app = createHttpServeApp(
+      httpOptions({
+        path: "/caplets",
+        auth: { enabled: true, user: "caplets", password: testPassword },
+      }),
+      engine,
+      { writeErr: () => {}, control: context },
+    );
+
+    const rootControl = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
+    expect(rootControl.status).toBe(404);
+
+    const missing = await app.request("http://127.0.0.1:5387/caplets/control", {
+      method: "POST",
+    });
+    expect(missing.status).toBe(401);
+
+    const listed = await app.request("http://127.0.0.1:5387/caplets/control", {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "list", arguments: {} }),
+    });
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({ ok: true });
+
+    await engine.close();
+  });
+
+  it("returns a structured control error for malformed JSON", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {}, control: context });
+
+    const response = await app.request("http://127.0.0.1:5387/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not-json",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID", message: expect.stringContaining("JSON") },
+    });
+
+    await engine.close();
+  });
+
   it("returns 404 for nested MCP paths", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });

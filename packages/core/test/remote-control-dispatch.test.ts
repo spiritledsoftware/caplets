@@ -54,19 +54,63 @@ describe("dispatchRemoteCliRequest", () => {
     const response = await dispatchRemoteCliRequest(
       {
         command: "add",
-        arguments: { kind: "mcp", id: "remote_fixture", command: "node", arg: ["server.js"] },
+        arguments: {
+          kind: "mcp",
+          id: "remote_fixture",
+          options: { command: "node", arg: ["server.js"] },
+        },
       },
       context,
     );
 
-    expect(response).toMatchObject({ ok: true });
+    expect(response).toMatchObject({ ok: true, result: { remote: true, label: "MCP" } });
     const capletPath = join(context.projectCapletsRoot, "remote_fixture.md");
     expect(existsSync(capletPath)).toBe(true);
     expect(readFileSync(capletPath, "utf8")).toContain("mcpServer:");
   });
+
+  it("marks init and install mutation responses as remote", async () => {
+    const initContext = testContext({ writeConfig: false });
+
+    await expect(
+      dispatchRemoteCliRequest({ command: "init", arguments: {} }, initContext),
+    ).resolves.toMatchObject({ ok: true, result: { remote: true, path: initContext.configPath } });
+
+    const installContext = testContext();
+    const sourceRepo = join(installContext.tempRoot, "source");
+    const sourceCaplets = join(sourceRepo, "caplets");
+    mkdirSync(sourceCaplets, { recursive: true });
+    writeFileSync(
+      join(sourceCaplets, "sample.md"),
+      [
+        "---",
+        "name: Sample",
+        "description: Sample Caplet.",
+        "httpApi:",
+        "  baseUrl: http://127.0.0.1:1",
+        "  auth:",
+        "    type: none",
+        "  actions:",
+        "    check:",
+        "      method: GET",
+        "      path: /check",
+        "---",
+        "",
+        "# Sample",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(
+      dispatchRemoteCliRequest(
+        { command: "install", arguments: { repo: sourceRepo } },
+        installContext,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { remote: true } });
+  });
 });
 
-function testContext() {
+function testContext(options: { writeConfig?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "caplets-dispatch-"));
   dirs.push(dir);
   const userRoot = join(dir, "user");
@@ -75,19 +119,27 @@ function testContext() {
   mkdirSync(projectRoot, { recursive: true });
   const configPath = join(userRoot, "config.json");
   const projectConfigPath = join(projectRoot, "config.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      httpApis: {
-        server_status: {
-          name: "Server Status",
-          description: "Server-side status API.",
-          baseUrl: "http://127.0.0.1:1",
-          auth: { type: "none" },
-          actions: { check: { method: "GET", path: "/check" } },
+  if (options.writeConfig !== false) {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        httpApis: {
+          server_status: {
+            name: "Server Status",
+            description: "Server-side status API.",
+            baseUrl: "http://127.0.0.1:1",
+            auth: { type: "none" },
+            actions: { check: { method: "GET", path: "/check" } },
+          },
         },
-      },
-    }),
-  );
-  return { configPath, projectConfigPath, projectCapletsRoot: projectRoot, watch: false };
+      }),
+    );
+  }
+  return {
+    tempRoot: dir,
+    configPath,
+    projectConfigPath,
+    projectCapletsRoot: projectRoot,
+    watch: false,
+  };
 }

@@ -71,6 +71,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 
   if (request.command === "init") {
     return {
+      remote: true,
       path: initConfig({
         ...optionalProp("path", context.configPath),
         force: optionalBoolean(request.arguments, "force"),
@@ -83,11 +84,14 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   }
 
   if (request.command === "install") {
-    return installCaplets(requiredString(request.arguments, "repo"), {
-      ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-      destinationRoot: context.projectCapletsRoot,
-      force: optionalBoolean(request.arguments, "force"),
-    });
+    return {
+      remote: true,
+      ...installCaplets(requiredString(request.arguments, "repo"), {
+        ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
+        destinationRoot: context.projectCapletsRoot,
+        force: optionalBoolean(request.arguments, "force"),
+      }),
+    };
   }
 
   throw new CapletsError(
@@ -99,62 +103,58 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {
   const kind = requiredString(args, "kind") as AddKind;
   const id = requiredString(args, "id");
+  const options = optionalObject(args, "options");
   switch (kind) {
     case "cli":
-      return addCliCaplet(id, {
-        ...optionalProp("repo", optionalString(args, "repo")),
-        ...optionalProp("include", optionalString(args, "include")),
-        ...optionalProp("command", optionalString(args, "command")),
-        ...optionalProp("output", optionalString(args, "output")),
-        force: optionalBoolean(args, "force"),
-        destinationRoot: context.projectCapletsRoot,
-        print: false,
-      });
+      return {
+        remote: true,
+        label: "CLI",
+        ...addCliCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     case "mcp":
-      return addMcpCaplet(id, {
-        ...optionalProp("command", optionalString(args, "command")),
-        ...optionalProp("arg", optionalStringArray(args, "arg")),
-        ...optionalProp("cwd", optionalString(args, "cwd")),
-        ...optionalProp("env", optionalStringArray(args, "env")),
-        ...optionalProp("url", optionalString(args, "url")),
-        ...optionalProp("transport", optionalString(args, "transport")),
-        ...optionalProp("tokenEnv", optionalString(args, "tokenEnv")),
-        ...optionalProp("output", optionalString(args, "output")),
-        force: optionalBoolean(args, "force"),
-        destinationRoot: context.projectCapletsRoot,
-        print: false,
-      });
+      return {
+        remote: true,
+        label: "MCP",
+        ...addMcpCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     case "openapi":
-      return addOpenApiCaplet(id, {
-        ...optionalProp("spec", optionalString(args, "spec")),
-        ...optionalProp("baseUrl", optionalString(args, "baseUrl")),
-        ...optionalProp("tokenEnv", optionalString(args, "tokenEnv")),
-        ...optionalProp("output", optionalString(args, "output")),
-        force: optionalBoolean(args, "force"),
-        destinationRoot: context.projectCapletsRoot,
-        print: false,
-      });
+      return {
+        remote: true,
+        label: "OpenAPI",
+        ...addOpenApiCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     case "graphql":
-      return addGraphqlCaplet(id, {
-        ...optionalProp("endpointUrl", optionalString(args, "endpointUrl")),
-        ...optionalProp("schema", optionalString(args, "schema")),
-        introspection: optionalBoolean(args, "introspection"),
-        ...optionalProp("tokenEnv", optionalString(args, "tokenEnv")),
-        ...optionalProp("output", optionalString(args, "output")),
-        force: optionalBoolean(args, "force"),
-        destinationRoot: context.projectCapletsRoot,
-        print: false,
-      });
+      return {
+        remote: true,
+        label: "GraphQL",
+        ...addGraphqlCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     case "http":
-      return addHttpCaplet(id, {
-        ...optionalProp("baseUrl", optionalString(args, "baseUrl")),
-        ...optionalProp("action", optionalStringArray(args, "action")),
-        ...optionalProp("tokenEnv", optionalString(args, "tokenEnv")),
-        ...optionalProp("output", optionalString(args, "output")),
-        force: optionalBoolean(args, "force"),
-        destinationRoot: context.projectCapletsRoot,
-        print: false,
-      });
+      return {
+        remote: true,
+        label: "HTTP",
+        ...addHttpCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     default:
       throw new CapletsError(
         "REQUEST_INVALID",
@@ -184,14 +184,12 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function optionalString(args: Record<string, unknown>, key: string): string | undefined {
+function optionalObject(args: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = args[key];
   if (value === undefined) {
-    return undefined;
+    return {};
   }
-  if (typeof value !== "string") {
-    throw new CapletsError("REQUEST_INVALID", `${key} must be a string`);
-  }
+  assertObject(value, key);
   return value;
 }
 
