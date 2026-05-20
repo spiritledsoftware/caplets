@@ -28,6 +28,7 @@ export function createHttpServeApp(
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
+  const paths = servicePaths(options.path);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -35,25 +36,30 @@ export function createHttpServeApp(
     }),
   );
 
-  app.get("/", (c) =>
+  app.get(paths.base, (c) =>
     c.json({
       name: "caplets",
       transport: "http",
-      mcp: options.path,
-      health: "/healthz",
+      base: paths.base,
+      mcp: paths.mcp,
+      control: paths.control,
+      health: paths.health,
       auth: { type: "basic", enabled: options.auth.enabled },
     }),
   );
 
-  app.get("/healthz", (c) =>
+  app.get(paths.health, (c) =>
     c.json({
       status: "ok",
       transport: "http",
-      mcpPath: options.path,
+      base: paths.base,
+      mcpPath: paths.mcp,
+      controlPath: paths.control,
+      healthPath: paths.health,
     }),
   );
 
-  app.all(options.path, basicAuth(options.auth), async (c) => {
+  app.all(paths.mcp, basicAuth(options.auth), async (c) => {
     const sessionId = c.req.header("mcp-session-id");
     if (sessionId) {
       const existing = sessions.get(sessionId);
@@ -125,17 +131,38 @@ export async function serveHttp(
 ): Promise<void> {
   const engine = new CapletsEngine(engineOptions);
   const app = createHttpServeApp(options, engine, { writeErr });
+  const paths = servicePaths(options.path);
+  const origin = `http://${formatHost(options.host)}:${options.port}`;
+  const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
   const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
-    writeErr(
-      `Caplets MCP HTTP server listening on http://${formatHost(options.host)}:${options.port}${options.path}\n`,
-    );
-    writeErr(`Health check: http://${formatHost(options.host)}:${options.port}/healthz\n`);
+    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+    writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+    writeErr(`Control endpoint: ${origin}${paths.control}\n`);
+    writeErr(`Health check: ${origin}${paths.health}\n`);
     writeErr(
       `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
     );
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
+}
+
+export function routePath(base: string, path: string): string {
+  return base === "/" ? `/${path}` : `${base}/${path}`;
+}
+
+export function servicePaths(base: string): {
+  base: string;
+  mcp: string;
+  control: string;
+  health: string;
+} {
+  return {
+    base,
+    mcp: routePath(base, "mcp"),
+    control: routePath(base, "control"),
+    health: routePath(base, "healthz"),
+  };
 }
 
 async function createHttpSession(

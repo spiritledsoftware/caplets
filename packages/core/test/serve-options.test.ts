@@ -6,13 +6,61 @@ describe("resolveServeOptions", () => {
     expect(resolveServeOptions({}, {})).toEqual({ transport: "stdio" });
   });
 
-  it("defaults HTTP serving to localhost port 5387 and /mcp", () => {
+  it("defaults HTTP serving to localhost port 5387 and root base path", () => {
     expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/mcp",
+      path: "/",
       auth: { enabled: false, user: "caplets" },
+    });
+  });
+
+  it("uses CAPLETS_SERVER_URL as HTTP serve defaults", () => {
+    const testPassword = ["test", "env", "password"].join("-");
+
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        {
+          CAPLETS_SERVER_URL: "http://localhost:7890/caplets/",
+          CAPLETS_SERVER_PASSWORD: testPassword,
+        },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "localhost",
+      port: 7890,
+      path: "/caplets",
+      auth: { enabled: true, user: "caplets", password: testPassword },
+    });
+  });
+
+  it("uses the default HTTP port when CAPLETS_SERVER_URL has no explicit port", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://127.0.0.1/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "127.0.0.1",
+      port: 5387,
+      path: "/caplets",
+    });
+  });
+
+  it("lets explicit HTTP flags override CAPLETS_SERVER_URL defaults", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", host: "127.0.0.1", port: "6000", path: "/local" },
+        { CAPLETS_SERVER_URL: "http://localhost:7890/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "127.0.0.1",
+      port: 6000,
+      path: "/local",
     });
   });
 

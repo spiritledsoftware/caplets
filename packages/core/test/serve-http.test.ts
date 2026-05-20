@@ -24,7 +24,9 @@ describe("createHttpServeApp", () => {
     await expect(root.json()).resolves.toMatchObject({
       name: "caplets",
       transport: "http",
+      base: "/",
       mcp: "/mcp",
+      control: "/control",
       health: "/healthz",
       auth: { type: "basic", enabled: false },
     });
@@ -34,7 +36,10 @@ describe("createHttpServeApp", () => {
     await expect(health.json()).resolves.toEqual({
       status: "ok",
       transport: "http",
+      base: "/",
       mcpPath: "/mcp",
+      controlPath: "/control",
+      healthPath: "/healthz",
     });
 
     await engine.close();
@@ -78,6 +83,27 @@ describe("createHttpServeApp", () => {
       },
     });
     expect(wrong.status).toBe(401);
+
+    await engine.close();
+  });
+
+  it("mounts service routes under a base path", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: () => {},
+    });
+
+    const rootHealth = await app.request("http://127.0.0.1:5387/healthz");
+    expect(rootHealth.status).toBe(404);
+
+    const health = await app.request("http://127.0.0.1:5387/caplets/healthz");
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({
+      base: "/caplets",
+      mcpPath: "/caplets/mcp",
+      controlPath: "/caplets/control",
+      healthPath: "/caplets/healthz",
+    });
 
     await engine.close();
   });
@@ -166,7 +192,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     transport: "http",
     host: "127.0.0.1",
     port: 5387,
-    path: "/mcp",
+    path: "/",
     auth: { enabled: false, user: "caplets" },
     warnUnauthenticatedNetwork: false,
     loopback: true,

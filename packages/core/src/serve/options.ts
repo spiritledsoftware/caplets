@@ -1,4 +1,5 @@
 import { CapletsError } from "../errors";
+import { parseServerBaseUrl } from "../server/options";
 
 export type ServeTransport = "stdio" | "http";
 
@@ -32,7 +33,9 @@ export type HttpBasicAuthOptions =
 
 export type ServeOptions = StdioServeOptions | HttpServeOptions;
 
-export type ServeEnv = Partial<Record<"CAPLETS_SERVER_USER" | "CAPLETS_SERVER_PASSWORD", string>>;
+export type ServeEnv = Partial<
+  Record<"CAPLETS_SERVER_URL" | "CAPLETS_SERVER_USER" | "CAPLETS_SERVER_PASSWORD", string>
+>;
 
 const HTTP_ONLY_OPTIONS = [
   "host",
@@ -59,9 +62,12 @@ export function resolveServeOptions(
     return { transport };
   }
 
-  const host = nonEmpty(raw.host, "--host") ?? "127.0.0.1";
-  const port = parsePort(raw.port ?? 5387);
-  const path = normalizeHttpPath(raw.path ?? "/mcp");
+  const serverUrl = env.CAPLETS_SERVER_URL
+    ? parseServerBaseUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
+    : undefined;
+  const host = nonEmpty(raw.host, "--host") ?? serverUrl?.hostname ?? "127.0.0.1";
+  const port = parsePort(raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : 5387));
+  const path = normalizeHttpPath(raw.path ?? serverUrl?.pathname ?? "/");
   const userWasExplicit = raw.user !== undefined || hasEnv(env.CAPLETS_SERVER_USER);
   const user =
     nonEmpty(raw.user, "--user") ??
