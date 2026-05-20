@@ -17,6 +17,7 @@ import {
   readTokenBundle,
   runOAuthFlow,
   runGenericOAuthFlow,
+  startGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth";
 import { listAuth } from "../src/cli/auth";
@@ -34,6 +35,32 @@ describe("auth helpers", () => {
       state: "xyz",
     });
     expect(extractCompletion("manual-code")).toEqual({ code: "manual-code" });
+  });
+
+  it("reports OAuth error callbacks before extracting an authorization code", async () => {
+    const flow = await startGenericOAuthFlow(
+      {
+        server: "remote",
+        backend: "http",
+        baseUrl: "https://api.example.com",
+        auth: {
+          type: "oauth2",
+          clientId: "client",
+          authorizationUrl: "https://auth.example.com/authorize",
+          tokenUrl: "https://auth.example.com/token",
+        },
+      },
+      { redirectUri: "http://127.0.0.1/callback" },
+    );
+
+    await expect(
+      flow.complete(
+        "http://127.0.0.1/callback?error=access_denied&error_description=Access%20denied&state=abc",
+      ),
+    ).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: "OAuth provider returned an error: Access denied",
+    });
   });
 
   it("requires stored OAuth tokens before remote operations", () => {

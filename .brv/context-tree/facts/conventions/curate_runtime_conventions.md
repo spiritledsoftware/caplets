@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T13:18:52.099Z'
 updatedAt: '2026-05-20T15:10:55.420Z'
 ---
+
 ## Reason
+
 Capture the runtime curation workflow and verification rules from the provided RLM context.
 
 ## Raw Concept
+
 **Task:**
 Document the runtime conventions for curating context with the RLM approach.
 
@@ -32,14 +35,19 @@ recon precomputed -> extract facts -> curate UPSERT -> verify applied file paths
 **Timestamp:** 2026-05-20T15:10:46.102Z
 
 ## Narrative
+
 ### Structure
+
 The guidance describes an RLM curation workflow with a single-pass path for small contexts and chunked extraction for larger ones.
 
 ### Dependencies
+
 Depends on precomputed recon variables, the curate tool, and optional curation helpers such as mapExtract, groupBySubject, and dedup.
 
 ### Highlights
+
 The context explicitly forbids printing raw context, prefers direct extraction, and requires verification through the curate result object.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_57b46e01_4a31_431c_8d92_e7ea01360858 (bare variable, not a string). Verify via result.applied[].filePath — do NOT call readFile for verification.
+
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been precomputed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_57b46e01_4a31_431c_8d92_e7ea01360858 (bare variable, not a string). Verify via result.applied[].filePath — do NOT call readFile for verification.

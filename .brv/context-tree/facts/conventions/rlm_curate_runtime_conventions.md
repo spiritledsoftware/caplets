@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:24:21.257Z'
 updatedAt: '2026-05-20T15:28:01.522Z'
 ---
+
 ## Reason
+
 Capture the runtime curation instructions and variable conventions from the provided context
 
 ## Raw Concept
+
 **Task:**
 Document the runtime conventions for curation in RLM mode using the provided context variables and precomputed recon.
 
@@ -58,22 +61,29 @@ context variable -> precomputed recon -> extraction -> curate -> verify via appl
 - `^__taskId_[a-f0-9_]+$` - Curate task ID variable naming pattern
 
 ## Narrative
+
 ### Structure
+
 This curation records the autonomous RLM workflow instructions, with emphasis on precomputed recon, single-pass processing, and direct verification from curate results.
 
 ### Dependencies
+
 Depends on sandbox-injected context, history, metadata, task ID, and the precomputed recon result.
 
 ### Highlights
+
 The input explicitly says not to call tools.curation.recon again and to avoid printing raw context.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_29a79f97_36be_4187_b8a0_0e24253814f2 (bare variable, not a string). Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
+
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been precomputed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_29a79f97_36be_4187_b8a0_0e24253814f2 (bare variable, not a string). Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ### Examples
+
 The current recon result suggests single-pass mode with charCount 1472, lineCount 25, and messageCount 0.
 
 ## Facts
+
 - **curate_workflow**: Curate using the RLM approach with precomputed recon. [convention]
 - **context_variable**: The context variable is __curate_ctx_29a79f97_36be_4187_b8a0_0e24253814f2. [convention]
 - **history_variable**: The history variable is __curate_hist_29a79f97_36be_4187_b8a0_0e24253814f2. [convention]

@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:11:18.102Z'
 updatedAt: '2026-05-20T14:11:18.102Z'
 ---
+
 ## Reason
+
 Capture durable verification of CLI and dispatch alignment after envelope fix commit f70d578
 
 ## Raw Concept
+
 **Task:**
 Document the approved Task 6 spec review after the envelope fix commit f70d578
 
@@ -33,19 +36,25 @@ CLI builds { caplet, request } envelope -> dispatch passes request to engine.exe
 **Author:** assistant
 
 ## Narrative
+
 ### Structure
+
 This note records the approved review result, the envelope contract, local-only config rules, and the test files that validate the behavior.
 
 ### Dependencies
+
 Depends on the envelope fix in commit f70d578 and the associated CLI, dispatch, and test updates.
 
 ### Highlights
+
 The review returned APPROVED and the verification run passed with 394 tests.
 
 ### Examples
+
 Covered tests include CLI remote list and call-tool envelope behavior, local-only config path handling, and dispatch nested envelope handling for get_caplet and search_tools.
 
 ## Facts
+
 - **task_6_review_status**: Task 6 spec review after envelope fix commit f70d578 was approved. [project]
 - **cli_envelope_shape**: CLI sends direct operation envelope as { caplet, request }. [project]
 - **dispatch_envelope_shape**: Dispatch consumes the same nested envelope and passes request to engine.execute. [project]

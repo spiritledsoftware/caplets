@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T13:11:07.251Z'
 updatedAt: '2026-05-20T14:01:45.228Z'
 ---
+
 ## Reason
+
 Curate extracted project-wide knowledge from the provided context
 
 ## Raw Concept
+
 **Task:**
 Curate project-level knowledge and workflow conventions from the provided RLM context.
 
@@ -42,22 +45,29 @@ context supplied -> extracted conventions and facts -> upserted into durable kno
 **Author:** ByteRover context engineer
 
 ## Narrative
+
 ### Structure
+
 This knowledge belongs in the facts/project domain because it documents repository-wide operational conventions and curation expectations.
 
 ### Dependencies
+
 Depends on the ByteRover context-tree organization and the RLM curation workflow.
 
 ### Highlights
+
 Preserves the project knowledge needed to curate future context safely and consistently.
 
 ### Rules
+
 Do not print raw context. Do not call recon when recon has already been computed. Verify curation via result.applied[].filePath.
 
 ### Examples
+
 Useful for future curation sessions that need to target the local context tree and use UPSERT by default.
 
 ## Facts
+
 - **context_tree_root**: The project context tree is stored under .brv/context-tree/ [project]
 - **context_tree_depth**: Context tree hierarchy is domain -> topic -> subtopic, with a maximum depth of 2 levels. [convention]
 - **context_tree_write_scope**: Only the local .brv/context-tree/ is writable; shared source context trees are read-only. [convention]

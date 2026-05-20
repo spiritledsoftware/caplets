@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T12:47:22.778Z'
 updatedAt: '2026-05-20T13:09:19.427Z'
 ---
+
 ## Reason
+
 Capture runtime curation workflow and verification conventions from context
 
 ## Raw Concept
+
 **Task:**
 Document the runtime curation conventions used for RLM processing
 
@@ -36,19 +39,25 @@ recon -> choose single-pass or chunked extraction -> curate with UPSERT -> verif
 **Author:** ByteRover context engineer
 
 ## Narrative
+
 ### Structure
+
 Curation runtime conventions are organized as procedural guidance for how to process context, extract facts, and apply knowledge tree updates.
 
 ### Dependencies
+
 Relies on the RLM curation workflow, tools.curation.recon, tools.curation.mapExtract, tools.curation.dedup, tools.curation.groupBySubject, and tools.curate.
 
 ### Highlights
+
 Small contexts should be handled in single-pass mode. Chunked contexts require mapExtract, deduplication, grouping by subject, and verification through applied file paths.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon when it has been pre-computed. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable, not a string. Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
+
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon when it has been precomputed. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable, not a string. Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ## Facts
+
 - **curation_workflow**: Use recon as the first step in RLM curation workflow. [convention]
 - **curation_mode**: For small contexts, suggestedMode single-pass should skip chunking. [convention]
 - **chunked_extraction**: For chunked contexts, use mapExtract with taskId passed as a bare variable and timeout 300000 on the code_exec call. [convention]

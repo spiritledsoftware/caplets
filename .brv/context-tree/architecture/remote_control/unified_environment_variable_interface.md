@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T11:12:05.554Z'
 updatedAt: '2026-05-20T11:12:05.554Z'
 ---
+
 ## Reason
+
 Document the agreed unified environment variable model for Caplets CLI, native integrations, and serve/client modes
 
 ## Raw Concept
+
 **Task:**
 Document the unified environment variable interface for Caplets
 
@@ -34,16 +37,21 @@ config/options -> unified env vars -> deprecated aliases -> defaults
 - `^CAPLETS_SERVER_URL=.+$` - Server URL setting used by serve and client mode
 
 ## Narrative
+
 ### Structure
+
 The design centralizes all runtime selection around CAPLETS_MODE and a single CAPLETS_SERVER_* namespace, while preserving old variables as deprecated aliases.
 
 ### Dependencies
+
 Relies on explicit host config or CLI options taking highest precedence, with environment variables filling in defaults for serving and client behavior.
 
 ### Highlights
+
 The model simplifies configuration, keeps backward compatibility for one release path, and derives control/MCP endpoints from the same base server URL.
 
 ### Rules
+
 1. CAPLETS_MODE=auto or unset uses remote/client mode when CAPLETS_SERVER_URL is set, otherwise local mode.
 2. CAPLETS_MODE=local always forces local mode, even if server settings exist.
 3. CAPLETS_MODE=remote requires CAPLETS_SERVER_URL and fails fast if missing.
@@ -51,6 +59,7 @@ The model simplifies configuration, keeps backward compatibility for one release
 5. Explicit CLI flags still override env values for caplets serve.
 
 ## Facts
+
 - **caplets_mode**: CAPLETS_MODE is the single mode selector and can be auto, local, or remote. [project]
 - **caplets_server_url**: CAPLETS_SERVER_URL is used by caplets serve and caplets client mode. [project]
 - **caplets_server_auth**: CAPLETS_SERVER_USER and CAPLETS_SERVER_PASSWORD provide Basic Auth credentials for serving and client/server configuration. [project]

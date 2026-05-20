@@ -1,4 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { dirname } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
@@ -145,9 +146,12 @@ export function createHttpServeApp(
       { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
       controlContext(io, writeErr, authFlowStore, c.req.url, paths.control),
     );
+    if (!result.ok) {
+      writeErr(`Caplets authentication failed for flow ${flowId}: ${result.error.message}\n`);
+    }
     return result.ok
       ? c.text("Caplets authentication complete. You can return to your terminal.")
-      : c.text(result.error.message, 400);
+      : c.text("Caplets authentication failed. Check server logs for details.", 400);
   });
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
@@ -194,7 +198,10 @@ export async function serveHttp(
   const engine = new CapletsEngine(engineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
-    control: { ...engineOptions, projectCapletsRoot: resolveProjectCapletsRoot() },
+    control: {
+      ...engineOptions,
+      projectCapletsRoot: projectCapletsRootForEngineOptions(engineOptions),
+    },
   });
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
@@ -210,6 +217,16 @@ export async function serveHttp(
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
+}
+
+function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions): string {
+  return engineOptions.projectConfigPath
+    ? resolveProjectCapletsRootForConfigPath(engineOptions.projectConfigPath)
+    : resolveProjectCapletsRoot();
+}
+
+function resolveProjectCapletsRootForConfigPath(projectConfigPath: string): string {
+  return dirname(projectConfigPath);
 }
 
 export function routePath(base: string, path: string): string {

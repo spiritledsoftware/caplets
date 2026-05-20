@@ -67,6 +67,15 @@ describe("resolveServeOptions", () => {
     });
   });
 
+  it("clarifies non-loopback HTTP server URL bind configuration", () => {
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://0.0.0.0:5387/caplets" },
+      ),
+    ).toThrow(/use --host, --port, and --path separately/u);
+  });
+
   it("lets explicit HTTP flags override CAPLETS_SERVER_URL defaults", () => {
     expect(
       resolveServeOptions(

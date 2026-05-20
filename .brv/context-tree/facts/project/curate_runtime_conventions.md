@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:16:38.968Z'
 updatedAt: '2026-05-20T15:37:12.996Z'
 ---
+
 ## Reason
+
 Preserve runtime conventions for curation workflow and verification
 
 ## Raw Concept
+
 **Task:**
 Document runtime conventions for RLM curation flow
 
@@ -52,19 +55,25 @@ recon -> mode selection -> direct curate -> verify applied file paths and summar
 - `^chunked$` - Suggested mode for larger contexts
 
 ## Narrative
+
 ### Structure
+
 This knowledge captures how to curate context efficiently when recon already recommends single-pass processing.
 
 ### Dependencies
+
 Depends on the precomputed recon result, the sandbox curate API, and the task/history metadata for traceability.
 
 ### Highlights
+
 The workflow avoids chunking for small contexts and avoids file rereads by checking curate application results directly.
 
 ### Rules
+
 Do not call tools.curation.recon again when recon is already computed. Do not print raw context. Verify via result.applied[].filePath and result.summary.failed.
 
 ## Facts
+
 - **curate_recon**: Use recon before curation to assess context and choose a mode. [convention]
 - **curate_mode**: When recon suggests single-pass, skip chunking and curate in two code_exec calls. [convention]
 - **raw_context_output**: Do not print raw context during curation. [convention]

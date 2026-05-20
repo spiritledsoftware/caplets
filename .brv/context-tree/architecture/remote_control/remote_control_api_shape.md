@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T11:07:38.964Z'
 updatedAt: '2026-05-20T15:42:10.341Z'
 ---
+
 ## Reason
+
 Curate remote control API shape, environment selection, and routing behavior from the provided RLM context.
 
 ## Raw Concept
+
 **Task:**
 Document the remote control API shape and its related execution model.
 
@@ -38,24 +41,31 @@ CLI input -> remote mode selection -> context/working module resolution -> remot
 **Timestamp:** 2026-05-20T15:42:02.926Z
 
 ## Narrative
+
 ### Structure
+
 This topic groups the remote control API shape together with selection and context-handling modules that determine how remote actions are routed.
 
 ### Dependencies
+
 Depends on CLI remote mode selection, unified environment variable handling, and the context/working module split.
 
 ### Highlights
+
 Captures the architectural shape of remote control behavior and the supporting module responsibilities in the caplets system.
 
 ### Rules
+
 No remote request is ever “run this CLI string”.
 No shelling out to `caplets` on the server.
 
 ### Examples
+
 Example request: POST /control { command: "list_tools", arguments: {} }
 Example login flow: auth_login_start returns authorizationUrl and flowId, then auth_login_complete exchanges credentials.
 
 ## Facts
+
 - **remote_mode_selection**: Remote mode selection is resolved through CLI remote mode selection logic. [project]
 - **environment_variable_interface**: The remote control layer uses a unified environment variable interface. [project]
 - **remote_control_modules**: Context and working modules are part of the remote control architecture. [project]

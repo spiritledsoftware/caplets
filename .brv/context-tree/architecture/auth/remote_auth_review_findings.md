@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T15:01:08.681Z'
 updatedAt: '2026-05-20T15:01:08.681Z'
 ---
+
 ## Reason
+
 Preserve lasting findings from Task 8 remote auth implementation review
 
 ## Raw Concept
+
 **Task:**
 Document the code review findings for Task 8 remote auth implementation
 
@@ -36,19 +39,25 @@ review scope -> inspect auth login behavior -> inspect remote auth flow cleanup 
 **Author:** code quality review
 
 ## Narrative
+
 ### Structure
+
 This review notes two issues: a high-severity mismatch between remote and local auth completion semantics, and a medium-severity lifecycle cleanup gap in the remote auth flow store.
 
 ### Dependencies
+
 The findings depend on remote-control auth flow handling and callback dispatch behavior, plus the existing test suite and typecheck validation.
 
 ### Highlights
+
 Existing tests passed, but they do not catch premature remote-login success or stale-flow lifecycle behavior.
 
 ### Rules
+
 Return APPROVED or FINDINGS with severity and refs. Do not edit during review.
 
 ## Facts
+
 - **remote_auth_login_premature_success**: Remote caplets auth login reports success immediately after auth_login_start before the OAuth callback completes. [project]
 - **remote_auth_flow_cleanup**: Pending remote auth flows are stored in an unbounded Map and are deleted only after flow.complete(callbackUrl) succeeds. [project]
 - **remote_auth_flow_lifecycle_risk**: Failed callbacks leave the remote auth flow live and abandoned flows can remain indefinitely. [project]

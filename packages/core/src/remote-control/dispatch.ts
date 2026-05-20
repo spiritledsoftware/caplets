@@ -14,7 +14,7 @@ import { loadConfigWithSources } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
-import { RemoteAuthFlowStore } from "./auth-flow";
+import type { RemoteAuthFlowStore } from "./auth-flow";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
@@ -62,7 +62,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   if (request.command === "list") {
     const config = loadConfigWithSources(context.configPath, context.projectConfigPath);
     return listCaplets(config, {
-      includeDisabled: optionalBoolean(request.arguments, "includeDisabled"),
+      includeDisabled: optionalBoolean(request.arguments, "includeDisabled") ?? false,
     });
   }
 
@@ -82,7 +82,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
       remote: true,
       path: initConfig({
         ...optionalProp("path", context.configPath),
-        force: optionalBoolean(request.arguments, "force"),
+        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
   }
@@ -97,7 +97,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
       ...installCaplets(requiredString(request.arguments, "repo"), {
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
         destinationRoot: context.projectCapletsRoot,
-        force: optionalBoolean(request.arguments, "force"),
+        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
   }
@@ -179,12 +179,9 @@ async function completeRemoteAuthLogin(
   if (!flow) {
     throw new CapletsError("REQUEST_INVALID", `Unknown auth flow ${flowId}`);
   }
-  try {
-    await flow.complete(callbackUrl);
-    return { server: flow.server, authenticated: true };
-  } finally {
-    context.authFlowStore?.delete(flowId);
-  }
+  context.authFlowStore?.delete(flowId);
+  await flow.complete(callbackUrl);
+  return { server: flow.server, authenticated: true };
 }
 
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {
@@ -397,10 +394,10 @@ function validateOptionType(key: string, value: unknown, type: RemoteAddOptionTy
   }
 }
 
-function optionalBoolean(args: Record<string, unknown>, key: string): boolean {
+function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
   const value = args[key];
   if (value === undefined) {
-    return false;
+    return undefined;
   }
   if (typeof value !== "boolean") {
     throw new CapletsError("REQUEST_INVALID", `${key} must be a boolean`);
@@ -429,6 +426,10 @@ function nextAction(details: unknown): string | undefined {
 
 function redactControlErrorMessage(message: string): string {
   return message
+    .replace(
+      /(["'])(authorization|(?:access[_-]?)?token|refresh(?:[_-]?token)?|password|client[_-]?secret|clientsecret|api[-_]?key|apikey|secret|credential|code)\1\s*:\s*(["'])(?:\\.|[^\\])*?\3/giu,
+      "$1$2$1:$3[REDACTED]$3",
+    )
     .replace(/\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s,;]+/giu, "$1[REDACTED]")
     .replace(
       /\b((?:access[_-]?)?token|refresh(?:[_-]?token)?|password|client[_-]?secret|clientsecret|api[-_]?key|apikey|secret|credential|code)(\s*[=:]\s*)[^\s,;]+/giu,

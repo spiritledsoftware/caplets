@@ -2,15 +2,18 @@
 title: Remote Control Context
 summary: Remote control architecture covering context, API shape, environment variable interface, working module, and interface UX.
 tags: []
-related: [architecture/auth/remote_auth_and_state_ownership.md, architecture/remote_control/cli_remote_mode_selection.md, architecture/remote_control/remote_control_api_shape.md, architecture/remote_control/unified_environment_variable_interface.md, architecture/remote_control/working_module.md, architecture/remote_control/context.md, architecture/remote_control/context_module.md, architecture/remote_control/caplets_remote_control_module.md, architecture/remote_control/remote_control_context.md, architecture/remote_control/task_1_spec_compliance_review.md]
+related: [architecture/auth/remote_auth_and_state_ownership.md, architecture/remote_control/cli_remote_mode_selection.md, architecture/remote_control/remote_control_api_shape.md, architecture/remote_control/unified_environment_variable_interface.md, architecture/remote_control/working_module.md, architecture/remote_control/context.md, architecture/remote_control/context_module.md, architecture/remote_control/caplets_remote_control_module.md, architecture/remote_control/task_1_spec_compliance_review.md]
 keywords: []
 createdAt: '2026-05-20T12:30:03.683Z'
 updatedAt: '2026-05-20T13:17:52.974Z'
 ---
+
 ## Reason
+
 Curate remote control architecture knowledge from the provided context
 
 ## Raw Concept
+
 **Task:**
 Document the remote control architecture knowledge captured in the context tree.
 
@@ -51,22 +54,29 @@ remote control context -> API shape -> environment variable interface -> working
 **Author:** ByteRover context engineering
 
 ## Narrative
+
 ### Structure
+
 This topic groups the remote control architecture, including the context module, API shape, working module, and unified environment variable interface.
 
 ### Dependencies
+
 Relates to auth ownership and interface UX documentation already present in the architecture domain.
 
 ### Highlights
+
 The context emphasizes how remote control functionality is organized and how the interface and environment variable interface fit into the design.
 
 ### Rules
+
 User explicitly said pre-1.0, so breaking changes/backward compatibility are not a concern.
 
 ### Examples
+
 Remote mode usage is governed by CAPLETS_MODE, while CAPLETS_SERVER_URL and credentials remain separate inputs.
 
 ## Facts
+
 - **context_module**: Caplets supports a context module for remote control and related workflows. [project]
 - **remote_control_api**: The remote control API shape is documented as part of the architecture knowledge. [project]
 - **environment_variable_interface**: The curated knowledge includes a unified environment variable interface for remote control. [project]

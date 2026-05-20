@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T15:41:00.585Z'
 updatedAt: '2026-05-20T15:41:00.585Z'
 ---
+
 ## Reason
+
 Persist final review outcome and verification details from the code review conversation
 
 ## Raw Concept
+
 **Task:**
 Document the final remote control review outcome after verifying the security fix and auth behavior.
 
@@ -32,22 +35,29 @@ review request -> verify security fix -> reassess auth wording -> inspect test r
 **Timestamp:** 2026-05-20T15:40:45.193Z
 
 ## Narrative
+
 ### Structure
+
 The review outcome centers on one fixed security issue, one accepted pending-auth UX detail, and one residual design-spec mismatch.
 
 ### Dependencies
+
 Depends on the remote control dispatch implementation, its regression tests, and the CLI wording/docs for remote authentication.
 
 ### Highlights
+
 The review concluded APPROVED, with focused remote tests passing and the prior high security issue resolved.
 
 ### Rules
+
 Return APPROVED or FINDINGS. Do not edit. The pending auth flow is acceptable when the CLI wording clearly indicates browser completion and server-side credential storage.
 
 ### Examples
+
 Verification used the command: pnpm --filter @caplets/core test -- test/remote-control-dispatch.test.ts test/remote-control-client.test.ts test/cli-remote.test.ts
 
 ## Facts
+
 - **remote_control_error_redaction**: Commit 7cb9381 fixed server-side remote control error redaction. [project]
 - **remote_control_dispatch**: A high security finding was verified as addressed in packages/core/src/remote-control/dispatch.ts. [project]
 - **remote_control_regression_tests**: Regression coverage was added in packages/core/test/remote-control-dispatch.test.ts. [project]

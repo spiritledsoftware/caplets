@@ -63,7 +63,7 @@ export function resolveServeOptions(
   }
 
   const serverUrl = env.CAPLETS_SERVER_URL
-    ? parseServerBaseUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
+    ? parseServeServerUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
     : undefined;
   const host = nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? "127.0.0.1";
   const port = parsePort(raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : 5387));
@@ -109,6 +109,23 @@ export function resolveServeOptions(
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLocaleLowerCase();
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function parseServeServerUrl(value: string): URL {
+  try {
+    return parseServerBaseUrl(value);
+  } catch (error) {
+    if (
+      error instanceof CapletsError &&
+      error.message.includes("must use https except loopback development URLs")
+    ) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "CAPLETS_SERVER_URL must use https except loopback development URLs; use --host, --port, and --path separately for non-loopback HTTP bind addresses.",
+      );
+    }
+    throw error;
+  }
 }
 
 function parseTransport(value: string): ServeTransport {

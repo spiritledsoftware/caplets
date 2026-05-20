@@ -17,6 +17,7 @@ import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 const dirs: string[] = [];
 
 afterEach(() => {
+  mockMcpAuth.mockReset();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -135,13 +136,16 @@ describe("dispatchRemoteCliRequest", () => {
           authorization: "Authorization: Basic abc123",
           clientSecret: "client_secret=secret-value",
           apiKey: "api_key=key-value",
+          json: '{"Authorization":"Bearer json-token","password":"json-password"}',
         },
       },
       context,
     );
 
     expect(response).toMatchObject({ ok: false });
-    expect(JSON.stringify(response)).not.toMatch(/hunter2|abc123|secret-value|key-value/u);
+    expect(JSON.stringify(response)).not.toMatch(
+      /hunter2|abc123|secret-value|key-value|json-token|json-password/u,
+    );
     expect(JSON.stringify(response)).toContain("[REDACTED]");
   });
 
@@ -382,12 +386,13 @@ describe("dispatchRemoteCliRequest", () => {
     expect(authFlowStore.get(flow.id)).toBeUndefined();
   });
 
-  it("removes remote auth flows after failed completion", async () => {
+  it("removes remote auth flows before completion to prevent concurrent replay", async () => {
     const authFlowStore = new RemoteAuthFlowStore();
     const flow = authFlowStore.create({
       server: "remote",
       authorizationUrl: "https://auth.example/authorize",
       complete: async () => {
+        expect(authFlowStore.get(flow.id)).toBeUndefined();
         throw new Error("callback failed");
       },
     });

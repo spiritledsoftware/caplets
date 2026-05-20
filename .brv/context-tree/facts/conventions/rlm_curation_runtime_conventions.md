@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T13:23:05.390Z'
 updatedAt: '2026-05-20T14:04:41.372Z'
 ---
+
 ## Reason
+
 Document runtime curation rules and workflow requirements for RLM-based processing
 
 ## Raw Concept
+
 **Task:**
 Document the curation workflow conventions for RLM-based context processing in this repository.
 
@@ -58,19 +61,25 @@ recon -> single-pass extraction -> curate -> verify applied file paths -> report
 - `^300000$` - Required timeout value for code_exec calls containing mapExtract
 
 ## Narrative
+
 ### Structure
+
 This knowledge belongs in the facts/conventions domain because it documents operating rules for curation rather than product behavior.
 
 ### Dependencies
+
 Depends on the precomputed recon result and the sandbox variables provided for this curation task.
 
 ### Highlights
+
 Single-pass mode is appropriate because the context is small; verification should rely on curate application results instead of rereading files.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself. Verify via result.applied[].filePath — do NOT call readFile for verification.
+
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been precomputed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself. Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ## Facts
+
 - **repository_and_knowledge_system**: The repo is called caplets and uses a .brv context tree for curated knowledge. [project]
 - **curation_workflow**: The current curation workflow uses the RLM approach with recon already precomputed and single-pass recommended. [convention]
 - **mapextract_timeout_and_taskid**: For chunked extraction, mapExtract must receive the taskId as a bare variable and code_exec calls using mapExtract must use a 300000 ms timeout. [convention]

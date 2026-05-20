@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:17:40.238Z'
 updatedAt: '2026-05-20T14:17:40.238Z'
 ---
+
 ## Reason
+
 Capture approved review details and verification results for Task 6
 
 ## Raw Concept
+
 **Task:**
 Record the Task 6 quality review outcome after operation envelope validation.
 
@@ -32,22 +35,29 @@ review request -> validate source/test behavior -> note doc-only cleanup scope -
 **Author:** assistant
 
 ## Narrative
+
 ### Structure
+
 This note captures the final review decision plus the specific code and test evidence cited in the approval.
 
 ### Dependencies
+
 The review depends on dispatch envelope validation, test coverage for missing/mismatched nested operations, and the intended old-env removal scope.
 
 ### Highlights
+
 Approved with no findings. Doc-only CAPLETS_REMOTE_* references were explicitly deferred to Task 10 because they do not block current source/test correctness.
 
 ### Rules
+
 Do not edit. Return APPROVED or FINDINGS.
 
 ### Examples
+
 Examples of verified behavior: missing nested request.operation is rejected; mismatched nested request.operation is rejected; CLI remote routing uses CAPLETS_MODE / CAPLETS_SERVER_URL.
 
 ## Facts
+
 - **task_6_review_outcome**: Task 6 review outcome was APPROVED after operation envelope validation. [project]
 - **remote_control_dispatch_validation**: packages/core/src/remote-control/dispatch.ts validates the nested engine request envelope and rejects missing or mismatched request.operation values. [project]
 - **remote_control_dispatch_tests**: packages/core/test/remote-control-dispatch.test.ts covers both missing and mismatched nested operation cases. [project]

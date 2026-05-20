@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T15:10:55.428Z'
 updatedAt: '2026-05-20T17:07:06.627Z'
 ---
+
 ## Reason
+
 Curate runtime conventions from RLM context
 
 ## Raw Concept
+
 **Task:**
 Document the runtime conventions for RLM curation workflows
 
@@ -33,19 +36,25 @@ precomputed recon -> choose suggested mode -> direct curate or mapExtract -> ver
 **Timestamp:** 2026-05-20T17:06:50.241Z
 
 ## Narrative
+
 ### Structure
+
 The convention set governs how to process RLM curation inputs depending on recon output. Small contexts are handled in a single pass, while larger inputs use chunked extraction.
 
 ### Dependencies
+
 Depends on precomputed recon metadata, taskId propagation, and curate result verification fields.
 
 ### Highlights
+
 The workflow emphasizes no redundant recon call, no raw context printing, and explicit timeout requirements for mapExtract.
 
 ### Rules
+
 Do NOT print raw context. Do NOT call tools.curation.recon when recon is already computed. For chunked extraction use tools.curation.mapExtract() and pass taskId as a bare variable. Verify via result.applied[].filePath and do NOT call readFile for verification.
 
 ## Facts
+
 - **rlm_recon_precomputed**: For RLM curation, recon is precomputed and should not be called again when provided. [convention]
 - **single_pass_mode**: When suggestedMode is single-pass, skip chunking and curate directly. [convention]
 - **map_extract_usage**: When chunked extraction is needed, tools.curation.mapExtract() should be used with taskId passed as a bare variable. [convention]

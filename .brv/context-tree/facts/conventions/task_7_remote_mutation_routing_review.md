@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:35:11.652Z'
 updatedAt: '2026-05-20T14:35:11.652Z'
 ---
+
 ## Reason
+
 Document the approved review outcome and verification details for remote mutation routing
 
 ## Raw Concept
+
 **Task:**
 Capture the code review outcome and verified technical findings for Task 7 remote mutation routing.
 
@@ -35,19 +38,25 @@ review request -> inspect CLI and remote control paths -> verify tests and typec
 **Author:** assistant
 
 ## Narrative
+
 ### Structure
+
 The review spans CLI routing, server-side dispatch validation, remote client parsing, and targeted test coverage.
 
 ### Dependencies
+
 Depends on CLI sanitization behavior, dispatch-layer validation, and client-side response handling.
 
 ### Highlights
+
 No blocking findings were reported. The review explicitly confirmed payload sanitization, boundary enforcement, malformed-response rejection, and redacted error surfacing.
 
 ### Rules
+
 Return APPROVED or FINDINGS with severity/refs. Do not edit.
 
 ## Facts
+
 - **task_7_review_outcome**: Task 7 remote mutation routing review was approved. [project]
 - **remote_route**: Remote init, install, and all add variants route through /control. [project]
 - **stripped_add_fields**: Local-only add fields are stripped before remote requests: global, print, output, destinationRoot. [project]

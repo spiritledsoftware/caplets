@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T12:35:54.751Z'
 updatedAt: '2026-05-20T12:35:54.751Z'
 ---
+
 ## Reason
+
 Curate remote control module notes from the provided context
 
 ## Raw Concept
+
 **Task:**
 Document the caplets remote control module and its related implementation notes
 
@@ -25,11 +28,15 @@ CLI remote mode selection -> build remote control context -> expose API shape ->
 **Timestamp:** 2026-05-20T12:35:48.316Z
 
 ## Narrative
+
 ### Structure
+
 The context groups several remote-control-related notes under architecture/remote_control, including CLI mode selection, context handling, API shape, environment variable unification, and working module guidance.
 
 ### Dependencies
+
 These notes depend on shared remote authentication/state ownership decisions and on the broader caplets remote-control architecture.
 
 ### Highlights
+
 The material emphasizes a unified interface for remote control and captures working-module expectations alongside spec-compliance review notes.

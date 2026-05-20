@@ -236,6 +236,44 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("hides auth callback failure details from unauthenticated browsers", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const authFlowStore = new RemoteAuthFlowStore();
+    authFlowStore.create(
+      {
+        server: "remote",
+        authorizationUrl: "https://auth.example/authorize",
+        complete: async () => {
+          throw new Error("internal token exchange failure");
+        },
+      },
+      "flow-1",
+    );
+    const logs: string[] = [];
+    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: (value) => logs.push(value),
+      control: context,
+      authFlowStore,
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/caplets/control/auth/callback/flow-1?code=abc&state=xyz",
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.text()).resolves.toBe(
+      "Caplets authentication failed. Check server logs for details.",
+    );
+    expect(logs.join("")).toContain("internal token exchange failure");
+
+    await engine.close();
+  });
+
   it("uses the mounted control path when auth login starts under a base path containing control", async () => {
     const context = testContext({ oauth: true });
     const engine = new CapletsEngine({

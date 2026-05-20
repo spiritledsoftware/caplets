@@ -288,6 +288,7 @@ export async function startOAuthFlow(
   return {
     authorizationUrl: redirectUrl.toString(),
     complete: async (callbackUrl: string) => {
+      assertNoOAuthCallbackError(server, callbackUrl);
       const completion = extractCompletion(callbackUrl);
       if (completion.state !== provider.state()) {
         throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
@@ -371,6 +372,27 @@ export async function runOAuthFlow(
   }
 }
 
+function assertNoOAuthCallbackError(target: { server: string }, callbackUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(callbackUrl);
+  } catch {
+    return;
+  }
+  const error = url.searchParams.get("error");
+  if (!error) {
+    return;
+  }
+  const description = url.searchParams.get("error_description");
+  throw new CapletsError(
+    "AUTH_FAILED",
+    description
+      ? `OAuth provider returned an error: ${description}`
+      : "OAuth provider returned an error",
+    redactSecrets({ server: target.server, error, error_description: description ?? undefined }),
+  );
+}
+
 function normalizeMcpOAuthError(server: CapletServerConfig, error: unknown): unknown {
   if (
     (server.auth?.type === "oauth2" || server.auth?.type === "oidc") &&
@@ -444,6 +466,7 @@ export async function startGenericOAuthFlow(
   return {
     authorizationUrl: authorizationUrl.toString(),
     complete: async (callbackUrl: string) => {
+      assertNoOAuthCallbackError(target, callbackUrl);
       const completion = extractCompletion(callbackUrl);
       if (completion.state !== state) {
         throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
