@@ -374,6 +374,65 @@ describe("remote CLI routing", () => {
       }),
     );
   });
+
+  it("routes auth list and logout through remote control", async () => {
+    const out: string[] = [];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            result: [{ server: "remote", status: "authenticated" }],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            result: { server: "remote", deleted: true },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+
+    const io = {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      },
+      fetch: fetchMock as typeof fetch,
+      writeOut: (value: string) => out.push(value),
+    };
+
+    await runCli(["auth", "list", "--json"], io);
+    await runCli(["auth", "logout", "remote"], io);
+
+    expect(JSON.parse(out[0]!)).toEqual([{ server: "remote", status: "authenticated" }]);
+    expect(out[1]).toBe("Deleted remote OAuth credentials for `remote`.\n");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      new URL("http://127.0.0.1:5387/control"),
+      expect.objectContaining({
+        body: JSON.stringify({ command: "auth_list", arguments: {} }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      new URL("http://127.0.0.1:5387/control"),
+      expect.objectContaining({
+        body: JSON.stringify({ command: "auth_logout", arguments: { server: "remote" } }),
+      }),
+    );
+  });
 });
 
 async function runRemoteAdd(args: string[]): Promise<unknown> {

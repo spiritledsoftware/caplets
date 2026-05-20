@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   addCliCaplet,
   addGraphqlCaplet,
@@ -5,15 +6,22 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./../cli/add";
+import { assertLoginTarget, findAuthTarget, listAuthRows, logoutAuthResult } from "./../cli/auth";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
 import { loadConfigWithSources } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
+import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
+import { RemoteAuthFlowStore } from "./auth-flow";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
-export type RemoteControlDispatchContext = CapletsEngineOptions & { projectCapletsRoot: string };
+export type RemoteControlDispatchContext = CapletsEngineOptions & {
+  projectCapletsRoot: string;
+  authFlowStore?: RemoteAuthFlowStore;
+  controlCallbackBaseUrl?: string;
+};
 
 type AddKind = "cli" | "mcp" | "openapi" | "graphql" | "http";
 
@@ -94,10 +102,83 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     };
   }
 
+  if (request.command === "auth_list") {
+    return listAuthRows({
+      ...optionalProp("configPath", context.configPath),
+      ...optionalProp("authDir", context.authDir),
+    });
+  }
+
+  if (request.command === "auth_logout") {
+    return logoutAuthResult(requiredString(request.arguments, "server"), {
+      ...optionalProp("configPath", context.configPath),
+      ...optionalProp("authDir", context.authDir),
+    });
+  }
+
+  if (request.command === "auth_login_start") {
+    return startRemoteAuthLogin(requiredString(request.arguments, "server"), context);
+  }
+
+  if (request.command === "auth_login_complete") {
+    return completeRemoteAuthLogin(
+      requiredString(request.arguments, "flowId"),
+      requiredString(request.arguments, "callbackUrl"),
+      context,
+    );
+  }
+
   throw new CapletsError(
     "UNKNOWN_OPERATION",
     `Unsupported remote control command ${request.command}`,
   );
+}
+
+async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
+  if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
+    throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
+  }
+  const config = loadConfigWithSources(context.configPath, context.projectConfigPath).config;
+  const target = findAuthTarget(serverId, config);
+  assertLoginTarget(target, serverId);
+  const flowId = randomUUID();
+  const baseUrl = context.controlCallbackBaseUrl.endsWith("/")
+    ? context.controlCallbackBaseUrl
+    : `${context.controlCallbackBaseUrl}/`;
+  const redirectUri = new URL(`auth/callback/${flowId}`, baseUrl).toString();
+  const started =
+    target.backend === "mcp"
+      ? await startOAuthFlow(target, {
+          redirectUri,
+          ...optionalProp("authDir", context.authDir),
+        })
+      : await startGenericOAuthFlow(target, {
+          redirectUri,
+          ...optionalProp("authDir", context.authDir),
+        });
+  const flow = context.authFlowStore.create(
+    {
+      server: serverId,
+      authorizationUrl: started.authorizationUrl,
+      complete: started.complete,
+    },
+    flowId,
+  );
+  return { server: serverId, flowId: flow.id, authorizationUrl: flow.authorizationUrl };
+}
+
+async function completeRemoteAuthLogin(
+  flowId: string,
+  callbackUrl: string,
+  context: RemoteControlDispatchContext,
+) {
+  const flow = context.authFlowStore?.get(flowId);
+  if (!flow) {
+    throw new CapletsError("REQUEST_INVALID", `Unknown auth flow ${flowId}`);
+  }
+  await flow.complete(callbackUrl);
+  context.authFlowStore?.delete(flowId);
+  return { server: flow.server, authenticated: true };
 }
 
 function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispatchContext) {

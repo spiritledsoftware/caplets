@@ -240,17 +240,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
   };
 }
 
-export async function runOAuthFlow(
+export type StartedOAuthFlow = {
+  authorizationUrl: string;
+  complete(callbackUrl: string): Promise<void>;
+};
+
+export async function startOAuthFlow(
   server: CapletServerConfig,
-  options: {
-    noOpen?: boolean;
-    authDir?: string;
-    manualInput?: string;
-    readManualInput?: () => Promise<string | undefined>;
-    open?: (url: string) => Promise<void>;
-    print?: (line: string) => void;
-  } = {},
-): Promise<AuthResult> {
+  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+): Promise<StartedOAuthFlow> {
   if (
     server.transport === "stdio" ||
     !server.url ||
@@ -262,6 +260,62 @@ export async function runOAuthFlow(
     );
   }
 
+  let redirectUrl: URL | undefined;
+  const provider = new FileOAuthProvider(
+    server,
+    options.redirectUri,
+    (url) => {
+      redirectUrl = url;
+      options.print?.(`Open this URL to authorize ${server.server}:\n${url.toString()}`);
+    },
+    options.authDir,
+  );
+  const scope = scopesFor(server.auth);
+  try {
+    const first = await auth(provider, {
+      serverUrl: server.url,
+      ...(scope ? { scope } : {}),
+    });
+    if (first === "AUTHORIZED") {
+      return { authorizationUrl: "", complete: async () => {} };
+    }
+  } catch (error) {
+    throw normalizeMcpOAuthError(server, error);
+  }
+  if (!redirectUrl) {
+    throw new CapletsError("AUTH_FAILED", "OAuth authorization URL was not provided");
+  }
+  return {
+    authorizationUrl: redirectUrl.toString(),
+    complete: async (callbackUrl: string) => {
+      const completion = extractCompletion(callbackUrl);
+      if (completion.state !== provider.state()) {
+        throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+      }
+      try {
+        await auth(provider, {
+          serverUrl: server.url!,
+          authorizationCode: completion.code,
+          ...(scope ? { scope } : {}),
+        });
+      } catch (error) {
+        throw normalizeMcpOAuthError(server, error);
+      }
+    },
+  };
+}
+
+export async function runOAuthFlow(
+  server: CapletServerConfig,
+  options: {
+    noOpen?: boolean;
+    authDir?: string;
+    manualInput?: string;
+    readManualInput?: () => Promise<string | undefined>;
+    open?: (url: string) => Promise<void>;
+    print?: (line: string) => void;
+  } = {},
+): Promise<AuthResult> {
   let callbackCode: string | undefined;
   let callbackState: string | undefined;
   const callback = await createLoopbackCallback((url) => {
@@ -276,31 +330,20 @@ export async function runOAuthFlow(
     callbackState = url.searchParams.get("state") ?? undefined;
   });
 
-  let redirectUrl: URL | undefined;
-  const provider = new FileOAuthProvider(
-    server,
-    callback.redirectUri,
-    (url) => {
-      redirectUrl = url;
-      options.print?.(`Open this URL to authorize ${server.server}:\n${url.toString()}`);
-    },
-    options.authDir,
-  );
-
   try {
-    const scope = scopesFor(server.auth);
-    const first = await auth(provider, {
-      serverUrl: server.url,
-      ...(scope ? { scope } : {}),
+    const started = await startOAuthFlow(server, {
+      redirectUri: callback.redirectUri,
+      ...(options.authDir ? { authDir: options.authDir } : {}),
+      ...(options.print ? { print: options.print } : {}),
     });
-    if (first === "AUTHORIZED") {
-      return first;
+    if (!started.authorizationUrl) {
+      return "AUTHORIZED";
     }
 
-    if (!options.noOpen && redirectUrl) {
+    if (!options.noOpen) {
       await (options.open
-        ? options.open(redirectUrl.toString())
-        : openBrowser(redirectUrl.toString()));
+        ? options.open(started.authorizationUrl)
+        : openBrowser(started.authorizationUrl));
     }
 
     const manualInput =
@@ -315,15 +358,12 @@ export async function runOAuthFlow(
               }
             : undefined,
         );
-    const expectedState = provider.state();
-    if (completion.state !== expectedState) {
-      throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
-    }
-    return await auth(provider, {
-      serverUrl: server.url,
-      authorizationCode: completion.code,
-      ...(scope ? { scope } : {}),
-    });
+    await started.complete(
+      completion.state
+        ? `${callback.redirectUri}?code=${encodeURIComponent(completion.code)}&state=${encodeURIComponent(completion.state)}`
+        : `${callback.redirectUri}?code=${encodeURIComponent(completion.code)}`,
+    );
+    return "AUTHORIZED";
   } catch (error) {
     throw normalizeMcpOAuthError(server, error);
   } finally {
@@ -359,6 +399,107 @@ type AuthorizationServerMetadata = {
   registration_endpoint?: string;
   [key: string]: unknown;
 };
+
+export async function startGenericOAuthFlow(
+  target: GenericAuthTarget,
+  options: { redirectUri: string; authDir?: string; print?: (line: string) => void },
+): Promise<StartedOAuthFlow> {
+  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
+    throw new CapletsError("REQUEST_INVALID", `${target.server} is not configured for OAuth`);
+  }
+  const authConfig = target.auth as OAuthLikeAuthConfig;
+  const redirectUri = authConfig.redirectUri ?? options.redirectUri;
+  const verifier = base64url(randomBytes(32));
+  const state = base64url(randomBytes(24));
+  const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
+  const metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
+  const authorizationEndpoint = authConfig.authorizationUrl ?? metadata.authorization_endpoint;
+  const tokenEndpoint = authConfig.tokenUrl ?? metadata.token_endpoint;
+  if (!authorizationEndpoint || !tokenEndpoint) {
+    throw new CapletsError("AUTH_FAILED", "OAuth metadata is missing endpoints", {
+      server: target.server,
+    });
+  }
+  assertAllowedAuthUrl(authorizationEndpoint, "authorization endpoint", allowLoopbackHttp);
+  assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
+  const client = await resolveGenericClient(
+    target,
+    authConfig,
+    metadata,
+    redirectUri,
+    allowLoopbackHttp,
+  );
+  const scope = scopesFor(authConfig);
+  const authorizationUrl = new URL(authorizationEndpoint);
+  authorizationUrl.searchParams.set("response_type", "code");
+  authorizationUrl.searchParams.set("client_id", client.clientId);
+  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizationUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
+  authorizationUrl.searchParams.set("code_challenge_method", "S256");
+  authorizationUrl.searchParams.set("state", state);
+  if (scope) {
+    authorizationUrl.searchParams.set("scope", scope);
+  }
+  options.print?.(`Open this URL to authorize ${target.server}:\n${authorizationUrl.toString()}`);
+  return {
+    authorizationUrl: authorizationUrl.toString(),
+    complete: async (callbackUrl: string) => {
+      const completion = extractCompletion(callbackUrl);
+      if (completion.state !== state) {
+        throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+      }
+      const params = new URLSearchParams({
+        grant_type: "authorization_code",
+        code: completion.code,
+        redirect_uri: redirectUri,
+        client_id: client.clientId,
+        code_verifier: verifier,
+      });
+      if (client.clientSecret) {
+        params.set("client_secret", client.clientSecret);
+      }
+      const tokenResponse = await fetchJson(
+        tokenEndpoint,
+        target.requestTimeoutMs,
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: params.toString(),
+        },
+        allowLoopbackHttp,
+      );
+      const idToken = asString(tokenResponse.id_token);
+      const idClaims = parseJwtPayload(idToken);
+      validateOidcToken(authConfig, metadata, idToken, idClaims, client.clientId);
+      writeTokenBundle(
+        stripUndefined({
+          server: target.server,
+          authType: authConfig.type,
+          accessToken: requireString(tokenResponse.access_token, "access_token"),
+          refreshToken: asString(tokenResponse.refresh_token),
+          tokenType: asString(tokenResponse.token_type),
+          expiresAt:
+            typeof tokenResponse.expires_in === "number"
+              ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+              : undefined,
+          scope: asString(tokenResponse.scope) ?? scope,
+          idToken,
+          issuer: asString(idClaims?.iss) ?? metadata.issuer ?? authConfig.issuer,
+          subject: asString(idClaims?.sub),
+          clientId: client.clientId,
+          clientSecret: client.clientSecret,
+          protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
+          metadata: redactSecrets({
+            protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
+            authorizationServer: metadata,
+            dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
+          }) as Record<string, unknown>,
+        }),
+        options.authDir,
+      );
+    },
+  };
+}
 
 export async function runGenericOAuthFlow(
   target: GenericAuthTarget,

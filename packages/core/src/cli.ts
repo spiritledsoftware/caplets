@@ -7,7 +7,7 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./cli/add";
-import { loginAuth, logoutAuth, listAuth } from "./cli/auth";
+import { loginAuth, logoutAuth, listAuth, formatAuthRows, type AuthStatusRow } from "./cli/auth";
 import { initConfig } from "./cli/init";
 import {
   formatCapletList,
@@ -602,6 +602,20 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<server>", "configured server ID")
     .option("--no-open", "print the authorization URL without opening a browser")
     .action(async (serverId: string, options: { open?: boolean }) => {
+      const remote = remoteClientForCli(io);
+      if (remote) {
+        const started = (await remote.request("auth_login_start", { server: serverId })) as {
+          server: string;
+          flowId: string;
+          authorizationUrl: string;
+        };
+        writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
+        if (options.open !== false) {
+          await openBrowser(started.authorizationUrl);
+        }
+        writeOut(`Authenticated \`${serverId}\`.\n`);
+        return;
+      }
       const configPath = currentConfigPath();
       await loginAuth(serverId, {
         noOpen: options.open === false,
@@ -616,7 +630,19 @@ export function createProgram(io: CliIO = {}): Command {
     .command("logout")
     .description("Delete stored OAuth credentials for a server.")
     .argument("<server>", "configured server ID")
-    .action((serverId: string) => {
+    .action(async (serverId: string) => {
+      const remote = remoteClientForCli(io);
+      if (remote) {
+        const result = (await remote.request("auth_logout", { server: serverId })) as {
+          deleted: boolean;
+        };
+        writeOut(
+          result.deleted
+            ? `Deleted remote OAuth credentials for \`${serverId}\`.\n`
+            : `No remote OAuth credentials found for \`${serverId}\`.\n`,
+        );
+        return;
+      }
       const configPath = currentConfigPath();
       logoutAuth(serverId, {
         writeOut,
@@ -630,10 +656,20 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List servers with stored OAuth credentials.")
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
-    .action((options: { json?: boolean; format?: CliOutputFormat }) => {
+    .action(async (options: { json?: boolean; format?: CliOutputFormat }) => {
       const configPath = currentConfigPath();
       const format =
         options.json || options.format === "json" ? "json" : (options.format ?? "plain");
+      const remote = remoteClientForCli(io);
+      if (remote) {
+        const rows = (await remote.request("auth_list", {})) as AuthStatusRow[];
+        if (format === "json") {
+          writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        writeOut(formatAuthRows(rows, format));
+        return;
+      }
       listAuth({
         writeOut,
         format,
@@ -658,6 +694,14 @@ function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
   }
   const server = resolveCapletsServer(io.fetch ? { fetch: io.fetch } : {}, env);
   return new RemoteControlClient(server);
+}
+
+async function openBrowser(url: string): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const command =
+    process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  spawn(command, args, { stdio: "ignore", detached: true }).unref();
 }
 
 function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undefined {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { writeTokenBundle } from "../src/auth";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 
 const dirs: string[] = [];
@@ -288,6 +289,36 @@ describe("dispatchRemoteCliRequest", () => {
       ),
     ).resolves.toMatchObject({ ok: true, result: { remote: true } });
   });
+
+  it("lists and logs out server-side auth credentials", async () => {
+    const fixture = remoteFixtureWithOAuth();
+    writeTokenBundle(
+      {
+        server: "remote",
+        accessToken: "secret-access-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+      fixture.context.authDir,
+    );
+
+    const listed = await dispatchRemoteCliRequest(
+      { command: "auth_list", arguments: {} },
+      fixture.context,
+    );
+    expect(listed).toEqual({
+      ok: true,
+      result: [expect.objectContaining({ server: "remote", status: "authenticated" })],
+    });
+
+    const loggedOut = await dispatchRemoteCliRequest(
+      { command: "auth_logout", arguments: { server: "remote" } },
+      fixture.context,
+    );
+    expect(loggedOut).toEqual({
+      ok: true,
+      result: { server: "remote", deleted: true },
+    });
+  });
 });
 
 function testContext(options: { writeConfig?: boolean } = {}) {
@@ -321,5 +352,42 @@ function testContext(options: { writeConfig?: boolean } = {}) {
     projectConfigPath,
     projectCapletsRoot: projectRoot,
     watch: false,
+  };
+}
+
+function remoteFixtureWithOAuth() {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-dispatch-auth-"));
+  dirs.push(dir);
+  const userRoot = join(dir, "user");
+  const projectRoot = join(dir, "project", ".caplets");
+  const authDir = join(dir, "auth");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(authDir, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      mcpServers: {
+        remote: {
+          name: "Remote",
+          description: "Remote OAuth server.",
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "oauth2", clientId: "client" },
+        },
+      },
+    }),
+  );
+  return {
+    context: {
+      tempRoot: dir,
+      configPath,
+      projectConfigPath,
+      projectCapletsRoot: projectRoot,
+      authDir,
+      watch: false,
+    },
   };
 }

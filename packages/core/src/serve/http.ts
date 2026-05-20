@@ -10,6 +10,7 @@ import {
   dispatchRemoteCliRequest,
   type RemoteControlDispatchContext,
 } from "../remote-control/dispatch";
+import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
@@ -17,6 +18,7 @@ import { CapletsMcpSession } from "./session";
 type HttpServeIo = {
   writeErr?: (value: string) => void;
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
+  authFlowStore?: RemoteAuthFlowStore;
 };
 
 type HttpSession = {
@@ -37,6 +39,7 @@ export function createHttpServeApp(
   const sessions = new Map<string, HttpSession>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
+  const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -129,12 +132,22 @@ export function createHttpServeApp(
       return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
     }
     return c.json(
-      await dispatchRemoteCliRequest(request, {
-        ...io.control,
-        projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
-        writeErr,
-      }),
+      await dispatchRemoteCliRequest(
+        request,
+        controlContext(io, writeErr, authFlowStore, c.req.url),
+      ),
     );
+  });
+
+  app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
+    const flowId = c.req.param("flowId");
+    const result = await dispatchRemoteCliRequest(
+      { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
+      controlContext(io, writeErr, authFlowStore, c.req.url),
+    );
+    return result.ok
+      ? c.text("Caplets authentication complete. You can return to your terminal.")
+      : c.text(result.error.message, 400);
   });
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
@@ -155,6 +168,31 @@ export function createHttpServeApp(
   }
 
   return app;
+}
+
+function controlContext(
+  io: HttpServeIo,
+  writeErr: (value: string) => void,
+  authFlowStore: RemoteAuthFlowStore,
+  requestUrl: string,
+): RemoteControlDispatchContext {
+  return {
+    ...io.control,
+    projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
+    authFlowStore,
+    controlCallbackBaseUrl: new URL(
+      servicePathsFromRequest(requestUrl).control,
+      requestUrl,
+    ).toString(),
+    writeErr,
+  };
+}
+
+function servicePathsFromRequest(requestUrl: string): { control: string } {
+  const path = new URL(requestUrl).pathname;
+  const marker = "/control";
+  const index = path.indexOf(marker);
+  return { control: index < 0 ? marker : path.slice(0, index + marker.length) };
 }
 
 export async function serveHttp(

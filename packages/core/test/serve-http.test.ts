@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletsEngine } from "../src/engine";
+import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 
@@ -199,6 +200,38 @@ describe("createHttpServeApp", () => {
       ok: false,
       error: { code: "REQUEST_INVALID", message: expect.stringContaining("JSON") },
     });
+
+    await engine.close();
+  });
+
+  it("dispatches auth callback completion under the control path", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const authFlowStore = new RemoteAuthFlowStore();
+    authFlowStore.create(
+      {
+        server: "remote",
+        authorizationUrl: "https://auth.example/authorize",
+        complete: async (_callbackUrl: string) => {},
+      },
+      "flow-1",
+    );
+    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: () => {},
+      control: context,
+      authFlowStore,
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/caplets/control/auth/callback/flow-1?code=abc&state=xyz",
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toContain("authentication complete");
 
     await engine.close();
   });
