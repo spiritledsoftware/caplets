@@ -125,6 +125,26 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("redacts secret-bearing control error messages", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "password=hunter2" as never,
+        arguments: {
+          authorization: "Authorization: Basic abc123",
+          clientSecret: "client_secret=secret-value",
+          apiKey: "api_key=key-value",
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({ ok: false });
+    expect(JSON.stringify(response)).not.toMatch(/hunter2|abc123|secret-value|key-value/u);
+    expect(JSON.stringify(response)).toContain("[REDACTED]");
+  });
+
   it("adds MCP Caplets to the server-side project Caplets root", async () => {
     const context = testContext();
 

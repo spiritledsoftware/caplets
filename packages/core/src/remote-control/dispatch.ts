@@ -48,7 +48,7 @@ export async function dispatchRemoteCliRequest(
       ok: false,
       error: {
         code: safe.code,
-        message: safe.message,
+        message: redactControlErrorMessage(safe.message),
         ...(action ? { nextAction: action } : {}),
       },
     };
@@ -425,4 +425,13 @@ function nextAction(details: unknown): string | undefined {
     return typeof value === "string" ? value : undefined;
   }
   return undefined;
+}
+
+function redactControlErrorMessage(message: string): string {
+  return message
+    .replace(/\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s,;]+/giu, "$1[REDACTED]")
+    .replace(
+      /\b((?:access[_-]?)?token|refresh(?:[_-]?token)?|password|client[_-]?secret|clientsecret|api[-_]?key|apikey|secret|credential|code)(\s*[=:]\s*)[^\s,;]+/giu,
+      "$1$2[REDACTED]",
+    );
 }
