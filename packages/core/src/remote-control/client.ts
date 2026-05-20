@@ -149,5 +149,8 @@ function redactRemoteMessage(message: string): string {
   return String(redactSecrets(message))
     .replace(/\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s,;]+/giu, "$1[REDACTED]")
     .replace(/\b((?:access_)?token=)[^\s,;]+/giu, "$1[REDACTED]")
-    .replace(/\b((?:password|client_secret|api_key)\s*[=:]\s*)[^\s,;]+/giu, "$1[REDACTED]");
+    .replace(
+      /\b((?:token|secret|authorization|auth|api[-_]?key|password|credential|clientsecret|client_secret|code|refresh(?:_token)?)\s*[=:]\s*)[^\s,;]+/giu,
+      "$1[REDACTED]",
+    );
 }
