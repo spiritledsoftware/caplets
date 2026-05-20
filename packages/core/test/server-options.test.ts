@@ -6,13 +6,31 @@ import { resolveCapletsMode, resolveCapletsServer } from "../src/server/options"
 
 describe("resolveCapletsMode", () => {
   it("defaults to local mode without a server URL", () => {
-    expect(resolveCapletsMode({}, {})).toBe("local");
+    expect(resolveCapletsMode({}, {})).toEqual({ mode: "local" });
   });
 
   it("uses remote mode in auto when a server URL is configured", () => {
-    expect(resolveCapletsMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" })).toBe(
-      "remote",
-    );
+    expect(resolveCapletsMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" })).toEqual({
+      mode: "remote",
+    });
+  });
+
+  it("uses local mode from CAPLETS_MODE=local even with a server URL", () => {
+    expect(
+      resolveCapletsMode(
+        {},
+        { CAPLETS_MODE: "local", CAPLETS_SERVER_URL: "https://example.com/caplets" },
+      ),
+    ).toEqual({ mode: "local" });
+  });
+
+  it("uses remote mode from CAPLETS_MODE=remote with a server URL", () => {
+    expect(
+      resolveCapletsMode(
+        {},
+        { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "https://example.com/caplets" },
+      ),
+    ).toEqual({ mode: "remote" });
   });
 
   it("lets explicit local mode ignore server settings", () => {
@@ -21,7 +39,7 @@ describe("resolveCapletsMode", () => {
         { mode: "local", serverUrl: "https://input.example.com/caplets" },
         { CAPLETS_SERVER_URL: "https://env.example.com/caplets" },
       ),
-    ).toBe("local");
+    ).toEqual({ mode: "local" });
   });
 
   it("requires a URL in explicit remote mode", () => {
@@ -63,6 +81,15 @@ describe("resolveCapletsServer", () => {
     });
   });
 
+  it("accepts loopback http IPv6 bracket URLs", () => {
+    expect(resolveCapletsServer({ url: "http://[::1]:5387" }, {})).toMatchObject({
+      baseUrl: new URL("http://[::1]:5387/"),
+      mcpUrl: new URL("http://[::1]:5387/mcp"),
+      controlUrl: new URL("http://[::1]:5387/control"),
+      healthUrl: new URL("http://[::1]:5387/healthz"),
+    });
+  });
+
   it("rejects non-loopback http URLs", () => {
     expect(() => resolveCapletsServer({ url: "http://example.com/caplets" }, {})).toThrow(/https/u);
   });
@@ -84,5 +111,27 @@ describe("resolveCapletsServer", () => {
     expect(() =>
       resolveCapletsServer({ url: "https://example.com/caplets", user: "alice" }, {}),
     ).toThrow(/requires a password/u);
+  });
+
+  it("resolves Basic Auth from CAPLETS_SERVER_USER and CAPLETS_SERVER_PASSWORD", () => {
+    const password = ["env", "password"].join("-");
+
+    expect(
+      resolveCapletsServer(
+        {},
+        {
+          CAPLETS_SERVER_URL: "https://example.com/caplets",
+          CAPLETS_SERVER_USER: "env-user",
+          CAPLETS_SERVER_PASSWORD: password,
+        },
+      ),
+    ).toMatchObject({
+      auth: { enabled: true, user: "env-user", password },
+      requestInit: {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`env-user:${password}`).toString("base64")}`,
+        },
+      },
+    });
   });
 });

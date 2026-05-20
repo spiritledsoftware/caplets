@@ -42,10 +42,10 @@ const DEFAULT_SERVER_USER = "caplets";
 export function resolveCapletsMode(
   input: CapletsModeInput = {},
   env: CapletsServerEnv = process.env,
-): Exclude<CapletsMode, "auto"> {
+): { mode: "local" } | { mode: "remote" } {
   const mode = parseCapletsMode(input.mode ?? env.CAPLETS_MODE ?? "auto");
   if (mode === "local") {
-    return "local";
+    return { mode: "local" };
   }
 
   const rawUrl =
@@ -58,10 +58,10 @@ export function resolveCapletsMode(
         "CAPLETS_MODE=remote requires CAPLETS_SERVER_URL or serverUrl.",
       );
     }
-    return "remote";
+    return { mode: "remote" };
   }
 
-  return rawUrl === undefined ? "local" : "remote";
+  return rawUrl === undefined ? { mode: "local" } : { mode: "remote" };
 }
 
 export function resolveCapletsServer(
@@ -154,7 +154,12 @@ export function parseServerBaseUrl(value: string): URL {
 
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLocaleLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
 }
 
 function parseCapletsMode(value: string): CapletsMode {
