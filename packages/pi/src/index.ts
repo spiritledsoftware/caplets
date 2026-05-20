@@ -246,7 +246,7 @@ function topLevelCapletsOptions(
       continue;
     }
     const argsValue = objectProperty(value, "native") ?? objectProperty(value, "args") ?? value;
-    const parsed = parsePiNativeOptions(argsValue);
+    const parsed = parsePiNativeOptions(argsValue, writeWarning, `${path}.${key}`);
     if (!parsed) {
       writeWarning(`[caplets/pi] Ignoring Pi settings args: invalid ${path}.${key} shape`);
       return {};
@@ -256,7 +256,11 @@ function topLevelCapletsOptions(
   return undefined;
 }
 
-function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
+function parsePiNativeOptions(
+  value: unknown,
+  writeWarning?: (message: string) => void,
+  path = "settings.caplets",
+): PiCapletsSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
@@ -287,18 +291,44 @@ function parsePiNativeOptions(value: unknown): PiCapletsSettings | undefined {
     result.remote = parsedRemote;
   }
   const server = objectProperty(value, "server");
-  if (server) {
-    const parsedServer: NonNullable<PiNativeCapletsOptions["server"]> = {};
-    for (const key of ["url", "user", "password"] as const) {
-      const field = server[key];
-      if (field !== undefined) {
-        if (typeof field !== "string") return undefined;
-        parsedServer[key] = field;
-      }
-    }
-    result.server = parsedServer;
+  const parsedServer = parsePiServerOptions(server);
+  if (parsedServer === undefined && server) {
+    return undefined;
+  }
+  const legacyServer = parsePiServerOptions(remote);
+  if (legacyServer === undefined && remote && hasLegacyRemoteServerFields(remote)) {
+    return undefined;
+  }
+  if (legacyServer && !parsedServer) {
+    writeWarning?.(
+      `[caplets/pi] ${path}.remote.url is deprecated; move remote.url/user/password to server.url/user/password.`,
+    );
+  }
+  if (legacyServer || parsedServer) {
+    result.server = { ...legacyServer, ...parsedServer };
   }
   return result;
+}
+
+function parsePiServerOptions(
+  value: Record<string, unknown> | undefined,
+): NonNullable<PiNativeCapletsOptions["server"]> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsedServer: NonNullable<PiNativeCapletsOptions["server"]> = {};
+  for (const key of ["url", "user", "password"] as const) {
+    const field = value[key];
+    if (field !== undefined) {
+      if (typeof field !== "string") return undefined;
+      parsedServer[key] = field;
+    }
+  }
+  return Object.keys(parsedServer).length > 0 ? parsedServer : undefined;
+}
+
+function hasLegacyRemoteServerFields(remote: Record<string, unknown>): boolean {
+  return remote.url !== undefined || remote.user !== undefined || remote.password !== undefined;
 }
 
 function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {

@@ -907,6 +907,44 @@ describe("@caplets/pi", () => {
     });
   });
 
+  it("loads deprecated remote server fields with a warning", async () => {
+    const service = mockService([]);
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: {
+            url: "https://caplets.example.com",
+            user: "ian",
+            password: "test-password",
+            pollIntervalMs: 1_000,
+          },
+        },
+      }),
+    );
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "remote",
+      server: {
+        url: "https://caplets.example.com",
+        user: "ian",
+        password: "test-password",
+      },
+      remote: {
+        pollIntervalMs: 1_000,
+      },
+    });
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("remote.url is deprecated"));
+    write.mockRestore();
+  });
+
   it("default export loads top-level Pi settings for the native service", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);

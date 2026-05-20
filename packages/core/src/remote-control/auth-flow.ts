@@ -31,7 +31,7 @@ export class RemoteAuthFlowStore {
       ...flow,
     };
     this.flows.set(created.id, created);
-    return created;
+    return { ...created };
   }
 
   get(id: string): RemoteAuthFlow | undefined {

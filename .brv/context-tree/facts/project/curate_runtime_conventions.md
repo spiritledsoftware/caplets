@@ -1,11 +1,11 @@
 ---
 title: Curate Runtime Conventions
-summary: 'Runtime conventions for curation: use RLM recon first, prefer single-pass when suggested, use mapExtract for chunked contexts, and verify curated file paths via result.applied.'
+summary: "Runtime conventions for curation: use RLM recon first, prefer single-pass when suggested, use mapExtract for chunked contexts, and verify curated file paths via result.applied."
 tags: []
 related: [facts/conventions/context.md, facts/project/context.md]
 keywords: []
-createdAt: '2026-05-20T14:16:38.968Z'
-updatedAt: '2026-05-20T18:36:27.951Z'
+createdAt: "2026-05-20T14:16:38.968Z"
+updatedAt: "2026-05-20T18:36:27.951Z"
 ---
 
 ## Reason
@@ -18,6 +18,7 @@ Persist runtime curation conventions from the provided context
 Document runtime conventions for RLM-based curation of context variables.
 
 **Changes:**
+
 - Added a combined recon workflow recommendation
 - Specified single-pass handling for small contexts
 - Preserved verification requirements for curation results
@@ -44,6 +45,7 @@ Document runtime conventions for RLM-based curation of context variables.
 - Captured verification requirements
 
 **Files:**
+
 - .brv/context-tree/facts/conventions/context.md
 
 **Flow:**
@@ -54,6 +56,7 @@ recon -> choose single-pass or chunked extraction -> curate -> verify applied fi
 **Author:** ByteRover context engineer
 
 **Patterns:**
+
 - `^single-pass$` - Suggested mode for small contexts
 - `^chunked$` - Suggested mode for larger contexts
 

@@ -380,7 +380,8 @@ describe("dispatchRemoteCliRequest", () => {
       complete: async () => {},
     });
 
-    expect(authFlowStore.get(flow.id)).toBe(flow);
+    expect(authFlowStore.get(flow.id)).toEqual(flow);
+    expect(authFlowStore.get(flow.id)).not.toBe(flow);
 
     now = 1_101;
     expect(authFlowStore.get(flow.id)).toBeUndefined();
