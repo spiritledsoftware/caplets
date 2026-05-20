@@ -93,6 +93,54 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("rejects remote add destinationRoot because the server owns the destination", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "add",
+        arguments: {
+          kind: "mcp",
+          id: "remote_destination_root",
+          options: { command: "node", destinationRoot: context.tempRoot },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("destinationRoot is not supported remotely"),
+      },
+    });
+  });
+
+  it("rejects remote add print because the server owns write behavior", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "add",
+        arguments: {
+          kind: "mcp",
+          id: "remote_print",
+          options: { command: "node", print: true },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("print is not supported remotely"),
+      },
+    });
+  });
+
   it("rejects invalid remote add option types before calling helpers", async () => {
     const context = testContext();
 
