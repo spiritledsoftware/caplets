@@ -6,16 +6,7 @@ import {
 } from "@caplets/core/native";
 import { createCapletsOpenCodeHooks } from "./hooks";
 
-export type CapletsOpenCodeConfig = {
-  mode?: "auto" | "local" | "remote";
-  remote?: {
-    url?: string;
-    user?: string;
-    password?: string;
-    pollIntervalMs?: number;
-    fetch?: typeof fetch;
-  };
-};
+export type CapletsOpenCodeConfig = Pick<NativeCapletsServiceOptions, "mode" | "server" | "remote">;
 
 const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
   const service = createNativeCapletsService(
@@ -34,6 +25,7 @@ function normalizeOpenCodeConfig(config: CapletsOpenCodeConfig | undefined): Cap
   }
   return {
     ...(config.mode ? { mode: config.mode } : {}),
+    ...(config.server ? { server: config.server } : {}),
     ...(config.remote ? { remote: config.remote } : {}),
   };
 }

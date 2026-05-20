@@ -178,9 +178,11 @@ describe("@caplets/opencode", () => {
       {} as never,
       {
         mode: "remote",
-        remote: {
-          url: "https://caplets.example.com/mcp",
+        server: {
+          url: "https://caplets.example.com",
           user: "caplets",
+        },
+        remote: {
           pollIntervalMs: 5_000,
         },
       } as never,
@@ -188,9 +190,11 @@ describe("@caplets/opencode", () => {
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "remote",
-      remote: {
-        url: "https://caplets.example.com/mcp",
+      server: {
+        url: "https://caplets.example.com",
         user: "caplets",
+      },
+      remote: {
         pollIntervalMs: 5_000,
       },
     });

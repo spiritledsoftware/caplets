@@ -11,9 +11,9 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
-  it("uses remote mode in auto when a remote URL is configured", () => {
+  it("uses remote mode in auto when a server URL is configured", () => {
     expect(
-      resolveNativeCapletsServiceOptions({}, { CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/mcp" }),
+      resolveNativeCapletsServiceOptions({}, { CAPLETS_SERVER_URL: "http://127.0.0.1:5387" }),
     ).toMatchObject({
       mode: "remote",
       remote: {
@@ -24,11 +24,11 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
-  it("lets explicit local mode ignore remote env vars", () => {
+  it("lets explicit local mode ignore server env vars", () => {
     expect(
       resolveNativeCapletsServiceOptions(
         { mode: "local" },
-        { CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/mcp" },
+        { CAPLETS_SERVER_URL: "http://127.0.0.1:5387" },
       ),
     ).toEqual({ mode: "local" });
   });
@@ -41,28 +41,25 @@ describe("resolveNativeCapletsServiceOptions", () => {
 
   it("rejects non-loopback http URLs", () => {
     expect(() =>
-      resolveNativeCapletsServiceOptions({ remote: { url: "http://caplets.example.com/mcp" } }, {}),
+      resolveNativeCapletsServiceOptions({ server: { url: "http://caplets.example.com" } }, {}),
     ).toThrow(/https/u);
   });
 
   it("does not echo invalid credential-bearing remote URL inputs", () => {
     const rawUrl = "https://caplets:secret@exa mple.com/mcp";
 
-    expect(() => resolveNativeCapletsServiceOptions({ remote: { url: rawUrl } }, {})).toThrowError(
+    expect(() => resolveNativeCapletsServiceOptions({ server: { url: rawUrl } }, {})).toThrowError(
       expect.not.stringContaining(rawUrl),
     );
   });
 
-  it("rejects remote URLs with embedded username or password", () => {
+  it("rejects server URLs with embedded username or password", () => {
     for (const url of [
-      "https://caplets:secret@caplets.example.com/mcp",
-      "http://caplets:secret@127.0.0.1:5387/mcp",
+      "https://caplets:secret@caplets.example.com",
+      "http://caplets:secret@127.0.0.1:5387",
     ]) {
-      expect(() => resolveNativeCapletsServiceOptions({ remote: { url } }, {})).toThrow(
-        /must not include username or password/u,
-      );
-      expect(() => resolveNativeCapletsServiceOptions({ remote: { url } }, {})).toThrow(
-        /CAPLETS_REMOTE_USER\/CAPLETS_REMOTE_PASSWORD or remote\.user\/remote\.password/u,
+      expect(() => resolveNativeCapletsServiceOptions({ server: { url } }, {})).toThrow(
+        /must not include username, password, query string, or fragment/u,
       );
     }
   });
@@ -72,22 +69,22 @@ describe("resolveNativeCapletsServiceOptions", () => {
     expect(
       resolveNativeCapletsServiceOptions(
         {
-          remote: {
-            url: "https://configured.example.com/mcp",
+          server: {
+            url: "https://configured.example.com/caplets",
             user: "configured",
             password: configPassword,
           },
         },
         {
-          CAPLETS_REMOTE_URL: "https://env.example.com/mcp",
-          CAPLETS_REMOTE_USER: "env-user",
-          CAPLETS_REMOTE_PASSWORD: ["env", "password"].join("-"),
+          CAPLETS_SERVER_URL: "https://env.example.com",
+          CAPLETS_SERVER_USER: "env-user",
+          CAPLETS_SERVER_PASSWORD: ["env", "password"].join("-"),
         },
       ),
     ).toMatchObject({
       mode: "remote",
       remote: {
-        url: new URL("https://configured.example.com/mcp"),
+        url: new URL("https://configured.example.com/caplets/mcp"),
         auth: { enabled: true, user: "configured", password: configPassword },
       },
     });
@@ -97,7 +94,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     const password = ["remote", "password"].join("-");
     expect(
       resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com/mcp", password } },
+        { server: { url: "https://caplets.example.com", password } },
         {},
       ),
     ).toMatchObject({
@@ -108,7 +105,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
   it("rejects user without password", () => {
     expect(() =>
       resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com/mcp", user: "caplets" } },
+        { server: { url: "https://caplets.example.com", user: "caplets" } },
         {},
       ),
     ).toThrow(/requires a password/u);
@@ -119,7 +116,10 @@ describe("resolveNativeCapletsServiceOptions", () => {
     const resolved = resolveNativeCapletsServiceOptions(
       {
         remote: {
-          url: "https://caplets.example.com/mcp",
+          pollIntervalMs: 5_000,
+        },
+        server: {
+          url: "https://caplets.example.com/caplets",
           user: "caplets",
           password,
         },
@@ -127,6 +127,10 @@ describe("resolveNativeCapletsServiceOptions", () => {
       {},
     );
     expect(resolved.mode).toBe("remote");
+    expect(resolved.mode === "remote" ? resolved.remote.url : undefined).toEqual(
+      new URL("https://caplets.example.com/caplets/mcp"),
+    );
+    expect(resolved.mode === "remote" ? resolved.remote.pollIntervalMs : undefined).toBe(5_000);
     expect(resolved.mode === "remote" ? resolved.remote.requestInit.headers : undefined).toEqual({
       Authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
     });
@@ -135,14 +139,14 @@ describe("resolveNativeCapletsServiceOptions", () => {
   it("rejects invalid poll intervals", () => {
     expect(() =>
       resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com/mcp", pollIntervalMs: 999 } },
+        { server: { url: "https://caplets.example.com" }, remote: { pollIntervalMs: 999 } },
         {},
       ),
     ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
 
     expect(() =>
       resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com/mcp", pollIntervalMs: 1_000.5 } },
+        { server: { url: "https://caplets.example.com" }, remote: { pollIntervalMs: 1_000.5 } },
         {},
       ),
     ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);

@@ -584,8 +584,8 @@ describe("@caplets/pi", () => {
     const service = mockService([]);
     const args = {
       mode: "remote",
-      remote: { url: "https://caplets.example.com/mcp", user: "pi-user" },
-    } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+      server: { url: "https://caplets.example.com", user: "pi-user" },
+    } satisfies Pick<NativeCapletsServiceOptions, "mode" | "server" | "remote">;
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
 
     createCapletsPiExtension({ args })({ registerTool: vi.fn() });
@@ -883,7 +883,7 @@ describe("@caplets/pi", () => {
           packages: ["npm:@caplets/pi"],
           caplets: {
             mode: "remote",
-            remote: { url: "http://localhost:5387/mcp" },
+            server: { url: "http://localhost:5387" },
           },
         }),
       );
@@ -903,12 +903,13 @@ describe("@caplets/pi", () => {
     );
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
-      remote: { url: "http://localhost:5387/mcp" },
+      server: { url: "http://localhost:5387" },
     });
   });
 
-  it("default export loads top-level Pi settings for the native service", async () => {
+  it("loads deprecated remote server fields with a warning", async () => {
     const service = mockService([]);
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
@@ -916,8 +917,9 @@ describe("@caplets/pi", () => {
         caplets: {
           mode: "remote",
           remote: {
-            url: "https://caplets.example.com/mcp",
+            url: "https://caplets.example.com",
             user: "ian",
+            password: "test-password",
             pollIntervalMs: 1_000,
           },
         },
@@ -930,9 +932,49 @@ describe("@caplets/pi", () => {
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
-      remote: {
-        url: "https://caplets.example.com/mcp",
+      server: {
+        url: "https://caplets.example.com",
         user: "ian",
+        password: "test-password",
+      },
+      remote: {
+        pollIntervalMs: 1_000,
+      },
+    });
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("remote.url is deprecated"));
+    write.mockRestore();
+  });
+
+  it("default export loads top-level Pi settings for the native service", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          server: {
+            url: "https://caplets.example.com",
+            user: "ian",
+          },
+          remote: {
+            pollIntervalMs: 1_000,
+          },
+        },
+      }),
+    );
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "remote",
+      server: {
+        url: "https://caplets.example.com",
+        user: "ian",
+      },
+      remote: {
         pollIntervalMs: 1_000,
       },
     });
@@ -946,7 +988,7 @@ describe("@caplets/pi", () => {
         packages: [
           {
             source: "npm:@caplets/pi",
-            args: { mode: "remote", remote: { url: "https://ignored.example.com/mcp" } },
+            args: { mode: "remote", server: { url: "https://ignored.example.com" } },
           },
         ],
       }),
@@ -1014,7 +1056,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          remote: { url: "https://caplets.example.com/mcp" },
+          server: { url: "https://caplets.example.com" },
         },
       }),
     );
@@ -1038,7 +1080,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          remote: { url: "https://caplets.example.com/mcp" },
+          server: { url: "https://caplets.example.com" },
           nerdFontIcons: false,
         },
       }),
@@ -1063,7 +1105,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          remote: { url: "https://caplets.example.com/mcp" },
+          server: { url: "https://caplets.example.com" },
           statusWidget: false,
         },
       }),
@@ -1084,7 +1126,7 @@ describe("@caplets/pi", () => {
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
-        caplets: { mode: "remote", remote: { url: "https://caplets.example.com/mcp" } },
+        caplets: { mode: "remote", server: { url: "https://caplets.example.com" } },
       }),
     );
     const { api } = mockPiApi();

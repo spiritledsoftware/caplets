@@ -1,14 +1,25 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { dirname } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
+import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
+import { CapletsError, toSafeError } from "../errors";
+import {
+  dispatchRemoteCliRequest,
+  type RemoteControlDispatchContext,
+} from "../remote-control/dispatch";
+import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
+import type { RemoteCliRequest } from "../remote-control/types";
 import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
 type HttpServeIo = {
   writeErr?: (value: string) => void;
+  control?: Omit<RemoteControlDispatchContext, "writeErr">;
+  authFlowStore?: RemoteAuthFlowStore;
 };
 
 type HttpSession = {
@@ -28,6 +39,8 @@ export function createHttpServeApp(
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
+  const paths = servicePaths(options.path);
+  const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -35,25 +48,30 @@ export function createHttpServeApp(
     }),
   );
 
-  app.get("/", (c) =>
+  app.get(paths.base, (c) =>
     c.json({
       name: "caplets",
       transport: "http",
-      mcp: options.path,
-      health: "/healthz",
+      base: paths.base,
+      mcp: paths.mcp,
+      control: paths.control,
+      health: paths.health,
       auth: { type: "basic", enabled: options.auth.enabled },
     }),
   );
 
-  app.get("/healthz", (c) =>
+  app.get(paths.health, (c) =>
     c.json({
       status: "ok",
       transport: "http",
-      mcpPath: options.path,
+      base: paths.base,
+      mcpPath: paths.mcp,
+      controlPath: paths.control,
+      healthPath: paths.health,
     }),
   );
 
-  app.all(options.path, basicAuth(options.auth), async (c) => {
+  app.all(paths.mcp, basicAuth(options.auth), async (c) => {
     const sessionId = c.req.header("mcp-session-id");
     if (sessionId) {
       const existing = sessions.get(sessionId);
@@ -98,6 +116,60 @@ export function createHttpServeApp(
     return session.transport.handleRequest(c);
   });
 
+  app.post(paths.control, basicAuth(options.auth), async (c) => {
+    let request: RemoteCliRequest;
+    try {
+      const parsed = await c.req.json();
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new CapletsError("REQUEST_INVALID", "Control request JSON must be an object");
+      }
+      request = parsed as RemoteCliRequest;
+    } catch (error) {
+      const requestError =
+        error instanceof CapletsError
+          ? error
+          : new CapletsError("REQUEST_INVALID", "Control request body must be valid JSON", error);
+      const safe = toSafeError(requestError, "REQUEST_INVALID");
+      return c.json({ ok: false, error: { code: safe.code, message: safe.message } });
+    }
+    return c.json(
+      await dispatchRemoteCliRequest(
+        request,
+        controlContext(
+          io,
+          writeErr,
+          authFlowStore,
+          c.req.url,
+          paths.control,
+          options.trustProxy,
+          (name) => c.req.header(name),
+        ),
+      ),
+    );
+  });
+
+  app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
+    const flowId = c.req.param("flowId");
+    const result = await dispatchRemoteCliRequest(
+      { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
+      controlContext(
+        io,
+        writeErr,
+        authFlowStore,
+        c.req.url,
+        paths.control,
+        options.trustProxy,
+        (name) => c.req.header(name),
+      ),
+    );
+    if (!result.ok) {
+      writeErr(`Caplets authentication failed for flow ${flowId}: ${result.error.message}\n`);
+    }
+    return result.ok
+      ? c.text("Caplets authentication complete. You can return to your terminal.")
+      : c.text("Caplets authentication failed. Check server logs for details.", 400);
+  });
+
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.closeCapletsSessions = async () => {
@@ -118,24 +190,105 @@ export function createHttpServeApp(
   return app;
 }
 
+function controlContext(
+  io: HttpServeIo,
+  writeErr: (value: string) => void,
+  authFlowStore: RemoteAuthFlowStore,
+  requestUrl: string,
+  controlPath: string,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): RemoteControlDispatchContext {
+  return {
+    ...io.control,
+    projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
+    authFlowStore,
+    controlCallbackBaseUrl: new URL(
+      controlPath,
+      publicRequestOrigin(requestUrl, trustProxy, header),
+    ).toString(),
+    writeErr,
+  };
+}
+
+function publicRequestOrigin(
+  requestUrl: string,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): string {
+  const url = new URL(requestUrl);
+  if (!trustProxy) {
+    return `${url.protocol.slice(0, -1)}://${header("host") ?? url.host}`;
+  }
+  const forwardedProto = firstForwardedValue(header("x-forwarded-proto"));
+  const forwardedHost = firstForwardedValue(header("x-forwarded-host"));
+  const proto =
+    forwardedProto === "http" || forwardedProto === "https"
+      ? forwardedProto
+      : url.protocol.slice(0, -1);
+  const host = forwardedHost ?? header("host") ?? url.host;
+  return `${proto}://${host}`;
+}
+
+function firstForwardedValue(value: string | undefined): string | undefined {
+  return value?.split(",", 1)[0]?.trim() || undefined;
+}
+
 export async function serveHttp(
   options: HttpServeOptions,
   engineOptions: CapletsEngineOptions = {},
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
   const engine = new CapletsEngine(engineOptions);
-  const app = createHttpServeApp(options, engine, { writeErr });
+  const app = createHttpServeApp(options, engine, {
+    writeErr,
+    control: {
+      ...engineOptions,
+      projectCapletsRoot: projectCapletsRootForEngineOptions(engineOptions),
+    },
+  });
+  const paths = servicePaths(options.path);
+  const origin = `http://${formatHost(options.host)}:${options.port}`;
+  const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
   const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
-    writeErr(
-      `Caplets MCP HTTP server listening on http://${formatHost(options.host)}:${options.port}${options.path}\n`,
-    );
-    writeErr(`Health check: http://${formatHost(options.host)}:${options.port}/healthz\n`);
+    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+    writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+    writeErr(`Control endpoint: ${origin}${paths.control}\n`);
+    writeErr(`Health check: ${origin}${paths.health}\n`);
     writeErr(
       `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
     );
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
+}
+
+function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions): string {
+  return engineOptions.projectConfigPath
+    ? resolveProjectCapletsRootForConfigPath(engineOptions.projectConfigPath)
+    : resolveProjectCapletsRoot();
+}
+
+function resolveProjectCapletsRootForConfigPath(projectConfigPath: string): string {
+  return dirname(projectConfigPath);
+}
+
+export function routePath(base: string, path: string): string {
+  return base === "/" ? `/${path}` : `${base}/${path}`;
+}
+
+export function servicePaths(base: string): {
+  base: string;
+  mcp: string;
+  control: string;
+  health: string;
+} {
+  return {
+    base,
+    mcp: routePath(base, "mcp"),
+    control: routePath(base, "control"),
+    health: routePath(base, "healthz"),
+  };
 }
 
 async function createHttpSession(

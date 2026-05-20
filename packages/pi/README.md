@@ -40,9 +40,10 @@ By default the extension uses the local Caplets native service. To connect Pi to
 especially the password:
 
 ```sh
-export CAPLETS_REMOTE_URL="https://caplets.example.com/mcp"
-export CAPLETS_REMOTE_USER="caplets"
-export CAPLETS_REMOTE_PASSWORD="..." # or load from your shell/secret manager
+export CAPLETS_MODE="remote"
+export CAPLETS_SERVER_URL="https://caplets.example.com/caplets"
+export CAPLETS_SERVER_USER="caplets"
+export CAPLETS_SERVER_PASSWORD="..." # or load from your shell/secret manager
 ```
 
 Pi currently calls extension factories with the Pi API only, so this extension reads its remote
@@ -54,9 +55,12 @@ options are supplied:
   "packages": ["npm:@caplets/pi"],
   "caplets": {
     "mode": "remote",
-    "remote": {
-      "url": "https://caplets.example.com/mcp",
+    "server": {
+      "url": "https://caplets.example.com/caplets",
       "user": "caplets"
+    },
+    "remote": {
+      "pollIntervalMs": 5000
     },
     "statusWidget": true,
     "nerdFontIcons": true
@@ -79,13 +83,17 @@ import { createCapletsPiExtension } from "@caplets/pi";
 export default createCapletsPiExtension({
   args: {
     mode: "remote",
-    remote: {
-      url: "https://caplets.example.com/mcp",
+    server: {
+      url: "https://caplets.example.com/caplets",
       user: "caplets",
+    },
+    remote: {
+      pollIntervalMs: 5_000,
     },
   },
 });
 ```
 
-Prefer environment variables for `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
+The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`.
+Prefer environment variables for `CAPLETS_SERVER_PASSWORD` rather than storing passwords in
 settings files or source code.

@@ -33,7 +33,7 @@ Caplets exposes progressive discovery operations instead of flattening every dow
 - Request only the output fields needed when the Caplet supports field selection.
 - Treat Caplet backends as live integrations: handle unavailable services, auth failures, validation errors, and partial responses explicitly.
 - Avoid loading broad tool lists unless the user task requires exploration.
-- When Caplets is configured as a remote MCP HTTP service, treat connection/auth failures as remote-service issues and ask the user to verify `CAPLETS_REMOTE_URL`, Basic Auth credentials, and that `caplets serve --transport http` is running.
+- When Caplets is configured as a remote MCP HTTP service, treat connection/auth failures as remote-service issues and ask the user to verify `CAPLETS_SERVER_URL`, Basic Auth credentials, and that `caplets serve --transport http` is running.
 
 ## Example
 

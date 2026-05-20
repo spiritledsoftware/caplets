@@ -21,15 +21,16 @@ tools still requires restarting OpenCode; newly added tools are not advertised u
 By default the plugin reads local Caplets config. To use a remote `caplets serve --transport http` service, set environment variables:
 
 ```sh
-CAPLETS_REMOTE_URL=http://127.0.0.1:5387/mcp opencode
+CAPLETS_MODE=remote CAPLETS_SERVER_URL=http://127.0.0.1:5387/caplets opencode
 ```
 
 For authenticated remote services, keep the password in the environment:
 
 ```sh
-CAPLETS_REMOTE_URL=https://caplets.example.com/mcp \
-CAPLETS_REMOTE_USER=caplets \
-CAPLETS_REMOTE_PASSWORD=... \
+CAPLETS_MODE=remote \
+CAPLETS_SERVER_URL=https://caplets.example.com/caplets \
+CAPLETS_SERVER_USER=caplets \
+CAPLETS_SERVER_PASSWORD=... \
 opencode
 ```
 
@@ -42,9 +43,12 @@ export default {
       "@caplets/opencode",
       {
         mode: "remote",
-        remote: {
-          url: "https://caplets.example.com/mcp",
+        server: {
+          url: "https://caplets.example.com/caplets",
           user: "caplets",
+        },
+        remote: {
+          pollIntervalMs: 5_000,
         },
       },
     ],
@@ -52,4 +56,4 @@ export default {
 };
 ```
 
-Plugin config overrides environment variables. Prefer `CAPLETS_REMOTE_PASSWORD` for the Basic Auth password unless your OpenCode setup provides secure secret storage.
+Plugin config overrides environment variables. The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`. Prefer `CAPLETS_SERVER_PASSWORD` for the Basic Auth password unless your OpenCode setup provides secure secret storage.

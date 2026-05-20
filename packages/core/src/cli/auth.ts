@@ -14,6 +14,13 @@ import { CapletsError, toSafeError } from "../errors";
 type AuthTarget = ReturnType<typeof authTargets>[number];
 type AuthListFormat = "plain" | "markdown" | "json";
 
+export type AuthStatusRow = {
+  server: string;
+  status: "missing" | "expired" | "authenticated";
+  expiresAt?: string;
+  scope?: string;
+};
+
 export async function loginAuth(
   serverId: string,
   options: {
@@ -51,14 +58,21 @@ export function logoutAuth(
   serverId: string,
   options: { authDir?: string; configPath?: string; writeOut: (value: string) => void },
 ): void {
-  const target = findAuthTarget(serverId, loadConfig(options.configPath));
-  assertLoginTarget(target, serverId);
-
-  if (deleteTokenBundle(serverId, options.authDir)) {
+  const result = logoutAuthResult(serverId, options);
+  if (result.deleted) {
     options.writeOut(`Deleted OAuth credentials for \`${serverId}\`.\n`);
   } else {
     options.writeOut(`No OAuth credentials found for \`${serverId}\`.\n`);
   }
+}
+
+export function logoutAuthResult(
+  serverId: string,
+  options: { authDir?: string; configPath?: string },
+): { server: string; deleted: boolean } {
+  const target = findAuthTarget(serverId, loadConfig(options.configPath));
+  assertLoginTarget(target, serverId);
+  return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
 }
 
 export function listAuth(options: {
@@ -67,14 +81,20 @@ export function listAuth(options: {
   writeOut: (value: string) => void;
   format?: AuthListFormat;
 }): void {
-  const config = loadConfig(options.configPath);
-  const servers = authTargets(config).sort((left, right) =>
-    left.server.localeCompare(right.server),
-  );
-
+  const rows = listAuthRows(options);
   const format = options.format ?? "plain";
   if (format === "json") {
-    const rows = servers.map((server) => {
+    options.writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+    return;
+  }
+  options.writeOut(formatAuthRows(rows, format));
+}
+
+export function listAuthRows(options: { authDir?: string; configPath?: string }): AuthStatusRow[] {
+  const config = loadConfig(options.configPath);
+  return authTargets(config)
+    .sort((left, right) => left.server.localeCompare(right.server))
+    .map((server) => {
       const bundle = readTokenBundle(server.server, options.authDir);
       const status = !bundle
         ? "missing"
@@ -88,48 +108,46 @@ export function listAuth(options: {
         ...(bundle?.scope ? { scope: bundle.scope } : {}),
       };
     });
-    options.writeOut(`${JSON.stringify(rows, null, 2)}\n`);
-    return;
+}
+
+export function formatAuthRows(
+  rows: AuthStatusRow[],
+  format: Exclude<AuthListFormat, "json">,
+): string {
+  if (rows.length === 0) {
+    return format === "markdown"
+      ? "## OAuth credentials\n\nNo configured remote OAuth servers found.\n"
+      : "No configured remote OAuth servers found.\n";
   }
-  if (servers.length === 0) {
-    options.writeOut(
-      format === "markdown"
-        ? "## OAuth credentials\n\nNo configured remote OAuth servers found.\n"
-        : "No configured remote OAuth servers found.\n",
-    );
-    return;
-  }
+  let output = "";
   if (format === "markdown") {
-    options.writeOut("## OAuth credentials\n\n");
+    output += "## OAuth credentials\n\n";
   } else {
-    options.writeOut("OAuth credentials\n\n");
+    output += "OAuth credentials\n\n";
   }
-  for (const server of servers) {
-    const bundle = readTokenBundle(server.server, options.authDir);
-    const status = !bundle ? "missing" : isTokenBundleExpired(bundle) ? "expired" : "authenticated";
+  for (const row of rows) {
     const details = [
-      bundle?.expiresAt ? `expires ${bundle.expiresAt}` : undefined,
-      bundle?.scope ? `scope ${bundle.scope}` : undefined,
+      row.expiresAt ? `expires ${row.expiresAt}` : undefined,
+      row.scope ? `scope ${row.scope}` : undefined,
     ]
       .filter(Boolean)
       .join("; ");
     if (format === "markdown") {
-      options.writeOut(`- \`${server.server}\` — ${status}${details ? ` (${details})` : ""}\n`);
+      output += `- \`${row.server}\` — ${row.status}${details ? ` (${details})` : ""}\n`;
       continue;
     }
-    options.writeOut(
+    output +=
       [
-        server.server,
-        `  Status: ${status}`,
-        ...(bundle?.expiresAt ? [`  Expires: ${bundle.expiresAt}`] : []),
-        ...(bundle?.scope ? [`  Scope: ${bundle.scope}`] : []),
-      ].join("\n"),
-    );
-    options.writeOut("\n\n");
+        row.server,
+        `  Status: ${row.status}`,
+        ...(row.expiresAt ? [`  Expires: ${row.expiresAt}`] : []),
+        ...(row.scope ? [`  Scope: ${row.scope}`] : []),
+      ].join("\n") + "\n\n";
   }
+  return output;
 }
 
-function findAuthTarget(serverId: string, config = loadConfig()): AuthTarget | undefined {
+export function findAuthTarget(serverId: string, config = loadConfig()): AuthTarget | undefined {
   return authTargets(config).find((server) => server.server === serverId);
 }
 
@@ -165,7 +183,7 @@ function httpAuthTarget(api: HttpApiConfig): HttpApiConfig & GenericAuthTarget {
   return { ...api };
 }
 
-function assertLoginTarget(
+export function assertLoginTarget(
   target: AuthTarget | undefined,
   serverId: string,
 ): asserts target is AuthTarget {

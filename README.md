@@ -107,28 +107,34 @@ configs run `caplets serve` directly, so install the Caplets CLI globally first.
 
 OpenCode and Pi can use native `caplets_<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
 
-Start a local HTTP service:
+Start a local HTTP service. `--path` is the service base path; Caplets mounts MCP,
+control, and health endpoints underneath it:
 
 ```sh
-caplets serve --transport http --host 127.0.0.1 --port 5387 --path /mcp
+CAPLETS_SERVER_URL=http://127.0.0.1:5387/caplets \
+CAPLETS_SERVER_PASSWORD=... \
+caplets serve --transport http
 ```
 
-`caplets serve --transport http` serves plain HTTP. For non-loopback or network access, expose it only through HTTPS/TLS (for example, a reverse proxy or secure tunnel) and enable Basic Auth; Basic Auth over plain HTTP exposes credentials. Keep credentials out of plugin manifests:
+With `CAPLETS_SERVER_URL=http://127.0.0.1:5387/caplets`, the derived endpoints are:
+
+- MCP: `http://127.0.0.1:5387/caplets/mcp`
+- Control: `http://127.0.0.1:5387/caplets/control`
+- Health: `http://127.0.0.1:5387/caplets/healthz`
+
+`caplets serve --transport http` serves plain HTTP. For non-loopback or network access, expose it only through HTTPS/TLS (for example, a reverse proxy or secure tunnel) and enable Basic Auth; Basic Auth over plain HTTP exposes credentials. Keep credentials out of plugin manifests.
+
+Native integrations and remote-capable CLI commands read remote client settings from environment variables:
 
 ```sh
-CAPLETS_SERVER_PASSWORD=... caplets serve --transport http --host 127.0.0.1 --port 5387 --path /mcp
-```
-
-Native integrations read remote client settings from environment variables:
-
-```sh
-CAPLETS_REMOTE_URL=https://caplets.example.com/mcp \
-CAPLETS_REMOTE_USER=caplets \
-CAPLETS_REMOTE_PASSWORD=... \
+CAPLETS_MODE=remote \
+CAPLETS_SERVER_URL=https://caplets.example.com/caplets \
+CAPLETS_SERVER_USER=caplets \
+CAPLETS_SERVER_PASSWORD=... \
 opencode
 ```
 
-For MCP-backed Codex or Claude Code configs, point the agent's MCP server entry at the remote URL using that agent's supported HTTP MCP configuration. If Basic Auth is needed, use the agent's secure secret or environment interpolation mechanism rather than hardcoding credentials.
+For MCP-backed Codex or Claude Code configs, point the agent's MCP server entry at the derived `/mcp` URL using that agent's supported HTTP MCP configuration. If Basic Auth is needed, use the agent's secure secret or environment interpolation mechanism rather than hardcoding credentials.
 
 ## Convert Existing Tooling
 
@@ -805,11 +811,14 @@ For headless terminals:
 caplets auth login <server> --no-open
 ```
 
-OAuth/OIDC tokens are stored under `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json`
-on Unix-like platforms and `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows.
-Token files use owner-only file permissions where the platform supports them. Caplets supports
-well-known OAuth/OIDC discovery and dynamic client registration when advertised. When a token expires,
-run `caplets auth login <server>` again.
+In local mode, OAuth/OIDC tokens are stored under
+`${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms and
+`%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows. Token files use owner-only file
+permissions where the platform supports them. In `CAPLETS_MODE=remote`, `caplets auth list`,
+`caplets auth login <server>`, and `caplets auth logout <server>` operate on the configured Caplets
+server instead. Downstream OAuth/OIDC credentials are stored server-side and are not returned to the
+local client. Caplets supports well-known OAuth/OIDC discovery and dynamic client registration when
+advertised. When a token expires, run `caplets auth login <server>` again.
 
 To inspect or remove stored OAuth credentials:
 

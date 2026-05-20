@@ -6,13 +6,88 @@ describe("resolveServeOptions", () => {
     expect(resolveServeOptions({}, {})).toEqual({ transport: "stdio" });
   });
 
-  it("defaults HTTP serving to localhost port 5387 and /mcp", () => {
+  it("defaults HTTP serving to localhost port 5387 and root base path", () => {
     expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
-      path: "/mcp",
+      path: "/",
       auth: { enabled: false, user: "caplets" },
+      trustProxy: false,
+    });
+  });
+
+  it("uses CAPLETS_SERVER_URL as HTTP serve defaults", () => {
+    const testPassword = ["test", "env", "password"].join("-");
+
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        {
+          CAPLETS_SERVER_URL: "http://localhost:7890/caplets/",
+          CAPLETS_SERVER_PASSWORD: testPassword,
+        },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "localhost",
+      port: 7890,
+      path: "/caplets",
+      auth: { enabled: true, user: "caplets", password: testPassword },
+    });
+  });
+
+  it("uses the default HTTP port when CAPLETS_SERVER_URL has no explicit port", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://127.0.0.1/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "127.0.0.1",
+      port: 5387,
+      path: "/caplets",
+    });
+  });
+
+  it("uses IPv6 loopback server URLs without requiring HTTP auth opt-in", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://[::1]:5387/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "::1",
+      port: 5387,
+      path: "/caplets",
+      auth: { enabled: false, user: "caplets" },
+      loopback: true,
+      warnUnauthenticatedNetwork: false,
+    });
+  });
+
+  it("clarifies non-loopback HTTP server URL bind configuration", () => {
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://0.0.0.0:5387/caplets" },
+      ),
+    ).toThrow(/use --host, --port, and --path separately/u);
+  });
+
+  it("lets explicit HTTP flags override CAPLETS_SERVER_URL defaults", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", host: "127.0.0.1", port: "6000", path: "/local" },
+        { CAPLETS_SERVER_URL: "http://localhost:7890/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "127.0.0.1",
+      port: 6000,
+      path: "/local",
     });
   });
 
@@ -56,6 +131,13 @@ describe("resolveServeOptions", () => {
     expect(() => resolveServeOptions({ transport: "http", host: "0.0.0.0" }, {})).toThrow(
       /requires --allow-unauthenticated-http/u,
     );
+  });
+
+  it("enables proxy trust only with explicit HTTP opt-in", () => {
+    expect(resolveServeOptions({ transport: "http", trustProxy: true }, {})).toMatchObject({
+      transport: "http",
+      trustProxy: true,
+    });
   });
 
   it("allows unauthenticated non-loopback HTTP serving with explicit opt-in", () => {
