@@ -148,5 +148,6 @@ function isCapletsErrorCode(value: string): value is CapletsErrorCode {
 function redactRemoteMessage(message: string): string {
   return String(redactSecrets(message))
     .replace(/\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s,;]+/giu, "$1[REDACTED]")
-    .replace(/\b((?:access_)?token=)[^\s,;]+/giu, "$1[REDACTED]");
+    .replace(/\b((?:access_)?token=)[^\s,;]+/giu, "$1[REDACTED]")
+    .replace(/\b((?:password|client_secret|api_key)\s*[=:]\s*)[^\s,;]+/giu, "$1[REDACTED]");
 }

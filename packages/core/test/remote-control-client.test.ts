@@ -133,4 +133,33 @@ describe("RemoteControlClient", () => {
       expect((error as CapletsError).message).toContain("[REDACTED]");
     }
   });
+
+  it("redacts password, client secret, and api key forms from remote error messages", async () => {
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: {},
+      fetch: async () =>
+        Response.json({
+          ok: false,
+          error: {
+            code: "AUTH_FAILED",
+            message:
+              "failed password=pw-123 client_secret: client-secret-123 api_key=api-key-123 password: colon-password api_key: colon-key",
+          },
+        }),
+    });
+
+    try {
+      await client.request("list", {});
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CapletsError);
+      expect((error as CapletsError).message).not.toContain("pw-123");
+      expect((error as CapletsError).message).not.toContain("client-secret-123");
+      expect((error as CapletsError).message).not.toContain("api-key-123");
+      expect((error as CapletsError).message).not.toContain("colon-password");
+      expect((error as CapletsError).message).not.toContain("colon-key");
+      expect((error as CapletsError).message).toContain("[REDACTED]");
+    }
+  });
 });
