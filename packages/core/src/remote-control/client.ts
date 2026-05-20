@@ -1,6 +1,6 @@
 import { CapletsError, toSafeError } from "../errors";
 import { controlUrlForBase } from "../server/options";
-import type { RemoteCliCommand, RemoteCliResponse } from "./types";
+import type { RemoteCliCommand, RemoteCliRequest, RemoteCliResponse } from "./types";
 
 export type RemoteControlClientOptions = {
   baseUrl: URL;
@@ -19,7 +19,7 @@ export class RemoteControlClient {
     this.#fetch = options.fetch ?? fetch;
   }
 
-  async request(command: RemoteCliCommand, args: unknown): Promise<unknown> {
+  async request(command: RemoteCliCommand, args: RemoteCliRequest["arguments"]): Promise<unknown> {
     const controlUrl = controlUrlForBase(this.#baseUrl);
     let response: Response;
     try {

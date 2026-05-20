@@ -18,7 +18,7 @@ export type RemoteCliCommand =
 
 export type RemoteCliRequest = {
   command: RemoteCliCommand;
-  arguments: unknown;
+  arguments: Record<string, unknown>;
 };
 
 export type RemoteCliResponse =

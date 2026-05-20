@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { CapletsError } from "../src/errors";
 import { RemoteControlClient } from "../src/remote-control/client";
+import type { RemoteCliRequest } from "../src/remote-control/types";
+
+const _requestArguments: RemoteCliRequest["arguments"] = {} satisfies Record<string, unknown>;
 
 describe("RemoteControlClient", () => {
   it("posts a structured request to the derived control endpoint with configured headers", async () => {
