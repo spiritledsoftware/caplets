@@ -1,0 +1,78 @@
+import { describe, expect, it } from "vitest";
+
+import { CapletsError } from "../src/errors";
+import { RemoteControlClient } from "../src/remote-control/client";
+
+describe("RemoteControlClient", () => {
+  it("posts a structured request to the derived control endpoint with configured headers", async () => {
+    const requests: Array<{ input: Parameters<typeof fetch>[0]; init: RequestInit | undefined }> =
+      [];
+    const fetchStub: typeof fetch = async (input, init) => {
+      requests.push({ input, init });
+      return Response.json({ ok: true, result: { caplets: ["github"] } });
+    };
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: { headers: { Authorization: "Basic fixture-secret" } },
+      fetch: fetchStub,
+    });
+
+    await expect(client.request("list", { verbose: true })).resolves.toEqual({
+      caplets: ["github"],
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(String(requests[0]?.input)).toBe("https://example.com/caplets/control");
+    expect(requests[0]?.init).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ command: "list", arguments: { verbose: true } }),
+    });
+    expect(new Headers(requests[0]?.init?.headers).get("authorization")).toBe(
+      "Basic fixture-secret",
+    );
+    expect(new Headers(requests[0]?.init?.headers).get("content-type")).toBe("application/json");
+  });
+
+  it("maps control error payloads to CapletsError", async () => {
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com"),
+      requestInit: {},
+      fetch: async () =>
+        Response.json({
+          ok: false,
+          error: {
+            code: "TOOL_NOT_FOUND",
+            message: "Tool missing",
+            nextAction: "run_caplets_list_tools",
+          },
+        }),
+    });
+
+    await expect(client.request("get_tool", { tool: "missing" })).rejects.toMatchObject({
+      code: "TOOL_NOT_FOUND",
+      message: "Tool missing",
+      details: { nextAction: "run_caplets_list_tools" },
+    });
+  });
+
+  it("throws a safe auth error for 401 without leaking credentials", async () => {
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: { headers: { Authorization: "Basic super-secret" } },
+      fetch: async () => new Response("nope super-secret", { status: 401 }),
+    });
+
+    await expect(client.request("list", {})).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: expect.stringContaining("CAPLETS_SERVER_USER"),
+    });
+
+    try {
+      await client.request("list", {});
+    } catch (error) {
+      expect(error).toBeInstanceOf(CapletsError);
+      expect(String(error)).not.toContain("super-secret");
+      expect(String(JSON.stringify((error as CapletsError).details))).not.toContain("super-secret");
+    }
+  });
+});
