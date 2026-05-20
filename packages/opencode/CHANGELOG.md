@@ -1,5 +1,16 @@
 # @caplets/opencode
 
+## 0.3.0
+
+### Minor Changes
+
+- 30bbc44: Add unified server configuration with `CAPLETS_MODE` and `CAPLETS_SERVER_*`, plus remote CLI control support using service-base URL endpoint derivation for MCP, control, and health routes.
+
+### Patch Changes
+
+- Updated dependencies [30bbc44]
+  - @caplets/core@0.17.0
+
 ## 0.2.0
 
 ### Minor Changes
