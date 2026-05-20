@@ -65,7 +65,7 @@ export function resolveServeOptions(
   const serverUrl = env.CAPLETS_SERVER_URL
     ? parseServerBaseUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
     : undefined;
-  const host = nonEmpty(raw.host, "--host") ?? serverUrl?.hostname ?? "127.0.0.1";
+  const host = nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? "127.0.0.1";
   const port = parsePort(raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : 5387));
   const path = normalizeHttpPath(raw.path ?? serverUrl?.pathname ?? "/");
   const userWasExplicit = raw.user !== undefined || hasEnv(env.CAPLETS_SERVER_USER);
@@ -143,6 +143,10 @@ function normalizeHttpPath(value: string): string {
     );
   }
   return value === "/" ? value : value.replace(/\/+$/u, "");
+}
+
+function serverUrlHost(url: URL | undefined): string | undefined {
+  return url?.hostname.replace(/^\[(.*)\]$/u, "$1");
 }
 
 function nonEmpty(value: string | undefined, label: string): string | undefined {

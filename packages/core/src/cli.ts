@@ -95,7 +95,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--transport <transport>", "server transport: stdio or http")
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
-    .option("--path <path>", "HTTP MCP endpoint path")
+    .option("--path <path>", "HTTP service base path")
     .option("--user <user>", "HTTP Basic Auth username")
     .option("--password <password>", "HTTP Basic Auth password")
     .option(

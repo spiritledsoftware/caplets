@@ -50,6 +50,23 @@ describe("resolveServeOptions", () => {
     });
   });
 
+  it("uses IPv6 loopback server URLs without requiring HTTP auth opt-in", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "http://[::1]:5387/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "::1",
+      port: 5387,
+      path: "/caplets",
+      auth: { enabled: false, user: "caplets" },
+      loopback: true,
+      warnUnauthenticatedNetwork: false,
+    });
+  });
+
   it("lets explicit HTTP flags override CAPLETS_SERVER_URL defaults", () => {
     expect(
       resolveServeOptions(

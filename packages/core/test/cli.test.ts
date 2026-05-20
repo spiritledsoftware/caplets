@@ -140,6 +140,18 @@ describe("cli init", () => {
     expect(out.join("")).toContain("serve");
   });
 
+  it("describes the HTTP serve path as a service base path", async () => {
+    const out: string[] = [];
+
+    await runCli(["serve", "--help"], {
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("HTTP service base path");
+    expect(out.join("")).not.toContain("HTTP MCP endpoint path");
+  });
+
   it("resolves serve defaults to stdio", async () => {
     const served: unknown[] = [];
 
