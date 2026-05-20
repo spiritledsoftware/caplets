@@ -174,7 +174,7 @@ describe("cli init", () => {
         transport: "http",
         host: "127.0.0.1",
         port: 5387,
-        path: "/mcp",
+        path: "/",
         auth: { enabled: false, user: "caplets" },
       }),
     ]);
