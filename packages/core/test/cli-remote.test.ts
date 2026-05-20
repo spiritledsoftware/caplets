@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -208,6 +208,7 @@ describe("remote CLI routing", () => {
     const remote = remoteServerFixture();
     const local = clientFixture();
     const out: string[] = [];
+    const localConfigBefore = readFileSync(local.configPath, "utf8");
 
     try {
       await runCli(["add", "mcp", "remote-tools", "--url", "https://mcp.example.com/mcp"], {
@@ -222,6 +223,7 @@ describe("remote CLI routing", () => {
 
       expect(existsSync(join(remote.projectCapletsRoot, "remote-tools.md"))).toBe(true);
       expect(existsSync(join(local.projectCapletsRoot, "remote-tools.md"))).toBe(false);
+      expect(readFileSync(local.configPath, "utf8")).toBe(localConfigBefore);
       expect(out.join("")).toContain("remote");
     } finally {
       await remote.app.closeCapletsSessions();
