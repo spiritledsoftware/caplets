@@ -24,6 +24,9 @@ import {
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
+import { RemoteControlClient } from "./remote-control/client";
+import type { RemoteCliCommand } from "./remote-control/types";
+import { resolveCapletsMode, resolveCapletsServer } from "./server/options";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
 
 export { initConfig, starterConfig } from "./cli/init";
@@ -39,6 +42,8 @@ export {
 type CliIO = {
   writeOut?: (value: string) => void;
   writeErr?: (value: string) => void;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  fetch?: typeof fetch;
   authDir?: string;
   version?: string;
   setExitCode?: (code: number) => void;
@@ -71,6 +76,8 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
 export function createProgram(io: CliIO = {}): Command {
   const writeOut = io.writeOut ?? ((value: string) => process.stdout.write(value));
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
+  const env = io.env ?? process.env;
+  const currentConfigPath = () => envConfigPath(env);
   const setExitCode =
     io.setExitCode ??
     ((code: number) => {
@@ -113,7 +120,7 @@ export function createProgram(io: CliIO = {}): Command {
         allowUnauthenticatedHttp?: boolean;
       }) => {
         const resolved = resolveServeOptions(options);
-        const configPath = envConfigPath();
+        const configPath = currentConfigPath();
         const runner =
           io.serve ??
           ((serveOptions: ServeOptions) =>
@@ -134,7 +141,7 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Create a starter Caplets config file.")
     .option("--force", "overwrite an existing config file")
     .action((options: { force?: boolean }) => {
-      const configPath = envConfigPath();
+      const configPath = currentConfigPath();
       const path = initConfig({
         ...(configPath ? { path: configPath } : {}),
         force: Boolean(options.force),
@@ -148,9 +155,22 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--all", "include disabled Caplets")
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
-    .action((options: { all?: boolean; json?: boolean; format?: CliOutputFormat }) => {
-      const config = loadConfigWithSources(envConfigPath());
-      const rows = listCaplets(config, { includeDisabled: Boolean(options.all) });
+    .action(async (options: { all?: boolean; json?: boolean; format?: CliOutputFormat }) => {
+      const includeDisabled = Boolean(options.all);
+      const remote = remoteClientForCli(io);
+      if (remote) {
+        const rows = await remote.request("list", { includeDisabled });
+        if (options.json || options.format === "json") {
+          writeOut(`${JSON.stringify(rows, null, 2)}\n`);
+          return;
+        }
+        writeOut(
+          formatCapletList(rows as ReturnType<typeof listCaplets>, options.format ?? "plain"),
+        );
+        return;
+      }
+      const config = loadConfigWithSources(currentConfigPath());
+      const rows = listCaplets(config, { includeDisabled });
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
         return;
@@ -170,7 +190,7 @@ export function createProgram(io: CliIO = {}): Command {
         capletIds,
         force: Boolean(options.force),
         destinationRoot: options.global
-          ? resolveCapletsRoot(resolveConfigPath(envConfigPath()))
+          ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
           : resolveProjectCapletsRoot(),
       });
       for (const caplet of result.installed) {
@@ -207,7 +227,7 @@ export function createProgram(io: CliIO = {}): Command {
         const result = addCliCaplet(id, {
           ...options,
           destinationRoot: options.global
-            ? resolveCapletsRoot(resolveConfigPath(envConfigPath()))
+            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
             : resolveProjectCapletsRoot(),
         });
         if (result.path) {
@@ -248,7 +268,7 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const result = addMcpCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options),
+          destinationRoot: addDestinationRoot(options, currentConfigPath()),
         });
         writeAddResult(writeOut, "MCP", result);
       },
@@ -272,7 +292,7 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const result = addOpenApiCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options),
+          destinationRoot: addDestinationRoot(options, currentConfigPath()),
         });
         writeAddResult(writeOut, "OpenAPI", result);
       },
@@ -302,7 +322,7 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const result = addGraphqlCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options),
+          destinationRoot: addDestinationRoot(options, currentConfigPath()),
         });
         writeAddResult(writeOut, "GraphQL", result);
       },
@@ -326,7 +346,7 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const result = addHttpCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options),
+          destinationRoot: addDestinationRoot(options, currentConfigPath()),
         });
         writeAddResult(writeOut, "HTTP", result);
       },
@@ -341,7 +361,15 @@ export function createProgram(io: CliIO = {}): Command {
       await executeOperation(
         caplet,
         { operation: "get_caplet" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
       );
     });
 
@@ -354,7 +382,15 @@ export function createProgram(io: CliIO = {}): Command {
       await executeOperation(
         caplet,
         { operation: "check_backend" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
       );
     });
 
@@ -367,7 +403,15 @@ export function createProgram(io: CliIO = {}): Command {
       await executeOperation(
         caplet,
         { operation: "list_tools" },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
       );
     });
 
@@ -389,7 +433,15 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_tools", query }
             : { operation: "search_tools", query, limit: options.limit },
-          { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
         );
       },
     );
@@ -404,7 +456,15 @@ export function createProgram(io: CliIO = {}): Command {
       await executeOperation(
         caplet,
         { operation: "get_tool", tool },
-        { writeOut, writeErr, setExitCode, authDir: io.authDir, format: options.format },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
       );
     });
 
@@ -432,6 +492,8 @@ export function createProgram(io: CliIO = {}): Command {
           writeErr,
           setExitCode,
           authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
           format: options.format,
         });
       },
@@ -443,7 +505,7 @@ export function createProgram(io: CliIO = {}): Command {
     .command("path")
     .description("Print the effective user config path.")
     .action(() => {
-      writeOut(`${resolveConfigPath(envConfigPath())}\n`);
+      writeOut(`${resolveConfigPath(currentConfigPath())}\n`);
     });
 
   config
@@ -452,7 +514,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
     .action((options: { json?: boolean; format?: CliOutputFormat }) => {
-      const paths = resolveCliConfigPaths(envConfigPath(), io.authDir);
+      const paths = resolveCliConfigPaths(currentConfigPath(), io.authDir);
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(paths, null, 2)}\n`);
         return;
@@ -468,7 +530,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<server>", "configured server ID")
     .option("--no-open", "print the authorization URL without opening a browser")
     .action(async (serverId: string, options: { open?: boolean }) => {
-      const configPath = envConfigPath();
+      const configPath = currentConfigPath();
       await loginAuth(serverId, {
         noOpen: options.open === false,
         writeOut,
@@ -483,7 +545,7 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Delete stored OAuth credentials for a server.")
     .argument("<server>", "configured server ID")
     .action((serverId: string) => {
-      const configPath = envConfigPath();
+      const configPath = currentConfigPath();
       logoutAuth(serverId, {
         writeOut,
         ...(configPath ? { configPath } : {}),
@@ -497,7 +559,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
     .action((options: { json?: boolean; format?: CliOutputFormat }) => {
-      const configPath = envConfigPath();
+      const configPath = currentConfigPath();
       const format =
         options.json || options.format === "json" ? "json" : (options.format ?? "plain");
       listAuth({
@@ -511,8 +573,33 @@ export function createProgram(io: CliIO = {}): Command {
   return program;
 }
 
-function envConfigPath(): string | undefined {
-  return process.env.CAPLETS_CONFIG?.trim() || undefined;
+function envConfigPath(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string | undefined {
+  return env.CAPLETS_CONFIG?.trim() || undefined;
+}
+
+function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
+  const env = io.env ?? process.env;
+  if (resolveCapletsMode({}, env).mode !== "remote") {
+    return undefined;
+  }
+  const server = resolveCapletsServer(io.fetch ? { fetch: io.fetch } : {}, env);
+  return new RemoteControlClient(server);
+}
+
+function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undefined {
+  switch (operation) {
+    case "get_caplet":
+    case "check_backend":
+    case "list_tools":
+    case "search_tools":
+    case "get_tool":
+    case "call_tool":
+      return operation;
+    default:
+      return undefined;
+  }
 }
 
 type AddBackendCliOptions = {
@@ -587,6 +674,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExitCode">> & {
   authDir?: string | undefined;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  remote?: RemoteControlClient | undefined;
   format?: CliOutputFormat | undefined;
 };
 
@@ -595,7 +684,20 @@ async function executeOperation(
   request: Record<string, unknown>,
   io: ExecuteOperationIO,
 ): Promise<void> {
-  const configPath = envConfigPath();
+  const command = remoteCommandForOperation(request.operation);
+  if (io.remote && command) {
+    const result = await io.remote.request(command, { caplet, request });
+    const output = cliOutputForOperation(result, { ...request, caplet }, io.format ?? "markdown");
+    io.writeOut(
+      typeof output === "string" ? `${output}\n` : `${JSON.stringify(output, null, 2)}\n`,
+    );
+    if (isPlainObject(result) && result.isError === true) {
+      io.setExitCode(1);
+    }
+    return;
+  }
+
+  const configPath = envConfigPath(io.env ?? process.env);
   const engine = new CapletsEngine({
     ...(configPath ? { configPath } : {}),
     ...(io.authDir ? { authDir: io.authDir } : {}),
@@ -958,9 +1060,9 @@ function schemaSummary(schema: unknown): string {
   return parts.filter((part): part is string => Boolean(part)).join("; ");
 }
 
-function addDestinationRoot(options: { global?: boolean }): string {
+function addDestinationRoot(options: { global?: boolean }, configPath?: string): string {
   return options.global
-    ? resolveCapletsRoot(resolveConfigPath(envConfigPath()))
+    ? resolveCapletsRoot(resolveConfigPath(configPath))
     : resolveProjectCapletsRoot();
 }
 
