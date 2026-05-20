@@ -109,6 +109,7 @@ export function createProgram(io: CliIO = {}): Command {
       "--allow-unauthenticated-http",
       "allow unauthenticated HTTP serving on non-loopback hosts",
     )
+    .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
     .action(
       async (options: {
         transport?: string;
@@ -118,6 +119,7 @@ export function createProgram(io: CliIO = {}): Command {
         user?: string;
         password?: string;
         allowUnauthenticatedHttp?: boolean;
+        trustProxy?: boolean;
       }) => {
         const resolved = resolveServeOptions(options);
         const configPath = currentConfigPath();

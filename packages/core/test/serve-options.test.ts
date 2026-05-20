@@ -13,6 +13,7 @@ describe("resolveServeOptions", () => {
       port: 5387,
       path: "/",
       auth: { enabled: false, user: "caplets" },
+      trustProxy: false,
     });
   });
 
@@ -130,6 +131,13 @@ describe("resolveServeOptions", () => {
     expect(() => resolveServeOptions({ transport: "http", host: "0.0.0.0" }, {})).toThrow(
       /requires --allow-unauthenticated-http/u,
     );
+  });
+
+  it("enables proxy trust only with explicit HTTP opt-in", () => {
+    expect(resolveServeOptions({ transport: "http", trustProxy: true }, {})).toMatchObject({
+      transport: "http",
+      trustProxy: true,
+    });
   });
 
   it("allows unauthenticated non-loopback HTTP serving with explicit opt-in", () => {

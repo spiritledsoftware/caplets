@@ -22,9 +22,8 @@ export type RemoteCliRequest = {
 };
 
 export type RemoteCliResponse =
-  | { ok: true; result: unknown; warnings?: string[] }
+  | { ok: true; result: unknown }
   | {
       ok: false;
       error: { code: CapletsErrorCode; message: string; nextAction?: string };
-      warnings?: string[];
     };

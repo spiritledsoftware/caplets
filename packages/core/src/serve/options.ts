@@ -11,6 +11,7 @@ export type RawServeOptions = {
   user?: string;
   password?: string;
   allowUnauthenticatedHttp?: boolean;
+  trustProxy?: boolean;
 };
 
 export type StdioServeOptions = {
@@ -25,6 +26,7 @@ export type HttpServeOptions = {
   auth: HttpBasicAuthOptions;
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
+  trustProxy: boolean;
 };
 
 export type HttpBasicAuthOptions =
@@ -44,6 +46,7 @@ const HTTP_ONLY_OPTIONS = [
   "user",
   "password",
   "allowUnauthenticatedHttp",
+  "trustProxy",
 ] as const;
 
 export function resolveServeOptions(
@@ -103,6 +106,7 @@ export function resolveServeOptions(
     auth,
     warnUnauthenticatedNetwork: !loopback && !auth.enabled,
     loopback,
+    trustProxy: raw.trustProxy === true,
   };
 }
 

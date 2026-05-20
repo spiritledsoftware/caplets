@@ -304,7 +304,7 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("uses forwarded host and proto for remote auth callback URLs", async () => {
+  it("ignores forwarded host and proto for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
     const engine = new CapletsEngine({
       configPath: context.configPath,
@@ -312,6 +312,40 @@ describe("createHttpServeApp", () => {
       watch: false,
     });
     const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: () => {},
+      control: context,
+    });
+
+    const response = await app.request("http://10.0.0.5:5387/caplets/control", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "caplets.example.com",
+      },
+      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(expect.objectContaining({ ok: true }));
+    const result = (body as { result: { authorizationUrl: string } }).result;
+    const authorizationUrl = new URL(result.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
+      /^http:\/\/10\.0\.0\.5:5387\/caplets\/control\/auth\/callback\//u,
+    );
+
+    await engine.close();
+  });
+
+  it("uses forwarded host and proto for remote auth callback URLs when proxy trust is enabled", async () => {
+    const context = testContext({ oauth: true });
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions({ path: "/caplets", trustProxy: true }), engine, {
       writeErr: () => {},
       control: context,
     });
@@ -426,6 +460,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     auth: { enabled: false, user: "caplets" },
     warnUnauthenticatedNetwork: false,
     loopback: true,
+    trustProxy: false,
     ...overrides,
   };
 }

@@ -576,6 +576,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     auth: { enabled: false, user: "caplets" },
     warnUnauthenticatedNetwork: false,
     loopback: true,
+    trustProxy: false,
     ...overrides,
   };
 }

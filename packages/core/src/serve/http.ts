@@ -135,8 +135,14 @@ export function createHttpServeApp(
     return c.json(
       await dispatchRemoteCliRequest(
         request,
-        controlContext(io, writeErr, authFlowStore, c.req.url, paths.control, (name) =>
-          c.req.header(name),
+        controlContext(
+          io,
+          writeErr,
+          authFlowStore,
+          c.req.url,
+          paths.control,
+          options.trustProxy,
+          (name) => c.req.header(name),
         ),
       ),
     );
@@ -146,8 +152,14 @@ export function createHttpServeApp(
     const flowId = c.req.param("flowId");
     const result = await dispatchRemoteCliRequest(
       { command: "auth_login_complete", arguments: { flowId, callbackUrl: c.req.url } },
-      controlContext(io, writeErr, authFlowStore, c.req.url, paths.control, (name) =>
-        c.req.header(name),
+      controlContext(
+        io,
+        writeErr,
+        authFlowStore,
+        c.req.url,
+        paths.control,
+        options.trustProxy,
+        (name) => c.req.header(name),
       ),
     );
     if (!result.ok) {
@@ -184,6 +196,7 @@ function controlContext(
   authFlowStore: RemoteAuthFlowStore,
   requestUrl: string,
   controlPath: string,
+  trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): RemoteControlDispatchContext {
   return {
@@ -192,7 +205,7 @@ function controlContext(
     authFlowStore,
     controlCallbackBaseUrl: new URL(
       controlPath,
-      publicRequestOrigin(requestUrl, header),
+      publicRequestOrigin(requestUrl, trustProxy, header),
     ).toString(),
     writeErr,
   };
@@ -200,9 +213,13 @@ function controlContext(
 
 function publicRequestOrigin(
   requestUrl: string,
+  trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): string {
   const url = new URL(requestUrl);
+  if (!trustProxy) {
+    return `${url.protocol.slice(0, -1)}://${header("host") ?? url.host}`;
+  }
   const forwardedProto = firstForwardedValue(header("x-forwarded-proto"));
   const forwardedHost = firstForwardedValue(header("x-forwarded-host"));
   const proto =
