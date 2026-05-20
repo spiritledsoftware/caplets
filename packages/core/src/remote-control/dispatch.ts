@@ -60,7 +60,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
-    const toolRequest = optionalObject(request.arguments, "request");
+    const toolRequest = requiredEngineRequest(request.arguments, request.command);
     const engine = new CapletsEngine(context);
     try {
       return await engine.execute(caplet, toolRequest);
@@ -191,6 +191,23 @@ function optionalObject(args: Record<string, unknown>, key: string): Record<stri
   }
   assertObject(value, key);
   return value;
+}
+
+function requiredEngineRequest(
+  args: Record<string, unknown>,
+  command: RemoteCliRequest["command"],
+): Record<string, unknown> {
+  const toolRequest = optionalObject(args, "request");
+  if (typeof toolRequest.operation !== "string") {
+    throw new CapletsError("REQUEST_INVALID", "request.operation must be a string");
+  }
+  if (toolRequest.operation !== command) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `request.operation must match remote command ${command}`,
+    );
+  }
+  return toolRequest;
 }
 
 function remoteAddOptions(

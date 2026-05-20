@@ -76,6 +76,46 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("rejects engine commands with a missing nested operation", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      { command: "get_tool", arguments: { caplet: "server_status", request: { tool: "check" } } },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "request.operation must be a string",
+      },
+    });
+  });
+
+  it("rejects engine commands with mismatched nested operation", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "call_tool",
+        arguments: {
+          caplet: "server_status",
+          request: { operation: "get_tool", tool: "check", arguments: {} },
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "request.operation must match remote command call_tool",
+      },
+    });
+  });
+
   it("adds MCP Caplets to the server-side project Caplets root", async () => {
     const context = testContext();
 
