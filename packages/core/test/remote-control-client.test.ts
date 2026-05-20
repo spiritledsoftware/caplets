@@ -78,4 +78,59 @@ describe("RemoteControlClient", () => {
       expect(String(JSON.stringify((error as CapletsError).details))).not.toContain("super-secret");
     }
   });
+
+  it("throws a protocol error for malformed JSON and response envelopes", async () => {
+    for (const response of [
+      new Response("not-json"),
+      Response.json(null),
+      Response.json({ ok: true }),
+      Response.json({ ok: false, error: { code: "TOOL_NOT_FOUND" } }),
+      Response.json({ ok: "yes", result: "nope" }),
+    ]) {
+      const client = new RemoteControlClient({
+        baseUrl: new URL("https://example.com/caplets"),
+        requestInit: {},
+        fetch: async () => response.clone(),
+      });
+
+      await expect(client.request("list", {})).rejects.toMatchObject({
+        code: "DOWNSTREAM_PROTOCOL_ERROR",
+        message: expect.stringContaining("invalid remote control response"),
+      });
+      await expect(client.request("list", {})).rejects.not.toBeInstanceOf(SyntaxError);
+      await expect(client.request("list", {})).rejects.not.toBeInstanceOf(TypeError);
+    }
+  });
+
+  it("redacts secret-like remote error messages while preserving nextAction", async () => {
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: {},
+      fetch: async () =>
+        Response.json({
+          ok: false,
+          error: {
+            code: "AUTH_FAILED",
+            message:
+              "remote failed with Authorization: Basic abc123 and bearer token bearer secret-token-123 access_token=super-secret",
+            nextAction: "run_caplets_auth_login",
+          },
+        }),
+    });
+
+    try {
+      await client.request("list", {});
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CapletsError);
+      expect(error).toMatchObject({
+        code: "AUTH_FAILED",
+        details: { nextAction: "run_caplets_auth_login" },
+      });
+      expect((error as CapletsError).message).not.toContain("abc123");
+      expect((error as CapletsError).message).not.toContain("secret-token-123");
+      expect((error as CapletsError).message).not.toContain("super-secret");
+      expect((error as CapletsError).message).toContain("[REDACTED]");
+    }
+  });
 });
