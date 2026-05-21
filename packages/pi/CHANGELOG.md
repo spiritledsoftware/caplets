@@ -1,5 +1,17 @@
 # @caplets/pi
 
+## 0.5.0
+
+### Minor Changes
+
+- 010b07d: Expose MCP resources, resource templates, prompts, and completions through MCP-backed Caplets while keeping non-MCP backend schemas tool-only.
+
+### Patch Changes
+
+- Updated dependencies [b0862be]
+- Updated dependencies [010b07d]
+  - @caplets/core@0.18.0
+
 ## 0.4.1
 
 ### Patch Changes
