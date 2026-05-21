@@ -115,8 +115,8 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
     return completeCliWords(optionalStringArray(request.arguments, "words") ?? [""], {
-      configPath: context.configPath,
-      projectConfigPath: context.projectConfigPath,
+      ...(context.configPath ? { configPath: context.configPath } : {}),
+      ...(context.projectConfigPath ? { projectConfigPath: context.projectConfigPath } : {}),
     });
   }
 

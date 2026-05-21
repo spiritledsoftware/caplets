@@ -124,9 +124,10 @@ export function createProgram(io: CliIO = {}): Command {
         ? (options.shell as CompletionShell)
         : "bash";
       const remote = remoteClientForCli(io);
+      const configPath = currentConfigPath();
       const suggestions = remote
         ? ((await remote.request("complete_cli" as RemoteCliCommand, { shell, words })) as string[])
-        : completeCliWords(words, { configPath: currentConfigPath() });
+        : completeCliWords(words, configPath ? { configPath } : {});
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
 
