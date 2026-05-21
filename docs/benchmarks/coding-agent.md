@@ -14,13 +14,13 @@ The fixture uses local mock MCP metadata only. It does not call external APIs, d
 ## Summary
 
 - Initial tools visible: direct flat MCP 106, Caplets top-level 3, 97.2% fewer.
-- Serialized payload bytes: direct flat MCP 32090, Caplets top-level 3453, 89.2% fewer.
-- Approx. tokens: direct flat MCP 8023, Caplets top-level 864, 7159 fewer.
+- Serialized payload bytes: direct flat MCP 32090, Caplets top-level 3906, 87.8% fewer.
+- Approx. tokens: direct flat MCP 8023, Caplets top-level 977, 7046 fewer.
 - Candidate set before discovery: direct flat MCP 106, Caplets top-level 3, 103 fewer.
 
 ## Deterministic Results
 
-Caplets reduces the initial serialized MCP tool payload by 89.2%, from 32090 bytes to 3453 bytes. It reduces initially visible tools by 97.2%, from 106 direct flat tools to 3 Caplets capability tools, while preserving access to downstream tools through scoped discovery and `call_tool`.
+Caplets reduces the initial serialized MCP tool payload by 87.8%, from 32090 bytes to 3906 bytes. It reduces initially visible tools by 97.2%, from 106 direct flat tools to 3 Caplets capability tools, while preserving access to downstream tools through scoped discovery and `call_tool`.
 
 ## Collision Check
 
@@ -38,7 +38,7 @@ Caplets starts from 3 capability tools. Expected task-specific discovery is 4 ca
 
 ## Validation
 
-- Initial payload reduction threshold: 89.2% >= 70.0%
+- Initial payload reduction threshold: 87.8% >= 70.0%
 - Top-level Caplets collisions: 0
 
 Payload implementation: `source`

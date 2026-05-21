@@ -11,6 +11,7 @@ import {
   nativeCapletToolDescription,
   nativeCapletToolName,
 } from "./tools";
+import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 
 export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
   configPath?: string;
@@ -33,6 +34,8 @@ export type NativeCapletTool = {
   title: string;
   description: string;
   promptGuidance: string[];
+  inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
+  operationNames?: string[];
 };
 
 export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => void;
@@ -72,12 +75,15 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   listTools(): NativeCapletTool[] {
     return this.engine.enabledServers().map((caplet) => {
       const toolName = nativeCapletToolName(caplet.server);
+      const inputSchema = generatedToolInputJsonSchemaForCaplet(caplet);
       return {
         caplet: caplet.server,
         toolName,
         title: caplet.name,
         description: nativeCapletToolDescription(toolName, caplet),
         promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
+        inputSchema,
+        operationNames: [...inputSchema.properties.operation.enum],
       };
     });
   }

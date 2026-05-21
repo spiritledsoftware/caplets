@@ -578,6 +578,219 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
+  program
+    .command("list-resources")
+    .description("List MCP resources for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of resources to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_resources" }
+          : { operation: "list_resources", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("search-resources")
+    .description("Search MCP resources and resource templates for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .argument("<query>")
+    .option("--limit <n>", "maximum number of matches to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        query: string,
+        options: { limit?: number; format?: CliOutputFormat },
+      ) =>
+        executeOperation(
+          caplet,
+          options.limit === undefined
+            ? { operation: "search_resources", query }
+            : { operation: "search_resources", query, limit: options.limit },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+  program
+    .command("list-resource-templates")
+    .description("List MCP resource templates for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of templates to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_resource_templates" }
+          : { operation: "list_resource_templates", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("read-resource")
+    .description("Read one MCP resource by URI.")
+    .argument("<caplet>")
+    .argument("<uri>")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, uri: string, options: { format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        { operation: "read_resource", uri },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("list-prompts")
+    .description("List MCP prompts for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of prompts to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_prompts" }
+          : { operation: "list_prompts", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("search-prompts")
+    .description("Search MCP prompts for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .argument("<query>")
+    .option("--limit <n>", "maximum number of prompts to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        query: string,
+        options: { limit?: number; format?: CliOutputFormat },
+      ) =>
+        executeOperation(
+          caplet,
+          options.limit === undefined
+            ? { operation: "search_prompts", query }
+            : { operation: "search_prompts", query, limit: options.limit },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+  program
+    .command("get-prompt")
+    .description("Get one MCP prompt by name.")
+    .argument("<caplet.prompt>", "qualified target, split on the first dot")
+    .option("--args <json-object>", "JSON object of prompt arguments")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (target: string, options: { args?: string; format?: CliOutputFormat }) => {
+      const { caplet, tool: prompt } = parseQualifiedTarget(target);
+      await executeOperation(
+        caplet,
+        {
+          operation: "get_prompt",
+          prompt,
+          arguments: parseJsonObjectOption(options.args, "get-prompt --args"),
+        },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      );
+    });
+  program
+    .command("complete")
+    .description("Complete an MCP prompt or resource-template argument.")
+    .argument("<caplet>")
+    .requiredOption("--argument <name>", "argument name")
+    .option("--value <value>", "argument prefix", "")
+    .option("--prompt <name>", "prompt name to complete")
+    .option("--resource-template <uri-template>", "resource template URI to complete")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        options: {
+          argument: string;
+          value: string;
+          prompt?: string;
+          resourceTemplate?: string;
+          format?: CliOutputFormat;
+        },
+      ) =>
+        executeOperation(
+          caplet,
+          {
+            operation: "complete",
+            ref: completionRefFromOptions(options),
+            argument: { name: options.argument, value: options.value },
+          },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+
   const config = program.command("config").description("Inspect Caplets config locations.");
 
   config
@@ -728,6 +941,14 @@ function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undef
     case "search_tools":
     case "get_tool":
     case "call_tool":
+    case "list_resources":
+    case "search_resources":
+    case "list_resource_templates":
+    case "read_resource":
+    case "list_prompts":
+    case "search_prompts":
+    case "get_prompt":
+    case "complete":
       return operation;
     default:
       return undefined;
@@ -826,6 +1047,32 @@ function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
     throw new CapletsError("REQUEST_INVALID", "call-tool --args must be a JSON object");
   }
   return parsed;
+}
+
+function parseJsonObjectOption(value: string | undefined, label: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be valid JSON`, error);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be a JSON object`);
+  }
+  return parsed;
+}
+
+function completionRefFromOptions(options: { prompt?: string; resourceTemplate?: string }) {
+  if (options.prompt && options.resourceTemplate) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "complete accepts either --prompt or --resource-template, not both",
+    );
+  }
+  if (options.prompt) return { type: "prompt", name: options.prompt };
+  if (options.resourceTemplate) return { type: "resourceTemplate", uri: options.resourceTemplate };
+  throw new CapletsError("REQUEST_INVALID", "complete requires --prompt or --resource-template");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -391,7 +391,8 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
     description: caplet.description,
     promptSnippet: `Use ${caplet.toolName} for the ${caplet.title} Caplet capability domain.`,
     promptGuidelines: caplet.promptGuidance,
-    parameters: generatedToolInputJsonSchema() as ToolDefinition["parameters"],
+    parameters: (caplet.inputSchema ??
+      generatedToolInputJsonSchema()) as ToolDefinition["parameters"],
     async execute(_toolCallId, params) {
       const result = await service.execute(caplet.caplet, params);
       const serialized = serializeResult(result);

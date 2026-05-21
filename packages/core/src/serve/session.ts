@@ -4,7 +4,7 @@ import { version as packageJsonVersion } from "../../package.json";
 import type { CapletConfig, CapletsConfig } from "../config";
 import type { CapletsEngine } from "../engine";
 import { capabilityDescription } from "../registry";
-import { generatedToolInputSchema } from "../tools";
+import { generatedToolInputSchemaForCaplet } from "../generated-tool-input-schema";
 
 export type ToolServer = Pick<McpServer, "registerTool" | "connect" | "close">;
 
@@ -68,6 +68,7 @@ export class CapletsMcpSession {
         tool.update({
           title: caplet.name,
           description: capabilityDescription(caplet),
+          paramsSchema: generatedToolInputSchemaForCaplet(caplet).shape,
           callback: async (request) => this.handleTool(serverId, request),
           enabled: true,
         });
@@ -88,7 +89,7 @@ export class CapletsMcpSession {
       {
         title: caplet.name,
         description: capabilityDescription(caplet),
-        inputSchema: generatedToolInputSchema,
+        inputSchema: generatedToolInputSchemaForCaplet(caplet).shape,
       },
       async (request) => this.handleTool(caplet.server, request),
     );

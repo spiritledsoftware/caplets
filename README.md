@@ -30,6 +30,10 @@ Instead of exposing a flat wall of tools, Caplets shows one top-level tool per c
 The agent chooses a domain first, then uses scoped operations like `search_tools`,
 `get_tool`, and `call_tool` only when it needs more detail.
 
+For MCP-backed Caplets, the scoped operation set also includes resource discovery/reading,
+prompt listing/rendering, resource-template discovery, and completion for prompt or template
+arguments. Non-MCP backends continue to expose only tool/action operations.
+
 ## Quick Start
 
 Caplets requires Node.js 22 or newer.
@@ -76,6 +80,11 @@ caplets list-tools context7
 caplets get-tool context7.resolve-library-id
 caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}'
 caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}' --field result.id --format json
+caplets list-resources docs
+caplets read-resource docs file:///repo/README.md
+caplets list-prompts linear
+caplets get-prompt linear.review_issue --args '{"issueId":"CAP-123"}'
+caplets complete docs --resource-template 'file:///repo/{path}' --argument path --value src/
 ```
 
 Direct CLI operation commands print Markdown summaries by default. Add `--format plain` for plain text or `--format json` for machine-readable JSON (`md` is accepted as an alias for `markdown`). If a downstream tool returns `isError: true`, Caplets still exits with status code 1.
