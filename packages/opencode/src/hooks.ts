@@ -12,7 +12,7 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
         caplet.toolName,
         tool({
           description: caplet.description,
-          args: capletsOpenCodeArgs(),
+          args: capletsOpenCodeArgs(caplet.operationNames ?? undefined),
           async execute(args) {
             const result = await service.execute(caplet.caplet, args);
             return compactOpenCodeResult(result);

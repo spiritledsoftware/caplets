@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { CapletsError } from "../errors";
+import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { ResolvedNativeCapletsServiceOptions } from "./options";
 import type {
   NativeCapletsService,
@@ -15,6 +16,7 @@ export type RemoteCapletsTool = {
   name: string;
   title?: string | undefined;
   description?: string | undefined;
+  inputSchema?: unknown;
 };
 
 export type RemoteCapletsClient = {
@@ -63,6 +65,7 @@ export function createSdkRemoteCapletsClient(
         name: tool.name,
         ...(tool.title ? { title: tool.title } : {}),
         ...(tool.description ? { description: tool.description } : {}),
+        ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
       }));
     },
     async callTool(name, args) {
@@ -239,6 +242,9 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
 
 function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
   const toolName = nativeCapletToolName(tool.name);
+  const inputSchema = isPlainObject(tool.inputSchema)
+    ? tool.inputSchema
+    : generatedToolInputJsonSchemaForCaplet({ backend: "tool" });
   return {
     caplet: tool.name,
     toolName,
@@ -250,7 +256,21 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
       `Remote Caplet ID: ${tool.name}`,
     ].join("\n"),
     promptGuidance: [`Use ${toolName} through the remote Caplets service.`],
+    inputSchema,
+    operationNames: operationNamesFromSchema(inputSchema),
   };
+}
+
+function operationNamesFromSchema(schema: Record<string, unknown>): string[] {
+  const properties = schema.properties;
+  if (!isPlainObject(properties)) return [...operations];
+  const operation = properties.operation;
+  if (!isPlainObject(operation) || !Array.isArray(operation.enum)) return [...operations];
+  return operation.enum.filter((value): value is string => typeof value === "string");
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function errorMessage(error: unknown): string {

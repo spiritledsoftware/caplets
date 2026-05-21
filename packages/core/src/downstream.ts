@@ -4,8 +4,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   CompatibilityCallToolResultSchema,
+  type CompleteRequestParams,
+  type Prompt,
+  type Resource,
+  type ResourceTemplate as McpResourceTemplate,
+  PromptListChangedNotificationSchema,
+  ResourceListChangedNotificationSchema,
   type CompatibilityCallToolResult,
   type Tool,
+  ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletServerConfig } from "./config";
 import {
@@ -26,12 +33,42 @@ export type CompactTool = {
   hasOutputSchema: boolean;
 };
 
+export type CompactResource = {
+  id: string;
+  kind: "resource";
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+};
+export type CompactResourceTemplate = {
+  id: string;
+  kind: "resourceTemplate";
+  uriTemplate: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+};
+export type CompactPrompt = {
+  id: string;
+  prompt: string;
+  description?: string;
+  arguments?: Prompt["arguments"];
+};
+
 type ManagedConnection = {
   client: Client;
   transport: { close(): Promise<void>; onclose?: () => void; onerror?: (error: Error) => void };
   configFingerprint: string;
-  tools?: Tool[];
-  toolsFetchedAt?: number;
+  tools?: Tool[] | undefined;
+  toolsFetchedAt?: number | undefined;
+  resources?: Resource[] | undefined;
+  resourcesFetchedAt?: number | undefined;
+  resourceTemplates?: McpResourceTemplate[] | undefined;
+  resourceTemplatesFetchedAt?: number | undefined;
+  prompts?: Prompt[] | undefined;
+  promptsFetchedAt?: number | undefined;
   restartingAfterDeath?: boolean;
   closing?: boolean;
 };
@@ -80,14 +117,33 @@ export class DownstreamManager {
   }> {
     const startedAt = Date.now();
     try {
+      const connection = await this.connect(server);
+      const capabilities = connection.client.getServerCapabilities() ?? {};
       const tools = await this.refreshTools(server, true);
       this.registry.setStatus(server.server, "available");
-      return {
+      const result = {
         id: server.server,
         status: "available",
+        capabilities: {
+          tools: Boolean(capabilities.tools),
+          resources: Boolean(capabilities.resources),
+          resourceTemplates: Boolean(capabilities.resources),
+          prompts: Boolean(capabilities.prompts),
+          completions: Boolean(capabilities.completions),
+        },
         toolCount: tools.length,
         elapsedMs: Date.now() - startedAt,
       };
+      if (capabilities.resources) {
+        Object.assign(result, {
+          resourceCount: (await this.listResources(server, true)).length,
+          resourceTemplateCount: (await this.listResourceTemplates(server, true)).length,
+        });
+      }
+      if (capabilities.prompts) {
+        Object.assign(result, { promptCount: (await this.listPrompts(server, true)).length });
+      }
+      return result;
     } catch (error) {
       const safe = toSafeError(error, "SERVER_UNAVAILABLE");
       this.registry.setStatus(server.server, "unavailable", safe);
@@ -153,6 +209,137 @@ export class DownstreamManager {
     }
   }
 
+  async listResources(server: CapletServerConfig, force = false): Promise<Resource[]> {
+    const connection = await this.assertCapability(server, "resources");
+    if (
+      !force &&
+      connection.resources &&
+      this.isCacheFresh(connection.resourcesFetchedAt, server.toolCacheTtlMs)
+    )
+      return connection.resources;
+    const resources: Resource[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await connection.client.listResources(cursor ? { cursor } : undefined, {
+        timeout: server.startupTimeoutMs,
+      });
+      resources.push(...(result.resources ?? []));
+      cursor = result.nextCursor;
+    } while (cursor);
+    connection.resources = resources;
+    connection.resourcesFetchedAt = Date.now();
+    return resources;
+  }
+
+  async listResourceTemplates(
+    server: CapletServerConfig,
+    force = false,
+  ): Promise<McpResourceTemplate[]> {
+    const connection = await this.assertCapability(server, "resources");
+    if (
+      !force &&
+      connection.resourceTemplates &&
+      this.isCacheFresh(connection.resourceTemplatesFetchedAt, server.toolCacheTtlMs)
+    )
+      return connection.resourceTemplates;
+    const resourceTemplates: McpResourceTemplate[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await connection.client.listResourceTemplates(
+        cursor ? { cursor } : undefined,
+        { timeout: server.startupTimeoutMs },
+      );
+      resourceTemplates.push(...(result.resourceTemplates ?? []));
+      cursor = result.nextCursor;
+    } while (cursor);
+    connection.resourceTemplates = resourceTemplates;
+    connection.resourceTemplatesFetchedAt = Date.now();
+    return resourceTemplates;
+  }
+
+  async readResource(server: CapletServerConfig, uri: string) {
+    const connection = await this.assertCapability(server, "resources");
+    try {
+      return await connection.client.readResource({ uri }, { timeout: server.callTimeoutMs });
+    } catch (error) {
+      throw new CapletsError(
+        "DOWNSTREAM_RESOURCE_ERROR",
+        `Downstream resource read failed for ${server.server}/${uri}`,
+        toSafeError(error),
+      );
+    }
+  }
+
+  async listPrompts(server: CapletServerConfig, force = false): Promise<Prompt[]> {
+    const connection = await this.assertCapability(server, "prompts");
+    if (
+      !force &&
+      connection.prompts &&
+      this.isCacheFresh(connection.promptsFetchedAt, server.toolCacheTtlMs)
+    )
+      return connection.prompts;
+    const prompts: Prompt[] = [];
+    let cursor: string | undefined;
+    do {
+      const result = await connection.client.listPrompts(cursor ? { cursor } : undefined, {
+        timeout: server.startupTimeoutMs,
+      });
+      prompts.push(...(result.prompts ?? []));
+      cursor = result.nextCursor;
+    } while (cursor);
+    connection.prompts = prompts;
+    connection.promptsFetchedAt = Date.now();
+    return prompts;
+  }
+
+  async getPrompt(server: CapletServerConfig, promptName: string, args: Record<string, unknown>) {
+    const prompts = await this.listPrompts(server);
+    if (!prompts.some((prompt) => prompt.name === promptName))
+      throw new CapletsError(
+        "PROMPT_NOT_FOUND",
+        `Prompt ${promptName} was not found on ${server.server}`,
+      );
+    const connection = await this.connect(server);
+    try {
+      return await connection.client.getPrompt(
+        { name: promptName, arguments: stringifyPromptArgs(args) },
+        { timeout: server.callTimeoutMs },
+      );
+    } catch (error) {
+      throw new CapletsError(
+        "DOWNSTREAM_PROMPT_ERROR",
+        `Downstream prompt failed for ${server.server}/${promptName}`,
+        toSafeError(error),
+      );
+    }
+  }
+
+  async complete(
+    server: CapletServerConfig,
+    request: {
+      ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
+      argument: { name: string; value: string };
+    },
+  ) {
+    const connection = await this.assertCapability(server, "completions");
+    const params: CompleteRequestParams = {
+      ref:
+        request.ref.type === "prompt"
+          ? { type: "ref/prompt", name: request.ref.name }
+          : { type: "ref/resource", uri: request.ref.uri },
+      argument: request.argument,
+    };
+    try {
+      return await connection.client.complete(params, { timeout: server.callTimeoutMs });
+    } catch (error) {
+      throw new CapletsError(
+        "DOWNSTREAM_COMPLETION_ERROR",
+        `Downstream completion failed for ${server.server}`,
+        toSafeError(error),
+      );
+    }
+  }
+
   compact(server: CapletServerConfig, tool: Tool): CompactTool {
     return {
       id: server.server,
@@ -163,8 +350,111 @@ export class DownstreamManager {
     };
   }
 
+  compactResource(server: CapletServerConfig, resource: Resource): CompactResource {
+    return {
+      id: server.server,
+      kind: "resource",
+      uri: resource.uri,
+      ...(resource.name ? { name: resource.name } : {}),
+      ...(resource.description ? { description: resource.description } : {}),
+      ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
+      ...(typeof resource.size === "number" ? { size: resource.size } : {}),
+    };
+  }
+  compactResourceTemplate(
+    server: CapletServerConfig,
+    template: McpResourceTemplate,
+  ): CompactResourceTemplate {
+    return {
+      id: server.server,
+      kind: "resourceTemplate",
+      uriTemplate: template.uriTemplate,
+      ...(template.name ? { name: template.name } : {}),
+      ...(template.description ? { description: template.description } : {}),
+      ...(template.mimeType ? { mimeType: template.mimeType } : {}),
+    };
+  }
+  compactPrompt(server: CapletServerConfig, prompt: Prompt): CompactPrompt {
+    return {
+      id: server.server,
+      prompt: prompt.name,
+      ...(prompt.description ? { description: prompt.description } : {}),
+      ...(prompt.arguments ? { arguments: prompt.arguments } : {}),
+    };
+  }
+
+  searchResources(
+    server: CapletServerConfig,
+    resources: Resource[],
+    query: string,
+    limit: number,
+  ): CompactResource[] {
+    const lower = query.toLocaleLowerCase();
+    return resources
+      .map((resource) => this.compactResource(server, resource))
+      .filter((resource) =>
+        [resource.uri, resource.name, resource.description, resource.mimeType].some((value) =>
+          value?.toLocaleLowerCase().includes(lower),
+        ),
+      )
+      .slice(0, limit);
+  }
+  searchResourceTemplates(
+    server: CapletServerConfig,
+    templates: McpResourceTemplate[],
+    query: string,
+    limit: number,
+  ): CompactResourceTemplate[] {
+    const lower = query.toLocaleLowerCase();
+    return templates
+      .map((template) => this.compactResourceTemplate(server, template))
+      .filter((template) =>
+        [template.uriTemplate, template.name, template.description, template.mimeType].some(
+          (value) => value?.toLocaleLowerCase().includes(lower),
+        ),
+      )
+      .slice(0, limit);
+  }
+  searchPrompts(
+    server: CapletServerConfig,
+    prompts: Prompt[],
+    query: string,
+    limit: number,
+  ): CompactPrompt[] {
+    const lower = query.toLocaleLowerCase();
+    return prompts
+      .map((prompt) => this.compactPrompt(server, prompt))
+      .filter((prompt) =>
+        [
+          prompt.prompt,
+          prompt.description,
+          ...(prompt.arguments ?? []).flatMap((arg) => [arg.name, arg.description]),
+        ].some((value) => value?.toLocaleLowerCase().includes(lower)),
+      )
+      .slice(0, limit);
+  }
+
   search(server: CapletServerConfig, tools: Tool[], query: string, limit: number): CompactTool[] {
     return searchToolList(tools, query, limit, (tool) => this.compact(server, tool));
+  }
+
+  private async assertCapability(
+    server: CapletServerConfig,
+    capability: "resources" | "prompts" | "completions",
+  ): Promise<ManagedConnection> {
+    const connection = await this.connect(server);
+    const capabilities = connection.client.getServerCapabilities();
+    if (!capabilities?.[capability])
+      throw new CapletsError(
+        "UNSUPPORTED_CAPABILITY",
+        `${server.server} does not advertise MCP ${capability}`,
+        { server: server.server, capability },
+      );
+    return connection;
+  }
+
+  private isCacheFresh(fetchedAt: number | undefined, ttlMs: number): boolean {
+    return fetchedAt !== undefined && ttlMs > 0 && Date.now() - fetchedAt <= ttlMs;
   }
 
   private async refreshTools(server: CapletServerConfig, force: boolean): Promise<Tool[]> {
@@ -234,6 +524,20 @@ export class DownstreamManager {
         transport,
         configFingerprint: expectedFingerprint,
       };
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        connection.tools = undefined;
+        connection.toolsFetchedAt = undefined;
+      });
+      client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+        connection.resources = undefined;
+        connection.resourcesFetchedAt = undefined;
+        connection.resourceTemplates = undefined;
+        connection.resourceTemplatesFetchedAt = undefined;
+      });
+      client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+        connection.prompts = undefined;
+        connection.promptsFetchedAt = undefined;
+      });
       pendingConnection = connection;
       this.connecting.set(server.server, connection);
       transport.onclose = () => {
@@ -437,6 +741,19 @@ function nearbyToolNames(tools: Tool[], needle: string): string[] {
 
 function isTimeoutLike(error: unknown): boolean {
   return error instanceof Error && /timeout|timed out|aborted/i.test(error.message);
+}
+
+function stringifyPromptArgs(args: Record<string, unknown>): Record<string, string> {
+  const stringified: Record<string, string> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string") {
+      stringified[key] = value;
+      continue;
+    }
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === "string") stringified[key] = serialized;
+  }
+  return stringified;
 }
 
 function isAuthRemediationError(error: unknown): error is CapletsError {

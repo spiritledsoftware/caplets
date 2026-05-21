@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletSetManager } from "./caplet-sets";
 import type { CapletConfig } from "./config";
@@ -10,30 +9,18 @@ import type { HttpActionManager } from "./http-actions";
 import type { OpenApiManager } from "./openapi";
 import type { ServerRegistry } from "./registry";
 import { projectStructuredContent, validateFieldSelection } from "./field-selection";
-import { generatedToolInputDescriptions, operations } from "./generated-tool-input-schema";
+import {
+  generatedToolInputSchemaForCaplet,
+  mcpOperations,
+  operations,
+} from "./generated-tool-input-schema";
 import { compactStructuredContent } from "./result-content";
 
-const operationSchema = z.enum(operations);
+export { generatedToolInputSchema } from "./generated-tool-input-schema";
 
-export const generatedToolInputSchema = z
-  .object({
-    operation: operationSchema.describe(generatedToolInputDescriptions.operation),
-    query: z.string().optional().describe(generatedToolInputDescriptions.query),
-    limit: z.number().int().positive().optional().describe(generatedToolInputDescriptions.limit),
-    tool: z.string().optional().describe(generatedToolInputDescriptions.tool),
-    arguments: z
-      .record(z.string(), z.unknown())
-      .optional()
-      .describe(generatedToolInputDescriptions.arguments),
-    fields: z
-      .array(z.string().min(1))
-      .min(1)
-      .optional()
-      .describe(generatedToolInputDescriptions.fields),
-  })
-  .strict();
+export type GeneratedServerToolRequest = RequiredOperationRequest;
 
-export type GeneratedServerToolRequest = z.infer<typeof generatedToolInputSchema>;
+type ParsedOperationRequest = RequiredOperationRequest & Record<string, unknown>;
 
 export async function handleServerTool(
   server: CapletConfig,
@@ -47,7 +34,11 @@ export async function handleServerTool(
   caplets?: CapletSetManager,
 ): Promise<any> {
   const startedAt = Date.now();
-  const parsed = validateOperationRequest(request, registry.config.options.maxSearchLimit);
+  const parsed = validateOperationRequest(
+    request,
+    registry.config.options.maxSearchLimit,
+    server.backend,
+  );
 
   switch (parsed.operation) {
     case "get_caplet":
@@ -134,29 +125,159 @@ export async function handleServerTool(
         metadataFor(server, "call_tool", parsed.tool, startedAt),
       );
     }
+    case "list_resources": {
+      const backend = mcpBackendFor(server, downstream);
+      const resources = await backend.listResources(server as never);
+      const templates = await backend.listResourceTemplates(server as never);
+      const limit = parsed.limit ?? resources.length + templates.length;
+      return jsonResult(
+        {
+          id: server.server,
+          name: server.name,
+          resources: resources
+            .slice(0, limit)
+            .map((resource) => backend.compactResource(server as never, resource)),
+          resourceTemplates: templates
+            .slice(0, Math.max(0, limit - resources.length))
+            .map((template) => backend.compactResourceTemplate(server as never, template)),
+        },
+        metadataFor(server, "list_resources", undefined, startedAt),
+      );
+    }
+    case "search_resources": {
+      const backend = mcpBackendFor(server, downstream);
+      const resources = await backend.listResources(server as never);
+      const templates = await backend.listResourceTemplates(server as never);
+      const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
+      const resourceMatches = backend.searchResources(
+        server as never,
+        resources,
+        parsed.query,
+        limit,
+      );
+      const templateMatches = backend.searchResourceTemplates(
+        server as never,
+        templates,
+        parsed.query,
+        Math.max(0, limit - resourceMatches.length),
+      );
+      return jsonResult(
+        {
+          id: server.server,
+          name: server.name,
+          query: parsed.query,
+          matches: [...resourceMatches, ...templateMatches],
+        },
+        metadataFor(server, "search_resources", undefined, startedAt),
+      );
+    }
+    case "list_resource_templates": {
+      const backend = mcpBackendFor(server, downstream);
+      const templates = await backend.listResourceTemplates(server as never);
+      const limit = parsed.limit ?? templates.length;
+      return jsonResult(
+        {
+          id: server.server,
+          name: server.name,
+          resourceTemplates: templates
+            .slice(0, limit)
+            .map((template) => backend.compactResourceTemplate(server as never, template)),
+        },
+        metadataFor(server, "list_resource_templates", undefined, startedAt),
+      );
+    }
+    case "read_resource": {
+      const result = await mcpBackendFor(server, downstream).readResource(
+        server as never,
+        parsed.uri,
+      );
+      return annotateMcpResult(
+        result,
+        metadataFor(server, "read_resource", { uri: parsed.uri }, startedAt),
+      );
+    }
+    case "list_prompts": {
+      const backend = mcpBackendFor(server, downstream);
+      const prompts = await backend.listPrompts(server as never);
+      const limit = parsed.limit ?? prompts.length;
+      return jsonResult(
+        {
+          id: server.server,
+          name: server.name,
+          prompts: prompts
+            .slice(0, limit)
+            .map((prompt) => backend.compactPrompt(server as never, prompt)),
+        },
+        metadataFor(server, "list_prompts", undefined, startedAt),
+      );
+    }
+    case "search_prompts": {
+      const backend = mcpBackendFor(server, downstream);
+      const prompts = await backend.listPrompts(server as never);
+      const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
+      return jsonResult(
+        {
+          id: server.server,
+          name: server.name,
+          query: parsed.query,
+          prompts: backend.searchPrompts(server as never, prompts, parsed.query, limit),
+        },
+        metadataFor(server, "search_prompts", undefined, startedAt),
+      );
+    }
+    case "get_prompt": {
+      const result = await mcpBackendFor(server, downstream).getPrompt(
+        server as never,
+        parsed.prompt,
+        parsed.arguments,
+      );
+      return annotateMcpResult(
+        result,
+        metadataFor(server, "get_prompt", { prompt: parsed.prompt }, startedAt),
+      );
+    }
+    case "complete": {
+      const result = await mcpBackendFor(server, downstream).complete(server as never, {
+        ref: parsed.ref,
+        argument: parsed.argument,
+      });
+      return annotateMcpResult(result, metadataFor(server, "complete", undefined, startedAt));
+    }
   }
 }
 
 export function validateOperationRequest(
   request: unknown,
   maxSearchLimit: number,
+  backend: string = "tool",
 ): RequiredOperationRequest {
+  const result = generatedToolInputSchemaForCaplet({ backend }).safeParse(request);
   if (
     request &&
     typeof request === "object" &&
     "operation" in request &&
     typeof (request as { operation?: unknown }).operation === "string" &&
-    !operations.includes(
-      (request as { operation: string }).operation as (typeof operations)[number],
-    )
+    !mcpOperations.includes((request as { operation: string }).operation as never)
   ) {
     throw new CapletsError(
       "UNKNOWN_OPERATION",
       `Unknown operation: ${(request as { operation: string }).operation}`,
     );
   }
-
-  const result = generatedToolInputSchema.safeParse(request);
+  if (
+    request &&
+    typeof request === "object" &&
+    "operation" in request &&
+    typeof (request as { operation?: unknown }).operation === "string" &&
+    backend !== "mcp" &&
+    mcpOperations.includes((request as { operation: string }).operation as never) &&
+    !operations.includes((request as { operation: string }).operation as never)
+  ) {
+    throw new CapletsError(
+      "UNSUPPORTED_OPERATION",
+      `${(request as { operation: string }).operation} is only available for MCP-backed Caplets`,
+    );
+  }
   if (!result.success) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -165,7 +286,7 @@ export function validateOperationRequest(
     );
   }
 
-  const value = result.data;
+  const value = result.data as ParsedOperationRequest;
   const keys = Object.keys(value).sort();
   const allowed = (fields: string[]) => {
     const expected = ["operation", ...fields].sort();
@@ -227,12 +348,61 @@ export function validateOperationRequest(
             arguments: value.arguments,
             fields: value.fields,
           };
+    case "list_resources":
+    case "list_resource_templates":
+    case "list_prompts":
+      allowed(["limit"]);
+      if (value.limit !== undefined && value.limit > maxSearchLimit) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          `${value.operation} limit must be <= ${maxSearchLimit}`,
+        );
+      }
+      return value.limit === undefined
+        ? { operation: value.operation }
+        : { operation: value.operation, limit: value.limit };
+    case "search_resources":
+    case "search_prompts":
+      allowed(["query", "limit"]);
+      if (!value.query)
+        throw new CapletsError("REQUEST_INVALID", `${value.operation} requires query`);
+      if (value.limit !== undefined && value.limit > maxSearchLimit) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          `${value.operation} limit must be <= ${maxSearchLimit}`,
+        );
+      }
+      return value.limit === undefined
+        ? { operation: value.operation, query: value.query }
+        : { operation: value.operation, query: value.query, limit: value.limit };
+    case "read_resource":
+      allowed(["uri"]);
+      if (!value.uri) throw new CapletsError("REQUEST_INVALID", "read_resource requires uri");
+      return { operation: "read_resource", uri: value.uri };
+    case "get_prompt":
+      allowed(["prompt", "arguments"]);
+      if (!value.prompt) throw new CapletsError("REQUEST_INVALID", "get_prompt requires prompt");
+      if (value.arguments !== undefined && !isPlainObject(value.arguments)) {
+        throw new CapletsError("REQUEST_INVALID", "get_prompt.arguments must be a JSON object");
+      }
+      return { operation: "get_prompt", prompt: value.prompt, arguments: value.arguments ?? {} };
+    case "complete":
+      allowed(["ref", "argument"]);
+      if (!value.ref) throw new CapletsError("REQUEST_INVALID", "complete requires ref");
+      if (!value.argument) throw new CapletsError("REQUEST_INVALID", "complete requires argument");
+      return { operation: "complete", ref: value.ref, argument: value.argument };
   }
-  return assertNever(value.operation);
+  throw new CapletsError("INTERNAL_ERROR", "Unhandled operation");
 }
 
-function assertNever(value: never): never {
-  throw new CapletsError("INTERNAL_ERROR", `Unhandled operation: ${String(value)}`);
+function mcpBackendFor(server: CapletConfig, downstream: DownstreamManager): DownstreamManager {
+  if (server.backend !== "mcp") {
+    throw new CapletsError(
+      "UNSUPPORTED_OPERATION",
+      "MCP resource, prompt, and completion operations require an MCP-backed Caplet",
+    );
+  }
+  return downstream;
 }
 
 type RequiredOperationRequest =
@@ -240,7 +410,16 @@ type RequiredOperationRequest =
   | { operation: "list_tools"; limit?: number }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }
-  | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] };
+  | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] }
+  | { operation: "list_resources" | "list_resource_templates" | "list_prompts"; limit?: number }
+  | { operation: "search_resources" | "search_prompts"; query: string; limit?: number }
+  | { operation: "read_resource"; uri: string }
+  | { operation: "get_prompt"; prompt: string; arguments: Record<string, unknown> }
+  | {
+      operation: "complete";
+      ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
+      argument: { name: string; value: string };
+    };
 
 export type CapletArtifact = {
   kind: "screenshot" | "snapshot" | "console-log" | "network-log" | "file";
@@ -254,6 +433,8 @@ export type CapletResultMetadata = {
   backend: string;
   operation: RequiredOperationRequest["operation"];
   tool?: string;
+  uri?: string;
+  prompt?: string;
   status: "ok" | "error";
   elapsedMs?: number;
   artifacts?: CapletArtifact[];
@@ -262,17 +443,29 @@ export type CapletResultMetadata = {
 export function metadataFor(
   server: CapletConfig,
   operation: RequiredOperationRequest["operation"],
-  tool?: string,
+  target?: string | { tool?: string; uri?: string; prompt?: string },
   startedAt?: number,
 ): CapletResultMetadata {
+  const targetFields = typeof target === "string" ? { tool: target } : (target ?? {});
   return {
     id: server.server,
     name: server.name,
     backend: server.backend,
     operation,
-    ...(tool === undefined ? {} : { tool }),
+    ...targetFields,
     status: "ok",
     ...(startedAt === undefined ? {} : { elapsedMs: Date.now() - startedAt }),
+  };
+}
+
+export function annotateMcpResult<T extends object>(result: T, metadata: CapletResultMetadata): T {
+  const existingMeta = (result as { _meta?: unknown })._meta;
+  return {
+    ...result,
+    _meta: {
+      ...(isPlainObject(existingMeta) ? existingMeta : {}),
+      caplets: metadata,
+    },
   };
 }
 

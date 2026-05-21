@@ -32,6 +32,14 @@ const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
   "search_tools",
   "get_tool",
   "call_tool",
+  "list_resources",
+  "search_resources",
+  "list_resource_templates",
+  "read_resource",
+  "list_prompts",
+  "search_prompts",
+  "get_prompt",
+  "complete",
 ]);
 
 export async function dispatchRemoteCliRequest(

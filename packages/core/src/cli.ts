@@ -578,6 +578,219 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
+  program
+    .command("list-resources")
+    .description("List MCP resources for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of resources to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_resources" }
+          : { operation: "list_resources", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("search-resources")
+    .description("Search MCP resources and resource templates for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .argument("<query>")
+    .option("--limit <n>", "maximum number of matches to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        query: string,
+        options: { limit?: number; format?: CliOutputFormat },
+      ) =>
+        executeOperation(
+          caplet,
+          options.limit === undefined
+            ? { operation: "search_resources", query }
+            : { operation: "search_resources", query, limit: options.limit },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+  program
+    .command("list-resource-templates")
+    .description("List MCP resource templates for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of templates to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_resource_templates" }
+          : { operation: "list_resource_templates", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("read-resource")
+    .description("Read one MCP resource by URI.")
+    .argument("<caplet>")
+    .argument("<uri>")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, uri: string, options: { format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        { operation: "read_resource", uri },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("list-prompts")
+    .description("List MCP prompts for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .option("--limit <n>", "maximum number of prompts to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (caplet: string, options: { limit?: number; format?: CliOutputFormat }) =>
+      executeOperation(
+        caplet,
+        options.limit === undefined
+          ? { operation: "list_prompts" }
+          : { operation: "list_prompts", limit: options.limit },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      ),
+    );
+  program
+    .command("search-prompts")
+    .description("Search MCP prompts for a configured MCP Caplet.")
+    .argument("<caplet>")
+    .argument("<query>")
+    .option("--limit <n>", "maximum number of prompts to return", parsePositiveInteger)
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        query: string,
+        options: { limit?: number; format?: CliOutputFormat },
+      ) =>
+        executeOperation(
+          caplet,
+          options.limit === undefined
+            ? { operation: "search_prompts", query }
+            : { operation: "search_prompts", query, limit: options.limit },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+  program
+    .command("get-prompt")
+    .description("Get one MCP prompt by name.")
+    .argument("<caplet.prompt>", "qualified target, split on the first dot")
+    .option("--args <json-object>", "JSON object of prompt arguments")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(async (target: string, options: { args?: string; format?: CliOutputFormat }) => {
+      const { caplet, tool: prompt } = parseQualifiedTarget(target);
+      await executeOperation(
+        caplet,
+        {
+          operation: "get_prompt",
+          prompt,
+          arguments: parseJsonObjectOption(options.args, "get-prompt --args"),
+        },
+        {
+          writeOut,
+          writeErr,
+          setExitCode,
+          authDir: io.authDir,
+          env,
+          remote: remoteClientForCli(io),
+          format: options.format,
+        },
+      );
+    });
+  program
+    .command("complete")
+    .description("Complete an MCP prompt or resource-template argument.")
+    .argument("<caplet>")
+    .requiredOption("--argument <name>", "argument name")
+    .option("--value <value>", "argument prefix", "")
+    .option("--prompt <name>", "prompt name to complete")
+    .option("--resource-template <uri-template>", "resource template URI to complete")
+    .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
+    .action(
+      async (
+        caplet: string,
+        options: {
+          argument: string;
+          value: string;
+          prompt?: string;
+          resourceTemplate?: string;
+          format?: CliOutputFormat;
+        },
+      ) =>
+        executeOperation(
+          caplet,
+          {
+            operation: "complete",
+            ref: completionRefFromOptions(options),
+            argument: { name: options.argument, value: options.value },
+          },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        ),
+    );
+
   const config = program.command("config").description("Inspect Caplets config locations.");
 
   config
@@ -728,6 +941,14 @@ function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undef
     case "search_tools":
     case "get_tool":
     case "call_tool":
+    case "list_resources":
+    case "search_resources":
+    case "list_resource_templates":
+    case "read_resource":
+    case "list_prompts":
+    case "search_prompts":
+    case "get_prompt":
+    case "complete":
       return operation;
     default:
       return undefined;
@@ -826,6 +1047,32 @@ function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
     throw new CapletsError("REQUEST_INVALID", "call-tool --args must be a JSON object");
   }
   return parsed;
+}
+
+function parseJsonObjectOption(value: string | undefined, label: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be valid JSON`, error);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be a JSON object`);
+  }
+  return parsed;
+}
+
+function completionRefFromOptions(options: { prompt?: string; resourceTemplate?: string }) {
+  if (options.prompt && options.resourceTemplate) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "complete accepts either --prompt or --resource-template, not both",
+    );
+  }
+  if (options.prompt) return { type: "prompt", name: options.prompt };
+  if (options.resourceTemplate) return { type: "resourceTemplate", uri: options.resourceTemplate };
+  throw new CapletsError("REQUEST_INVALID", "complete requires --prompt or --resource-template");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1002,6 +1249,54 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         .filter((line): line is string => line !== undefined)
         .join("\n");
     }
+    case "list_resources":
+    case "search_resources": {
+      const resources = Array.isArray(payload.resources) ? payload.resources : [];
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      const matches = Array.isArray(payload.matches)
+        ? payload.matches
+        : [...resources, ...templates];
+      return [
+        `## MCP resources for \`${id}\``,
+        "",
+        `${matches.length} item${matches.length === 1 ? "" : "s"} found.`,
+        "",
+        ...formatResourceLines(matches, "markdown"),
+      ].join("\n");
+    }
+    case "list_resource_templates": {
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      return [
+        `## MCP resource templates for \`${id}\``,
+        "",
+        ...formatResourceLines(templates, "markdown"),
+      ].join("\n");
+    }
+    case "read_resource":
+      return [
+        `## Resource \`${String(request.uri ?? "")}\``,
+        "",
+        summarizeResourceRead(payload),
+        "",
+        "Use `--format json` to inspect all contents.",
+      ].join("\n");
+    case "list_prompts":
+    case "search_prompts": {
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      return [`## MCP prompts for \`${id}\``, "", ...formatPromptLines(prompts, "markdown")].join(
+        "\n",
+      );
+    }
+    case "get_prompt":
+      return [
+        `## Prompt \`${String(request.caplet)}.${String(request.prompt)}\``,
+        "",
+        summarizePromptResult(payload),
+        "",
+        "Use `--format json` to inspect all messages.",
+      ].join("\n");
+    case "complete":
+      return [`## Completion for \`${id}\``, "", summarizeCompletionResult(payload)].join("\n");
     default:
       return JSON.stringify(payload, null, 2);
   }
@@ -1079,6 +1374,43 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
         .filter((line): line is string => Boolean(line))
         .join("\n");
     }
+    case "list_resources":
+    case "search_resources": {
+      const resources = Array.isArray(payload.resources) ? payload.resources : [];
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      const matches = Array.isArray(payload.matches)
+        ? payload.matches
+        : [...resources, ...templates];
+      return [
+        `MCP resources for ${id} (${matches.length}):`,
+        ...formatResourceLines(matches, "plain"),
+      ].join("\n");
+    }
+    case "list_resource_templates": {
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      return [`MCP resource templates for ${id}:`, ...formatResourceLines(templates, "plain")].join(
+        "\n",
+      );
+    }
+    case "read_resource":
+      return [
+        `Resource ${String(request.uri ?? "")}`,
+        summarizeResourceRead(payload),
+        "Use --format json to inspect all contents.",
+      ].join("\n");
+    case "list_prompts":
+    case "search_prompts": {
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      return [`MCP prompts for ${id}:`, ...formatPromptLines(prompts, "plain")].join("\n");
+    }
+    case "get_prompt":
+      return [
+        `Prompt ${String(request.caplet)}.${String(request.prompt)}`,
+        summarizePromptResult(payload),
+        "Use --format json to inspect all messages.",
+      ].join("\n");
+    case "complete":
+      return [`Completion for ${id}`, summarizeCompletionResult(payload)].join("\n");
     default:
       return JSON.stringify(payload, null, 2);
   }
@@ -1107,6 +1439,66 @@ function formatToolLines(tools: unknown[], format: "markdown" | "plain"): string
     const suffix = flags ? ` (${flags})` : "";
     return `- ${displayName}${suffix}${tool.description ? ` — ${compactDescription(String(tool.description))}` : ""}`;
   });
+}
+
+function formatResourceLines(resources: unknown[], format: "markdown" | "plain"): string[] {
+  if (resources.length === 0) return ["- none"];
+  return resources.map((resource) => {
+    if (!isPlainObject(resource)) return `- ${String(resource)}`;
+    const name = String(resource.uri ?? resource.uriTemplate ?? "unknown");
+    const displayName = format === "markdown" ? `\`${name}\`` : name;
+    const label = typeof resource.name === "string" ? ` (${resource.name})` : "";
+    const kind = typeof resource.kind === "string" ? `${resource.kind}: ` : "";
+    const description = resource.description
+      ? ` — ${compactDescription(String(resource.description))}`
+      : "";
+    return `- ${kind}${displayName}${label}${description}`;
+  });
+}
+
+function formatPromptLines(prompts: unknown[], format: "markdown" | "plain"): string[] {
+  if (prompts.length === 0) return ["- none"];
+  return prompts.map((prompt) => {
+    if (!isPlainObject(prompt)) return `- ${String(prompt)}`;
+    const name = String(prompt.prompt ?? prompt.name ?? "unknown");
+    const displayName = format === "markdown" ? `\`${name}\`` : name;
+    const args = Array.isArray(prompt.arguments) ? ` (${prompt.arguments.length} args)` : "";
+    const description = prompt.description
+      ? ` — ${compactDescription(String(prompt.description))}`
+      : "";
+    return `- ${displayName}${args}${description}`;
+  });
+}
+
+function summarizeResourceRead(payload: Record<string, unknown>): string {
+  const contents = Array.isArray(payload.contents) ? payload.contents : [];
+  if (contents.length === 0) return "No contents returned.";
+  const first = contents.find(isPlainObject);
+  if (!first) return `${contents.length} content item${contents.length === 1 ? "" : "s"} returned.`;
+  const value = typeof first.text === "string" ? first.text : first.blob;
+  return (
+    previewValue(value) ??
+    `${contents.length} content item${contents.length === 1 ? "" : "s"} returned.`
+  );
+}
+
+function summarizePromptResult(payload: Record<string, unknown>): string {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  if (messages.length === 0) return "No messages returned.";
+  const first = messages.find(isPlainObject);
+  if (!first) return `${messages.length} message${messages.length === 1 ? "" : "s"} returned.`;
+  const content = isPlainObject(first.content) ? first.content : undefined;
+  return (
+    previewValue(content?.text ?? first.content) ??
+    `${messages.length} message${messages.length === 1 ? "" : "s"} returned.`
+  );
+}
+
+function summarizeCompletionResult(payload: Record<string, unknown>): string {
+  const completion = isPlainObject(payload.completion) ? payload.completion : undefined;
+  const values = Array.isArray(completion?.values) ? completion.values : [];
+  if (values.length > 0) return values.map((value) => `- ${String(value)}`).join("\n");
+  return previewValue(payload) ?? "No completions returned.";
 }
 
 function compactDescription(value: string): string {
