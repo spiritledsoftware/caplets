@@ -98,9 +98,9 @@ Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ### Examples
 
-The current recon result suggests single-pass mode with charCount 1472, lineCount 25, and messageCount 0.
+The canonical precomputed recon result for this run suggests single-pass mode with charCount 1472, lineCount 25, and messageCount 0. Earlier context-size counts in this note describe accumulated source/context-tree text, not the recon input used for mode selection.
 
 ## Facts
 
 - **rlm_curation_mode**: This curation run uses the RLM approach with single-pass extraction. [convention]
-- **curation_context_size**: The provided context is 4846 characters long and contains 53 lines. [project]
+- **curation_context_size_scope**: For mode selection, use the precomputed recon metrics (charCount 1472, lineCount 25, messageCount 0); larger counts in the raw note refer to accumulated documentation/context text and are not authoritative for this run's recon decision. [project]

@@ -12,7 +12,7 @@ The existing `.github/workflows/release.yml` workflow runs on pushes to `main` a
 
 Use the existing release job and add GHCR publishing steps after the Changesets action. The Docker image publish steps are gated on both `steps.changesets.outputs.published == 'true'` and `steps.cli-package.outputs.published == 'true'`, so they do not run while the workflow is merely creating or updating a version PR or when only non-CLI packages are published.
 
-The release job will grant `packages: write`, log in to `ghcr.io` using `GITHUB_TOKEN`, generate image metadata, and push the existing root `Dockerfile` image to:
+The release job will grant `packages: write`, log in to `ghcr.io` using `GITHUB_TOKEN`, register QEMU for multi-platform builds, generate image metadata, and push the existing root `Dockerfile` image to:
 
 - `ghcr.io/spiritledsoftware/caplets:latest`
 - `ghcr.io/spiritledsoftware/caplets:v<package-version>`
@@ -27,4 +27,4 @@ The workflow uses the repository-scoped `GITHUB_TOKEN` and GitHub Actions packag
 
 ## Validation
 
-Validation should cover YAML formatting, workflow syntax sanity, and Docker metadata behavior where practical. Full GHCR push verification can only happen in GitHub Actions on a release publish. Local verification should include `pnpm format:check .github/workflows/release.yml` and a Docker build of the existing image.
+Validation should cover YAML formatting, workflow syntax sanity, QEMU/Buildx setup ordering, and Docker metadata behavior where practical. Full GHCR push verification can only happen in GitHub Actions on a release publish. Local verification should include `pnpm format:check .github/workflows/release.yml` and a Docker build of the existing image.

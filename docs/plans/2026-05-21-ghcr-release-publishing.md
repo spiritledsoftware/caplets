@@ -16,7 +16,7 @@
   - Add job-scoped `packages: write` permission for GHCR publishing.
   - Add an `id: changesets` to the existing Changesets action step.
   - Add a step to check whether the `caplets` CLI package was published, then read `packages/cli/package.json` version for Docker metadata.
-  - Add Docker Buildx, GHCR login, metadata, and build-push steps gated on published releases.
+  - Add QEMU, Docker Buildx, GHCR login, metadata, and build-push steps gated on published CLI releases.
 - Verify only: `Dockerfile`
   - Existing source-build image is the image pushed by the workflow.
 
@@ -124,6 +124,10 @@ Immediately after the existing `Create release PR or publish` step, insert:
   id: image-version
   run: echo "version=$(node -p \"require('./packages/cli/package.json').version\")" >> "$GITHUB_OUTPUT"
 
+- name: Setup QEMU
+  if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+  uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
 - name: Setup Docker Buildx
   if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
   uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -213,6 +217,7 @@ const required = [
   'id: changesets',
   "if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'",
   'id: cli-package',
+  'uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130',
   'uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9',
   'uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051',
   'uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8',
@@ -276,6 +281,7 @@ Expected: commit succeeds only if fixes were made. If no fixes were required, do
 - Use repository-scoped token and no extra long-lived registry secret: Task 2 uses `docker/login-action` pinned to a full commit SHA with `secrets.GITHUB_TOKEN`.
 - Add required GitHub Packages permission: Task 1.
 - Tags for `latest`, semantic version, `v` semantic version, and short SHA: Task 2 and Task 3.
+- Multi-platform Docker publishing includes QEMU registration before Buildx: Task 2.
 - Local verification of workflow and Dockerfile: Task 3.
 
 ### Placeholder scan
