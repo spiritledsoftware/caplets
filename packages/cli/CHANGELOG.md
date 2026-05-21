@@ -1,5 +1,13 @@
 # caplets
 
+## 0.17.1
+
+### Patch Changes
+
+- da9af23: Bump dependencies to latest
+- Updated dependencies [da9af23]
+  - @caplets/core@0.18.1
+
 ## 0.17.0
 
 ### Minor Changes

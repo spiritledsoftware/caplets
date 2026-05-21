@@ -1,5 +1,13 @@
 # @caplets/opencode
 
+## 0.4.1
+
+### Patch Changes
+
+- da9af23: Bump dependencies to latest
+- Updated dependencies [da9af23]
+  - @caplets/core@0.18.1
+
 ## 0.4.0
 
 ### Minor Changes

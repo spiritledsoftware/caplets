@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.18.1
+
+### Patch Changes
+
+- da9af23: Bump dependencies to latest
+
 ## 0.18.0
 
 ### Minor Changes
