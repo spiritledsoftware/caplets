@@ -14,6 +14,7 @@ import {
   completeCliWords,
   completionScript,
   completionShells,
+  trailingSpaceCompletionToken,
   type CompletionShell,
 } from "./cli/completion";
 import {
@@ -80,6 +81,10 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   }
 }
 
+function normalizeCompletionWords(words: string[]): string[] {
+  return words.map((word) => (word === trailingSpaceCompletionToken ? "" : word));
+}
+
 export function createProgram(io: CliIO = {}): Command {
   const writeOut = io.writeOut ?? ((value: string) => process.stdout.write(value));
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -129,14 +134,15 @@ export function createProgram(io: CliIO = {}): Command {
         : "bash";
       const remote = remoteClientForCli(io);
       const configPath = currentConfigPath();
+      const completionWords = normalizeCompletionWords(words);
       let suggestions: string[] = [];
       try {
         suggestions = remote
           ? ((await remote.request("complete_cli" as RemoteCliCommand, {
               shell,
-              words,
+              words: completionWords,
             })) as string[])
-          : await completeCliWords(words, configPath ? { configPath } : {});
+          : await completeCliWords(completionWords, configPath ? { configPath } : {});
       } catch {
         suggestions = [];
       }

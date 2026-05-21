@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../src/cli";
-import { completeCliWords, completionScript } from "../src/cli/completion";
+import {
+  completeCliWords,
+  completionScript,
+  trailingSpaceCompletionToken,
+} from "../src/cli/completion";
 
 const dirs: string[] = [];
 
@@ -26,6 +30,8 @@ describe("CLI completion scripts", () => {
     expect(completionScript("fish")).toContain("2>/dev/null");
     expect(completionScript("powershell")).toContain("Register-ArgumentCompleter");
     expect(completionScript("powershell")).toContain("caplets __complete --shell powershell");
+    expect(completionScript("powershell")).toContain(trailingSpaceCompletionToken);
+    expect(completionScript("powershell")).not.toContain("$tokens += ''");
     expect(completionScript("powershell")).toContain("2>$null");
     expect(completionScript("cmd")).toContain("doskey caplets-complete=");
     expect(completionScript("cmd")).toContain("caplets __complete --shell cmd");

@@ -22,6 +22,8 @@ import {
 
 export { completionShells, type CompletionShell } from "./commands";
 
+export const trailingSpaceCompletionToken = "__CAPLETS_TRAILING_SPACE__";
+
 export type CompletionOptions = {
   configPath?: string;
   projectConfigPath?: string;
@@ -236,7 +238,7 @@ function powershellCompletionScript(): string {
 Register-ArgumentCompleter -Native -CommandName caplets -ScriptBlock {
   param($wordToComplete, $commandAst, $cursorPosition)
   $tokens = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
-  if ($tokens.Count -eq 0 -or $commandAst.Extent.Text.EndsWith(' ')) { $tokens += '' }
+  if ($tokens.Count -eq 0 -or $commandAst.Extent.Text.EndsWith(' ')) { $tokens += '${trailingSpaceCompletionToken}' }
   caplets __complete --shell powershell -- @tokens 2>$null | ForEach-Object {
     [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
   }
