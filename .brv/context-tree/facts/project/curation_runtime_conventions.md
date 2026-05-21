@@ -1,21 +1,18 @@
 ---
 title: Curation Runtime Conventions
-summary: 'Runtime conventions for curation workflows: use RLM variables, single-pass when suggested, do not print raw context, verify via curate result, and preserve detailed facts and structure.'
+summary: Runtime conventions for using the RLM curation workflow, including recon-first processing, single-pass handling for small contexts, and verification through applied file paths.
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-20T14:56:37.757Z'
-updatedAt: '2026-05-20T17:10:10.808Z'
+updatedAt: '2026-05-21T09:55:42.936Z'
 ---
-
 ## Reason
-
-Curate runtime instructions and task-specific curation rules from the provided RLM context
+Curate the runtime conventions and curation workflow from the provided RLM context.
 
 ## Raw Concept
-
 **Task:**
-Document the curation runtime conventions for RLM-based context processing
+Document the RLM curation runtime conventions and workflow rules for this session
 
 **Changes:**
 - Use precomputed recon results when available
@@ -32,35 +29,47 @@ Document the curation runtime conventions for RLM-based context processing
 - Established the single-pass path when recon recommends it
 - Documented the required timeout for mapExtract-based extraction
 - Captured the verification rule using result.applied[].filePath
+- Prefer single-pass processing for compact contexts
+- Verify curation via applied file paths
 
 **Flow:**
-recon -> choose mode -> extract or curate -> verify via curate result
+recon -> extract -> curate -> verify
 
-**Timestamp:** 2026-05-20T17:10:03.093Z
+**Timestamp:** 2026-05-21T09:55:37.086Z
 
-**Author:** ByteRover context engine
+**Author:** ByteRover context engineering workflow
 
 ## Narrative
-
 ### Structure
-
-This knowledge captures the operating rules for RLM curation runs, including mode selection and verification expectations.
+This context defines the operational workflow for curating compact RLM inputs and emphasizes immediate execution without confirmation.
 
 ### Dependencies
-
-Relies on precomputed recon output and sandbox variables for context, history, metadata, and task ID.
+Depends on precomputed recon metadata, task ID scoping, and the curate tool result object for verification.
 
 ### Highlights
-
-The instructions emphasize not printing raw context, using single-pass when suggested, and preserving only compact summaries during curation.
+Single-pass mode is recommended for small contexts, and verification should rely on result.applied[].filePath rather than file rereads.
 
 ### Rules
-
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been precomputed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_315cb313_abe8_40eb_97b1_c8fe949ba458 (bare variable, not a string). IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options). Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
+Do NOT print raw context. Do NOT call tools.curation.recon when recon is already precomputed. For chunked extraction, pass taskId as a bare variable. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself.
 
 ## Facts
-
-- **rlm_curation_workflow**: The current curation workflow uses the RLM approach with context, history, metadata, and task ID variables. [convention]
-- **single_pass_mode**: When recon suggests single-pass, chunking should be skipped. [convention]
-- **mapextract_timeout**: If mapExtract is used, the code_exec call must set timeout to 300000 milliseconds. [convention]
-- **verification_method**: Verification should be done via result.applied[].filePath without reading files back. [convention]
+- **curation_context_line**: The following is a conversation between a user and an AI assistant. [other]
+- **curation_context_line**: Curate only information with lasting value: facts, decisions, technical details, preferences, or notable outcomes. [other]
+- **curation_context_line**: Skip trivial messages such as greetings, acknowledgments ("ok", "thanks", "sure", "got it"), one-word replies, anything with no substantive content. [other]
+- **curation_context_line**: Conversation: [other]
+- **curation_context_line**: --- [other]
+- **curation_context_line**: [user]: Implement the plan @docs/plans/2026-05-21-docker-self-hosting.md entirely. Implement inline, no worktree or subagents required [other]
+- **curation_context_line**: [assistant]: I'm using the executing-plans skill to implement this plan. [other]
+- **curation_context_line**: [assistant]: Implemented the Docker self-hosting plan inline. [other]
+- **curation_context_line**: Changed files: [other]
+- **curation_context_line**: - `.dockerignore` [other]
+- **curation_context_line**: - `Dockerfile` [other]
+- **curation_context_line**: - `docker-compose.yml` [other]
+- **curation_context_line**: - `README.md` [other]
+- **curation_context_line**: Commits created: [other]
+- **curation_context_line**: - `35de342 build: add docker ignore rules` [other]
+- **curation_context_line**: - `10cf86a build: add caplets docker image` [other]
+- **curation_context_line**: - `2d62990 build: add docker compose service` [other]
+- **curation_context_line**: - `a4be4f8 docs: document docker self-hosting` [other]
+- **curation_context_line**: - `9f6fc07 fix: polish docker self-hosting setup` [other]
+- **curation_context_line**: Verification run: [other]
