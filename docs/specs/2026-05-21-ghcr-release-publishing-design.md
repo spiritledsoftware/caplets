@@ -10,9 +10,9 @@ The existing `.github/workflows/release.yml` workflow runs on pushes to `main` a
 
 ## Design
 
-Use the existing release job and add GHCR publishing steps after the Changesets action. The Docker image publish steps are gated on `steps.changesets.outputs.published == 'true'`, so they do not run while the workflow is merely creating or updating a version PR.
+Use the existing release job and add GHCR publishing steps after the Changesets action. The Docker image publish steps are gated on both `steps.changesets.outputs.published == 'true'` and `steps.cli-package.outputs.published == 'true'`, so they do not run while the workflow is merely creating or updating a version PR or when only non-CLI packages are published.
 
-The workflow will grant `packages: write`, log in to `ghcr.io` using `GITHUB_TOKEN`, generate image metadata, and push the existing root `Dockerfile` image to:
+The release job will grant `packages: write`, log in to `ghcr.io` using `GITHUB_TOKEN`, generate image metadata, and push the existing root `Dockerfile` image to:
 
 - `ghcr.io/spiritledsoftware/caplets:latest`
 - `ghcr.io/spiritledsoftware/caplets:v<package-version>`
@@ -23,7 +23,7 @@ The package version is read from `packages/cli/package.json` after Changesets ha
 
 ## Security and permissions
 
-The workflow uses the repository-scoped `GITHUB_TOKEN` and GitHub Actions package permissions. No new long-lived registry token is required. The job adds only `packages: write`; existing `contents`, `pull-requests`, and `id-token` permissions remain unchanged.
+The workflow uses the repository-scoped `GITHUB_TOKEN` and GitHub Actions package permissions. No new long-lived registry token is required. The release job adds only `packages: write`; existing `contents`, `pull-requests`, and `id-token` permissions remain unchanged.
 
 ## Validation
 

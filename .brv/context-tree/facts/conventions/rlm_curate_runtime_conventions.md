@@ -7,10 +7,13 @@ keywords: []
 createdAt: '2026-05-20T14:24:21.257Z'
 updatedAt: '2026-05-21T10:21:39.246Z'
 ---
+
 ## Reason
+
 Capture the curation runtime instructions and operational constraints from the current RLM context.
 
 ## Raw Concept
+
 **Task:**
 Document the RLM curation runtime conventions used for this session.
 
@@ -73,24 +76,31 @@ precomputed recon -> extraction -> curate -> verify applied paths -> record prog
 - `result.applied[].filePath` - Verification source for curated file paths
 
 ## Narrative
+
 ### Structure
+
 This note captures the operational rules for running RLM curation in single-pass mode, including the constraint to avoid printing raw context and the requirement to use the provided taskId for extraction when needed.
 
 ### Dependencies
+
 Depends on precomputed recon data, the context/history/metadata variables, and the curated knowledge tree as the target store.
 
 ### Highlights
+
 The run explicitly forbids calling tools.curation.recon again and instructs verification via result.applied[].filePath only.
 
 ### Rules
+
 IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction.
 For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_d37d89f0_90c3_484b_bc24_c0395c2fca73 (bare variable, not a string).
 IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options).
 Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ### Examples
+
 The current recon result suggests single-pass mode with charCount 1472, lineCount 25, and messageCount 0.
 
 ## Facts
+
 - **rlm_curation_mode**: This curation run uses the RLM approach with single-pass extraction. [convention]
 - **curation_context_size**: The provided context is 4846 characters long and contains 53 lines. [project]

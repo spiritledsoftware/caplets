@@ -428,11 +428,10 @@ Fix the issue before completing the task.
 Run:
 
 ```bash
-pnpm lint
-pnpm typecheck
+pnpm verify
 ```
 
-Expected: both commands exit `0`.
+Expected: command exits `0`.
 
 - [ ] **Step 6: Commit any verification fixes**
 

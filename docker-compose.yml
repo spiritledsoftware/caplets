@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: caplets:latest
+    image: caplets:local
     restart: unless-stopped
     environment:
       CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
