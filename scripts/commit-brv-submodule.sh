@@ -5,6 +5,7 @@ SUBMODULE_PATH=".brv"
 SUBMODULE_REMOTE="origin"
 COMMIT_MESSAGE="chore: update memory"
 PUSH=false
+COMMITTED_MEMORY=false
 
 if [[ "${1:-}" == "--push" ]]; then
   PUSH=true
@@ -34,6 +35,7 @@ if [[ -n "$(git -C "$SUBMODULE_PATH" status --porcelain --untracked-files=all)" 
   git -C "$SUBMODULE_PATH" add -A
   git -C "$SUBMODULE_PATH" commit -m "$COMMIT_MESSAGE"
   git add "$SUBMODULE_PATH"
+  COMMITTED_MEMORY=true
 fi
 
 if [[ "$PUSH" == true ]]; then
@@ -42,5 +44,14 @@ if [[ "$PUSH" == true ]]; then
     # Push any new memory commits before the parent repo publishes a gitlink that
     # points at them.
     git -C "$SUBMODULE_PATH" push "$SUBMODULE_REMOTE" "$branch"
+  fi
+
+  if [[ "$COMMITTED_MEMORY" == true ]]; then
+    if ! git diff --quiet -- "$SUBMODULE_PATH" || ! git diff --cached --quiet -- "$SUBMODULE_PATH"; then
+      git add "$SUBMODULE_PATH"
+      git commit --no-verify -m "chore: update byterover memory pointer"
+      echo "Committed new $SUBMODULE_PATH gitlink. Re-run git push so the new parent commit is sent." >&2
+      exit 1
+    fi
   fi
 fi
