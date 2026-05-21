@@ -105,10 +105,13 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command("completion")
     .description("Print a shell completion script.")
-    .argument("<shell>", "completion shell: bash, zsh, or fish")
+    .argument("<shell>", "completion shell: bash, zsh, fish, powershell, or cmd")
     .action((shell: string) => {
       if (!completionShells.includes(shell as CompletionShell)) {
-        throw new CapletsError("REQUEST_INVALID", "completion shell must be bash, zsh, or fish");
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "completion shell must be bash, zsh, fish, powershell, or cmd",
+        );
       }
       writeOut(completionScript(shell as CompletionShell));
     });

@@ -91,7 +91,7 @@ Direct CLI operation commands print Markdown summaries by default. Add `--format
 
 ### Shell completions
 
-The npm package ships shell completion generators for Bash, Zsh, and Fish. Installation is explicit: `npm install -g caplets` does not modify shell startup files or system completion directories.
+The npm package ships shell completion generators for Bash, Zsh, Fish, PowerShell, and cmd. Installation is explicit: `npm install -g caplets` does not modify shell startup files or system completion directories.
 
 ```sh
 # Bash
@@ -105,6 +105,13 @@ caplets completion zsh > ~/.zsh/completions/_caplets
 # Fish
 mkdir -p ~/.config/fish/completions
 caplets completion fish > ~/.config/fish/completions/caplets.fish
+
+# PowerShell
+caplets completion powershell | Out-String | Invoke-Expression
+
+# cmd.exe
+caplets completion cmd > %USERPROFILE%\caplets-completion.cmd
+%USERPROFILE%\caplets-completion.cmd
 ```
 
 Completions include command names, options, common enum values, and configured Caplet IDs. They do not probe downstream MCP servers, HTTP APIs, GraphQL endpoints, OpenAPI specs, or configured CLI tools during tab completion.

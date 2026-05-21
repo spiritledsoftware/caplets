@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("CLI completion scripts", () => {
-  it("emits Bash, Zsh, and Fish scripts that call caplets __complete", () => {
+  it("emits Bash, Zsh, Fish, PowerShell, and cmd scripts that call caplets __complete", () => {
     expect(completionScript("bash")).toContain("caplets __complete --shell bash");
     expect(completionScript("bash")).toContain(
       "complete -o default -F _caplets_completions caplets",
@@ -22,10 +22,16 @@ describe("CLI completion scripts", () => {
 
     expect(completionScript("fish")).toContain("complete -c caplets");
     expect(completionScript("fish")).toContain("caplets __complete --shell fish");
+
+    expect(completionScript("powershell")).toContain("Register-ArgumentCompleter");
+    expect(completionScript("powershell")).toContain("caplets __complete --shell powershell");
+
+    expect(completionScript("cmd")).toContain("doskey caplets=");
+    expect(completionScript("cmd")).toContain("caplets __complete --shell cmd");
   });
 
   it("rejects unknown shells for explicit script generation", () => {
-    expect(() => completionScript("powershell" as never)).toThrow(
+    expect(() => completionScript("xonsh" as never)).toThrow(
       expect.objectContaining({ code: "REQUEST_INVALID" }),
     );
   });
@@ -40,7 +46,13 @@ describe("CLI completion resolver", () => {
 
   it("suggests nested static subcommands and enum values", () => {
     expect(completeCliWords(["add", ""])).toEqual(["cli", "mcp", "openapi", "graphql", "http"]);
-    expect(completeCliWords(["completion", ""])).toEqual(["bash", "zsh", "fish"]);
+    expect(completeCliWords(["completion", ""])).toEqual([
+      "bash",
+      "zsh",
+      "fish",
+      "powershell",
+      "cmd",
+    ]);
     expect(completeCliWords(["serve", "--transport", ""])).toEqual(["stdio", "http"]);
     expect(completeCliWords(["call-tool", "github.search", "--format", ""])).toEqual([
       "markdown",

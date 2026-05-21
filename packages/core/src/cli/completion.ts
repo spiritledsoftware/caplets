@@ -2,7 +2,7 @@ import { loadConfigWithSources } from "../config";
 import { CapletsError } from "../errors";
 import { listCaplets } from "./inspection";
 
-export const completionShells = ["bash", "zsh", "fish"] as const;
+export const completionShells = ["bash", "zsh", "fish", "powershell", "cmd"] as const;
 export type CompletionShell = (typeof completionShells)[number];
 
 export type CompletionOptions = {
@@ -38,7 +38,7 @@ const topLevelCommands = [
 const subcommands: Record<string, string[]> = {
   add: ["cli", "mcp", "openapi", "graphql", "http"],
   auth: ["login", "logout", "list"],
-  completion: ["bash", "zsh", "fish"],
+  completion: [...completionShells],
   config: ["path", "paths"],
 };
 
@@ -81,8 +81,15 @@ export function completionScript(shell: CompletionShell): string {
       return zshCompletionScript();
     case "fish":
       return fishCompletionScript();
+    case "powershell":
+      return powershellCompletionScript();
+    case "cmd":
+      return cmdCompletionScript();
     default:
-      throw new CapletsError("REQUEST_INVALID", "completion shell must be bash, zsh, or fish");
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "completion shell must be bash, zsh, fish, powershell, or cmd",
+      );
   }
 }
 
@@ -175,5 +182,29 @@ function __caplets_complete
   caplets __complete --shell fish -- $tokens[2..-1] $current
 end
 complete -c caplets -f -a '(__caplets_complete)'
+`;
+}
+
+function powershellCompletionScript(): string {
+  return `# caplets PowerShell completion
+Register-ArgumentCompleter -Native -CommandName caplets -ScriptBlock {
+  param($wordToComplete, $commandAst, $cursorPosition)
+  $tokens = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
+  if ($tokens.Count -eq 0 -or $commandAst.Extent.Text.EndsWith(' ')) { $tokens += '' }
+  caplets __complete --shell powershell -- @tokens | ForEach-Object {
+    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+  }
+}
+`;
+}
+
+function cmdCompletionScript(): string {
+  return `@echo off
+REM caplets cmd completion helper
+REM cmd.exe has no native programmable completion API. This doskey macro prints suggestions for the current words.
+doskey caplets-complete=caplets __complete --shell cmd -- $*
+REM Usage: caplets-complete get-caplet 
+REM The regular caplets command remains available; use caplets-complete to inspect suggestions.
+doskey caplets=caplets $*
 `;
 }
