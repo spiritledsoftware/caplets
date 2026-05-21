@@ -1,1 +1,2 @@
+scripts/commit-brv-submodule.sh
 pnpm lint-staged
