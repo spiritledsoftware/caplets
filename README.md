@@ -89,6 +89,26 @@ caplets complete docs --resource-template 'file:///repo/{path}' --argument path 
 
 Direct CLI operation commands print Markdown summaries by default. Add `--format plain` for plain text or `--format json` for machine-readable JSON (`md` is accepted as an alias for `markdown`). If a downstream tool returns `isError: true`, Caplets still exits with status code 1.
 
+### Shell completions
+
+The npm package ships shell completion generators for Bash, Zsh, and Fish. Installation is explicit: `npm install -g caplets` does not modify shell startup files or system completion directories.
+
+```sh
+# Bash
+mkdir -p ~/.local/share/bash-completion/completions
+caplets completion bash > ~/.local/share/bash-completion/completions/caplets
+
+# Zsh
+mkdir -p ~/.zsh/completions
+caplets completion zsh > ~/.zsh/completions/_caplets
+
+# Fish
+mkdir -p ~/.config/fish/completions
+caplets completion fish > ~/.config/fish/completions/caplets.fish
+```
+
+Completions include command names, options, common enum values, and configured Caplet IDs. They do not probe downstream MCP servers, HTTP APIs, GraphQL endpoints, OpenAPI specs, or configured CLI tools during tab completion.
+
 ## Agent Plugins
 
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
