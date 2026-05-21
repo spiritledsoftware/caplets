@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { createProgram } from "../src/cli";
 import { completeCliWords, completionScript } from "../src/cli/completion";
 
 const dirs: string[] = [];
@@ -13,21 +14,26 @@ afterEach(() => {
 describe("CLI completion scripts", () => {
   it("emits Bash, Zsh, Fish, PowerShell, and cmd scripts that call caplets __complete", () => {
     expect(completionScript("bash")).toContain("caplets __complete --shell bash");
+    expect(completionScript("bash")).toContain("2>/dev/null");
     expect(completionScript("bash")).toContain(
       "complete -o default -F _caplets_completions caplets",
     );
 
     expect(completionScript("zsh")).toContain("#compdef caplets");
     expect(completionScript("zsh")).toContain("caplets __complete --shell zsh");
+    expect(completionScript("zsh")).toContain("2>/dev/null");
 
     expect(completionScript("fish")).toContain("complete -c caplets");
     expect(completionScript("fish")).toContain("caplets __complete --shell fish");
+    expect(completionScript("fish")).toContain("2>/dev/null");
 
     expect(completionScript("powershell")).toContain("Register-ArgumentCompleter");
     expect(completionScript("powershell")).toContain("caplets __complete --shell powershell");
+    expect(completionScript("powershell")).toContain("2>$null");
 
     expect(completionScript("cmd")).toContain("doskey caplets-complete=");
     expect(completionScript("cmd")).toContain("caplets __complete --shell cmd");
+    expect(completionScript("cmd")).toContain("2^>nul");
     expect(completionScript("cmd")).not.toContain("doskey caplets=caplets");
   });
 
@@ -43,6 +49,15 @@ describe("CLI completion resolver", () => {
     expect(completeCliWords([""])).toEqual(
       expect.arrayContaining(["add", "auth", "call-tool", "completion", "serve"]),
     );
+  });
+
+  it("keeps top-level command suggestions in sync with registered CLI commands", () => {
+    const registeredCommands = createProgram()
+      .commands.filter((command) => command.name() !== "__complete")
+      .map((command) => command.name())
+      .sort();
+
+    expect(completeCliWords([""]).toSorted()).toEqual(registeredCommands);
   });
 
   it("suggests nested static subcommands and enum values", () => {

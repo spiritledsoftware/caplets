@@ -157,7 +157,7 @@ function bashCompletionScript(): string {
   return `# caplets bash completion
 _caplets_completions() {
   local IFS=$'\n'
-  COMPREPLY=( $(caplets __complete --shell bash -- "\${COMP_WORDS[@]:1}") )
+  COMPREPLY=( $(caplets __complete --shell bash -- "\${COMP_WORDS[@]:1}" 2>/dev/null) )
 }
 complete -o default -F _caplets_completions caplets
 `;
@@ -167,7 +167,7 @@ function zshCompletionScript(): string {
   return `#compdef caplets
 _caplets() {
   local -a suggestions
-  suggestions=("\${(@f)$(caplets __complete --shell zsh -- "\${words[@]:1}")}")
+  suggestions=("\${(@f)$(caplets __complete --shell zsh -- "\${words[@]:1}" 2>/dev/null)}")
   compadd -- $suggestions
 }
 _caplets "$@"
@@ -179,7 +179,7 @@ function fishCompletionScript(): string {
 function __caplets_complete
   set -l tokens (commandline -opc)
   set -l current (commandline -ct)
-  caplets __complete --shell fish -- $tokens[2..-1] $current
+  caplets __complete --shell fish -- $tokens[2..-1] $current 2>/dev/null
 end
 complete -c caplets -f -a '(__caplets_complete)'
 `;
@@ -191,7 +191,7 @@ Register-ArgumentCompleter -Native -CommandName caplets -ScriptBlock {
   param($wordToComplete, $commandAst, $cursorPosition)
   $tokens = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.ToString() })
   if ($tokens.Count -eq 0 -or $commandAst.Extent.Text.EndsWith(' ')) { $tokens += '' }
-  caplets __complete --shell powershell -- @tokens | ForEach-Object {
+  caplets __complete --shell powershell -- @tokens 2>$null | ForEach-Object {
     [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
   }
 }
@@ -202,7 +202,7 @@ function cmdCompletionScript(): string {
   return `@echo off
 REM caplets cmd completion helper
 REM cmd.exe has no native programmable completion API. This doskey macro prints suggestions for the current words.
-doskey caplets-complete=caplets __complete --shell cmd -- $*
+doskey caplets-complete=caplets __complete --shell cmd -- $* 2^>nul
 REM Usage: caplets-complete get-caplet 
 `;
 }
