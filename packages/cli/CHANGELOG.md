@@ -1,5 +1,18 @@
 # caplets
 
+## 0.17.0
+
+### Minor Changes
+
+- b0862be: Add Bash, Zsh, Fish, PowerShell, and cmd shell completion generation plus config-aware and cache-backed downstream completion suggestions for the Caplets CLI.
+- 010b07d: Expose MCP resources, resource templates, prompts, and completions through MCP-backed Caplets while keeping non-MCP backend schemas tool-only.
+
+### Patch Changes
+
+- Updated dependencies [b0862be]
+- Updated dependencies [010b07d]
+  - @caplets/core@0.18.0
+
 ## 0.16.0
 
 ### Minor Changes
