@@ -117,7 +117,9 @@ caplets completion cmd > %USERPROFILE%\caplets-completion.cmd
 %USERPROFILE%\caplets-completion.cmd
 ```
 
-Completions include command names, options, common enum values, and configured Caplet IDs. They do not probe downstream MCP servers, HTTP APIs, GraphQL endpoints, OpenAPI specs, or configured CLI tools during tab completion.
+Completions include command names, options, common enum values, configured Caplet IDs, and cache-backed downstream names for qualified targets such as `caplets call-tool repo.<TAB>`. Downstream discovery is bounded by the `completion` config timeouts and a platform-native cache directory. Generated shell scripts suppress completion stderr; run the underlying CLI command directly when debugging completion behavior.
+
+Backends that require OAuth or token auth may need `caplets auth login <server>` before live downstream completions can return richer results. Completion never starts interactive login flows.
 
 ## Agent Plugins
 
@@ -327,6 +329,12 @@ you want Caplets to expose:
   "version": 1,
   "defaultSearchLimit": 20,
   "maxSearchLimit": 50,
+  "completion": {
+    "discoveryTimeoutMs": 750,
+    "overallTimeoutMs": 1500,
+    "cacheTtlMs": 300000,
+    "negativeCacheTtlMs": 30000
+  },
   "mcpServers": {
     "filesystem": {
       "name": "Project Files",

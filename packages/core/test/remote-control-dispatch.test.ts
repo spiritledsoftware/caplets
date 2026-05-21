@@ -350,6 +350,21 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response).toEqual({ ok: true, result: ["github", "users"] });
   });
 
+  it("routes complete_cli through server-owned discovery", async () => {
+    const context = testContext();
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "complete_cli",
+        arguments: { shell: "bash", words: ["call-tool", "server_status."] },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({ ok: true });
+    expect(response.ok && response.result).toEqual(["server_status.check"]);
+  });
+
   it("lists and logs out server-side auth credentials", async () => {
     const fixture = remoteFixtureWithOAuth();
     writeTokenBundle(

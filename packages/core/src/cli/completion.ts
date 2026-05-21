@@ -1,77 +1,42 @@
-import { loadConfigWithSources } from "../config";
+import {
+  loadConfigWithSources,
+  type CapletConfig,
+  type CapletsConfig,
+  type CompletionConfig,
+} from "../config";
 import { CapletsError } from "../errors";
 import { listCaplets } from "./inspection";
+import {
+  capletIdCommands,
+  cliCommands,
+  cliSubcommands,
+  qualifiedPromptCommands,
+  qualifiedToolCommands,
+  topLevelCommandNames,
+  type CompletionShell,
+} from "./commands";
+import {
+  discoverCompletionCandidates,
+  type CompletionDiscoveryManagers,
+} from "./completion-discovery";
 
-export const completionShells = ["bash", "zsh", "fish", "powershell", "cmd"] as const;
-export type CompletionShell = (typeof completionShells)[number];
+export { completionShells, type CompletionShell } from "./commands";
 
 export type CompletionOptions = {
   configPath?: string;
   projectConfigPath?: string;
-};
-
-const topLevelCommands = [
-  "serve",
-  "init",
-  "list",
-  "install",
-  "add",
-  "get-caplet",
-  "check-backend",
-  "list-tools",
-  "search-tools",
-  "get-tool",
-  "call-tool",
-  "list-resources",
-  "search-resources",
-  "list-resource-templates",
-  "read-resource",
-  "list-prompts",
-  "search-prompts",
-  "get-prompt",
-  "complete",
-  "config",
-  "auth",
-  "completion",
-];
-
-const subcommands: Record<string, string[]> = {
-  add: ["cli", "mcp", "openapi", "graphql", "http"],
-  auth: ["login", "logout", "list"],
-  completion: [...completionShells],
-  config: ["path", "paths"],
+  config?: CapletsConfig;
+  completion?: CompletionConfig;
+  cacheDir?: string;
+  managers?: CompletionDiscoveryManagers;
 };
 
 const optionValueSuggestions: Record<string, Record<string, string[]>> = {
-  "*": {
-    "--format": ["markdown", "md", "plain", "json"],
-  },
-  serve: {
-    "--transport": ["stdio", "http"],
-  },
-  "add:mcp": {
-    "--transport": ["http", "sse"],
-  },
-  "add:cli": {
-    "--include": ["git", "gh", "package"],
-  },
+  "*": { "--format": ["markdown", "md", "plain", "json"] },
+  serve: { "--transport": ["stdio", "http"] },
+  "add:mcp": { "--transport": ["http", "sse"] },
+  "add:cli": { "--include": ["git", "gh", "package"] },
 };
-
-const capletIdCommands = new Set([
-  "get-caplet",
-  "check-backend",
-  "list-tools",
-  "search-tools",
-  "list-resources",
-  "search-resources",
-  "list-resource-templates",
-  "read-resource",
-  "list-prompts",
-  "search-prompts",
-  "complete",
-]);
-
-const qualifiedTargetCommands = new Set(["get-tool", "call-tool", "get-prompt"]);
 
 export function completionScript(shell: CompletionShell): string {
   switch (shell) {
@@ -93,7 +58,10 @@ export function completionScript(shell: CompletionShell): string {
   }
 }
 
-export function completeCliWords(words: string[], options: CompletionOptions = {}): string[] {
+export async function completeCliWords(
+  words: string[],
+  options: CompletionOptions = {},
+): Promise<string[]> {
   try {
     const normalized = words.length === 0 ? [""] : words;
     const current = normalized.at(-1) ?? "";
@@ -101,27 +69,81 @@ export function completeCliWords(words: string[], options: CompletionOptions = {
     const command = normalized[0] ?? "";
     const subcommand = normalized[1] ?? "";
 
-    const optionValues = suggestionsForOptionValue(command, subcommand, previous);
-    if (optionValues) return prefixFilter(optionValues, current);
-
-    if (normalized.length === 1) return prefixFilter(topLevelCommands, current);
-
-    if (normalized.length === 2 && subcommands[command]) {
-      return prefixFilter(subcommands[command], current);
-    }
-
-    if (normalized.length === 2 && capletIdCommands.has(command)) {
-      return prefixFilter(configuredCapletIds(options), current);
-    }
-
-    if (normalized.length === 2 && qualifiedTargetCommands.has(command)) {
+    if (command === cliCommands.complete && previous === "--prompt" && subcommand) {
       return prefixFilter(
-        configuredCapletIds(options).map((id) => `${id}.`),
+        (await discoverCompletionCandidates(subcommand, "prompts", discoveryOptions(options))).map(
+          (candidate) => candidate.value.replace(`${subcommand}.`, ""),
+        ),
         current,
       );
     }
 
-    if (command === "auth" && ["login", "logout"].includes(subcommand) && normalized.length === 3) {
+    if (command === cliCommands.complete && previous === "--resource-template" && subcommand) {
+      return prefixFilter(
+        (
+          await discoverCompletionCandidates(
+            subcommand,
+            "resourceTemplates",
+            discoveryOptions(options),
+          )
+        ).map((candidate) => candidate.value),
+        current,
+      );
+    }
+
+    const optionValues = suggestionsForOptionValue(command, subcommand, previous);
+    if (optionValues) return prefixFilter(optionValues, current);
+
+    if (normalized.length === 1) return prefixFilter([...topLevelCommandNames], current);
+
+    if (normalized.length === 2 && command in cliSubcommands) {
+      return prefixFilter(cliSubcommands[command as keyof typeof cliSubcommands], current);
+    }
+
+    if (normalized.length === 2 && capletIdCommands.has(command)) {
+      const ids = promptResourceCommands.has(command)
+        ? configuredCapletIds(options, { backend: "mcp" })
+        : configuredCapletIds(options);
+      return prefixFilter(ids, current);
+    }
+
+    if (
+      normalized.length === 2 &&
+      (qualifiedToolCommands.has(command) || qualifiedPromptCommands.has(command))
+    ) {
+      if (current.includes(".")) {
+        const serverId = current.slice(0, current.indexOf("."));
+        const kind = qualifiedToolCommands.has(command) ? "tools" : "prompts";
+        return prefixFilter(
+          (await discoverCompletionCandidates(serverId, kind, discoveryOptions(options))).map(
+            (candidate) => candidate.value,
+          ),
+          current,
+        );
+      }
+      return prefixFilter(
+        configuredCapletIds(
+          options,
+          qualifiedPromptCommands.has(command) ? { backend: "mcp" } : undefined,
+        ).map((id) => `${id}.`),
+        current,
+      );
+    }
+
+    if (command === cliCommands.readResource && normalized.length === 3) {
+      return prefixFilter(
+        (
+          await discoverCompletionCandidates(subcommand, "resources", discoveryOptions(options))
+        ).map((candidate) => candidate.value),
+        current,
+      );
+    }
+
+    if (
+      command === cliCommands.auth &&
+      ["login", "logout"].includes(subcommand) &&
+      normalized.length === 3
+    ) {
       return prefixFilter(configuredCapletIds(options), current);
     }
 
@@ -144,12 +166,36 @@ function suggestionsForOptionValue(
   );
 }
 
-function configuredCapletIds(options: CompletionOptions): string[] {
-  const loaded = loadConfigWithSources(options.configPath, options.projectConfigPath);
-  return listCaplets(loaded, { includeDisabled: false }).map((row) => row.server);
+const promptResourceCommands = new Set<string>([
+  cliCommands.getPrompt,
+  cliCommands.readResource,
+  cliCommands.complete,
+]);
+
+function configuredCapletIds(
+  options: CompletionOptions,
+  filter: { backend?: CapletConfig["backend"] } = {},
+): string[] {
+  const loaded = options.config
+    ? { config: options.config, sources: {}, shadows: {} }
+    : loadConfigWithSources(options.configPath, options.projectConfigPath);
+  return listCaplets(loaded, { includeDisabled: false })
+    .filter((row) => !filter.backend || row.backend === filter.backend)
+    .map((row) => row.server);
 }
 
-function prefixFilter(values: string[], prefix: string): string[] {
+function discoveryOptions(options: CompletionOptions) {
+  const config =
+    options.config ?? loadConfigWithSources(options.configPath, options.projectConfigPath).config;
+  return {
+    config,
+    completion: options.completion,
+    cacheDir: options.cacheDir,
+    managers: options.managers,
+  };
+}
+
+function prefixFilter(values: readonly string[], prefix: string): string[] {
   return values.filter((value) => value.startsWith(prefix));
 }
 

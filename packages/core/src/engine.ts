@@ -18,6 +18,8 @@ import { OpenApiManager } from "./openapi";
 import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
 
+type ToolSummary = { name: string; description?: string };
+
 export type CapletsEngineOptions = {
   configPath?: string;
   projectConfigPath?: string;
@@ -149,6 +151,39 @@ export class CapletsEngine {
     }
   }
 
+  async completeCliWords(words: string[]): Promise<string[]> {
+    const { completeCliWords } = await import("./cli/completion");
+    return await completeCliWords(words, {
+      config: this.registry.config,
+      managers: {
+        listTools: async (server) => this.listCompletionTools(server),
+        listPrompts: async (server) => {
+          if (server.backend !== "mcp") return [];
+          return (await this.downstream.listPrompts(server)).map((prompt) => ({
+            name: prompt.name,
+            ...(prompt.description ? { description: prompt.description } : {}),
+          }));
+        },
+        listResources: async (server) => {
+          if (server.backend !== "mcp") return [];
+          return (await this.downstream.listResources(server)).map((resource) => ({
+            uri: resource.uri,
+            ...(resource.name ? { name: resource.name } : {}),
+            ...(resource.description ? { description: resource.description } : {}),
+          }));
+        },
+        listResourceTemplates: async (server) => {
+          if (server.backend !== "mcp") return [];
+          return (await this.downstream.listResourceTemplates(server)).map((template) => ({
+            uriTemplate: template.uriTemplate,
+            ...(template.name ? { name: template.name } : {}),
+            ...(template.description ? { description: template.description } : {}),
+          }));
+        },
+      },
+    });
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     try {
@@ -169,6 +204,25 @@ export class CapletsEngine {
       await this.capletSets.close();
       this.reloadListeners.clear();
     }
+  }
+
+  private async listCompletionTools(server: CapletConfig): Promise<ToolSummary[]> {
+    const tools =
+      server.backend === "mcp"
+        ? await this.downstream.listTools(server)
+        : server.backend === "openapi"
+          ? await this.openapi.listTools(server)
+          : server.backend === "graphql"
+            ? await this.graphql.listTools(server)
+            : server.backend === "http"
+              ? await this.http.listTools(server)
+              : server.backend === "cli"
+                ? await this.cli.listTools(server)
+                : await this.capletSets.listTools(server);
+    return tools.map((tool) => ({
+      name: tool.name,
+      ...(tool.description ? { description: tool.description } : {}),
+    }));
   }
 
   private async reloadOnce(): Promise<boolean> {

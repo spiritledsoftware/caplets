@@ -7,7 +7,7 @@ import {
   addOpenApiCaplet,
 } from "./../cli/add";
 import { assertLoginTarget, findAuthTarget, listAuthRows, logoutAuthResult } from "./../cli/auth";
-import { completeCliWords, completionShells, type CompletionShell } from "./../cli/completion";
+import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
@@ -114,10 +114,12 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    return completeCliWords(optionalStringArray(request.arguments, "words") ?? [""], {
-      ...(context.configPath ? { configPath: context.configPath } : {}),
-      ...(context.projectConfigPath ? { projectConfigPath: context.projectConfigPath } : {}),
-    });
+    const engine = new CapletsEngine(context);
+    try {
+      return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
+    } finally {
+      await engine.close();
+    }
   }
 
   if (request.command === "auth_list") {
