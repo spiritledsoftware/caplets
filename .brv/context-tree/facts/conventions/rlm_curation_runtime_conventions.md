@@ -1,21 +1,18 @@
 ---
 title: RLM Curation Runtime Conventions
-summary: RLM curation runtime conventions covering single-pass recon guidance, chunked extraction, UPSERT-first curation, verification expectations, and reporting requirements.
+summary: RLM curation uses precomputed recon for small contexts, UPSERT-based curation, and verification via applied file paths; the reviewed fix also pinned QEMU setup before Buildx and verified the build.
 tags: []
-related: [facts/conventions/context.md]
+related: [facts/conventions/context.md, facts/project/context.md, docs/plans/active_caplets_planning_documents.md]
 keywords: []
 createdAt: '2026-05-20T13:23:05.390Z'
-updatedAt: '2026-05-21T09:35:02.619Z'
+updatedAt: '2026-05-21T11:20:11.122Z'
 ---
-
 ## Reason
-
-Persist the runtime conventions and workflow rules for RLM-based curation
+Document runtime and workflow conventions from the curation instructions and conversation outcome.
 
 ## Raw Concept
-
 **Task:**
-Document the runtime conventions for RLM-based curation workflows.
+Document the curation runtime conventions and the outcome of the PR review fix.
 
 **Changes:**
 - Established single-pass curation for the current context.
@@ -58,15 +55,23 @@ Document the runtime conventions for RLM-based curation workflows.
 - Captured the precomputed-recon shortcut rule
 - Captured the single-pass versus chunked extraction guidance
 - Captured the verification and reporting expectations
+- Clarified that single-pass recon is already computed and should not be recomputed.
+- Recorded the required timeout for any code_exec call that uses mapExtract.
+- Captured the push of commit 843c7dd resolving remaining review threads.
+- Captured the QEMU-before-Buildx change for multi-arch GHCR builds.
 
 **Files:**
 - .brv/context-tree/
 - .brv/context-tree/facts/conventions/
+- .brv/context-tree/facts/conventions/context.md
+- pnpm verify
+- docker compose config
+- docker build -t caplets:self-host-review .
 
 **Flow:**
-recon -> choose single-pass or chunked extraction -> curate with UPSERT -> verify applied file paths -> report status
+precomputed recon -> extraction/curation -> verify applied file paths; review fix -> push commit -> run verification commands
 
-**Timestamp:** 2026-05-21T09:34:56.226Z
+**Timestamp:** 2026-05-21T11:19:55.626Z
 
 **Author:** ByteRover context engineer
 
@@ -74,34 +79,27 @@ recon -> choose single-pass or chunked extraction -> curate with UPSERT -> verif
 - `^300000$` - Required timeout value for code_exec calls containing mapExtract
 
 ## Narrative
-
 ### Structure
-
-This knowledge records the curation workflow conventions used in RLM mode, including extraction, curation, and verification steps.
+This knowledge captures runtime conventions for the RLM curation workflow plus the specific PR-review fix outcome and verification commands.
 
 ### Dependencies
-
-Relies on recon metadata, optional mapExtract for chunked contexts, and the curate tool for final persistence.
+Depends on the curation toolchain conventions and the successful completion of repository verification commands.
 
 ### Highlights
-
-The workflow explicitly favors single-pass curation for small contexts and UPSERT-based updates for consistency.
+The conversation recorded that the unresolved review comments were addressed, commit 843c7dd was pushed, and the multi-arch GHCR build flow now registers QEMU before Buildx.
 
 ### Rules
-
-Do NOT print raw context. Do NOT call tools.curation.recon when recon has already been computed. Proceed directly to extraction.
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction.
+IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options).
+Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ### Examples
-
 Use single-pass when suggestedMode is single-pass; use mapExtract only when chunking is needed, with timeout 300000 at the code_exec level.
 
 ## Facts
-
-- **rlm_curation_mode_selection**: Use recon first to determine whether curation should be single-pass or chunked. [convention]
-- **rlm_single_pass_flow**: For small contexts, skip chunking entirely and curate directly after the available recon; when recon is precomputed, do not call recon again. [convention]
-- **rlm_chunked_extraction_timeout**: For chunked contexts, use mapExtract with timeout 300000 on the code_exec call itself. [convention]
-- **curate_operation_default**: Use UPSERT as the default curation operation. [convention]
-- **curation_verification_rule**: After curation, verify result.summary.failed equals 0. [convention]
-- **no_raw_context_printing**: Do not print raw context during curation. [convention]
-- **precomputed_recon_handling**: Do not call tools.curation.recon when recon has already been pre-computed. [convention]
-- **verification_method**: Verify curation using result.applied[].filePath instead of readFile. [convention]
+- **rlm_curation_mode**: For small curation contexts, recon is pre-computed and the workflow should proceed directly to extraction when suggestedMode is single-pass. [convention]
+- **mapextract_timeout**: When using mapExtract, the code_exec call itself must use timeout: 300000. [convention]
+- **verification_method**: Verification should use result.applied[].filePath and should not call readFile for verification. [convention]
+- **pr_review_fix_commit**: The fix addressed unresolved PR review comments, including outside-diff comments, and pushed commit 843c7dd fix: resolve remaining review threads. [project]
+- **qemu_before_buildx**: The fixes included adding pinned docker/setup-qemu-action before Buildx for multi-arch GHCR builds. [project]
+- **verification_commands**: The fixes were verified with pnpm verify, docker compose config, and docker build -t caplets:self-host-review . [project]
