@@ -1,4 +1,3 @@
-import { z } from "zod";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { CapletSetManager } from "./caplet-sets";
 import type { CapletConfig } from "./config";
@@ -11,7 +10,6 @@ import type { OpenApiManager } from "./openapi";
 import type { ServerRegistry } from "./registry";
 import { projectStructuredContent, validateFieldSelection } from "./field-selection";
 import {
-  generatedToolInputSchema,
   generatedToolInputSchemaForCaplet,
   mcpOperations,
   operations,
@@ -20,7 +18,7 @@ import { compactStructuredContent } from "./result-content";
 
 export { generatedToolInputSchema } from "./generated-tool-input-schema";
 
-export type GeneratedServerToolRequest = z.infer<typeof generatedToolInputSchema>;
+export type GeneratedServerToolRequest = RequiredOperationRequest;
 
 type ParsedOperationRequest = RequiredOperationRequest & Record<string, unknown>;
 

@@ -10,6 +10,22 @@ vi.mock("@opencode-ai/plugin", () => ({
       }),
       record: () => ({ optional: () => ({ type: "record", optional: true }) }),
       unknown: () => ({ type: "unknown" }),
+      literal: (value: string) => ({ type: "literal", value }),
+      object: (shape: unknown) => ({
+        type: "object",
+        shape,
+        strict: () => ({
+          type: "object",
+          shape,
+          strict: true,
+          optional: () => ({ type: "object", optional: true }),
+        }),
+      }),
+      union: (options: unknown[]) => ({
+        type: "union",
+        options,
+        optional: () => ({ type: "union", options, optional: true }),
+      }),
       array: () => ({ min: () => ({ optional: () => ({ type: "array", optional: true }) }) }),
     },
   }),

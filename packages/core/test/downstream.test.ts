@@ -134,6 +134,36 @@ describe("downstream stdio lifecycle", () => {
     }
   });
 
+  it("omits non-serializable prompt arguments before forwarding to MCP", async () => {
+    const fixture = join(fixturesDir, "stdio-server.ts");
+    const config = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A useful fixture server.",
+          command: process.execPath,
+          args: ["--import", tsxImport, fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    const manager = new DownstreamManager(new ServerRegistry(config));
+
+    try {
+      const result = await manager.getPrompt(config.mcpServers.fixture!, "review_issue", {
+        issueId: "ABC-123",
+        ignored: () => "ignored",
+        nested: { id: 123 },
+      });
+
+      expect(result).toMatchObject({
+        messages: [{ role: "user", content: { type: "text", text: "Review ABC-123" } }],
+      });
+    } finally {
+      await manager.close();
+    }
+  });
+
   it("closes one managed stdio server so the next operation reconnects", async () => {
     const fixture = join(fixturesDir, "stdio-server.ts");
     const config = parseConfig({

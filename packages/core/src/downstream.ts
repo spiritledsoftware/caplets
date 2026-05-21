@@ -299,7 +299,7 @@ export class DownstreamManager {
         "PROMPT_NOT_FOUND",
         `Prompt ${promptName} was not found on ${server.server}`,
       );
-    const connection = await this.assertCapability(server, "prompts");
+    const connection = await this.connect(server);
     try {
       return await connection.client.getPrompt(
         { name: promptName, arguments: stringifyPromptArgs(args) },
@@ -744,12 +744,16 @@ function isTimeoutLike(error: unknown): boolean {
 }
 
 function stringifyPromptArgs(args: Record<string, unknown>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(args).map(([key, value]) => [
-      key,
-      typeof value === "string" ? value : JSON.stringify(value),
-    ]),
-  );
+  const stringified: Record<string, string> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string") {
+      stringified[key] = value;
+      continue;
+    }
+    const serialized = JSON.stringify(value);
+    if (typeof serialized === "string") stringified[key] = serialized;
+  }
+  return stringified;
 }
 
 function isAuthRemediationError(error: unknown): error is CapletsError {
