@@ -27,17 +27,17 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "@types/node": "^25.9.0",
-    "@typescript/native-preview": "7.0.0-dev.20260518.1",
+    "@types/node": "^25.9.1",
+    "@typescript/native-preview": "7.0.0-dev.20260519.1",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.5",
-    "oxfmt": "^0.50.0",
-    "oxlint": "^1.65.0",
-    "rolldown": "^1.0.1",
-    "tsx": "^4.22.2",
+    "oxfmt": "^0.51.0",
+    "oxlint": "^1.66.0",
+    "rolldown": "^1.0.2",
+    "tsx": "^4.22.3",
     "turbo": "^2.9.14",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.7"
   },
   "lint-staged": {
     "*.{js,cjs,mjs,ts,json,md,yml,yaml}": "oxfmt --check",
