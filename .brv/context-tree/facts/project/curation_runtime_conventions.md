@@ -1,18 +1,18 @@
 ---
 title: Curation Runtime Conventions
-summary: Runtime conventions for using the RLM curation workflow, including recon-first processing, single-pass handling for small contexts, and verification through applied file paths.
+summary: Curation runtime conventions for RLM-based context processing, including recon-first flow, silent reads, chunked extraction, verification, and UPSERT-first curation.
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-20T14:56:37.757Z'
-updatedAt: '2026-05-21T09:55:42.936Z'
+updatedAt: '2026-05-21T10:14:09.770Z'
 ---
 ## Reason
-Curate the runtime conventions and curation workflow from the provided RLM context.
+Capture runtime conventions and workflow constraints from the provided curation context
 
 ## Raw Concept
 **Task:**
-Document the RLM curation runtime conventions and workflow rules for this session
+Document runtime conventions for RLM curation using the provided context variables and precomputed recon result.
 
 **Changes:**
 - Use precomputed recon results when available
@@ -31,45 +31,40 @@ Document the RLM curation runtime conventions and workflow rules for this sessio
 - Captured the verification rule using result.applied[].filePath
 - Prefer single-pass processing for compact contexts
 - Verify curation via applied file paths
+- Single-pass curation is recommended for compact contexts
+- mapExtract requires timeout 300000 on the code_exec call when used
+- Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extracted facts
+- Preserved the single-pass recommendation
+- Captured mapExtract timeout and taskId invocation constraints
+- Recorded verification guidance and extraction organization helpers
 
 **Flow:**
-recon -> extract -> curate -> verify
+recon already computed -> extract directly -> group and dedup facts -> curate -> verify by filePath
 
-**Timestamp:** 2026-05-21T09:55:37.086Z
+**Timestamp:** 2026-05-21T10:14:03.666Z
 
 **Author:** ByteRover context engineering workflow
 
+**Patterns:**
+- `^timeout:s*300000$` - Required timeout for code_exec calls containing mapExtract
+
 ## Narrative
 ### Structure
-This context defines the operational workflow for curating compact RLM inputs and emphasizes immediate execution without confirmation.
+This note captures the operational conventions for curating RLM context: do not rerun recon when single-pass is suggested, keep extraction organized with grouping and deduplication, and verify by inspecting applied file paths.
 
 ### Dependencies
-Depends on precomputed recon metadata, task ID scoping, and the curate tool result object for verification.
+Depends on the precomputed recon result and the sandbox variables supplied for context, history, metadata, and task ID.
 
 ### Highlights
-Single-pass mode is recommended for small contexts, and verification should rely on result.applied[].filePath rather than file rereads.
+The workflow emphasizes immediate execution, single-pass handling for small contexts, and UPSERT-based curation with file-path verification.
 
 ### Rules
 Do NOT print raw context. Do NOT call tools.curation.recon when recon is already precomputed. For chunked extraction, pass taskId as a bare variable. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself.
 
 ## Facts
-- **curation_context_line**: The following is a conversation between a user and an AI assistant. [other]
-- **curation_context_line**: Curate only information with lasting value: facts, decisions, technical details, preferences, or notable outcomes. [other]
-- **curation_context_line**: Skip trivial messages such as greetings, acknowledgments ("ok", "thanks", "sure", "got it"), one-word replies, anything with no substantive content. [other]
-- **curation_context_line**: Conversation: [other]
-- **curation_context_line**: --- [other]
-- **curation_context_line**: [user]: Implement the plan @docs/plans/2026-05-21-docker-self-hosting.md entirely. Implement inline, no worktree or subagents required [other]
-- **curation_context_line**: [assistant]: I'm using the executing-plans skill to implement this plan. [other]
-- **curation_context_line**: [assistant]: Implemented the Docker self-hosting plan inline. [other]
-- **curation_context_line**: Changed files: [other]
-- **curation_context_line**: - `.dockerignore` [other]
-- **curation_context_line**: - `Dockerfile` [other]
-- **curation_context_line**: - `docker-compose.yml` [other]
-- **curation_context_line**: - `README.md` [other]
-- **curation_context_line**: Commits created: [other]
-- **curation_context_line**: - `35de342 build: add docker ignore rules` [other]
-- **curation_context_line**: - `10cf86a build: add caplets docker image` [other]
-- **curation_context_line**: - `2d62990 build: add docker compose service` [other]
-- **curation_context_line**: - `a4be4f8 docs: document docker self-hosting` [other]
-- **curation_context_line**: - `9f6fc07 fix: polish docker self-hosting setup` [other]
-- **curation_context_line**: Verification run: [other]
+- **rlm_curation_approach**: Curate tasks should use the RLM approach with the provided context, history, metadata, and task ID variables. [convention]
+- **recon_single_pass**: Recon is already computed and should not be called again when suggestedMode is single-pass. [convention]
+- **mapextract_task_id**: For chunked extraction, tools.curation.mapExtract requires taskId to be passed as a bare variable. [convention]
+- **mapextract_timeout**: Any code_exec call containing mapExtract must use timeout: 300000 on the code_exec tool call itself. [convention]
+- **verification_via_file_path**: Verification should be done via result.applied[].filePath and should not use readFile for verification. [convention]
+- **extraction_organization**: tools.curation.groupBySubject and tools.curation.dedup should be used to organize extractions. [convention]

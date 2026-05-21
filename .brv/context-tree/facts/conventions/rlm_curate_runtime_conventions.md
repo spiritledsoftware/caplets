@@ -1,18 +1,18 @@
 ---
 title: RLM Curate Runtime Conventions
-summary: RLM curation runtime conventions covering single-pass handling, mapExtract timeout/taskId usage, and verification via applied file paths
+summary: RLM curation runtime conventions for single-pass processing, extraction, verification, and history recording.
 tags: []
 related: [facts/conventions/context.md, facts/project/context.md]
 keywords: []
 createdAt: '2026-05-20T14:24:21.257Z'
-updatedAt: '2026-05-21T10:03:56.798Z'
+updatedAt: '2026-05-21T10:21:39.246Z'
 ---
 ## Reason
-Capture runtime instructions and verification rules from the curation context
+Capture the curation runtime instructions and operational constraints from the current RLM context.
 
 ## Raw Concept
 **Task:**
-Document the runtime conventions for RLM curation execution and verification
+Document the RLM curation runtime conventions used for this session.
 
 **Changes:**
 - Use single-pass mode when recon already recommends it
@@ -49,34 +49,48 @@ Document the runtime conventions for RLM curation execution and verification
 - Recon is precomputed and single-pass should be used for this context
 - mapExtract requires a bare taskId variable when chunking is needed
 - Verification should rely on applied file paths instead of readFile
+- Use pre-computed recon instead of calling recon again.
+- Proceed directly to extraction for single-pass contexts.
+- Enforce bare-variable taskId and 300000 ms timeout for mapExtract calls.
+- Verify curation results via result.applied[].filePath without readFile.
+- Use precomputed recon results instead of recomputing reconnaissance.
+- Proceed directly to extraction when suggestedMode is single-pass.
+- Verify curated outputs through applied file paths rather than read-back verification.
 
 **Files:**
 - .brv/context-tree/facts/conventions/rlm_curate_runtime_conventions.md
 
 **Flow:**
-recon -> single-pass curate -> verify applied file paths -> record progress
+precomputed recon -> extraction -> curate -> verify applied paths -> record progress
 
-**Timestamp:** 2026-05-21T10:03:50.667Z
+**Timestamp:** 2026-05-21T10:21:32.929Z
 
 **Author:** ByteRover context engineer
 
+**Patterns:**
+- `timeout: 300000` - Required timeout for any code_exec call containing mapExtract
+- `taskId: __taskId_*` - Pass taskId as a bare variable, not a string
+- `result.applied[].filePath` - Verification source for curated file paths
+
 ## Narrative
 ### Structure
-This knowledge captures execution constraints for RLM curation, including how to proceed when recon has already recommended single-pass processing.
+This note captures the operational rules for running RLM curation in single-pass mode, including the constraint to avoid printing raw context and the requirement to use the provided taskId for extraction when needed.
 
 ### Dependencies
-Depends on the curation sandbox helpers: tools.curate(), tools.curation.mapExtract(), and result.applied verification data.
+Depends on precomputed recon data, the context/history/metadata variables, and the curated knowledge tree as the target store.
 
 ### Highlights
-Preserves the instruction set for autonomous curation, including the required timeout for mapExtract calls and the prohibition on readFile-based verification.
+The run explicitly forbids calling tools.curation.recon again and instructs verification via result.applied[].filePath only.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable, not a string. IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options). Use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions. Verify via result.applied[].filePath — do NOT call readFile for verification.
+IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction.
+For chunked extraction use tools.curation.mapExtract(). Pass taskId: __taskId_d37d89f0_90c3_484b_bc24_c0395c2fca73 (bare variable, not a string).
+IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options).
+Verify via result.applied[].filePath — do NOT call readFile for verification.
 
 ### Examples
 The current recon result suggests single-pass mode with charCount 1472, lineCount 25, and messageCount 0.
 
 ## Facts
-- **rlm_curation_mode**: Context is a curated RLM curation workflow note with recon already computed and suggestedMode single-pass [convention]
-- **map_extract_timeout_and_taskid**: For chunked extraction, tools.curation.mapExtract() must receive taskId as a bare variable and code_exec timeout must be 300000 [convention]
-- **verification_method**: Verification should use result.applied[].filePath and must not call readFile for verification [convention]
+- **rlm_curation_mode**: This curation run uses the RLM approach with single-pass extraction. [convention]
+- **curation_context_size**: The provided context is 4846 characters long and contains 53 lines. [project]
