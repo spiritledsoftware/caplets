@@ -19,6 +19,7 @@
 
 ## Generated And Checked Files
 
+- Put design specs in `docs/specs/`, implementation plans in `docs/plans/`, and product requirements documents in `docs/product/`; do not use `docs/superpowers/` in this repo.
 - Config schema source of truth is Zod in `packages/core/src/config.ts`; update `schemas/caplets-config.schema.json` with `pnpm schema:generate` and verify with `pnpm schema:check`.
 - `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` fails if the committed report is stale.
 - Live benchmarks are opt-in only: build first, then run `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode` or `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi`; results are local/model-dependent and not deterministic product claims.

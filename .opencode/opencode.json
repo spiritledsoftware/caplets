@@ -5,7 +5,7 @@
       "@caplets/opencode@file:./packages/opencode",
       {
         "mode": "local",
-        "remote": {
+        "server": {
           "url": "http://localhost:5387/mcp"
         }
       }

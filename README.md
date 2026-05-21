@@ -124,6 +124,46 @@ With `CAPLETS_SERVER_URL=http://127.0.0.1:5387/caplets`, the derived endpoints a
 
 `caplets serve --transport http` serves plain HTTP. For non-loopback or network access, expose it only through HTTPS/TLS (for example, a reverse proxy or secure tunnel) and enable Basic Auth; Basic Auth over plain HTTP exposes credentials. Keep credentials out of plugin manifests.
 
+#### Docker Compose self-hosting
+
+This repository includes a source-build Docker image and Compose service for running the HTTP service from the checked-out source tree:
+
+```sh
+CAPLETS_SERVER_PASSWORD=change-me docker compose up --build
+```
+
+By default, Compose publishes the service on loopback only:
+
+- Base URL: `http://127.0.0.1:5387`
+- MCP endpoint: `http://127.0.0.1:5387/mcp`
+- Control endpoint: `http://127.0.0.1:5387/control`
+- Health endpoint: `http://127.0.0.1:5387/healthz`
+
+The service stores Caplets config and auth state in a Docker named volume mounted at `/data`. To use a host-visible bind mount instead, replace this Compose volume entry:
+
+```yaml
+volumes:
+  - caplets-data:/data
+```
+
+with:
+
+```yaml
+volumes:
+  - ./data:/data
+```
+
+To expose the service to a LAN interface or reverse proxy, set an explicit bind address and public base URL:
+
+```sh
+CAPLETS_BIND_ADDRESS=0.0.0.0 \
+CAPLETS_SERVER_URL=https://caplets.example.com \
+CAPLETS_SERVER_PASSWORD=change-me \
+docker compose up --build
+```
+
+Only expose Caplets beyond loopback through HTTPS/TLS and Basic Auth. `CAPLETS_SERVER_PASSWORD` protects both the MCP and control endpoints; downstream provider tokens and auth files remain server-owned inside the mounted `/data` location.
+
 Native integrations and remote-capable CLI commands read remote client settings from environment variables:
 
 ```sh

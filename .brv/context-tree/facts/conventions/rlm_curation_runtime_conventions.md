@@ -1,18 +1,18 @@
 ---
 title: RLM Curation Runtime Conventions
-summary: Runtime conventions for RLM curation, including recon-first workflow, single-pass handling for small contexts, mapExtract chunking for larger contexts, and verification via applied file paths.
+summary: RLM curation runtime conventions covering single-pass recon guidance, chunked extraction, UPSERT-first curation, verification expectations, and reporting requirements.
 tags: []
 related: [facts/conventions/context.md]
 keywords: []
 createdAt: '2026-05-20T13:23:05.390Z'
-updatedAt: '2026-05-20T18:39:31.988Z'
+updatedAt: '2026-05-21T09:35:02.619Z'
 ---
 ## Reason
-Document runtime curation constraints and workflow requirements from the current RLM context.
+Persist the runtime conventions and workflow rules for RLM-based curation
 
 ## Raw Concept
 **Task:**
-Curate RLM approach instructions for context-driven curation.
+Document the runtime conventions for RLM-based curation workflows.
 
 **Changes:**
 - Established single-pass curation for the current context.
@@ -46,15 +46,24 @@ Curate RLM approach instructions for context-driven curation.
 - Single-pass mode is appropriate for the 1402-character, 31-line context.
 - Use mapExtract with taskId only when chunking is required.
 - Verify curation via result.applied[].filePath without readFile-based verification.
+- Captured single-pass recommendation from precomputed recon
+- Recorded context size and message count
+- Noted availability of task ID and precomputed recon
+- Captured the single-pass vs chunked decision rule
+- Captured mapExtract timeout and taskId requirements
+- Captured verification and success-check requirements
+- Captured the precomputed-recon shortcut rule
+- Captured the single-pass versus chunked extraction guidance
+- Captured the verification and reporting expectations
 
 **Files:**
 - .brv/context-tree/
 - .brv/context-tree/facts/conventions/
 
 **Flow:**
-recon -> extract -> dedup/group -> curate -> verify
+recon -> choose single-pass or chunked extraction -> curate with UPSERT -> verify applied file paths -> report status
 
-**Timestamp:** 2026-05-20T18:39:26.083Z
+**Timestamp:** 2026-05-21T09:34:56.226Z
 
 **Author:** ByteRover context engineer
 
@@ -63,13 +72,26 @@ recon -> extract -> dedup/group -> curate -> verify
 
 ## Narrative
 ### Structure
-The instructions define an RLM curation workflow with a pre-computed recon result, a single-pass recommendation, and explicit verification guidance.
+This knowledge records the curation workflow conventions used in RLM mode, including extraction, curation, and verification steps.
 
 ### Dependencies
-Depends on sandbox variables for context, history, metadata, and taskId; uses tools.curation helpers and tools.curate.
+Relies on recon metadata, optional mapExtract for chunked contexts, and the curate tool for final persistence.
 
 ### Highlights
-Emphasizes not printing raw context, not calling recon again, and using groupBySubject and dedup when extraction results need organization.
+The workflow explicitly favors single-pass curation for small contexts and UPSERT-based updates for consistency.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been precomputed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself. Verify via result.applied[].filePath — do NOT call readFile for verification.
+Do NOT print raw context. Do NOT call tools.curation.recon when recon has already been computed. Proceed directly to extraction.
+
+### Examples
+Use single-pass when suggestedMode is single-pass; use mapExtract only when chunking is needed, with timeout 300000 at the code_exec level.
+
+## Facts
+- **rlm_curation_mode_selection**: Use recon first to determine whether curation should be single-pass or chunked. [convention]
+- **rlm_single_pass_flow**: For small contexts, skip chunking entirely and curate in two calls: recon plus curate. [convention]
+- **rlm_chunked_extraction_timeout**: For chunked contexts, use mapExtract with timeout 300000 on the code_exec call itself. [convention]
+- **curate_operation_default**: Use UPSERT as the default curation operation. [convention]
+- **curation_verification_rule**: After curation, verify result.summary.failed equals 0. [convention]
+- **no_raw_context_printing**: Do not print raw context during curation. [convention]
+- **precomputed_recon_handling**: Do not call tools.curation.recon when recon has already been pre-computed. [convention]
+- **verification_method**: Verify curation using result.applied[].filePath instead of readFile. [convention]

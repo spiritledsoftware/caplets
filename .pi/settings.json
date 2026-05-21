@@ -2,7 +2,7 @@
   "packages": ["npm:@caplets/pi@file:../../packages/pi"],
   "caplets": {
     "mode": "local",
-    "remote": {
+    "server": {
       "url": "http://localhost:5387/mcp"
     }
   }

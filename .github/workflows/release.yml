@@ -10,6 +10,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  packages: write
 
 env:
   # CI runs explicit quality gates; do not let Changesets' git pushes invoke
@@ -47,6 +48,7 @@ jobs:
         run: pnpm verify
 
       - name: Create release PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
@@ -55,3 +57,58 @@ jobs:
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether CLI package was published
+        if: steps.changesets.outputs.published == 'true'
+        id: cli-package
+        env:
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          cli_published=$(node <<'NODE'
+          const publishedPackages = JSON.parse(process.env.PUBLISHED_PACKAGES || '[]');
+          const cliPublished = publishedPackages.some((pkg) => pkg && pkg.name === 'caplets');
+          process.stdout.write(cliPublished ? 'true' : 'false');
+          NODE
+          )
+          echo "published=${cli_published}" >> "$GITHUB_OUTPUT"
+
+      - name: Read Docker image version
+        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        id: image-version
+        run: |
+          version=$(node -p "require('./packages/cli/package.json').version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        id: docker-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/spiritledsoftware/caplets
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.image-version.outputs.version }}
+            type=raw,value=v${{ steps.image-version.outputs.version }}
+            type=sha,format=short,prefix=sha-
+
+      - name: Publish Docker image
+        if: steps.changesets.outputs.published == 'true' && steps.cli-package.outputs.published == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: ${{ steps.docker-meta.outputs.labels }}

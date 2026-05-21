@@ -1,0 +1,32 @@
+services:
+  caplets:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: caplets:latest
+    restart: unless-stopped
+    environment:
+      CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
+      CAPLETS_SERVER_USER: ${CAPLETS_SERVER_USER:-caplets}
+      CAPLETS_SERVER_PASSWORD: ${CAPLETS_SERVER_PASSWORD:-}
+      XDG_CONFIG_HOME: /data/config
+      XDG_STATE_HOME: /data/state
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${CAPLETS_BIND_ADDRESS:-127.0.0.1}:${CAPLETS_PORT:-5387}:5387"
+    volumes:
+      - caplets-data:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:5387/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  caplets-data:
