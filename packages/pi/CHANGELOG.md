@@ -1,5 +1,13 @@
 # @caplets/pi
 
+## 0.5.1
+
+### Patch Changes
+
+- da9af23: Bump dependencies to latest
+- Updated dependencies [da9af23]
+  - @caplets/core@0.18.1
+
 ## 0.5.0
 
 ### Minor Changes
