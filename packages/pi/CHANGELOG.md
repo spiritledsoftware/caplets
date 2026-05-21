@@ -1,5 +1,11 @@
 # @caplets/pi
 
+## 0.4.1
+
+### Patch Changes
+
+- dd56fd0: Fix pi peer dependency resolution
+
 ## 0.4.0
 
 ### Minor Changes
