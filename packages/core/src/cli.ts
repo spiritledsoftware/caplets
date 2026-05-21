@@ -10,6 +10,12 @@ import {
 import { loginAuth, logoutAuth, listAuth, formatAuthRows, type AuthStatusRow } from "./cli/auth";
 import { initConfig } from "./cli/init";
 import {
+  completeCliWords,
+  completionScript,
+  completionShells,
+  type CompletionShell,
+} from "./cli/completion";
+import {
   formatCapletList,
   formatConfigPaths,
   listCaplets,
@@ -94,6 +100,34 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut,
       writeErr,
       outputError: (value, write) => write(value),
+    });
+
+  program
+    .command("completion")
+    .description("Print a shell completion script.")
+    .argument("<shell>", "completion shell: bash, zsh, or fish")
+    .action((shell: string) => {
+      if (!completionShells.includes(shell as CompletionShell)) {
+        throw new CapletsError("REQUEST_INVALID", "completion shell must be bash, zsh, or fish");
+      }
+      writeOut(completionScript(shell as CompletionShell));
+    });
+
+  program
+    .command("__complete", { hidden: true })
+    .description("Internal shell completion endpoint.")
+    .option("--shell <shell>", "completion shell")
+    .allowUnknownOption(true)
+    .argument("[words...]", "words to complete")
+    .action(async (words: string[], options: { shell?: string }) => {
+      const shell = completionShells.includes(options.shell as CompletionShell)
+        ? (options.shell as CompletionShell)
+        : "bash";
+      const remote = remoteClientForCli(io);
+      const suggestions = remote
+        ? ((await remote.request("complete_cli" as RemoteCliCommand, { shell, words })) as string[])
+        : completeCliWords(words, { configPath: currentConfigPath() });
+      if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
 
   program
