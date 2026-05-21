@@ -113,6 +113,75 @@ describe("remote CLI routing", () => {
     );
   });
 
+  it("formats new MCP commands as markdown by default and honors --format", async () => {
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { command: string };
+      requests.push({ url: String(url), body: init?.body });
+      if (body.command === "list_resources") {
+        return Response.json({
+          ok: true,
+          result: {
+            structuredContent: {
+              result: {
+                id: "docs",
+                resources: [{ kind: "resource", uri: "file:///repo/README.md", name: "README" }],
+                resourceTemplates: [
+                  { kind: "resourceTemplate", uriTemplate: "file:///repo/{path}", name: "File" },
+                ],
+              },
+            },
+          },
+        });
+      }
+      if (body.command === "read_resource") {
+        return Response.json({
+          ok: true,
+          result: { contents: [{ uri: "file:///repo/README.md", text: "# Hello" }] },
+        });
+      }
+      return Response.json({
+        ok: true,
+        result: { completion: { values: ["src/index.ts"] } },
+      });
+    });
+
+    const io = {
+      env: { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets" },
+      fetch,
+      writeOut: (value: string) => out.push(value),
+    };
+
+    await runCli(["list-resources", "docs"], io);
+    await runCli(["read-resource", "docs", "file:///repo/README.md", "--format", "plain"], io);
+    await runCli(
+      [
+        "complete",
+        "docs",
+        "--resource-template",
+        "file:///repo/{path}",
+        "--argument",
+        "path",
+        "--value",
+        "src/",
+        "--format",
+        "json",
+      ],
+      io,
+    );
+
+    expect(out[0]).toContain("## MCP resources for `docs`");
+    expect(out[0]).toContain("- resource: `file:///repo/README.md`");
+    expect(out[0]).not.toContain('"resources"');
+    expect(out[1]).toContain("Resource file:///repo/README.md");
+    expect(out[1]).toContain("# Hello");
+    expect(JSON.parse(out[2] ?? "{}")).toEqual({ completion: { values: ["src/index.ts"] } });
+    expect(
+      requests.map((request) => JSON.parse(String((request as { body: string }).body)).command),
+    ).toEqual(["list_resources", "read_resource", "complete"]);
+  });
+
   it("keeps config path local-only in remote mode", async () => {
     const fetch = vi.fn(async () => Response.json({ ok: true, result: null }));
     const out: string[] = [];

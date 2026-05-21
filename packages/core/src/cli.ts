@@ -1249,6 +1249,54 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         .filter((line): line is string => line !== undefined)
         .join("\n");
     }
+    case "list_resources":
+    case "search_resources": {
+      const resources = Array.isArray(payload.resources) ? payload.resources : [];
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      const matches = Array.isArray(payload.matches)
+        ? payload.matches
+        : [...resources, ...templates];
+      return [
+        `## MCP resources for \`${id}\``,
+        "",
+        `${matches.length} item${matches.length === 1 ? "" : "s"} found.`,
+        "",
+        ...formatResourceLines(matches, "markdown"),
+      ].join("\n");
+    }
+    case "list_resource_templates": {
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      return [
+        `## MCP resource templates for \`${id}\``,
+        "",
+        ...formatResourceLines(templates, "markdown"),
+      ].join("\n");
+    }
+    case "read_resource":
+      return [
+        `## Resource \`${String(request.uri ?? "")}\``,
+        "",
+        summarizeResourceRead(payload),
+        "",
+        "Use `--format json` to inspect all contents.",
+      ].join("\n");
+    case "list_prompts":
+    case "search_prompts": {
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      return [`## MCP prompts for \`${id}\``, "", ...formatPromptLines(prompts, "markdown")].join(
+        "\n",
+      );
+    }
+    case "get_prompt":
+      return [
+        `## Prompt \`${String(request.caplet)}.${String(request.prompt)}\``,
+        "",
+        summarizePromptResult(payload),
+        "",
+        "Use `--format json` to inspect all messages.",
+      ].join("\n");
+    case "complete":
+      return [`## Completion for \`${id}\``, "", summarizeCompletionResult(payload)].join("\n");
     default:
       return JSON.stringify(payload, null, 2);
   }
@@ -1326,6 +1374,43 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
         .filter((line): line is string => Boolean(line))
         .join("\n");
     }
+    case "list_resources":
+    case "search_resources": {
+      const resources = Array.isArray(payload.resources) ? payload.resources : [];
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      const matches = Array.isArray(payload.matches)
+        ? payload.matches
+        : [...resources, ...templates];
+      return [
+        `MCP resources for ${id} (${matches.length}):`,
+        ...formatResourceLines(matches, "plain"),
+      ].join("\n");
+    }
+    case "list_resource_templates": {
+      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+      return [`MCP resource templates for ${id}:`, ...formatResourceLines(templates, "plain")].join(
+        "\n",
+      );
+    }
+    case "read_resource":
+      return [
+        `Resource ${String(request.uri ?? "")}`,
+        summarizeResourceRead(payload),
+        "Use --format json to inspect all contents.",
+      ].join("\n");
+    case "list_prompts":
+    case "search_prompts": {
+      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      return [`MCP prompts for ${id}:`, ...formatPromptLines(prompts, "plain")].join("\n");
+    }
+    case "get_prompt":
+      return [
+        `Prompt ${String(request.caplet)}.${String(request.prompt)}`,
+        summarizePromptResult(payload),
+        "Use --format json to inspect all messages.",
+      ].join("\n");
+    case "complete":
+      return [`Completion for ${id}`, summarizeCompletionResult(payload)].join("\n");
     default:
       return JSON.stringify(payload, null, 2);
   }
@@ -1354,6 +1439,66 @@ function formatToolLines(tools: unknown[], format: "markdown" | "plain"): string
     const suffix = flags ? ` (${flags})` : "";
     return `- ${displayName}${suffix}${tool.description ? ` — ${compactDescription(String(tool.description))}` : ""}`;
   });
+}
+
+function formatResourceLines(resources: unknown[], format: "markdown" | "plain"): string[] {
+  if (resources.length === 0) return ["- none"];
+  return resources.map((resource) => {
+    if (!isPlainObject(resource)) return `- ${String(resource)}`;
+    const name = String(resource.uri ?? resource.uriTemplate ?? "unknown");
+    const displayName = format === "markdown" ? `\`${name}\`` : name;
+    const label = typeof resource.name === "string" ? ` (${resource.name})` : "";
+    const kind = typeof resource.kind === "string" ? `${resource.kind}: ` : "";
+    const description = resource.description
+      ? ` — ${compactDescription(String(resource.description))}`
+      : "";
+    return `- ${kind}${displayName}${label}${description}`;
+  });
+}
+
+function formatPromptLines(prompts: unknown[], format: "markdown" | "plain"): string[] {
+  if (prompts.length === 0) return ["- none"];
+  return prompts.map((prompt) => {
+    if (!isPlainObject(prompt)) return `- ${String(prompt)}`;
+    const name = String(prompt.prompt ?? prompt.name ?? "unknown");
+    const displayName = format === "markdown" ? `\`${name}\`` : name;
+    const args = Array.isArray(prompt.arguments) ? ` (${prompt.arguments.length} args)` : "";
+    const description = prompt.description
+      ? ` — ${compactDescription(String(prompt.description))}`
+      : "";
+    return `- ${displayName}${args}${description}`;
+  });
+}
+
+function summarizeResourceRead(payload: Record<string, unknown>): string {
+  const contents = Array.isArray(payload.contents) ? payload.contents : [];
+  if (contents.length === 0) return "No contents returned.";
+  const first = contents.find(isPlainObject);
+  if (!first) return `${contents.length} content item${contents.length === 1 ? "" : "s"} returned.`;
+  const value = typeof first.text === "string" ? first.text : first.blob;
+  return (
+    previewValue(value) ??
+    `${contents.length} content item${contents.length === 1 ? "" : "s"} returned.`
+  );
+}
+
+function summarizePromptResult(payload: Record<string, unknown>): string {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  if (messages.length === 0) return "No messages returned.";
+  const first = messages.find(isPlainObject);
+  if (!first) return `${messages.length} message${messages.length === 1 ? "" : "s"} returned.`;
+  const content = isPlainObject(first.content) ? first.content : undefined;
+  return (
+    previewValue(content?.text ?? first.content) ??
+    `${messages.length} message${messages.length === 1 ? "" : "s"} returned.`
+  );
+}
+
+function summarizeCompletionResult(payload: Record<string, unknown>): string {
+  const completion = isPlainObject(payload.completion) ? payload.completion : undefined;
+  const values = Array.isArray(completion?.values) ? completion.values : [];
+  if (values.length > 0) return values.map((value) => `- ${String(value)}`).join("\n");
+  return previewValue(payload) ?? "No completions returned.";
 }
 
 function compactDescription(value: string): string {
