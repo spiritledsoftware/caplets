@@ -1866,6 +1866,74 @@ describe("cli init", () => {
   });
 });
 
+describe("cli completion commands", () => {
+  it("prints completion scripts", async () => {
+    const out: string[] = [];
+
+    await runCli(["completion", "bash"], { writeOut: (value) => out.push(value) });
+
+    expect(out.join("")).toContain("caplets __complete --shell bash");
+    expect(out.join("")).toContain("complete -o default -F _caplets_completions caplets");
+  });
+
+  it("runs the hidden completion endpoint", async () => {
+    const out: string[] = [];
+
+    await runCli(["__complete", "--shell", "bash", "--", "add", ""], {
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("").split("\n").filter(Boolean)).toEqual([
+      "cli",
+      "mcp",
+      "openapi",
+      "graphql",
+      "http",
+    ]);
+  });
+
+  it("maps the PowerShell trailing-space sentinel before resolving completions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-completion-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      await runCli(
+        ["__complete", "--shell", "powershell", "--", "call-tool", "__CAPLETS_TRAILING_SPACE__"],
+        {
+          env: { CAPLETS_CONFIG: configPath },
+          writeOut: (value) => out.push(value),
+        },
+      );
+
+      expect(out.join("").split("\n").filter(Boolean)).toEqual([
+        "catalog.",
+        "filesystem.",
+        "users.",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses configured Caplet IDs in local completion", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-completion-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
+      await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+        env: { CAPLETS_CONFIG: configPath },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(out.join("").split("\n").filter(Boolean)).toEqual(["catalog", "filesystem", "users"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 function writeInspectionConfig(path: string): void {
   writeFileSync(
     path,

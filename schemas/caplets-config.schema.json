@@ -30,6 +30,43 @@
       "exclusiveMinimum": 0,
       "maximum": 50
     },
+    "completion": {
+      "default": {
+        "discoveryTimeoutMs": 750,
+        "overallTimeoutMs": 1500,
+        "cacheTtlMs": 300000,
+        "negativeCacheTtlMs": 30000
+      },
+      "description": "Shell completion discovery timeout and cache settings.",
+      "type": "object",
+      "properties": {
+        "discoveryTimeoutMs": {
+          "default": 750,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "overallTimeoutMs": {
+          "default": 1500,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cacheTtlMs": {
+          "default": 300000,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "negativeCacheTtlMs": {
+          "default": 30000,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false
+    },
     "mcpServers": {
       "default": {},
       "description": "Downstream MCP servers keyed by stable server ID.",

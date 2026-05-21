@@ -8,7 +8,15 @@ import {
   addOpenApiCaplet,
 } from "./cli/add";
 import { loginAuth, logoutAuth, listAuth, formatAuthRows, type AuthStatusRow } from "./cli/auth";
+import { cliCommands } from "./cli/commands";
 import { initConfig } from "./cli/init";
+import {
+  completeCliWords,
+  completionScript,
+  completionShells,
+  trailingSpaceCompletionToken,
+  type CompletionShell,
+} from "./cli/completion";
 import {
   formatCapletList,
   formatConfigPaths,
@@ -73,6 +81,10 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   }
 }
 
+function normalizeCompletionWords(words: string[]): string[] {
+  return words.map((word) => (word === trailingSpaceCompletionToken ? "" : word));
+}
+
 export function createProgram(io: CliIO = {}): Command {
   const writeOut = io.writeOut ?? ((value: string) => process.stdout.write(value));
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -97,7 +109,48 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("serve")
+    .command(cliCommands.completion)
+    .description("Print a shell completion script.")
+    .argument("<shell>", "completion shell: bash, zsh, fish, powershell, or cmd")
+    .action((shell: string) => {
+      if (!completionShells.includes(shell as CompletionShell)) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "completion shell must be bash, zsh, fish, powershell, or cmd",
+        );
+      }
+      writeOut(completionScript(shell as CompletionShell));
+    });
+
+  program
+    .command(cliCommands.completeHidden, { hidden: true })
+    .description("Internal shell completion endpoint.")
+    .option("--shell <shell>", "completion shell")
+    .allowUnknownOption(true)
+    .argument("[words...]", "words to complete")
+    .action(async (words: string[], options: { shell?: string }) => {
+      const shell = completionShells.includes(options.shell as CompletionShell)
+        ? (options.shell as CompletionShell)
+        : "bash";
+      const remote = remoteClientForCli(io);
+      const configPath = currentConfigPath();
+      const completionWords = normalizeCompletionWords(words);
+      let suggestions: string[] = [];
+      try {
+        suggestions = remote
+          ? ((await remote.request("complete_cli" as RemoteCliCommand, {
+              shell,
+              words: completionWords,
+            })) as string[])
+          : await completeCliWords(completionWords, configPath ? { configPath } : {});
+      } catch {
+        suggestions = [];
+      }
+      if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
+    });
+
+  program
+    .command(cliCommands.serve)
     .description("Serve configured Caplets as an MCP server.")
     .option("--transport <transport>", "server transport: stdio or http")
     .option("--host <host>", "HTTP bind host")
@@ -139,7 +192,7 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command("init")
+    .command(cliCommands.init)
     .description("Create a starter Caplets config file.")
     .option("--force", "overwrite an existing config file")
     .action(async (options: { force?: boolean }) => {
@@ -160,7 +213,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("list")
+    .command(cliCommands.list)
     .description("List configured Caplets.")
     .option("--all", "include disabled Caplets")
     .option("--json", "print JSON output")
@@ -189,7 +242,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("install")
+    .command(cliCommands.install)
     .description("Install Caplets from a repo's caplets directory.")
     .argument("<repo>", "local repo path, Git URL, or GitHub owner/repo")
     .argument("[caplets...]", "optional Caplet IDs to install")
@@ -227,7 +280,7 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
-  const add = program.command("add").description("Add generated Caplet files.");
+  const add = program.command(cliCommands.add).description("Add generated Caplet files.");
 
   add
     .command("cli")
@@ -432,7 +485,7 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command("get-caplet")
+    .command(cliCommands.getCaplet)
     .description("Print a configured Caplet card.")
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
@@ -453,7 +506,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("check-backend")
+    .command(cliCommands.checkBackend)
     .description("Check backend availability for a configured Caplet.")
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
@@ -474,7 +527,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("list-tools")
+    .command(cliCommands.listTools)
     .description("List downstream tools for a configured Caplet.")
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
@@ -495,7 +548,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("search-tools")
+    .command(cliCommands.searchTools)
     .description("Search downstream tools for a configured Caplet.")
     .argument("<caplet>", "configured Caplet ID")
     .argument("<query>", "search query")
@@ -526,7 +579,7 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command("get-tool")
+    .command(cliCommands.getTool)
     .description("Print one downstream tool schema.")
     .argument("<caplet.tool>", "qualified target, split on the first dot")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
@@ -548,7 +601,7 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   program
-    .command("call-tool")
+    .command(cliCommands.callTool)
     .description("Call one downstream tool.")
     .argument("<caplet.tool>", "qualified target, split on the first dot")
     .option("--args <json-object>", "JSON object of downstream tool arguments")
@@ -579,7 +632,7 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command("list-resources")
+    .command(cliCommands.listResources)
     .description("List MCP resources for a configured MCP Caplet.")
     .argument("<caplet>")
     .option("--limit <n>", "maximum number of resources to return", parsePositiveInteger)
@@ -602,7 +655,7 @@ export function createProgram(io: CliIO = {}): Command {
       ),
     );
   program
-    .command("search-resources")
+    .command(cliCommands.searchResources)
     .description("Search MCP resources and resource templates for a configured MCP Caplet.")
     .argument("<caplet>")
     .argument("<query>")
@@ -631,7 +684,7 @@ export function createProgram(io: CliIO = {}): Command {
         ),
     );
   program
-    .command("list-resource-templates")
+    .command(cliCommands.listResourceTemplates)
     .description("List MCP resource templates for a configured MCP Caplet.")
     .argument("<caplet>")
     .option("--limit <n>", "maximum number of templates to return", parsePositiveInteger)
@@ -654,7 +707,7 @@ export function createProgram(io: CliIO = {}): Command {
       ),
     );
   program
-    .command("read-resource")
+    .command(cliCommands.readResource)
     .description("Read one MCP resource by URI.")
     .argument("<caplet>")
     .argument("<uri>")
@@ -675,7 +728,7 @@ export function createProgram(io: CliIO = {}): Command {
       ),
     );
   program
-    .command("list-prompts")
+    .command(cliCommands.listPrompts)
     .description("List MCP prompts for a configured MCP Caplet.")
     .argument("<caplet>")
     .option("--limit <n>", "maximum number of prompts to return", parsePositiveInteger)
@@ -698,7 +751,7 @@ export function createProgram(io: CliIO = {}): Command {
       ),
     );
   program
-    .command("search-prompts")
+    .command(cliCommands.searchPrompts)
     .description("Search MCP prompts for a configured MCP Caplet.")
     .argument("<caplet>")
     .argument("<query>")
@@ -727,7 +780,7 @@ export function createProgram(io: CliIO = {}): Command {
         ),
     );
   program
-    .command("get-prompt")
+    .command(cliCommands.getPrompt)
     .description("Get one MCP prompt by name.")
     .argument("<caplet.prompt>", "qualified target, split on the first dot")
     .option("--args <json-object>", "JSON object of prompt arguments")
@@ -753,7 +806,7 @@ export function createProgram(io: CliIO = {}): Command {
       );
     });
   program
-    .command("complete")
+    .command(cliCommands.complete)
     .description("Complete an MCP prompt or resource-template argument.")
     .argument("<caplet>")
     .requiredOption("--argument <name>", "argument name")
@@ -791,7 +844,9 @@ export function createProgram(io: CliIO = {}): Command {
         ),
     );
 
-  const config = program.command("config").description("Inspect Caplets config locations.");
+  const config = program
+    .command(cliCommands.config)
+    .description("Inspect Caplets config locations.");
 
   config
     .command("path")
@@ -814,7 +869,9 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(formatConfigPaths(paths, options.format ?? "plain"));
     });
 
-  const auth = program.command("auth").description("Manage OAuth credentials for remote servers.");
+  const auth = program
+    .command(cliCommands.auth)
+    .description("Manage OAuth credentials for remote servers.");
 
   auth
     .command("login")

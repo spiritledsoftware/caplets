@@ -18,8 +18,11 @@ import { nestedSchema, schemaPath } from "./schema-utils";
 
 export {
   DEFAULT_AUTH_DIR,
+  DEFAULT_COMPLETION_CACHE_DIR,
   DEFAULT_CONFIG_PATH,
   PROJECT_CONFIG_FILE,
+  defaultCacheBaseDir,
+  defaultCompletionCacheDir,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
@@ -219,6 +222,14 @@ export type CapletConfig =
 export type CapletsOptions = {
   defaultSearchLimit: number;
   maxSearchLimit: number;
+  completion: CompletionConfig;
+};
+
+export type CompletionConfig = {
+  discoveryTimeoutMs: number;
+  overallTimeoutMs: number;
+  cacheTtlMs: number;
+  negativeCacheTtlMs: number;
 };
 
 export type CapletsConfig = {
@@ -802,6 +813,21 @@ function configSchemaFor(
         .max(50)
         .default(50)
         .describe("Maximum accepted search_tools limit."),
+      completion: z
+        .object({
+          discoveryTimeoutMs: z.number().int().positive().default(750),
+          overallTimeoutMs: z.number().int().positive().default(1500),
+          cacheTtlMs: z.number().int().nonnegative().default(300_000),
+          negativeCacheTtlMs: z.number().int().nonnegative().default(30_000),
+        })
+        .strict()
+        .default({
+          discoveryTimeoutMs: 750,
+          overallTimeoutMs: 1500,
+          cacheTtlMs: 300_000,
+          negativeCacheTtlMs: 30_000,
+        })
+        .describe("Shell completion discovery timeout and cache settings."),
       mcpServers: z
         .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
         .default({})
@@ -1607,6 +1633,7 @@ export function parseConfig(input: unknown): CapletsConfig {
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,
+      completion: parsed.data.completion,
     },
     mcpServers: servers,
     openapiEndpoints,

@@ -7,6 +7,7 @@ import {
   addOpenApiCaplet,
 } from "./../cli/add";
 import { assertLoginTarget, findAuthTarget, listAuthRows, logoutAuthResult } from "./../cli/auth";
+import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
@@ -108,6 +109,17 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
+  }
+
+  if (request.command === "complete_cli") {
+    const shell = optionalString(request.arguments, "shell") ?? "bash";
+    if (!completionShells.includes(shell as CompletionShell)) return [];
+    const engine = new CapletsEngine(context);
+    try {
+      return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
+    } finally {
+      await engine.close();
+    }
   }
 
   if (request.command === "auth_list") {
@@ -272,6 +284,17 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== "string" || value.length === 0) {
     throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalString(args: Record<string, unknown>, key: string): string | undefined {
+  const value = args[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a string`);
   }
   return value;
 }

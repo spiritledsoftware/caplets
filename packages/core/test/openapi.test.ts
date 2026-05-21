@@ -642,7 +642,16 @@ describe("native OpenAPI Caplets", () => {
       };
       const registry = new ServerRegistry({
         version: 1,
-        options: { defaultSearchLimit: 20, maxSearchLimit: 50 },
+        options: {
+          defaultSearchLimit: 20,
+          maxSearchLimit: 50,
+          completion: {
+            discoveryTimeoutMs: 750,
+            overallTimeoutMs: 1500,
+            cacheTtlMs: 300_000,
+            negativeCacheTtlMs: 30_000,
+          },
+        },
         mcpServers: {},
         openapiEndpoints: { remote: endpoint },
         graphqlEndpoints: {},

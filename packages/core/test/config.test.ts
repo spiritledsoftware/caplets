@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files";
-import { configJsonSchema, loadConfig, loadConfigWithSources, parseConfig } from "../src/config";
+import {
+  configJsonSchema,
+  defaultCompletionCacheDir,
+  loadConfig,
+  loadConfigWithSources,
+  parseConfig,
+} from "../src/config";
 import { CapletsError } from "../src/errors";
 
 describe("config", () => {
@@ -263,7 +269,16 @@ describe("config", () => {
     );
 
     const config = loadConfig(userConfigPath, projectConfigPath);
-    expect(config.options).toEqual({ defaultSearchLimit: 7, maxSearchLimit: 40 });
+    expect(config.options).toEqual({
+      defaultSearchLimit: 7,
+      maxSearchLimit: 40,
+      completion: {
+        discoveryTimeoutMs: 750,
+        overallTimeoutMs: 1500,
+        cacheTtlMs: 300_000,
+        negativeCacheTtlMs: 30_000,
+      },
+    });
     expect(Object.keys(config.mcpServers).sort()).toEqual(["projectOnly", "shared", "userOnly"]);
     expect(config.mcpServers.shared?.command).toBe("project-shared");
     rmSync(dir, { recursive: true, force: true });
@@ -1170,7 +1185,29 @@ describe("config", () => {
     expect(config.options).toEqual({
       defaultSearchLimit: 5,
       maxSearchLimit: 10,
+      completion: {
+        discoveryTimeoutMs: 750,
+        overallTimeoutMs: 1500,
+        cacheTtlMs: 300_000,
+        negativeCacheTtlMs: 30_000,
+      },
     });
+  });
+
+  it("uses platform-native completion cache paths", () => {
+    expect(
+      defaultCompletionCacheDir({ XDG_CACHE_HOME: "/tmp/cache" }, "/home/alice", "linux"),
+    ).toBe("/tmp/cache/caplets/completions");
+    expect(defaultCompletionCacheDir({}, "/Users/alice", "darwin")).toBe(
+      "/Users/alice/Library/Caches/caplets/completions",
+    );
+    expect(
+      defaultCompletionCacheDir(
+        { LOCALAPPDATA: "C:\\Users\\Alice\\AppData\\Local" },
+        "C:\\Users\\Alice",
+        "win32",
+      ),
+    ).toBe("C:\\Users\\Alice\\AppData\\Local\\caplets\\cache\\completions");
   });
 
   it("loads OpenAPI endpoints with defaults and explicit auth", () => {
