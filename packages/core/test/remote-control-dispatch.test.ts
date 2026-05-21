@@ -322,6 +322,34 @@ describe("dispatchRemoteCliRequest", () => {
     ).resolves.toMatchObject({ ok: true, result: { remote: true } });
   });
 
+  it("dispatches complete_cli using server-owned config", async () => {
+    const context = testContext();
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        mcpServers: {
+          github: { name: "GitHub", description: "GitHub project automation.", command: "node" },
+        },
+        httpApis: {
+          users: {
+            name: "Users",
+            description: "Manage users through the API.",
+            baseUrl: "https://api.example.com",
+            auth: { type: "none" },
+            actions: { list: { method: "GET", path: "/users" } },
+          },
+        },
+      }),
+    );
+
+    const response = await dispatchRemoteCliRequest(
+      { command: "complete_cli", arguments: { shell: "bash", words: ["get-caplet", ""] } },
+      context,
+    );
+
+    expect(response).toEqual({ ok: true, result: ["github", "users"] });
+  });
+
   it("lists and logs out server-side auth credentials", async () => {
     const fixture = remoteFixtureWithOAuth();
     writeTokenBundle(

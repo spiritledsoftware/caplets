@@ -16,6 +16,31 @@ afterEach(() => {
 });
 
 describe("remote CLI routing", () => {
+  it("routes hidden completion through remote control in remote mode", async () => {
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({ ok: true, result: ["github", "linear"] });
+      },
+    );
+
+    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+      },
+      fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toEqual([
+      { command: "complete_cli", arguments: { shell: "bash", words: ["get-caplet", ""] } },
+    ]);
+    expect(out.join("")).toBe("github\nlinear\n");
+  });
+
   it("routes list --json through remote control in remote mode", async () => {
     const requests: unknown[] = [];
     const out: string[] = [];
