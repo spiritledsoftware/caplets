@@ -37,4 +37,4 @@ COPY --from=build /app /app
 VOLUME ["/data"]
 EXPOSE 5387
 
-CMD ["pnpm", "--filter", "caplets", "exec", "caplets", "serve", "--transport", "http", "--host", "0.0.0.0"]
+CMD ["sh", "-c", "test -f /data/config/caplets/config.json || CAPLETS_MODE=local node packages/cli/dist/index.js init && exec env CAPLETS_MODE=local node packages/cli/dist/index.js serve --transport http --host 0.0.0.0"]
