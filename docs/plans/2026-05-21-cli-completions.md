@@ -653,8 +653,6 @@ caplets completion fish > ~/.config/fish/completions/caplets.fish
 
 Completions include command names, options, common enum values, and configured Caplet IDs. They do not probe downstream MCP servers, HTTP APIs, GraphQL endpoints, OpenAPI specs, or configured CLI tools during tab completion.
 
-````
-
 - [ ] **Step 2: Ensure package README mirrors root README**
 
 Because `packages/cli` copies the root README in `prepack`, either let the root README flow through unchanged or add the same section to `packages/cli/README.md` if the file is currently committed separately.
@@ -670,7 +668,7 @@ Create `.changeset/cli-completions.md`:
 ---
 
 Add Bash, Zsh, and Fish shell completion generation plus config-aware completion suggestions for the Caplets CLI.
-````
+```
 
 - [ ] **Step 4: Run docs-sensitive checks**
 

@@ -41,6 +41,25 @@ describe("remote CLI routing", () => {
     expect(out.join("")).toBe("github\nlinear\n");
   });
 
+  it("keeps hidden remote completion quiet when remote control fails", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const fetch = vi.fn(async () => Response.json({ ok: false, error: "server unavailable" }));
+
+    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+      },
+      fetch,
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(out).toEqual([]);
+    expect(err).toEqual([]);
+  });
+
   it("routes list --json through remote control in remote mode", async () => {
     const requests: unknown[] = [];
     const out: string[] = [];

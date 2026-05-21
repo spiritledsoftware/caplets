@@ -26,8 +26,9 @@ describe("CLI completion scripts", () => {
     expect(completionScript("powershell")).toContain("Register-ArgumentCompleter");
     expect(completionScript("powershell")).toContain("caplets __complete --shell powershell");
 
-    expect(completionScript("cmd")).toContain("doskey caplets=");
+    expect(completionScript("cmd")).toContain("doskey caplets-complete=");
     expect(completionScript("cmd")).toContain("caplets __complete --shell cmd");
+    expect(completionScript("cmd")).not.toContain("doskey caplets=caplets");
   });
 
   it("rejects unknown shells for explicit script generation", () => {

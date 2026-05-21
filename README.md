@@ -101,6 +101,9 @@ caplets completion bash > ~/.local/share/bash-completion/completions/caplets
 # Zsh
 mkdir -p ~/.zsh/completions
 caplets completion zsh > ~/.zsh/completions/_caplets
+# Ensure ~/.zsh/completions is on fpath before compinit, then reload your shell:
+# echo 'fpath=(~/.zsh/completions $fpath)' >> ~/.zshrc
+# echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
 
 # Fish
 mkdir -p ~/.config/fish/completions

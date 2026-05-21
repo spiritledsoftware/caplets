@@ -204,7 +204,5 @@ REM caplets cmd completion helper
 REM cmd.exe has no native programmable completion API. This doskey macro prints suggestions for the current words.
 doskey caplets-complete=caplets __complete --shell cmd -- $*
 REM Usage: caplets-complete get-caplet 
-REM The regular caplets command remains available; use caplets-complete to inspect suggestions.
-doskey caplets=caplets $*
 `;
 }
