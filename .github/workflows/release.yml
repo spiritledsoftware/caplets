@@ -10,6 +10,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  packages: write
 
 env:
   # CI runs explicit quality gates; do not let Changesets' git pushes invoke
@@ -47,6 +48,7 @@ jobs:
         run: pnpm verify
 
       - name: Create release PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
