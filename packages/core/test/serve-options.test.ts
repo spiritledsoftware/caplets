@@ -34,6 +34,22 @@ describe("resolveServeOptions", () => {
       port: 7890,
       path: "/caplets",
       auth: { enabled: true, user: "caplets", password: testPassword },
+      publicOrigin: "http://localhost:7890",
+    });
+  });
+
+  it("preserves HTTPS CAPLETS_SERVER_URL as the public origin", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", allowUnauthenticatedHttp: true },
+        { CAPLETS_SERVER_URL: "https://caplets.example.com/caplets" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "caplets.example.com",
+      port: 5387,
+      path: "/caplets",
+      publicOrigin: "https://caplets.example.com",
     });
   });
 

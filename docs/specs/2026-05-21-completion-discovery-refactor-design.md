@@ -156,18 +156,19 @@ Completion may start normal MCP stdio processes because MCP discovery requires i
 
 For `call-tool` and `get-tool`:
 
-- `caplets call-tool <TAB>` suggests enabled backend IDs with a trailing dot: `github.`, `repo.`.
-- `caplets call-tool repo.<TAB>` suggests `repo.status`, `repo.build`, etc.
-- `caplets call-tool gh.se<TAB>` filters by the full typed prefix.
+- `caplets call-tool <TAB>` suggests enabled backend IDs such as `github`, `repo`.
+- `caplets call-tool repo <TAB>` suggests unqualified tool names such as `status`, `build`.
+- `caplets call-tool repo.<TAB>` remains supported and suggests qualified tool names such as `repo.status`, `repo.build`.
 - CLI and HTTP backends can provide config-defined action names without live probing.
 - OpenAPI, GraphQL, MCP, and Caplet-set backends may use live discovery through the cache manager.
-- Failures/timeouts degrade to `server.` suggestions or no extra target names.
+- Failures/timeouts degrade to backend ID suggestions or no extra target names.
 
 ### Prompts
 
 For `get-prompt`:
 
-- `caplets get-prompt <TAB>` suggests MCP backend IDs with trailing dots when prompts are possible.
+- `caplets get-prompt <TAB>` suggests MCP backend IDs when prompts are possible.
+- `caplets get-prompt docs <TAB>` suggests unqualified prompt names such as `summarize`.
 - `caplets get-prompt docs.<TAB>` discovers/caches MCP prompt names and suggests `docs.promptName`.
 - Non-MCP backends should not suggest prompt names.
 

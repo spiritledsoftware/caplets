@@ -23,6 +23,7 @@ export type HttpServeOptions = {
   host: string;
   port: number;
   path: string;
+  publicOrigin?: string | undefined;
   auth: HttpBasicAuthOptions;
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
@@ -103,6 +104,7 @@ export function resolveServeOptions(
     host,
     port,
     path,
+    ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
     auth,
     warnUnauthenticatedNetwork: !loopback && !auth.enabled,
     loopback,

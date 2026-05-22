@@ -142,9 +142,14 @@ export function createProgram(io: CliIO = {}): Command {
               shell,
               words: completionWords,
             })) as string[])
-          : await completeCliWords(completionWords, configPath ? { configPath } : {});
+          : await completeCliWordsLocally(completionWords, {
+              ...(configPath ? { configPath } : {}),
+              ...(io.authDir ? { authDir: io.authDir } : {}),
+            });
       } catch {
-        suggestions = [];
+        suggestions = remote
+          ? []
+          : await completeCliWords(completionWords, configPath ? { configPath } : {});
       }
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
@@ -581,38 +586,47 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.getTool)
     .description("Print one downstream tool schema.")
-    .argument("<caplet.tool>", "qualified target, split on the first dot")
+    .argument("<caplet-or-target>", "Caplet ID or qualified <caplet.tool> target")
+    .argument("[tool]", "downstream tool name when caplet is provided separately")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
-    .action(async (target: string, options: { format?: CliOutputFormat }) => {
-      const { caplet, tool } = parseQualifiedTarget(target);
-      await executeOperation(
-        caplet,
-        { operation: "get_tool", tool },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
-    });
+    .action(
+      async (
+        capletOrTarget: string,
+        toolArgument: string | undefined,
+        options: { format?: CliOutputFormat },
+      ) => {
+        const { caplet, tool } = parseQualifiedTarget(capletOrTarget, toolArgument);
+        await executeOperation(
+          caplet,
+          { operation: "get_tool", tool },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        );
+      },
+    );
 
   program
     .command(cliCommands.callTool)
     .description("Call one downstream tool.")
-    .argument("<caplet.tool>", "qualified target, split on the first dot")
+    .argument("<caplet-or-target>", "Caplet ID or qualified <caplet.tool> target")
+    .argument("[tool]", "downstream tool name when caplet is provided separately")
     .option("--args <json-object>", "JSON object of downstream tool arguments")
     .option("--field <path>", "project a field from structured output", collect, [])
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(
       async (
-        target: string,
+        capletOrTarget: string,
+        toolArgument: string | undefined,
         options: { args?: string; field?: string[]; format?: CliOutputFormat },
       ) => {
-        const { caplet, tool } = parseQualifiedTarget(target);
+        const { caplet, tool } = parseQualifiedTarget(capletOrTarget, toolArgument);
         const request = {
           operation: "call_tool",
           tool,
@@ -782,29 +796,36 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.getPrompt)
     .description("Get one MCP prompt by name.")
-    .argument("<caplet.prompt>", "qualified target, split on the first dot")
+    .argument("<caplet-or-target>", "MCP Caplet ID or qualified <caplet.prompt> target")
+    .argument("[prompt]", "prompt name when caplet is provided separately")
     .option("--args <json-object>", "JSON object of prompt arguments")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
-    .action(async (target: string, options: { args?: string; format?: CliOutputFormat }) => {
-      const { caplet, tool: prompt } = parseQualifiedTarget(target);
-      await executeOperation(
-        caplet,
-        {
-          operation: "get_prompt",
-          prompt,
-          arguments: parseJsonObjectOption(options.args, "get-prompt --args"),
-        },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
-    });
+    .action(
+      async (
+        capletOrTarget: string,
+        promptArgument: string | undefined,
+        options: { args?: string; format?: CliOutputFormat },
+      ) => {
+        const { caplet, tool: prompt } = parseQualifiedTarget(capletOrTarget, promptArgument);
+        await executeOperation(
+          caplet,
+          {
+            operation: "get_prompt",
+            prompt,
+            arguments: parseJsonObjectOption(options.args, "get-prompt --args"),
+          },
+          {
+            writeOut,
+            writeErr,
+            setExitCode,
+            authDir: io.authDir,
+            env,
+            remote: remoteClientForCli(io),
+            format: options.format,
+          },
+        );
+      },
+    );
   program
     .command(cliCommands.complete)
     .description("Complete an MCP prompt or resource-template argument.")
@@ -1079,15 +1100,44 @@ function parseOutputFormat(value: string): CliOutputFormat {
   }
 }
 
-function parseQualifiedTarget(target: string): { caplet: string; tool: string } {
-  const dot = target.indexOf(".");
-  if (dot <= 0 || dot === target.length - 1) {
+function parseQualifiedTarget(
+  capletOrTarget: string,
+  toolArgument?: string | undefined,
+): { caplet: string; tool: string } {
+  if (toolArgument !== undefined) {
+    if (capletOrTarget.length === 0 || toolArgument.length === 0) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Expected target in the form <caplet> <tool> or <caplet>.<tool>",
+      );
+    }
+    return { caplet: capletOrTarget, tool: toolArgument };
+  }
+
+  const dot = capletOrTarget.indexOf(".");
+  if (dot <= 0 || dot === capletOrTarget.length - 1) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Expected qualified target in the form <caplet>.<tool>",
+      "Expected target in the form <caplet> <tool> or <caplet>.<tool>",
     );
   }
-  return { caplet: target.slice(0, dot), tool: target.slice(dot + 1) };
+  return { caplet: capletOrTarget.slice(0, dot), tool: capletOrTarget.slice(dot + 1) };
+}
+
+async function completeCliWordsLocally(
+  words: string[],
+  options: { configPath?: string | undefined; authDir?: string | undefined },
+): Promise<string[]> {
+  const engine = new CapletsEngine({
+    ...(options.configPath ? { configPath: options.configPath } : {}),
+    ...(options.authDir ? { authDir: options.authDir } : {}),
+    watch: false,
+  });
+  try {
+    return await engine.completeCliWords(words);
+  } finally {
+    await engine.close();
+  }
 }
 
 function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
