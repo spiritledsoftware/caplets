@@ -1976,20 +1976,27 @@ describe("cli completion commands", () => {
   });
 
   it("runs the hidden completion endpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-completion-"));
+    const configPath = join(dir, "config.json");
     const out: string[] = [];
+    try {
+      writeInspectionConfig(configPath);
 
-    await runCli(["__complete", "--shell", "bash", "--", "add", ""], {
-      env: { CAPLETS_MODE: "local" },
-      writeOut: (value) => out.push(value),
-    });
+      await runCli(["__complete", "--shell", "bash", "--", "add", ""], {
+        env: { CAPLETS_MODE: "local", CAPLETS_CONFIG: configPath },
+        writeOut: (value) => out.push(value),
+      });
 
-    expect(out.join("").split("\n").filter(Boolean)).toEqual([
-      "cli",
-      "mcp",
-      "openapi",
-      "graphql",
-      "http",
-    ]);
+      expect(out.join("").split("\n").filter(Boolean)).toEqual([
+        "cli",
+        "mcp",
+        "openapi",
+        "graphql",
+        "http",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("maps the PowerShell trailing-space sentinel before resolving completions", async () => {
