@@ -304,6 +304,40 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("uses CAPLETS_SERVER_URL public scheme for remote auth callback URLs", async () => {
+    const context = testContext({ oauth: true });
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(
+      httpOptions({ path: "/caplets", publicOrigin: "https://caplets.example.com" }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+      },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/caplets/control", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual(expect.objectContaining({ ok: true }));
+    const result = (body as { result: { authorizationUrl: string } }).result;
+    const authorizationUrl = new URL(result.authorizationUrl);
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
+      /^https:\/\/caplets\.example\.com\/caplets\/control\/auth\/callback\//u,
+    );
+
+    await engine.close();
+  });
+
   it("ignores forwarded host and proto for remote auth callback URLs by default", async () => {
     const context = testContext({ oauth: true });
     const engine = new CapletsEngine({
@@ -457,6 +491,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     host: "127.0.0.1",
     port: 5387,
     path: "/",
+    publicOrigin: undefined,
     auth: { enabled: false, user: "caplets" },
     warnUnauthenticatedNetwork: false,
     loopback: true,

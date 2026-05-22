@@ -117,7 +117,7 @@ describe("CLI completion resolver", () => {
       "repo",
     ]);
     await expect(completeCliWords(["call-tool", "git"], { configPath })).resolves.toEqual([
-      "github.",
+      "github",
     ]);
     await expect(completeCliWords(["auth", "login", ""], { configPath })).resolves.toEqual([
       "github",
@@ -153,7 +153,7 @@ describe("CLI completion resolver", () => {
     });
     dirs.push(dir);
 
-    await expect(completeCliWords(["get-prompt", ""], { configPath })).resolves.toEqual(["docs."]);
+    await expect(completeCliWords(["get-prompt", ""], { configPath })).resolves.toEqual(["docs"]);
     await expect(completeCliWords(["read-resource", ""], { configPath })).resolves.toEqual([
       "docs",
     ]);
@@ -192,6 +192,17 @@ describe("CLI completion resolver", () => {
     });
     dirs.push(dir);
 
+    await expect(completeCliWords(["call-tool", ""], { configPath })).resolves.toEqual([
+      "repo",
+      "status_api",
+    ]);
+    await expect(completeCliWords(["call-tool", "repo", ""], { configPath })).resolves.toEqual([
+      "status",
+      "build",
+    ]);
+    await expect(completeCliWords(["get-tool", "status_api", ""], { configPath })).resolves.toEqual(
+      ["check"],
+    );
     await expect(completeCliWords(["call-tool", "repo."], { configPath })).resolves.toEqual([
       "repo.status",
       "repo.build",
@@ -353,6 +364,24 @@ describe("CLI completion resolver", () => {
         managers: { listResourceTemplates: async () => [{ uriTemplate: "file:///repo/{path}" }] },
       }),
     ).resolves.toEqual(["file:///repo/{path}"]);
+  });
+
+  it("suggests split and dotted prompt targets", async () => {
+    const { dir, configPath } = writeMcpConfigWithDir("docs");
+    dirs.push(dir);
+
+    await expect(
+      completeCliWords(["get-prompt", "docs", ""], {
+        configPath,
+        managers: { listPrompts: async () => [{ name: "summarize" }] },
+      }),
+    ).resolves.toEqual(["summarize"]);
+    await expect(
+      completeCliWords(["get-prompt", "docs."], {
+        configPath,
+        managers: { listPrompts: async () => [{ name: "summarize" }] },
+      }),
+    ).resolves.toEqual(["docs.summarize"]);
   });
 
   it("returns no suggestions instead of throwing when config loading fails", async () => {

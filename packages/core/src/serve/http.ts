@@ -141,6 +141,7 @@ export function createHttpServeApp(
           authFlowStore,
           c.req.url,
           paths.control,
+          options.publicOrigin,
           options.trustProxy,
           (name) => c.req.header(name),
         ),
@@ -158,6 +159,7 @@ export function createHttpServeApp(
         authFlowStore,
         c.req.url,
         paths.control,
+        options.publicOrigin,
         options.trustProxy,
         (name) => c.req.header(name),
       ),
@@ -196,6 +198,7 @@ function controlContext(
   authFlowStore: RemoteAuthFlowStore,
   requestUrl: string,
   controlPath: string,
+  publicOrigin: string | undefined,
   trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): RemoteControlDispatchContext {
@@ -205,7 +208,7 @@ function controlContext(
     authFlowStore,
     controlCallbackBaseUrl: new URL(
       controlPath,
-      publicRequestOrigin(requestUrl, trustProxy, header),
+      publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
     ).toString(),
     writeErr,
   };

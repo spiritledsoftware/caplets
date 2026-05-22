@@ -109,27 +109,33 @@ export async function completeCliWords(
       return prefixFilter(ids, current);
     }
 
-    if (
-      normalized.length === 2 &&
-      (qualifiedToolCommands.has(command) || qualifiedPromptCommands.has(command))
-    ) {
-      if (current.includes(".")) {
-        const serverId = current.slice(0, current.indexOf("."));
-        const kind = qualifiedToolCommands.has(command) ? "tools" : "prompts";
+    if (qualifiedToolCommands.has(command) || qualifiedPromptCommands.has(command)) {
+      const kind = qualifiedToolCommands.has(command) ? "tools" : "prompts";
+      const idFilter = qualifiedPromptCommands.has(command)
+        ? { backend: "mcp" as const }
+        : undefined;
+
+      if (normalized.length === 2) {
+        if (current.includes(".")) {
+          const serverId = current.slice(0, current.indexOf("."));
+          return prefixFilter(
+            (await discoverCompletionCandidates(serverId, kind, discoveryOptions(options))).map(
+              (candidate) => candidate.value,
+            ),
+            current,
+          );
+        }
+        return prefixFilter(configuredCapletIds(options, idFilter), current);
+      }
+
+      if (normalized.length === 3 && subcommand && !subcommand.includes(".")) {
         return prefixFilter(
-          (await discoverCompletionCandidates(serverId, kind, discoveryOptions(options))).map(
-            (candidate) => candidate.value,
+          (await discoverCompletionCandidates(subcommand, kind, discoveryOptions(options))).map(
+            (candidate) => candidate.value.replace(`${subcommand}.`, ""),
           ),
           current,
         );
       }
-      return prefixFilter(
-        configuredCapletIds(
-          options,
-          qualifiedPromptCommands.has(command) ? { backend: "mcp" } : undefined,
-        ).map((id) => `${id}.`),
-        current,
-      );
     }
 
     if (command === cliCommands.readResource && normalized.length === 3) {

@@ -77,15 +77,17 @@ You can also invoke configured Caplets directly from the CLI for agent-friendly 
 ```sh
 caplets get-caplet context7
 caplets list-tools context7
-caplets get-tool context7.resolve-library-id
-caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}'
-caplets call-tool context7.resolve-library-id --args '{"libraryName":"react"}' --field result.id --format json
+caplets get-tool context7 resolve-library-id
+caplets call-tool context7 resolve-library-id --args '{"libraryName":"react"}'
+caplets call-tool context7 resolve-library-id --args '{"libraryName":"react"}' --field result.id --format json
 caplets list-resources docs
 caplets read-resource docs file:///repo/README.md
 caplets list-prompts linear
-caplets get-prompt linear.review_issue --args '{"issueId":"CAP-123"}'
+caplets get-prompt linear review_issue --args '{"issueId":"CAP-123"}'
 caplets complete docs --resource-template 'file:///repo/{path}' --argument path --value src/
 ```
+
+The older qualified form, such as `caplets call-tool context7.resolve-library-id` or `caplets get-prompt linear.review_issue`, remains supported for scripts and existing usage.
 
 Direct CLI operation commands print Markdown summaries by default. Add `--format plain` for plain text or `--format json` for machine-readable JSON (`md` is accepted as an alias for `markdown`). If a downstream tool returns `isError: true`, Caplets still exits with status code 1.
 
@@ -117,7 +119,7 @@ caplets completion cmd > %USERPROFILE%\caplets-completion.cmd
 %USERPROFILE%\caplets-completion.cmd
 ```
 
-Completions include command names, options, common enum values, configured Caplet IDs, and cache-backed downstream names for qualified targets such as `caplets call-tool repo.<TAB>`. Downstream discovery is bounded by the `completion` config timeouts and a platform-native cache directory. Generated shell scripts suppress completion stderr; run the underlying CLI command directly when debugging completion behavior.
+Completions include command names, options, common enum values, configured Caplet IDs, and cache-backed downstream names for split targets such as `caplets call-tool repo <TAB>` and qualified targets such as `caplets call-tool repo.<TAB>`. Downstream discovery is bounded by the `completion` config timeouts and a platform-native cache directory. Generated shell scripts suppress completion stderr; run the underlying CLI command directly when debugging completion behavior.
 
 Backends that require OAuth or token auth may need `caplets auth login <server>` before live downstream completions can return richer results. Completion never starts interactive login flows.
 

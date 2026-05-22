@@ -539,6 +539,105 @@ describe("cli init", () => {
     }
   });
 
+  it("gets a CLI tool with split caplet and tool arguments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-tool-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      await runCli(["get-tool", "local", "echo_json", "--format", "json"], {
+        env: { CAPLETS_CONFIG: configPath },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({ tool: { name: "echo_json" } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("calls a CLI tool with split caplet and tool arguments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-tool-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeCliOperationConfig(configPath);
+      await runCli(
+        [
+          "call-tool",
+          "local",
+          "echo_json",
+          "--args",
+          JSON.stringify({ message: "hi" }),
+          "--format",
+          "json",
+        ],
+        {
+          env: { CAPLETS_CONFIG: configPath },
+          writeOut: (value) => out.push(value),
+        },
+      );
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        structuredContent: { json: { message: "hi" } },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gets an MCP prompt with split caplet and prompt arguments", async () => {
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              description: "Review an issue.",
+              messages: [{ role: "user", content: { type: "text", text: "Review CAP-123" } }],
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    );
+
+    await runCli(
+      [
+        "get-prompt",
+        "linear",
+        "review_issue",
+        "--args",
+        JSON.stringify({ issueId: "CAP-123" }),
+        "--format",
+        "json",
+      ],
+      {
+        env: { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "http://127.0.0.1:5387" },
+        fetch: fetchMock,
+        writeOut: (value) => out.push(value),
+      },
+    );
+
+    expect(requests).toEqual([
+      {
+        command: "get_prompt",
+        arguments: {
+          caplet: "linear",
+          request: {
+            operation: "get_prompt",
+            prompt: "review_issue",
+            arguments: { issueId: "CAP-123" },
+          },
+        },
+      },
+    ]);
+    expect(JSON.parse(out.join(""))).toMatchObject({ description: "Review an issue." });
+  });
+
   it("prints agent-first summaries by default for direct Caplet operation commands", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-call-summary-"));
     const configPath = join(dir, "config.json");
@@ -1906,11 +2005,7 @@ describe("cli completion commands", () => {
         },
       );
 
-      expect(out.join("").split("\n").filter(Boolean)).toEqual([
-        "catalog.",
-        "filesystem.",
-        "users.",
-      ]);
+      expect(out.join("").split("\n").filter(Boolean)).toEqual(["catalog", "filesystem", "users"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1928,6 +2023,23 @@ describe("cli completion commands", () => {
       });
 
       expect(out.join("").split("\n").filter(Boolean)).toEqual(["catalog", "filesystem", "users"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses engine-backed discovery for local hidden tool completion", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cli-completion-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeOpenApiCompletionConfig(configPath);
+      await runCli(["__complete", "--shell", "bash", "--", "get-tool", "users."], {
+        env: { CAPLETS_CONFIG: configPath },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(out.join("").split("\n").filter(Boolean)).toEqual(["users.lookupUser"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1971,6 +2083,47 @@ function writeInspectionConfig(path: string): void {
           schemaPath: "/tmp/catalog.graphql",
           auth: { type: "none" },
         },
+      },
+    }),
+  );
+}
+
+function writeOpenApiCompletionConfig(path: string): void {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const specPath = join(dir, "openapi.json");
+  writeFileSync(
+    specPath,
+    JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Users API", version: "1.0.0" },
+      servers: [{ url: "https://api.example.com" }],
+      paths: {
+        "/users/{id}": {
+          get: {
+            operationId: "lookupUser",
+            responses: { "200": { description: "OK" } },
+          },
+        },
+      },
+    }),
+  );
+  writeFileSync(
+    path,
+    JSON.stringify({
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through OpenAPI.",
+          specPath,
+          auth: { type: "none" },
+        },
+      },
+      completion: {
+        discoveryTimeoutMs: 250,
+        overallTimeoutMs: 500,
+        cacheTtlMs: 0,
+        negativeCacheTtlMs: 0,
       },
     }),
   );
