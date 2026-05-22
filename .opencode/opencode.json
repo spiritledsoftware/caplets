@@ -14,7 +14,9 @@
   "permission": {
     "external_directory": {
       "~/.config/caplets/": "allow",
-      "~/.config/caplets/*": "allow"
+      "~/.config/caplets/*": "allow",
+      "~/.local/state/caplets/": "allow",
+      "~/.local/state/caplets/*": "allow"
     }
   }
 }
