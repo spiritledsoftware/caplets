@@ -1979,6 +1979,7 @@ describe("cli completion commands", () => {
     const out: string[] = [];
 
     await runCli(["__complete", "--shell", "bash", "--", "add", ""], {
+      env: { CAPLETS_MODE: "local" },
       writeOut: (value) => out.push(value),
     });
 
