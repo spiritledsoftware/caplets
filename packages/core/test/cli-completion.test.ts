@@ -212,6 +212,28 @@ describe("CLI completion resolver", () => {
     ]);
   });
 
+  it("does not discover tool names when completing option flags after a split target", async () => {
+    const { dir, configPath } = writeCompletionConfig({
+      mcpServers: {
+        repo: {
+          name: "Repo",
+          description: "Repository MCP server for completion tests.",
+          command: "node",
+        },
+      },
+    });
+    dirs.push(dir);
+    const listTools = vi.fn(async () => [{ name: "status" }]);
+
+    await expect(
+      completeCliWords(["call-tool", "repo", "--format"], {
+        configPath,
+        managers: { listTools },
+      }),
+    ).resolves.toEqual([]);
+    expect(listTools).not.toHaveBeenCalled();
+  });
+
   it("uses cached discovered tool names when live discovery times out", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-completion-cache-"));
     dirs.push(dir);

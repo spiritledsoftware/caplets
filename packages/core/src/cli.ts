@@ -11,6 +11,7 @@ import { loginAuth, logoutAuth, listAuth, formatAuthRows, type AuthStatusRow } f
 import { cliCommands } from "./cli/commands";
 import { initConfig } from "./cli/init";
 import {
+  completeCliWords,
   completionScript,
   completionShells,
   trailingSpaceCompletionToken,
@@ -146,7 +147,9 @@ export function createProgram(io: CliIO = {}): Command {
               ...(io.authDir ? { authDir: io.authDir } : {}),
             });
       } catch {
-        suggestions = [];
+        suggestions = remote
+          ? []
+          : await completeCliWords(completionWords, configPath ? { configPath } : {});
       }
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });

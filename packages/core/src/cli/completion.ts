@@ -129,6 +129,7 @@ export async function completeCliWords(
       }
 
       if (normalized.length === 3 && subcommand && !subcommand.includes(".")) {
+        if (current.startsWith("-")) return [];
         return prefixFilter(
           (await discoverCompletionCandidates(subcommand, kind, discoveryOptions(options))).map(
             (candidate) => candidate.value.replace(`${subcommand}.`, ""),
