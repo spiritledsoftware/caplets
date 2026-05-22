@@ -1,5 +1,13 @@
 # caplets
 
+## 0.17.2
+
+### Patch Changes
+
+- a287e70: Fix local shell completion discovery for downstream tool names and support split `caplets get-tool <caplet> <tool>`, `caplets call-tool <caplet> <tool>`, and `caplets get-prompt <caplet> <prompt>` command forms while preserving existing qualified targets. Preserve the public `CAPLETS_SERVER_URL` origin for remote OAuth callback redirects.
+- Updated dependencies [a287e70]
+  - @caplets/core@0.18.2
+
 ## 0.17.1
 
 ### Patch Changes
