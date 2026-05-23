@@ -1,6 +1,6 @@
 {
   "name": "caplets",
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Expose configured Caplets as progressive-disclosure tools in Codex.",
   "author": {
     "name": "Spirit-Led Software LLC"
