@@ -306,20 +306,20 @@ async function loadOpenApiSource(
 }
 
 function parseOpenApiSourceText(source: string): OpenApiDocument {
+  let parsed: unknown;
   try {
-    return JSON.parse(source);
+    parsed = JSON.parse(source);
   } catch (jsonError) {
-    let parsed: unknown;
     try {
       parsed = parseYaml(source);
     } catch {
       throw jsonError instanceof Error ? jsonError : new Error(String(jsonError));
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("OpenAPI source must parse to an object");
-    }
-    return parsed as OpenApiDocument;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("OpenAPI source must parse to an object");
+  }
+  return parsed as OpenApiDocument;
 }
 
 function extractOperations(

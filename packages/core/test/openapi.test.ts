@@ -51,6 +51,11 @@ describe("native OpenAPI Caplets", () => {
           response.end(JSON.stringify(openApiSpec(baseUrl)));
           return;
         }
+        if (request.url === "/scalar-openapi.json") {
+          response.setHeader("content-type", "application/json");
+          response.end("42");
+          return;
+        }
         if (request.url === "/openapi.yaml") {
           response.setHeader("content-type", "application/yaml");
           response.end(openApiYamlSpec(baseUrl));
@@ -732,6 +737,32 @@ describe("native OpenAPI Caplets", () => {
 
     await expect(
       openapi.listTools(registry.config.openapiEndpoints.scalarYaml!),
+    ).rejects.toMatchObject({
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
+      details: expect.objectContaining({
+        message: "OpenAPI source must parse to an object",
+      }),
+    });
+  });
+
+  it("reports non-object remote JSON specs clearly", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          scalarJson: {
+            name: "Scalar JSON API",
+            description: "Exercise remote OpenAPI JSON validation diagnostics.",
+            specUrl: `${baseUrl}/scalar-openapi.json`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(
+      openapi.listTools(registry.config.openapiEndpoints.scalarJson!),
     ).rejects.toMatchObject({
       code: "DOWNSTREAM_PROTOCOL_ERROR",
       details: expect.objectContaining({
