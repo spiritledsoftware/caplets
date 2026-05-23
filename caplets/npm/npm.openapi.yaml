@@ -1,0 +1,223 @@
+openapi: 3.0.3
+info:
+  title: npm Registry API
+  version: 1.0.0
+  description: Compact read-only OpenAPI description for common npm registry package metadata and search endpoints.
+servers:
+  - url: https://registry.npmjs.org
+paths:
+  /{packageName}:
+    get:
+      operationId: get_package
+      summary: Get package packument metadata
+      description: Fetch package-level registry metadata, including versions, dist-tags, maintainers, and timestamps.
+      parameters:
+        - $ref: "#/components/parameters/PackageName"
+      responses:
+        "200":
+          description: Package metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Package"
+        "404":
+          description: Package not found.
+  /{packageName}/{version}:
+    get:
+      operationId: get_package_version
+      summary: Get one package version
+      description: Fetch metadata for one exact published package version.
+      parameters:
+        - $ref: "#/components/parameters/PackageName"
+        - name: version
+          in: path
+          required: true
+          description: Exact package version, such as 5.8.3.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageVersion"
+        "404":
+          description: Package or version not found.
+  /-/package/{packageName}/dist-tags:
+    get:
+      operationId: get_dist_tags
+      summary: Get package dist-tags
+      description: Fetch the dist-tag map for a package, such as latest or next.
+      parameters:
+        - $ref: "#/components/parameters/PackageName"
+      responses:
+        "200":
+          description: Dist-tag version map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DistTags"
+        "404":
+          description: Package not found.
+  /-/v1/search:
+    get:
+      operationId: search_packages
+      summary: Search packages
+      description: Search public npm packages by text with optional paging and ranking weights.
+      parameters:
+        - name: text
+          in: query
+          required: true
+          description: npm search query text, such as react hooks or keywords:lint.
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          description: Number of results to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 250
+            default: 20
+        - name: from
+          in: query
+          required: false
+          description: Zero-based result offset.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: quality
+          in: query
+          required: false
+          description: Weight for package quality in search ranking.
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - name: popularity
+          in: query
+          required: false
+          description: Weight for package popularity in search ranking.
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - name: maintenance
+          in: query
+          required: false
+          description: Weight for maintenance health in search ranking.
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+      responses:
+        "200":
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResults"
+components:
+  parameters:
+    PackageName:
+      name: packageName
+      in: path
+      required: true
+      description: Package name, including scope when needed, such as react or @types/node.
+      schema:
+        type: string
+  schemas:
+    Package:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dist-tags:
+          $ref: "#/components/schemas/DistTags"
+        versions:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/PackageVersion"
+        time:
+          type: object
+          additionalProperties:
+            type: string
+    PackageVersion:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        description:
+          type: string
+        license:
+          type: string
+        dependencies:
+          type: object
+          additionalProperties:
+            type: string
+        dist:
+          type: object
+          additionalProperties: true
+          properties:
+            tarball:
+              type: string
+              format: uri
+            shasum:
+              type: string
+            integrity:
+              type: string
+    DistTags:
+      type: object
+      additionalProperties:
+        type: string
+      example:
+        latest: 1.0.0
+    SearchResults:
+      type: object
+      additionalProperties: true
+      properties:
+        total:
+          type: integer
+        objects:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              package:
+                $ref: "#/components/schemas/SearchPackage"
+              score:
+                type: object
+                additionalProperties: true
+              searchScore:
+                type: number
+    SearchPackage:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        description:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        date:
+          type: string
+          format: date-time
+        links:
+          type: object
+          additionalProperties:
+            type: string

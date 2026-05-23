@@ -548,7 +548,18 @@ This repository includes polished working examples under [`caplets/`](caplets/):
 - `linear`: Linear's hosted OAuth MCP endpoint.
 - `context7`: Context7 documentation lookup through `@upstash/context7-mcp`.
 - `repo-cli`: Read-oriented repository CLI workflows through `git` and package scripts.
-- `github-cli`: Read-oriented GitHub workflows through the `gh` CLI.
+- `ast-grep`: Structural code search, scan, rewrite, rule testing, and scaffolding through the `ast-grep` CLI.
+- `osv`: OSV.dev vulnerability lookups through explicit read-only HTTP actions.
+- `npm`: npm registry package metadata, version metadata, dist-tags, and search through a curated OpenAPI spec.
+- `pypi`: PyPI project metadata, release metadata, and Simple API JSON through a curated OpenAPI spec.
+- `deepwiki`: Repository-focused documentation and architecture context through DeepWiki MCP.
+- `sourcegraph`: Cross-repository code search and navigation through Sourcegraph MCP.
+- `playwright`: Headless browser automation for frontend inspection and testing through Playwright MCP.
+- `coding-agent-toolkit`: A CapletSet that bundles high-value coding-agent examples; source children are symlinks to canonical top-level examples and installed copies are materialized as self-contained files/directories.
+- `github-cli`: Secondary read-oriented GitHub workflows through the `gh` CLI; prefer the canonical `github` MCP example for the polished GitHub integration.
+
+GraphQL is intentionally skipped in this showcase batch so the examples can focus on HTTP,
+OpenAPI, MCP, CLI, and CapletSet coverage without duplicating GitHub or GitLab surfaces.
 
 Install every example from a repo's `caplets/` directory into the current project's
 `./.caplets` directory:

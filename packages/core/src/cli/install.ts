@@ -2,17 +2,21 @@ import { execFileSync } from "node:child_process";
 import {
   accessSync,
   constants,
+  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   type Stats,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, parse, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { discoverCapletFiles, validateCapletFile } from "../caplet-files";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
@@ -27,6 +31,7 @@ type InstallableCaplet = {
 
 type InstallPlan = InstallableCaplet & {
   sourcePath: string;
+  sourceBoundary: string;
 };
 
 export function installCaplets(
@@ -281,6 +286,7 @@ function installPlan(
 ): InstallPlan {
   const isDirectory = basename(caplet.path) === "CAPLET.md";
   const sourcePath = isDirectory ? dirname(caplet.path) : caplet.path;
+  const sourceBoundary = isDirectory ? dirname(sourcePath) : dirname(sourcePath);
   const sourcePathRelative = relative(options.repoRoot, sourcePath);
   const destination = isDirectory
     ? join(options.destinationRoot, caplet.id)
@@ -290,6 +296,7 @@ function installPlan(
     id: caplet.id,
     source: `${options.sourceId}#${sourcePathRelative}`,
     sourcePath,
+    sourceBoundary,
     destination,
     kind: isDirectory ? "directory" : "file",
   };
@@ -384,12 +391,20 @@ function removeInstallPath(path: string, label: string, force: boolean): void {
 
 function copyInstallPath(plan: InstallPlan): void {
   try {
+    if (plan.kind === "directory") {
+      copyDirectoryCaplet(plan.sourcePath, plan.destination, realpathSync(plan.sourceBoundary));
+      return;
+    }
+
     cpSync(plan.sourcePath, plan.destination, {
-      recursive: plan.kind === "directory",
+      recursive: false,
       force: false,
       errorOnExist: true,
     });
   } catch (error) {
+    if (error instanceof CapletsError) {
+      throw error;
+    }
     if (isFsError(error, "EEXIST") || isFsError(error, "EISDIR")) {
       throw new CapletsError(
         "CONFIG_EXISTS",
@@ -403,6 +418,55 @@ function copyInstallPath(plan: InstallPlan): void {
       toSafeError(error),
     );
   }
+}
+
+function copyDirectoryCaplet(
+  source: string,
+  destination: string,
+  sourceBoundary: string,
+  seenDirectories = new Set<string>(),
+): void {
+  const lstat = lstatSync(source);
+  const resolvedSource = lstat.isSymbolicLink()
+    ? resolveDirectoryCapletSymlink(source, sourceBoundary)
+    : source;
+  const stats = statSync(resolvedSource);
+  if (stats.isDirectory()) {
+    const realDirectory = realpathSync(resolvedSource);
+    if (seenDirectories.has(realDirectory)) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Directory Caplet symlink ${source} creates a copy cycle`,
+      );
+    }
+    const childSeenDirectories = new Set(seenDirectories);
+    childSeenDirectories.add(realDirectory);
+    mkdirSync(destination);
+    for (const entry of readdirSync(resolvedSource)) {
+      copyDirectoryCaplet(
+        join(resolvedSource, entry),
+        join(destination, entry),
+        sourceBoundary,
+        childSeenDirectories,
+      );
+    }
+    return;
+  }
+
+  copyFileSync(resolvedSource, destination);
+}
+
+function resolveDirectoryCapletSymlink(source: string, sourceBoundary: string): string {
+  const target = readlinkSync(source);
+  const targetPath = isAbsolute(target) ? target : resolve(dirname(source), target);
+  const resolvedTarget = realpathSync(targetPath);
+  if (resolvedTarget !== sourceBoundary && !resolvedTarget.startsWith(`${sourceBoundary}${sep}`)) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Directory Caplet symlink ${source} resolves outside source Caplets boundary`,
+    );
+  }
+  return resolvedTarget;
 }
 
 function isFsError(error: unknown, code: string): boolean {

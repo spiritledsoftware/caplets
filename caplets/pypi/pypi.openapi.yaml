@@ -1,0 +1,243 @@
+openapi: 3.0.3
+info:
+  title: PyPI API
+  version: 1.0.0
+  description: Compact read-only OpenAPI description for PyPI project JSON, release JSON, and Simple API JSON endpoints.
+servers:
+  - url: https://pypi.org
+paths:
+  /pypi/{project}/json:
+    get:
+      operationId: get_project
+      summary: Get project JSON metadata
+      description: Fetch current PyPI project metadata, releases, distribution files, URLs, and vulnerability records.
+      parameters:
+        - $ref: "#/components/parameters/Project"
+      responses:
+        "200":
+          description: Project metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        "404":
+          description: Project not found.
+  /pypi/{project}/{version}/json:
+    get:
+      operationId: get_release
+      summary: Get release JSON metadata
+      description: Fetch metadata and distribution files for one exact PyPI project version.
+      parameters:
+        - $ref: "#/components/parameters/Project"
+        - name: version
+          in: path
+          required: true
+          description: Exact project version, such as 2.32.3.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Release metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReleaseResponse"
+        "404":
+          description: Project or release not found.
+  /simple/{project}/:
+    get:
+      operationId: get_simple_project
+      summary: Get Simple API JSON project details
+      description: Fetch PyPI Simple Repository API project details as JSON. This curated spec supplies the JSON Accept header automatically, so callers only provide the project path parameter.
+      parameters:
+        - $ref: "#/components/parameters/Project"
+        - name: Accept
+          in: header
+          required: false
+          description: Static default supplied by this curated spec to request the Simple API JSON representation.
+          schema:
+            type: string
+            default: application/vnd.pypi.simple.v1+json
+      responses:
+        "200":
+          description: Simple API project metadata.
+          content:
+            application/vnd.pypi.simple.v1+json:
+              schema:
+                $ref: "#/components/schemas/SimpleProject"
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimpleProject"
+        "404":
+          description: Project not found.
+components:
+  parameters:
+    Project:
+      name: project
+      in: path
+      required: true
+      description: PyPI project name, normalized or unnormalized, such as requests or beautifulsoup4.
+      schema:
+        type: string
+  schemas:
+    ProjectResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        info:
+          $ref: "#/components/schemas/ProjectInfo"
+        releases:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/File"
+        urls:
+          type: array
+          items:
+            $ref: "#/components/schemas/File"
+        vulnerabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Vulnerability"
+    ReleaseResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        info:
+          $ref: "#/components/schemas/ProjectInfo"
+        urls:
+          type: array
+          items:
+            $ref: "#/components/schemas/File"
+        vulnerabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Vulnerability"
+    ProjectInfo:
+      type: object
+      additionalProperties: true
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+        license:
+          type: string
+        author:
+          type: string
+        author_email:
+          type: string
+        maintainer:
+          type: string
+        maintainer_email:
+          type: string
+        home_page:
+          type: string
+          format: uri
+        project_url:
+          type: string
+          format: uri
+        project_urls:
+          type: object
+          additionalProperties:
+            type: string
+        requires_python:
+          type: string
+        classifiers:
+          type: array
+          items:
+            type: string
+    File:
+      type: object
+      additionalProperties: true
+      properties:
+        filename:
+          type: string
+        packagetype:
+          type: string
+        python_version:
+          type: string
+        url:
+          type: string
+          format: uri
+        digests:
+          type: object
+          additionalProperties:
+            type: string
+        requires_python:
+          type: string
+        size:
+          type: integer
+        upload_time_iso_8601:
+          type: string
+          format: date-time
+        yanked:
+          type: boolean
+        yanked_reason:
+          type: string
+          nullable: true
+    Vulnerability:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        aliases:
+          type: array
+          items:
+            type: string
+        details:
+          type: string
+        fixed_in:
+          type: array
+          items:
+            type: string
+        link:
+          type: string
+          format: uri
+        source:
+          type: string
+    SimpleProject:
+      type: object
+      additionalProperties: true
+      properties:
+        meta:
+          type: object
+          additionalProperties: true
+          properties:
+            api-version:
+              type: string
+        name:
+          type: string
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/SimpleFile"
+        versions:
+          type: array
+          items:
+            type: string
+    SimpleFile:
+      type: object
+      additionalProperties: true
+      properties:
+        filename:
+          type: string
+        url:
+          type: string
+          format: uri
+        hashes:
+          type: object
+          additionalProperties:
+            type: string
+        requires-python:
+          type: string
+        yanked:
+          oneOf:
+            - type: boolean
+            - type: string
