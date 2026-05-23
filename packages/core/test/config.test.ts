@@ -598,7 +598,7 @@ describe("config", () => {
         server: "playwright",
         name: "Playwright",
         command: "npx",
-        args: ["-y", "@playwright/mcp@latest", "--headless"],
+        args: ["-y", "@playwright/mcp@0.0.75", "--headless"],
       });
       expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
         server: "coding-agent-toolkit",

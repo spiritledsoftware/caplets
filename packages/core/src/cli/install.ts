@@ -286,7 +286,7 @@ function installPlan(
 ): InstallPlan {
   const isDirectory = basename(caplet.path) === "CAPLET.md";
   const sourcePath = isDirectory ? dirname(caplet.path) : caplet.path;
-  const sourceBoundary = isDirectory ? dirname(sourcePath) : dirname(sourcePath);
+  const sourceBoundary = dirname(sourcePath);
   const sourcePathRelative = relative(options.repoRoot, sourcePath);
   const destination = isDirectory
     ? join(options.destinationRoot, caplet.id)

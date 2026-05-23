@@ -18,6 +18,7 @@
 - Add `deepwiki`, `sourcegraph`, and `playwright` using `mcpServer`.
 - Add `coding-agent-toolkit` using `capletSet` with symlinked child Caplets.
 - Preserve canonical GitHub as `github` MCP and do not add GitHub REST/GraphQL.
+- Keep pre-existing `github-cli` documented as secondary to canonical `github` MCP, not as a new showcase Caplet.
 - Skip GraphQL-backed showcase examples for now.
 
 ## Files

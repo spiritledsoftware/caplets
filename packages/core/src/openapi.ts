@@ -309,15 +309,16 @@ function parseOpenApiSourceText(source: string): OpenApiDocument {
   try {
     return JSON.parse(source);
   } catch (jsonError) {
+    let parsed: unknown;
     try {
-      const parsed = parseYaml(source);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("OpenAPI source must parse to an object");
-      }
-      return parsed as OpenApiDocument;
-    } catch (yamlError) {
-      throw jsonError instanceof Error ? jsonError : yamlError;
+      parsed = parseYaml(source);
+    } catch {
+      throw jsonError instanceof Error ? jsonError : new Error(String(jsonError));
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("OpenAPI source must parse to an object");
+    }
+    return parsed as OpenApiDocument;
   }
 }
 

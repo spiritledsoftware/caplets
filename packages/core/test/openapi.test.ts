@@ -56,6 +56,11 @@ describe("native OpenAPI Caplets", () => {
           response.end(openApiYamlSpec(baseUrl));
           return;
         }
+        if (request.url === "/scalar-openapi.yaml") {
+          response.setHeader("content-type", "application/yaml");
+          response.end("not-an-openapi-object");
+          return;
+        }
         requests.push({
           ...(request.method === undefined ? {} : { method: request.method }),
           ...(request.url === undefined ? {} : { url: request.url }),
@@ -707,6 +712,32 @@ describe("native OpenAPI Caplets", () => {
     await expect(openapi.listTools(registry.config.openapiEndpoints.remoteYaml!)).resolves.toEqual([
       expect.objectContaining({ name: "listUsers" }),
     ]);
+  });
+
+  it("reports non-object remote YAML specs clearly", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          scalarYaml: {
+            name: "Scalar YAML API",
+            description: "Exercise remote OpenAPI YAML validation diagnostics.",
+            specUrl: `${baseUrl}/scalar-openapi.yaml`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(
+      openapi.listTools(registry.config.openapiEndpoints.scalarYaml!),
+    ).rejects.toMatchObject({
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
+      details: expect.objectContaining({
+        message: "OpenAPI source must parse to an object",
+      }),
+    });
   });
 
   it("applies stored OAuth tokens to remote specs and OpenAPI requests", async () => {

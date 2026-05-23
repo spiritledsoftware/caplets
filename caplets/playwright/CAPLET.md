@@ -11,7 +11,7 @@ mcpServer:
   command: npx
   args:
     - -y
-    - "@playwright/mcp@latest"
+    - "@playwright/mcp@0.0.75"
     - --headless
 ---
 
@@ -29,7 +29,10 @@ visual inspection, or end-to-end testing workflows.
 
 ## Setup
 
-This Caplet starts Playwright MCP with `npx -y @playwright/mcp@latest --headless`.
+This Caplet starts Playwright MCP with `npx -y @playwright/mcp@0.0.75 --headless`.
 
-Remove `--headless` from the args to use a visible browser. For advanced settings, use a Playwright
-MCP config file and update the args to point at that configuration.
+Remove `--headless`, or set `PLAYWRIGHT_MCP_HEADLESS=false` in a custom MCP
+environment, to use a visible browser. For advanced settings, create a
+Playwright MCP JSON config file in your project (for example,
+`.caplets/playwright-mcp.json`) and add `--config .caplets/playwright-mcp.json`
+to the args.
