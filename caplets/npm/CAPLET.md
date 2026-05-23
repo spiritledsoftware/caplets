@@ -8,19 +8,20 @@ tags:
   - packages
   - code
 openapiEndpoint:
-  specPath: ./npm.openapi.yaml
+  specUrl: https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml
   auth:
     type: none
 ---
 
 # npm Registry
 
-Use this Caplet to inspect npm package metadata through a compact, read-only
+Use this Caplet to inspect npm registry operations through npm's published
 OpenAPI description of the public registry API.
 
 ## Spec
 
-The local OpenAPI spec is [npm.openapi.yaml](./npm.openapi.yaml).
+The OpenAPI spec is loaded from npm's public API documentation repository:
+<https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml>.
 
 ## Usage Notes
 

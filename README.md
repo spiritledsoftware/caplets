@@ -550,7 +550,7 @@ This repository includes polished working examples under [`caplets/`](caplets/):
 - `repo-cli`: Read-oriented repository CLI workflows through `git` and package scripts.
 - `ast-grep`: Structural code search, scan, rewrite, rule testing, and scaffolding through the `ast-grep` CLI.
 - `osv`: OSV.dev vulnerability lookups through explicit read-only HTTP actions.
-- `npm`: npm registry package metadata, version metadata, dist-tags, and search through a curated OpenAPI spec.
+- `npm`: npm registry operations through npm's published OpenAPI spec URL.
 - `pypi`: PyPI project metadata, release metadata, and Simple API JSON through a curated OpenAPI spec.
 - `deepwiki`: Repository-focused documentation and architecture context through DeepWiki MCP.
 - `sourcegraph`: Cross-repository code search and navigation through Sourcegraph MCP.

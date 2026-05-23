@@ -571,7 +571,7 @@ describe("config", () => {
       expect(config.openapiEndpoints.npm).toMatchObject({
         server: "npm",
         name: "npm Registry",
-        specPath: expect.stringMatching(/caplets[/\\]npm[/\\]npm\.openapi\.yaml$/),
+        specUrl: "https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml",
         auth: { type: "none" },
       });
       expect(config.openapiEndpoints.pypi).toMatchObject({

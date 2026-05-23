@@ -51,6 +51,11 @@ describe("native OpenAPI Caplets", () => {
           response.end(JSON.stringify(openApiSpec(baseUrl)));
           return;
         }
+        if (request.url === "/openapi.yaml") {
+          response.setHeader("content-type", "application/yaml");
+          response.end(openApiYamlSpec(baseUrl));
+          return;
+        }
         requests.push({
           ...(request.method === undefined ? {} : { method: request.method }),
           ...(request.url === undefined ? {} : { url: request.url }),
@@ -683,6 +688,27 @@ describe("native OpenAPI Caplets", () => {
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
   });
 
+  it("loads remote YAML specs from specUrl", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          remoteYaml: {
+            name: "Remote YAML API",
+            description: "Exercise remote OpenAPI YAML spec loading.",
+            specUrl: `${baseUrl}/openapi.yaml`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(openapi.listTools(registry.config.openapiEndpoints.remoteYaml!)).resolves.toEqual([
+      expect.objectContaining({ name: "listUsers" }),
+    ]);
+  });
+
   it("applies stored OAuth tokens to remote specs and OpenAPI requests", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-auth-"));
     const authDir = join(dir, "auth");
@@ -910,6 +936,25 @@ function openApiSpec(baseUrl: string) {
       },
     },
   };
+}
+
+function openApiYamlSpec(baseUrl: string) {
+  return [
+    'openapi: "3.0.3"',
+    "info:",
+    "  title: Remote YAML API",
+    '  version: "1.0.0"',
+    "servers:",
+    `  - url: ${baseUrl}`,
+    "paths:",
+    "  /users:",
+    "    get:",
+    "      operationId: listUsers",
+    "      responses:",
+    '        "200":',
+    "          description: OK",
+    "",
+  ].join("\n");
 }
 
 function singleOperationSpec(operationId: string) {

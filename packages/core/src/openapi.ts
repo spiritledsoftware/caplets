@@ -1,5 +1,6 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { parse as parseYaml } from "yaml";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
@@ -301,7 +302,23 @@ async function loadOpenApiSource(
     endpoint.requestTimeoutMs,
     shouldSendSpecAuth(endpoint) ? authHeaders(endpoint, authDir) : {},
   );
-  return JSON.parse(response);
+  return parseOpenApiSourceText(response);
+}
+
+function parseOpenApiSourceText(source: string): OpenApiDocument {
+  try {
+    return JSON.parse(source);
+  } catch (jsonError) {
+    try {
+      const parsed = parseYaml(source);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("OpenAPI source must parse to an object");
+      }
+      return parsed as OpenApiDocument;
+    } catch (yamlError) {
+      throw jsonError instanceof Error ? jsonError : yamlError;
+    }
+  }
 }
 
 function extractOperations(

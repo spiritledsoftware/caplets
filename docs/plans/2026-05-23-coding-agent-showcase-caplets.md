@@ -6,14 +6,14 @@
 
 **Architecture:** Add top-level registry Caplets for OSV, npm, PyPI, DeepWiki, Sourcegraph, and Playwright. Add a `coding-agent-toolkit` CapletSet whose nested child entries are symlinks to the canonical top-level examples, and update install behavior so selected directory Caplet installs materialize internal symlinks as real files/directories.
 
-**Tech Stack:** Caplets Markdown manifests, local OpenAPI YAML specs, HTTP action backend, OpenAPI backend, MCP backend, CapletSet backend, Node `fs.cpSync`, Vitest.
+**Tech Stack:** Caplets Markdown manifests, local and remote OpenAPI YAML specs, HTTP action backend, OpenAPI backend, MCP backend, CapletSet backend, Node `fs.cpSync`, Vitest.
 
 ---
 
 ## Scope
 
 - Add `osv` using `httpApi`.
-- Add `npm` using `openapiEndpoint` and a curated local `npm.openapi.yaml`.
+- Add `npm` using `openapiEndpoint.specUrl` pointed at npm's published OpenAPI YAML.
 - Add `pypi` using `openapiEndpoint` and a curated local `pypi.openapi.yaml`.
 - Add `deepwiki`, `sourcegraph`, and `playwright` using `mcpServer`.
 - Add `coding-agent-toolkit` using `capletSet` with symlinked child Caplets.
@@ -25,7 +25,7 @@
 - Modify: `packages/core/src/cli/install.ts` to dereference symlinks when copying directory Caplets.
 - Modify: `packages/core/test/cli.test.ts` to verify selected installs of symlinked toolkit children are self-contained.
 - Create: `caplets/osv/CAPLET.md`.
-- Create: `caplets/npm/CAPLET.md` and `caplets/npm/npm.openapi.yaml`.
+- Create: `caplets/npm/CAPLET.md`.
 - Create: `caplets/pypi/CAPLET.md` and `caplets/pypi/pypi.openapi.yaml`.
 - Create: `caplets/deepwiki/CAPLET.md`.
 - Create: `caplets/sourcegraph/CAPLET.md`.
@@ -89,21 +89,10 @@ Expected: PASS once loadability assertions are updated in Task 7; before Task 7,
 **Files:**
 
 - Create: `caplets/npm/CAPLET.md`
-- Create: `caplets/npm/npm.openapi.yaml`
 
-- [ ] **Step 1: Add curated npm OpenAPI spec**
+- [ ] **Step 1: Add npm Caplet manifest**
 
-Create a small OpenAPI 3.0.3 spec with `servers: [{ url: https://registry.npmjs.org }]` and operations:
-
-- `GET /{packageName}` for packument metadata.
-- `GET /{packageName}/{version}` for version metadata.
-- `GET /-/package/{packageName}/dist-tags` for dist-tags.
-- `GET /-/v1/search` with query parameters `text`, `size`, `from`, `quality`, `popularity`, `maintenance`.
-  Use `operationId` values `get_package`, `get_package_version`, `get_dist_tags`, and `search_packages`.
-
-- [ ] **Step 2: Add npm Caplet manifest**
-
-Create `caplets/npm/CAPLET.md` with `openapiEndpoint.specPath: ./npm.openapi.yaml`, `auth.type: none`, and docs explaining this is a read-only curated npm registry spec.
+Create `caplets/npm/CAPLET.md` with `openapiEndpoint.specUrl` pointed at npm's published OpenAPI YAML, `auth.type: none`, and docs explaining that the spec is loaded remotely.
 
 ## Task 4: PyPI OpenAPI Caplet
 
