@@ -514,6 +514,97 @@ describe("config", () => {
         url: "https://mcp.linear.app/mcp",
         auth: { type: "oauth2" },
       });
+      expect(config.cliTools["ast-grep"]).toMatchObject({
+        server: "ast-grep",
+        name: "ast-grep CLI",
+        actions: {
+          run_pattern_json: {
+            command: "ast-grep",
+            args: [
+              "run",
+              "--pattern",
+              "$input.pattern",
+              "--lang",
+              "$input.lang",
+              "--json=compact",
+              "--color",
+              "never",
+              "$input.path",
+            ],
+            output: { type: "json" },
+            annotations: { readOnlyHint: true },
+          },
+          run_rewrite_apply_all: {
+            command: "ast-grep",
+            annotations: { destructiveHint: true },
+          },
+          new_rule_yes: {
+            command: "ast-grep",
+            cwd: expect.stringMatching(/caplets[/\\]ast-grep[/\\]\$input\.cwd$/),
+            annotations: { destructiveHint: true },
+          },
+        },
+      });
+      expect(config.httpApis.osv).toMatchObject({
+        server: "osv",
+        name: "OSV Vulnerabilities",
+        baseUrl: "https://api.osv.dev",
+        auth: { type: "none" },
+        actions: {
+          query_package_version: {
+            method: "POST",
+            path: "/v1/query",
+            jsonBody: {
+              package: {
+                name: "$input.name",
+                ecosystem: "$input.ecosystem",
+              },
+              version: "$input.version",
+            },
+          },
+          get_vulnerability: {
+            method: "GET",
+            path: "/v1/vulns/{id}",
+          },
+        },
+      });
+      expect(config.openapiEndpoints.npm).toMatchObject({
+        server: "npm",
+        name: "npm Registry",
+        specUrl: "https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml",
+        auth: { type: "none" },
+      });
+      expect(config.openapiEndpoints.pypi).toMatchObject({
+        server: "pypi",
+        name: "PyPI",
+        specPath: expect.stringMatching(/caplets[/\\]pypi[/\\]pypi\.openapi\.yaml$/),
+        auth: { type: "none" },
+      });
+      expect(config.mcpServers.deepwiki).toMatchObject({
+        server: "deepwiki",
+        name: "DeepWiki",
+        transport: "http",
+        url: "https://mcp.deepwiki.com/mcp",
+        auth: { type: "none" },
+      });
+      expect(config.mcpServers.sourcegraph).toMatchObject({
+        server: "sourcegraph",
+        name: "Sourcegraph",
+        transport: "http",
+        url: "https://sourcegraph.com/.api/mcp",
+        auth: { type: "oauth2" },
+      });
+      expect(config.mcpServers.playwright).toMatchObject({
+        server: "playwright",
+        name: "Playwright",
+        command: "npx",
+        args: ["-y", "@playwright/mcp@0.0.75", "--headless"],
+      });
+      expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
+        server: "coding-agent-toolkit",
+        name: "Coding Agent Toolkit",
+        capletsRoot: expect.stringMatching(/caplets[/\\]coding-agent-toolkit[/\\]caplets$/),
+      });
     } finally {
       if (originalGithubToken === undefined) {
         delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;

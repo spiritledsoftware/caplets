@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +19,7 @@ import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
   const originalConfigPath = process.env.CAPLETS_CONFIG;
+  const originalServerUrl = process.env.CAPLETS_SERVER_URL;
   const originalServerUser = process.env.CAPLETS_SERVER_USER;
   const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
 
@@ -32,6 +34,11 @@ describe("cli init", () => {
       delete process.env.CAPLETS_SERVER_USER;
     } else {
       process.env.CAPLETS_SERVER_USER = originalServerUser;
+    }
+    if (originalServerUrl === undefined) {
+      delete process.env.CAPLETS_SERVER_URL;
+    } else {
+      process.env.CAPLETS_SERVER_URL = originalServerUrl;
     }
     if (originalServerPassword === undefined) {
       delete process.env.CAPLETS_SERVER_PASSWORD;
@@ -171,6 +178,7 @@ describe("cli init", () => {
   it("resolves HTTP serve defaults", async () => {
     const served: unknown[] = [];
 
+    delete process.env.CAPLETS_SERVER_URL;
     delete process.env.CAPLETS_SERVER_USER;
     delete process.env.CAPLETS_SERVER_PASSWORD;
 
@@ -1528,6 +1536,81 @@ describe("cli init", () => {
       expect(readFileSync(join(destinationRoot, "filesystem", "CAPLET.md"), "utf8")).toBe(
         "existing\n",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes internal symlinked children when installing a selected directory Caplet", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-symlinked-toolkit-"));
+    const repo = join(dir, "repo");
+    const capletsRoot = join(repo, "caplets");
+    const destinationRoot = join(dir, "user");
+    try {
+      mkdirSync(join(capletsRoot, "osv"), { recursive: true });
+      mkdirSync(join(capletsRoot, "coding-agent-toolkit", "caplets"), { recursive: true });
+      writeFileSync(join(capletsRoot, "osv", "CAPLET.md"), capletFixture("OSV"));
+      writeFileSync(
+        join(capletsRoot, "coding-agent-toolkit", "CAPLET.md"),
+        [
+          "---",
+          "name: Coding Agent Toolkit",
+          "description: Test toolkit.",
+          "capletSet:",
+          "  capletsRoot: ./caplets",
+          "---",
+          "# Coding Agent Toolkit",
+        ].join("\n"),
+      );
+      symlinkSync("../../osv", join(capletsRoot, "coding-agent-toolkit", "caplets", "osv"));
+
+      const result = installCaplets(repo, { capletIds: ["coding-agent-toolkit"], destinationRoot });
+
+      const installedChild = join(destinationRoot, "coding-agent-toolkit", "caplets", "osv");
+      expect(result.installed).toEqual([
+        expect.objectContaining({
+          id: "coding-agent-toolkit",
+          destination: join(destinationRoot, "coding-agent-toolkit"),
+          kind: "directory",
+        }),
+      ]);
+      expect(existsSync(join(installedChild, "CAPLET.md"))).toBe(true);
+      expect(lstatSync(installedChild).isSymbolicLink()).toBe(false);
+      expect(existsSync(join(destinationRoot, "osv"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects directory Caplet symlinks that resolve outside the source Caplets boundary", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-external-symlink-"));
+    const repo = join(dir, "repo");
+    const capletsRoot = join(repo, "caplets");
+    const destinationRoot = join(dir, "user");
+    try {
+      mkdirSync(join(repo, "outside"), { recursive: true });
+      mkdirSync(join(capletsRoot, "coding-agent-toolkit", "caplets"), { recursive: true });
+      writeFileSync(join(repo, "outside", "CAPLET.md"), capletFixture("Outside"));
+      writeFileSync(
+        join(capletsRoot, "coding-agent-toolkit", "CAPLET.md"),
+        [
+          "---",
+          "name: Coding Agent Toolkit",
+          "description: Test toolkit.",
+          "capletSet:",
+          "  capletsRoot: ./caplets",
+          "---",
+          "# Coding Agent Toolkit",
+        ].join("\n"),
+      );
+      symlinkSync(
+        "../../../outside",
+        join(capletsRoot, "coding-agent-toolkit", "caplets", "outside"),
+      );
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["coding-agent-toolkit"], destinationRoot }),
+      ).toThrow(expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

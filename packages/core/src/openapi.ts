@@ -1,5 +1,6 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { parse as parseYaml } from "yaml";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
@@ -40,6 +41,7 @@ type OpenApiOperation = {
   outputSchema?: Record<string, unknown>;
   requestBodyContentType?: string;
   baseUrl?: string;
+  staticHeaders?: Record<string, string>;
 };
 
 type ManagedOpenApi = {
@@ -300,7 +302,24 @@ async function loadOpenApiSource(
     endpoint.requestTimeoutMs,
     shouldSendSpecAuth(endpoint) ? authHeaders(endpoint, authDir) : {},
   );
-  return JSON.parse(response);
+  return parseOpenApiSourceText(response);
+}
+
+function parseOpenApiSourceText(source: string): OpenApiDocument {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(source);
+  } catch (jsonError) {
+    try {
+      parsed = parseYaml(source);
+    } catch {
+      throw jsonError instanceof Error ? jsonError : new Error(String(jsonError));
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("OpenAPI source must parse to an object");
+  }
+  return parsed as OpenApiDocument;
 }
 
 function extractOperations(
@@ -336,6 +355,7 @@ function extractOperations(
       const requestBody = requestBodyFor(operation);
       const outputSchema = outputSchemaFor(operation);
       const baseUrl = endpoint.baseUrl ?? firstServerUrl(document);
+      const staticHeaders = staticHeaderDefaultsFor(endpoint, parameters);
       validateOperationBaseUrl(endpoint, baseUrl);
       operations.push({
         name,
@@ -345,14 +365,40 @@ function extractOperations(
         ...(typeof operation.description === "string"
           ? { description: operation.description }
           : {}),
-        inputSchema: inputSchemaFor(parameters, requestBody),
+        inputSchema: inputSchemaFor(parameters, requestBody, staticHeaders),
         ...(outputSchema ? { outputSchema } : {}),
         ...(requestBody?.contentType ? { requestBodyContentType: requestBody.contentType } : {}),
         ...(baseUrl ? { baseUrl } : {}),
+        ...(Object.keys(staticHeaders).length ? { staticHeaders } : {}),
       });
     }
   }
   return operations.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function staticHeaderDefaultsFor(
+  endpoint: OpenApiEndpointConfig,
+  parameters: any[],
+): Record<string, string> {
+  const configuredHeaderNames = configuredAuthHeaderNames(endpoint);
+  const headers: Record<string, string> = {};
+  for (const parameter of parameters) {
+    if (parameter?.in !== "header" || typeof parameter.name !== "string") {
+      continue;
+    }
+    const normalized = parameter.name.toLowerCase();
+    if (
+      configuredHeaderNames.has(normalized) ||
+      (FORBIDDEN_ARGUMENT_HEADERS.has(normalized) && normalized !== "accept")
+    ) {
+      continue;
+    }
+    const defaultValue = parameter.schema?.default;
+    if (["string", "number", "boolean"].includes(typeof defaultValue)) {
+      headers[parameter.name] = String(defaultValue);
+    }
+  }
+  return headers;
 }
 
 function requestBodyFor(
@@ -446,6 +492,7 @@ function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<str
 function inputSchemaFor(
   parameters: any[],
   requestBody?: { required: boolean; schema: Record<string, unknown>; contentType: string },
+  staticHeaders: Record<string, string> = {},
 ): Record<string, unknown> {
   const schema: Record<string, any> = {
     type: "object",
@@ -453,8 +500,17 @@ function inputSchemaFor(
     properties: {},
   };
   const required: string[] = [];
+  const protectedStaticHeaders = new Set(
+    Object.keys(staticHeaders)
+      .map((key) => key.toLowerCase())
+      .filter((key) => FORBIDDEN_ARGUMENT_HEADERS.has(key)),
+  );
   for (const location of ["path", "query", "header"] as const) {
-    const locationParameters = parameters.filter((parameter) => parameter?.in === location);
+    const locationParameters = parameters.filter(
+      (parameter) =>
+        parameter?.in === location &&
+        !(location === "header" && protectedStaticHeaders.has(parameter.name?.toLowerCase())),
+    );
     if (locationParameters.length === 0) {
       continue;
     }
@@ -530,10 +586,12 @@ function buildRequest(
   }
   const headers = new Headers();
   applyAuth(headers, endpoint, authDir);
-  const configuredHeaderNames =
-    endpoint.auth.type === "headers"
-      ? new Set(Object.keys(endpoint.auth.headers).map((key) => key.toLowerCase()))
-      : new Set<string>();
+  const configuredHeaderNames = configuredAuthHeaderNames(endpoint);
+  for (const [key, value] of Object.entries(operation.staticHeaders ?? {})) {
+    if (!headers.has(key) && !configuredHeaderNames.has(key.toLowerCase())) {
+      headers.set(key, value);
+    }
+  }
   for (const [key, value] of Object.entries(asRecord(args.header))) {
     if (value !== undefined && value !== null) {
       const normalized = key.toLowerCase();
@@ -609,6 +667,12 @@ function applyAuth(headers: Headers, endpoint: OpenApiEndpointConfig, authDir?: 
   for (const [key, value] of Object.entries(authHeaders(endpoint, authDir))) {
     headers.set(key, value);
   }
+}
+
+function configuredAuthHeaderNames(endpoint: OpenApiEndpointConfig): Set<string> {
+  return endpoint.auth.type === "headers"
+    ? new Set(Object.keys(endpoint.auth.headers).map((key) => key.toLowerCase()))
+    : new Set<string>();
 }
 
 function authHeaders(endpoint: OpenApiEndpointConfig, authDir?: string): Record<string, string> {

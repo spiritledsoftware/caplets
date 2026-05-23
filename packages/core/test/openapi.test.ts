@@ -51,6 +51,21 @@ describe("native OpenAPI Caplets", () => {
           response.end(JSON.stringify(openApiSpec(baseUrl)));
           return;
         }
+        if (request.url === "/scalar-openapi.json") {
+          response.setHeader("content-type", "application/json");
+          response.end("42");
+          return;
+        }
+        if (request.url === "/openapi.yaml") {
+          response.setHeader("content-type", "application/yaml");
+          response.end(openApiYamlSpec(baseUrl));
+          return;
+        }
+        if (request.url === "/scalar-openapi.yaml") {
+          response.setHeader("content-type", "application/yaml");
+          response.end("not-an-openapi-object");
+          return;
+        }
         requests.push({
           ...(request.method === undefined ? {} : { method: request.method }),
           ...(request.url === undefined ? {} : { url: request.url }),
@@ -383,6 +398,78 @@ describe("native OpenAPI Caplets", () => {
     }
   });
 
+  it("sends safe static header defaults from OpenAPI parameters", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-header-default-"));
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(specPath, JSON.stringify(headerDefaultSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        simple: {
+          name: "Simple API",
+          description: "Exercise static header defaults.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry);
+
+    try {
+      const tool = await openapi.getTool(config.openapiEndpoints.simple!, "getSimple");
+      const inputProperties = tool.inputSchema.properties as Record<string, unknown>;
+      const header = inputProperties.header as { properties: Record<string, unknown> };
+      expect(header).toMatchObject({
+        properties: { "x-trace-id": { type: "string" } },
+      });
+      expect(header.properties).not.toHaveProperty("Accept");
+
+      requests.length = 0;
+      await openapi.callTool(config.openapiEndpoints.simple!, "getSimple", {});
+
+      expect(requests.at(-1)?.headers.accept).toBe("application/vnd.pypi.simple.v1+json");
+
+      await openapi.callTool(config.openapiEndpoints.simple!, "getSimple", {
+        header: { "x-trace-id": "trace-1" },
+      });
+
+      expect(requests.at(-1)?.headers["x-trace-id"]).toBe("trace-1");
+      expect(requests.at(-1)?.headers.accept).toBe("application/vnd.pypi.simple.v1+json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still rejects argument-supplied Accept headers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-accept-argument-"));
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(specPath, JSON.stringify(headerDefaultSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        simple: {
+          name: "Simple API",
+          description: "Exercise protected Accept handling.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry);
+
+    try {
+      await expect(
+        openapi.callTool(config.openapiEndpoints.simple!, "getSimple", {
+          header: { Accept: "application/json" },
+        }),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports OpenAPI check unavailable when base URL is not executable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-base-"));
     const specPath = join(dir, "openapi.json");
@@ -609,6 +696,79 @@ describe("native OpenAPI Caplets", () => {
     await expect(
       openapi.listTools({ ...remote, specUrl: `${baseUrl}/large-openapi.json` }),
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+  });
+
+  it("loads remote YAML specs from specUrl", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          remoteYaml: {
+            name: "Remote YAML API",
+            description: "Exercise remote OpenAPI YAML spec loading.",
+            specUrl: `${baseUrl}/openapi.yaml`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(openapi.listTools(registry.config.openapiEndpoints.remoteYaml!)).resolves.toEqual([
+      expect.objectContaining({ name: "listUsers" }),
+    ]);
+  });
+
+  it("reports non-object remote YAML specs clearly", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          scalarYaml: {
+            name: "Scalar YAML API",
+            description: "Exercise remote OpenAPI YAML validation diagnostics.",
+            specUrl: `${baseUrl}/scalar-openapi.yaml`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(
+      openapi.listTools(registry.config.openapiEndpoints.scalarYaml!),
+    ).rejects.toMatchObject({
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
+      details: expect.objectContaining({
+        message: "OpenAPI source must parse to an object",
+      }),
+    });
+  });
+
+  it("reports non-object remote JSON specs clearly", async () => {
+    const registry = new ServerRegistry(
+      parseConfig({
+        openapiEndpoints: {
+          scalarJson: {
+            name: "Scalar JSON API",
+            description: "Exercise remote OpenAPI JSON validation diagnostics.",
+            specUrl: `${baseUrl}/scalar-openapi.json`,
+            baseUrl,
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const openapi = new OpenApiManager(registry);
+
+    await expect(
+      openapi.listTools(registry.config.openapiEndpoints.scalarJson!),
+    ).rejects.toMatchObject({
+      code: "DOWNSTREAM_PROTOCOL_ERROR",
+      details: expect.objectContaining({
+        message: "OpenAPI source must parse to an object",
+      }),
+    });
   });
 
   it("applies stored OAuth tokens to remote specs and OpenAPI requests", async () => {
@@ -840,6 +1000,25 @@ function openApiSpec(baseUrl: string) {
   };
 }
 
+function openApiYamlSpec(baseUrl: string) {
+  return [
+    'openapi: "3.0.3"',
+    "info:",
+    "  title: Remote YAML API",
+    '  version: "1.0.0"',
+    "servers:",
+    `  - url: ${baseUrl}`,
+    "paths:",
+    "  /users:",
+    "    get:",
+    "      operationId: listUsers",
+    "      responses:",
+    '        "200":',
+    "          description: OK",
+    "",
+  ].join("\n");
+}
+
 function singleOperationSpec(operationId: string) {
   return {
     openapi: "3.0.3",
@@ -848,6 +1027,34 @@ function singleOperationSpec(operationId: string) {
       "/users": {
         get: {
           operationId,
+          responses: { "200": { description: "OK" } },
+        },
+      },
+    },
+  };
+}
+
+function headerDefaultSpec(baseUrl: string) {
+  return {
+    openapi: "3.0.3",
+    info: { title: "Simple API", version: "1.0.0" },
+    servers: [{ url: baseUrl }],
+    paths: {
+      "/simple/project/": {
+        get: {
+          operationId: "getSimple",
+          parameters: [
+            {
+              name: "Accept",
+              in: "header",
+              schema: { type: "string", default: "application/vnd.pypi.simple.v1+json" },
+            },
+            {
+              name: "x-trace-id",
+              in: "header",
+              schema: { type: "string" },
+            },
+          ],
           responses: { "200": { description: "OK" } },
         },
       },
