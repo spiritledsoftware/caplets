@@ -1237,7 +1237,7 @@ export function loadGlobalConfig(path = resolveConfigPath()): CapletsConfig {
         : undefined,
     ],
     `Caplets user config not found at ${path}`,
-    "Caplets user config must define at least one Caplet",
+    undefined,
   ).config;
 }
 
@@ -1261,14 +1261,14 @@ export function loadProjectConfig(projectPath = resolveProjectConfigPath()): Cap
         : undefined,
     ],
     `Caplets project config not found at ${projectPath}`,
-    "Caplets project config must define at least one Caplet",
+    undefined,
   ).config;
 }
 
 function buildConfigWithSources(
   inputs: Array<ConfigInputWithSource | undefined>,
   notFoundMessage: string,
-  emptyMessage: string,
+  emptyMessage: string | undefined,
 ): ConfigWithSources {
   if (!inputs.some((entry) => entry?.input !== undefined)) {
     throw new CapletsError("CONFIG_NOT_FOUND", notFoundMessage);
@@ -1278,6 +1278,7 @@ function buildConfigWithSources(
     const { input, sources, shadows } = mergeConfigInputsWithSources(...inputs);
     const config = parseConfig(input);
     if (
+      emptyMessage &&
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
       Object.keys(config.graphqlEndpoints).length === 0 &&

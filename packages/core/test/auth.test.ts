@@ -252,6 +252,35 @@ describe("auth helpers", () => {
     }
   });
 
+  it("returns no auth rows for empty explicit local scopes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-empty-scope-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(configPath, "{}", "utf8");
+      writeFileSync(projectConfigPath, "{}", "utf8");
+      const globalOutput: string[] = [];
+      const projectOutput: string[] = [];
+
+      await runCli(["auth", "list", "--global", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => globalOutput.push(value),
+      });
+      await runCli(["auth", "list", "--project", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => projectOutput.push(value),
+      });
+
+      expect(JSON.parse(globalOutput.join(""))).toEqual([]);
+      expect(JSON.parse(projectOutput.join(""))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not include global Caplet files in project-only auth list rows", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-project-only-files-"));
     try {
