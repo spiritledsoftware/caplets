@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+  "defaultSearchLimit": 20,
+  "maxSearchLimit": 50,
+  "mcpServers": {
+    "browser": {
+      "name": "Browser",
+      "description": "Web browsing capabilities to fetch real-time information from the internet, including web pages, APIs, and other online resources.",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--headless"]
+    },
+    "deepwiki": {
+      "name": "DeepWiki",
+      "description": "DeepWiki provides up-to-date documentation you can talk to, for every repo in the world. Think Deep Research for GitHub - powered by Devin.",
+      "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "github": {
+      "name": "GitHub",
+      "description": "Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.",
+      "url": "https://api.githubcopilot.com/mcp",
+      "auth": {
+        "type": "bearer",
+        "token": "$env:GH_TOKEN"
+      }
+    },
+    "grep-app": {
+      "name": "Grep.app",
+      "description": "Grep.app provides powerful code search capabilities across a vast index of open source repositories, allowing you to quickly find relevant code snippets and examples.",
+      "url": "https://mcp.grep.app"
+    },
+    "stealth-browser": {
+      "name": "Stealth Browser",
+      "description": "A stealth web browser that can evade anti-bot measures and access content that may be restricted to regular automated browsers.",
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest",
+        "--headless",
+        "--browser=firefox",
+        "--user-data-dir=$env:HOME/.camoufox/profile",
+        "--executable-path=$env:HOME/.cache/camoufox/camoufox",
+        "--caps=--headless=virtual"
+      ]
+    }
+  }
+}
