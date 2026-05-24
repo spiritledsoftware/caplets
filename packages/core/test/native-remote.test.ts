@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapletsError } from "../src/errors";
@@ -607,6 +607,48 @@ describe("createNativeCapletsService remote mode", () => {
 
     expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
+    await service.close();
+  });
+
+  it("picks up valid local overlay additions when existing warnings are unchanged", async () => {
+    const fixture = client([{ name: "remote", title: "Remote" }]);
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    const badCapletPath = join(dirname(configPath), "bad.md");
+    dirs.push(dir);
+    writeFileSync(
+      badCapletPath,
+      ["---", "name: Bad", "description: Missing backend config.", "---", "# Bad"].join("\n"),
+      "utf8",
+    );
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+    await service.reload();
+
+    writeFileSync(
+      join(dirname(configPath), "local.md"),
+      [
+        "---",
+        "name: Local",
+        "description: Local Caplet.",
+        "mcpServer:",
+        `  command: ${JSON.stringify(process.execPath)}`,
+        "---",
+        "# Local",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(service.reload()).resolves.toBe(true);
+
+    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining(badCapletPath));
     await service.close();
   });
 

@@ -239,21 +239,28 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
 function createLocalOverlayConfigLoader(options: NativeCapletsServiceOptions) {
   let hasLoaded = false;
+  let previousWarnings = new Set<string>();
   return (configPath: string, projectConfigPath: string): CapletsConfig => {
     const result = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
     for (const warning of result.warnings) {
       const path = typeof warning.path === "string" ? ` at ${warning.path}` : "";
       writeErr(options, `Caplets local overlay warning${path}: ${warning.message}\n`);
     }
-    if (hasLoaded && result.warnings.length > 0) {
+    const warnings = new Set(result.warnings.map(warningKey));
+    if (hasLoaded && [...warnings].some((warning) => !previousWarnings.has(warning))) {
       throw new CapletsError(
         "CONFIG_INVALID",
-        "Caplets local overlay reload produced warnings; keeping last known-good config.",
+        "Caplets local overlay reload produced new warnings; keeping last known-good config.",
       );
     }
+    previousWarnings = warnings;
     hasLoaded = true;
     return result.config;
   };
+}
+
+function warningKey(warning: { kind: string; path: string; message: string }): string {
+  return `${warning.kind}\0${warning.path}\0${warning.message}`;
 }
 
 function writeErr(options: NativeCapletsServiceOptions, message: string): void {
