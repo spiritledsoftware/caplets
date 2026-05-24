@@ -1399,7 +1399,7 @@ function localShadowedCompletionTarget(words: string[], config: CapletsConfig): 
     : capletCommands.has(command)
       ? target
       : undefined;
-  return caplet && hasCaplet(config, caplet) ? caplet : undefined;
+  return caplet && hasEnabledCaplet(config, caplet) ? caplet : undefined;
 }
 
 function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
@@ -1465,7 +1465,7 @@ async function executeOperation(
   const command = remoteCommandForOperation(request.operation);
   if (io.remote && command) {
     const localOverlay = tryLoadLocalOverlayForCli(io, io.writeErr);
-    if (localOverlay && hasCaplet(localOverlay.config, caplet)) {
+    if (localOverlay && hasEnabledCaplet(localOverlay.config, caplet)) {
       await executeLocalOperation(caplet, request, io, localOverlay.config);
       return;
     }
@@ -1542,6 +1542,9 @@ function mergeRemoteAndLocalRows(
   for (const row of listCaplets(localOverlay, { includeDisabled: true })) {
     const remote = rows.get(row.server);
     if (remote) {
+      if (row.disabled) {
+        continue;
+      }
       options.writeErr(
         `Warning: ${formatOverlaySource(row.source)} Caplet ${row.server} shadows remote Caplet\n`,
       );
@@ -1559,15 +1562,15 @@ function formatOverlaySource(kind: ConfigSource["kind"] | "remote" | "unknown"):
   return kind;
 }
 
-function hasCaplet(config: CapletsConfig, id: string): boolean {
-  return Boolean(
+function hasEnabledCaplet(config: CapletsConfig, id: string): boolean {
+  const caplet =
     config.mcpServers[id] ??
     config.openapiEndpoints[id] ??
     config.graphqlEndpoints[id] ??
     config.httpApis[id] ??
     config.cliTools[id] ??
-    config.capletSets[id],
-  );
+    config.capletSets[id];
+  return Boolean(caplet && !caplet.disabled);
 }
 
 async function executeLocalOperation(

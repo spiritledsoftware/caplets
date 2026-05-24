@@ -90,6 +90,30 @@ describe("remote CLI routing", () => {
     expect(out.join("")).toBe("shared.echo\n");
   });
 
+  it("uses remote completions when a matching local overlay caplet is disabled", async () => {
+    const context = testContext("caplets-cli-remote-complete-disabled-shadow-");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    writeCliCapletConfig(context.configPath, "shared", "Disabled Shared", { disabled: true });
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({ ok: true, result: ["shared.remote_only"] });
+      },
+    );
+
+    await runCli(["__complete", "--shell", "bash", "--", "call-tool", "shared."], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toEqual([
+      { command: "complete_cli", arguments: { shell: "bash", words: ["call-tool", "shared."] } },
+    ]);
+    expect(out.join("")).toBe("shared.remote_only\n");
+  });
+
   it("keeps hidden remote completion quiet when remote control fails", async () => {
     const out: string[] = [];
     const err: string[] = [];
@@ -240,7 +264,7 @@ describe("remote CLI routing", () => {
     ]);
   });
 
-  it("lets disabled local overlay rows shadow remote rows before default list filtering", async () => {
+  it("does not let disabled local overlay rows shadow remote rows", async () => {
     const context = testContext("caplets-cli-remote-list-disabled-shadow-");
     const out: string[] = [];
     const err: string[] = [];
@@ -256,8 +280,10 @@ describe("remote CLI routing", () => {
       writeErr: (value) => err.push(value),
     });
 
-    expect(JSON.parse(out.join(""))).toEqual([]);
-    expect(err.join("")).toContain("global Caplet shared shadows remote Caplet");
+    expect(JSON.parse(out.join(""))).toEqual([
+      expect.objectContaining({ server: "shared", name: "Remote Shared", source: "remote" }),
+    ]);
+    expect(err.join("")).not.toContain("shadows remote Caplet");
   });
 
   it("lets project list rows shadow remote rows and warns on stderr", async () => {
@@ -385,25 +411,34 @@ describe("remote CLI routing", () => {
     expect(err).toEqual([]);
   });
 
-  it("executes a disabled local overlay caplet locally instead of falling back to remote", async () => {
+  it("executes remote control when a matching local overlay caplet is disabled", async () => {
     const context = testContext("caplets-cli-remote-disabled-local-exec-");
+    const requests: unknown[] = [];
     const out: string[] = [];
-    const fetch = vi.fn(async () => Response.json({ ok: false, error: "should not call remote" }));
-    let exitCode: number | undefined;
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({ ok: true, result: { content: [{ type: "text", text: "remote" }] } });
+      },
+    );
     writeCliCapletConfig(context.configPath, "shared", "Disabled Shared", { disabled: true });
 
     await runCli(["call-tool", "shared.echo", "--format", "json"], {
       env: remoteEnv(context),
       fetch,
       writeOut: (value) => out.push(value),
-      setExitCode: (code) => {
-        exitCode = code;
-      },
     });
 
-    expect(fetch).not.toHaveBeenCalled();
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(out.join(""))).toMatchObject({ isError: true });
+    expect(requests).toEqual([
+      {
+        command: "call_tool",
+        arguments: {
+          caplet: "shared",
+          request: { operation: "call_tool", tool: "echo", arguments: {} },
+        },
+      },
+    ]);
+    expect(JSON.parse(out.join(""))).toEqual({ content: [{ type: "text", text: "remote" }] });
   });
 
   it("falls back to remote control when no local overlay contains the caplet", async () => {
