@@ -265,11 +265,12 @@ export function createProgram(io: CliIO = {}): Command {
       const includeDisabled = Boolean(options.all);
       const remote = remoteClientForCli(io);
       if (remote) {
-        const rows = mergeRemoteAndLocalRows(
-          (await remote.request("list", { includeDisabled })) as CapletListRow[],
-          loadLocalOverlayForCli(io, writeErr),
-          { includeDisabled, writeErr },
-        );
+        const remoteRows = (await remote.request("list", { includeDisabled })) as CapletListRow[];
+        const localOverlay = tryLoadLocalOverlayForCli(io, writeErr);
+        const rows = mergeRemoteAndLocalRows(remoteRows, localOverlay, {
+          includeDisabled,
+          writeErr,
+        });
         if (options.json || options.format === "json") {
           writeOut(`${JSON.stringify(rows, null, 2)}\n`);
           return;
@@ -1463,8 +1464,8 @@ async function executeOperation(
 ): Promise<void> {
   const command = remoteCommandForOperation(request.operation);
   if (io.remote && command) {
-    const localOverlay = loadLocalOverlayForCli(io, io.writeErr);
-    if (hasCaplet(localOverlay.config, caplet)) {
+    const localOverlay = tryLoadLocalOverlayForCli(io, io.writeErr);
+    if (localOverlay && hasCaplet(localOverlay.config, caplet)) {
       await executeLocalOperation(caplet, request, io, localOverlay.config);
       return;
     }
@@ -1497,6 +1498,22 @@ function loadLocalOverlayForCli(
   return overlay;
 }
 
+function tryLoadLocalOverlayForCli(
+  io: Pick<CliIO, "env">,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  try {
+    return loadLocalOverlayForCli(io, writeErr);
+  } catch (error) {
+    writeErr(`Warning: Could not load local Caplets overlay: ${formatErrorMessage(error)}\n`);
+    return undefined;
+  }
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function envProjectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
   return env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath();
 }
@@ -1510,12 +1527,17 @@ function envProjectCapletsRoot(
 
 function mergeRemoteAndLocalRows(
   remoteRows: CapletListRow[],
-  localOverlay: LocalOverlayConfigWithSources,
+  localOverlay: LocalOverlayConfigWithSources | undefined,
   options: { includeDisabled: boolean; writeErr: (value: string) => void },
 ): CapletListRow[] {
   const rows = new Map<string, CapletListRow>();
   for (const row of remoteRows) {
     rows.set(row.server, { ...row, source: "remote" });
+  }
+  if (!localOverlay) {
+    return [...rows.values()]
+      .filter((row) => options.includeDisabled || !row.disabled)
+      .sort((left, right) => left.server.localeCompare(right.server));
   }
   for (const row of listCaplets(localOverlay, { includeDisabled: true })) {
     const remote = rows.get(row.server);

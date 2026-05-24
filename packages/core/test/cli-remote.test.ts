@@ -173,6 +173,28 @@ describe("remote CLI routing", () => {
     ]);
   });
 
+  it("falls back to remote list when local overlay loading warns", async () => {
+    const context = testContext("caplets-cli-remote-list-overlay-invalid-");
+    const out: string[] = [];
+    const err: string[] = [];
+    writeFileSync(context.configPath, "{ invalid json", "utf8");
+    const fetch = vi.fn(async () =>
+      Response.json({ ok: true, result: [remoteListRow("remote-only", "Remote Only")] }),
+    );
+
+    await runCli(["list", "--json"], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toEqual([
+      expect.objectContaining({ server: "remote-only", source: "remote" }),
+    ]);
+    expect(err.join("")).toContain("Warning: global-config");
+  });
+
   it("merges remote, global, and project rows for list in remote mode", async () => {
     const context = testContext("caplets-cli-remote-list-merge-");
     const out: string[] = [];
@@ -412,6 +434,39 @@ describe("remote CLI routing", () => {
       },
     ]);
     expect(JSON.parse(out.join(""))).toEqual({ content: [{ type: "text", text: "remote" }] });
+  });
+
+  it("falls back to remote execution when local overlay loading warns", async () => {
+    const context = testContext("caplets-cli-remote-exec-overlay-invalid-");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const err: string[] = [];
+    writeFileSync(context.configPath, "{ invalid json", "utf8");
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({ ok: true, result: { content: [{ type: "text", text: "remote" }] } });
+      },
+    );
+
+    await runCli(["call-tool", "remote.echo", "--format", "json"], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(requests).toEqual([
+      {
+        command: "call_tool",
+        arguments: {
+          caplet: "remote",
+          request: { operation: "call_tool", tool: "echo", arguments: {} },
+        },
+      },
+    ]);
+    expect(JSON.parse(out.join(""))).toEqual({ content: [{ type: "text", text: "remote" }] });
+    expect(err.join("")).toContain("Warning: global-config");
   });
 
   it("formats new MCP commands as markdown by default and honors --format", async () => {
