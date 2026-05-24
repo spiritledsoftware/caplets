@@ -73,7 +73,12 @@ export function createNativeCapletsService(
       });
       return new CompositeNativeCapletsService(remote, local, options);
     } catch (error) {
-      void local.close();
+      void local.close().catch((closeError) => {
+        writeErr(
+          options,
+          `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
+        );
+      });
       throw error;
     }
   }

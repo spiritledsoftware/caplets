@@ -1094,6 +1094,24 @@ describe("remote CLI routing", () => {
     );
   });
 
+  it("does not fall back to remote auth targets when local auth config is malformed", async () => {
+    const context = testContext("caplets-cli-remote-auth-invalid-local-");
+    writeFileSync(context.configPath, "{ invalid json", "utf8");
+    const fetchMock = vi.fn(async () =>
+      Response.json({ ok: true, result: [{ server: "remote", status: "authenticated" }] }),
+    );
+
+    await expect(
+      runCli(["auth", "logout", "remote"], {
+        env: remoteEnv(context),
+        fetch: fetchMock as typeof fetch,
+        writeOut: () => {},
+      }),
+    ).rejects.toThrow(/not valid JSON/u);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("uses explicit --remote for auth login and logout remote requests", async () => {
     const out: string[] = [];
     const fetchMock = vi

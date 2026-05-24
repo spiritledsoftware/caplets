@@ -1,6 +1,5 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { dirname, join } from "node:path";
 import {
   deleteTokenBundle,
   isTokenBundleExpired,
@@ -11,6 +10,8 @@ import {
 } from "../auth";
 import {
   loadConfig,
+  loadGlobalConfig,
+  loadProjectConfig,
   type CapletsConfig,
   type GraphQlEndpointConfig,
   type HttpApiConfig,
@@ -151,8 +152,11 @@ function authTargetsForSource(
       ...target,
       source,
     }));
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") {
+      return [];
+    }
+    throw error;
   }
 }
 
@@ -161,17 +165,9 @@ function loadConfigForSource(
   options: { configPath?: string; projectConfigPath?: string },
 ): CapletsConfig {
   if (source === "global") {
-    return loadConfig(options.configPath, missingProjectPath(options.projectConfigPath));
+    return loadGlobalConfig(options.configPath);
   }
-  return loadConfig(missingGlobalPath(options.configPath), options.projectConfigPath);
-}
-
-function missingGlobalPath(path: string | undefined): string {
-  return join(dirname(path ?? process.cwd()), ".caplets-missing-global", "config.json");
-}
-
-function missingProjectPath(path: string | undefined): string {
-  return join(dirname(path ?? process.cwd()), ".caplets-missing-project", "config.json");
+  return loadProjectConfig(options.projectConfigPath);
 }
 
 function authRowsForTargets(

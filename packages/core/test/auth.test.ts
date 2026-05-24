@@ -277,6 +277,50 @@ describe("auth helpers", () => {
     }
   });
 
+  it("does not load sentinel-named directories for project-only auth list rows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-no-sentinel-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeAuthConfig(projectConfigPath, "project-auth");
+      writeAuthConfig(join(dir, ".caplets-missing-global", "config.json"), "sentinel-auth");
+      const output: string[] = [];
+
+      await runCli(["auth", "list", "--project", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => output.push(value),
+      });
+
+      expect(JSON.parse(output.join(""))).toEqual([
+        expect.objectContaining({ server: "project-auth", source: "project" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces malformed scoped auth configs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-invalid-scope-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeAuthConfig(configPath, "global-auth");
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(projectConfigPath, "{ invalid json", "utf8");
+
+      await expect(
+        runCli(["auth", "list", "--project", "--json"], {
+          env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+          authDir: join(dir, "auth"),
+          writeOut: () => {},
+        }),
+      ).rejects.toThrow(/not valid JSON/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("includes source in plain and markdown auth row output", () => {
     expect(
       formatAuthRows([{ server: "remote", status: "authenticated", source: "remote" }], "plain"),

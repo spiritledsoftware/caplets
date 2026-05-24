@@ -342,6 +342,40 @@ describe("createNativeCapletsService remote mode", () => {
     expect(localClose).toHaveBeenCalledTimes(1);
   });
 
+  it("reports local close failures when remote construction fails after local starts", async () => {
+    const writeErr = vi.fn();
+    const localClose = vi.fn(async () => {
+      throw new Error("close failed");
+    });
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const remoteClientFactory = vi.fn(() => {
+      throw new Error("remote construction failed");
+    });
+
+    expect(() =>
+      createNativeCapletsService({
+        mode: "remote",
+        server: { url: "http://127.0.0.1:5387" },
+        localServiceFactory: vi.fn(() => localService),
+        remoteClientFactory,
+        writeErr,
+      }),
+    ).toThrow("remote construction failed");
+
+    expect(localClose).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        expect.stringContaining("Could not close local overlay Caplets service: close failed"),
+      ),
+    );
+  });
+
   it("lists local overlay Caplets after remote tools and shadows matching remote Caplets", async () => {
     const fixture = client([
       { name: "shared", title: "Remote Shared" },

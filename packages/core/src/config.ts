@@ -1206,15 +1206,8 @@ export function loadConfigWithSources(
     ? loadCapletFilesWithPaths(projectCapletsRoot)
     : undefined;
 
-  if (!hasUserConfig && !hasProjectConfig && !userCaplets && !projectCaplets) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `Caplets config not found at ${path} or ${projectPath}`,
-    );
-  }
-
-  try {
-    const { input, sources, shadows } = mergeConfigInputsWithSources(
+  return buildConfigWithSources(
+    [
       { input: userConfig, source: { kind: "global-config", path } },
       userCaplets
         ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
@@ -1226,7 +1219,63 @@ export function loadConfigWithSources(
             source: { kind: "project-file", path: projectCaplets.paths },
           }
         : undefined,
-    );
+    ],
+    `Caplets config not found at ${path} or ${projectPath}`,
+    "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+  );
+}
+
+export function loadGlobalConfig(path = resolveConfigPath()): CapletsConfig {
+  const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
+  const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
+
+  return buildConfigWithSources(
+    [
+      { input: userConfig, source: { kind: "global-config", path } },
+      userCaplets
+        ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+        : undefined,
+    ],
+    `Caplets user config not found at ${path}`,
+    "Caplets user config must define at least one Caplet",
+  ).config;
+}
+
+export function loadProjectConfig(projectPath = resolveProjectConfigPath()): CapletsConfig {
+  const projectConfig = existsSync(projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    : undefined;
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadCapletFilesWithPaths(projectCapletsRoot)
+    : undefined;
+
+  return buildConfigWithSources(
+    [
+      { input: projectConfig, source: { kind: "project-config", path: projectPath } },
+      projectCaplets
+        ? {
+            input: projectCaplets.config,
+            source: { kind: "project-file", path: projectCaplets.paths },
+          }
+        : undefined,
+    ],
+    `Caplets project config not found at ${projectPath}`,
+    "Caplets project config must define at least one Caplet",
+  ).config;
+}
+
+function buildConfigWithSources(
+  inputs: Array<ConfigInputWithSource | undefined>,
+  notFoundMessage: string,
+  emptyMessage: string,
+): ConfigWithSources {
+  if (!inputs.some((entry) => entry?.input !== undefined)) {
+    throw new CapletsError("CONFIG_NOT_FOUND", notFoundMessage);
+  }
+
+  try {
+    const { input, sources, shadows } = mergeConfigInputsWithSources(...inputs);
     const config = parseConfig(input);
     if (
       Object.keys(config.mcpServers).length === 0 &&
@@ -1236,10 +1285,7 @@ export function loadConfigWithSources(
       Object.keys(config.cliTools).length === 0 &&
       Object.keys(config.capletSets).length === 0
     ) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
-      );
+      throw new CapletsError("CONFIG_INVALID", emptyMessage);
     }
     return { config, sources, shadows };
   } catch (error) {
