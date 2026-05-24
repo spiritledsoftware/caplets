@@ -20,13 +20,14 @@ import {
   startGenericOAuthFlow,
   writeTokenBundle,
 } from "../src/auth";
-import { listAuth } from "../src/cli/auth";
+import { formatAuthRows, listAuth } from "../src/cli/auth";
+import { runCli } from "../src/cli";
 import { parseConfig } from "../src/config";
 import { DEFAULT_AUTH_DIR } from "../src/config/paths";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, parse } from "node:path";
+import { dirname, join, parse } from "node:path";
 
 describe("auth helpers", () => {
   it("extracts callback code and state together", () => {
@@ -199,6 +200,110 @@ describe("auth helpers", () => {
       listAuth({ configPath, writeOut: (value) => output.push(value) });
 
       expect(output.join("")).toContain("status\n  Status: missing");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lists auth rows from project and global sources with source metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-sources-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeAuthConfig(configPath, "global-auth");
+      writeAuthConfig(projectConfigPath, "project-auth");
+      const output: string[] = [];
+
+      await runCli(["auth", "list", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => output.push(value),
+      });
+
+      expect(JSON.parse(output.join(""))).toEqual([
+        expect.objectContaining({ server: "global-auth", source: "global" }),
+        expect.objectContaining({ server: "project-auth", source: "project" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filters local auth list rows by explicit target scope", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-filter-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeAuthConfig(configPath, "global-auth");
+      writeAuthConfig(projectConfigPath, "project-auth");
+      const output: string[] = [];
+
+      await runCli(["auth", "list", "--project", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => output.push(value),
+      });
+
+      expect(JSON.parse(output.join(""))).toEqual([
+        expect.objectContaining({ server: "project-auth", source: "project" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not include global Caplet files in project-only auth list rows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-project-only-files-"));
+    try {
+      const globalRoot = join(dir, "global");
+      const configPath = join(globalRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(globalRoot, { recursive: true });
+      writeAuthConfig(projectConfigPath, "project-auth");
+      writeAuthCapletFile(join(globalRoot, "global-file-auth.md"), "Global File Auth");
+      const output: string[] = [];
+
+      await runCli(["auth", "list", "--project", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        authDir: join(dir, "auth"),
+        writeOut: (value) => output.push(value),
+      });
+
+      expect(JSON.parse(output.join(""))).toEqual([
+        expect.objectContaining({ server: "project-auth", source: "project" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes source in plain and markdown auth row output", () => {
+    expect(
+      formatAuthRows([{ server: "remote", status: "authenticated", source: "remote" }], "plain"),
+    ).toContain("  Source: remote");
+    expect(
+      formatAuthRows(
+        [{ server: "project-auth", status: "missing", source: "project" }],
+        "markdown",
+      ),
+    ).toContain("- `project-auth` — missing (source project)");
+  });
+
+  it("rejects ambiguous local auth targets without a target flag", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-ambiguous-"));
+    try {
+      const configPath = join(dir, "global.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeAuthConfig(configPath, "shared");
+      writeAuthConfig(projectConfigPath, "shared");
+
+      await expect(
+        runCli(["auth", "logout", "shared"], {
+          env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+          authDir: join(dir, "auth"),
+          writeOut: () => {},
+        }),
+      ).rejects.toThrow(/--project.*--global.*--remote/s);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -884,3 +989,41 @@ describe("auth helpers", () => {
     }
   });
 });
+
+function writeAuthConfig(path: string, serverId: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    JSON.stringify({
+      mcpServers: {
+        [serverId]: {
+          name: serverId,
+          description: `${serverId} auth`,
+          transport: "http",
+          url: "https://example.com/mcp",
+          auth: { type: "oauth2", clientId: "client" },
+        },
+      },
+    }),
+  );
+}
+
+function writeAuthCapletFile(path: string, name: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    [
+      "---",
+      `name: ${name}`,
+      `description: ${name}`,
+      "mcpServer:",
+      "  transport: http",
+      "  url: https://example.com/mcp",
+      "  auth:",
+      "    type: oauth2",
+      "    clientId: client",
+      "---",
+      `# ${name}`,
+    ].join("\n"),
+  );
+}

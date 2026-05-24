@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createNativeCapletsService,
   nativeCapletPromptGuidance,
@@ -11,8 +11,18 @@ import {
 
 describe("native Caplets service", () => {
   const dirs: string[] = [];
+  const originalMode = process.env.CAPLETS_MODE;
+
+  beforeEach(() => {
+    process.env.CAPLETS_MODE = "local";
+  });
 
   afterEach(() => {
+    if (originalMode === undefined) {
+      delete process.env.CAPLETS_MODE;
+    } else {
+      process.env.CAPLETS_MODE = originalMode;
+    }
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }

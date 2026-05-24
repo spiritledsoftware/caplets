@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
   lstatSync,
@@ -18,13 +18,23 @@ import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
+  const originalMode = process.env.CAPLETS_MODE;
   const originalConfigPath = process.env.CAPLETS_CONFIG;
   const originalServerUrl = process.env.CAPLETS_SERVER_URL;
   const originalServerUser = process.env.CAPLETS_SERVER_USER;
   const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
 
+  beforeEach(() => {
+    process.env.CAPLETS_MODE = "local";
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalMode === undefined) {
+      delete process.env.CAPLETS_MODE;
+    } else {
+      process.env.CAPLETS_MODE = originalMode;
+    }
     if (originalConfigPath === undefined) {
       delete process.env.CAPLETS_CONFIG;
     } else {
@@ -86,14 +96,34 @@ describe("cli init", () => {
     }
   });
 
-  it("uses CAPLETS_CONFIG when run through the CLI", async () => {
+  it("creates the project config by default when run through the CLI", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-init-project-"));
+    const projectRoot = join(dir, "project");
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    const cwd = process.cwd();
+    const out: string[] = [];
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["init"], { writeOut: (value) => out.push(value) });
+
+      expect(existsSync(projectConfigPath)).toBe(true);
+      expect(out.join("")).toBe(`Created Caplets config at ${projectConfigPath}\n`);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses CAPLETS_CONFIG with --global when run through the CLI", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-init-"));
     const path = join(dir, "custom.json");
     const out: string[] = [];
     try {
       process.env.CAPLETS_CONFIG = path;
 
-      await runCli(["init"], { writeOut: (value) => out.push(value) });
+      await runCli(["init", "--global"], { writeOut: (value) => out.push(value) });
 
       expect(existsSync(path)).toBe(true);
       expect(out.join("")).toBe(`Created Caplets config at ${path}\n`);
@@ -419,6 +449,45 @@ describe("cli init", () => {
     }
   });
 
+  it("honors CAPLETS_PROJECT_CONFIG when listing local Caplets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-list-project-env-"));
+    const configPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(dir, "custom-project", "config.json");
+    const out: string[] = [];
+    try {
+      mkdirSync(dirname(configPath), { recursive: true });
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+      writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            project_env: {
+              name: "Project Env",
+              description: "Loaded from CAPLETS_PROJECT_CONFIG.",
+              command: "project-env",
+            },
+          },
+        }),
+      );
+
+      await runCli(["list", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toEqual([
+        expect.objectContaining({
+          server: "project_env",
+          source: "project-config",
+          path: projectConfigPath,
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prints the effective config path", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-config-path-"));
     const configPath = join(dir, "custom.json");
@@ -454,6 +523,30 @@ describe("cli init", () => {
         stateRoot: dirname(authDir),
         projectRoot: join(process.cwd(), ".caplets"),
         authDir,
+        envConfig: configPath,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors CAPLETS_PROJECT_CONFIG when printing resolved config paths as JSON", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-paths-project-env-"));
+    const configPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(dir, "custom-project", "config.json");
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await runCli(["config", "paths", "--json"], {
+        env: { CAPLETS_CONFIG: configPath, CAPLETS_PROJECT_CONFIG: projectConfigPath },
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        userConfig: configPath,
+        projectConfig: projectConfigPath,
+        projectRoot: dirname(projectConfigPath),
         envConfig: configPath,
       });
     } finally {
@@ -595,6 +688,7 @@ describe("cli init", () => {
   });
 
   it("gets an MCP prompt with split caplet and prompt arguments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-remote-prompt-"));
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetchMock = vi.fn(
@@ -613,22 +707,31 @@ describe("cli init", () => {
       },
     );
 
-    await runCli(
-      [
-        "get-prompt",
-        "linear",
-        "review_issue",
-        "--args",
-        JSON.stringify({ issueId: "CAP-123" }),
-        "--format",
-        "json",
-      ],
-      {
-        env: { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "http://127.0.0.1:5387" },
-        fetch: fetchMock,
-        writeOut: (value) => out.push(value),
-      },
-    );
+    try {
+      await runCli(
+        [
+          "get-prompt",
+          "linear",
+          "review_issue",
+          "--args",
+          JSON.stringify({ issueId: "CAP-123" }),
+          "--format",
+          "json",
+        ],
+        {
+          env: {
+            CAPLETS_MODE: "remote",
+            CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+            CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
+            CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+          },
+          fetch: fetchMock,
+          writeOut: (value) => out.push(value),
+        },
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
 
     expect(requests).toEqual([
       {
@@ -1901,10 +2004,12 @@ describe("cli init", () => {
 
       const text = out.join("");
       expect(text).toContain(
-        "remote\n  Status: authenticated\n  Expires: 2999-01-01T00:00:00.000Z\n  Scope: mcp:tools",
+        "remote\n  Status: authenticated\n  Source: global\n  Expires: 2999-01-01T00:00:00.000Z\n  Scope: mcp:tools",
       );
-      expect(text).toContain("expired\n  Status: expired\n  Expires: 2000-01-01T00:00:00.000Z");
-      expect(text).toContain("users\n  Status: missing");
+      expect(text).toContain(
+        "expired\n  Status: expired\n  Source: global\n  Expires: 2000-01-01T00:00:00.000Z",
+      );
+      expect(text).toContain("users\n  Status: missing\n  Source: global");
       expect(text).not.toContain("stdio");
       expect(text).not.toContain("secret-access-token");
       expect(text).not.toContain("openapi-client");
@@ -1966,7 +2071,9 @@ describe("cli init", () => {
       await runCli(["auth", "list", "--format", "json"], {
         writeOut: (value) => out.push(value),
       });
-      expect(JSON.parse(out.join(""))).toEqual([{ server: "catalog", status: "missing" }]);
+      expect(JSON.parse(out.join(""))).toEqual([
+        { server: "catalog", status: "missing", source: "global" },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

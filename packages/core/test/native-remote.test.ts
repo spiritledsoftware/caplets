@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapletsError } from "../src/errors";
 import { RemoteNativeCapletsService, type RemoteCapletsClient } from "../src/native/remote";
@@ -273,7 +276,15 @@ describe("RemoteNativeCapletsService", () => {
 });
 
 describe("createNativeCapletsService remote mode", () => {
-  it("creates a remote service using the factory seam", () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a composite service using the factory seam", () => {
     const fixture = client();
     const service = createNativeCapletsService({
       mode: "remote",
@@ -281,7 +292,315 @@ describe("createNativeCapletsService remote mode", () => {
       remoteClientFactory: vi.fn(() => fixture.api),
     });
 
-    expect(service).toBeInstanceOf(RemoteNativeCapletsService);
+    expect(service).not.toBeInstanceOf(RemoteNativeCapletsService);
+  });
+
+  it("does not create the remote service when local overlay construction fails", () => {
+    const fixture = client();
+    const remoteClientFactory = vi.fn(() => fixture.api);
+    const localServiceFactory = vi.fn(() => {
+      throw new Error("local construction failed");
+    });
+
+    expect(() =>
+      createNativeCapletsService({
+        mode: "remote",
+        server: { url: "http://127.0.0.1:5387" },
+        remoteClientFactory,
+        localServiceFactory,
+      }),
+    ).toThrow("local construction failed");
+
+    expect(localServiceFactory).toHaveBeenCalledTimes(1);
+    expect(remoteClientFactory).not.toHaveBeenCalled();
+    expect(fixture.api.close).not.toHaveBeenCalled();
+  });
+
+  it("closes the local service when remote construction fails after local starts", () => {
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const remoteClientFactory = vi.fn(() => {
+      throw new Error("remote construction failed");
+    });
+
+    expect(() =>
+      createNativeCapletsService({
+        mode: "remote",
+        server: { url: "http://127.0.0.1:5387" },
+        localServiceFactory: vi.fn(() => localService),
+        remoteClientFactory,
+      }),
+    ).toThrow("remote construction failed");
+
+    expect(remoteClientFactory).toHaveBeenCalledTimes(1);
+    expect(localClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists local overlay Caplets after remote tools and shadows matching remote Caplets", async () => {
+    const fixture = client([
+      { name: "shared", title: "Remote Shared" },
+      { name: "remote-only", title: "Remote Only" },
+    ]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        shared: { name: "Local Shared", description: "Local wins.", command: process.execPath },
+        "local-only": { name: "Local Only", description: "Local only.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    await service.reload();
+
+    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+      ["remote-only", "Remote Only"],
+      ["shared", "Local Shared"],
+      ["local-only", "Local Only"],
+    ]);
+    await service.close();
+  });
+
+  it("executes local overlay Caplets locally and remote-only Caplets remotely", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+    await service.reload();
+
+    await expect(service.execute("local", { operation: "get_caplet" })).resolves.toEqual(
+      expect.objectContaining({ content: expect.any(Array) }),
+    );
+    await expect(service.execute("remote-only", { input: true })).resolves.toEqual({
+      name: "remote-only",
+      args: { input: true },
+    });
+
+    expect(fixture.api.callTool).toHaveBeenCalledTimes(1);
+    expect(fixture.api.callTool).toHaveBeenCalledWith("remote-only", { input: true });
+    await service.close();
+  });
+
+  it("emits one merged tools-changed event only when the merged set changes", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+    await service.reload();
+    const listener = vi.fn();
+    service.onToolsChanged(listener);
+
+    fixture.setTools([{ name: "beta", title: "Beta" }]);
+    fixture.emit();
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
+
+    expect(listener).toHaveBeenCalledWith([
+      expect.objectContaining({ caplet: "beta" }),
+      expect.objectContaining({ caplet: "local" }),
+    ]);
+    await expect(service.reload()).resolves.toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+    await service.close();
+  });
+
+  it("emits one merged tools-changed event when both children change during explicit reload", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+    await service.reload();
+    const listener = vi.fn();
+    service.onToolsChanged(listener);
+    fixture.setTools([{ name: "beta", title: "Beta" }]);
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          local: { name: "Local Renamed", description: "Local Caplet.", command: process.execPath },
+        },
+      }),
+      "utf8",
+    );
+
+    await expect(service.reload()).resolves.toBe(true);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith([
+      expect.objectContaining({ caplet: "beta", title: "Beta" }),
+      expect.objectContaining({ caplet: "local", title: "Local Renamed" }),
+    ]);
+    await service.close();
+  });
+
+  it("isolates listener failures while continuing notifications during reload", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+    await service.reload();
+    service.onToolsChanged(() => {
+      throw new Error("listener exploded");
+    });
+    const secondListener = vi.fn();
+    service.onToolsChanged(secondListener);
+    fixture.setTools([{ name: "beta", title: "Beta" }]);
+
+    await expect(service.reload()).resolves.toBe(true);
+
+    expect(secondListener).toHaveBeenCalledWith([
+      expect.objectContaining({ caplet: "beta" }),
+      expect.objectContaining({ caplet: "local" }),
+    ]);
+    expect(writeErr).toHaveBeenCalledWith(
+      expect.stringContaining("Caplets tools-changed listener failed"),
+    );
+    await service.close();
+  });
+
+  it("keeps last known-good merged tools and warns when a child reload rejects unexpectedly", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+    await service.reload();
+    const listener = vi.fn();
+    service.onToolsChanged(listener);
+    const remote = (service as unknown as { remote: { reload: () => Promise<boolean> } }).remote;
+    remote.reload = vi.fn(async () => {
+      fixture.setTools([{ name: "beta", title: "Beta" }]);
+      throw new Error("remote exploded");
+    });
+
+    await expect(service.reload()).resolves.toBe(false);
+
+    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+      ["alpha", "Alpha"],
+      ["local", "Local"],
+    ]);
+    expect(listener).not.toHaveBeenCalled();
+    expect(writeErr).toHaveBeenCalledWith(
+      expect.stringContaining("Could not reload composite Caplets tools"),
+    );
+    await service.close();
+  });
+
+  it("keeps the last known-good merged tools when local overlay reload only warns", async () => {
+    const fixture = client([{ name: "remote", title: "Remote" }]);
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+    await service.reload();
+    writeFileSync(configPath, "{ invalid json", "utf8");
+
+    await expect(service.reload()).resolves.toBe(true);
+
+    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
+    await service.close();
+  });
+
+  it("closes remote and local overlay services idempotently", async () => {
+    vi.useFakeTimers();
+    const fixture = client();
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      remote: { pollIntervalMs: 1_000 },
+    });
+
+    await service.close();
+    await service.close();
+    vi.advanceTimersByTime(1_000);
+
+    expect(fixture.api.close).toHaveBeenCalledTimes(1);
+    expect(fixture.api.listTools).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it("fails fast for invalid remote config", () => {
@@ -290,3 +609,16 @@ describe("createNativeCapletsService remote mode", () => {
     ).toThrow(/https/u);
   });
 });
+
+function tempConfig(config: unknown) {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-native-remote-"));
+  const userDir = join(dir, "user");
+  const projectDir = join(dir, "project", ".caplets");
+  mkdirSync(userDir, { recursive: true });
+  mkdirSync(projectDir, { recursive: true });
+  const configPath = join(userDir, "config.json");
+  const projectConfigPath = join(projectDir, "config.json");
+  writeFileSync(configPath, JSON.stringify(config), "utf8");
+  writeFileSync(projectConfigPath, JSON.stringify({}), "utf8");
+  return { dir, configPath, projectConfigPath };
+}

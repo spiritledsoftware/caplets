@@ -618,6 +618,15 @@ export type CapletFileLoadResult = {
   paths: Record<string, string>;
 };
 
+export type CapletFileWarning = {
+  path?: string | undefined;
+  message: string;
+};
+
+export type BestEffortCapletFileLoadResult = CapletFileLoadResult & {
+  warnings: CapletFileWarning[];
+};
+
 export function loadCapletFiles(root: string): CapletFileConfig | undefined {
   return loadCapletFilesWithPaths(root)?.config;
 }
@@ -688,6 +697,111 @@ export function loadCapletFilesWithPaths(root: string): CapletFileLoadResult | u
     : undefined;
 }
 
+export function loadCapletFilesWithPathsBestEffort(
+  root: string,
+): BestEffortCapletFileLoadResult | undefined {
+  if (!existsSync(root)) {
+    return undefined;
+  }
+
+  const warnings: CapletFileWarning[] = [];
+  return buildCapletFileLoadResult(root, discoverCapletFilesBestEffort(root, warnings), warnings);
+}
+
+function buildCapletFileLoadResult(
+  root: string,
+  candidates: Array<{ id: string; path: string }>,
+  warnings?: CapletFileWarning[],
+): BestEffortCapletFileLoadResult | undefined {
+  const servers: Record<string, unknown> = {};
+  const openapiEndpoints: Record<string, unknown> = {};
+  const graphqlEndpoints: Record<string, unknown> = {};
+  const httpApis: Record<string, unknown> = {};
+  const cliTools: Record<string, unknown> = {};
+  const capletSets: Record<string, unknown> = {};
+  const paths: Record<string, string> = {};
+
+  function hasId(id: string): boolean {
+    return Boolean(
+      servers[id] ||
+      openapiEndpoints[id] ||
+      graphqlEndpoints[id] ||
+      httpApis[id] ||
+      cliTools[id] ||
+      capletSets[id],
+    );
+  }
+
+  for (const candidate of candidates) {
+    if (hasId(candidate.id)) {
+      const message = `Duplicate Caplet ID ${candidate.id} under ${root}`;
+      if (!warnings) {
+        throw new CapletsError("CONFIG_INVALID", message);
+      }
+      warnings.push({
+        path: candidate.path,
+        message: `${message}; skipping duplicate at ${candidate.path}`,
+      });
+      continue;
+    }
+
+    let config: unknown;
+    try {
+      config = readCapletFile(candidate.path);
+    } catch (error) {
+      if (!warnings) {
+        throw error;
+      }
+      warnings.push({
+        path: candidate.path,
+        message: `Skipping invalid Caplet file at ${candidate.path}: ${errorMessage(error)}`,
+      });
+      continue;
+    }
+
+    paths[candidate.id] = candidate.path;
+    if (isPlainObject(config) && config.backend === "openapi") {
+      const { backend: _backend, ...endpoint } = config;
+      openapiEndpoints[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "graphql") {
+      const { backend: _backend, ...endpoint } = config;
+      graphqlEndpoints[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "http") {
+      const { backend: _backend, ...endpoint } = config;
+      httpApis[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "cli") {
+      const { backend: _backend, ...endpoint } = config;
+      cliTools[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "caplets") {
+      const { backend: _backend, ...endpoint } = config;
+      capletSets[candidate.id] = endpoint;
+    } else {
+      servers[candidate.id] = config;
+    }
+  }
+
+  const hasServers = Object.keys(servers).length > 0;
+  const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
+  const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
+  const hasHttpApis = Object.keys(httpApis).length > 0;
+  const hasCliTools = Object.keys(cliTools).length > 0;
+  const hasCapletSets = Object.keys(capletSets).length > 0;
+  const config = {
+    ...(hasServers ? { mcpServers: servers } : {}),
+    ...(hasOpenApi ? { openapiEndpoints } : {}),
+    ...(hasGraphQl ? { graphqlEndpoints } : {}),
+    ...(hasHttpApis ? { httpApis } : {}),
+    ...(hasCliTools ? { cliTools } : {}),
+    ...(hasCapletSets ? { capletSets } : {}),
+  };
+  const hasConfig = Object.keys(config).length > 0;
+  if (!hasConfig && warnings?.length === 0) {
+    return undefined;
+  }
+
+  return { config, paths, warnings: warnings ?? [] };
+}
+
 export function discoverCapletFiles(root: string): Array<{ id: string; path: string }> {
   const entries = readdirSync(root, { withFileTypes: true }).sort((left, right) =>
     left.name.localeCompare(right.name),
@@ -718,6 +832,86 @@ export function discoverCapletFiles(root: string): Array<{ id: string; path: str
   }
 
   return candidates;
+}
+
+function discoverCapletFilesBestEffort(
+  root: string,
+  warnings: CapletFileWarning[],
+): Array<{ id: string; path: string }> {
+  const entries = readdirSync(root, { withFileTypes: true }).sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+  const byId = new Map<string, { id: string; path: string; isDirectoryCaplet: boolean }>();
+  const duplicateIds = new Set<string>();
+
+  function addCandidate(id: string, path: string, isDirectoryCaplet: boolean): void {
+    try {
+      validateCapletId(id, path);
+    } catch (error) {
+      warnings.push({
+        path,
+        message: `Skipping invalid Caplet file at ${path}: ${errorMessage(error)}`,
+      });
+      return;
+    }
+
+    if (duplicateIds.has(id)) {
+      warnings.push({
+        path,
+        message: `Duplicate Caplet ID ${id} under ${root}; skipping duplicate at ${path}`,
+      });
+      return;
+    }
+
+    const existing = byId.get(id);
+    if (!existing) {
+      byId.set(id, { id, path, isDirectoryCaplet });
+      return;
+    }
+
+    if (isDirectoryCaplet && !existing.isDirectoryCaplet) {
+      warnings.push({
+        path: existing.path,
+        message: `Caplet file at ${existing.path} was shadowed by ${path}`,
+      });
+      byId.set(id, { id, path, isDirectoryCaplet });
+      return;
+    }
+
+    if (!isDirectoryCaplet && existing.isDirectoryCaplet) {
+      warnings.push({ path, message: `Caplet file at ${path} was shadowed by ${existing.path}` });
+      return;
+    }
+
+    warnings.push({ message: `Duplicate Caplet ID ${id} under ${root}; skipping ID` });
+    byId.delete(id);
+    duplicateIds.add(id);
+  }
+
+  for (const entry of entries) {
+    if (entry.name === "auth" || entry.name === "config.json") {
+      continue;
+    }
+
+    const path = join(root, entry.name);
+    if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") {
+      addCandidate(basename(entry.name, extname(entry.name)), path, false);
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      const capletPath = join(path, "CAPLET.md");
+      if (existsSync(capletPath) && statSync(capletPath).isFile()) {
+        addCandidate(entry.name, capletPath, true);
+      }
+    }
+  }
+
+  return Array.from(byId.values()).map(({ id, path }) => ({ id, path }));
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function readCapletFile(path: string): unknown {
