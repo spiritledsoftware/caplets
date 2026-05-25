@@ -1543,10 +1543,13 @@ describe("config", () => {
         paths: {},
         warnings: [
           expect.objectContaining({
+            path: join(root, "tools.MD"),
             message: expect.stringContaining("Duplicate Caplet ID tools"),
           }),
         ],
       });
+      expect(result?.warnings[0]?.message).toContain(join(root, "tools.md"));
+      expect(result?.warnings[0]?.message).toContain(join(root, "tools.MD"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

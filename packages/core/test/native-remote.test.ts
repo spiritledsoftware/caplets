@@ -284,7 +284,7 @@ describe("createNativeCapletsService remote mode", () => {
     }
   });
 
-  it("creates a composite service using the factory seam", () => {
+  it("creates a composite service using the factory seam", async () => {
     const fixture = client();
     const service = createNativeCapletsService({
       mode: "remote",
@@ -293,6 +293,7 @@ describe("createNativeCapletsService remote mode", () => {
     });
 
     expect(service).not.toBeInstanceOf(RemoteNativeCapletsService);
+    await service.close();
   });
 
   it("does not create the remote service when local overlay construction fails", () => {
@@ -606,6 +607,29 @@ describe("createNativeCapletsService remote mode", () => {
     await expect(service.reload()).resolves.toBe(true);
 
     expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
+    await service.close();
+  });
+
+  it("starts with remote tools when initial local overlay loading warns", async () => {
+    const fixture = client([{ name: "remote", title: "Remote" }]);
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    writeFileSync(configPath, "{ invalid json", "utf8");
+
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+
+    await service.reload();
+
+    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
     await service.close();
   });

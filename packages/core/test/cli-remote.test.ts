@@ -219,6 +219,34 @@ describe("remote CLI routing", () => {
     expect(err.join("")).toContain("Warning: global-config");
   });
 
+  it("keeps valid project overlay rows when the global overlay is invalid", async () => {
+    const context = testContext("caplets-cli-remote-list-overlay-partial-");
+    const out: string[] = [];
+    const err: string[] = [];
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({ mcpServers: { broken: { name: "Broken" } } }),
+      "utf8",
+    );
+    writeProjectMcpCaplet(context.projectCapletsRoot, "project-only", "Project Only");
+    const fetch = vi.fn(async () =>
+      Response.json({ ok: true, result: [remoteListRow("remote-only", "Remote Only")] }),
+    );
+
+    await runCli(["list", "--json"], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toEqual([
+      expect.objectContaining({ server: "project-only", source: "project-file" }),
+      expect.objectContaining({ server: "remote-only", source: "remote" }),
+    ]);
+    expect(err.join("")).toContain("Warning: global-config");
+  });
+
   it("merges remote, global, and project rows for list in remote mode", async () => {
     const context = testContext("caplets-cli-remote-list-merge-");
     const out: string[] = [];
@@ -626,7 +654,7 @@ describe("remote CLI routing", () => {
 
     const output = join(context.projectCapletsRoot, "github.md");
     expect(readFileSync(output, "utf8")).toContain('url: "https://mcp.example.com/mcp"');
-    expect(out.join("")).toBe(`Wrote MCP Caplet to ${output}\n`);
+    expect(out.join("")).toBe(`Wrote project MCP Caplet to ${output}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -644,7 +672,7 @@ describe("remote CLI routing", () => {
     const output = join(context.projectCapletsRoot, "github.md");
     expect(readFileSync(output, "utf8")).toContain('url: "https://mcp.example.com/mcp"');
     expect(existsSync(join(dirname(context.configPath), "github.md"))).toBe(false);
-    expect(out.join("")).toBe(`Wrote MCP Caplet to ${output}\n`);
+    expect(out.join("")).toBe(`Wrote project MCP Caplet to ${output}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -662,7 +690,7 @@ describe("remote CLI routing", () => {
     const output = join(dirname(context.configPath), "github.md");
     expect(readFileSync(output, "utf8")).toContain('url: "https://mcp.example.com/mcp"');
     expect(existsSync(join(context.projectCapletsRoot, "github.md"))).toBe(false);
-    expect(out.join("")).toBe(`Wrote MCP Caplet to ${output}\n`);
+    expect(out.join("")).toBe(`Wrote global MCP Caplet to ${output}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -872,7 +900,7 @@ describe("remote CLI routing", () => {
       "name: GitHub",
     );
     expect(out.join("")).toContain(
-      `Installed github to ${join(context.projectCapletsRoot, "github")}`,
+      `Installed github to project ${join(context.projectCapletsRoot, "github")}`,
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -895,7 +923,7 @@ describe("remote CLI routing", () => {
     );
     expect(existsSync(join(dirname(context.configPath), "github"))).toBe(false);
     expect(out.join("")).toContain(
-      `Installed github to ${join(context.projectCapletsRoot, "github")}`,
+      `Installed github to project ${join(context.projectCapletsRoot, "github")}`,
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -918,7 +946,7 @@ describe("remote CLI routing", () => {
     ).toContain("name: GitHub");
     expect(existsSync(join(context.projectCapletsRoot, "github"))).toBe(false);
     expect(out.join("")).toContain(
-      `Installed github to ${join(dirname(context.configPath), "github")}`,
+      `Installed github to global ${join(dirname(context.configPath), "github")}`,
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -983,7 +1011,7 @@ describe("remote CLI routing", () => {
     });
 
     expect(existsSync(context.projectConfigPath)).toBe(true);
-    expect(out.join("")).toBe(`Created Caplets config at ${context.projectConfigPath}\n`);
+    expect(out.join("")).toBe(`Created project Caplets config at ${context.projectConfigPath}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -991,6 +1019,7 @@ describe("remote CLI routing", () => {
     const context = testContext("caplets-cli-remote-init-explicit-project-");
     const out: string[] = [];
     const fetchMock = vi.fn(async () => Response.json({ ok: true, result: {} }));
+    const userConfigBefore = readFileSync(context.configPath, "utf8");
 
     await runCli(["init", "--project"], {
       env: remoteEnv(context),
@@ -999,8 +1028,8 @@ describe("remote CLI routing", () => {
     });
 
     expect(existsSync(context.projectConfigPath)).toBe(true);
-    expect(existsSync(join(dirname(context.configPath), "config.json"))).toBe(true);
-    expect(out.join("")).toBe(`Created Caplets config at ${context.projectConfigPath}\n`);
+    expect(readFileSync(context.configPath, "utf8")).toBe(userConfigBefore);
+    expect(out.join("")).toBe(`Created project Caplets config at ${context.projectConfigPath}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -1018,7 +1047,7 @@ describe("remote CLI routing", () => {
 
     expect(existsSync(context.configPath)).toBe(true);
     expect(existsSync(context.projectConfigPath)).toBe(false);
-    expect(out.join("")).toBe(`Created Caplets config at ${context.configPath}\n`);
+    expect(out.join("")).toBe(`Created global Caplets config at ${context.configPath}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

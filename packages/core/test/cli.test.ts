@@ -20,12 +20,15 @@ import { writeTokenBundle } from "../src/auth";
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
   const originalConfigPath = process.env.CAPLETS_CONFIG;
+  const originalProjectConfigPath = process.env.CAPLETS_PROJECT_CONFIG;
   const originalServerUrl = process.env.CAPLETS_SERVER_URL;
   const originalServerUser = process.env.CAPLETS_SERVER_USER;
   const originalServerPassword = process.env.CAPLETS_SERVER_PASSWORD;
 
   beforeEach(() => {
     process.env.CAPLETS_MODE = "local";
+    delete process.env.CAPLETS_CONFIG;
+    delete process.env.CAPLETS_PROJECT_CONFIG;
   });
 
   afterEach(() => {
@@ -39,6 +42,11 @@ describe("cli init", () => {
       delete process.env.CAPLETS_CONFIG;
     } else {
       process.env.CAPLETS_CONFIG = originalConfigPath;
+    }
+    if (originalProjectConfigPath === undefined) {
+      delete process.env.CAPLETS_PROJECT_CONFIG;
+    } else {
+      process.env.CAPLETS_PROJECT_CONFIG = originalProjectConfigPath;
     }
     if (originalServerUser === undefined) {
       delete process.env.CAPLETS_SERVER_USER;

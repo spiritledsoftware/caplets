@@ -1,5 +1,5 @@
 import { Command, CommanderError } from "commander";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
@@ -252,7 +252,7 @@ export function createProgram(io: CliIO = {}): Command {
           target === "global" ? resolveConfigPath(currentConfigPath()) : envProjectConfigPath(env),
         force: Boolean(options.force),
       });
-      writeOut(`Created Caplets config at ${path}\n`);
+      writeOut(`Created ${localMutationTargetLabel(target, io)}Caplets config at ${path}\n`);
     });
 
   program
@@ -324,7 +324,9 @@ export function createProgram(io: CliIO = {}): Command {
               : envProjectCapletsRoot(env),
         });
         for (const caplet of result.installed) {
-          writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
+          writeOut(
+            `Installed ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+          );
         }
       },
     );
@@ -378,7 +380,7 @@ export function createProgram(io: CliIO = {}): Command {
               : envProjectCapletsRoot(env),
         });
         if (result.path) {
-          writeOut(`Wrote CLI Caplet to ${result.path}\n`);
+          writeOut(`Wrote ${localMutationTargetLabel(target, io)}CLI Caplet to ${result.path}\n`);
           return;
         }
         writeOut(result.text);
@@ -430,7 +432,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "MCP", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}MCP`, result);
       },
     );
 
@@ -467,7 +469,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "OpenAPI", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}OpenAPI`, result);
       },
     );
 
@@ -510,7 +512,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "GraphQL", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}GraphQL`, result);
       },
     );
 
@@ -547,7 +549,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...options,
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "HTTP", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}HTTP`, result);
       },
     );
 
@@ -1165,6 +1167,10 @@ function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
   return "project";
 }
 
+function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
+  return remoteClientForCli(io) ? `${target} ` : "";
+}
+
 function parseAuthFlagTarget(options: AuthTargetOptions): AuthTarget | undefined {
   const selected = [
     options.project ? "--project" : undefined,
@@ -1506,8 +1512,117 @@ function tryLoadLocalOverlayForCli(
     return loadLocalOverlayForCli(io, writeErr);
   } catch (error) {
     writeErr(`Warning: Could not load local Caplets overlay: ${formatErrorMessage(error)}\n`);
+    return loadPartialLocalOverlayForCli(io, writeErr);
+  }
+}
+
+function loadPartialLocalOverlayForCli(
+  io: Pick<CliIO, "env">,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  const env = io.env ?? process.env;
+  const configPath = resolveConfigPath(envConfigPath(env));
+  const projectConfigPath = envProjectConfigPath(env);
+  const absentProjectPath = join(dirname(configPath), ".caplets-overlay-recovery", "config.json");
+  const absentGlobalPath = join(
+    dirname(projectConfigPath),
+    ".caplets-overlay-recovery",
+    "config.json",
+  );
+  const globalOverlay = tryLoadPartialOverlayLayer(
+    "global",
+    configPath,
+    absentProjectPath,
+    writeErr,
+  );
+  const projectOverlay = tryLoadPartialOverlayLayer(
+    "project",
+    absentGlobalPath,
+    projectConfigPath,
+    writeErr,
+  );
+
+  if (!globalOverlay) {
+    return projectOverlay;
+  }
+  if (!projectOverlay) {
+    return globalOverlay;
+  }
+  return mergePartialLocalOverlays(globalOverlay, projectOverlay);
+}
+
+function tryLoadPartialOverlayLayer(
+  label: "global" | "project",
+  configPath: string,
+  projectConfigPath: string,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  try {
+    const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    for (const warning of overlay.warnings) {
+      writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+    }
+    return overlay;
+  } catch (error) {
+    writeErr(`Warning: Could not load ${label} Caplets overlay: ${formatErrorMessage(error)}\n`);
     return undefined;
   }
+}
+
+function mergePartialLocalOverlays(
+  globalOverlay: LocalOverlayConfigWithSources,
+  projectOverlay: LocalOverlayConfigWithSources,
+): LocalOverlayConfigWithSources {
+  const config = { ...globalOverlay.config };
+  const sources = { ...globalOverlay.sources };
+  const shadows = { ...globalOverlay.shadows };
+
+  for (const kind of capletConfigKinds) {
+    config[kind] = { ...globalOverlay.config[kind] } as never;
+  }
+  for (const kind of capletConfigKinds) {
+    for (const id of Object.keys(projectOverlay.config[kind])) {
+      removeCapletFromPartialOverlay(config, sources, shadows, id);
+      config[kind][id] = projectOverlay.config[kind][id] as never;
+    }
+  }
+  for (const [id, source] of Object.entries(projectOverlay.sources)) {
+    sources[id] = source;
+  }
+  for (const [id, shadowedSources] of Object.entries(projectOverlay.shadows)) {
+    shadows[id] = [...(shadows[id] ?? []), ...shadowedSources];
+  }
+
+  return {
+    config,
+    sources,
+    shadows,
+    warnings: [...globalOverlay.warnings, ...projectOverlay.warnings],
+  };
+}
+
+const capletConfigKinds = [
+  "mcpServers",
+  "openapiEndpoints",
+  "graphqlEndpoints",
+  "httpApis",
+  "cliTools",
+  "capletSets",
+] as const;
+
+function removeCapletFromPartialOverlay(
+  config: CapletsConfig,
+  sources: Record<string, ConfigSource>,
+  shadows: Record<string, ConfigSource[]>,
+  id: string,
+): void {
+  for (const kind of capletConfigKinds) {
+    delete config[kind][id];
+  }
+  if (sources[id]) {
+    shadows[id] = [...(shadows[id] ?? []), sources[id]];
+  }
+  delete sources[id];
 }
 
 function formatErrorMessage(error: unknown): string {

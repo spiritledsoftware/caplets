@@ -883,7 +883,10 @@ function discoverCapletFilesBestEffort(
       return;
     }
 
-    warnings.push({ message: `Duplicate Caplet ID ${id} under ${root}; skipping ID` });
+    warnings.push({
+      path,
+      message: `Duplicate Caplet ID ${id} under ${root}; skipping ${existing.path} and ${path}`,
+    });
     byId.delete(id);
     duplicateIds.add(id);
   }

@@ -199,8 +199,8 @@ export function formatAuthRows(
 ): string {
   if (rows.length === 0) {
     return format === "markdown"
-      ? "## OAuth credentials\n\nNo configured remote OAuth servers found.\n"
-      : "No configured remote OAuth servers found.\n";
+      ? "## OAuth credentials\n\nNo configured OAuth servers found.\n"
+      : "No configured OAuth servers found.\n";
   }
   let output = "";
   if (format === "markdown") {

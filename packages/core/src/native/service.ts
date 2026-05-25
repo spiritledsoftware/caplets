@@ -12,7 +12,12 @@ import {
   nativeCapletToolDescription,
   nativeCapletToolName,
 } from "./tools";
-import { loadLocalOverlayConfigWithSources, type CapletsConfig } from "../config";
+import {
+  loadLocalOverlayConfigWithSources,
+  parseConfig,
+  type CapletsConfig,
+  type LocalOverlayConfigWithSources,
+} from "../config";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 
 export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
@@ -241,7 +246,24 @@ function createLocalOverlayConfigLoader(options: NativeCapletsServiceOptions) {
   let hasLoaded = false;
   let previousWarnings = new Set<string>();
   return (configPath: string, projectConfigPath: string): CapletsConfig => {
-    const result = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    let result: LocalOverlayConfigWithSources;
+    try {
+      result = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    } catch (error) {
+      writeErr(
+        options,
+        `Caplets local overlay warning: Could not load local overlay config: ${errorMessage(error)}\n`,
+      );
+      if (hasLoaded) {
+        throw new CapletsError(
+          "CONFIG_INVALID",
+          "Caplets local overlay reload failed; keeping last known-good config.",
+          error,
+        );
+      }
+      hasLoaded = true;
+      return parseConfig({});
+    }
     for (const warning of result.warnings) {
       const path = typeof warning.path === "string" ? ` at ${warning.path}` : "";
       writeErr(options, `Caplets local overlay warning${path}: ${warning.message}\n`);
