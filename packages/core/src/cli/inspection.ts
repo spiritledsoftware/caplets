@@ -3,7 +3,6 @@ import {
   DEFAULT_AUTH_DIR,
   resolveCapletsRoot,
   resolveConfigPath,
-  resolveProjectCapletsRoot,
   resolveProjectConfigPath,
   type CapletConfig,
   type CapletsConfig,
@@ -19,7 +18,7 @@ type CapletListRow = {
   description: string;
   disabled: boolean;
   status: ServerStatus;
-  source: ConfigSource["kind"] | "unknown";
+  source: ConfigSource["kind"] | "remote" | "unknown";
   path: string | null;
   shadows: ConfigSource[];
 };
@@ -66,6 +65,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),
+    ...Object.values(config.capletSets),
   ];
 }
 
@@ -145,7 +145,7 @@ function formatCapletListPlain(rows: CapletListRow[]): string {
   return `Configured Caplets (${rows.length})\n\n${entries}\n\n${warnings.join("\n")}\n`;
 }
 
-function formatSourceKind(kind: ConfigSource["kind"] | "unknown"): string {
+function formatSourceKind(kind: ConfigSource["kind"] | "remote" | "unknown"): string {
   if (kind.startsWith("project")) {
     return "project";
   }
@@ -157,16 +157,17 @@ function formatSourceKind(kind: ConfigSource["kind"] | "unknown"): string {
 
 export function resolveCliConfigPaths(
   envConfigPath: string | undefined,
+  projectConfigPath = resolveProjectConfigPath(),
   authDir?: string,
 ): ConfigPaths {
   const configPath = resolveConfigPath(envConfigPath);
   const effectiveAuthDir = authDir ?? DEFAULT_AUTH_DIR;
   return {
     userConfig: configPath,
-    projectConfig: resolveProjectConfigPath(),
+    projectConfig: projectConfigPath,
     userRoot: resolveCapletsRoot(configPath),
     stateRoot: dirname(effectiveAuthDir),
-    projectRoot: resolveProjectCapletsRoot(),
+    projectRoot: dirname(projectConfigPath),
     authDir: effectiveAuthDir,
     envConfig: envConfigPath ?? null,
   };

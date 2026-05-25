@@ -219,6 +219,12 @@ opencode
 
 For MCP-backed Codex or Claude Code configs, point the agent's MCP server entry at the derived `/mcp` URL using that agent's supported HTTP MCP configuration. If Basic Auth is needed, use the agent's secure secret or environment interpolation mechanism rather than hardcoding credentials.
 
+In `CAPLETS_MODE=remote`, read and execute commands use a merged Caplets view. Remote server rows load first, user-global local Caplets overlay them, and project-local Caplets have the highest priority. A local Caplet with the same ID shadows the remote one, runs locally, and prints a warning such as `Warning: project Caplet shared shadows remote Caplet`; remote-only IDs continue through remote control.
+
+Local overlays in remote mode are best-effort. Invalid local config sources warn and are ignored while remaining valid layers still load; invalid Caplet files warn and are skipped individually. For sibling file layouts, `foo/CAPLET.md` wins over `foo.md` and warns that `foo.md` was shadowed; if the winning `CAPLET.md` is invalid, that local ID is skipped instead of falling back to `foo.md`.
+
+Mutating commands do not automatically write to the server just because remote mode is active. `caplets init`, `caplets add ...`, and `caplets install ...` write project-local by default, `--project` is the explicit project-local target, `--global` writes user-global local files, and `--remote` sends the mutation to the remote Caplets server. Target flags are mutually exclusive.
+
 ## Convert Existing Tooling
 
 Caplets is designed to convert what you already use into agent-friendly capability domains.
@@ -299,7 +305,7 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## Capabilities
 
-- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and curated CLI tool definitions from the user config file.
+- Reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and curated CLI tool definitions from user and project config sources.
 - Registers one generated MCP tool for each enabled MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, or CLI tools backend.
 - Uses the configured server ID as the generated tool name.
 - Uses the configured `name` and `description` as the capability card shown to agents.
@@ -316,10 +322,18 @@ the agent chooses that server and asks to search, list, inspect, or call them.
 
 ## Configure
 
-Create a starter user config at `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows:
+Create a starter project config at `./.caplets/config.json`:
 
 ```sh
 caplets init
+```
+
+To create a starter user config instead, pass `--global`. The user config path is
+`${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms and
+`%APPDATA%\caplets\config.json` on Windows:
+
+```sh
+caplets init --global
 ```
 
 The generated config includes a disabled example server. Replace it with the MCP servers
@@ -406,10 +420,12 @@ you want Caplets to expose:
 }
 ```
 
-The default config path is `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms and `%APPDATA%\caplets\config.json` on Windows. It can be overridden with `CAPLETS_CONFIG`:
+The user config path can be overridden with `CAPLETS_CONFIG`; the project config path can be
+overridden with `CAPLETS_PROJECT_CONFIG`:
 
 ```sh
-CAPLETS_CONFIG=/path/to/config.json caplets init
+CAPLETS_PROJECT_CONFIG=/path/to/project/.caplets/config.json caplets init
+CAPLETS_CONFIG=/path/to/user/config.json caplets init --global
 CAPLETS_CONFIG=/path/to/config.json caplets serve
 ```
 
@@ -422,10 +438,9 @@ caplets config paths
 caplets config paths --json
 ```
 
-Caplets validates this file at startup and hot reloads config changes while `caplets serve`
+Caplets validates config files at startup and hot reloads config changes while `caplets serve`
 is running. Invalid edits are ignored until fixed, so the MCP server keeps serving the last
-known-good config instead of dropping every tool because of a transient JSON or validation
-error.
+known-good config instead of dropping every tool because of a transient JSON or validation error.
 
 The optional `$schema` field points editors at the generated JSON Schema in
 [`schemas/caplets-config.schema.json`](schemas/caplets-config.schema.json). CI verifies that
@@ -591,11 +606,13 @@ That means a project-local Caplet can intentionally replace a user-level Caplet 
 Use `caplets list` to see each Caplet's winning source; when a project Caplet shadows a user-level
 Caplet, the list output includes a warning naming the shadowed path.
 
-`caplets init` refuses to overwrite an existing config. To intentionally replace the file:
+`caplets init` refuses to overwrite an existing project config. To intentionally replace the file:
 
 ```sh
 caplets init --force
 ```
+
+Use `caplets init --global --force` to replace the user config instead.
 
 ### Caplet IDs
 
@@ -914,11 +931,16 @@ caplets auth login <server> --no-open
 In local mode, OAuth/OIDC tokens are stored under
 `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms and
 `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows. Token files use owner-only file
-permissions where the platform supports them. In `CAPLETS_MODE=remote`, `caplets auth list`,
-`caplets auth login <server>`, and `caplets auth logout <server>` operate on the configured Caplets
-server instead. Downstream OAuth/OIDC credentials are stored server-side and are not returned to the
-local client. Caplets supports well-known OAuth/OIDC discovery and dynamic client registration when
-advertised. When a token expires, run `caplets auth login <server>` again.
+permissions where the platform supports them. In `CAPLETS_MODE=remote`, `caplets auth list` shows
+local and remote auth targets with a `source` field. `caplets auth login <server>` and
+`caplets auth logout <server>` use the matching scope when it is unambiguous; if the same ID exists
+in multiple scopes, pass `--project`, `--global`, or `--remote`. Remote OAuth/OIDC credentials are
+stored server-side and are not returned to the local client. Caplets supports well-known OAuth/OIDC
+discovery and dynamic client registration when advertised. When a token expires, run
+`caplets auth login <server>` again.
+
+Auth target flags are mutually exclusive. `caplets auth list --project`,
+`caplets auth list --global`, and `caplets auth list --remote` filter the listing to one scope.
 
 To inspect or remove stored OAuth credentials:
 

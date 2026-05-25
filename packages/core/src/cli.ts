@@ -1,4 +1,5 @@
 import { Command, CommanderError } from "commander";
+import { dirname, join } from "node:path";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
@@ -7,7 +8,16 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./cli/add";
-import { loginAuth, logoutAuth, listAuth, formatAuthRows, type AuthStatusRow } from "./cli/auth";
+import {
+  loginAuth,
+  logoutAuth,
+  formatAuthRows,
+  listLocalAuthRows,
+  localAuthConfigForTarget,
+  localAuthTargets,
+  type AuthSource,
+  type AuthStatusRow,
+} from "./cli/auth";
 import { cliCommands } from "./cli/commands";
 import { initConfig } from "./cli/init";
 import {
@@ -25,10 +35,15 @@ import {
 } from "./cli/inspection";
 import { installCaplets } from "./cli/install";
 import {
+  type CapletsConfig,
+  type ConfigSource,
+  type LocalOverlayConfigWithSources,
   loadConfigWithSources,
+  loadLocalOverlayConfigWithSources,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
+  resolveProjectConfigPath,
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
@@ -137,19 +152,38 @@ export function createProgram(io: CliIO = {}): Command {
       const completionWords = normalizeCompletionWords(words);
       let suggestions: string[] = [];
       try {
-        suggestions = remote
-          ? ((await remote.request("complete_cli" as RemoteCliCommand, {
+        if (remote) {
+          const localOverlay = loadLocalOverlayForCli(io, () => {});
+          const localSuggestions = await completeCliWordsLocally(completionWords, {
+            ...(configPath ? { configPath } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            config: localOverlay.config,
+          });
+          const target = localShadowedCompletionTarget(completionWords, localOverlay.config);
+          if (target) {
+            suggestions = localSuggestions;
+          } else {
+            const remoteSuggestions = (await remote.request("complete_cli" as RemoteCliCommand, {
               shell,
               words: completionWords,
-            })) as string[])
-          : await completeCliWordsLocally(completionWords, {
-              ...(configPath ? { configPath } : {}),
-              ...(io.authDir ? { authDir: io.authDir } : {}),
-            });
+            })) as string[];
+            suggestions = mergeCompletionSuggestions(localSuggestions, remoteSuggestions);
+          }
+        } else {
+          suggestions = await completeCliWordsLocally(completionWords, {
+            ...(configPath ? { configPath } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+          });
+        }
       } catch {
         suggestions = remote
           ? []
-          : await completeCliWords(completionWords, configPath ? { configPath } : {});
+          : await completeCliWords(completionWords, {
+              ...(configPath ? { configPath } : {}),
+              projectConfigPath: envProjectConfigPath(env),
+            });
       }
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
@@ -199,22 +233,26 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.init)
     .description("Create a starter Caplets config file.")
+    .option("--project", "create the project Caplets config")
+    .option("-g, --global", "create the user Caplets config")
+    .option("--remote", "create the remote Caplets config")
     .option("--force", "overwrite an existing config file")
-    .action(async (options: { force?: boolean }) => {
-      const remote = remoteClientForCli(io);
-      if (remote) {
+    .action(async (options: MutationTargetOptions & { force?: boolean }) => {
+      const target = parseMutationTarget(options);
+      if (target === "remote") {
+        const remote = requireRemoteClientForTarget(io);
         const result = (await remote.request("init", {
           force: Boolean(options.force),
         })) as { path: string; remote: true };
         writeOut(`Created remote Caplets config at ${result.path}\n`);
         return;
       }
-      const configPath = currentConfigPath();
       const path = initConfig({
-        ...(configPath ? { path: configPath } : {}),
+        path:
+          target === "global" ? resolveConfigPath(currentConfigPath()) : envProjectConfigPath(env),
         force: Boolean(options.force),
       });
-      writeOut(`Created Caplets config at ${path}\n`);
+      writeOut(`Created ${localMutationTargetLabel(target, io)}Caplets config at ${path}\n`);
     });
 
   program
@@ -227,17 +265,20 @@ export function createProgram(io: CliIO = {}): Command {
       const includeDisabled = Boolean(options.all);
       const remote = remoteClientForCli(io);
       if (remote) {
-        const rows = await remote.request("list", { includeDisabled });
+        const remoteRows = (await remote.request("list", { includeDisabled })) as CapletListRow[];
+        const localOverlay = tryLoadLocalOverlayForCli(io, writeErr);
+        const rows = mergeRemoteAndLocalRows(remoteRows, localOverlay, {
+          includeDisabled,
+          writeErr,
+        });
         if (options.json || options.format === "json") {
           writeOut(`${JSON.stringify(rows, null, 2)}\n`);
           return;
         }
-        writeOut(
-          formatCapletList(rows as ReturnType<typeof listCaplets>, options.format ?? "plain"),
-        );
+        writeOut(formatCapletList(rows, options.format ?? "plain"));
         return;
       }
-      const config = loadConfigWithSources(currentConfigPath());
+      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env));
       const rows = listCaplets(config, { includeDisabled });
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
@@ -251,17 +292,19 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Install Caplets from a repo's caplets directory.")
     .argument("<repo>", "local repo path, Git URL, or GitHub owner/repo")
     .argument("[caplets...]", "optional Caplet IDs to install")
+    .option("--project", "install to the project Caplets root")
     .option("-g, --global", "install to the user Caplets root")
+    .option("--remote", "install through remote control")
     .option("--force", "overwrite installed Caplets")
     .action(
-      async (repo: string, capletIds: string[], options: { global?: boolean; force?: boolean }) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
-          if (options.global) {
-            writeErr(
-              "Warning: --global is not supported in remote mode; the server controls the installation destination.\n",
-            );
-          }
+      async (
+        repo: string,
+        capletIds: string[],
+        options: MutationTargetOptions & { force?: boolean },
+      ) => {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = (await remote.request("install", {
             repo,
             capletIds,
@@ -275,12 +318,15 @@ export function createProgram(io: CliIO = {}): Command {
         const result = installCaplets(repo, {
           capletIds,
           force: Boolean(options.force),
-          destinationRoot: options.global
-            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-            : resolveProjectCapletsRoot(),
+          destinationRoot:
+            target === "global"
+              ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
+              : envProjectCapletsRoot(env),
         });
         for (const caplet of result.installed) {
-          writeOut(`Installed ${caplet.id} to ${caplet.destination}\n`);
+          writeOut(
+            `Installed ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+          );
         }
       },
     );
@@ -294,7 +340,9 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--repo <path>", "repository path to inspect")
     .option("--include <items>", "comma-separated generators to include: git,gh,package")
     .option("--command <name>", "single CLI command template to generate")
+    .option("--project", "write to the project Caplets root")
     .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
     .option("--print", "print generated Caplet text without writing a file")
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
@@ -309,10 +357,13 @@ export function createProgram(io: CliIO = {}): Command {
           print?: boolean;
           output?: string;
           force?: boolean;
+          project?: boolean;
+          remote?: boolean;
         },
       ) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
             kind: "cli",
             id,
@@ -323,12 +374,13 @@ export function createProgram(io: CliIO = {}): Command {
         }
         const result = addCliCaplet(id, {
           ...options,
-          destinationRoot: options.global
-            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-            : resolveProjectCapletsRoot(),
+          destinationRoot:
+            target === "global"
+              ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
+              : envProjectCapletsRoot(env),
         });
         if (result.path) {
-          writeOut(`Wrote CLI Caplet to ${result.path}\n`);
+          writeOut(`Wrote ${localMutationTargetLabel(target, io)}CLI Caplet to ${result.path}\n`);
           return;
         }
         writeOut(result.text);
@@ -346,7 +398,9 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--url <url>", "remote MCP server URL")
     .option("--transport <transport>", "remote transport: http or sse")
     .option("--token-env <ENV>", "bearer token environment variable reference")
+    .option("--project", "write to the project Caplets root")
     .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
     .option("--print", "print generated Caplet text without writing a file")
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
@@ -363,8 +417,9 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
             kind: "mcp",
             id,
@@ -375,9 +430,9 @@ export function createProgram(io: CliIO = {}): Command {
         }
         const result = addMcpCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options, currentConfigPath()),
+          destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "MCP", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}MCP`, result);
       },
     );
 
@@ -388,7 +443,9 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--spec <path-or-url>", "OpenAPI spec path or URL")
     .option("--base-url <url>", "request base URL override")
     .option("--token-env <ENV>", "bearer token environment variable reference")
+    .option("--project", "write to the project Caplets root")
     .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
     .option("--print", "print generated Caplet text without writing a file")
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
@@ -397,8 +454,9 @@ export function createProgram(io: CliIO = {}): Command {
         id: string,
         options: AddBackendCliOptions & { spec?: string; baseUrl?: string; tokenEnv?: string },
       ) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
             kind: "openapi",
             id,
@@ -409,9 +467,9 @@ export function createProgram(io: CliIO = {}): Command {
         }
         const result = addOpenApiCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options, currentConfigPath()),
+          destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "OpenAPI", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}OpenAPI`, result);
       },
     );
 
@@ -423,7 +481,9 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--schema <path-or-url>", "GraphQL schema path or URL")
     .option("--introspection", "load schema through endpoint introspection")
     .option("--token-env <ENV>", "bearer token environment variable reference")
+    .option("--project", "write to the project Caplets root")
     .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
     .option("--print", "print generated Caplet text without writing a file")
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
@@ -437,8 +497,9 @@ export function createProgram(io: CliIO = {}): Command {
           tokenEnv?: string;
         },
       ) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
             kind: "graphql",
             id,
@@ -449,9 +510,9 @@ export function createProgram(io: CliIO = {}): Command {
         }
         const result = addGraphqlCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options, currentConfigPath()),
+          destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "GraphQL", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}GraphQL`, result);
       },
     );
 
@@ -462,7 +523,9 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--base-url <url>", "HTTP API base URL")
     .option("--action <name:METHOD:/path>", "HTTP action", collect, [])
     .option("--token-env <ENV>", "bearer token environment variable reference")
+    .option("--project", "write to the project Caplets root")
     .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
     .option("--print", "print generated Caplet text without writing a file")
     .option("--output <path>", "output path")
     .option("--force", "overwrite an existing destination file")
@@ -471,8 +534,9 @@ export function createProgram(io: CliIO = {}): Command {
         id: string,
         options: AddBackendCliOptions & { baseUrl?: string; action?: string[]; tokenEnv?: string },
       ) => {
-        const remote = remoteClientForCli(io);
-        if (remote) {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
           const result = await remote.request("add", {
             kind: "http",
             id,
@@ -483,9 +547,9 @@ export function createProgram(io: CliIO = {}): Command {
         }
         const result = addHttpCaplet(id, {
           ...options,
-          destinationRoot: addDestinationRoot(options, currentConfigPath()),
+          destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
-        writeAddResult(writeOut, "HTTP", result);
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}HTTP`, result);
       },
     );
 
@@ -882,7 +946,11 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
     .action((options: { json?: boolean; format?: CliOutputFormat }) => {
-      const paths = resolveCliConfigPaths(currentConfigPath(), io.authDir);
+      const paths = resolveCliConfigPaths(
+        currentConfigPath(),
+        envProjectConfigPath(env),
+        io.authDir,
+      );
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(paths, null, 2)}\n`);
         return;
@@ -898,37 +966,35 @@ export function createProgram(io: CliIO = {}): Command {
     .command("login")
     .description("Authenticate a configured remote OAuth server.")
     .argument("<server>", "configured server ID")
+    .option("--project", "authenticate using the project Caplets config")
+    .option("-g, --global", "authenticate using the user Caplets config")
+    .option("--remote", "authenticate using the remote server auth store")
     .option("--no-open", "print the authorization URL without opening a browser")
-    .action(async (serverId: string, options: { open?: boolean }) => {
-      const remote = remoteClientForCli(io);
-      if (remote) {
-        const started = (await remote.request("auth_login_start", { server: serverId })) as {
-          server: string;
-          flowId?: string;
-          authorizationUrl?: string;
-          authenticated?: boolean;
-        };
-        if (started.authorizationUrl) {
-          writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
-          if (options.open !== false) {
-            await openBrowser(started.authorizationUrl);
-          }
-          writeOut(
-            "Complete authentication in your browser. The server callback will store credentials.\n",
-          );
-          return;
-        }
-        if (started.authenticated) {
-          writeOut(`Authenticated \`${serverId}\`.\n`);
-        }
+    .action(async (serverId: string, options: AuthTargetOptions & { open?: boolean }) => {
+      const target = await resolveAuthTarget(serverId, options, io);
+      if (target === "remote") {
+        await remoteAuthLogin(
+          requireRemoteClientForTarget(io),
+          serverId,
+          options.open !== false,
+          writeOut,
+        );
         return;
       }
       const configPath = currentConfigPath();
+      const projectConfigPath = envProjectConfigPath(env);
       await loginAuth(serverId, {
         noOpen: options.open === false,
         writeOut,
         writeErr,
         ...(configPath ? { configPath } : {}),
+        ...(projectConfigPath ? { projectConfigPath } : {}),
+        config: localAuthConfigForTarget({
+          serverId,
+          ...(configPath ? { configPath } : {}),
+          ...(projectConfigPath ? { projectConfigPath } : {}),
+          source: target,
+        }),
         ...(io.authDir ? { authDir: io.authDir } : {}),
       });
     });
@@ -937,9 +1003,13 @@ export function createProgram(io: CliIO = {}): Command {
     .command("logout")
     .description("Delete stored OAuth credentials for a server.")
     .argument("<server>", "configured server ID")
-    .action(async (serverId: string) => {
-      const remote = remoteClientForCli(io);
-      if (remote) {
+    .option("--project", "delete credentials for the project Caplets config target")
+    .option("-g, --global", "delete credentials for the user Caplets config target")
+    .option("--remote", "delete credentials from the remote server auth store")
+    .action(async (serverId: string, options: AuthTargetOptions) => {
+      const target = await resolveAuthTarget(serverId, options, io);
+      if (target === "remote") {
+        const remote = requireRemoteClientForTarget(io);
         const result = (await remote.request("auth_logout", { server: serverId })) as {
           deleted: boolean;
         };
@@ -951,9 +1021,16 @@ export function createProgram(io: CliIO = {}): Command {
         return;
       }
       const configPath = currentConfigPath();
+      const projectConfigPath = envProjectConfigPath(env);
       logoutAuth(serverId, {
         writeOut,
         ...(configPath ? { configPath } : {}),
+        config: localAuthConfigForTarget({
+          serverId,
+          ...(configPath ? { configPath } : {}),
+          ...(projectConfigPath ? { projectConfigPath } : {}),
+          source: target,
+        }),
         ...(io.authDir ? { authDir: io.authDir } : {}),
       });
     });
@@ -963,26 +1040,21 @@ export function createProgram(io: CliIO = {}): Command {
     .description("List servers with stored OAuth credentials.")
     .option("--json", "print JSON output")
     .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
-    .action(async (options: { json?: boolean; format?: CliOutputFormat }) => {
+    .option("--project", "list auth targets from the project Caplets config")
+    .option("-g, --global", "list auth targets from the user Caplets config")
+    .option("--remote", "list auth targets from the remote server auth store")
+    .action(async (options: AuthTargetOptions & { json?: boolean; format?: CliOutputFormat }) => {
       const configPath = currentConfigPath();
+      const projectConfigPath = envProjectConfigPath(env);
       const format =
         options.json || options.format === "json" ? "json" : (options.format ?? "plain");
-      const remote = remoteClientForCli(io);
-      if (remote) {
-        const rows = (await remote.request("auth_list", {})) as AuthStatusRow[];
-        if (format === "json") {
-          writeOut(`${JSON.stringify(rows, null, 2)}\n`);
-          return;
-        }
-        writeOut(formatAuthRows(rows, format));
+      const target = parseAuthFlagTarget(options);
+      const rows = await authListRowsForCli(target, io, configPath, projectConfigPath);
+      if (format === "json") {
+        writeOut(`${JSON.stringify(rows, null, 2)}\n`);
         return;
       }
-      listAuth({
-        writeOut,
-        format,
-        ...(configPath ? { configPath } : {}),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
-      });
+      writeOut(formatAuthRows(rows, format));
     });
 
   return program;
@@ -1035,23 +1107,30 @@ function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undef
 
 type AddBackendCliOptions = {
   global?: boolean;
+  project?: boolean;
+  remote?: boolean;
   print?: boolean;
   output?: string;
   force?: boolean;
 };
 
+type MutationTarget = "project" | "global" | "remote";
+type AuthTarget = AuthSource;
+
+type MutationTargetOptions = {
+  project?: boolean;
+  global?: boolean;
+  remote?: boolean;
+};
+
+type AuthTargetOptions = MutationTargetOptions;
+
 type AddCliResult = { path?: string; text: string; remote?: boolean };
 
 function remoteAddOptions<T extends Record<string, unknown>>(
   options: T,
-): Omit<T, "global" | "print" | "output" | "destinationRoot"> {
-  const { output, print, global, destinationRoot, ...remoteOptions } = options;
-  if (global) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "--global is not supported in remote mode; the server controls the add destination.",
-    );
-  }
+): Omit<T, "global" | "project" | "remote" | "print" | "output" | "destinationRoot"> {
+  const { output, print, global, project, remote, destinationRoot, ...remoteOptions } = options;
   if (print) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -1064,8 +1143,154 @@ function remoteAddOptions<T extends Record<string, unknown>>(
       "--output is not supported in remote mode; the server controls the add destination.",
     );
   }
+  void global;
+  void project;
+  void remote;
   void destinationRoot;
   return remoteOptions;
+}
+
+function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
+  const selected = [
+    options.project ? "--project" : undefined,
+    options.global ? "--global" : undefined,
+    options.remote ? "--remote" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  if (selected.length > 1) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Cannot combine mutation target flags: ${selected.join(", ")}`,
+    );
+  }
+  if (options.global) return "global";
+  if (options.remote) return "remote";
+  return "project";
+}
+
+function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
+  return remoteClientForCli(io) ? `${target} ` : "";
+}
+
+function parseAuthFlagTarget(options: AuthTargetOptions): AuthTarget | undefined {
+  const selected = [
+    options.project ? "--project" : undefined,
+    options.global ? "--global" : undefined,
+    options.remote ? "--remote" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  if (selected.length > 1) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Cannot combine auth target flags: ${selected.join(", ")}`,
+    );
+  }
+  if (options.project) return "project";
+  if (options.global) return "global";
+  if (options.remote) return "remote";
+  return undefined;
+}
+
+async function resolveAuthTarget(
+  serverId: string,
+  options: AuthTargetOptions,
+  io: CliIO,
+): Promise<AuthTarget> {
+  const explicit = parseAuthFlagTarget(options);
+  if (explicit) return explicit;
+
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const projectConfigPath = envProjectConfigPath(env);
+  const matches: AuthTarget[] = localAuthTargets({
+    ...(configPath ? { configPath } : {}),
+    ...(projectConfigPath ? { projectConfigPath } : {}),
+  })
+    .filter((target) => target.server === serverId)
+    .map((target) => target.source);
+
+  const remote = remoteClientForCli(io);
+  if (remote) {
+    if (matches.length === 0) {
+      matches.push("remote");
+    } else if ((await remoteAuthRows(remote)).some((row) => row.server === serverId)) {
+      matches.push("remote");
+    }
+  }
+
+  const unique = [...new Set(matches)];
+  if (unique.length === 1) return unique[0]!;
+  if (unique.length > 1) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Auth target \`${serverId}\` exists in multiple scopes. Pass --project, --global, or --remote.`,
+    );
+  }
+  throw new CapletsError("SERVER_NOT_FOUND", `Server ${serverId} is not configured for OAuth`);
+}
+
+async function authListRowsForCli(
+  target: AuthTarget | undefined,
+  io: CliIO,
+  configPath: string | undefined,
+  projectConfigPath: string | undefined,
+): Promise<AuthStatusRow[]> {
+  if (target === "remote") {
+    return remoteAuthRows(requireRemoteClientForTarget(io));
+  }
+  const localRows = listLocalAuthRows({
+    ...(configPath ? { configPath } : {}),
+    ...(projectConfigPath ? { projectConfigPath } : {}),
+    ...(io.authDir ? { authDir: io.authDir } : {}),
+    ...(target ? { source: target } : {}),
+  });
+  if (target) return localRows;
+  const remote = remoteClientForCli(io);
+  if (!remote) return localRows;
+  return [...localRows, ...(await remoteAuthRows(remote))].sort((left, right) =>
+    left.server.localeCompare(right.server),
+  );
+}
+
+async function remoteAuthRows(remote: RemoteControlClient): Promise<AuthStatusRow[]> {
+  const rows = (await remote.request("auth_list", {})) as AuthStatusRow[];
+  return rows.map((row) => ({ ...row, source: "remote" }));
+}
+
+async function remoteAuthLogin(
+  remote: RemoteControlClient,
+  serverId: string,
+  open: boolean,
+  writeOut: (value: string) => void,
+): Promise<void> {
+  const started = (await remote.request("auth_login_start", { server: serverId })) as {
+    server: string;
+    flowId?: string;
+    authorizationUrl?: string;
+    authenticated?: boolean;
+  };
+  if (started.authorizationUrl) {
+    writeOut(`Open this URL to authorize ${serverId}:\n${started.authorizationUrl}\n`);
+    if (open) {
+      await openBrowser(started.authorizationUrl);
+    }
+    writeOut(
+      "Complete authentication in your browser. The server callback will store credentials.\n",
+    );
+    return;
+  }
+  if (started.authenticated) {
+    writeOut(`Authenticated \`${serverId}\`.\n`);
+  }
+}
+
+function requireRemoteClientForTarget(io: CliIO): RemoteControlClient {
+  const remote = remoteClientForCli(io);
+  if (!remote) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--remote requires CAPLETS_MODE=remote and CAPLETS_SERVER_URL",
+    );
+  }
+  return remote;
 }
 
 function collect(value: string, previous: string[]): string[] {
@@ -1126,18 +1351,61 @@ function parseQualifiedTarget(
 
 async function completeCliWordsLocally(
   words: string[],
-  options: { configPath?: string | undefined; authDir?: string | undefined },
+  options: {
+    configPath?: string | undefined;
+    projectConfigPath?: string | undefined;
+    authDir?: string | undefined;
+    config?: CapletsConfig | undefined;
+  },
 ): Promise<string[]> {
   const engine = new CapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
+    ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
     watch: false,
+    ...(options.config ? { configLoader: () => options.config as CapletsConfig } : {}),
   });
   try {
     return await engine.completeCliWords(words);
   } finally {
     await engine.close();
   }
+}
+
+function mergeCompletionSuggestions(...groups: string[][]): string[] {
+  return [...new Set(groups.flat())];
+}
+
+function localShadowedCompletionTarget(words: string[], config: CapletsConfig): string | undefined {
+  const command = words[0];
+  const target = words[1];
+  if (!command || !target || target.startsWith("-")) {
+    return undefined;
+  }
+  const qualifiedCommands = new Set<string>([
+    cliCommands.getTool,
+    cliCommands.callTool,
+    cliCommands.getPrompt,
+  ]);
+  const capletCommands = new Set<string>([
+    cliCommands.getCaplet,
+    cliCommands.checkBackend,
+    cliCommands.listTools,
+    cliCommands.searchTools,
+    cliCommands.listResources,
+    cliCommands.searchResources,
+    cliCommands.listResourceTemplates,
+    cliCommands.readResource,
+    cliCommands.listPrompts,
+    cliCommands.searchPrompts,
+    cliCommands.complete,
+  ]);
+  const caplet = qualifiedCommands.has(command)
+    ? target.slice(0, target.includes(".") ? target.indexOf(".") : target.length)
+    : capletCommands.has(command)
+      ? target
+      : undefined;
+  return caplet && hasEnabledCaplet(config, caplet) ? caplet : undefined;
 }
 
 function parseCallToolArgs(value: string | undefined): Record<string, unknown> {
@@ -1193,6 +1461,8 @@ type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExi
   format?: CliOutputFormat | undefined;
 };
 
+type CapletListRow = ReturnType<typeof listCaplets>[number];
+
 async function executeOperation(
   caplet: string,
   request: Record<string, unknown>,
@@ -1200,6 +1470,11 @@ async function executeOperation(
 ): Promise<void> {
   const command = remoteCommandForOperation(request.operation);
   if (io.remote && command) {
+    const localOverlay = tryLoadLocalOverlayForCli(io, io.writeErr);
+    if (localOverlay && hasEnabledCaplet(localOverlay.config, caplet)) {
+      await executeLocalOperation(caplet, request, io, localOverlay.config);
+      return;
+    }
     const result = await io.remote.request(command, { caplet, request });
     const output = cliOutputForOperation(result, { ...request, caplet }, io.format ?? "markdown");
     io.writeOut(
@@ -1211,12 +1486,222 @@ async function executeOperation(
     return;
   }
 
+  await executeLocalOperation(caplet, request, io);
+}
+
+function loadLocalOverlayForCli(
+  io: Pick<CliIO, "env">,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources {
+  const env = io.env ?? process.env;
+  const overlay = loadLocalOverlayConfigWithSources(
+    resolveConfigPath(envConfigPath(env)),
+    envProjectConfigPath(env),
+  );
+  for (const warning of overlay.warnings) {
+    writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+  }
+  return overlay;
+}
+
+function tryLoadLocalOverlayForCli(
+  io: Pick<CliIO, "env">,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  try {
+    return loadLocalOverlayForCli(io, writeErr);
+  } catch (error) {
+    writeErr(`Warning: Could not load local Caplets overlay: ${formatErrorMessage(error)}\n`);
+    return loadPartialLocalOverlayForCli(io, writeErr);
+  }
+}
+
+function loadPartialLocalOverlayForCli(
+  io: Pick<CliIO, "env">,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  const env = io.env ?? process.env;
+  const configPath = resolveConfigPath(envConfigPath(env));
+  const projectConfigPath = envProjectConfigPath(env);
+  const absentProjectPath = join(dirname(configPath), ".caplets-overlay-recovery", "config.json");
+  const absentGlobalPath = join(
+    dirname(projectConfigPath),
+    ".caplets-overlay-recovery",
+    "config.json",
+  );
+  const globalOverlay = tryLoadPartialOverlayLayer(
+    "global",
+    configPath,
+    absentProjectPath,
+    writeErr,
+  );
+  const projectOverlay = tryLoadPartialOverlayLayer(
+    "project",
+    absentGlobalPath,
+    projectConfigPath,
+    writeErr,
+  );
+
+  if (!globalOverlay) {
+    return projectOverlay;
+  }
+  if (!projectOverlay) {
+    return globalOverlay;
+  }
+  return mergePartialLocalOverlays(globalOverlay, projectOverlay);
+}
+
+function tryLoadPartialOverlayLayer(
+  label: "global" | "project",
+  configPath: string,
+  projectConfigPath: string,
+  writeErr: (value: string) => void,
+): LocalOverlayConfigWithSources | undefined {
+  try {
+    const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    for (const warning of overlay.warnings) {
+      writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+    }
+    return overlay;
+  } catch (error) {
+    writeErr(`Warning: Could not load ${label} Caplets overlay: ${formatErrorMessage(error)}\n`);
+    return undefined;
+  }
+}
+
+function mergePartialLocalOverlays(
+  globalOverlay: LocalOverlayConfigWithSources,
+  projectOverlay: LocalOverlayConfigWithSources,
+): LocalOverlayConfigWithSources {
+  const config = { ...globalOverlay.config };
+  const sources = { ...globalOverlay.sources };
+  const shadows = { ...globalOverlay.shadows };
+
+  for (const kind of capletConfigKinds) {
+    config[kind] = { ...globalOverlay.config[kind] } as never;
+  }
+  for (const kind of capletConfigKinds) {
+    for (const id of Object.keys(projectOverlay.config[kind])) {
+      removeCapletFromPartialOverlay(config, sources, shadows, id);
+      config[kind][id] = projectOverlay.config[kind][id] as never;
+    }
+  }
+  for (const [id, source] of Object.entries(projectOverlay.sources)) {
+    sources[id] = source;
+  }
+  for (const [id, shadowedSources] of Object.entries(projectOverlay.shadows)) {
+    shadows[id] = [...(shadows[id] ?? []), ...shadowedSources];
+  }
+
+  return {
+    config,
+    sources,
+    shadows,
+    warnings: [...globalOverlay.warnings, ...projectOverlay.warnings],
+  };
+}
+
+const capletConfigKinds = [
+  "mcpServers",
+  "openapiEndpoints",
+  "graphqlEndpoints",
+  "httpApis",
+  "cliTools",
+  "capletSets",
+] as const;
+
+function removeCapletFromPartialOverlay(
+  config: CapletsConfig,
+  sources: Record<string, ConfigSource>,
+  shadows: Record<string, ConfigSource[]>,
+  id: string,
+): void {
+  for (const kind of capletConfigKinds) {
+    delete config[kind][id];
+  }
+  if (sources[id]) {
+    shadows[id] = [...(shadows[id] ?? []), sources[id]];
+  }
+  delete sources[id];
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function envProjectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  return env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath();
+}
+
+function envProjectCapletsRoot(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string {
+  const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim();
+  return projectConfigPath ? dirname(projectConfigPath) : resolveProjectCapletsRoot();
+}
+
+function mergeRemoteAndLocalRows(
+  remoteRows: CapletListRow[],
+  localOverlay: LocalOverlayConfigWithSources | undefined,
+  options: { includeDisabled: boolean; writeErr: (value: string) => void },
+): CapletListRow[] {
+  const rows = new Map<string, CapletListRow>();
+  for (const row of remoteRows) {
+    rows.set(row.server, { ...row, source: "remote" });
+  }
+  if (!localOverlay) {
+    return [...rows.values()]
+      .filter((row) => options.includeDisabled || !row.disabled)
+      .sort((left, right) => left.server.localeCompare(right.server));
+  }
+  for (const row of listCaplets(localOverlay, { includeDisabled: true })) {
+    const remote = rows.get(row.server);
+    if (remote) {
+      if (row.disabled) {
+        continue;
+      }
+      options.writeErr(
+        `Warning: ${formatOverlaySource(row.source)} Caplet ${row.server} shadows remote Caplet\n`,
+      );
+    }
+    rows.set(row.server, row);
+  }
+  return [...rows.values()]
+    .filter((row) => options.includeDisabled || !row.disabled)
+    .sort((left, right) => left.server.localeCompare(right.server));
+}
+
+function formatOverlaySource(kind: ConfigSource["kind"] | "remote" | "unknown"): string {
+  if (kind.startsWith("project")) return "project";
+  if (kind.startsWith("global")) return "global";
+  return kind;
+}
+
+function hasEnabledCaplet(config: CapletsConfig, id: string): boolean {
+  const caplet =
+    config.mcpServers[id] ??
+    config.openapiEndpoints[id] ??
+    config.graphqlEndpoints[id] ??
+    config.httpApis[id] ??
+    config.cliTools[id] ??
+    config.capletSets[id];
+  return Boolean(caplet && !caplet.disabled);
+}
+
+async function executeLocalOperation(
+  caplet: string,
+  request: Record<string, unknown>,
+  io: ExecuteOperationIO,
+  config?: CapletsConfig,
+): Promise<void> {
   const configPath = envConfigPath(io.env ?? process.env);
   const engine = new CapletsEngine({
     ...(configPath ? { configPath } : {}),
+    projectConfigPath: envProjectConfigPath(io.env ?? process.env),
     ...(io.authDir ? { authDir: io.authDir } : {}),
     watch: false,
     writeErr: io.writeErr,
+    ...(config ? { configLoader: () => config } : {}),
   });
   try {
     const result = await engine.execute(caplet, request);
@@ -1719,10 +2204,14 @@ function schemaSummary(schema: unknown): string {
   return parts.filter((part): part is string => Boolean(part)).join("; ");
 }
 
-function addDestinationRoot(options: { global?: boolean }, configPath?: string): string {
-  return options.global
+function addDestinationRoot(
+  target: MutationTarget,
+  configPath: string | undefined,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string {
+  return target === "global"
     ? resolveCapletsRoot(resolveConfigPath(configPath))
-    : resolveProjectCapletsRoot();
+    : envProjectCapletsRoot(env);
 }
 
 function writeAddResult(

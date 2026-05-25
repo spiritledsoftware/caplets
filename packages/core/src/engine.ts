@@ -27,6 +27,7 @@ export type CapletsEngineOptions = {
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
+  configLoader?: (configPath: string, projectConfigPath: string) => CapletsConfig;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -57,6 +58,7 @@ export class CapletsEngine {
   private readonly watchDebounceMs: number;
   private readonly watchEnabled: boolean;
   private readonly writeErr: (value: string) => void;
+  private readonly configLoader: (configPath: string, projectConfigPath: string) => CapletsConfig;
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
@@ -70,7 +72,8 @@ export class CapletsEngine {
       configPath: resolveConfigPath(options.configPath),
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
-    const config = loadConfig(this.paths.configPath, this.paths.projectConfigPath);
+    this.configLoader = options.configLoader ?? loadConfig;
+    const config = this.configLoader(this.paths.configPath, this.paths.projectConfigPath);
     this.registry = new ServerRegistry(config);
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
     this.openapi = new OpenApiManager(this.registry, selectAuthOptions(options.authDir));
@@ -231,7 +234,7 @@ export class CapletsEngine {
     }
     let nextConfig: CapletsConfig;
     try {
-      nextConfig = loadConfig(this.paths.configPath, this.paths.projectConfigPath);
+      nextConfig = this.configLoader(this.paths.configPath, this.paths.projectConfigPath);
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);

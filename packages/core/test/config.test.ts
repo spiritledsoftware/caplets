@@ -10,14 +10,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { capletJsonSchema, loadCapletFiles } from "../src/caplet-files";
+import {
+  capletJsonSchema,
+  loadCapletFiles,
+  loadCapletFilesWithPathsBestEffort,
+} from "../src/caplet-files";
 import {
   configJsonSchema,
   defaultCompletionCacheDir,
   loadConfig,
+  loadLocalOverlayConfigWithSources,
   loadConfigWithSources,
   parseConfig,
 } from "../src/config";
+import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
 
 describe("config", () => {
@@ -477,6 +483,198 @@ describe("config", () => {
     expect(sources.github).toEqual({ kind: "global-file", path: globalPath });
     expect(shadows.github).toBeUndefined();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loads local overlay sources independently when global config is invalid", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-invalid-global-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectRoot = join(dir, "project", ".caplets");
+      const projectConfigPath = join(projectRoot, "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(userConfigPath, "{");
+      writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            project: {
+              name: "Project Server",
+              description: "A useful project downstream server.",
+              command: "project-server",
+            },
+          },
+        }),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config.mcpServers.project?.command).toBe("project-server");
+      expect(sources.project).toEqual({ kind: "project-config", path: projectConfigPath });
+      expect(warnings).toEqual([
+        expect.objectContaining({ kind: "global-config", path: userConfigPath }),
+      ]);
+      expect(warnings[0]?.message).toContain("not valid JSON");
+      expect(() => loadConfigWithSources(userConfigPath, projectConfigPath)).toThrow(CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("merges mixed valid and invalid local overlay layers with per-file warnings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-mixed-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectRoot = join(dir, "project", ".caplets");
+      const projectConfigPath = join(projectRoot, "config.json");
+      const badFilePath = join(userRoot, "bad.md");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            global: {
+              name: "Global Server",
+              description: "A useful global downstream server.",
+              command: "global-server",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        badFilePath,
+        ["---", "name: Bad", "description: Missing backend config.", "---", "# Bad"].join("\n"),
+      );
+      writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          openapiEndpoints: {
+            forbidden: {
+              name: "Forbidden API",
+              description: "A forbidden executable project config backend.",
+              specUrl: "https://example.com/openapi.json",
+              auth: { type: "none" },
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(projectRoot, "project-file.md"),
+        [
+          "---",
+          "name: Project File",
+          "description: Valid project file Caplet.",
+          "mcpServer:",
+          "  command: project-file",
+          "---",
+          "# Project File",
+        ].join("\n"),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config.mcpServers.global?.command).toBe("global-server");
+      expect(config.mcpServers["project-file"]?.command).toBe("project-file");
+      expect(sources.global).toEqual({ kind: "global-config", path: userConfigPath });
+      expect(sources["project-file"]).toEqual({
+        kind: "project-file",
+        path: join(projectRoot, "project-file.md"),
+      });
+      expect(warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "global-file",
+            path: badFilePath,
+            message: expect.stringContaining(badFilePath),
+          }),
+          expect.objectContaining({ kind: "project-config", path: projectConfigPath }),
+        ]),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves local overlay source and shadow metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-shadows-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectRoot = join(dir, "project", ".caplets");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub Global",
+              description: "A useful global downstream server.",
+              command: "global-github",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        join(projectRoot, "github.md"),
+        [
+          "---",
+          "name: GitHub Project",
+          "description: Valid project file Caplet.",
+          "mcpServer:",
+          "  command: project-github",
+          "---",
+          "# GitHub Project",
+        ].join("\n"),
+      );
+
+      const { config, sources, shadows, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        join(projectRoot, "config.json"),
+      );
+
+      expect(config.mcpServers.github?.command).toBe("project-github");
+      expect(sources.github).toEqual({
+        kind: "project-file",
+        path: join(projectRoot, "github.md"),
+      });
+      expect(shadows.github).toEqual([{ kind: "global-config", path: userConfigPath }]);
+      expect(warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an empty normalized local overlay config when no valid sources exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-empty-"));
+    try {
+      const { config, sources, shadows, warnings } = loadLocalOverlayConfigWithSources(
+        join(dir, "missing-user", "config.json"),
+        join(dir, "project", ".caplets", "config.json"),
+      );
+
+      expect(config.options.defaultSearchLimit).toBe(20);
+      expect(config.mcpServers).toEqual({});
+      expect(config.openapiEndpoints).toEqual({});
+      expect(config.graphqlEndpoints).toEqual({});
+      expect(config.httpApis).toEqual({});
+      expect(config.cliTools).toEqual({});
+      expect(config.capletSets).toEqual({});
+      expect(sources).toEqual({});
+      expect(shadows).toEqual({});
+      expect(warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("keeps repository example Caplets loadable", () => {
@@ -1204,6 +1402,159 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("loads valid sibling Caplet files when one file is invalid in best-effort mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    try {
+      const badFilePath = join(root, "bad.md");
+      writeFileSync(
+        badFilePath,
+        ["---", "name: Bad", "description: Missing backend config.", "---", "# Bad"].join("\n"),
+      );
+      writeFileSync(
+        join(root, "good.md"),
+        [
+          "---",
+          "name: Good",
+          "description: Valid sibling Caplet.",
+          "mcpServer:",
+          "  command: node",
+          "---",
+          "# Good",
+        ].join("\n"),
+      );
+
+      const result = loadCapletFilesWithPathsBestEffort(root);
+
+      expect(result?.config.mcpServers?.good).toMatchObject({ name: "Good", command: "node" });
+      expect(result?.config.mcpServers?.bad).toBeUndefined();
+      expect(result?.paths).toEqual({ good: join(root, "good.md") });
+      expect(result?.warnings).toEqual([
+        expect.objectContaining({
+          path: badFilePath,
+          message: expect.stringContaining(badFilePath),
+        }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses directory CAPLET.md over same-name Markdown files in best-effort mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    try {
+      const shadowedPath = join(root, "github.md");
+      mkdirSync(join(root, "github"), { recursive: true });
+      writeFileSync(
+        shadowedPath,
+        [
+          "---",
+          "name: GitHub File",
+          "description: Shadowed top-level Caplet.",
+          "mcpServer:",
+          "  command: file-github",
+          "---",
+          "# GitHub File",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, "github", "CAPLET.md"),
+        [
+          "---",
+          "name: GitHub Directory",
+          "description: Winning directory Caplet.",
+          "mcpServer:",
+          "  command: directory-github",
+          "---",
+          "# GitHub Directory",
+        ].join("\n"),
+      );
+
+      const result = loadCapletFilesWithPathsBestEffort(root);
+
+      expect(result?.config.mcpServers?.github).toMatchObject({
+        name: "GitHub Directory",
+        command: "directory-github",
+      });
+      expect(result?.paths.github).toBe(join(root, "github", "CAPLET.md"));
+      expect(result?.warnings).toEqual([
+        expect.objectContaining({
+          path: shadowedPath,
+          message: expect.stringContaining("shadowed"),
+        }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns warnings when every discovered Caplet file is invalid in best-effort mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    try {
+      const badFilePath = join(root, "bad.md");
+      writeFileSync(
+        badFilePath,
+        ["---", "name: Bad", "description: Missing backend config.", "---", "# Bad"].join("\n"),
+      );
+
+      const result = loadCapletFilesWithPathsBestEffort(root);
+
+      expect(result).toEqual({
+        config: {},
+        paths: {},
+        warnings: [expect.objectContaining({ path: badFilePath })],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips all entries for duplicate IDs after precedence in best-effort mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+    try {
+      writeFileSync(
+        join(root, "tools.md"),
+        [
+          "---",
+          "name: Tools Lower",
+          "description: Lowercase extension Caplet.",
+          "mcpServer:",
+          "  command: lower-tools",
+          "---",
+          "# Tools Lower",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(root, "tools.MD"),
+        [
+          "---",
+          "name: Tools Upper",
+          "description: Uppercase extension Caplet.",
+          "mcpServer:",
+          "  command: upper-tools",
+          "---",
+          "# Tools Upper",
+        ].join("\n"),
+      );
+
+      const result = loadCapletFilesWithPathsBestEffort(root);
+
+      expect(result).toEqual({
+        config: {},
+        paths: {},
+        warnings: [
+          expect.objectContaining({
+            path: join(root, "tools.MD"),
+            message: expect.stringContaining("Duplicate Caplet ID tools"),
+          }),
+        ],
+      });
+      expect(result?.warnings[0]?.message).toContain(join(root, "tools.md"));
+      expect(result?.warnings[0]?.message).toContain(join(root, "tools.MD"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects invalid OIDC URL fields in Caplet files", () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
     writeFileSync(
@@ -1576,6 +1927,22 @@ describe("config", () => {
       toolCacheTtlMs: 30000,
     });
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("includes Caplet sets in inspection list rows", () => {
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested",
+          description: "Expose a nested child Caplet collection.",
+          capletsRoot: "/tmp/caplets",
+        },
+      },
+    });
+
+    expect(listCaplets({ config, sources: {}, shadows: {} }, { includeDisabled: false })).toEqual([
+      expect.objectContaining({ server: "nested", backend: "caplets" }),
+    ]);
   });
 
   it("rejects invalid Caplet set sources and duplicate IDs", () => {

@@ -353,6 +353,9 @@ function shouldShowStatusWidget(
   if (statusWidget === false) {
     return false;
   }
+  if (options.mode === "local") {
+    return false;
+  }
   return (
     options.mode === "remote" ||
     !!options.server?.url ||

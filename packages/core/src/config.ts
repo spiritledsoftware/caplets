@@ -1,7 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { loadCapletFiles, loadCapletFilesWithPaths } from "./caplet-files";
+import {
+  loadCapletFiles,
+  loadCapletFilesWithPaths,
+  loadCapletFilesWithPathsBestEffort,
+} from "./caplet-files";
 import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths";
 import {
   FORBIDDEN_HEADERS,
@@ -254,6 +258,16 @@ export type ConfigWithSources = {
   config: CapletsConfig;
   sources: Record<string, ConfigSource>;
   shadows: Record<string, ConfigSource[]>;
+};
+
+export type LocalOverlayConfigWarning = {
+  kind: ConfigSourceKind;
+  path: string;
+  message: string;
+};
+
+export type LocalOverlayConfigWithSources = ConfigWithSources & {
+  warnings: LocalOverlayConfigWarning[];
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
@@ -1192,15 +1206,8 @@ export function loadConfigWithSources(
     ? loadCapletFilesWithPaths(projectCapletsRoot)
     : undefined;
 
-  if (!hasUserConfig && !hasProjectConfig && !userCaplets && !projectCaplets) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `Caplets config not found at ${path} or ${projectPath}`,
-    );
-  }
-
-  try {
-    const { input, sources, shadows } = mergeConfigInputsWithSources(
+  return buildConfigWithSources(
+    [
       { input: userConfig, source: { kind: "global-config", path } },
       userCaplets
         ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
@@ -1212,9 +1219,66 @@ export function loadConfigWithSources(
             source: { kind: "project-file", path: projectCaplets.paths },
           }
         : undefined,
-    );
+    ],
+    `Caplets config not found at ${path} or ${projectPath}`,
+    "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+  );
+}
+
+export function loadGlobalConfig(path = resolveConfigPath()): CapletsConfig {
+  const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
+  const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
+
+  return buildConfigWithSources(
+    [
+      { input: userConfig, source: { kind: "global-config", path } },
+      userCaplets
+        ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+        : undefined,
+    ],
+    `Caplets user config not found at ${path}`,
+    undefined,
+  ).config;
+}
+
+export function loadProjectConfig(projectPath = resolveProjectConfigPath()): CapletsConfig {
+  const projectConfig = existsSync(projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    : undefined;
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadCapletFilesWithPaths(projectCapletsRoot)
+    : undefined;
+
+  return buildConfigWithSources(
+    [
+      { input: projectConfig, source: { kind: "project-config", path: projectPath } },
+      projectCaplets
+        ? {
+            input: projectCaplets.config,
+            source: { kind: "project-file", path: projectCaplets.paths },
+          }
+        : undefined,
+    ],
+    `Caplets project config not found at ${projectPath}`,
+    undefined,
+  ).config;
+}
+
+function buildConfigWithSources(
+  inputs: Array<ConfigInputWithSource | undefined>,
+  notFoundMessage: string,
+  emptyMessage: string | undefined,
+): ConfigWithSources {
+  if (!inputs.some((entry) => entry?.input !== undefined)) {
+    throw new CapletsError("CONFIG_NOT_FOUND", notFoundMessage);
+  }
+
+  try {
+    const { input, sources, shadows } = mergeConfigInputsWithSources(...inputs);
     const config = parseConfig(input);
     if (
+      emptyMessage &&
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
       Object.keys(config.graphqlEndpoints).length === 0 &&
@@ -1222,10 +1286,7 @@ export function loadConfigWithSources(
       Object.keys(config.cliTools).length === 0 &&
       Object.keys(config.capletSets).length === 0
     ) {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
-      );
+      throw new CapletsError("CONFIG_INVALID", emptyMessage);
     }
     return { config, sources, shadows };
   } catch (error) {
@@ -1238,6 +1299,76 @@ export function loadConfigWithSources(
       redactSecrets(error),
     );
   }
+}
+
+export function loadLocalOverlayConfigWithSources(
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+): LocalOverlayConfigWithSources {
+  const warnings: LocalOverlayConfigWarning[] = [];
+  const userConfig = existsSync(path)
+    ? readBestEffortConfigInput(path, "global-config", warnings)
+    : undefined;
+  const userCaplets = loadBestEffortCapletFiles(resolveCapletsRoot(path), "global-file", warnings);
+  const projectConfig = existsSync(projectPath)
+    ? readBestEffortConfigInput(projectPath, "project-config", warnings, (input) =>
+        rejectProjectConfigExecutableBackendMaps(input, projectPath),
+      )
+    : undefined;
+  const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
+  const projectCaplets = projectCapletsRoot
+    ? loadBestEffortCapletFiles(projectCapletsRoot, "project-file", warnings)
+    : undefined;
+
+  const { input, sources, shadows } = mergeConfigInputsWithSources(
+    { input: userConfig, source: { kind: "global-config", path } },
+    userCaplets
+      ? { input: userCaplets.config, source: { kind: "global-file", path: userCaplets.paths } }
+      : undefined,
+    { input: projectConfig, source: { kind: "project-config", path: projectPath } },
+    projectCaplets
+      ? {
+          input: projectCaplets.config,
+          source: { kind: "project-file", path: projectCaplets.paths },
+        }
+      : undefined,
+  );
+
+  return { config: parseConfig(input), sources, shadows, warnings };
+}
+
+function readBestEffortConfigInput(
+  path: string,
+  kind: ConfigSourceKind,
+  warnings: LocalOverlayConfigWarning[],
+  transform?: (input: ConfigInput) => ConfigInput,
+): ConfigInput | undefined {
+  try {
+    const input = readPublicConfigInput(path);
+    return transform ? transform(input) : input;
+  } catch (error) {
+    warnings.push({ kind, path, message: errorMessage(error) });
+    return undefined;
+  }
+}
+
+function loadBestEffortCapletFiles(
+  root: string,
+  kind: ConfigSourceKind,
+  warnings: LocalOverlayConfigWarning[],
+): { config: ConfigInput; paths: Record<string, string> } | undefined {
+  const result = loadCapletFilesWithPathsBestEffort(root);
+  if (!result) {
+    return undefined;
+  }
+  for (const warning of result.warnings) {
+    warnings.push({ kind, path: warning.path ?? root, message: warning.message });
+  }
+  return { config: result.config, paths: result.paths };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type ConfigSourceInput =

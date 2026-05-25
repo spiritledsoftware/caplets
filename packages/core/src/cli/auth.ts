@@ -8,17 +8,26 @@ import {
   runOAuthFlow,
   type GenericAuthTarget,
 } from "../auth";
-import { loadConfig, type GraphQlEndpointConfig, type HttpApiConfig } from "../config";
+import {
+  loadConfig,
+  loadGlobalConfig,
+  loadProjectConfig,
+  type CapletsConfig,
+  type GraphQlEndpointConfig,
+  type HttpApiConfig,
+} from "../config";
 import { CapletsError, toSafeError } from "../errors";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
 type AuthListFormat = "plain" | "markdown" | "json";
+export type AuthSource = "project" | "global" | "remote";
 
 export type AuthStatusRow = {
   server: string;
   status: "missing" | "expired" | "authenticated";
   expiresAt?: string;
   scope?: string;
+  source?: AuthSource;
 };
 
 export async function loginAuth(
@@ -29,9 +38,10 @@ export async function loginAuth(
     writeOut: (value: string) => void;
     writeErr: (value: string) => void;
     authDir?: string;
+    config?: CapletsConfig;
   },
 ): Promise<void> {
-  const config = loadConfig(options.configPath);
+  const config = options.config ?? loadConfig(options.configPath);
   const server = findAuthTarget(serverId, config);
   assertLoginTarget(server, serverId);
 
@@ -56,7 +66,12 @@ export async function loginAuth(
 
 export function logoutAuth(
   serverId: string,
-  options: { authDir?: string; configPath?: string; writeOut: (value: string) => void },
+  options: {
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+    writeOut: (value: string) => void;
+  },
 ): void {
   const result = logoutAuthResult(serverId, options);
   if (result.deleted) {
@@ -68,9 +83,9 @@ export function logoutAuth(
 
 export function logoutAuthResult(
   serverId: string,
-  options: { authDir?: string; configPath?: string },
+  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
 ): { server: string; deleted: boolean } {
-  const target = findAuthTarget(serverId, loadConfig(options.configPath));
+  const target = findAuthTarget(serverId, options.config ?? loadConfig(options.configPath));
   assertLoginTarget(target, serverId);
   return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
 }
@@ -92,10 +107,77 @@ export function listAuth(options: {
 
 export function listAuthRows(options: { authDir?: string; configPath?: string }): AuthStatusRow[] {
   const config = loadConfig(options.configPath);
-  return authTargets(config)
+  return authRowsForTargets(authTargets(config), options.authDir);
+}
+
+export function listLocalAuthRows(options: {
+  authDir?: string;
+  configPath?: string;
+  projectConfigPath?: string;
+  source?: Exclude<AuthSource, "remote">;
+}): AuthStatusRow[] {
+  return authRowsForTargets(localAuthTargets(options), options.authDir);
+}
+
+export function localAuthTargets(options: {
+  configPath?: string;
+  projectConfigPath?: string;
+  source?: Exclude<AuthSource, "remote">;
+}): (AuthTarget & { source: Exclude<AuthSource, "remote"> })[] {
+  return [
+    ...(options.source === "project" ? [] : authTargetsForSource("global", options)),
+    ...(options.source === "global" ? [] : authTargetsForSource("project", options)),
+  ].filter((target) => !options.source || target.source === options.source);
+}
+
+export function localAuthConfigForTarget(options: {
+  serverId: string;
+  configPath?: string;
+  projectConfigPath?: string;
+  source: Exclude<AuthSource, "remote">;
+}): CapletsConfig {
+  const target = localAuthTargets(options).find(
+    (candidate) => candidate.server === options.serverId,
+  );
+  assertLoginTarget(target, options.serverId);
+  return loadConfigForSource(options.source, options);
+}
+
+function authTargetsForSource(
+  source: Exclude<AuthSource, "remote">,
+  options: { configPath?: string; projectConfigPath?: string },
+): (AuthTarget & { source: Exclude<AuthSource, "remote"> })[] {
+  try {
+    return authTargets(loadConfigForSource(source, options)).map((target) => ({
+      ...target,
+      source,
+    }));
+  } catch (error) {
+    if (error instanceof CapletsError && error.code === "CONFIG_NOT_FOUND") {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function loadConfigForSource(
+  source: Exclude<AuthSource, "remote">,
+  options: { configPath?: string; projectConfigPath?: string },
+): CapletsConfig {
+  if (source === "global") {
+    return loadGlobalConfig(options.configPath);
+  }
+  return loadProjectConfig(options.projectConfigPath);
+}
+
+function authRowsForTargets(
+  targets: (AuthTarget & { source?: AuthSource })[],
+  authDir?: string,
+): AuthStatusRow[] {
+  return targets
     .sort((left, right) => left.server.localeCompare(right.server))
     .map((server) => {
-      const bundle = readTokenBundle(server.server, options.authDir);
+      const bundle = readTokenBundle(server.server, authDir);
       const status = !bundle
         ? "missing"
         : isTokenBundleExpired(bundle)
@@ -106,6 +188,7 @@ export function listAuthRows(options: { authDir?: string; configPath?: string })
         status,
         ...(bundle?.expiresAt ? { expiresAt: bundle.expiresAt } : {}),
         ...(bundle?.scope ? { scope: bundle.scope } : {}),
+        ...(server.source ? { source: server.source } : {}),
       };
     });
 }
@@ -116,8 +199,8 @@ export function formatAuthRows(
 ): string {
   if (rows.length === 0) {
     return format === "markdown"
-      ? "## OAuth credentials\n\nNo configured remote OAuth servers found.\n"
-      : "No configured remote OAuth servers found.\n";
+      ? "## OAuth credentials\n\nNo configured OAuth servers found.\n"
+      : "No configured OAuth servers found.\n";
   }
   let output = "";
   if (format === "markdown") {
@@ -127,6 +210,7 @@ export function formatAuthRows(
   }
   for (const row of rows) {
     const details = [
+      row.source ? `source ${row.source}` : undefined,
       row.expiresAt ? `expires ${row.expiresAt}` : undefined,
       row.scope ? `scope ${row.scope}` : undefined,
     ]
@@ -140,6 +224,7 @@ export function formatAuthRows(
       [
         row.server,
         `  Status: ${row.status}`,
+        ...(row.source ? [`  Source: ${row.source}`] : []),
         ...(row.expiresAt ? [`  Expires: ${row.expiresAt}`] : []),
         ...(row.scope ? [`  Scope: ${row.scope}`] : []),
       ].join("\n") + "\n\n";
