@@ -6,6 +6,10 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  process.stderr.write(`${errorMessage(error)}\n`);
   process.exit(1);
 });
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -2,7 +2,7 @@
 title: PR 78 Review Outcome
 summary: 'PR #78 had zero unresolved review threads and zero unresolved outside-diff threads; no code fixes were needed, the .brv memory update was preserved, pushed as commit c41d191, and pnpm verify passed.'
 tags: []
-related: []
+related: [project/rlm_curation_workflow/context.md, project/rlm_curation_workflow/rlm_curation_workflow.md]
 keywords: []
 createdAt: '2026-05-24T15:30:07.506Z'
 updatedAt: '2026-05-24T15:30:07.507Z'

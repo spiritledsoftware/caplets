@@ -5,7 +5,10 @@ export {
   type NativeCapletsServiceOptions,
   type NativeCapletsToolsChangedListener,
 } from "./native/service";
-export { registerNativeCapletsProcessCleanup } from "./native/process-cleanup";
+export {
+  registerNativeCapletsProcessCleanup,
+  type NativeCapletsProcessCleanupOptions,
+} from "./native/process-cleanup";
 export {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,

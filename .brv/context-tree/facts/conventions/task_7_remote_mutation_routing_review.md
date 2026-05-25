@@ -2,7 +2,7 @@
 title: Task 7 Remote Mutation Routing Review
 summary: Task 7 remote mutation routing review was approved; remote add/init/install flows, server-side boundary validation, response parsing, and redaction were verified, with tests and typecheck passing.
 tags: []
-related: [architecture/remote_control/context.md, architecture/remote_control/remote_control_api_shape.md]
+related: [architecture/remote_control/context.md, architecture/remote_control/remote_control_api_shape.md, facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_9_remote_config_test_fix.md]
 keywords: []
 createdAt: '2026-05-20T14:35:11.652Z'
 updatedAt: '2026-05-20T14:35:11.652Z'

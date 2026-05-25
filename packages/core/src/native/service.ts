@@ -98,7 +98,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly engine: CapletsEngine;
 
   constructor(options: LocalNativeCapletsServiceOptions) {
-    this.engine = new CapletsEngine(options);
+    this.engine = new CapletsEngine({
+      ...options,
+      writeErr: options.writeErr ?? (() => undefined),
+    });
   }
 
   listTools(): NativeCapletTool[] {
@@ -286,7 +289,7 @@ function warningKey(warning: { kind: string; path: string; message: string }): s
 }
 
 function writeErr(options: NativeCapletsServiceOptions, message: string): void {
-  (options.writeErr ?? ((value: string) => process.stderr.write(value)))(message);
+  options.writeErr?.(message);
 }
 
 function errorMessage(error: unknown): string {

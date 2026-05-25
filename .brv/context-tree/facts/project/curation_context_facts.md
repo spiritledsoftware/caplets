@@ -2,7 +2,7 @@
 title: Curation Context Facts
 summary: Project facts and runtime conventions extracted from the curation context, including task metadata and processing guidance.
 tags: []
-related: []
+related: [facts/project/curation_input_notes.md, facts/project/curation-itself-is-treated-as-durable-project-infrastructure.md]
 keywords: []
 createdAt: '2026-05-20T19:28:15.751Z'
 updatedAt: '2026-05-20T19:28:15.751Z'

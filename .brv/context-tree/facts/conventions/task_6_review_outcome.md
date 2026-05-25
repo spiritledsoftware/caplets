@@ -2,7 +2,7 @@
 title: Task 6 Review Outcome
 summary: Task 6 review approved; nested engine request envelope validation is correct, old CAPLETS_REMOTE_* docs belong to Task 10, and source/test verification passed.
 tags: []
-related: []
+related: [facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/conventions/task_9_remote_config_test_fix.md]
 keywords: []
 createdAt: '2026-05-20T14:17:40.238Z'
 updatedAt: '2026-05-20T14:17:40.238Z'

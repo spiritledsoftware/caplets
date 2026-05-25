@@ -2,7 +2,7 @@
 title: Greptile Review Comments
 summary: Two remaining Greptile review comments were noted, along with passing PR checks.
 tags: []
-related: []
+related: [facts/project/pr_65_fixes_and_verification.md, facts/project/pr_71_completion_fix_outcome.md, facts/project/remote_control_review_outcome.md]
 keywords: []
 createdAt: '2026-05-20T19:26:36.972Z'
 updatedAt: '2026-05-20T19:26:36.972Z'

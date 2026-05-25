@@ -1,3 +1,6 @@
+---
+related: [project/pr_78_review_outcome/pr_78_review_outcome.md]
+---
 # Topic: rlm_curation_workflow
 
 ## Overview

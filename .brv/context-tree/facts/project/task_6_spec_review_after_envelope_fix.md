@@ -2,7 +2,7 @@
 title: Task 6 Spec Review After Envelope Fix
 summary: 'Task 6 review approved: CLI and dispatch align on { caplet, request }, config path handling remains local-only, and tests cover remote control behavior.'
 tags: []
-related: [architecture/remote_control/remote_control_api_shape.md, architecture/remote_control/task_1_spec_compliance_review.md, architecture/remote_control/cli_remote_mode_selection.md]
+related: [architecture/remote_control/remote_control_api_shape.md, architecture/remote_control/task_1_spec_compliance_review.md, architecture/remote_control/cli_remote_mode_selection.md, facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/conventions/task_9_remote_config_test_fix.md]
 keywords: []
 createdAt: '2026-05-20T14:11:18.102Z'
 updatedAt: '2026-05-20T14:11:18.102Z'
