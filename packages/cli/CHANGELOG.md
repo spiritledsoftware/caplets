@@ -1,5 +1,13 @@
 # caplets
 
+## 0.17.4
+
+### Patch Changes
+
+- 88c2557: Layer remote mode with user-global and project-local Caplets. Local project Caplets now shadow global and remote Caplets, local overlays load best-effort with warnings, mutation commands support explicit project/global/remote targets, and auth commands require explicit scope when local and remote IDs are ambiguous.
+- Updated dependencies [88c2557]
+  - @caplets/core@0.18.4
+
 ## 0.17.3
 
 ### Patch Changes

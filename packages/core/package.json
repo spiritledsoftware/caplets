@@ -1,6 +1,6 @@
 {
   "name": "@caplets/core",
-  "version": "0.18.3",
+  "version": "0.18.4",
   "description": "Core runtime library for Caplets progressive disclosure gateways.",
   "keywords": [
     "caplets",
