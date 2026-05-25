@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.18.5
+
+### Patch Changes
+
+- ffa8a4f: Keep console logs from leaking into native integrations
+
 ## 0.18.4
 
 ### Patch Changes

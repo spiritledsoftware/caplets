@@ -1,5 +1,13 @@
 # @caplets/opencode
 
+## 0.4.5
+
+### Patch Changes
+
+- ffa8a4f: Keep console logs from leaking into native integrations
+- Updated dependencies [ffa8a4f]
+  - @caplets/core@0.18.5
+
 ## 0.4.4
 
 ### Patch Changes
