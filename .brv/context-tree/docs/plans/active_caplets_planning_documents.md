@@ -2,7 +2,7 @@
 title: Active Caplets Planning Documents
 summary: Active caplets planning notes covering backend, remote control, CLI, HTTP actions, GraphQL, hot reload, XDG paths, and release-related work.
 tags: []
-related: [architecture/remote_control/context.md, architecture/auth/context.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/docker_image_publishing_for_release_pipeline.md]
+related: [architecture/remote_control/context.md, architecture/auth/context.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/docker_image_publishing_for_release_pipeline.md, docs/plans/context.md, docs/plans/pr_71_completion_fix_outcome.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md]
 keywords: []
 createdAt: '2026-05-21T10:20:40.246Z'
 updatedAt: '2026-05-21T10:21:06.053Z'

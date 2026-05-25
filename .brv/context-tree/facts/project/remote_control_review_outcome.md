@@ -2,7 +2,7 @@
 title: Remote Control Review Outcome
 summary: 'Approved remote control review: server-side redaction fixed, regression tests added, CLI pending auth wording accepted, with residual spec mismatch noted.'
 tags: []
-related: []
+related: [facts/project/pr_65_fixes_and_verification.md, facts/project/pr_71_completion_fix_outcome.md, facts/project/greptile_review_comments.md]
 keywords: []
 createdAt: '2026-05-20T15:41:00.585Z'
 updatedAt: '2026-05-20T15:41:00.585Z'

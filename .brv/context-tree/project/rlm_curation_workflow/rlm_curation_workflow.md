@@ -1,99 +1,66 @@
 ---
-title: RLM Curation Workflow
-summary: RLM curation workflow uses recon-first analysis, single-pass extraction for small contexts, optional chunked mapExtract for larger contexts, UPSERT-based curation, and verification through applied file paths and result summaries.
-tags: []
-related: [facts/conventions/context.md]
-keywords: []
-createdAt: '2026-05-22T10:24:48.339Z'
-updatedAt: '2026-05-22T10:45:13.936Z'
+consolidated_at: '2026-05-25T11:38:47.792Z'
+consolidated_from: [{date: '2026-05-25T11:38:47.792Z', path: project/rlm_curation_workflow/current_branch_completion_restore.md, reason: 'These two files substantially overlap on the RLM curation workflow and completion behavior guidance. The latter is the richer and more complete source, while the branch restore note includes implementation-specific completion details and verification outcomes that fit naturally into the workflow topic; combining them will reduce duplication and keep one canonical workflow record.'}]
+related: [project/pr_78_review_outcome/pr_78_review_outcome.md]
 ---
-## Reason
-Document the RLM curation approach, runtime constraints, and verification rules from the current context.
+# Title: RLM Curation Workflow
 
-## Raw Concept
-**Task:**
-Curate the RLM curation workflow and runtime guidance.
+## Overview
+Covers the curation workflow for this session, the completion behavior contract for caplets commands, and the branch-local restoration of split-target CLI completion support.
 
-**Changes:**
-- Use precomputed recon output to select single-pass mode
-- Proceed directly to extraction when single-pass is suggested
-- Verify curation through applied file paths and summary status
-- Reinforced single-pass handling when recon suggests single-pass mode
-- Captured the requirement to avoid printing raw context
-- Captured extraction and verification requirements for curation runs
-- Captured the agreed completion behavior for call-tool, get-tool, and get-prompt
-- Recorded that call-tool completions distinguish backend IDs from tool names based on prefix
-- Recorded that failures and timeouts must degrade to safe fallbacks without surfacing errors
-- Followed the RLM workflow without recomputing recon
-- Applied single-pass curation for a small context
-- Captured verification requirements and execution constraints
-- Use precomputed recon results and proceed directly to extraction when suggestedMode is single-pass
-- Use mapExtract only for chunked extraction when needed
-- Use dedup and groupBySubject to organize extracted facts
-- Verify curation via result.applied[].filePath without readFile
-- Defined the single-pass path after recon.
-- Captured the timeout requirement for mapExtract calls.
-- Captured verification guidance using applied file paths.
-- Use precomputed recon when available and proceed directly to extraction for single-pass contexts
-- Use mapExtract only for chunked extraction when suggested by recon
-- Verify curation via result.applied[].filePath instead of readFile
-- Opened PR #74 for fix/cli-completions.
-- Used main as the base branch.
-- Confirmed verification succeeded via the push hook.
-- Left unrelated local dirty files untouched.
-- Captured recon-first workflow guidance for curation.
-- Recorded single-pass and chunked extraction decision rules.
-- Preserved verification and timeout requirements for mapExtract usage.
+## Key Concepts
+- single-pass
+- chunked extraction
+- recon-first analysis
+- completion contract
+- call-tool
+- get-tool
+- get-prompt
+- safe fallback behavior
+- split target support
+- dotted target compatibility
+- regression tests
+- verification via applied file paths
 
-**Files:**
-- caplets/github-cli/CAPLET.md
-- caplets/repo-cli/CAPLET.md
-- caplets/context7.md
-- .brv
-- .opencode/opencode.json
+## Workflow / Rules
+- Use precomputed recon output to select single-pass mode.
+- Proceed directly to extraction when single-pass is suggested.
+- Use mapExtract only for chunked extraction when needed.
+- Pass taskId as a bare variable, not a string.
+- Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself.
+- Verify curation via result.applied[].filePath; do not reread files for verification.
+- Do not print raw context.
+- Completion behavior for call-tool, get-tool, and get-prompt must distinguish backend IDs from tool names based on prefix.
+- Failures and timeouts must degrade to safe fallbacks without surfacing errors.
+- Local hidden __complete now uses CapletsEngine.completeCliWords.
 
-**Flow:**
-recon -> choose single-pass or chunked extraction -> dedup/group facts -> curate -> verify applied file paths
-
-**Timestamp:** 2026-05-22T10:45:06.051Z
-
-**Author:** ByteRover context engineer
-
-## Narrative
-### Structure
-This knowledge describes how to curate context using the RLM workflow, including when to skip chunking, how to extract facts, and how to validate results after curation.
-
-### Dependencies
-Depends on recon output, the curate tool, and optional mapExtract for larger contexts.
-
-### Highlights
-The context emphasizes a single-pass path for compact inputs and requires explicit verification from curate results rather than rereading files.
-
-### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable, not a string. Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options). Verify via result.applied[].filePath — do NOT call readFile for verification.
-
-### Examples
-Opened PR: https://github.com/spiritledsoftware/caplets/pull/74
+## Highlights
+- For small contexts, single-pass curation is the preferred path after recon.
+- For larger contexts, chunked extraction should be followed by dedup and groupBySubject before curation.
+- Split targets for get-tool, call-tool, and get-prompt were restored while preserving dotted completion compatibility.
+- Regression tests were added for split tool calls, split prompt calls, split/dotted completion, and local OpenAPI completion discovery.
+- Verification passed with focused tests, formatting, lint, and full pnpm verify.
 
 ## Facts
 - **curation_mode**: Single-pass mode should be used when recon suggests single-pass. [convention]
 - **mapextract_taskid**: When using mapExtract in curation, the taskId must be passed as a bare variable. [convention]
 - **mapextract_timeout**: Any code_exec call containing mapExtract must use timeout: 300000 on the code_exec tool call itself. [convention]
 - **verification_method**: Verification should use result.applied[].filePath and should not call readFile for verification. [convention]
-
----
-
-title: RLM Curation Workflow
-summary: RLM curation workflow for small contexts and runtime conventions: recon-first, single-pass when suggested, use mapExtract for chunked contexts, dedup/groupBySubject, and verify via applied file paths or curate result status.
-tags: []
-related: [project/rlm_curation_workflow/context.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/project/rlm_curation_workflow.md]
-keywords: []
-createdAt: '2026-05-21T16:05:21.915Z'
-updatedAt: '2026-05-21T17:56:16.143Z'
-
----
+- **branch_location**: The work was implemented in the current branch at /home/ianpascoe/code/caplets instead of the previous worktree. [project]
+- **completion_implementation**: Local hidden __complete now uses CapletsEngine.completeCliWords. [project]
+- **split_target_support**: get-tool, call-tool, and get-prompt accept split targets. [project]
+- **dotted_target_support**: Existing dotted targets remain supported. [project]
+- **completion_suggestions**: Completion suggests split-form backend IDs and unqualified tool/prompt names while preserving dotted completion. [project]
+- **regression_tests**: Regression tests were added for split tool calls, split prompt calls, split/dotted completion, and local OpenAPI completion discovery. [project]
+- **documentation_updates**: README, completion spec, and .changeset/local-completion-split-tools.md were updated. [project]
+- **focused_test_result**: pnpm --filter @caplets/core test -- test/cli-completion.test.ts test/cli.test.ts passed with 456 tests. [project]
+- **format_check**: pnpm format:check passed. [project]
+- **lint_check**: pnpm lint passed. [project]
+- **verify_result**: pnpm verify passed fully with 39 test files and 536 tests. [project]
+- **dirty_worktree_note**: Only pre-existing unrelated .brv remained dirty alongside the implementation files. [project]
 
 ## Cross-References
 - project/rlm_curation_workflow/context.md
 - facts/conventions/task_7_remote_mutation_routing_review.md
 - facts/project/rlm_curation_workflow.md
+- project/rlm_curation_workflow/current_branch_completion_restore.md

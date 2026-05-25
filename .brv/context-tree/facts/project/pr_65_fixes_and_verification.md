@@ -2,7 +2,7 @@
 title: PR 65 Fixes and Verification
 summary: 'PR #65 fix for Pi legacy remote settings and auth-flow object isolation, with verification passing locally and on push hook'
 tags: []
-related: []
+related: [facts/project/pr_71_completion_fix_outcome.md, facts/project/remote_control_review_outcome.md, facts/project/greptile_review_comments.md]
 keywords: []
 createdAt: '2026-05-20T19:06:59.769Z'
 updatedAt: '2026-05-20T19:06:59.769Z'

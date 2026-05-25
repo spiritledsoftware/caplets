@@ -1,56 +1,11 @@
 ---
-title: Curation Runtime Conventions
-summary: Curation runtime conventions covering RLM workflow, single-pass recon guidance, mapExtract usage, UPSERT preference, verification requirements, and context quality rules.
-tags: []
-related: []
-keywords: []
-createdAt: '2026-05-22T10:00:59.917Z'
-updatedAt: '2026-05-22T10:00:59.917Z'
+consolidated_at: '2026-05-25T11:38:36.975Z'
+consolidated_from: [{date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_run_requirements.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_run_conventions.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_single_pass_mode.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_single_pass_curation_run_requirements.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/project/rlm_curation_run_constraints.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}]
+related: [facts/project/console_logging_policy.md]
 ---
-## Reason
-Capture runtime conventions and workflow constraints from the provided curation context
-
-## Raw Concept
-**Task:**
-Document the runtime conventions and workflow rules for curation in this environment
-
-**Changes:**
-- Captured RLM curation workflow guidance
-- Recorded single-pass handling when recon recommends it
-- Recorded verification and UPSERT preferences
-
-**Flow:**
-recon -> extract if needed -> curate -> verify
-
-**Timestamp:** 2026-05-22T10:00:48.913Z
-
-**Author:** ByteRover context engineer
-
-## Narrative
-### Structure
-The guidance defines how to process curation contexts, including when to use single-pass versus chunked extraction and how to verify applied results.
-
-### Dependencies
-Depends on recon output, tools.curation.mapExtract() for chunked contexts, and tools.curate() for final knowledge writes.
-
-### Highlights
-The context emphasizes not printing raw context, using bare taskId for mapExtract when needed, and checking curation summaries for failures.
-
-### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon when recon has already been pre-computed. For chunked extraction use tools.curation.mapExtract(). Pass taskId as a bare variable, not a string. Verify via result.applied[].filePath — do NOT call readFile for verification.
-
-## Facts
-- **curation_workflow**: For curation tasks, use the RLM approach with recon, extraction, and curate phases. [convention]
-- **single_pass_mode**: When recon suggests single-pass, skip chunking and curate directly. [convention]
-- **default_curate_operation**: Use UPSERT by default for curation operations. [convention]
-- **chunked_extraction_tool**: If a context is chunked, use tools.curation.mapExtract() for parallel extraction. [convention]
-- **curation_verification**: Verify curation results via result.summary.failed and result.applied[].filePath. [convention]
-
----
-
 # Title: Curation Runtime Conventions
 
-## Purpose
+## Summary
 Canonical runtime guidance for RLM curation sessions: use precomputed recon, choose single-pass for small contexts, fall back to chunked mapExtract only when needed, and verify results through applied file paths rather than filesystem reads.
 
 ## Core Workflow
@@ -77,3 +32,10 @@ precomputed recon -> inspect suggestedMode -> single-pass curate or chunked extr
 
 ## Temporal Note
 This guidance has appeared in multiple curation sessions over time; the canonical file should preserve the newest and most complete wording while noting that older session-specific entries existed and were later consolidated.
+
+## Facts
+- Single-pass mode is recommended when recon suggests it for small contexts.
+- Chunked extraction is reserved for larger contexts.
+- Precomputed recon is the source of truth for mode selection.
+- Verification should rely on curated result output, not rereading files.
+- Session variables may include context, history, metadata, and task ID names that should be used directly.

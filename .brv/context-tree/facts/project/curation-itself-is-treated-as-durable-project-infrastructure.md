@@ -6,7 +6,7 @@ type: synthesis
 title: Curation itself is treated as durable project infrastructure
 summary: The knowledge base records curation rules and project facts as first-class runtime knowledge, not chat-only notes.
 tags: [curation, runtime, knowledge-base, conventions]
-related: []
+related: [facts/project/curation_context_facts.md, facts/project/curation_input_notes.md]
 keywords: [upsert, durable, facts, narrative, verification, knowledge, curation, policy]
 createdAt: '2026-05-21T23:23:26.222Z'
 updatedAt: '2026-05-21T23:23:26.222Z'

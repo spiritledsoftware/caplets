@@ -2,7 +2,7 @@
 title: Task 3 Spec Review Fix
 summary: 'Task 3 fix: IPv6 loopback serve URLs now bind with ::1, CLI help text updated, focused tests passed, commit cdde479'
 tags: []
-related: []
+related: [facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/conventions/task_9_remote_config_test_fix.md]
 keywords: []
 createdAt: '2026-05-20T12:56:28.017Z'
 updatedAt: '2026-05-20T12:56:28.017Z'

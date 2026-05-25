@@ -2,7 +2,7 @@
 title: Console Logging Policy
 summary: Production code must not use console.log or similar logging because it can leak messages into native TUIs such as opencode, pi, and codex.
 tags: []
-related: []
+related: [facts/project/curation_runtime_conventions.md]
 keywords: []
 createdAt: '2026-05-25T11:13:26.206Z'
 updatedAt: '2026-05-25T11:13:26.206Z'

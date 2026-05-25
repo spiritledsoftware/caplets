@@ -2,7 +2,7 @@
 title: Task 5 Regression Test Update
 summary: Added regression tests for remote add rejecting server-owned fields; tests passed and commit 089542d was created with a note about unrelated worktree changes.
 tags: []
-related: []
+related: [facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_6_review_outcome.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/conventions/task_9_remote_config_test_fix.md]
 keywords: []
 createdAt: '2026-05-20T13:52:39.382Z'
 updatedAt: '2026-05-20T13:52:39.382Z'

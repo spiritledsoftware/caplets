@@ -2,7 +2,7 @@
 title: Completion Local Discovery and Split Targets
 summary: Plan saved for fixing local live discovery of existing caplet.tool completions and adding split <caplet> <tool> targets, with formatting verified.
 tags: []
-related: [docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/context.md, docs/plans/active_caplets_planning_documents.md]
+related: [docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/context.md, docs/plans/active_caplets_planning_documents.md, docs/plans/docker_image_publishing_for_release_pipeline.md, docs/plans/pr_71_completion_fix_outcome.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md]
 keywords: []
 createdAt: '2026-05-21T23:07:39.925Z'
 updatedAt: '2026-05-21T23:07:39.925Z'
