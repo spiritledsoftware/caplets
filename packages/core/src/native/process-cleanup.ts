@@ -1,6 +1,13 @@
 import type { NativeCapletsService } from "./service";
 
-export function registerNativeCapletsProcessCleanup(service: NativeCapletsService): void {
+export type NativeCapletsProcessCleanupOptions = {
+  writeErr?: (message: string) => void;
+};
+
+export function registerNativeCapletsProcessCleanup(
+  service: NativeCapletsService,
+  options: NativeCapletsProcessCleanupOptions = {},
+): void {
   let closed = false;
   const close = async () => {
     if (closed) {
@@ -10,7 +17,7 @@ export function registerNativeCapletsProcessCleanup(service: NativeCapletsServic
     try {
       await service.close();
     } catch (error: unknown) {
-      console.error("Failed to close Caplets service:", error);
+      options.writeErr?.(`Failed to close Caplets service: ${errorMessage(error)}\n`);
       process.exitCode = 1;
     }
   };
@@ -25,4 +32,8 @@ export function registerNativeCapletsProcessCleanup(service: NativeCapletsServic
   process.once("beforeExit", closeBeforeExit);
   process.once("SIGINT", closeAndExit);
   process.once("SIGTERM", closeAndExit);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

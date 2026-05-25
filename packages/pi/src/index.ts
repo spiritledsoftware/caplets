@@ -64,7 +64,7 @@ export async function loadPiSettingsArgs(
   const projectSettingsPath =
     options.projectSettingsPath ?? join(process.cwd(), ".pi", "settings.json");
   const readSettingsFile = options.readSettingsFile ?? readFileUtf8;
-  const writeWarning = options.writeWarning ?? ((message) => process.stderr.write(`${message}\n`));
+  const writeWarning = options.writeWarning ?? (() => undefined);
   const userSettings = await readPiSettingsFile(settingsPath, readSettingsFile, writeWarning);
   const projectSettings = await readPiSettingsFile(
     projectSettingsPath,

@@ -232,11 +232,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   }
 
   private warn(message: string): void {
-    if (this.options.writeErr) {
-      this.options.writeErr(message);
-      return;
-    }
-    process.stderr.write(message);
+    this.options.writeErr?.(message);
   }
 }
 

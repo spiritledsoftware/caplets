@@ -10,6 +10,25 @@ const scannedExtensions = new Set([".ts", ".mjs"]);
 const ignoredDirectories = new Set(["dist", "node_modules"]);
 
 describe("package boundaries", () => {
+  it("keeps native-facing production code from writing directly to stdio", () => {
+    const nativeFacingRoots = [
+      resolve(packagesRoot, "core/src/native"),
+      resolve(packagesRoot, "cli/src"),
+      resolve(packagesRoot, "opencode/src"),
+      resolve(packagesRoot, "pi/src"),
+    ];
+    const violations = scanFiles(nativeFacingRoots).flatMap((filePath) => {
+      const source = readFileSync(filePath, "utf8");
+      return Array.from(
+        source.matchAll(
+          /\bconsole\.(?:log|info|warn|error|debug|trace)\b|process\.(?:stdout|stderr)\.write\b/g,
+        ),
+      ).map((match) => `${formatPath(filePath)} uses ${match[0]}`);
+    });
+
+    expect(violations).toEqual([]);
+  });
+
   it("uses Node ESM-safe MCP SDK subpath imports", () => {
     const violations = scanFiles([packagesRoot]).flatMap((filePath) => {
       const source = readFileSync(filePath, "utf8");

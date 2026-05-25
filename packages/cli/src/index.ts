@@ -5,7 +5,6 @@ async function main() {
   await runCli(process.argv.slice(2), { version: packageVersion });
 }
 
-main().catch((error) => {
-  console.error(error);
+main().catch(() => {
   process.exit(1);
 });

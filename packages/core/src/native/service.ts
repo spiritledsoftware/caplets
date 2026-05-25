@@ -286,7 +286,7 @@ function warningKey(warning: { kind: string; path: string; message: string }): s
 }
 
 function writeErr(options: NativeCapletsServiceOptions, message: string): void {
-  (options.writeErr ?? ((value: string) => process.stderr.write(value)))(message);
+  options.writeErr?.(message);
 }
 
 function errorMessage(error: unknown): string {

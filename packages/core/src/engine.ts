@@ -83,7 +83,7 @@ export class CapletsEngine {
     this.capletSets = new CapletSetManager(this.registry, selectAuthOptions(options.authDir));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
-    this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
+    this.writeErr = options.writeErr ?? (() => undefined);
     if (this.watchEnabled) {
       this.resetWatchers();
     }

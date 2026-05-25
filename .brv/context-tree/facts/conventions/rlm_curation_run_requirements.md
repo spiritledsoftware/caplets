@@ -1,18 +1,18 @@
 ---
 title: RLM Curation Run Requirements
-summary: RLM curation runs use pre-computed single-pass recon for small contexts, require mapExtract timeout at the tool-call level when used, and verify through applied file paths.
+summary: RLM curation run requirements covering single-pass handling, context safety, verification, and curation workflow expectations.
 tags: []
 related: [facts/conventions/rlm_curation_single_pass_mode.md, facts/conventions/rlm_curation_run_conventions.md, facts/conventions/context.md]
 keywords: []
 createdAt: '2026-05-25T10:03:04.676Z'
-updatedAt: '2026-05-25T10:19:24.663Z'
+updatedAt: '2026-05-25T11:23:15.737Z'
 ---
 ## Reason
-Capture explicit curation-run instructions and verification constraints from the provided context.
+Curate single-pass RLM curation requirements and conventions from the provided context
 
 ## Raw Concept
 **Task:**
-Document the required RLM curation run procedure for this session
+Document the RLM curation run requirements and execution conventions for this single-pass curation context.
 
 **Changes:**
 - Use recon-suggested single-pass mode for small contexts
@@ -25,11 +25,14 @@ Document the required RLM curation run procedure for this session
 - Recorded pre-computed recon usage for single-pass mode
 - Recorded timeout requirement for mapExtract tool calls
 - Recorded verification rule using applied file paths
+- Recorded the precomputed recon result and single-pass recommendation
+- Captured the requirement to avoid printing raw context
+- Captured verification guidance using applied file paths
 
 **Flow:**
-precomputed recon -> single-pass extraction -> curate -> verify applied file paths
+precomputed recon -> single-pass curation -> curate UPSERT -> verify applied file paths -> report status
 
-**Timestamp:** 2026-05-25T10:19:14.056Z
+**Timestamp:** 2026-05-25T11:23:05.351Z
 
 **Author:** ByteRover context engineer
 
@@ -38,21 +41,19 @@ precomputed recon -> single-pass extraction -> curate -> verify applied file pat
 
 ## Narrative
 ### Structure
-This knowledge captures the run-level instructions governing how the current curation task must be processed.
+This knowledge covers how to handle an RLM curation run when the context is small enough for a single-pass operation.
 
 ### Dependencies
-Depends on the pre-computed recon result and the provided context/history/metadata variables.
+Depends on the precomputed recon result, the provided context/history/metadata variables, and the curation API.
 
 ### Highlights
-Single-pass mode is already suggested; mapExtract is only relevant for chunked extraction, and if used it requires a 300000 ms timeout at the code_exec call level.
+Single-pass mode was recommended. The instructions emphasize not printing raw context, not re-running recon, and verifying success from applied file paths.
 
 ### Rules
-IMPORTANT: Do NOT print raw context. Do NOT call tools.curation.recon — it has been pre-computed. Proceed directly to extraction.
-IMPORTANT: Any code_exec call containing mapExtract MUST use timeout: 300000 on the code_exec tool call itself (not inside mapExtract options).
-Verify via result.applied[].filePath — do NOT call readFile for verification.
+Do NOT print raw context. Do NOT call tools.curation.recon. Proceed directly to extraction. Verify via result.applied[].filePath.
 
 ## Facts
-- **rlm_curation_mode**: Curation runs must use the RLM approach with pre-computed recon in single-pass mode for small contexts. [convention]
-- **mapextract_timeout**: When mapExtract is used, the code_exec call containing it must use timeout 300000 at the tool-call level. [convention]
-- **verification_method**: Verification must use result.applied[].filePath and must not call readFile for verification. [convention]
-- **curation_context_size**: The context payload for this curation run is small: 1307 chars, 26 lines, and 0 messages. [project]
+- **curation_mode**: The context is small enough for single-pass curation. [convention]
+- **recon_status**: Recon was already computed before curation and suggested single-pass mode. [convention]
+- **context_logging_policy**: The curation workflow must not print raw context. [convention]
+- **verification_method**: Verification must use result.applied[].filePath and not readFile. [convention]

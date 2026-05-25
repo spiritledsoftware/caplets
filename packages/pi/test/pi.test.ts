@@ -6,7 +6,11 @@ import type {
   NativeCapletsService,
   NativeCapletsServiceOptions,
 } from "@caplets/core/native";
-import capletsPiExtension, { createCapletsPiExtension, type PiExtensionApi } from "../src/index";
+import capletsPiExtension, {
+  createCapletsPiExtension,
+  loadPiSettingsArgs,
+  type PiExtensionApi,
+} from "../src/index";
 
 const nativeMocks = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn(),
@@ -908,9 +912,7 @@ describe("@caplets/pi", () => {
   });
 
   it("loads deprecated remote server fields with a warning", async () => {
-    const service = mockService([]);
-    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    const writeWarning = vi.fn();
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
@@ -926,11 +928,10 @@ describe("@caplets/pi", () => {
       }),
     );
     fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
-    const { api } = mockPiApi();
 
-    await capletsPiExtension(api as unknown as PiExtensionApi);
+    const args = await loadPiSettingsArgs({ writeWarning });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+    expect(args).toEqual({
       mode: "remote",
       server: {
         url: "https://caplets.example.com",
@@ -941,8 +942,7 @@ describe("@caplets/pi", () => {
         pollIntervalMs: 1_000,
       },
     });
-    expect(write).toHaveBeenCalledWith(expect.stringContaining("remote.url is deprecated"));
-    write.mockRestore();
+    expect(writeWarning).toHaveBeenCalledWith(expect.stringContaining("remote.url is deprecated"));
   });
 
   it("default export loads top-level Pi settings for the native service", async () => {
@@ -1015,19 +1015,15 @@ describe("@caplets/pi", () => {
   });
 
   it("warns and falls back to empty args when Pi settings are malformed", async () => {
-    const service = mockService([]);
-    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    const writeWarning = vi.fn();
     fsMocks.readFile
       .mockResolvedValueOnce("{ not json")
       .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
-    const { api } = mockPiApi();
 
-    await capletsPiExtension(api as unknown as PiExtensionApi);
+    const args = await loadPiSettingsArgs({ writeWarning });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
-    expect(write).toHaveBeenCalledWith(expect.stringContaining("Ignoring Pi settings args"));
-    write.mockRestore();
+    expect(args).toEqual({});
+    expect(writeWarning).toHaveBeenCalledWith(expect.stringContaining("Ignoring Pi settings args"));
   });
 
   it("does not show a status widget for local settings", async () => {
