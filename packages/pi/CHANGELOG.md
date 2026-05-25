@@ -1,5 +1,13 @@
 # @caplets/pi
 
+## 0.5.5
+
+### Patch Changes
+
+- ffa8a4f: Keep console logs from leaking into native integrations
+- Updated dependencies [ffa8a4f]
+  - @caplets/core@0.18.5
+
 ## 0.5.4
 
 ### Patch Changes
