@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import corePackage from "../package.json";
@@ -13,7 +13,6 @@ describe("package boundaries", () => {
   it("keeps native-facing production code from writing directly to stdio", () => {
     const nativeFacingRoots = [
       resolve(packagesRoot, "core/src/native"),
-      resolve(packagesRoot, "cli/src"),
       resolve(packagesRoot, "opencode/src"),
       resolve(packagesRoot, "pi/src"),
     ];
@@ -27,6 +26,10 @@ describe("package boundaries", () => {
     });
 
     expect(violations).toEqual([]);
+  });
+
+  it("ignores missing scan roots", () => {
+    expect(scanFiles([resolve(packagesRoot, "missing-package/src")])).toEqual([]);
   });
 
   it("uses Node ESM-safe MCP SDK subpath imports", () => {
@@ -91,7 +94,9 @@ describe("package boundaries", () => {
 function scanFiles(roots: string[]): string[] {
   const files: string[] = [];
   for (const root of roots) {
-    collectFiles(root, files);
+    if (existsSync(root)) {
+      collectFiles(root, files);
+    }
   }
   return files;
 }

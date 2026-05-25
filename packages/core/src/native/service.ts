@@ -98,7 +98,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly engine: CapletsEngine;
 
   constructor(options: LocalNativeCapletsServiceOptions) {
-    this.engine = new CapletsEngine(options);
+    this.engine = new CapletsEngine({
+      ...options,
+      writeErr: options.writeErr ?? (() => undefined),
+    });
   }
 
   listTools(): NativeCapletTool[] {
