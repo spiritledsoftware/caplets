@@ -52,26 +52,18 @@ args = ["serve"]`,
     name: "OpenCode",
     installCommand: "npm install -g @caplets/opencode",
     configSnippet: `{
-  "mcp": {
-    "caplets": {
-      "type": "local",
-      "command": ["caplets", "serve"]
-    }
-  }
+  "plugin": ["@caplets/opencode"]
 }`,
-    note: "Use MCP config or the native @caplets/opencode integration where available.",
+    note: "Use the native @caplets/opencode plugin; it reads Caplets config and does not start the MCP server.",
   },
   {
     id: "pi",
     name: "Pi",
-    installCommand: "pi update && npm install -g @caplets/pi",
+    installCommand: "pi install npm:@caplets/pi",
     configSnippet: `{
-  "caplets": {
-    "enabled": true,
-    "configPath": "~/.config/caplets/config.json"
-  }
+  "packages": ["npm:@caplets/pi"]
 }`,
-    note: "Use the native @caplets/pi integration with the same Caplets config file.",
+    note: "The extension reads existing Caplets config; this Pi settings snippet registers the package.",
   },
   {
     id: "mcp-client",
