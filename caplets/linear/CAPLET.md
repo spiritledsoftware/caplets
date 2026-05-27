@@ -1,5 +1,5 @@
 ---
-$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
 name: Linear
 description: Plan and track product work in Linear by reading teams, projects, cycles, issues, comments, and workflow state.
 tags:

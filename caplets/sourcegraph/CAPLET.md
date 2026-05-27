@@ -1,5 +1,5 @@
 ---
-$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
 name: Sourcegraph
 description: Search and inspect code across Sourcegraph using its MCP endpoint for repository-aware coding workflows.
 tags:
