@@ -1,5 +1,14 @@
 # caplets
 
+## 0.17.6
+
+### Patch Changes
+
+- 7644d07: Update dependencies
+- 7644d07: Add a polished LSP registry Caplet backed by `language-server-mcp` and include it in the coding-agent toolkit examples.
+- Updated dependencies [7644d07]
+  - @caplets/core@0.18.6
+
 ## 0.17.5
 
 ### Patch Changes
