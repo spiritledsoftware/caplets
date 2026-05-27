@@ -2,7 +2,7 @@
 title: Docker Image Publishing for Release Pipeline
 summary: 'Release workflow should publish GHCR Docker images only after Changesets publishes npm packages, with packages: write permission and Docker build/login steps gated on published releases.'
 tags: []
-related: [architecture/remote_control/release_workflow.md, docs/plans/active_caplets_planning_documents.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/context.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/pr_71_completion_fix_outcome.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md]
+related: [architecture/remote_control/release_workflow.md, docs/plans/active_caplets_planning_documents.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/context.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/pr_71_completion_fix_outcome.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md, docs/plans/release-and-completion-work-is-governed-by-verification-not-optimistic-success-s.md]
 keywords: []
 createdAt: '2026-05-21T09:58:44.922Z'
 updatedAt: '2026-05-21T09:58:44.922Z'

@@ -1,7 +1,7 @@
 ---
-consolidated_at: '2026-05-25T11:38:36.975Z'
-consolidated_from: [{date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_run_requirements.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_run_conventions.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_curation_single_pass_mode.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/conventions/rlm_single_pass_curation_run_requirements.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}, {date: '2026-05-25T11:38:36.975Z', path: facts/project/rlm_curation_run_constraints.md, reason: 'These files all document the same RLM curation runtime policy: precomputed recon, single-pass handling for small contexts, no raw-context printing, mapExtract timeout/taskId rules, UPSERT workflow, and verification via result.applied[].filePath. They are substantially overlapping and should be consolidated into one canonical requirements/conventions note.'}]
-related: [facts/project/console_logging_policy.md]
+consolidated_at: '2026-05-27T10:03:18.780Z'
+consolidated_from: [{date: '2026-05-27T10:03:18.780Z', path: facts/curation_runtime_conventions/rlm_curation_workflow.md, reason: 'These files describe the same canonical RLM curation workflow with overlapping instructions on precomputed recon, single-pass handling, chunked mapExtract fallback, bare taskId usage, timeout 300000, no raw-context printing, verification via applied file paths, and UPSERT preference. The full note and the existing project convention file are redundant representations of one workflow policy, so they should be consolidated into the richer canonical convention note.'}, {date: '2026-05-27T10:03:18.780Z', path: facts/project/curate_rlm_workflow_context.md, reason: 'These files describe the same canonical RLM curation workflow with overlapping instructions on precomputed recon, single-pass handling, chunked mapExtract fallback, bare taskId usage, timeout 300000, no raw-context printing, verification via applied file paths, and UPSERT preference. The full note and the existing project convention file are redundant representations of one workflow policy, so they should be consolidated into the richer canonical convention note.'}]
+related: [facts/project/context.md]
 ---
 # Title: Curation Runtime Conventions
 
@@ -39,3 +39,13 @@ This guidance has appeared in multiple curation sessions over time; the canonica
 - Precomputed recon is the source of truth for mode selection.
 - Verification should rely on curated result output, not rereading files.
 - Session variables may include context, history, metadata, and task ID names that should be used directly.
+
+## Additions to Preserve from Overlapping Files
+- Earlier sessions recorded the exact required workflow as: recon -> mapExtract -> dedup/group -> curate -> verify applied file paths.
+- Verification must rely on result.applied[].filePath and not on readFile.
+- Any code_exec call containing mapExtract must set timeout to 300000 at the outer code_exec level.
+- mapExtract taskId must be passed as a bare variable.
+- do not print raw context; do not call recon again when precomputed recon is already available.
+- use tools.curation.groupBySubject() and tools.curation.dedup() to organize extractions.
+- Later guidance reinforced canonical wording around UPSERT preference and checking result.summary.failed.
+- For small pre-reconciled contexts, proceed directly in single-pass mode; chunked extraction is for larger contexts.

@@ -2,7 +2,7 @@
 title: Remote Control Review Outcome
 summary: 'Approved remote control review: server-side redaction fixed, regression tests added, CLI pending auth wording accepted, with residual spec mismatch noted.'
 tags: []
-related: [facts/project/pr_65_fixes_and_verification.md, facts/project/pr_71_completion_fix_outcome.md, facts/project/greptile_review_comments.md]
+related: [facts/project/pr_65_fixes_and_verification.md, facts/project/pr_71_completion_fix_outcome.md, facts/project/greptile_review_comments.md, facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/conventions/task_9_remote_config_test_fix.md, facts/project/task_6_spec_review_after_envelope_fix.md]
 keywords: []
 createdAt: '2026-05-20T15:41:00.585Z'
 updatedAt: '2026-05-20T15:41:00.585Z'

@@ -1,3 +1,6 @@
+---
+related: [facts/project/context.md]
+---
 # Topic: conventions
 
 ## Overview

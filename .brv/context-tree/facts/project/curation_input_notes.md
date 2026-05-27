@@ -2,7 +2,7 @@
 title: Curation Input Notes
 summary: Captured the provided curation input as durable project knowledge.
 tags: []
-related: [facts/project/curation_context_facts.md, facts/project/curation-itself-is-treated-as-durable-project-infrastructure.md]
+related: [facts/project/curation_context_facts.md, facts/project/curation-itself-is-treated-as-durable-project-infrastructure.md, facts/project/autocommit_hooks_for_memory_files.md]
 keywords: []
 createdAt: '2026-05-20T17:11:58.075Z'
 updatedAt: '2026-05-20T17:11:58.075Z'
