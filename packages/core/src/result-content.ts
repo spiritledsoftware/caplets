@@ -38,15 +38,31 @@ export function statusSummary(value: unknown): string {
   const statusText =
     typeof record.statusText === "string" && record.statusText ? record.statusText : undefined;
   const exitCode = typeof record.exitCode === "number" ? `exit ${record.exitCode}` : undefined;
-  const body = "body" in record ? "body" : undefined;
-  const json = "json" in record ? "json" : undefined;
-  const stdout = typeof record.stdout === "string" && record.stdout ? "stdout" : undefined;
-  const stderr = typeof record.stderr === "string" && record.stderr ? "stderr" : undefined;
+  const body = "body" in record ? valueSummary("body", record.body) : undefined;
+  const json = "json" in record ? valueSummary("json", record.json) : undefined;
+  const stdout =
+    typeof record.stdout === "string" && record.stdout
+      ? valueSummary("stdout", record.stdout)
+      : undefined;
+  const stderr =
+    typeof record.stderr === "string" && record.stderr
+      ? valueSummary("stderr", record.stderr)
+      : undefined;
   return (
     [status, statusText, exitCode, body, json, stdout, stderr]
       .filter((part): part is string => Boolean(part))
       .join("; ") || resultKeys(record)
   );
+}
+
+function valueSummary(label: string, value: unknown): string {
+  if (typeof value === "string") {
+    return value ? `${label} ${compactText(value, 200)}` : label;
+  }
+  if (value === undefined) {
+    return label;
+  }
+  return `${label} ${compactJsonText(value, 200)}`;
 }
 
 export function compactStructuredContent(value: unknown): TextContentBlock[] {

@@ -806,7 +806,7 @@ describe("generated tool handlers", () => {
     );
 
     expect(result).toMatchObject({
-      content: [{ type: "text", text: "body" }],
+      content: [{ type: "text", text: 'body {"name":"Ada"}' }],
       structuredContent: { body: { name: "Ada" } },
     });
     expect(openapi.getTool).toHaveBeenCalledWith(openApiServer, "getUser");
