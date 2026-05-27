@@ -1,5 +1,5 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { parse as parseYaml } from "yaml";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
@@ -8,7 +8,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { compactStructuredContent } from "./result-content";
+import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
@@ -148,7 +148,12 @@ export class OpenApiManager {
       }
       const parsed = await readResponse(response);
       return {
-        content: compactStructuredContent(parsed),
+        content: markdownStructuredContent(parsed, {
+          title: `${endpoint.name} call_tool ${toolName}`,
+          backend: "openapi",
+          operation: "call_tool",
+          tool: toolName,
+        }),
         structuredContent: parsed as Record<string, unknown>,
         isError: response.ok ? false : true,
       };

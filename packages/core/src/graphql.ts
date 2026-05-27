@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import {
   buildClientSchema,
   buildSchema,
@@ -34,7 +34,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { compactStructuredContent } from "./result-content";
+import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
 
 const GRAPHQL_METHOD = "POST";
@@ -189,7 +189,12 @@ export class GraphQLManager {
         body,
       };
       return {
-        content: compactStructuredContent(result),
+        content: markdownStructuredContent(result, {
+          title: `${endpoint.name} call_tool ${toolName}`,
+          backend: "graphql",
+          operation: "call_tool",
+          tool: toolName,
+        }),
         structuredContent: result,
         isError:
           !response.ok ||

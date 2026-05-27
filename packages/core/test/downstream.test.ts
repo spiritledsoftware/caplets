@@ -10,7 +10,7 @@ import { ServerRegistry } from "../src/registry";
 import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 import { handleServerTool } from "../src/tools";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types";
 
 const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
@@ -126,9 +126,11 @@ describe("downstream stdio lifecycle", () => {
       )) as any;
 
       expect(result).toMatchObject({
-        content: [{ type: "text", text: "structured keys: message" }],
         structuredContent: { message: "hello" },
       });
+      expect(result.content[0].text).toContain("# Fixture call_tool echo");
+      expect(result.content[0].text).toContain("## Result");
+      expect(result.content[0].text).toContain('"message": "hello"');
     } finally {
       await manager.close();
     }
@@ -214,7 +216,7 @@ describe("downstream stdio lifecycle", () => {
           name: "Fixture Reloaded",
           description: "A reloaded fixture server.",
           command: process.execPath,
-          args: [fixture],
+          args: ["--import", tsxImport, fixture],
           toolCacheTtlMs: 30_000,
         },
       },

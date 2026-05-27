@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { z } from "zod";
 import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
@@ -133,22 +133,17 @@ describe("generated tool request validation", () => {
     ]);
   });
 
-  it("returns concise wrapper content while preserving structured result", () => {
+  it("returns Markdown wrapper content while preserving structured result", () => {
     const result = jsonResult({ id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
 
     expect(result.structuredContent).toEqual({
       result: { id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
     });
-    expect(result.content).toEqual([
-      {
-        type: "text",
-        text: JSON.stringify(
-          { id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
-          null,
-          2,
-        ),
-      },
-    ]);
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain("# Result");
+    expect(text).toContain("## Full Result");
+    expect(text).toContain('"tool": "read"');
+    expect(text).toContain('"tool": "write"');
   });
 
   it("describes the nested call_tool argument shape to agents", () => {
@@ -505,7 +500,10 @@ describe("generated tool handlers", () => {
     );
     expect(result).not.toBe(downstreamResult);
     expect(downstreamResult).toEqual(originalDownstreamResult);
-    expect(result).toEqual({
+    expect(result.content[0]?.text).toContain("ok");
+    expect(result.content[1]?.text).toContain("## Structured Content");
+    expect(result.content[1]?.text).toContain('"ok": true');
+    expect({ ...result, content: originalDownstreamResult.content }).toEqual({
       ...originalDownstreamResult,
       _meta: {
         caplets: {
@@ -536,7 +534,10 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     );
-    expect(result).toEqual({
+    expect(result.content[0]?.text).toContain("ok");
+    expect(result.content[1]?.text).toContain("## Structured Content");
+    expect(result.content[1]?.text).toContain('"ok": true');
+    expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {
         requestId: "req-1",
@@ -570,7 +571,10 @@ describe("generated tool handlers", () => {
       registry,
       downstream,
     );
-    expect(result).toEqual({
+    expect(result.content[0]?.text).toContain("failed");
+    expect(result.content[1]?.text).toContain("## Structured Content");
+    expect(result.content[1]?.text).toContain('"error": "nope"');
+    expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {
         requestId: "req-2",
@@ -737,9 +741,12 @@ describe("generated tool handlers", () => {
       downstream,
     );
 
+    expect(result.content[0]?.text).toContain("# Alpha call_tool read");
+    expect(result.content[0]?.text).toContain("## Result");
+    expect(result.content[0]?.text).toContain('"message": "ok"');
     expect(result).toEqual({
       ...downstreamResult,
-      content: [{ type: "text", text: "structured keys: message" }],
+      content: result.content,
       structuredContent: { message: "ok" },
       _meta: {
         requestId: "req-1",
@@ -806,9 +813,11 @@ describe("generated tool handlers", () => {
     );
 
     expect(result).toMatchObject({
-      content: [{ type: "text", text: "body" }],
       structuredContent: { body: { name: "Ada" } },
     });
+    expect(result.content[0]?.text).toContain("# Users API call_tool getUser");
+    expect(result.content[0]?.text).toContain("## Body");
+    expect(result.content[0]?.text).toContain('"name": "Ada"');
     expect(openapi.getTool).toHaveBeenCalledWith(openApiServer, "getUser");
     expect(openapi.callTool).toHaveBeenCalledWith(openApiServer, "getUser", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -859,9 +868,11 @@ describe("generated tool handlers", () => {
     );
 
     expect(result).toMatchObject({
-      content: [{ type: "text", text: "structured keys: ok" }],
       structuredContent: { ok: true },
     });
+    expect(result.content[0]?.text).toContain("# Status HTTP call_tool check");
+    expect(result.content[0]?.text).toContain("## Result");
+    expect(result.content[0]?.text).toContain('"ok": true');
     expect(http.getTool).toHaveBeenCalledWith(httpServer, "check");
     expect(http.callTool).toHaveBeenCalledWith(httpServer, "check", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -1062,7 +1073,10 @@ describe("generated tool handlers", () => {
       structuredContent: { ok: true },
       isError: false,
     });
-    expect(result).toEqual({
+    expect(result.content[0]?.text).toContain("# Graph call_tool query_user");
+    expect(result.content[0]?.text).toContain("## Result");
+    expect(result.content[0]?.text).toContain('"ok": true');
+    expect({ ...result, content: graphqlResult.content }).toEqual({
       ...graphqlResult,
       _meta: {
         caplets: {
@@ -1159,7 +1173,10 @@ describe("generated tool handlers", () => {
       structuredContent: { ok: true },
       isError: false,
     });
-    expect(result).toEqual({
+    expect(result.content[0]?.text).toContain("# Status HTTP call_tool check");
+    expect(result.content[0]?.text).toContain("## Result");
+    expect(result.content[0]?.text).toContain('"ok": true');
+    expect({ ...result, content: httpResult.content }).toEqual({
       ...httpResult,
       _meta: {
         caplets: {

@@ -97,16 +97,27 @@ export function toSafeError(
 
 export function errorResult(error: unknown, fallback?: CapletsErrorCode) {
   const safe = toSafeError(error, fallback);
+  const structuredContent = { error: safe };
   return {
     isError: true,
     content: [
       {
         type: "text" as const,
-        text: `${safe.code}: ${safe.message}`,
+        text: [
+          "# Error",
+          "",
+          `## ${safe.code}`,
+          "",
+          safe.message,
+          "",
+          "## Details",
+          "",
+          "```json",
+          JSON.stringify(safe, null, 2),
+          "```",
+        ].join("\n"),
       },
     ],
-    structuredContent: {
-      error: safe,
-    },
+    structuredContent,
   };
 }

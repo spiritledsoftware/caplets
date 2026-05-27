@@ -1,4 +1,4 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { resolve } from "node:path";
 import { CliToolsManager } from "./cli-tools";
 import { type CapletConfig, type CapletSetConfig, loadIsolatedConfig } from "./config";

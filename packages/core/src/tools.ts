@@ -1,4 +1,4 @@
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
 import type { CapletSetManager } from "./caplet-sets";
 import type { CapletConfig } from "./config";
 import type { CliToolsManager } from "./cli-tools";
@@ -14,7 +14,11 @@ import {
   mcpOperations,
   operations,
 } from "./generated-tool-input-schema";
-import { compactStructuredContent } from "./result-content";
+import {
+  markdownCallToolResultContent,
+  markdownStructuredContent,
+  type ResultMarkdownContext,
+} from "./result-content";
 
 export { generatedToolInputSchema } from "./generated-tool-input-schema";
 
@@ -115,15 +119,14 @@ export async function handleServerTool(
       }
       validateFieldSelection(tool.outputSchema, parsed.fields);
 
+      const metadata = metadataFor(server, "call_tool", parsed.tool, startedAt);
       const result = projectCallToolResult(
         await backend.callTool(server as never, parsed.tool, parsed.arguments),
         tool.outputSchema,
         parsed.fields,
+        markdownContextFor(metadata),
       );
-      return annotateCallToolResult(
-        result,
-        metadataFor(server, "call_tool", parsed.tool, startedAt),
-      );
+      return annotateCallToolResult(result, metadata);
     }
     case "list_resources": {
       const backend = mcpBackendFor(server, downstream);
@@ -469,18 +472,30 @@ export function annotateMcpResult<T extends object>(result: T, metadata: CapletR
   };
 }
 
-export function jsonResult(value: unknown, metadata?: CapletResultMetadata): CallToolResult {
+function markdownContextFor(metadata: CapletResultMetadata): ResultMarkdownContext {
   return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify(value, null, 2),
-      },
-    ],
-    structuredContent: {
-      ...(metadata === undefined ? {} : { caplets: metadata }),
-      result: value as Record<string, unknown>,
-    },
+    title: [metadata.name, metadata.operation, metadata.tool ?? metadata.uri ?? metadata.prompt]
+      .filter(Boolean)
+      .join(" "),
+    backend: metadata.backend,
+    operation: metadata.operation,
+    ...(metadata.tool ? { tool: metadata.tool } : {}),
+    ...(metadata.uri ? { uri: metadata.uri } : {}),
+    ...(metadata.prompt ? { prompt: metadata.prompt } : {}),
+  };
+}
+
+export function jsonResult(value: unknown, metadata?: CapletResultMetadata): CallToolResult {
+  const structuredContent = {
+    ...(metadata === undefined ? {} : { caplets: metadata }),
+    result: value as Record<string, unknown>,
+  };
+  return {
+    content: markdownStructuredContent(
+      structuredContent,
+      metadata ? markdownContextFor(metadata) : { title: "Result" },
+    ),
+    structuredContent,
   };
 }
 
@@ -498,6 +513,10 @@ export function annotateCallToolResult<T extends object>(
 
   return {
     ...result,
+    content: markdownCallToolResultContent(
+      result as CallToolResult,
+      markdownContextFor(annotatedMetadata),
+    ),
     _meta: {
       ...(isPlainObject(existingMeta) ? existingMeta : {}),
       caplets: annotatedMetadata,
@@ -509,6 +528,7 @@ export function projectCallToolResult<T extends object>(
   result: T,
   outputSchema: unknown,
   fields: string[],
+  context: ResultMarkdownContext = {},
 ): T & CallToolResult {
   if ((result as { isError?: unknown }).isError === true) {
     return result as T & CallToolResult;
@@ -525,7 +545,7 @@ export function projectCallToolResult<T extends object>(
   const projected = projectStructuredContent(structuredContent, outputSchema, fields);
   return {
     ...result,
-    content: compactStructuredContent(projected),
+    content: markdownStructuredContent(projected, context),
     structuredContent: projected,
   } as T & CallToolResult;
 }

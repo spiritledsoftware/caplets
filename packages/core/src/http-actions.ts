@@ -1,4 +1,4 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { genericOAuthHeaders } from "./auth";
 import type { HttpActionConfig, HttpApiConfig } from "./config";
 import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation";
@@ -6,7 +6,7 @@ import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
-import { compactStructuredContent } from "./result-content";
+import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
@@ -97,7 +97,12 @@ export class HttpActionManager {
       }
       const parsed = await readResponse(response, api, Date.now() - startedAt);
       return {
-        content: compactStructuredContent(parsed),
+        content: markdownStructuredContent(parsed, {
+          title: `${api.name} call_tool ${toolName}`,
+          backend: "http",
+          operation: "call_tool",
+          tool: toolName,
+        }),
         structuredContent: parsed,
         isError: !response.ok,
       };

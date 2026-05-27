@@ -32,13 +32,13 @@ describe("package boundaries", () => {
     expect(scanFiles([resolve(packagesRoot, "missing-package/src")])).toEqual([]);
   });
 
-  it("uses Node ESM-safe MCP SDK subpath imports", () => {
+  it("keeps MCP SDK subpath imports extensionless for bundler resolution", () => {
     const violations = scanFiles([packagesRoot]).flatMap((filePath) => {
       const source = readFileSync(filePath, "utf8");
       return Array.from(source.matchAll(/["'](@modelcontextprotocol\/sdk\/[^"']+)["']/g))
         .map((match) => match[1])
         .filter((specifier): specifier is string => Boolean(specifier))
-        .filter((specifier) => !specifier.endsWith(".js"))
+        .filter((specifier) => specifier.endsWith(".js"))
         .map((specifier) => `${formatPath(filePath)} imports ${specifier}`);
     });
 
