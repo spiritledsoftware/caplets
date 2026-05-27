@@ -1,5 +1,14 @@
 # @caplets/pi
 
+## 0.5.7
+
+### Patch Changes
+
+- b33dc00: Render structured Caplets results as lossless Markdown content while preserving canonical structuredContent.
+- Updated dependencies [b33dc00]
+- Updated dependencies [b33dc00]
+  - @caplets/core@0.18.7
+
 ## 0.5.6
 
 ### Patch Changes

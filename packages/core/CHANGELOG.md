@@ -1,5 +1,12 @@
 # @caplets/core
 
+## 0.18.7
+
+### Patch Changes
+
+- b33dc00: Fix missing http response body in tool result content
+- b33dc00: Render structured Caplets results as lossless Markdown content while preserving canonical structuredContent.
+
 ## 0.18.6
 
 ### Patch Changes
