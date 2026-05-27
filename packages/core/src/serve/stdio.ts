@@ -1,4 +1,4 @@
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsMcpSession } from "./session";
 

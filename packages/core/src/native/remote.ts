@@ -1,6 +1,6 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types";
 
 import { CapletsError } from "../errors";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";

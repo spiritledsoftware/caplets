@@ -1,4 +1,4 @@
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapletsConfig } from "./config";
 import { CapletsEngine, type CapletsEngineOptions } from "./engine";
 import { CapletsMcpSession, type ToolServer } from "./serve/session";

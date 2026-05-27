@@ -52,9 +52,8 @@ function compactOpenCodeResult(result: unknown): string {
       )
       .map((item) => item.text)
       .join("\n")
-      .replace(/\s+/gu, " ")
       .trim();
-    if (text) return text.length > 600 ? `${text.slice(0, 599).trimEnd()}…` : text;
+    if (text) return text;
   }
   try {
     return JSON.stringify(result, null, 2) ?? "null";

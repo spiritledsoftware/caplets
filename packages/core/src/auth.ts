@@ -5,12 +5,12 @@ import {
   type AuthResult,
   extractWWWAuthenticateParams,
   type OAuthClientProvider,
-} from "@modelcontextprotocol/sdk/client/auth.js";
+} from "@modelcontextprotocol/sdk/client/auth";
 import type {
   OAuthClientInformationMixed,
   OAuthClientMetadata,
   OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/sdk/shared/auth";
 import {
   isTokenBundleExpired,
   readTokenBundle,

@@ -1,12 +1,12 @@
 import { constants, existsSync, accessSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import type { CliToolActionConfig, CliToolsConfig } from "./config";
 import type { CompactTool } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
-import { compactStructuredContent } from "./result-content";
+import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
 
 const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as const;
@@ -88,7 +88,12 @@ export class CliToolsManager {
       const result = await spawnCommand(execution, controller.signal, () => Date.now() - startedAt);
       const structured = parseStructuredResult(action, result, result.exitCode !== 0);
       return {
-        content: compactStructuredContent(structured),
+        content: markdownStructuredContent(structured, {
+          title: `${config.name} call_tool ${toolName}`,
+          backend: "cli",
+          operation: "call_tool",
+          tool: toolName,
+        }),
         structuredContent: structured,
         isError: result.exitCode !== 0,
       };

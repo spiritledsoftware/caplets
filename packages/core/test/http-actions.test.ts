@@ -205,7 +205,9 @@ describe("HttpActionManager", () => {
       http,
     )) as any;
     expect(projected.structuredContent).toEqual({ body: { ok: true } });
-    expect(projected.content[0].text).toBe('body {"ok":true}');
+    expect(projected.content[0].text).toContain("# HTTP API call_tool ping");
+    expect(projected.content[0].text).toContain("## Body");
+    expect(projected.content[0].text).toContain('"ok": true');
   });
 
   it("builds requests from path, query, header, and JSON body mappings", async () => {
