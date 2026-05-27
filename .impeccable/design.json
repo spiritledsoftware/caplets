@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-27T00:00:00.000Z",
+  "title": "Design System: Caplets",
+  "extensions": {
+    "colorMeta": {
+      "ember": {
+        "role": "primary",
+        "displayName": "Ember Signal",
+        "canonical": "#E0582F",
+        "tonalRamp": [
+          "oklch(18% 0.055 35)",
+          "oklch(28% 0.085 35)",
+          "oklch(40% 0.12 35)",
+          "oklch(52% 0.15 35)",
+          "oklch(62% 0.155 35)",
+          "oklch(74% 0.11 35)",
+          "oklch(86% 0.06 35)",
+          "oklch(95% 0.025 35)"
+        ]
+      },
+      "parchment": {
+        "role": "tertiary",
+        "displayName": "Parchment Surface",
+        "canonical": "#F6E8C8",
+        "tonalRamp": [
+          "oklch(18% 0.018 82)",
+          "oklch(29% 0.025 82)",
+          "oklch(41% 0.03 82)",
+          "oklch(55% 0.035 82)",
+          "oklch(68% 0.04 82)",
+          "oklch(80% 0.045 82)",
+          "oklch(89% 0.035 82)",
+          "oklch(96% 0.02 82)"
+        ]
+      },
+      "charred-ink": {
+        "role": "primary",
+        "displayName": "Charred Ink",
+        "canonical": "#1F2018",
+        "tonalRamp": [
+          "oklch(14% 0.012 100)",
+          "oklch(22% 0.014 100)",
+          "oklch(32% 0.016 100)",
+          "oklch(44% 0.018 100)",
+          "oklch(58% 0.018 100)",
+          "oklch(72% 0.014 100)",
+          "oklch(86% 0.01 100)",
+          "oklch(95% 0.006 100)"
+        ]
+      },
+      "linen": {
+        "role": "neutral",
+        "displayName": "Linen Field",
+        "canonical": "#FBF7EC",
+        "tonalRamp": [
+          "oklch(16% 0.01 85)",
+          "oklch(27% 0.012 85)",
+          "oklch(40% 0.014 85)",
+          "oklch(54% 0.016 85)",
+          "oklch(68% 0.018 85)",
+          "oklch(82% 0.018 85)",
+          "oklch(91% 0.014 85)",
+          "oklch(98% 0.008 85)"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper Panel",
+        "canonical": "#FFF8EA",
+        "tonalRamp": [
+          "oklch(17% 0.01 82)",
+          "oklch(30% 0.012 82)",
+          "oklch(44% 0.014 82)",
+          "oklch(58% 0.016 82)",
+          "oklch(72% 0.018 82)",
+          "oklch(85% 0.018 82)",
+          "oklch(93% 0.014 82)",
+          "oklch(98% 0.008 82)"
+        ]
+      },
+      "ash": {
+        "role": "neutral",
+        "displayName": "Ash Rule",
+        "canonical": "#E3D8C0",
+        "tonalRamp": [
+          "oklch(17% 0.01 78)",
+          "oklch(29% 0.012 78)",
+          "oklch(42% 0.014 78)",
+          "oklch(56% 0.016 78)",
+          "oklch(70% 0.018 78)",
+          "oklch(82% 0.018 78)",
+          "oklch(91% 0.012 78)",
+          "oklch(96% 0.006 78)"
+        ]
+      },
+      "muted-olive": {
+        "role": "secondary",
+        "displayName": "Muted Olive",
+        "canonical": "#686B4E",
+        "tonalRamp": [
+          "oklch(17% 0.025 110)",
+          "oklch(27% 0.035 110)",
+          "oklch(38% 0.045 110)",
+          "oklch(50% 0.05 110)",
+          "oklch(62% 0.045 110)",
+          "oklch(74% 0.035 110)",
+          "oklch(86% 0.022 110)",
+          "oklch(95% 0.01 110)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page titles, onboarding headings, and major empty-state statements."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section introductions and major panel headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card titles, form groups, toolbar headings, and table group labels."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Explanatory text, descriptions, and documentation-adjacent prose."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons, chips, capability IDs, state labels, and terse navigation labels."
+      }
+    },
+    "shadows": [
+      {
+        "name": "overlay-low",
+        "value": "0 18px 50px rgba(31, 32, 24, 0.14)",
+        "purpose": "Only for popovers, command palettes, and disclosure panels that must float above the map."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-quart",
+        "value": "cubic-bezier(0.25, 1, 0.5, 1)",
+        "purpose": "Default easing for hover, focus, and disclosure state changes."
+      },
+      { "name": "state-fast", "value": "150ms", "purpose": "Fast control feedback." },
+      {
+        "name": "state-standard",
+        "value": "200ms",
+        "purpose": "Disclosure and panel state changes."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary action control with rare ember hover state and visible keyboard focus.",
+      "html": "<button class=\"ds-btn-primary\">Call Tool</button>",
+      "css": ".ds-btn-primary { background: #1F2018; color: #F6E8C8; border: 1px solid #1F2018; border-radius: 10px; padding: 10px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.035em; transition: background-color 180ms cubic-bezier(0.25, 1, 0.5, 1), color 180ms cubic-bezier(0.25, 1, 0.5, 1), transform 180ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-btn-primary:hover { background: #E0582F; color: #FFF8EA; transform: translateY(-1px); } .ds-btn-primary:focus-visible { outline: 2px solid #E0582F; outline-offset: 2px; } .ds-btn-primary:active { transform: translateY(0); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Inspection and navigation action for lower-risk product flows.",
+      "html": "<button class=\"ds-btn-secondary\">List Tools</button>",
+      "css": ".ds-btn-secondary { background: #FFF8EA; color: #1F2018; border: 1px solid #E3D8C0; border-radius: 10px; padding: 10px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.035em; transition: background-color 180ms cubic-bezier(0.25, 1, 0.5, 1), border-color 180ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-btn-secondary:hover { background: #F6E8C8; border-color: #1F2018; } .ds-btn-secondary:focus-visible { outline: 2px solid #E0582F; outline-offset: 2px; }"
+    },
+    {
+      "name": "Capability Chip",
+      "kind": "chip",
+      "refersTo": "chip-neutral",
+      "description": "Compact backend, operation, or status label.",
+      "html": "<span class=\"ds-chip\">MCP</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 6px; background: #F6E8C8; color: #1F2018; border: 1px solid #E3D8C0; border-radius: 14px; padding: 5px 9px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.035em; } .ds-chip::before { content: ''; width: 6px; height: 6px; border-radius: 999px; background: #E0582F; }"
+    },
+    {
+      "name": "Capability Card",
+      "kind": "card",
+      "refersTo": "capability-card",
+      "description": "Signature bounded region for one capability domain and its next inspection steps.",
+      "html": "<article class=\"ds-capability-card\"><div class=\"ds-card-kicker\">caplets_context7</div><h3>Context7 Documentation</h3><p>Fetch current library and framework documentation before using version-sensitive APIs.</p><div class=\"ds-card-actions\"><span>search_tools</span><span>get_tool</span><span>call_tool</span></div></article>",
+      "css": ".ds-capability-card { background: #FFF8EA; color: #1F2018; border: 1px solid #E3D8C0; border-radius: 14px; padding: 18px; max-width: 360px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; } .ds-capability-card h3 { margin: 8px 0 6px; font-size: 16px; line-height: 1.3; letter-spacing: -0.01em; } .ds-capability-card p { margin: 0; color: #686B4E; font-size: 14px; line-height: 1.5; } .ds-card-kicker, .ds-card-actions span { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.035em; } .ds-card-kicker { color: #E0582F; } .ds-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; } .ds-card-actions span { border: 1px solid #E3D8C0; border-radius: 999px; padding: 4px 7px; background: #F6E8C8; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "Focused inspection field for searching tools, resources, and operation names.",
+      "html": "<label class=\"ds-search-label\">Search tools<input class=\"ds-search-input\" placeholder=\"search_tools query\" /></label>",
+      "css": ".ds-search-label { display: grid; gap: 6px; color: #686B4E; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.035em; } .ds-search-input { width: 260px; background: #FFF8EA; color: #1F2018; border: 1px solid #E3D8C0; border-radius: 10px; padding: 10px 12px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; font-size: 15px; line-height: 1.4; transition: border-color 180ms cubic-bezier(0.25, 1, 0.5, 1), background-color 180ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-search-input::placeholder { color: #686B4E; } .ds-search-input:focus-visible { outline: 2px solid #E0582F; outline-offset: 2px; border-color: #1F2018; background: #FBF7EC; }"
+    },
+    {
+      "name": "Top Navigation",
+      "kind": "nav",
+      "refersTo": "nav-top",
+      "description": "Compact map wayfinding for docs, plugins, and capability setup sections.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-active\" href=\"#\">Caplets</a><a href=\"#\">Docs</a><a href=\"#\">Plugins</a><a href=\"#\">Config</a></nav>",
+      "css": ".ds-nav { display: inline-flex; align-items: center; gap: 6px; background: #FFF8EA; border: 1px solid #E3D8C0; border-radius: 14px; padding: 5px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; } .ds-nav a { color: #686B4E; text-decoration: none; border-radius: 10px; padding: 8px 10px; font-size: 14px; font-weight: 600; transition: background-color 180ms cubic-bezier(0.25, 1, 0.5, 1), color 180ms cubic-bezier(0.25, 1, 0.5, 1); } .ds-nav a:hover { background: #F6E8C8; color: #1F2018; } .ds-nav a:focus-visible { outline: 2px solid #E0582F; outline-offset: 2px; } .ds-nav .ds-nav-active { background: #1F2018; color: #F6E8C8; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Tool Cartographer",
+    "overview": "Caplets is a map for agent capability space. The interface should make many backends feel legible without flattening their differences. It uses warm technical surfaces, compact labels, and restrained ember accents to help users orient, inspect, and act.\n\nThe system is product-first: precise, calm, capable. It should feel like an expert tool that has already sorted the sprawl into useful regions. Avoid theatrical intelligence. Avoid visual fog. Every surface should answer one of three questions: what capability is this, what can I inspect next, and what is safe to call.\n\nThe physical scene is a developer reviewing an agent setup at a desk during focused work, with docs, terminal output, and a browser open side by side. The theme stays light and warm because this surface is read for long stretches, compared with documentation, and used during configuration rather than incident response.",
+    "keyCharacteristics": [
+      "Warm light surfaces with ink-like text and a rare ember accent.",
+      "Tonal layering instead of decorative shadows.",
+      "Compact product typography with monospace reserved for labels, tool names, command fragments, and schema snippets.",
+      "Capability cards that feel like map regions and audited records, not marketing cards.",
+      "State-rich interactions with visible focus, non-color-only status cues, and reduced-motion-safe transitions."
+    ],
+    "rules": [
+      {
+        "name": "The Rare Ember Rule",
+        "body": "Ember is a signal, not atmosphere. Keep it below 10% of any product surface; if everything glows orange, nothing is selected.",
+        "section": "colors"
+      },
+      {
+        "name": "The No Pure Extremes Rule",
+        "body": "Never use pure black or pure white. All neutrals must carry a warm tint so product screens remain readable and owned by Caplets.",
+        "section": "colors"
+      },
+      {
+        "name": "The Machine-Text Rule",
+        "body": "Monospace is reserved for things a user might copy, inspect, or route through an agent. Never use monospace as a vibe.",
+        "section": "typography"
+      },
+      {
+        "name": "The Compact Confidence Rule",
+        "body": "Product text should be smaller and denser than a marketing page, but never cramped. If a line needs more than two clauses, rewrite it.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Map Rule",
+        "body": "Surfaces are flat at rest. A capability card earns attention through hierarchy, content, and state, not a drop shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Border As Structure Rule",
+        "body": "Borders separate scan regions and focus areas. They are never colored side stripes, and they never become decoration.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use ember as a rare signal for selected states, primary actions, and important status markers.",
+      "Do keep capability cards flat at rest with paper surfaces, ash borders, and precise content hierarchy.",
+      "Do reserve monospace for tool names, command fragments, schemas, operation names, and IDs.",
+      "Do make every state accessible through text, icon, shape, or focus treatment in addition to color.",
+      "Do write compact UI copy that helps the next decision: inspect, search, list, call, configure, or fix."
+    ],
+    "donts": [
+      "Don't use generic SaaS cream: beige landing pages, vague AI productivity promises, identical rounded card grids, hero metrics, or decorative gradients.",
+      "Don't use neon devtool dark: hacker-dashboard cosplay, glowing terminal aesthetics, saturated cyber palettes, or default dark-mode theatrics.",
+      "Don't use raw configuration documentation as the interface. Config details are inspectable, not the whole product surface.",
+      "Don't use colored side-stripe borders on cards, callouts, alerts, or list items. Use full borders, background tone, icons, or labels instead.",
+      "Don't use gradient text, decorative glassmorphism, bounce motion, or orchestrated page-load choreography."
+    ]
+  }
+}

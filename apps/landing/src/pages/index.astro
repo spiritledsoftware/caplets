@@ -1,0 +1,288 @@
+---
+import "../styles/global.css";
+
+const capabilityCards = [
+  {
+    name: "Context7",
+    kind: "MCP",
+    copy: "Current framework docs without loading every operation up front.",
+    ops: ["get_caplet", "search_tools", "get_tool", "call_tool"],
+  },
+  {
+    name: "Repo CLI",
+    kind: "CLI",
+    copy: "Curated local commands exposed as safe, inspectable agent actions.",
+    ops: ["list_tools", "get_tool", "call_tool"],
+  },
+  {
+    name: "GitHub",
+    kind: "MCP",
+    copy: "Issues, pull requests, branches, and review workflows behind one card.",
+    ops: ["search_tools", "get_tool", "call_tool"],
+  },
+];
+
+const backends = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
+const integrations = ["Claude Code", "Codex", "OpenCode", "Pi", "Any MCP client"];
+
+const proofPoints = [
+  {
+    eyebrow: "Progressive disclosure",
+    title: "One capability first. Details only when useful.",
+    copy: "Agents see compact domain cards, then inspect tools, schemas, resources, prompts, and calls inside the selected capability.",
+  },
+  {
+    eyebrow: "Lossless routing",
+    title: "Downstream results stay intact.",
+    copy: "Caplets forwards tool results without flattening away structured content, images, resource links, or downstream error state.",
+  },
+  {
+    eyebrow: "Operational safety",
+    title: "Config failures are visible and redacted.",
+    copy: "Backend checks, source metadata, timeouts, auth status, and safe errors make setup inspectable without leaking secrets.",
+  },
+];
+
+const installSteps = [
+  "pnpm add -g caplets",
+  "caplets init",
+  "caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp",
+  "caplets serve",
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="generator" content={Astro.generator} />
+    <meta
+      name="description"
+      content="Caplets turns sprawling tool stacks into focused capability cards for coding agents."
+    />
+    <title>Caplets, capability cards for coding agents</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand-mark" href="/" aria-label="Caplets home">
+        <img src="/icon.png" alt="" width="32" height="32" />
+        <span>Caplets</span>
+      </a>
+      <nav class="top-nav" aria-label="Page sections">
+        <a href="#map"><span>01</span> Map</a>
+        <a href="#proof"><span>02</span> Proof</a>
+        <a href="#install"><span>03</span> Install</a>
+      </nav>
+      <div class="header-actions" aria-label="Project links">
+        <a class="header-action icon-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
+          <svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>npm</title><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
+        </a>
+        <a class="header-action icon-link" href="https://github.com/spiritledsoftware/caplets" aria-label="Caplets on GitHub">
+          <svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>GitHub</title><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        </a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="kicker">Capability cards for coding agents</p>
+          <h1 id="hero-title">Give every tool stack a map.</h1>
+          <p class="hero-lede">
+            Caplets wraps MCP servers, APIs, local commands, and remote services behind focused
+            cards. Agents choose a capability domain first, then inspect only the operations they
+            need.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button primary" href="#install">Install Caplets</a>
+            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">Read the repo</a>
+          </div>
+          <dl class="hero-facts" aria-label="Supported capability sources">
+            <div>
+              <dt>Backends</dt>
+              <dd>{backends.join(" · ")}</dd>
+            </div>
+            <div>
+              <dt>Clients</dt>
+              <dd>{integrations.join(" · ")}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="map-stage" id="map" aria-label="Capability map example">
+          <div class="map-toolbar">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span>caplets.tools/list</span>
+          </div>
+          <svg class="route-field" viewBox="0 0 720 520" aria-hidden="true">
+            <path class="route route-one route-backbone" d="M122 146 C230 88 322 112 418 178 S586 282 632 170" />
+            <path class="route route-two route-backbone" d="M114 352 C222 272 318 304 422 340 S558 424 640 356" />
+            <path class="route route-three route-backbone" d="M176 242 C294 210 372 220 506 250" />
+            <path class="route route-draw route-draw-one" pathLength="1" d="M122 146 C230 88 322 112 418 178 S586 282 632 170" />
+            <path class="route route-draw route-draw-two" pathLength="1" d="M114 352 C222 272 318 304 422 340 S558 424 640 356" />
+            <path class="route route-draw route-draw-three" pathLength="1" d="M176 242 C294 210 372 220 506 250" />
+          </svg>
+          <div class="cartography-compass" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="capability-grid">
+            {capabilityCards.map((card, index) => (
+              <article class={`capability-card card-${index + 1}`} style={`--i:${index}`}>
+                <div class="card-topline">
+                  <span class="chip">{card.kind}</span>
+                  <span class="card-index">0{index + 1}</span>
+                </div>
+                <h2>{card.name}</h2>
+                <p>{card.copy}</p>
+                <ul aria-label={`${card.name} operations`}>
+                  {card.ops.map((op) => <li>{op}</li>)}
+                </ul>
+              </article>
+            ))}
+          </div>
+          <div class="inspect-panel" aria-label="Selected operation preview">
+            <span class="panel-label">selected route</span>
+            <code>context7.call_tool(arguments)</code>
+            <p>Exact schemas stay scoped to the chosen capability.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="problem" aria-labelledby="problem-title">
+        <div class="section-heading">
+          <p class="kicker">The wall of tools problem</p>
+          <h2 id="problem-title">Flat tool lists make agents guess before they understand.</h2>
+        </div>
+        <div class="comparison" aria-label="Comparison between direct aggregation and Caplets">
+          <article class="dense-list" aria-labelledby="before-title">
+            <h3 id="before-title">Before</h3>
+            <p>Every downstream operation arrives at once.</p>
+            <div class="tool-noise" aria-hidden="true">
+              {Array.from({ length: 24 }).map((_, index) => <span>tool_{index + 1}</span>)}
+            </div>
+          </article>
+          <article class="ordered-flow" aria-labelledby="after-title">
+            <h3 id="after-title">After</h3>
+            <p>Agents inspect a capability path one step at a time.</p>
+            <ol>
+              <li><strong>Choose</strong><span>github</span></li>
+              <li><strong>Inspect</strong><span>search_tools</span></li>
+              <li><strong>Resolve</strong><span>get_tool</span></li>
+              <li><strong>Invoke</strong><span>call_tool</span></li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="proof" id="proof" aria-labelledby="proof-title">
+        <div class="section-heading narrow">
+          <p class="kicker">Built for real agent workflows</p>
+          <h2 id="proof-title">A compact surface that still tells the truth.</h2>
+        </div>
+        <div class="proof-list">
+          {proofPoints.map((point) => (
+            <article class="proof-item">
+              <p class="proof-eyebrow">{point.eyebrow}</p>
+              <h3>{point.title}</h3>
+              <p>{point.copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section class="integrations" aria-labelledby="integrations-title">
+        <div>
+          <p class="kicker">Native where it helps</p>
+          <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
+        </div>
+        <ul class="integration-strip" aria-label="Supported integrations">
+          {integrations.map((name) => <li>{name}</li>)}
+        </ul>
+      </section>
+
+      <section class="install" id="install" aria-labelledby="install-title">
+        <div class="install-copy">
+          <p class="kicker">Start with one capability</p>
+          <h2 id="install-title">Install, add a backend, serve the map.</h2>
+          <p>
+            Caplets can run as a universal MCP server, a native Pi or OpenCode tool layer, or a remote
+            HTTP service for shared environments.
+          </p>
+        </div>
+        <div class="terminal" role="region" aria-label="Installation commands">
+          <div class="terminal-bar">
+            <span></span><span></span><span></span>
+          </div>
+          <ol>
+            {installSteps.map((step) => (
+              <li><code>{step}</code></li>
+            ))}
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Caplets turns sprawling tool setups into focused capability cards.</p>
+      <a href="https://www.npmjs.com/package/caplets">npm package</a>
+    </footer>
+    <script>
+      const hero = document.querySelector(".hero") as HTMLElement | null;
+      const mapStage = document.querySelector(".map-stage") as HTMLElement | null;
+      const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      function clamp(value: number, min: number, max: number) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function updateHeroProgress() {
+        if (!hero || !mapStage || !canAnimate) return;
+        const rect = hero.getBoundingClientRect();
+        const range = Math.max(1, rect.height + window.innerHeight * 0.85);
+        const progress = clamp((window.innerHeight * 0.72 - rect.top) / range, 0, 1);
+        const resolve = clamp((progress - 0.38) / 0.42, 0, 1);
+        hero.style.setProperty("--scroll-progress", progress.toFixed(4));
+        hero.style.setProperty("--route-resolve", resolve.toFixed(4));
+        document.documentElement.style.setProperty("--scroll-progress", progress.toFixed(4));
+        document.documentElement.style.setProperty("--route-resolve", resolve.toFixed(4));
+      }
+
+      if (canAnimate && hero && mapStage) {
+        updateHeroProgress();
+        window.addEventListener("scroll", updateHeroProgress, { passive: true });
+        window.addEventListener("resize", updateHeroProgress);
+        mapStage.addEventListener("pointermove", (event: PointerEvent) => {
+          const rect = mapStage.getBoundingClientRect();
+          const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+          const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+          mapStage.style.setProperty("--pointer-x", x.toFixed(3));
+          mapStage.style.setProperty("--pointer-y", y.toFixed(3));
+        });
+
+        const revealTargets = document.querySelectorAll<HTMLElement>(
+          ".problem, .proof, .integrations, .install, .proof-item, .integration-strip li, .terminal li"
+        );
+        const revealObserver = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("is-visible");
+                revealObserver.unobserve(entry.target);
+              }
+            }
+          },
+          { rootMargin: "0px 0px -12%", threshold: 0.16 }
+        );
+        revealTargets.forEach((target, index) => {
+          target.style.setProperty("--reveal-index", String(index % 4));
+          revealObserver.observe(target);
+        });
+      }
+    </script>
+  </body>
+</html>
