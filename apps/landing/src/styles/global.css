@@ -691,6 +691,7 @@ dd {
 .install,
 .proof-item,
 .integration-pill,
+.agent-setup-panel,
 .terminal li {
   opacity: 0;
   transform: translateY(22px);
@@ -702,6 +703,7 @@ dd {
 .install.is-visible,
 .proof-item.is-visible,
 .integration-pill.is-visible,
+.agent-setup-panel.is-visible,
 .terminal li.is-visible {
   opacity: 1;
   transform: translateY(0);
@@ -1325,6 +1327,7 @@ dd {
   .install,
   .proof-item,
   .integration-pill,
+  .agent-setup-panel,
   .terminal li {
     opacity: 1 !important;
     transform: none !important;
