@@ -570,6 +570,7 @@ This repository includes polished working examples under [`caplets/`](caplets/):
 - `deepwiki`: Repository-focused documentation and architecture context through DeepWiki MCP.
 - `sourcegraph`: Cross-repository code search and navigation through Sourcegraph MCP.
 - `playwright`: Headless browser automation for frontend inspection and testing through Playwright MCP.
+- `lsp`: Language Server Protocol-backed code intelligence through `language-server-mcp`.
 - `coding-agent-toolkit`: A CapletSet that bundles high-value coding-agent examples; source children are symlinks to canonical top-level examples and installed copies are materialized as self-contained files/directories.
 - `github-cli`: Pre-existing secondary read-oriented GitHub workflows through the `gh` CLI; prefer the canonical `github` MCP example for the polished GitHub integration.
 
