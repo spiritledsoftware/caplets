@@ -798,6 +798,12 @@ describe("config", () => {
         command: "npx",
         args: ["-y", "@playwright/mcp@0.0.75", "--headless"],
       });
+      expect(config.mcpServers.lsp).toMatchObject({
+        server: "lsp",
+        name: "LSP",
+        command: "npx",
+        args: ["-y", "language-server-mcp"],
+      });
       expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
         server: "coding-agent-toolkit",
         name: "Coding Agent Toolkit",
