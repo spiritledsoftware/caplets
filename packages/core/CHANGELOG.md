@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.18.6
+
+### Patch Changes
+
+- 7644d07: Update dependencies
+
 ## 0.18.5
 
 ### Patch Changes
