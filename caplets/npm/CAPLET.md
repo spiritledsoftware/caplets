@@ -1,5 +1,5 @@
 ---
-$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
 name: npm Registry
 description: Query package metadata, versions, dist-tags, and search results from the public npm registry.
 tags:

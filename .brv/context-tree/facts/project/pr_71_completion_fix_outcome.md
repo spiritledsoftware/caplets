@@ -1,7 +1,7 @@
 ---
 consolidated_at: '2026-05-21T23:23:02.290Z'
 consolidated_from: [{date: '2026-05-21T23:23:02.290Z', path: facts/project/pr_71_completion_commands_sync.md, reason: 'These two PR #71 outcome files describe the same completion-related fix and verification cycle, with one focusing on command parity/stderr suppression and the other on the PowerShell sentinel/endpoint normalization issue. They are complementary parts of the same PR outcome and should be merged into a single consolidated PR #71 completion fixes note.'}]
-related: [facts/project/pr_65_fixes_and_verification.md, facts/project/remote_control_review_outcome.md, facts/project/greptile_review_comments.md]
+related: [facts/project/pr_65_fixes_and_verification.md, facts/project/remote_control_review_outcome.md, facts/project/greptile_review_comments.md, facts/project/task_6_spec_review_after_envelope_fix.md]
 ---
 # Title: PR 71 Completion Fix Outcome
 

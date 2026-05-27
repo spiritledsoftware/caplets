@@ -2,7 +2,7 @@
 title: Task 9 Remote Config Test Fix
 summary: Task 9 fix updated the in-process remote control app test to snapshot local.configPath before runCli and assert it remains unchanged; focused tests passed and commit c9f08ac was created.
 tags: []
-related: [facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md]
+related: [facts/conventions/task_3_spec_review_fix.md, facts/conventions/task_5_regression_test_update.md, facts/conventions/task_6_review_outcome.md, facts/project/task_6_spec_review_after_envelope_fix.md, facts/conventions/task_7_review_outcome.md, facts/conventions/task_7_remote_mutation_routing_review.md, facts/project/remote_control_review_outcome.md]
 keywords: []
 createdAt: '2026-05-20T15:14:33.118Z'
 updatedAt: '2026-05-20T15:14:33.118Z'

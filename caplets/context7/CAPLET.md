@@ -1,5 +1,5 @@
 ---
-$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
 name: Context7 Documentation
 description: Fetch current library and framework documentation through Context7 before using version-sensitive APIs.
 tags:

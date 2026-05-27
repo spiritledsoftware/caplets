@@ -1,3 +1,6 @@
+---
+related: [facts/conventions/context.md, facts/project/curation_runtime_conventions.md]
+---
 # Topic: project
 
 ## Overview

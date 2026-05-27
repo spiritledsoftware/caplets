@@ -1,4 +1,0 @@
----
-consolidated_at: '2026-05-25T11:38:36.992Z'
----
-Document the RLM curation runtime rules as a chronological policy: earlier sessions established precomputed recon, single-pass handling for compact contexts, no raw-context printing, bare taskId usage for mapExtract, the 300000 ms outer code_exec timeout when mapExtract is present, and verification via result.applied[].filePath. Later sessions reiterated the same guidance and added stronger canonical wording around UPSERT preference, result.summary.failed checks, and use of tools.curation.groupBySubject() and tools.curation.dedup() to organize extracted facts. The current canonical rule is that small, pre-reconciled contexts should proceed directly in single-pass mode; chunked extraction is only for larger contexts.

@@ -712,36 +712,11 @@ describe("config", () => {
         url: "https://mcp.linear.app/mcp",
         auth: { type: "oauth2" },
       });
-      expect(config.cliTools["ast-grep"]).toMatchObject({
+      expect(config.mcpServers["ast-grep"]).toMatchObject({
         server: "ast-grep",
-        name: "ast-grep CLI",
-        actions: {
-          run_pattern_json: {
-            command: "ast-grep",
-            args: [
-              "run",
-              "--pattern",
-              "$input.pattern",
-              "--lang",
-              "$input.lang",
-              "--json=compact",
-              "--color",
-              "never",
-              "$input.path",
-            ],
-            output: { type: "json" },
-            annotations: { readOnlyHint: true },
-          },
-          run_rewrite_apply_all: {
-            command: "ast-grep",
-            annotations: { destructiveHint: true },
-          },
-          new_rule_yes: {
-            command: "ast-grep",
-            cwd: expect.stringMatching(/caplets[/\\]ast-grep[/\\]\$input\.cwd$/),
-            annotations: { destructiveHint: true },
-          },
-        },
+        name: "ast-grep",
+        command: "npx",
+        args: ["-y", "ast-grep-mcp"],
       });
       expect(config.httpApis.osv).toMatchObject({
         server: "osv",
@@ -797,6 +772,12 @@ describe("config", () => {
         name: "Playwright",
         command: "npx",
         args: ["-y", "@playwright/mcp@0.0.75", "--headless"],
+      });
+      expect(config.mcpServers.lsp).toMatchObject({
+        server: "lsp",
+        name: "LSP",
+        command: "npx",
+        args: ["-y", "language-server-mcp"],
       });
       expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
         server: "coding-agent-toolkit",

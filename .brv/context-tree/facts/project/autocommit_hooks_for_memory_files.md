@@ -2,7 +2,7 @@
 title: Autocommit Hooks for Memory Files
 summary: User requested hooks that autocommit memory files to make them less of a nuisance.
 tags: []
-related: []
+related: [facts/project/curation-itself-is-treated-as-durable-project-infrastructure.md, facts/project/curation_context_facts.md, facts/project/curation_input_notes.md]
 keywords: []
 createdAt: '2026-05-21T11:39:40.128Z'
 updatedAt: '2026-05-21T11:39:40.128Z'

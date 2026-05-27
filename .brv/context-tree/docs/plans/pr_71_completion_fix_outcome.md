@@ -2,7 +2,7 @@
 title: PR 71 Completion Fix Outcome
 summary: Completion-related PR review fixes were implemented and verified with focused tests and pnpm verify, with no unresolved outside-diff review threads found.
 tags: []
-related: [docs/plans/context.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/active_caplets_planning_documents.md, docs/plans/docker_image_publishing_for_release_pipeline.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md]
+related: [docs/plans/context.md, docs/plans/completion_local_discovery_and_split_targets.md, docs/plans/completion_discovery_refactor_implementation_plan.md, docs/plans/active_caplets_planning_documents.md, docs/plans/docker_image_publishing_for_release_pipeline.md, docs/plans/release-automation-is-gated-by-verified-publish-state-not-just-workflow-success.md, docs/plans/release-and-completion-work-is-governed-by-verification-not-optimistic-success-s.md]
 keywords: []
 createdAt: '2026-05-22T10:56:26.474Z'
 updatedAt: '2026-05-22T10:56:26.474Z'
