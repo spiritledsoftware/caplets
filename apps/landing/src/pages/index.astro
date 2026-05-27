@@ -23,7 +23,69 @@ const capabilityCards = [
 ];
 
 const backends = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
-const integrations = ["Claude Code", "Codex", "OpenCode", "Pi", "Any MCP client"];
+const agentSetups = [
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    installCommand: "npm install -g caplets",
+    configSnippet: `{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}`,
+    note: "Use the universal MCP server from Claude Code's MCP configuration.",
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    installCommand: "npm install -g caplets",
+    configSnippet: `[mcp_servers.caplets]
+command = "caplets"
+args = ["serve"]`,
+    note: "Register Caplets as a local MCP server in Codex config.",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    installCommand: "npm install -g @caplets/opencode",
+    configSnippet: `{
+  "mcp": {
+    "caplets": {
+      "type": "local",
+      "command": ["caplets", "serve"]
+    }
+  }
+}`,
+    note: "Use MCP config or the native @caplets/opencode integration where available.",
+  },
+  {
+    id: "pi",
+    name: "Pi",
+    installCommand: "pi update && npm install -g @caplets/pi",
+    configSnippet: `{
+  "caplets": {
+    "enabled": true,
+    "configPath": "~/.config/caplets/config.json"
+  }
+}`,
+    note: "Use the native @caplets/pi integration with the same Caplets config file.",
+  },
+  {
+    id: "mcp-client",
+    name: "Any MCP client",
+    installCommand: "npm install -g caplets",
+    configSnippet: `{
+  "command": "caplets",
+  "args": ["serve"]
+}`,
+    note: "Any MCP-compatible client can launch Caplets over stdio.",
+  },
+];
+
+const integrations = agentSetups.map((agent) => agent.name);
 
 const proofPoints = [
   {
@@ -200,9 +262,47 @@ const installSteps = [
           <p class="kicker">Native where it helps</p>
           <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
         </div>
-        <ul class="integration-strip" aria-label="Supported integrations">
-          {integrations.map((name) => <li>{name}</li>)}
-        </ul>
+        <div class="agent-setup-card" data-agent-tabs>
+          <div class="integration-strip" role="tablist" aria-label="Supported integrations">
+            {agentSetups.map((agent, index) => (
+              <button
+                class="integration-pill"
+                id={`agent-tab-${agent.id}`}
+                type="button"
+                role="tab"
+                aria-selected={index === 0 ? "true" : "false"}
+                aria-controls={`agent-panel-${agent.id}`}
+                data-agent-tab={agent.id}
+              >
+                {agent.name}
+              </button>
+            ))}
+          </div>
+          <div class="agent-setup-panels">
+            {agentSetups.map((agent, index) => (
+              <article
+                class="agent-setup-panel"
+                id={`agent-panel-${agent.id}`}
+                role="tabpanel"
+                aria-labelledby={`agent-tab-${agent.id}`}
+                data-agent-panel={agent.id}
+                hidden={index !== 0}
+              >
+                <p class="agent-setup-note">{agent.note}</p>
+                <div class="agent-setup-grid">
+                  <div>
+                    <span class="agent-setup-label">Install</span>
+                    <pre><code>{agent.installCommand}</code></pre>
+                  </div>
+                  <div>
+                    <span class="agent-setup-label">Configuration</span>
+                    <pre><code>{agent.configSnippet}</code></pre>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section class="install" id="install" aria-labelledby="install-title">
@@ -236,6 +336,57 @@ const installSteps = [
       const mapStage = document.querySelector(".map-stage") as HTMLElement | null;
       const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+      const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
+      const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
+      const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
+
+      function selectAgentTab(selectedId: string) {
+        for (const tab of agentTabs) {
+          const isSelected = tab.dataset.agentTab === selectedId;
+          tab.setAttribute("aria-selected", String(isSelected));
+          tab.tabIndex = isSelected ? 0 : -1;
+        }
+
+        for (const panel of agentPanels) {
+          panel.hidden = panel.dataset.agentPanel !== selectedId;
+        }
+      }
+
+      if (agentTabsRoot && agentTabs.length > 0 && agentPanels.length > 0) {
+        selectAgentTab(agentTabs[0].dataset.agentTab ?? "");
+
+        for (const tab of agentTabs) {
+          tab.addEventListener("click", () => {
+            const selectedId = tab.dataset.agentTab;
+            if (selectedId) selectAgentTab(selectedId);
+          });
+
+          tab.addEventListener("keydown", (event: KeyboardEvent) => {
+            const currentIndex = agentTabs.indexOf(tab);
+            const lastIndex = agentTabs.length - 1;
+            const nextIndex =
+              event.key === "ArrowRight"
+                ? currentIndex + 1
+                : event.key === "ArrowLeft"
+                  ? currentIndex - 1
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? lastIndex
+                      : currentIndex;
+            const wrappedIndex = nextIndex < 0 ? lastIndex : nextIndex > lastIndex ? 0 : nextIndex;
+
+            if (wrappedIndex !== currentIndex) {
+              event.preventDefault();
+              const nextTab = agentTabs[wrappedIndex];
+              const selectedId = nextTab.dataset.agentTab;
+              nextTab.focus();
+              if (selectedId) selectAgentTab(selectedId);
+            }
+          });
+        }
+      }
+
       function clamp(value: number, min: number, max: number) {
         return Math.min(max, Math.max(min, value));
       }
@@ -265,7 +416,7 @@ const installSteps = [
         });
 
         const revealTargets = document.querySelectorAll<HTMLElement>(
-          ".problem, .proof, .integrations, .install, .proof-item, .integration-strip li, .terminal li"
+          ".problem, .proof, .integrations, .install, .proof-item, .integration-pill, .agent-setup-panel, .terminal li"
         );
         const revealObserver = new IntersectionObserver(
           (entries) => {

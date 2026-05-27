@@ -690,7 +690,7 @@ dd {
 .integrations,
 .install,
 .proof-item,
-.integration-strip li,
+.integration-pill,
 .terminal li {
   opacity: 0;
   transform: translateY(22px);
@@ -701,7 +701,7 @@ dd {
 .integrations.is-visible,
 .install.is-visible,
 .proof-item.is-visible,
-.integration-strip li.is-visible,
+.integration-pill.is-visible,
 .terminal li.is-visible {
   opacity: 1;
   transform: translateY(0);
@@ -909,15 +909,94 @@ dd {
   list-style: none;
 }
 
-.integration-strip li {
+.integration-pill {
   border: 1px solid var(--night-line);
   border-radius: 999px;
   padding: 10px 12px;
   color: var(--night-text);
   background: oklch(28% 0.018 100);
+  font: inherit;
   font-family: var(--font-mono);
   font-size: 0.78rem;
   font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 180ms var(--ease-out),
+    border-color 180ms var(--ease-out),
+    color 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+
+.integration-pill:hover,
+.integration-pill[aria-selected="true"] {
+  border-color: oklch(86% 0.08 35);
+  background: var(--parchment);
+  color: var(--night-ink);
+  transform: translateY(-1px);
+}
+
+.agent-setup-card {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.agent-setup-panels {
+  min-width: 0;
+  border: 1px solid var(--night-line);
+  border-radius: 20px;
+  background: oklch(25% 0.016 100);
+  overflow: hidden;
+}
+
+.agent-setup-panel {
+  padding: 18px;
+}
+
+.agent-setup-panel[hidden] {
+  display: none;
+}
+
+.agent-setup-note {
+  margin: 0 0 14px;
+  color: var(--night-muted);
+}
+
+.agent-setup-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 12px;
+}
+
+.agent-setup-label {
+  display: block;
+  margin-bottom: 8px;
+  color: oklch(86% 0.08 35);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-setup-panel pre {
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--night-line);
+  border-radius: 14px;
+  background: var(--night-ink);
+  color: var(--night-text);
+  overflow-x: auto;
+}
+
+.agent-setup-panel code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .install {
@@ -1130,6 +1209,10 @@ dd {
   .integration-strip {
     justify-content: flex-start;
   }
+
+  .agent-setup-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1241,7 +1324,7 @@ dd {
   .integrations,
   .install,
   .proof-item,
-  .integration-strip li,
+  .integration-pill,
   .terminal li {
     opacity: 1 !important;
     transform: none !important;
