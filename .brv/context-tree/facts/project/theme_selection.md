@@ -1,11 +1,11 @@
 ---
-title: Modified files
-summary: Facts about modified files
+title: Theme selection
+summary: Facts about theme selection
 tags: []
 related: []
 keywords: []
-createdAt: '2026-05-27T11:14:20.336Z'
-updatedAt: '2026-05-27T19:18:57.180Z'
+createdAt: '2026-05-27T19:12:30.296Z'
+updatedAt: '2026-05-27T19:18:57.148Z'
 ---
 ## Reason
 Curated facts extracted from context
@@ -24,4 +24,4 @@ Collected factual statements
 Contains 1 facts
 
 ## Facts
-- **modified files**: The animation changes modified the files `apps/landing/src/pages/index.astro` and `apps/landing/src/styles/global.css`.
+- **theme selection**: Dark vs. light theme is never a default; choose based on a physical scene description.

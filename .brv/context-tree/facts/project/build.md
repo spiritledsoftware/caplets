@@ -1,11 +1,11 @@
 ---
-title: Modified files
-summary: Facts about modified files
+title: Build
+summary: Facts about build
 tags: []
 related: []
 keywords: []
-createdAt: '2026-05-27T11:14:20.336Z'
-updatedAt: '2026-05-27T19:18:57.180Z'
+createdAt: '2026-05-27T18:59:51.352Z'
+updatedAt: '2026-05-27T19:18:57.182Z'
 ---
 ## Reason
 Curated facts extracted from context
@@ -24,4 +24,4 @@ Collected factual statements
 Contains 1 facts
 
 ## Facts
-- **modified files**: The animation changes modified the files `apps/landing/src/pages/index.astro` and `apps/landing/src/styles/global.css`.
+- **build**: The build command `pnpm --filter @caplets/landing build` passed after the animation changes.

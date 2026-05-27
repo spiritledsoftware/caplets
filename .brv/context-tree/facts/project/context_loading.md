@@ -1,11 +1,11 @@
 ---
-title: Modified files
-summary: Facts about modified files
+title: Context loading
+summary: Facts about context loading
 tags: []
 related: []
 keywords: []
-createdAt: '2026-05-27T11:14:20.336Z'
-updatedAt: '2026-05-27T19:18:57.180Z'
+createdAt: '2026-05-27T18:47:50.527Z'
+updatedAt: '2026-05-27T19:18:57.131Z'
 ---
 ## Reason
 Curated facts extracted from context
@@ -24,4 +24,4 @@ Collected factual statements
 Contains 1 facts
 
 ## Facts
-- **modified files**: The animation changes modified the files `apps/landing/src/pages/index.astro` and `apps/landing/src/styles/global.css`.
+- **context loading**: The loader looks at the project root by default and falls back to .agents/context/ and docs/ if the root is clean.
