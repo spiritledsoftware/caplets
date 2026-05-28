@@ -1,11 +1,11 @@
 ---
-title: Browser
-summary: Facts about browser
+title: System
+summary: Facts about system
 tags: []
 related: []
 keywords: []
-createdAt: '2026-05-27T18:59:51.377Z'
-updatedAt: '2026-05-28T09:45:49.178Z'
+createdAt: '2026-05-28T09:45:49.176Z'
+updatedAt: '2026-05-28T09:45:49.176Z'
 ---
 ## Reason
 Curated extracted facts from context
@@ -18,7 +18,7 @@ Document extracted facts
 
 ## Narrative
 ### Highlights
-Extracted 1 facts for browser
+Extracted 1 facts for system
 
 ## Facts
-- **browser**: Browser overlay was not
+- **system**: No false positives.
