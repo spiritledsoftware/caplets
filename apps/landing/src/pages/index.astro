@@ -27,8 +27,7 @@ const agentSetups = [
   {
     id: "claude-code",
     name: "Claude Code",
-    installCommand: `npm install -g caplets
-claude plugin marketplace add spiritledsoftware/caplets
+    installCommand: `claude plugin marketplace add spiritledsoftware/caplets
 claude plugin install caplets@caplets`,
     configSnippet: `{
   "mcpServers": {
@@ -43,8 +42,7 @@ claude plugin install caplets@caplets`,
   {
     id: "codex",
     name: "Codex",
-    installCommand: `npm install -g caplets
-codex plugin marketplace add spiritledsoftware/caplets`,
+    installCommand: "codex plugin marketplace add spiritledsoftware/caplets",
     configSnippet: `{
   "mcpServers": {
     "caplets": {
@@ -53,7 +51,7 @@ codex plugin marketplace add spiritledsoftware/caplets`,
     }
   }
 }`,
-    note: "After adding the marketplace, install the caplets plugin from Codex plugins; the bundled MCP config runs caplets serve.",
+    note: "After adding the marketplace, install caplets from Codex plugins; the bundled MCP config runs caplets serve.",
   },
   {
     id: "opencode",
