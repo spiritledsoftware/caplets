@@ -39,7 +39,7 @@ jobs:
   changeset:
     name: Changeset
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'no changeset') == false
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '[no changeset]') == false
     steps:
       - name: Checkout
         uses: actions/checkout@v6
