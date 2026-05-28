@@ -2,7 +2,7 @@
 title: trust_priority
 summary: Landing page should prioritize trust in architecture first
 tags: []
-related: []
+related: [design/landing_page/context.md]
 keywords: []
 createdAt: '2026-05-28T09:50:32.824Z'
 updatedAt: '2026-05-28T09:50:32.824Z'

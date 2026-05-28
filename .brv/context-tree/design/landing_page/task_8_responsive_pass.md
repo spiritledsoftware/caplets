@@ -2,7 +2,7 @@
 title: Task 8 Responsive Pass
 summary: Responsive CSS updates for trace, trust, snippets and mobile copy button in landing page
 tags: []
-related: []
+related: [design/caplets_curate/working_module.md, design/landing_page/landing_page_review_findings.md, design/landing_page/skillify_landing_page_review.md, design/landing_page/skillify_landing_page_review_2026_05_28.md, design/landing_page/skillify_landing_page_task_7_review.md]
 keywords: []
 createdAt: '2026-05-28T10:38:10.054Z'
 updatedAt: '2026-05-28T10:38:10.054Z'

@@ -2,7 +2,7 @@
 title: Skillify Landing Page Review
 summary: Landing page review approved, all tasks 1-9 satisfied
 tags: []
-related: []
+related: [design/caplets_curate/working_module.md, design/landing_page/landing_page_review_findings.md, design/landing_page/skillify_landing_page_review_2026_05_28.md, design/landing_page/skillify_landing_page_task_7_review.md, design/landing_page/task_8_responsive_pass.md]
 keywords: []
 createdAt: '2026-05-28T10:43:56.110Z'
 updatedAt: '2026-05-28T10:43:56.110Z'

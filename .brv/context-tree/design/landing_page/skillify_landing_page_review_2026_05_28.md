@@ -2,7 +2,7 @@
 title: Skillify Landing Page Review 2026-05-28
 summary: 'Review of tasks 1-4 implementation; blocker: broken #map nav target'
 tags: []
-related: []
+related: [design/caplets_curate/working_module.md, design/landing_page/landing_page_review_findings.md, design/landing_page/skillify_landing_page_review.md, design/landing_page/skillify_landing_page_task_7_review.md, design/landing_page/task_8_responsive_pass.md]
 keywords: []
 createdAt: '2026-05-28T10:19:04.961Z'
 updatedAt: '2026-05-28T10:19:04.961Z'

@@ -1,40 +1,41 @@
 ---
 title: extracted_facts
-summary: Aggregated factual statements extracted via RLM extraction
+summary: Extracted factual statements from provided context
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-28T11:15:49.857Z'
-updatedAt: '2026-05-28T11:15:49.857Z'
+updatedAt: '2026-05-28T13:27:23.975Z'
 ---
 ## Reason
-Curate facts extracted from RLM context
+Curate extracted factual statements from context
 
 ## Raw Concept
 **Task:**
-Curate extracted facts from provided context
+Curate extracted facts
+
+**Changes:**
+- Extracted facts from provided context
 
 **Flow:**
 extract -> dedup -> group -> curate
 
-**Timestamp:** 2026-05-28T11:15:49.856Z
+**Timestamp:** 2026-05-28T13:27:23.971Z
 
 ## Narrative
 ### Structure
-Aggregated factual statements extracted from context
+Aggregated factual statements
 
 ### Highlights
-audit theming, global.css, index.astro, grep, typecheck, build, impeccable, risks
+hero layout, trace column, hero text column, headline sizing, trace card width
 
 ## Facts
-- **audit theming**: Implemented audit theming and polish fixes in apps/landing only.
-- **global.css**: Changed file apps/landing/src/styles/global.css: moved direct OKLCH literals into semantic :root tokens.
-- **global.css**: Changed file apps/landing/src/styles/global.css: removed unused stale custom properties.
-- **global.css**: Changed file apps/landing/src/styles/global.css: removed unused .header-action.muted selector.
-- **index.astro**: Changed file apps/landing/src/pages/index.astro: marked decorative terminal chrome with aria-hidden="true".
-- **grep**: grep verified removed tokens and selectors are no longer present.
-- **grep**: grep verified no em dashes in apps/landing.
-- **typecheck**: pnpm --filter @caplets/landing typecheck passed with 0 errors.
-- **build**: pnpm --filter @caplets/landing build passed.
-- **impeccable**: npx impeccable --json apps/landing/src/pages/index.astro passed with empty result array.
-- **risks**: Open risks/questions: None.
+- **hero layout**: Rebalanced the hero layout so the trace card is wider again while keeping the headline to a clean two-line wrap.
+- **trace column**: Increased trace column from 576px to about 660px at desktop width in apps/landing/src/styles/global.css.
+- **hero text column**: Reduced the hero text column slightly.
+- **headline sizing**: Adjusted headline sizing so it still wraps as: “Skillify your” and “backends.”
+- **trace card width**: Browser verified at 1440 × 900 that trace card width is 660px.
+- **trace card overflow**: No trace card horizontal overflow observed.
+- **hero headline**: Hero headline remains two lines.
+- **typecheck**: Build check passed: pnpm --filter @caplets/landing typecheck.
+- **build**: Build check passed: pnpm --filter @caplets/landing build.

@@ -1,38 +1,38 @@
 ---
-title: curated_content
-summary: Curated factual statements extracted from provided context.
+title: Curated Content
+summary: Curated factual statements extracted from provided context
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-28T09:56:03.656Z'
-updatedAt: '2026-05-28T11:14:14.272Z'
+updatedAt: '2026-05-28T13:24:55.559Z'
 ---
 ## Reason
-Curate extracted facts from context
+Store extracted factual statements from curating task
 
 ## Raw Concept
 **Task:**
-Curate extracted facts from provided context
+Curate extracted factual statements
 
 **Flow:**
 extraction -> deduplication -> curation
 
-**Timestamp:** 2026-05-28T09:56:03.655Z
+**Timestamp:** 2026-05-28T13:24:55.556Z
 
 ## Narrative
 ### Structure
-Extracted factual statements organized by subject.
+Curated factual statements from provided context
 
 ### Highlights
-landing page content, skillify term presentation, hero tagline, feature flow, skillify proof framework
+hero text, desktop hero wrap, global.css, hero grid, desktop h1, line height and letter spacing, headline, browser size, checks
 
 ## Facts
-- **landing app**: Changed files: apps/landing/src/pages/index.astro and apps/landing/src/styles/global.css.
-- **typecheck**: pnpm --filter @caplets/landing typecheck passed with 0 errors.
-- **build**: pnpm --filter @caplets/landing build passed, 1 page built.
-- **touch targets**: Raised nav/header action touch targets from 42px to 44px in base and mobile CSS.
-- **tab semantics**: Removed initial no-JS tab ARIA roles/state and now adds tab semantics via JavaScript only.
-- **panels**: Kept no-JS panels visible.
-- **clipboard fallback**: Associated copy buttons with snippet targets and added failure behavior that focuses/selects snippet text while preserving feedback.
-- **reveal fail-safe**: Added reveal timeout fail-safe after .motion-ready is applied.
-- **risks**: Open risks/questions: None.
+- **hero text**: The hero text "Skillify your backends." was wrapped weird on desktop
+- **desktop hero wrap**: The desktop hero wrap was fixed
+- **global.css**: The file apps/landing/src/styles/global.css was changed
+- **hero grid**: The hero grid was rebalanced so the text column has enough room
+- **desktop h1**: The oversized desktop h1 scale was reduced
+- **line height and letter spacing**: The line height and letter spacing were relaxed
+- **headline**: The result is now a clean two-line headline: "Skillify your" and "backends."
+- **browser size**: Verified in browser at 1440 × 900
+- **checks**: Build checks passed: pnpm --filter @caplets/landing typecheck and pnpm --filter @caplets/landing build

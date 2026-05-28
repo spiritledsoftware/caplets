@@ -5,23 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T18:59:51.352Z'
-updatedAt: '2026-05-28T11:17:59.559Z'
+updatedAt: '2026-05-28T13:55:17.314Z'
 ---
 ## Reason
-Curated facts extracted from context
+Curated extracted facts from context
 
 ## Raw Concept
 **Task:**
-Document facts about build
+Document extracted factual statements
 
-**Timestamp:** 2026-05-28T11:17:59.530Z
+**Timestamp:** 2026-05-28T13:55:17.267Z
 
 ## Narrative
 ### Structure
-Collected factual statements
+Collected facts for build
 
 ### Highlights
 Extracted 1 facts for build
 
 ## Facts
-- **build**: pnpm --filter @caplets/landing build passed, building 1 page.
+- **build**: pnpm --filter @caplets/landing build passed, building 1 page successfully.

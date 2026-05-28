@@ -2,7 +2,7 @@
 title: Landing Page Review Findings
 summary: 'Landing page review: anchors valid, accessibility ok, build passes, minor dead CSS, no brand violations'
 tags: []
-related: []
+related: [design/caplets_curate/working_module.md, design/landing_page/skillify_landing_page_review.md, design/landing_page/skillify_landing_page_review_2026_05_28.md, design/landing_page/skillify_landing_page_task_7_review.md, design/landing_page/task_8_responsive_pass.md]
 keywords: []
 createdAt: '2026-05-28T10:52:14.235Z'
 updatedAt: '2026-05-28T10:52:14.235Z'

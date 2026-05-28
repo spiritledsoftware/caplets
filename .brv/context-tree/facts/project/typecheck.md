@@ -5,23 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T18:59:51.354Z'
-updatedAt: '2026-05-28T11:17:59.549Z'
+updatedAt: '2026-05-28T13:55:17.303Z'
 ---
 ## Reason
-Curated facts extracted from context
+Curated extracted facts from context
 
 ## Raw Concept
 **Task:**
-Document facts about typecheck
+Document extracted factual statements
 
-**Timestamp:** 2026-05-28T11:17:59.530Z
+**Timestamp:** 2026-05-28T13:55:17.267Z
 
 ## Narrative
 ### Structure
-Collected factual statements
+Collected facts for typecheck
 
 ### Highlights
 Extracted 1 facts for typecheck
 
 ## Facts
-- **typecheck**: pnpm --filter @caplets/landing typecheck passed with 0 errors.
+- **typecheck**: pnpm --filter @caplets/landing typecheck passed with 0 errors, 0 warnings, and 0 hints.

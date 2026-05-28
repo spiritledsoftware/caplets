@@ -2,7 +2,7 @@
 title: Skillify Landing Page Task 7 Review
 summary: 'Task 7: removed old motion systems, updated CSS, verified build passes, no grep matches'
 tags: []
-related: []
+related: [design/caplets_curate/working_module.md, design/landing_page/landing_page_review_findings.md, design/landing_page/skillify_landing_page_review.md, design/landing_page/skillify_landing_page_review_2026_05_28.md, design/landing_page/task_8_responsive_pass.md]
 keywords: []
 createdAt: '2026-05-28T10:36:29.420Z'
 updatedAt: '2026-05-28T10:36:29.420Z'

@@ -2,7 +2,7 @@
 title: working_module
 summary: Aggregated factual statements from working module
 tags: []
-related: []
+related: [design/landing_page/landing_page_review_findings.md, design/landing_page/skillify_landing_page_review.md, design/landing_page/skillify_landing_page_review_2026_05_28.md, design/landing_page/skillify_landing_page_task_7_review.md, design/landing_page/task_8_responsive_pass.md]
 keywords: []
 createdAt: '2026-05-28T10:52:25.575Z'
 updatedAt: '2026-05-28T10:52:25.575Z'

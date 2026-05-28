@@ -1,3 +1,6 @@
+---
+related: [design/landing_page/trust_priority.md]
+---
 # Topic: landing_page
 
 ## Overview
