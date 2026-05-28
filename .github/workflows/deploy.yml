@@ -22,45 +22,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check apps/ changes
-        id: apps-changes
-        run: |
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            current_tag="${{ github.event.release.tag_name }}"
-            previous_tag="$(git describe --tags --abbrev=0 "${current_tag}^" 2>/dev/null || true)"
-
-            if [[ -n "$previous_tag" ]]; then
-              changed_files="$(git diff --name-only "$previous_tag" "$current_tag")"
-            else
-              changed_files="$(git diff-tree --no-commit-id --name-only -r "$current_tag")"
-            fi
-          else
-            changed_files="$(git diff-tree --no-commit-id --name-only -r HEAD)"
-          fi
-
-          if grep -q '^apps/' <<< "$changed_files"; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.apps-changes.outputs.changed == 'true'
         uses: pnpm/action-setup@v6
 
       - name: Setup Node
-        if: steps.apps-changes.outputs.changed == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
-        if: steps.apps-changes.outputs.changed == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Run quality gates
-        if: steps.apps-changes.outputs.changed == 'true'
         run: pnpm run alchemy:deploy
         env:
           ALCHEMY_STAGE: prod
