@@ -3,7 +3,7 @@ import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const runnerPath = fileURLToPath(import.meta.url);
-const shimPath = fileURLToPath(new URL("./alchemy-fetch-compat.mjs", import.meta.url));
+const shimPath = fileURLToPath(new URL("./alchemy-fetch-compat.ts", import.meta.url));
 const alchemyBinPath = fileURLToPath(
   new URL("../node_modules/alchemy/bin/alchemy.js", import.meta.url),
 );
@@ -21,7 +21,7 @@ export async function main(args = process.argv.slice(2)) {
     stdio: "inherit",
   });
 
-  const exitCode = await new Promise((resolve) => {
+  const exitCode = await new Promise<number>((resolve) => {
     child.on("close", (code, signal) => {
       if (signal) {
         resolve(128 + (osConstants.signals[signal] ?? 0));

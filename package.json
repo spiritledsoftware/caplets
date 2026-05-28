@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "alchemy:dev": "node ./scripts/alchemy-runner.mjs dev",
-    "alchemy:deploy": "node ./scripts/alchemy-runner.mjs deploy",
-    "alchemy:destroy": "node ./scripts/alchemy-runner.mjs destroy",
+    "alchemy:dev": "tsx ./scripts/alchemy-runner.ts dev",
+    "alchemy:deploy": "tsx ./scripts/alchemy-runner.ts deploy",
+    "alchemy:destroy": "tsx ./scripts/alchemy-runner.ts destroy",
     "clean": "turbo clean",
     "build": "turbo build",
     "build:watch": "turbo build:watch",
@@ -25,7 +25,7 @@
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "typecheck": "tsgo --noEmit && turbo typecheck",
-    "test": "vitest run && node --test scripts/*.test.mjs",
+    "test": "vitest run",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && tsx scripts/sync-plugin-versions.ts && oxfmt plugins/caplets/.codex-plugin/plugin.json plugins/caplets/.claude-plugin/plugin.json"
   },

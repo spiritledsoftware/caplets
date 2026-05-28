@@ -134,7 +134,7 @@ Expected: FAIL because `jsonResult()` currently returns a text content block con
 Write this file:
 
 ```ts
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
 
 export type TextContentBlock = { type: "text"; text: string };
 

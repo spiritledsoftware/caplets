@@ -328,9 +328,9 @@ export {
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
   type NativeCapletTool,
-} from "./native/service.js";
-export { nativeCapletToolName, nativeCapletsSystemGuidance } from "./native/tools.js";
-export { generatedToolInputSchema } from "./tools.js";
+} from "./native/service";
+export { nativeCapletToolName, nativeCapletsSystemGuidance } from "./native/tools";
+export { generatedToolInputSchema } from "./tools";
 export { generatedToolInputJsonSchema } from "./generated-tool-input-schema.mjs";
 ```
 

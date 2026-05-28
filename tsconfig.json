@@ -1,5 +1,4 @@
 {
   "extends": "./packages/core/tsconfig.json",
-  "exclude": ["node_modules", ".turbo", "dist", "packages"],
-  "include": ["alchemy.run.ts"]
+  "exclude": ["node_modules", ".turbo", "dist", "apps", "packages", "tools"]
 }

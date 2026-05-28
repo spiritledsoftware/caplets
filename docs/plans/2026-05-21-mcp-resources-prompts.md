@@ -829,7 +829,7 @@ git commit -m "feat(core): expose backend-specific Caplet schemas"
 Modify `packages/core/test/fixtures/stdio-server.ts` to import `ResourceTemplate` and register resource/prompt capabilities:
 
 ```ts
-import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp";
 ```
 
 Append before `await server.connect(...)`:
@@ -993,7 +993,7 @@ import {
   type ResourceTemplate as McpResourceTemplate,
   ToolListChangedNotificationSchema,
   type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/sdk/types";
 ```
 
 Extend `ManagedConnection`:

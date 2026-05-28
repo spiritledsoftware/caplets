@@ -239,7 +239,7 @@ const installSteps = [
 
       <section class="problem" aria-labelledby="problem-title">
         <div class="section-heading">
-          <p class="kicker">The wall of tools problem</p>
+          <p class="section-note">The wall of tools problem</p>
           <h2 id="problem-title">Flat tool lists make agents guess before they understand.</h2>
         </div>
         <div class="comparison" aria-label="Comparison between direct aggregation and Caplets">
@@ -265,7 +265,7 @@ const installSteps = [
 
       <section class="proof" id="proof" aria-labelledby="proof-title">
         <div class="section-heading narrow">
-          <p class="kicker">What skillify means</p>
+          <p class="section-note">What skillify means</p>
           <h2 id="proof-title">A backend becomes safe for agents when it reveals itself in stages.</h2>
         </div>
         <div class="proof-list">
@@ -281,7 +281,7 @@ const installSteps = [
 
       <section class="trust" aria-labelledby="trust-title">
         <div class="section-heading">
-          <p class="kicker">Trust before invocation</p>
+          <p class="section-note">Trust before invocation</p>
           <h2 id="trust-title">Trust is visible before the call.</h2>
         </div>
         <div class="trust-grid">
@@ -304,7 +304,7 @@ const installSteps = [
 
       <section class="integrations" aria-labelledby="integrations-title">
         <div>
-          <p class="kicker">Native where it helps</p>
+          <p class="section-note">Native where it helps</p>
           <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
         </div>
         <div class="agent-setup-card" data-agent-tabs>
@@ -520,21 +520,20 @@ const installSteps = [
         button.addEventListener("click", () => void copyValue(button));
       }
 
-      if (canAnimate) {
-        const revealTargets = document.querySelectorAll<HTMLElement>(
-          ".problem, .proof, .trust, .integrations, .install, .proof-item, .trust-item, .trust-error, .agent-setup-panel, .terminal li"
+      if (canAnimate && "IntersectionObserver" in window) {
+        const revealTargets = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            ".problem, .proof, .trust, .integrations, .install, .proof-item, .trust-item, .trust-error, .agent-setup-panel, .terminal li"
+          )
         );
 
-        if (!("IntersectionObserver" in window)) {
-          revealTargets.forEach((target) => target.classList.add("is-visible"));
-        } else {
-          document.documentElement.classList.add("motion-ready");
-          window.setTimeout(() => {
-            revealTargets.forEach((target) => target.classList.add("is-visible"));
-          }, 1800);
+        if (revealTargets.length > 0) {
+          let hasIntersectionUpdate = false;
 
           const revealObserver = new IntersectionObserver(
             (entries) => {
+              hasIntersectionUpdate = true;
+
               for (const entry of entries) {
                 if (entry.isIntersecting) {
                   entry.target.classList.add("is-visible");
@@ -545,10 +544,18 @@ const installSteps = [
             { rootMargin: "0px 0px -10%", threshold: 0.12 }
           );
 
-          revealTargets.forEach((target, index) => {
+          for (const [index, target] of revealTargets.entries()) {
             target.style.setProperty("--reveal-index", String(index % 3));
             revealObserver.observe(target);
-          });
+          }
+
+          document.documentElement.classList.add("motion-ready");
+          window.setTimeout(() => {
+            if (hasIntersectionUpdate) return;
+
+            revealTargets.forEach((target) => target.classList.add("is-visible"));
+            revealObserver.disconnect();
+          }, 100);
         }
       }
     </script>
