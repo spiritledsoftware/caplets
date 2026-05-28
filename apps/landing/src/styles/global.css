@@ -39,10 +39,43 @@
   --ease-out: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --content: min(1180px, calc(100vw - 32px));
+  --scrollbar-thumb: transparent;
+  --scrollbar-thumb-active: oklch(51% 0.045 100 / 0.42);
+  --scrollbar-thumb-hover: oklch(43% 0.05 100 / 0.56);
+  --scrollbar-track: transparent;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+html.scrollbars-active,
+:where(.agent-setup-panel, .agent-setup-panel pre):hover,
+:where(.agent-setup-panel, .agent-setup-panel pre):focus-within {
+  --scrollbar-thumb: var(--scrollbar-thumb-active);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
 }
 
 html {

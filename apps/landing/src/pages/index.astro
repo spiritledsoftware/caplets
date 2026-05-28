@@ -408,6 +408,25 @@ const installSteps = [
       document.documentElement.classList.add("js-enabled");
 
       const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let scrollbarIdleTimer = 0;
+
+      function showScrollbarsBriefly() {
+        document.documentElement.classList.add("scrollbars-active");
+        window.clearTimeout(scrollbarIdleTimer);
+        scrollbarIdleTimer = window.setTimeout(() => {
+          document.documentElement.classList.remove("scrollbars-active");
+        }, 900);
+      }
+
+      window.addEventListener("scroll", showScrollbarsBriefly, { passive: true });
+      window.addEventListener("wheel", showScrollbarsBriefly, { passive: true });
+      window.addEventListener("touchmove", showScrollbarsBriefly, { passive: true });
+      window.addEventListener("pointerdown", showScrollbarsBriefly);
+      window.addEventListener("keydown", (event: KeyboardEvent) => {
+        if (["ArrowDown", "ArrowUp", "End", "Home", "PageDown", "PageUp", "Space"].includes(event.code)) {
+          showScrollbarsBriefly();
+        }
+      });
 
       const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
       const agentTablist = document.querySelector<HTMLElement>("[data-agent-tablist]");
