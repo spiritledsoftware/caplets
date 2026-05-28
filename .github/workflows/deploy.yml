@@ -1,8 +1,17 @@
 name: Deploy
 
 on:
-  release:
-    types: [published]
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy.yml
+      - alchemy.run.ts
+      - apps/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - scripts/alchemy-*.ts
   workflow_dispatch:
 
 permissions:

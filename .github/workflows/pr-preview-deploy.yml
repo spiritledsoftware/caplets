@@ -4,6 +4,19 @@ on:
   pull_request:
     branches:
       - main
+    paths:
+      - .github/workflows/pr-preview-deploy.yml
+      - alchemy.run.ts
+      - apps/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - scripts/alchemy-*.ts
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
 
 permissions:
   contents: read
@@ -36,7 +49,22 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Deploy preview
+        if: ${{ github.event.action != 'closed' }}
         run: pnpm run alchemy:deploy
+        env:
+          ALCHEMY_STAGE: pr-${{ github.event.pull_request.number }}
+          ALCHEMY_PASSWORD: ${{ secrets.ALCHEMY_PASSWORD }}
+          ALCHEMY_STATE_TOKEN: ${{ secrets.ALCHEMY_STATE_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          GITHUB_REPOSITORY_NAME: ${{ github.event.repository.name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+
+      - name: Destroy preview
+        if: ${{ github.event.action == 'closed' }}
+        run: pnpm run alchemy:destroy
         env:
           ALCHEMY_STAGE: pr-${{ github.event.pull_request.number }}
           ALCHEMY_PASSWORD: ${{ secrets.ALCHEMY_PASSWORD }}
