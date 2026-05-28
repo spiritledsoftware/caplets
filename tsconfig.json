@@ -1,4 +1,4 @@
 {
   "extends": "./packages/core/tsconfig.json",
-  "exclude": ["node_modules", ".turbo", "dist", "packages"]
+  "exclude": ["node_modules", ".turbo", "dist", "apps", "packages", "tools"]
 }

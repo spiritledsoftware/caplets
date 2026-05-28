@@ -33,7 +33,7 @@ vi.mock("@opencode-ai/plugin", () => ({
 
 describe("@caplets/opencode", () => {
   it("registers one prefixed native tool per Caplet", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -66,7 +66,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when tool result serialization fails", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -95,7 +95,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("returns stable text when JSON.stringify returns undefined", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
         {
@@ -123,7 +123,7 @@ describe("@caplets/opencode", () => {
   });
 
   it("refreshes system guidance for remaining registered tools only", async () => {
-    const { createCapletsOpenCodeHooks } = await import("../src/hooks.js");
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     let tools = [
       {
         caplet: "git-hub",
@@ -188,7 +188,7 @@ describe("@caplets/opencode", () => {
       registerNativeCapletsProcessCleanup: vi.fn(),
     };
     vi.doMock("@caplets/core/native", () => nativeMocks);
-    const plugin = (await import("../src/index.js")).default;
+    const plugin = (await import("../src/index")).default;
 
     await plugin(
       {} as never,
@@ -243,7 +243,7 @@ describe("@caplets/opencode", () => {
       registerNativeCapletsProcessCleanup: vi.fn(),
     };
     vi.doMock("@caplets/core/native", () => nativeMocks);
-    const plugin = (await import("../src/index.js")).default;
+    const plugin = (await import("../src/index")).default;
 
     const hooks = await plugin({} as never, undefined as never);
 

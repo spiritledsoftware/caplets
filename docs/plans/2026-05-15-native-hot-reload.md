@@ -61,7 +61,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CapletsEngine } from "../src/engine.js";
+import { CapletsEngine } from "../src/engine";
 
 describe("CapletsEngine", () => {
   const dirs: string[] = [];
@@ -294,7 +294,7 @@ Create `packages/core/src/engine.ts`. Move the reload, watcher, config path, bac
 ```ts
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, parse } from "node:path";
-import { CliToolsManager } from "./cli-tools.js";
+import { CliToolsManager } from "./cli-tools";
 import {
   type CapletConfig,
   type CapletsConfig,
@@ -302,14 +302,14 @@ import {
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
-} from "./config.js";
-import { DownstreamManager } from "./downstream.js";
-import { errorResult, toSafeError } from "./errors.js";
-import { GraphQLManager } from "./graphql.js";
-import { HttpActionManager } from "./http-actions.js";
-import { OpenApiManager } from "./openapi.js";
-import { ServerRegistry } from "./registry.js";
-import { handleServerTool } from "./tools.js";
+} from "./config";
+import { DownstreamManager } from "./downstream";
+import { errorResult, toSafeError } from "./errors";
+import { GraphQLManager } from "./graphql";
+import { HttpActionManager } from "./http-actions";
+import { OpenApiManager } from "./openapi";
+import { ServerRegistry } from "./registry";
+import { handleServerTool } from "./tools";
 
 export type CapletsEngineOptions = {
   configPath?: string;
@@ -712,8 +712,8 @@ In `packages/core/src/runtime.ts`, remove imports that are now engine-owned: `ex
 Add these imports:
 
 ```ts
-import type { CapletConfig, CapletsConfig } from "./config.js";
-import { CapletsEngine } from "./engine.js";
+import type { CapletConfig, CapletsConfig } from "./config";
+import { CapletsEngine } from "./engine";
 ```
 
 Change the class fields to this shape:
@@ -979,7 +979,7 @@ export type NativeCapletsService = {
 In `packages/core/src/native/service.ts`, remove direct manager/config imports and add:
 
 ```ts
-import { CapletsEngine } from "../engine.js";
+import { CapletsEngine } from "../engine";
 ```
 
 Replace `DefaultNativeCapletsService` with:
@@ -1034,7 +1034,7 @@ export {
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
   type NativeCapletsToolsChangedListener,
-} from "./native/service.js";
+} from "./native/service";
 ```
 
 - [ ] **Step 6: Run native tests**
@@ -1341,7 +1341,7 @@ Append this test to `packages/opencode/test/opencode.test.ts`:
 
 ```ts
 it("refreshes system guidance from the current native tool list", async () => {
-  const { createCapletsOpenCodeHooks } = await import("../src/index.js");
+  const { createCapletsOpenCodeHooks } = await import("../src/index");
   let tools = [
     {
       caplet: "git-hub",

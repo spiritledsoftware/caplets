@@ -580,8 +580,8 @@ Expected: FAIL because `../src/native/remote` does not exist and `remoteClientFa
 Create `packages/core/src/native/remote.ts`:
 
 ```ts
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
 import { version as packageJsonVersion } from "../../package.json";
 import { CapletsError } from "../errors";
 import type {
@@ -938,7 +938,7 @@ it("passes second-argument config into the native service", async () => {
     registerNativeCapletsProcessCleanup: vi.fn(),
   }));
   vi.doMock("@caplets/core/native", () => nativeMocks);
-  const plugin = (await import("../src/index.js")).default;
+  const plugin = (await import("../src/index")).default;
 
   await plugin(
     {} as never,

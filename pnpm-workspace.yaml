@@ -9,3 +9,5 @@ allowBuilds:
   koffi: true
   msgpackr-extract: true
   protobufjs: true
+  sharp: true
+  workerd: true

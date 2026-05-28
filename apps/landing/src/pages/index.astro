@@ -1,0 +1,563 @@
+---
+import "../styles/global.css";
+
+const heroTrace = {
+  capability: "github",
+  source: ".caplets/config.json",
+  status: "ready",
+  auth: "token present, redacted",
+  steps: [
+    {
+      label: "get_caplet",
+      detail: "Expose one card before any downstream tool list enters context.",
+      result: "search_tools · get_tool · call_tool",
+    },
+    {
+      label: 'search_tools("pull request")',
+      detail: "Find matching operations inside the selected capability only.",
+      result: "create_pull_request · list_pull_requests · request_review",
+    },
+    {
+      label: 'get_tool("create_pull_request")',
+      detail: "Inspect the preserved schema before an agent can invoke the operation.",
+      result: "title · body · base · head · reviewers?",
+    },
+    {
+      label: "call_tool(arguments)",
+      detail: "Forward the call and keep downstream content, structured data, and errors intact.",
+      result: "structuredContent + content",
+    },
+  ],
+};
+
+const skillifyFramework = [
+  {
+    title: "Discoverable as one capability",
+    copy: "A backend enters the agent context as a focused card with source, status, and next actions, not a flat wall of operations.",
+  },
+  {
+    title: "Inspectable before invocation",
+    copy: "Agents search inside the selected capability, then inspect exact tool schemas before any call is made.",
+  },
+  {
+    title: "Lossless after the call",
+    copy: "Caplets preserves structured content, resource links, images, and downstream error state instead of flattening results away.",
+  },
+];
+
+const trustMechanics = [
+  {
+    label: "Source",
+    value: ".caplets/config.json",
+    copy: "Users can see where the capability came from before trusting it.",
+  },
+  {
+    label: "Auth",
+    value: "GITHUB_TOKEN: redacted",
+    copy: "Secrets stay hidden while auth state remains inspectable.",
+  },
+  {
+    label: "Timeout",
+    value: "30s boundary",
+    copy: "Slow or stuck backends fail visibly instead of disappearing into agent context.",
+  },
+  {
+    label: "Error",
+    value: "safe message + raw detail scoped",
+    copy: "Recovery information stays useful without leaking sensitive configuration.",
+  },
+];
+
+const backends = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
+const agentSetups = [
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    installCommand: `claude plugin marketplace add spiritledsoftware/caplets
+claude plugin install caplets@caplets`,
+    configSnippet: `{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}`,
+    note: "Install the Claude Code plugin from the Caplets marketplace entry; the bundled MCP config runs caplets serve.",
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    installCommand: "codex plugin marketplace add spiritledsoftware/caplets",
+    configSnippet: `{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}`,
+    note: "After adding the marketplace, install caplets from Codex plugins; the bundled MCP config runs caplets serve.",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    installCommand: "npm install -g caplets",
+    configSnippet: `{
+  "plugin": ["@caplets/opencode"]
+}`,
+    note: "Use the native @caplets/opencode plugin; it reads Caplets config and does not start the MCP server.",
+  },
+  {
+    id: "pi",
+    name: "Pi",
+    installCommand: `npm install -g caplets
+pi install npm:@caplets/pi`,
+    configSnippet: `{
+  "packages": ["npm:@caplets/pi"]
+}`,
+    note: "The extension reads existing Caplets config; this Pi settings snippet registers the package.",
+  },
+  {
+    id: "mcp-client",
+    name: "Any MCP client",
+    installCommand: "npm install -g caplets",
+    configSnippet: `{
+  "command": "caplets",
+  "args": ["serve"]
+}`,
+    note: "Any MCP-compatible client can launch Caplets over stdio.",
+  },
+];
+
+const integrations = agentSetups.map((agent) => agent.name);
+const themeColor = "oklch(97% 0.012 85)";
+
+const installSteps = [
+  "npm install -g caplets",
+  "caplets init",
+  "caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp",
+  "caplets serve",
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="generator" content={Astro.generator} />
+    <meta
+      name="description"
+      content="Caplets turns sprawling tool stacks into focused capability cards for coding agents."
+    />
+    <meta name="theme-color" content={themeColor} />
+    <title>Caplets, capability cards for coding agents</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand-mark" href="/" aria-label="Caplets home">
+        <img src="/icon.png" alt="" width="32" height="32" />
+        <span>Caplets</span>
+      </a>
+      <nav class="top-nav" aria-label="Page sections">
+        <a href="#trace"><span>01</span> Trace</a>
+        <a href="#proof"><span>02</span> Proof</a>
+        <a href="#install"><span>03</span> Install</a>
+      </nav>
+      <div class="header-actions" aria-label="Project links">
+        <a class="header-action icon-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
+        </a>
+        <a class="header-action icon-link" href="https://github.com/spiritledsoftware/caplets" aria-label="Caplets on GitHub">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="kicker">Capability cards for coding agents</p>
+          <h1 id="hero-title">Skillify your backends.</h1>
+          <p class="hero-lede">
+            Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card
+            first, searchable tools next, inspectable schemas before calls, and preserved results after.
+          </p>
+          <p class="hero-definition">
+            To skillify a backend is to wrap it as a capability an agent can discover, inspect, call,
+            and recover from one step at a time.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button primary" href="#install">Install Caplets</a>
+            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">Inspect the repo</a>
+          </div>
+          <dl class="hero-facts" aria-label="Supported capability sources">
+            <div>
+              <dt>Backends</dt>
+              <dd>{backends.join(" · ")}</dd>
+            </div>
+            <div>
+              <dt>Clients</dt>
+              <dd>{integrations.join(" · ")}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <aside class="trace-stage" id="trace" aria-label="GitHub capability trace example">
+          <div class="trace-header">
+            <span class="trace-status" aria-label={`Capability status: ${heroTrace.status}`}>{heroTrace.status}</span>
+            <span>{heroTrace.capability}</span>
+          </div>
+          <dl class="trace-metadata" aria-label="Capability metadata">
+            <div>
+              <dt>source</dt>
+              <dd>{heroTrace.source}</dd>
+            </div>
+            <div>
+              <dt>auth</dt>
+              <dd>{heroTrace.auth}</dd>
+            </div>
+          </dl>
+          <ol class="trace-steps" aria-label="Progressive disclosure trace">
+            {heroTrace.steps.map((step) => (
+              <li>
+                <div>
+                  <span class="trace-label">{step.label}</span>
+                  <p>{step.detail}</p>
+                </div>
+                <code>{step.result}</code>
+              </li>
+            ))}
+          </ol>
+        </aside>
+      </section>
+
+      <section class="problem" aria-labelledby="problem-title">
+        <div class="section-heading">
+          <p class="section-note">The wall of tools problem</p>
+          <h2 id="problem-title">Flat tool lists make agents guess before they understand.</h2>
+        </div>
+        <div class="comparison" aria-label="Comparison between direct aggregation and Caplets">
+          <article class="dense-list" aria-labelledby="before-title">
+            <h3 id="before-title">Before</h3>
+            <p>Every downstream operation arrives at once.</p>
+            <div class="tool-noise" aria-hidden="true">
+              {Array.from({ length: 24 }).map((_, index) => <span>tool_{index + 1}</span>)}
+            </div>
+          </article>
+          <article class="ordered-flow" aria-labelledby="after-title">
+            <h3 id="after-title">After</h3>
+            <p>Agents inspect a capability path one step at a time.</p>
+            <ol>
+              <li><strong>Choose</strong><span>github</span></li>
+              <li><strong>Inspect</strong><span>search_tools</span></li>
+              <li><strong>Resolve</strong><span>get_tool</span></li>
+              <li><strong>Invoke</strong><span>call_tool</span></li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="proof" id="proof" aria-labelledby="proof-title">
+        <div class="section-heading narrow">
+          <p class="section-note">What skillify means</p>
+          <h2 id="proof-title">A backend becomes safe for agents when it reveals itself in stages.</h2>
+        </div>
+        <div class="proof-list">
+          {skillifyFramework.map((point, index) => (
+            <article class="proof-item">
+              <p class="proof-eyebrow">0{index + 1}</p>
+              <h3>{point.title}</h3>
+              <p>{point.copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section class="trust" aria-labelledby="trust-title">
+        <div class="section-heading">
+          <p class="section-note">Trust before invocation</p>
+          <h2 id="trust-title">Trust is visible before the call.</h2>
+        </div>
+        <div class="trust-grid">
+          {trustMechanics.map((item) => (
+            <article class="trust-item">
+              <span class="agent-setup-label">{item.label}</span>
+              <code>{item.value}</code>
+              <p>{item.copy}</p>
+            </article>
+          ))}
+        </div>
+        <div class="trust-error" role="note" aria-label="Safe error example">
+          <span class="agent-setup-label">Safe recovery example</span>
+          <p>
+            If a backend fails, Caplets keeps the error scoped to the capability, preserves useful
+            recovery detail, and redacts sensitive configuration before it reaches the agent.
+          </p>
+        </div>
+      </section>
+
+      <section class="integrations" aria-labelledby="integrations-title">
+        <div>
+          <p class="section-note">Native where it helps</p>
+          <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
+        </div>
+        <div class="agent-setup-card" data-agent-tabs>
+          <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
+            {agentSetups.map((agent) => (
+              <button
+                class="integration-pill"
+                id={`agent-tab-${agent.id}`}
+                type="button"
+                data-agent-tab={agent.id}
+              >
+                {agent.name}
+              </button>
+            ))}
+          </div>
+          <div class="agent-setup-panels">
+            {agentSetups.map((agent) => (
+              <article
+                class="agent-setup-panel"
+                id={`agent-panel-${agent.id}`}
+                data-agent-panel={agent.id}
+              >
+                <p class="agent-setup-note">{agent.note}</p>
+                <div class="agent-setup-grid">
+                  <div class="snippet-block">
+                    <div class="snippet-heading">
+                      <span class="agent-setup-label">Install</span>
+                      <button
+                        class="copy-button"
+                        type="button"
+                        aria-controls={`agent-install-snippet-${agent.id}`}
+                        data-copy-target={`agent-install-snippet-${agent.id}`}
+                        data-copy-value={agent.installCommand}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre id={`agent-install-snippet-${agent.id}`} tabindex="-1"><code>{agent.installCommand}</code></pre>
+                  </div>
+                  <div class="snippet-block">
+                    <div class="snippet-heading">
+                      <span class="agent-setup-label">Configuration</span>
+                      <button
+                        class="copy-button"
+                        type="button"
+                        aria-controls={`agent-config-snippet-${agent.id}`}
+                        data-copy-target={`agent-config-snippet-${agent.id}`}
+                        data-copy-value={agent.configSnippet}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre id={`agent-config-snippet-${agent.id}`} tabindex="-1"><code>{agent.configSnippet}</code></pre>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="install" id="install" aria-labelledby="install-title">
+        <div class="install-copy">
+          <p class="kicker">Start with one capability</p>
+          <h2 id="install-title">Install, add a backend, serve capabilities.</h2>
+          <p>
+            Caplets can run as a universal MCP server, a native Pi or OpenCode tool layer, or a remote
+            HTTP service for shared environments.
+          </p>
+        </div>
+        <div class="terminal" role="region" aria-label="Installation commands">
+          <div class="terminal-bar" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <ol>
+            {installSteps.map((step, index) => (
+              <li>
+                <code id={`install-step-${index + 1}`} tabindex="-1">{step}</code>
+                <button
+                  class="copy-button terminal-copy"
+                  type="button"
+                  aria-controls={`install-step-${index + 1}`}
+                  data-copy-target={`install-step-${index + 1}`}
+                  data-copy-value={step}
+                >
+                  Copy
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Caplets turns sprawling tool setups into focused capability cards.</p>
+      <a href="https://www.npmjs.com/package/caplets">npm package</a>
+      <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
+    </footer>
+    <script>
+      document.documentElement.classList.add("js-enabled");
+
+      const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+      const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
+      const agentTablist = document.querySelector<HTMLElement>("[data-agent-tablist]");
+      const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
+      const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
+      const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
+
+      function selectAgentTab(selectedId: string) {
+        for (const tab of agentTabs) {
+          const tabId = tab.dataset.agentTab;
+          const isSelected = tabId === selectedId;
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-selected", String(isSelected));
+          if (tabId) tab.setAttribute("aria-controls", `agent-panel-${tabId}`);
+          tab.tabIndex = isSelected ? 0 : -1;
+        }
+
+        for (const panel of agentPanels) {
+          const panelId = panel.dataset.agentPanel;
+          panel.setAttribute("role", "tabpanel");
+          if (panelId) panel.setAttribute("aria-labelledby", `agent-tab-${panelId}`);
+          panel.hidden = panelId !== selectedId;
+        }
+      }
+
+      if (agentTabsRoot && agentTabs.length > 0 && agentPanels.length > 0) {
+        agentTablist?.setAttribute("role", "tablist");
+        selectAgentTab(agentTabs[0].dataset.agentTab ?? "");
+
+        for (const tab of agentTabs) {
+          tab.addEventListener("click", () => {
+            const selectedId = tab.dataset.agentTab;
+            if (selectedId) selectAgentTab(selectedId);
+          });
+
+          tab.addEventListener("keydown", (event: KeyboardEvent) => {
+            const currentIndex = agentTabs.indexOf(tab);
+            const lastIndex = agentTabs.length - 1;
+            const nextIndex =
+              event.key === "ArrowRight"
+                ? currentIndex + 1
+                : event.key === "ArrowLeft"
+                  ? currentIndex - 1
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? lastIndex
+                      : currentIndex;
+            const wrappedIndex = nextIndex < 0 ? lastIndex : nextIndex > lastIndex ? 0 : nextIndex;
+
+            if (wrappedIndex !== currentIndex) {
+              event.preventDefault();
+              const nextTab = agentTabs[wrappedIndex];
+              const selectedId = nextTab.dataset.agentTab;
+              nextTab.focus();
+              if (selectedId) selectAgentTab(selectedId);
+            }
+          });
+        }
+      }
+
+      function setCopyFeedback(button: HTMLButtonElement, label: string, timeout = 1600) {
+        button.textContent = label;
+        button.setAttribute("data-copied", "true");
+        window.setTimeout(() => {
+          button.textContent = "Copy";
+          button.removeAttribute("data-copied");
+        }, timeout);
+      }
+
+      function selectTextTarget(target: HTMLElement | null, value: string) {
+        if (target) {
+          target.focus({ preventScroll: true });
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          return;
+        }
+
+        const fallback = document.createElement("textarea");
+        fallback.value = value;
+        fallback.setAttribute("readonly", "");
+        fallback.style.position = "fixed";
+        fallback.style.inset = "0 auto auto 0";
+        fallback.style.opacity = "0";
+        document.body.append(fallback);
+        fallback.focus();
+        fallback.select();
+        window.setTimeout(() => fallback.remove(), 0);
+      }
+
+      async function copyValue(button: HTMLButtonElement) {
+        const value = button.dataset.copyValue;
+        if (!value) return;
+
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopyFeedback(button, "Copied");
+        } catch {
+          const targetId = button.dataset.copyTarget;
+          const target = targetId ? document.getElementById(targetId) : null;
+          selectTextTarget(target, value);
+          setCopyFeedback(button, "Text selected", 2200);
+        }
+      }
+
+      for (const button of copyButtons) {
+        button.addEventListener("click", () => void copyValue(button));
+      }
+
+      if (canAnimate && "IntersectionObserver" in window) {
+        const revealTargets = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            ".problem, .proof, .trust, .integrations, .install, .proof-item, .trust-item, .trust-error, .agent-setup-panel, .terminal li"
+          )
+        );
+
+        if (revealTargets.length > 0) {
+          let hasIntersectionUpdate = false;
+
+          const revealObserver = new IntersectionObserver(
+            (entries) => {
+              hasIntersectionUpdate = true;
+
+              for (const entry of entries) {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add("is-visible");
+                  revealObserver.unobserve(entry.target);
+                }
+              }
+            },
+            { rootMargin: "0px 0px -10%", threshold: 0.12 }
+          );
+
+          for (const [index, target] of revealTargets.entries()) {
+            target.style.setProperty("--reveal-index", String(index % 3));
+            revealObserver.observe(target);
+          }
+
+          document.documentElement.classList.add("motion-ready");
+          window.setTimeout(() => {
+            if (hasIntersectionUpdate) return;
+
+            revealTargets.forEach((target) => target.classList.add("is-visible"));
+            revealObserver.disconnect();
+          }, 100);
+        }
+      }
+    </script>
+  </body>
+</html>

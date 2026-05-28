@@ -97,7 +97,7 @@ Create `packages/core/test/serve-session.test.ts`:
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { CapletsMcpSession } from "../src/serve/session";
@@ -221,8 +221,8 @@ Expected: FAIL because `../src/serve/session` does not exist.
 Create `packages/core/src/serve/session.ts`:
 
 ```ts
-import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { version as packageJsonVersion } from "../../../package.json";
 import type { CapletConfig, CapletsConfig } from "../config";
 import { CapletsEngine } from "../engine";
@@ -354,7 +354,7 @@ function serializeCaplet(caplet: CapletConfig | undefined): string {
 Replace `packages/core/src/runtime.ts` with:
 
 ```ts
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { type CapletsConfig } from "./config";
 import { CapletsEngine, type CapletsEngineOptions } from "./engine";
 import { CapletsMcpSession, type ToolServer } from "./serve/session";
@@ -732,7 +732,7 @@ git commit -m "feat(core): validate serve transport options"
 Create `packages/core/src/serve/stdio.ts`:
 
 ```ts
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsMcpSession } from "./session";
 
