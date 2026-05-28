@@ -20,7 +20,6 @@ const pullRequestNumber = process.env.PULL_REQUEST
   : undefined;
 
 export const landingPage = await Astro("landing-page", {
-  assets: "apps/landing/dist",
   cwd: "apps/landing",
   dev: {
     command: "pnpm run dev" + (process.env.SSH_CONNECTION ? " --host 0.0.0.0" : ""),
