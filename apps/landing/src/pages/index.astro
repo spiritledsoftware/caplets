@@ -1,24 +1,70 @@
 ---
 import "../styles/global.css";
 
-const capabilityCards = [
+const heroTrace = {
+  capability: "github",
+  source: ".caplets/config.json",
+  status: "ready",
+  auth: "token present, redacted",
+  steps: [
+    {
+      label: "get_caplet",
+      detail: "Expose one card before any downstream tool list enters context.",
+      result: "search_tools · get_tool · call_tool",
+    },
+    {
+      label: 'search_tools("pull request")',
+      detail: "Find matching operations inside the selected capability only.",
+      result: "create_pull_request · list_pull_requests · request_review",
+    },
+    {
+      label: 'get_tool("create_pull_request")',
+      detail: "Inspect the preserved schema before an agent can invoke the operation.",
+      result: "title · body · base · head · reviewers?",
+    },
+    {
+      label: "call_tool(arguments)",
+      detail: "Forward the call and keep downstream content, structured data, and errors intact.",
+      result: "structuredContent + content",
+    },
+  ],
+};
+
+const skillifyFramework = [
   {
-    name: "Context7",
-    kind: "MCP",
-    copy: "Current framework docs without loading every operation up front.",
-    ops: ["get_caplet", "search_tools", "get_tool", "call_tool"],
+    title: "Discoverable as one capability",
+    copy: "A backend enters the agent context as a focused card with source, status, and next actions, not a flat wall of operations.",
   },
   {
-    name: "Repo CLI",
-    kind: "CLI",
-    copy: "Curated local commands exposed as safe, inspectable agent actions.",
-    ops: ["list_tools", "get_tool", "call_tool"],
+    title: "Inspectable before invocation",
+    copy: "Agents search inside the selected capability, then inspect exact tool schemas before any call is made.",
   },
   {
-    name: "GitHub",
-    kind: "MCP",
-    copy: "Issues, pull requests, branches, and review workflows behind one card.",
-    ops: ["search_tools", "get_tool", "call_tool"],
+    title: "Lossless after the call",
+    copy: "Caplets preserves structured content, resource links, images, and downstream error state instead of flattening results away.",
+  },
+];
+
+const trustMechanics = [
+  {
+    label: "Source",
+    value: ".caplets/config.json",
+    copy: "Users can see where the capability came from before trusting it.",
+  },
+  {
+    label: "Auth",
+    value: "GITHUB_TOKEN: redacted",
+    copy: "Secrets stay hidden while auth state remains inspectable.",
+  },
+  {
+    label: "Timeout",
+    value: "30s boundary",
+    copy: "Slow or stuck backends fail visibly instead of disappearing into agent context.",
+  },
+  {
+    label: "Error",
+    value: "safe message + raw detail scoped",
+    copy: "Recovery information stays useful without leaking sensitive configuration.",
   },
 ];
 
@@ -86,26 +132,8 @@ pi install npm:@caplets/pi`,
 
 const integrations = agentSetups.map((agent) => agent.name);
 
-const proofPoints = [
-  {
-    eyebrow: "Progressive disclosure",
-    title: "One capability first. Details only when useful.",
-    copy: "Agents see compact domain cards, then inspect tools, schemas, resources, prompts, and calls inside the selected capability.",
-  },
-  {
-    eyebrow: "Lossless routing",
-    title: "Downstream results stay intact.",
-    copy: "Caplets forwards tool results without flattening away structured content, images, resource links, or downstream error state.",
-  },
-  {
-    eyebrow: "Operational safety",
-    title: "Config failures are visible and redacted.",
-    copy: "Backend checks, source metadata, timeouts, auth status, and safe errors make setup inspectable without leaking secrets.",
-  },
-];
-
 const installSteps = [
-  "pnpm add -g caplets",
+  "npm install -g caplets",
   "caplets init",
   "caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp",
   "caplets serve",
@@ -134,7 +162,7 @@ const installSteps = [
         <span>Caplets</span>
       </a>
       <nav class="top-nav" aria-label="Page sections">
-        <a href="#map"><span>01</span> Map</a>
+        <a href="#trace"><span>01</span> Trace</a>
         <a href="#proof"><span>02</span> Proof</a>
         <a href="#install"><span>03</span> Install</a>
       </nav>
@@ -154,15 +182,18 @@ const installSteps = [
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
           <p class="kicker">Capability cards for coding agents</p>
-          <h1 id="hero-title">Give every tool stack a map.</h1>
+          <h1 id="hero-title">Skillify your backends.</h1>
           <p class="hero-lede">
-            Caplets wraps MCP servers, APIs, local commands, and remote services behind focused
-            cards. Agents choose a capability domain first, then inspect only the operations they
-            need.
+            Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card
+            first, searchable tools next, inspectable schemas before calls, and preserved results after.
+          </p>
+          <p class="hero-definition">
+            To skillify a backend is to wrap it as a capability an agent can discover, inspect, call,
+            and recover from one step at a time.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
             <a class="button primary" href="#install">Install Caplets</a>
-            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">Read the repo</a>
+            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">Inspect the repo</a>
           </div>
           <dl class="hero-facts" aria-label="Supported capability sources">
             <div>
@@ -176,45 +207,33 @@ const installSteps = [
           </dl>
         </div>
 
-        <div class="map-stage" id="map" aria-label="Capability map example">
-          <div class="map-toolbar">
-            <span class="status-dot" aria-hidden="true"></span>
-            <span>caplets.tools/list</span>
+        <aside class="trace-stage" id="trace" aria-label="GitHub capability trace example">
+          <div class="trace-header">
+            <span class="trace-status" aria-label={`Capability status: ${heroTrace.status}`}>{heroTrace.status}</span>
+            <span>{heroTrace.capability}</span>
           </div>
-          <svg class="route-field" viewBox="0 0 720 520" aria-hidden="true">
-            <path class="route route-one route-backbone" d="M122 146 C230 88 322 112 418 178 S586 282 632 170" />
-            <path class="route route-two route-backbone" d="M114 352 C222 272 318 304 422 340 S558 424 640 356" />
-            <path class="route route-three route-backbone" d="M176 242 C294 210 372 220 506 250" />
-            <path class="route route-draw route-draw-one" pathLength="1" d="M122 146 C230 88 322 112 418 178 S586 282 632 170" />
-            <path class="route route-draw route-draw-two" pathLength="1" d="M114 352 C222 272 318 304 422 340 S558 424 640 356" />
-            <path class="route route-draw route-draw-three" pathLength="1" d="M176 242 C294 210 372 220 506 250" />
-          </svg>
-          <div class="cartography-compass" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <div class="capability-grid">
-            {capabilityCards.map((card, index) => (
-              <article class={`capability-card card-${index + 1}`} style={`--i:${index}`}>
-                <div class="card-topline">
-                  <span class="chip">{card.kind}</span>
-                  <span class="card-index">0{index + 1}</span>
+          <dl class="trace-metadata" aria-label="Capability metadata">
+            <div>
+              <dt>source</dt>
+              <dd>{heroTrace.source}</dd>
+            </div>
+            <div>
+              <dt>auth</dt>
+              <dd>{heroTrace.auth}</dd>
+            </div>
+          </dl>
+          <ol class="trace-steps" aria-label="Progressive disclosure trace">
+            {heroTrace.steps.map((step) => (
+              <li>
+                <div>
+                  <span class="trace-label">{step.label}</span>
+                  <p>{step.detail}</p>
                 </div>
-                <h2>{card.name}</h2>
-                <p>{card.copy}</p>
-                <ul aria-label={`${card.name} operations`}>
-                  {card.ops.map((op) => <li>{op}</li>)}
-                </ul>
-              </article>
+                <code>{step.result}</code>
+              </li>
             ))}
-          </div>
-          <div class="inspect-panel" aria-label="Selected operation preview">
-            <span class="panel-label">selected route</span>
-            <code>context7.call_tool(arguments)</code>
-            <p>Exact schemas stay scoped to the chosen capability.</p>
-          </div>
-        </div>
+          </ol>
+        </aside>
       </section>
 
       <section class="problem" aria-labelledby="problem-title">
@@ -245,17 +264,40 @@ const installSteps = [
 
       <section class="proof" id="proof" aria-labelledby="proof-title">
         <div class="section-heading narrow">
-          <p class="kicker">Built for real agent workflows</p>
-          <h2 id="proof-title">A compact surface that still tells the truth.</h2>
+          <p class="kicker">What skillify means</p>
+          <h2 id="proof-title">A backend becomes safe for agents when it reveals itself in stages.</h2>
         </div>
         <div class="proof-list">
-          {proofPoints.map((point) => (
+          {skillifyFramework.map((point, index) => (
             <article class="proof-item">
-              <p class="proof-eyebrow">{point.eyebrow}</p>
+              <p class="proof-eyebrow">0{index + 1}</p>
               <h3>{point.title}</h3>
               <p>{point.copy}</p>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section class="trust" aria-labelledby="trust-title">
+        <div class="section-heading">
+          <p class="kicker">Trust before invocation</p>
+          <h2 id="trust-title">Trust is visible before the call.</h2>
+        </div>
+        <div class="trust-grid">
+          {trustMechanics.map((item) => (
+            <article class="trust-item">
+              <span class="agent-setup-label">{item.label}</span>
+              <code>{item.value}</code>
+              <p>{item.copy}</p>
+            </article>
+          ))}
+        </div>
+        <div class="trust-error" role="note" aria-label="Safe error example">
+          <span class="agent-setup-label">Safe recovery example</span>
+          <p>
+            If a backend fails, Caplets keeps the error scoped to the capability, preserves useful
+            recovery detail, and redacts sensitive configuration before it reaches the agent.
+          </p>
         </div>
       </section>
 
@@ -281,23 +323,28 @@ const installSteps = [
             ))}
           </div>
           <div class="agent-setup-panels">
-            {agentSetups.map((agent, index) => (
+            {agentSetups.map((agent) => (
               <article
                 class="agent-setup-panel"
                 id={`agent-panel-${agent.id}`}
                 role="tabpanel"
                 aria-labelledby={`agent-tab-${agent.id}`}
                 data-agent-panel={agent.id}
-                hidden={index !== 0}
               >
                 <p class="agent-setup-note">{agent.note}</p>
                 <div class="agent-setup-grid">
-                  <div>
-                    <span class="agent-setup-label">Install</span>
+                  <div class="snippet-block">
+                    <div class="snippet-heading">
+                      <span class="agent-setup-label">Install</span>
+                      <button class="copy-button" type="button" data-copy-value={agent.installCommand}>Copy</button>
+                    </div>
                     <pre><code>{agent.installCommand}</code></pre>
                   </div>
-                  <div>
-                    <span class="agent-setup-label">Configuration</span>
+                  <div class="snippet-block">
+                    <div class="snippet-heading">
+                      <span class="agent-setup-label">Configuration</span>
+                      <button class="copy-button" type="button" data-copy-value={agent.configSnippet}>Copy</button>
+                    </div>
                     <pre><code>{agent.configSnippet}</code></pre>
                   </div>
                 </div>
@@ -310,7 +357,7 @@ const installSteps = [
       <section class="install" id="install" aria-labelledby="install-title">
         <div class="install-copy">
           <p class="kicker">Start with one capability</p>
-          <h2 id="install-title">Install, add a backend, serve the map.</h2>
+          <h2 id="install-title">Install, add a backend, serve capabilities.</h2>
           <p>
             Caplets can run as a universal MCP server, a native Pi or OpenCode tool layer, or a remote
             HTTP service for shared environments.
@@ -322,7 +369,10 @@ const installSteps = [
           </div>
           <ol>
             {installSteps.map((step) => (
-              <li><code>{step}</code></li>
+              <li>
+                <code>{step}</code>
+                <button class="copy-button terminal-copy" type="button" data-copy-value={step}>Copy</button>
+              </li>
             ))}
           </ol>
         </div>
@@ -332,15 +382,17 @@ const installSteps = [
     <footer class="site-footer">
       <p>Caplets turns sprawling tool setups into focused capability cards.</p>
       <a href="https://www.npmjs.com/package/caplets">npm package</a>
+      <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
     </footer>
     <script>
-      const hero = document.querySelector(".hero") as HTMLElement | null;
-      const mapStage = document.querySelector(".map-stage") as HTMLElement | null;
+      document.documentElement.classList.add("js-enabled");
+
       const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
       const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
       const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
       const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
+      const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
 
       function selectAgentTab(selectedId: string) {
         for (const tab of agentTabs) {
@@ -389,66 +441,37 @@ const installSteps = [
         }
       }
 
-      function clamp(value: number, min: number, max: number) {
-        return Math.min(max, Math.max(min, value));
+      async function copyValue(button: HTMLButtonElement) {
+        const value = button.dataset.copyValue;
+        if (!value) return;
+
+        try {
+          await navigator.clipboard.writeText(value);
+          button.textContent = "Copied";
+          button.setAttribute("data-copied", "true");
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+            button.removeAttribute("data-copied");
+          }, 1600);
+        } catch {
+          button.textContent = "Select text";
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+          }, 2200);
+        }
       }
 
-      let heroProgressFrame = 0;
-      let mapStageRect = mapStage?.getBoundingClientRect();
-      let pointerFrame = 0;
-      let pendingPointer: PointerEvent | undefined;
-
-      function refreshMapStageRect() {
-        mapStageRect = mapStage?.getBoundingClientRect();
+      for (const button of copyButtons) {
+        button.addEventListener("click", () => void copyValue(button));
       }
 
-      function updateHeroProgress() {
-        if (!hero || !mapStage || !canAnimate) return;
-        const rect = hero.getBoundingClientRect();
-        const range = Math.max(1, rect.height + window.innerHeight * 0.85);
-        const progress = clamp((window.innerHeight * 0.72 - rect.top) / range, 0, 1);
-        const resolve = clamp((progress - 0.38) / 0.42, 0, 1);
-        hero.style.setProperty("--scroll-progress", progress.toFixed(4));
-        hero.style.setProperty("--route-resolve", resolve.toFixed(4));
-        document.documentElement.style.setProperty("--scroll-progress", progress.toFixed(4));
-        document.documentElement.style.setProperty("--route-resolve", resolve.toFixed(4));
-      }
-
-      function scheduleHeroProgressUpdate() {
-        if (heroProgressFrame) return;
-        heroProgressFrame = window.requestAnimationFrame(() => {
-          heroProgressFrame = 0;
-          updateHeroProgress();
-        });
-      }
-
-      if (canAnimate && hero && mapStage) {
-        updateHeroProgress();
-        window.addEventListener("scroll", scheduleHeroProgressUpdate, { passive: true });
-        window.addEventListener("resize", () => {
-          refreshMapStageRect();
-          scheduleHeroProgressUpdate();
-        });
-        mapStage.addEventListener("pointerenter", refreshMapStageRect);
-        mapStage.addEventListener("pointermove", (event: PointerEvent) => {
-          pendingPointer = event;
-          if (pointerFrame) return;
-          pointerFrame = window.requestAnimationFrame(() => {
-            pointerFrame = 0;
-            if (!pendingPointer || !mapStageRect) return;
-            const x = clamp((pendingPointer.clientX - mapStageRect.left) / mapStageRect.width, 0, 1);
-            const y = clamp((pendingPointer.clientY - mapStageRect.top) / mapStageRect.height, 0, 1);
-            mapStage.style.setProperty("--pointer-x", x.toFixed(3));
-            mapStage.style.setProperty("--pointer-y", y.toFixed(3));
-          });
-        });
-
+      if (canAnimate) {
         const revealTargets = document.querySelectorAll<HTMLElement>(
-          ".problem, .proof, .integrations, .install, .proof-item, .integration-pill, .agent-setup-panel, .terminal li"
+          ".problem, .proof, .trust, .integrations, .install, .proof-item, .trust-item, .trust-error, .agent-setup-panel, .terminal li"
         );
+
         if (!("IntersectionObserver" in window)) {
           revealTargets.forEach((target) => target.classList.add("is-visible"));
-          mapStage.classList.add("is-route-active");
         } else {
           document.documentElement.classList.add("motion-ready");
           const revealObserver = new IntersectionObserver(
@@ -460,20 +483,13 @@ const installSteps = [
                 }
               }
             },
-            { rootMargin: "0px 0px -12%", threshold: 0.16 }
+            { rootMargin: "0px 0px -10%", threshold: 0.12 }
           );
+
           revealTargets.forEach((target, index) => {
-            target.style.setProperty("--reveal-index", String(index % 4));
+            target.style.setProperty("--reveal-index", String(index % 3));
             revealObserver.observe(target);
           });
-
-          const routeMotionObserver = new IntersectionObserver(
-            ([entry]) => {
-              mapStage.classList.toggle("is-route-active", Boolean(entry?.isIntersecting));
-            },
-            { rootMargin: "18% 0px", threshold: 0.08 }
-          );
-          routeMotionObserver.observe(mapStage);
         }
       }
     </script>

@@ -10,7 +10,7 @@ const app = await alchemy("caplets", {
   password: process.env.ALCHEMY_PASSWORD!,
 });
 
-const landingPageDomain = app.stage === "prod" ? baseDomain : `${app.stage}.${baseDomain}`;
+const landingPageDomain = app.stage === "prod" ? baseDomain : `${app.stage}.preview.${baseDomain}`;
 export const landingPage = await Astro("landing-page", {
   assets: "apps/landing/dist",
   cwd: "apps/landing",

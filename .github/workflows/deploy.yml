@@ -1,4 +1,4 @@
-name: PR Preview
+name: Deploy
 
 on:
   release:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Verify
+    name: Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
