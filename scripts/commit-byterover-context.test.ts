@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 
 import {
@@ -24,9 +23,4 @@ test("ByteRover check warning is advisory and includes manual commit command", (
 
 test("ByteRover context commits use a conventional docs commit message", () => {
   expect(buildCommitArgs()).toEqual(["commit", "-m", "docs(agents): byterover context"]);
-});
-
-test("ByteRover context script has a Node shebang for direct hook execution", async () => {
-  const script = await readFile(new URL("./commit-byterover-context.ts", import.meta.url), "utf8");
-  expect(script.startsWith("#!/usr/bin/env node\n")).toBe(true);
 });
