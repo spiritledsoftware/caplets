@@ -39,7 +39,6 @@ Caplets requires Node.js 22 or newer.
 ```sh
 npm install -g caplets
 caplets init
-caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
 caplets serve
 ```
 
@@ -58,9 +57,12 @@ Connect Caplets to any MCP client:
 
 Ask your agent to use Caplets. It will see a compact capability list first, then inspect only the backend it needs.
 
-You can also add capabilities from existing systems:
+Add capabilities from existing systems when you are ready to skillify a backend:
 
 ```sh
+# Wrap an MCP server
+caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
+
 # Convert useful repository commands into curated tools
 caplets add cli repo-tools --repo . --include git,gh,package
 
@@ -244,7 +246,7 @@ Flat tool lists make agents guess before they understand. If every downstream se
 
 Caplets turns that flat wall into a staged path:
 
-1. **Choose** a capability, such as `github`.
+1. **Choose** a capability, such as `GitHub`.
 2. **Inspect** matching operations with `search_tools` or `list_tools`.
 3. **Resolve** the exact schema with `get_tool`.
 4. **Invoke** with `call_tool` while preserving downstream content, structured data, and error state.
