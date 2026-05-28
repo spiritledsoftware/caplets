@@ -9,7 +9,7 @@ const heroTrace = {
   steps: [
     {
       label: "get_caplet",
-      detail: "Expose one card before any downstream tool list enters context.",
+      detail: "Show one capability card before any downstream tool list enters context.",
       result: "search_tools · get_tool · call_tool",
     },
     {
@@ -19,29 +19,29 @@ const heroTrace = {
     },
     {
       label: 'get_tool("create_pull_request")',
-      detail: "Inspect the preserved schema before an agent can invoke the operation.",
+      detail: "Inspect the exact schema before an agent can invoke the operation.",
       result: "title · body · base · head · reviewers?",
     },
     {
       label: "call_tool(arguments)",
-      detail: "Forward the call and keep downstream content, structured data, and errors intact.",
+      detail: "Forward the call and keep content, structured data, and errors intact.",
       result: "structuredContent + content",
     },
   ],
 };
 
-const skillifyFramework = [
+const capabilityFramework = [
   {
-    title: "Discoverable as one capability",
-    copy: "A backend enters the agent context as a focused card with source, status, and next actions, not a flat wall of operations.",
+    title: "One capability first",
+    copy: "Each tool source enters agent context as a focused card with source, status, and next actions, not a long list of operations.",
   },
   {
-    title: "Inspectable before invocation",
-    copy: "Agents search inside the selected capability, then inspect exact tool schemas before any call is made.",
+    title: "Schemas before calls",
+    copy: "Agents search inside one capability, then inspect the exact tool schema before they invoke anything.",
   },
   {
-    title: "Lossless after the call",
-    copy: "Caplets preserves structured content, resource links, images, and downstream error state instead of flattening results away.",
+    title: "Results stay intact",
+    copy: "Caplets preserves structured content, resource links, images, and downstream errors instead of flattening results away.",
   },
 ];
 
@@ -59,7 +59,7 @@ const trustMechanics = [
   {
     label: "Timeout",
     value: "30s boundary",
-    copy: "Slow or stuck backends fail visibly instead of disappearing into agent context.",
+    copy: "Slow or stuck tools fail visibly instead of disappearing into agent context."
   },
   {
     label: "Error",
@@ -68,7 +68,7 @@ const trustMechanics = [
   },
 ];
 
-const backends = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
+const sources = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
 const agentSetups = [
   {
     id: "claude-code",
@@ -183,14 +183,14 @@ const installSteps = [
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
           <p class="kicker">Capability cards for coding agents</p>
-          <h1 id="hero-title">Skillify your backends.</h1>
+          <h1 id="hero-title">Give agents capabilities, not tool walls.</h1>
           <p class="hero-lede">
             Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card
             first, searchable tools next, inspectable schemas before calls, and preserved results after.
           </p>
           <p class="hero-definition">
-            To skillify a backend is to wrap it as a capability an agent can discover, inspect, call,
-            and recover from one step at a time.
+            Wrap each MCP server, API, or command set as a capability an agent can discover, inspect,
+            call, and recover from one step at a time.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
             <a class="button primary" href="#install">Install Caplets</a>
@@ -198,8 +198,8 @@ const installSteps = [
           </div>
           <dl class="hero-facts" aria-label="Supported capability sources">
             <div>
-              <dt>Backends</dt>
-              <dd>{backends.join(" · ")}</dd>
+              <dt>Sources</dt>
+              <dd>{sources.join(" · ")}</dd>
             </div>
             <div>
               <dt>Clients</dt>
@@ -239,20 +239,20 @@ const installSteps = [
 
       <section class="problem" aria-labelledby="problem-title">
         <div class="section-heading">
-          <p class="section-note">The wall of tools problem</p>
-          <h2 id="problem-title">Flat tool lists make agents guess before they understand.</h2>
+          <p class="section-note">The tool wall problem</p>
+          <h2 id="problem-title">Flat tool lists force agents to choose before they understand.</h2>
         </div>
         <div class="comparison" aria-label="Comparison between direct aggregation and Caplets">
           <article class="dense-list" aria-labelledby="before-title">
             <h3 id="before-title">Before</h3>
-            <p>Every downstream operation arrives at once.</p>
+            <p>Every operation enters context before the agent knows which one matters.</p>
             <div class="tool-noise" aria-hidden="true">
               {Array.from({ length: 24 }).map((_, index) => <span>tool_{index + 1}</span>)}
             </div>
           </article>
           <article class="ordered-flow" aria-labelledby="after-title">
             <h3 id="after-title">After</h3>
-            <p>Agents inspect a capability path one step at a time.</p>
+            <p>Agents choose a capability, then inspect only the operations inside it.</p>
             <ol>
               <li><strong>Choose</strong><span>github</span></li>
               <li><strong>Inspect</strong><span>search_tools</span></li>
@@ -265,11 +265,11 @@ const installSteps = [
 
       <section class="proof" id="proof" aria-labelledby="proof-title">
         <div class="section-heading narrow">
-          <p class="section-note">What skillify means</p>
-          <h2 id="proof-title">A backend becomes safe for agents when it reveals itself in stages.</h2>
+          <p class="section-note">Capability-shaped tools</p>
+          <h2 id="proof-title">A tool source is safer for agents when it reveals itself in stages.</h2>
         </div>
         <div class="proof-list">
-          {skillifyFramework.map((point, index) => (
+          {capabilityFramework.map((point, index) => (
             <article class="proof-item">
               <p class="proof-eyebrow">0{index + 1}</p>
               <h3>{point.title}</h3>
@@ -296,7 +296,7 @@ const installSteps = [
         <div class="trust-error" role="note" aria-label="Safe error example">
           <span class="agent-setup-label">Safe recovery example</span>
           <p>
-            If a backend fails, Caplets keeps the error scoped to the capability, preserves useful
+            If a tool fails, Caplets keeps the error scoped to that capability, preserves useful
             recovery detail, and redacts sensitive configuration before it reaches the agent.
           </p>
         </div>
@@ -304,8 +304,8 @@ const installSteps = [
 
       <section class="integrations" aria-labelledby="integrations-title">
         <div>
-          <p class="section-note">Native where it helps</p>
-          <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
+          <p class="section-note">Works where agents work</p>
+          <h2 id="integrations-title">Run Caplets from the coding agent you already use.</h2>
         </div>
         <div class="agent-setup-card" data-agent-tabs>
           <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
@@ -368,8 +368,8 @@ const installSteps = [
 
       <section class="install" id="install" aria-labelledby="install-title">
         <div class="install-copy">
-          <p class="kicker">Start with one capability</p>
-          <h2 id="install-title">Install, add a backend, serve capabilities.</h2>
+          <p class="kicker">Start with one tool source</p>
+          <h2 id="install-title">Install Caplets, add a source, serve capabilities.</h2>
           <p>
             Caplets can run as a universal MCP server, a native Pi or OpenCode tool layer, or a remote
             HTTP service for shared environments.
@@ -400,7 +400,7 @@ const installSteps = [
     </main>
 
     <footer class="site-footer">
-      <p>Caplets turns sprawling tool setups into focused capability cards.</p>
+      <p>Caplets gives agents capabilities, not tool walls.</p>
       <a href="https://www.npmjs.com/package/caplets">npm package</a>
       <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
     </footer>

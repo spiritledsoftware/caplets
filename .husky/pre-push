@@ -1,1 +1,2 @@
 pnpm verify
+pnpm exec tsx ./scripts/commit-byterover-context.ts --check

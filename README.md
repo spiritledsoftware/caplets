@@ -4,8 +4,8 @@
   <h1>Caplets</h1>
 
   <p>
-    <strong>Capability cards for coding agents.</strong><br />
-    Wrap sprawling tool stacks behind focused, progressive-disclosure interfaces.
+    <strong>Give agents capabilities, not tool walls.</strong><br />
+    Turn MCP servers, APIs, and commands into focused agent capabilities.
   </p>
 
   <p>
@@ -16,44 +16,30 @@
   </p>
 
   <p>
+    <a href="https://caplets.dev"><strong>caplets.dev</strong></a>
+  </p>
+
+  <p>
     <code>MCP</code> · <code>OpenAPI</code> · <code>GraphQL</code> · <code>HTTP</code> · <code>CLI</code>
   </p>
 </div>
 
 ---
 
-Caplets turns sprawling tool setups into focused capability cards for coding agents.
-Connect MCP servers, OpenAPI specs, GraphQL endpoints, HTTP actions, and curated CLI
-commands without flooding the model with every downstream operation up front.
+Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card first, searchable tools next, inspectable schemas before calls, and preserved results after.
 
-Instead of exposing a flat wall of tools, Caplets shows one top-level tool per capability.
-The agent chooses a domain first, then uses scoped operations like `search_tools`,
-`get_tool`, and `call_tool` only when it needs more detail.
+Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
 
-For MCP-backed Caplets, the scoped operation set also includes resource discovery/reading,
-prompt listing/rendering, resource-template discovery, and completion for prompt or template
-arguments. Non-MCP backends continue to expose only tool/action operations.
+For MCP-backed Caplets, the scoped operation set also includes resource discovery and reading, prompt listing and rendering, resource-template discovery, and completion for prompt or template arguments. Non-MCP backends expose focused tool and action operations.
 
 ## Quick Start
 
 Caplets requires Node.js 22 or newer.
 
 ```sh
-pnpm add -g caplets
+npm install -g caplets
 caplets init
-```
-
-Add a capability from an existing system:
-
-```sh
-# Wrap an MCP server
-caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
-
-# Convert useful repository commands into curated tools
-caplets add cli repo-tools --repo . --include git,gh,package
-
-# Install ready-made Caplets from a repository
-caplets install spiritledsoftware/caplets github linear context7
+caplets serve
 ```
 
 Connect Caplets to any MCP client:
@@ -69,10 +55,22 @@ Connect Caplets to any MCP client:
 }
 ```
 
-Ask your agent to use Caplets. It will see a compact capability list first, then inspect
-only the backend it needs.
+Ask your agent to use Caplets. It will see a compact capability list first, then inspect only the backend it needs.
 
-You can also invoke configured Caplets directly from the CLI for agent-friendly scripts and smoke tests:
+Add capabilities from existing systems when you are ready to give agents a focused tool surface:
+
+```sh
+# Wrap an MCP server
+caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
+
+# Convert useful repository commands into curated tools
+caplets add cli repo-tools --repo . --include git,gh,package
+
+# Install ready-made Caplets from a repository
+caplets install spiritledsoftware/caplets github linear context7
+```
+
+Configured Caplets can be invoked directly from the CLI for agent-friendly scripts and smoke tests:
 
 ```sh
 caplets get-caplet context7
@@ -244,12 +242,16 @@ version, and customize them with the project.
 
 ## Why It Matters
 
-Large MCP setups can make agents harder to steer. If every downstream server exposes
-every tool up front, the model starts with a noisy flat list, duplicate tool names, and
-a larger context surface before it knows which capability matters.
+Flat tool lists make agents guess before they understand. If every downstream server exposes every operation up front, the model starts with a noisy list, duplicate tool names, and a larger context surface before it knows which capability matters.
 
-Caplets turns that flat tool wall into progressive disclosure: one capability card first,
-then scoped discovery only after the agent chooses the relevant domain.
+Caplets turns that flat wall into a staged path:
+
+1. **Choose** a capability, such as `GitHub`.
+2. **Inspect** matching operations with `search_tools` or `list_tools`.
+3. **Resolve** the exact schema with `get_tool`.
+4. **Invoke** with `call_tool` while preserving downstream content, structured data, and error state.
+
+A backend enters agent context as a focused card with source, status, and next actions, not a wall of operations.
 
 ## Benchmark
 
@@ -290,18 +292,30 @@ CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode -- --model openai/gpt-5.5-fast
 
 ## Design Model
 
-Caplets combines two ideas that work well separately but leave a gap together: agent
-skills and MCP servers.
+Caplets combines two ideas that work well separately but leave a gap together: agent skills and MCP servers.
 
-Agent skills are great at progressive disclosure. They show an agent a compact capability
-card first, then let it read deeper instructions only when that skill is relevant. MCP
-servers are great at live tool execution, but most clients expose their tools as one flat
-list up front. That means a powerful MCP setup can flood the agent with every tool from
-every server before it knows which capability area matters.
+Agent skills are great at progressive disclosure. They show an agent a compact capability card first, then let it read deeper instructions only when that skill is relevant. MCP servers are great at live tool execution, but most clients expose their tools as one flat list up front. That means a powerful MCP setup can flood the agent with every tool from every server before it knows which capability area matters.
 
-Caplets borrows the skill-shaped discovery model and applies it to MCP. Each downstream
-server becomes a skill-like capability card first; its actual MCP tools stay hidden until
-the agent chooses that server and asks to search, list, inspect, or call them.
+Caplets borrows the skill-shaped discovery model and applies it to MCP, OpenAPI, GraphQL, HTTP, and CLI backends. Each backend becomes a skill-like capability card first; its actual operations stay hidden until the agent chooses that capability and asks to search, list, inspect, or call them.
+
+A capability is safe for agents when it reveals itself in stages:
+
+- **Discoverable as one capability:** source, status, auth posture, and next actions are visible before any downstream tool list enters context.
+- **Inspectable before invocation:** agents search inside the selected capability, then inspect exact tool schemas before any call is made.
+- **Lossless after the call:** Caplets preserves structured content, resource links, images, and downstream error state instead of flattening results away.
+
+## Trust Before Invocation
+
+Caplets keeps trust mechanics visible before an agent calls a backend.
+
+| Mechanic | Example                            | Why it matters                                                                  |
+| -------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| Source   | `.caplets/config.json`             | Users can see where the capability came from before trusting it.                |
+| Auth     | `GITHUB_TOKEN: redacted`           | Secrets stay hidden while auth state remains inspectable.                       |
+| Timeout  | `30s boundary`                     | Slow or stuck backends fail visibly instead of disappearing into agent context. |
+| Error    | `safe message + raw detail scoped` | Recovery information stays useful without leaking sensitive configuration.      |
+
+If a backend fails, Caplets keeps the error scoped to the capability, preserves useful recovery detail, and redacts sensitive configuration before it reaches the agent.
 
 ## Capabilities
 
