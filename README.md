@@ -4,7 +4,7 @@
   <h1>Caplets</h1>
 
   <p>
-    <strong>Skillify your backends.</strong><br />
+    <strong>Give agents capabilities, not tool walls.</strong><br />
     Turn MCP servers, APIs, and commands into focused agent capabilities.
   </p>
 
@@ -28,7 +28,7 @@
 
 Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card first, searchable tools next, inspectable schemas before calls, and preserved results after.
 
-To skillify a backend is to wrap it as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
+Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
 
 For MCP-backed Caplets, the scoped operation set also includes resource discovery and reading, prompt listing and rendering, resource-template discovery, and completion for prompt or template arguments. Non-MCP backends expose focused tool and action operations.
 
@@ -57,7 +57,7 @@ Connect Caplets to any MCP client:
 
 Ask your agent to use Caplets. It will see a compact capability list first, then inspect only the backend it needs.
 
-Add capabilities from existing systems when you are ready to skillify a backend:
+Add capabilities from existing systems when you are ready to give agents a focused tool surface:
 
 ```sh
 # Wrap an MCP server
