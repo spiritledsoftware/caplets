@@ -14,6 +14,7 @@ const baseDomain =
   app.stage === "prod" ? globalBaseDomain : `${app.stage}.preview.${globalBaseDomain}`;
 
 const landingPageDomain = baseDomain;
+const landingPageUrl = `https://${landingPageDomain}`;
 export const landingPage = await Astro("landing-page", {
   cwd: "apps/landing",
   dev: {
@@ -23,7 +24,7 @@ export const landingPage = await Astro("landing-page", {
 });
 
 console.log({
-  "Landing Page URL": `https://${landingPageDomain}`,
+  "Landing Page URL": landingPageUrl,
 });
 
 const [repositoryOwnerFromSlug, repositoryNameFromSlug] =
@@ -46,7 +47,7 @@ if (pullRequestNumber) {
 
 Your changes have been deployed to a preview environment:
 
-**🌐 Landing Page:** ${landingPage.url}
+**🌐 Landing Page:** ${landingPageUrl}
 
 Built from commit ${process.env.GITHUB_SHA?.slice(0, 7) ?? "unknown"}
 
