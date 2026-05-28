@@ -56,7 +56,7 @@ claude plugin install caplets@caplets`,
   {
     id: "opencode",
     name: "OpenCode",
-    installCommand: "npm install -g @caplets/opencode",
+    installCommand: "npm install -g caplets",
     configSnippet: `{
   "plugin": ["@caplets/opencode"]
 }`,
@@ -65,7 +65,8 @@ claude plugin install caplets@caplets`,
   {
     id: "pi",
     name: "Pi",
-    installCommand: "pi install npm:@caplets/pi",
+    installCommand: `npm install -g caplets
+pi install npm:@caplets/pi`,
     configSnippet: `{
   "packages": ["npm:@caplets/pi"]
 }`,
