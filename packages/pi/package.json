@@ -1,6 +1,6 @@
 {
   "name": "@caplets/pi",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Native Pi extension for Caplets.",
   "homepage": "https://github.com/spiritledsoftware/caplets#readme",
   "bugs": {
