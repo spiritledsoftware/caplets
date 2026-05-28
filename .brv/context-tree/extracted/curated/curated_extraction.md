@@ -1,18 +1,18 @@
 ---
 title: Curated Extraction
-summary: Extracted and deduplicated factual statements
+summary: Extracted factual statements organized by subject
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-28T09:24:42.638Z'
-updatedAt: '2026-05-28T09:29:34.332Z'
+updatedAt: '2026-05-28T09:56:12.966Z'
 ---
 ## Reason
-Curate extracted factual statements from context
+Curate extracted facts from provided context
 
 ## Raw Concept
 **Task:**
-Curate extracted factual statements
+Extract and organize factual statements
 
 **Changes:**
 - Extracted facts from context
@@ -20,18 +20,16 @@ Curate extracted factual statements
 - Deduplicated
 - Grouped by subject
 
-**Timestamp:** 2026-05-28T09:29:34.330Z
+**Timestamp:** 2026-05-28T09:56:12.962Z
 
 ## Narrative
 ### Structure
-Facts organized by subject
+Facts extracted and deduplicated
 
 ### Highlights
-landing page, scroll progress implementation, reveal animations, landing project, .npm-link CSS
+implementation plan, motion systems, fix-all plan
 
 ## Facts
-- **landing page**: Accessibility improvements are sound: decorative SVGs are hidden from AT while links retain explicit aria-labels
-- **scroll progress implementation**: Scroll progress work is throttled through requestAnimationFrame, reducing scroll/resize work
-- **reveal animations**: Reveal animations now avoid hiding content unless JS/IntersectionObserver setup succeeds via .motion-ready
-- **landing project**: Landing build passes with pnpm --filter @caplets/landing build
-- **.npm-link CSS**: Unused .npm-link CSS added in this change is dead styling and should be removed or wired up
+- **implementation plan**: The implementation plan should remove substantial animation code, not just hide it behind toned-down styling.
+- **motion systems**: The page contains multiple motion systems: scroll-progress route resolution, pointer-reactive perspective tilt, route drift animation, entrance choreography, reveal choreography, glow and drop-shadow route effects, and a large animated hero headline treatment.
+- **fix-all plan**: The fix-all plan includes: keep reduced-motion support; keep small hover/focus transitions; keep maybe one restrained reveal pattern if it clarifies scanning; remove pointer tilt and scroll-driven route resolution; replace animated cartography with a mostly static, inspectable trace panel.
