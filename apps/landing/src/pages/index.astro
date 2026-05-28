@@ -393,6 +393,13 @@ const installSteps = [
       }
 
       let heroProgressFrame = 0;
+      let mapStageRect = mapStage?.getBoundingClientRect();
+      let pointerFrame = 0;
+      let pendingPointer: PointerEvent | undefined;
+
+      function refreshMapStageRect() {
+        mapStageRect = mapStage?.getBoundingClientRect();
+      }
 
       function updateHeroProgress() {
         if (!hero || !mapStage || !canAnimate) return;
@@ -417,13 +424,22 @@ const installSteps = [
       if (canAnimate && hero && mapStage) {
         updateHeroProgress();
         window.addEventListener("scroll", scheduleHeroProgressUpdate, { passive: true });
-        window.addEventListener("resize", scheduleHeroProgressUpdate);
+        window.addEventListener("resize", () => {
+          refreshMapStageRect();
+          scheduleHeroProgressUpdate();
+        });
+        mapStage.addEventListener("pointerenter", refreshMapStageRect);
         mapStage.addEventListener("pointermove", (event: PointerEvent) => {
-          const rect = mapStage.getBoundingClientRect();
-          const x = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-          const y = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-          mapStage.style.setProperty("--pointer-x", x.toFixed(3));
-          mapStage.style.setProperty("--pointer-y", y.toFixed(3));
+          pendingPointer = event;
+          if (pointerFrame) return;
+          pointerFrame = window.requestAnimationFrame(() => {
+            pointerFrame = 0;
+            if (!pendingPointer || !mapStageRect) return;
+            const x = clamp((pendingPointer.clientX - mapStageRect.left) / mapStageRect.width, 0, 1);
+            const y = clamp((pendingPointer.clientY - mapStageRect.top) / mapStageRect.height, 0, 1);
+            mapStage.style.setProperty("--pointer-x", x.toFixed(3));
+            mapStage.style.setProperty("--pointer-y", y.toFixed(3));
+          });
         });
 
         const revealTargets = document.querySelectorAll<HTMLElement>(
