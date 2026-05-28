@@ -252,19 +252,6 @@ a {
   fill: currentColor;
 }
 
-.npm-link svg {
-  width: 25px;
-  height: 25px;
-}
-
-.npm-link svg rect {
-  fill: currentColor;
-}
-
-.npm-link svg path {
-  fill: var(--paper);
-}
-
 main {
   display: grid;
   gap: clamp(74px, 10vw, 142px);
