@@ -131,6 +131,7 @@ pi install npm:@caplets/pi`,
 ];
 
 const integrations = agentSetups.map((agent) => agent.name);
+const themeColor = "oklch(97% 0.012 85)";
 
 const installSteps = [
   "npm install -g caplets",
@@ -151,7 +152,7 @@ const installSteps = [
       name="description"
       content="Caplets turns sprawling tool stacks into focused capability cards for coding agents."
     />
-    <meta name="theme-color" content="oklch(97% 0.012 85)" />
+    <meta name="theme-color" content={themeColor} />
     <title>Caplets, capability cards for coding agents</title>
   </head>
   <body>
@@ -307,15 +308,12 @@ const installSteps = [
           <h2 id="integrations-title">Use Caplets from the agent you already run.</h2>
         </div>
         <div class="agent-setup-card" data-agent-tabs>
-          <div class="integration-strip" role="tablist" aria-label="Supported integrations">
-            {agentSetups.map((agent, index) => (
+          <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
+            {agentSetups.map((agent) => (
               <button
                 class="integration-pill"
                 id={`agent-tab-${agent.id}`}
                 type="button"
-                role="tab"
-                aria-selected={index === 0 ? "true" : "false"}
-                aria-controls={`agent-panel-${agent.id}`}
                 data-agent-tab={agent.id}
               >
                 {agent.name}
@@ -327,8 +325,6 @@ const installSteps = [
               <article
                 class="agent-setup-panel"
                 id={`agent-panel-${agent.id}`}
-                role="tabpanel"
-                aria-labelledby={`agent-tab-${agent.id}`}
                 data-agent-panel={agent.id}
               >
                 <p class="agent-setup-note">{agent.note}</p>
@@ -336,16 +332,32 @@ const installSteps = [
                   <div class="snippet-block">
                     <div class="snippet-heading">
                       <span class="agent-setup-label">Install</span>
-                      <button class="copy-button" type="button" data-copy-value={agent.installCommand}>Copy</button>
+                      <button
+                        class="copy-button"
+                        type="button"
+                        aria-controls={`agent-install-snippet-${agent.id}`}
+                        data-copy-target={`agent-install-snippet-${agent.id}`}
+                        data-copy-value={agent.installCommand}
+                      >
+                        Copy
+                      </button>
                     </div>
-                    <pre><code>{agent.installCommand}</code></pre>
+                    <pre id={`agent-install-snippet-${agent.id}`} tabindex="-1"><code>{agent.installCommand}</code></pre>
                   </div>
                   <div class="snippet-block">
                     <div class="snippet-heading">
                       <span class="agent-setup-label">Configuration</span>
-                      <button class="copy-button" type="button" data-copy-value={agent.configSnippet}>Copy</button>
+                      <button
+                        class="copy-button"
+                        type="button"
+                        aria-controls={`agent-config-snippet-${agent.id}`}
+                        data-copy-target={`agent-config-snippet-${agent.id}`}
+                        data-copy-value={agent.configSnippet}
+                      >
+                        Copy
+                      </button>
                     </div>
-                    <pre><code>{agent.configSnippet}</code></pre>
+                    <pre id={`agent-config-snippet-${agent.id}`} tabindex="-1"><code>{agent.configSnippet}</code></pre>
                   </div>
                 </div>
               </article>
@@ -364,14 +376,22 @@ const installSteps = [
           </p>
         </div>
         <div class="terminal" role="region" aria-label="Installation commands">
-          <div class="terminal-bar">
+          <div class="terminal-bar" aria-hidden="true">
             <span></span><span></span><span></span>
           </div>
           <ol>
-            {installSteps.map((step) => (
+            {installSteps.map((step, index) => (
               <li>
-                <code>{step}</code>
-                <button class="copy-button terminal-copy" type="button" data-copy-value={step}>Copy</button>
+                <code id={`install-step-${index + 1}`} tabindex="-1">{step}</code>
+                <button
+                  class="copy-button terminal-copy"
+                  type="button"
+                  aria-controls={`install-step-${index + 1}`}
+                  data-copy-target={`install-step-${index + 1}`}
+                  data-copy-value={step}
+                >
+                  Copy
+                </button>
               </li>
             ))}
           </ol>
@@ -390,23 +410,31 @@ const installSteps = [
       const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
       const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
+      const agentTablist = document.querySelector<HTMLElement>("[data-agent-tablist]");
       const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
       const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
       const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
 
       function selectAgentTab(selectedId: string) {
         for (const tab of agentTabs) {
-          const isSelected = tab.dataset.agentTab === selectedId;
+          const tabId = tab.dataset.agentTab;
+          const isSelected = tabId === selectedId;
+          tab.setAttribute("role", "tab");
           tab.setAttribute("aria-selected", String(isSelected));
+          if (tabId) tab.setAttribute("aria-controls", `agent-panel-${tabId}`);
           tab.tabIndex = isSelected ? 0 : -1;
         }
 
         for (const panel of agentPanels) {
-          panel.hidden = panel.dataset.agentPanel !== selectedId;
+          const panelId = panel.dataset.agentPanel;
+          panel.setAttribute("role", "tabpanel");
+          if (panelId) panel.setAttribute("aria-labelledby", `agent-tab-${panelId}`);
+          panel.hidden = panelId !== selectedId;
         }
       }
 
       if (agentTabsRoot && agentTabs.length > 0 && agentPanels.length > 0) {
+        agentTablist?.setAttribute("role", "tablist");
         selectAgentTab(agentTabs[0].dataset.agentTab ?? "");
 
         for (const tab of agentTabs) {
@@ -441,23 +469,50 @@ const installSteps = [
         }
       }
 
+      function setCopyFeedback(button: HTMLButtonElement, label: string, timeout = 1600) {
+        button.textContent = label;
+        button.setAttribute("data-copied", "true");
+        window.setTimeout(() => {
+          button.textContent = "Copy";
+          button.removeAttribute("data-copied");
+        }, timeout);
+      }
+
+      function selectTextTarget(target: HTMLElement | null, value: string) {
+        if (target) {
+          target.focus({ preventScroll: true });
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          return;
+        }
+
+        const fallback = document.createElement("textarea");
+        fallback.value = value;
+        fallback.setAttribute("readonly", "");
+        fallback.style.position = "fixed";
+        fallback.style.inset = "0 auto auto 0";
+        fallback.style.opacity = "0";
+        document.body.append(fallback);
+        fallback.focus();
+        fallback.select();
+        window.setTimeout(() => fallback.remove(), 0);
+      }
+
       async function copyValue(button: HTMLButtonElement) {
         const value = button.dataset.copyValue;
         if (!value) return;
 
         try {
           await navigator.clipboard.writeText(value);
-          button.textContent = "Copied";
-          button.setAttribute("data-copied", "true");
-          window.setTimeout(() => {
-            button.textContent = "Copy";
-            button.removeAttribute("data-copied");
-          }, 1600);
+          setCopyFeedback(button, "Copied");
         } catch {
-          button.textContent = "Select text";
-          window.setTimeout(() => {
-            button.textContent = "Copy";
-          }, 2200);
+          const targetId = button.dataset.copyTarget;
+          const target = targetId ? document.getElementById(targetId) : null;
+          selectTextTarget(target, value);
+          setCopyFeedback(button, "Text selected", 2200);
         }
       }
 
@@ -474,6 +529,10 @@ const installSteps = [
           revealTargets.forEach((target) => target.classList.add("is-visible"));
         } else {
           document.documentElement.classList.add("motion-ready");
+          window.setTimeout(() => {
+            revealTargets.forEach((target) => target.classList.add("is-visible"));
+          }, 1800);
+
           const revealObserver = new IntersectionObserver(
             (entries) => {
               for (const entry of entries) {

@@ -14,22 +14,24 @@
   --linen: oklch(97% 0.012 85);
   --paper: oklch(98% 0.014 82);
   --ash: oklch(86% 0.018 78);
-  --ash-strong: oklch(76% 0.025 78);
   --olive: oklch(48% 0.045 110);
   --success: oklch(50% 0.09 145);
-  --danger: oklch(48% 0.13 31);
   --focus: oklch(62% 0.155 35 / 0.72);
   --dark-accent: oklch(86% 0.08 35);
   --dark-selected-panel: oklch(25% 0.016 100);
   --dark-tool: oklch(28% 0.018 100);
-  --decorative-grid: oklch(78% 0.02 78 / 0.35);
-  --decorative-grid-muted: oklch(78% 0.02 78 / 0.33);
-  --decorative-grid-strong: oklch(78% 0.02 78 / 0.38);
   --muted-tool: oklch(54% 0.035 110 / 0.72);
-  --success-glow: oklch(50% 0.09 145 / 0.12);
   --page-warmth: oklch(91% 0.035 42 / 0.52);
   --page-grid-line: oklch(88% 0.018 82 / 0.26);
   --page-grid-line-muted: oklch(88% 0.018 82 / 0.24);
+  --body-sweep: oklch(98% 0.014 82 / 0.55);
+  --header-surface: oklch(98% 0.014 82 / 0.9);
+  --header-shadow: oklch(24% 0.018 100 / 0.06);
+  --trace-surface-start: oklch(98% 0.014 82 / 0.98);
+  --trace-surface-end: oklch(96% 0.018 82 / 0.98);
+  --trace-status-bg: oklch(95% 0.03 145);
+  --trace-status-text: oklch(34% 0.07 145);
+  --trace-shadow: oklch(24% 0.018 100 / 0.08);
   --terminal-success: oklch(72% 0.12 145);
   --terminal-step: oklch(82% 0.08 35);
   --font-sans:
@@ -79,7 +81,7 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, oklch(98% 0.014 82 / 0.55), transparent);
+  background: linear-gradient(90deg, transparent, var(--body-sweep), transparent);
   mix-blend-mode: multiply;
   z-index: -1;
 }
@@ -127,11 +129,11 @@ a {
   padding: 8px;
   border: 1px solid var(--ash);
   border-radius: 20px;
-  background: oklch(98% 0.014 82 / 0.9);
+  background: var(--header-surface);
   position: sticky;
   top: 12px;
   z-index: 10;
-  box-shadow: 0 12px 40px oklch(24% 0.018 100 / 0.06);
+  box-shadow: 0 12px 40px var(--header-shadow);
 }
 
 .brand-mark,
@@ -143,6 +145,7 @@ a {
 
 .brand-mark {
   min-width: 0;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -179,7 +182,7 @@ a {
 
 .top-nav a,
 .header-action {
-  min-height: 42px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -224,11 +227,6 @@ a {
   border: 1px solid var(--ash);
   background: var(--paper);
   color: var(--charred-ink);
-}
-
-.header-action.muted {
-  color: var(--olive);
-  background: transparent;
 }
 
 .icon-link {
@@ -396,9 +394,9 @@ dd {
   border: 1px solid var(--ash);
   border-radius: 28px;
   background:
-    linear-gradient(180deg, oklch(98% 0.014 82 / 0.98), oklch(96% 0.018 82 / 0.98)), var(--paper);
+    linear-gradient(180deg, var(--trace-surface-start), var(--trace-surface-end)), var(--paper);
   overflow: hidden;
-  box-shadow: 0 18px 54px oklch(24% 0.018 100 / 0.08);
+  box-shadow: 0 18px 54px var(--trace-shadow);
 }
 
 .trace-header {
@@ -421,8 +419,8 @@ dd {
   gap: 8px;
   border: 1px solid color-mix(in oklch, var(--success), var(--ash) 45%);
   border-radius: 999px;
-  background: oklch(95% 0.03 145);
-  color: oklch(34% 0.07 145);
+  background: var(--trace-status-bg);
+  color: var(--trace-status-text);
   padding: 5px 9px;
   text-transform: uppercase;
   letter-spacing: 0.055em;
@@ -800,6 +798,7 @@ dd {
 }
 
 .integration-pill {
+  min-height: 44px;
   border: 1px solid var(--night-line);
   border-radius: 999px;
   padding: 10px 12px;
@@ -890,7 +889,7 @@ dd {
 }
 
 .copy-button {
-  min-height: 32px;
+  min-height: 44px;
   display: none;
   align-items: center;
   justify-content: center;
@@ -1150,7 +1149,7 @@ dd {
 
   .top-nav a,
   .header-action {
-    min-height: 42px;
+    min-height: 44px;
     padding-inline: 8px;
     font-size: 0.82rem;
   }
@@ -1192,7 +1191,7 @@ dd {
   }
 
   .copy-button {
-    min-height: 40px;
+    min-height: 44px;
     padding-inline: 12px;
   }
 
