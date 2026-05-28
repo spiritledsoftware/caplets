@@ -1,5 +1,13 @@
 # @caplets/opencode
 
+## 0.4.8
+
+### Patch Changes
+
+- 100a9bb: Add landing page and bump dependencies
+- Updated dependencies [100a9bb]
+  - @caplets/core@0.18.8
+
 ## 0.4.7
 
 ### Patch Changes

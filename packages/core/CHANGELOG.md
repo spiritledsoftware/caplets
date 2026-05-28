@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.18.8
+
+### Patch Changes
+
+- 100a9bb: Add landing page and bump dependencies
+
 ## 0.18.7
 
 ### Patch Changes

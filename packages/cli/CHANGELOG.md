@@ -1,5 +1,13 @@
 # caplets
 
+## 0.17.8
+
+### Patch Changes
+
+- 100a9bb: Add landing page and bump dependencies
+- Updated dependencies [100a9bb]
+  - @caplets/core@0.18.8
+
 ## 0.17.7
 
 ### Patch Changes
