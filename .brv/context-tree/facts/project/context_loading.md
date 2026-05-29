@@ -5,23 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T18:47:50.527Z'
-updatedAt: '2026-05-27T19:18:57.131Z'
+updatedAt: '2026-05-29T09:19:16.143Z'
 ---
 ## Reason
-Curated facts extracted from context
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document project facts
+Document factual statements
 
-**Timestamp:** 2026-05-27T19:18:57.119Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
 Collected factual statements
 
 ### Highlights
-Contains 1 facts
+Extracted 1 facts for context loading
 
 ## Facts
 - **context loading**: The loader looks at the project root by default and falls back to .agents/context/ and docs/ if the root is clean.

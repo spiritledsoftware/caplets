@@ -5,20 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T19:12:30.267Z'
-updatedAt: '2026-05-27T19:12:30.267Z'
+updatedAt: '2026-05-29T09:19:16.146Z'
 ---
 ## Reason
-Curated extracted facts from context
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document extracted facts
+Document factual statements
 
-**Timestamp:** 2026-05-27T19:12:30.245Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
 Extracted facts for IMPECCABLE_CONTEXT_DIR
 
+### Highlights
+Extracted 1 facts for IMPECCABLE_CONTEXT_DIR
+
 ## Facts
-- **IMPECCABLE_CONTEXT_DIR**: The context directory can be overridden with IMPECCABLE_CONTEXT_DIR=path/to/dir (absolute or relative to cwd).
+- **IMPECCABLE_CONTEXT_DIR**: Override the context directory with IMPECCABLE_CONTEXT_DIR=path/to/dir (absolute or relative to cwd).

@@ -1,27 +1,27 @@
 ---
-title: apps/landing/src/pages/index.astro
+title: Apps/landing/src/pages/index.astro
 summary: Facts about apps/landing/src/pages/index.astro
 tags: []
 related: []
 keywords: []
 createdAt: '2026-05-28T13:51:08.350Z'
-updatedAt: '2026-05-28T13:51:08.350Z'
+updatedAt: '2026-05-29T09:19:16.211Z'
 ---
 ## Reason
-Curated extracted facts
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document factual statements about apps/landing/src/pages/index.astro
+Document factual statements
 
-**Timestamp:** 2026-05-28T13:51:08.346Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
 Collected facts for apps/landing/src/pages/index.astro
 
 ### Highlights
-Changed files: apps/landing/src/pages/index.astro
+Extracted 1 facts for apps/landing/src/pages/index.astro
 
 ## Facts
-- **apps/landing/src/pages/index.astro**: Changed files: apps/landing/src/pages/index.astro
+- **apps/landing/src/pages/index.astro**: Updated page title and meta description in apps/landing/src/pages/index.astro.
