@@ -1,5 +1,7 @@
 ---
 import "../styles/global.css";
+import { CheckIcon, Copy01Icon } from "@hugeicons/core-free-icons";
+import HugeIcon from "../components/HugeIcon.astro";
 
 const heroTrace = {
   capability: "github",
@@ -30,6 +32,17 @@ const heroTrace = {
   ],
 };
 
+const heroCommands = [
+  {
+    label: "Install",
+    command: "npm install -g caplets",
+  },
+  {
+    label: "Setup",
+    command: "caplets setup codex",
+  },
+];
+
 const proofStats = [
   {
     value: "106",
@@ -45,6 +58,40 @@ const proofStats = [
     value: "87.8%",
     label: "smaller initial payload",
     detail: "The deterministic benchmark cuts serialized tool metadata before discovery.",
+  },
+];
+
+const proofComparison = [
+  { label: "Direct MCP", value: "106", detail: "flat tools up front" },
+  { label: "Caplets", value: "3", detail: "capability cards first" },
+];
+
+const remoteCommands = {
+  server: `CAPLETS_SERVER_URL=https://caplets.example.com/caplets
+CAPLETS_SERVER_PASSWORD=...
+caplets serve --transport http`,
+  client: `CAPLETS_MODE=remote
+CAPLETS_SERVER_URL=https://caplets.example.com/caplets
+CAPLETS_SERVER_PASSWORD=...
+opencode`,
+};
+
+const remoteEndpoints = [
+  { label: "MCP", value: "/caplets/mcp" },
+  { label: "Control", value: "/caplets/control" },
+  { label: "Health", value: "/caplets/healthz" },
+];
+
+const remoteComparison = [
+  {
+    label: "Without remote Caplets",
+    detail: "Each agent client needs its own provider tokens, OAuth login, and local MCP wiring.",
+    points: ["Repeat auth per client", "Duplicate secrets", "Debug setup in every agent"],
+  },
+  {
+    label: "With remote Caplets",
+    detail: "One server holds provider auth; every agent connects to the same capability surface.",
+    points: ["Auth once on the server", "Reuse from Codex, OpenCode, Pi, Claude", "Inspect, search, schema, call everywhere"],
   },
 ];
 
@@ -112,12 +159,55 @@ pi install npm:@caplets/pi`,
 const lightThemeColor = "oklch(97% 0.012 85)";
 const darkThemeColor = "oklch(18% 0.014 100)";
 
-const context7Steps = [
-  "caplets init",
-  "caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp",
+const exampleCaplets = [
+  {
+    id: "github",
+    name: "GitHub",
+    summary: "A huge hosted MCP surface for repositories, issues, pull requests, branches, commits, and reviews.",
+    why: "Use it when the value is avoiding a giant GitHub tool wall.",
+    path: ["github", "inspect", "search_tools", "get_tool", "call_tool"],
+    steps: [
+      { command: "export GH_TOKEN=github_pat_...", label: "GitHub token export" },
+      {
+        command: "caplets install spiritledsoftware/caplets github",
+        label: "GitHub caplet install command",
+      },
+      { command: 'codex "try using the github caplet"', label: "Codex trial command" },
+    ],
+    help: ["If setup fails, check Node 22+, plugin installation, and ", "GH_TOKEN", "."],
+  },
+  {
+    id: "sourcegraph",
+    name: "Sourcegraph",
+    summary: "Hosted code search for finding examples, references, and implementation patterns across repositories.",
+    why: "Use it when the agent should search code first, then inspect only the matching operations.",
+    path: ["sourcegraph", "inspect", "search_tools", "get_tool", "call_tool"],
+    steps: [
+      {
+        command: "caplets install spiritledsoftware/caplets sourcegraph",
+        label: "Sourcegraph caplet install command",
+      },
+      { command: "caplets auth login sourcegraph", label: "Sourcegraph auth command" },
+      { command: 'codex "try using the sourcegraph caplet"', label: "Codex trial command" },
+    ],
+    help: ["If setup fails, check Node 22+, plugin installation, and Sourcegraph OAuth login."],
+  },
+  {
+    id: "osv",
+    name: "OSV",
+    summary: "A small explicit HTTP API for vulnerability lookups by package, purl, commit, or batch query.",
+    why: "Use it when Caplets should bound a sharp task without exposing arbitrary HTTP calls.",
+    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
+    steps: [
+      {
+        command: "caplets install spiritledsoftware/caplets osv",
+        label: "OSV caplet install command",
+      },
+      { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
+    ],
+    help: ["OSV is public and does not need auth; check Node 22+ and plugin installation."],
+  },
 ];
-
-const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_tool"];
 ---
 
 <html lang="en">
@@ -140,6 +230,8 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
           const theme = localStorage.getItem("caplets-theme");
           if (theme === "light" || theme === "dark") {
             document.documentElement.dataset.theme = theme;
+          } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.dataset.theme = "dark";
           }
         } catch {}
       })();
@@ -157,8 +249,9 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         <span>Caplets</span>
       </a>
       <nav class="top-nav" aria-label="Landing page sections">
-        <a href="#trace">How it works</a>
+        <a href="#trace">How</a>
         <a href="#proof">Benchmark</a>
+        <a href="#remote">Remote</a>
         <a href="#install">Setup</a>
       </nav>
       <div class="header-actions" aria-label="Project links">
@@ -184,7 +277,7 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
             <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
           </svg>
         </button>
-        <a class="header-action icon-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
+        <a class="header-action icon-link npm-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
         </a>
         <a class="header-action icon-link" href="https://github.com/spiritledsoftware/caplets" aria-label="Caplets on GitHub">
@@ -208,6 +301,35 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
             <a class="button primary" href="#install">Add Caplets to your agent</a>
             <a class="button secondary" href="#proof">See the benchmark</a>
           </div>
+          <div class="hero-quickstart" aria-label="Quick install commands">
+            <div class="hero-quickstart-heading">
+              <span>Quick start</span>
+              <a href="#install">More setup options</a>
+            </div>
+            <ol>
+              {heroCommands.map((item, index) => (
+                <li>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <div>
+                    <strong>{item.label}</strong>
+                    <code id={`hero-command-${index + 1}`}>{item.command}</code>
+                  </div>
+                  <button
+                    class="copy-button hero-copy-button"
+                    type="button"
+                    aria-label={`Copy ${item.label.toLowerCase()} command`}
+                    aria-controls={`hero-command-${index + 1}`}
+                    data-copy-target={`hero-command-${index + 1}`}
+                    data-copy-value={item.command}
+                    data-copy-label={`${item.label.toLowerCase()} command`}
+                  >
+                    <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                    <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
+                  </button>
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
 
         <aside class="trace-reactor" id="trace" aria-label="GitHub capability trace example">
@@ -228,7 +350,13 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
             </dl>
             <ol class="trace-steps" aria-label="Progressive disclosure trace" data-reactor-steps>
               {heroTrace.steps.map((step, index) => (
-                <li data-reactor-step={index} class={index === 0 ? "is-active" : undefined}>
+                <li
+                  data-reactor-step={index}
+                  class={index === 0 ? "is-active" : undefined}
+                  role="button"
+                  tabindex="0"
+                  aria-label={`Show trace step ${index + 1}: ${step.label}`}
+                >
                   <div>
                     <span class="trace-label">{step.label}</span>
                     <p>{step.detail}</p>
@@ -237,6 +365,11 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
                 </li>
               ))}
             </ol>
+            <div class="trace-mobile-output" aria-live="polite" data-reactor-mobile-output>
+              <span>{heroTrace.steps[0].label}</span>
+              <code>{heroTrace.steps[0].result}</code>
+              <p>{heroTrace.steps[0].detail}</p>
+            </div>
             <div class="reactor-rail" aria-hidden="true">
               <div class="reactor-rail-track">
                 <span class="is-active" data-reactor-dot="0"></span>
@@ -269,13 +402,112 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
             </div>
           ))}
         </dl>
+        <div class="proof-flow" aria-label="Benchmark payload reduction">
+          {proofComparison.map((item, index) => (
+            <>
+              {index > 0 && <span class="proof-arrow" aria-hidden="true">to</span>}
+              <div>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <small>{item.detail}</small>
+              </div>
+            </>
+          ))}
+        </div>
         <a href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md">Read benchmark method</a>
+      </section>
+
+      <section class="remote-story" id="remote" aria-labelledby="remote-story-title">
+        <div class="remote-story-copy">
+          <p class="section-note">Remote Caplets server</p>
+          <h2 id="remote-story-title">Auth into tools once. Use them from every agent.</h2>
+          <p>
+            Run Caplets as a small HTTP service. Provider tokens and OAuth state stay with that
+            server; Codex, OpenCode, Pi, Claude Code, and any MCP client connect to the same
+            capability surface.
+          </p>
+        </div>
+        <div class="remote-compare" aria-label="Remote Caplets before and after">
+          {remoteComparison.map((item) => (
+            <article>
+              <h3>{item.label}</h3>
+              <p>{item.detail}</p>
+              <ul>
+                {item.points.map((point) => <li>{point}</li>)}
+              </ul>
+            </article>
+          ))}
+        </div>
+        <div class="remote-story-grid">
+          <div class="remote-flow" aria-label="Remote Caplets flow">
+            <div>
+              <span>Server owns auth</span>
+              <strong>GitHub, Sourcegraph, OSV</strong>
+            </div>
+            <i aria-hidden="true"></i>
+            <div>
+              <span>Caplets exposes</span>
+              <strong>inspect · search · schema · call</strong>
+            </div>
+            <i aria-hidden="true"></i>
+            <div>
+              <span>Agents reuse it</span>
+              <strong>Codex · OpenCode · Pi · Claude</strong>
+            </div>
+          </div>
+          <div class="remote-snippets">
+            <div class="snippet-block">
+              <div class="snippet-heading">
+                <span class="agent-setup-label">Serve once</span>
+                <button
+                  class="copy-button"
+                  type="button"
+                  aria-label="Copy remote server command"
+                  aria-controls="remote-server-snippet"
+                  data-copy-target="remote-server-snippet"
+                  data-copy-value={remoteCommands.server}
+                  data-copy-label="remote server command"
+                >
+                  <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                  <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
+                </button>
+              </div>
+              <pre id="remote-server-snippet" tabindex="-1"><code>{remoteCommands.server}</code></pre>
+            </div>
+            <div class="snippet-block">
+              <div class="snippet-heading">
+                <span class="agent-setup-label">Use remotely</span>
+                <button
+                  class="copy-button"
+                  type="button"
+                  aria-label="Copy remote client command"
+                  aria-controls="remote-client-snippet"
+                  data-copy-target="remote-client-snippet"
+                  data-copy-value={remoteCommands.client}
+                  data-copy-label="remote client command"
+                >
+                  <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                  <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
+                </button>
+              </div>
+              <pre id="remote-client-snippet" tabindex="-1"><code>{remoteCommands.client}</code></pre>
+            </div>
+          </div>
+        </div>
+        <dl class="remote-endpoints" aria-label="Remote service endpoints">
+          {remoteEndpoints.map((endpoint) => (
+            <div>
+              <dt>{endpoint.label}</dt>
+              <dd>{endpoint.value}</dd>
+            </div>
+          ))}
+        </dl>
       </section>
 
       <section class="integrations" aria-labelledby="integrations-title">
         <div>
-          <p class="section-note">Setup reference</p>
-          <h2 id="integrations-title">Choose the integration your agent should load.</h2>
+          <p class="section-note">Step 1</p>
+          <h2 id="integrations-title">Connect your agent to Caplets.</h2>
         </div>
         <div class="agent-setup-card" data-agent-tabs>
           <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
@@ -311,7 +543,8 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
                         data-copy-value={agent.installCommand}
                         data-copy-label={`${agent.name} install command`}
                       >
-                        Copy
+                        <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                        <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
                       </button>
                     </div>
                     <pre id={`agent-install-snippet-${agent.id}`} tabindex="-1"><code>{agent.installCommand}</code></pre>
@@ -328,7 +561,8 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
                         data-copy-value={agent.configSnippet}
                         data-copy-label={`${agent.name} configuration`}
                       >
-                        Copy
+                        <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                        <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
                       </button>
                     </div>
                     <pre id={`agent-config-snippet-${agent.id}`} tabindex="-1"><code>{agent.configSnippet}</code></pre>
@@ -342,51 +576,68 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
 
       <section class="activation" id="install" aria-labelledby="activation-title">
         <div class="activation-copy">
-          <p class="section-note">Add Caplets to your agent</p>
-          <h2 id="activation-title">Install the integration, then add Context7 as your first capability.</h2>
+          <p class="section-note">Step 2</p>
+          <h2 id="activation-title">Add one caplet and try the capability.</h2>
           <p>
-            Pick the integration above, copy its setup, then add Context7. Your agent should see one
-            <code>context7</code> capability before it sees any downstream tools.
+            Pick the integration above, then try one premade Caplet. Your agent sees one focused
+            capability before it can search or call downstream tools.
           </p>
         </div>
 
-        <div class="context7-setup">
-          <div>
-            <h3>Add Context7</h3>
-            <p>Use this as the first source because it is quick to verify and easy to remove.</p>
-            <div class="discovery-path" aria-label="Expected discovery path">
-              {discoveryPath.map((step, index) => index === 0 ? <code>{step}</code> : <span>{step}</span>)}
-            </div>
-            <p class="setup-help">If setup fails, check Node 22+, <code>npx</code>, plugin installation, and your MCP client command configuration.</p>
-          </div>
-          <div class="terminal" role="region" aria-label="Context7 source commands">
-            <div class="terminal-bar" aria-hidden="true">
-              <span></span><span></span><span></span>
-            </div>
-            <ol>
-              {context7Steps.map((step, index) => (
-                <li>
-                  <code id={`context7-step-${index + 1}`} tabindex="-1">{step}</code>
-                  {(() => {
-                    const copyLabel =
-                      index === 0 ? "Context7 init command" : "Context7 source command";
-                    return (
-                  <button
-                    class="copy-button terminal-copy"
-                    type="button"
-                    aria-label={`Copy ${copyLabel}`}
-                    aria-controls={`context7-step-${index + 1}`}
-                    data-copy-target={`context7-step-${index + 1}`}
-                    data-copy-value={step}
-                    data-copy-label={copyLabel}
-                  >
-                    Copy
-                  </button>
-                    );
-                  })()}
-                </li>
+        <div class="caplet-examples" data-caplet-examples>
+          <div class="example-bar">
+            <div class="example-tabs" aria-label="Premade Caplet examples" data-example-tablist>
+              {exampleCaplets.map((example) => (
+                <button class="example-tab" id={`example-tab-${example.id}`} type="button" data-example-tab={example.id}>
+                  {example.name}
+                </button>
               ))}
-            </ol>
+            </div>
+            <a class="example-more" href="https://github.com/spiritledsoftware/caplets/tree/main/caplets">
+              Explore more Caplets
+            </a>
+          </div>
+
+          <div class="example-panels">
+            {exampleCaplets.map((example) => (
+              <article class="example-panel" id={`example-panel-${example.id}`} data-example-panel={example.id}>
+                <div>
+                  <h3>Add {example.name}</h3>
+                  <p>{example.summary}</p>
+                  <p>{example.why}</p>
+                  <div class="discovery-path" aria-label={`${example.name} expected discovery path`}>
+                    {example.path.map((step, index) => index === 0 ? <code>{step}</code> : <span><code>{step}</code></span>)}
+                  </div>
+                  <p class="setup-help">
+                    {example.help.map((part) => part === "GH_TOKEN" ? <code>{part}</code> : part)}
+                  </p>
+                </div>
+                <div class="terminal" role="region" aria-label={`${example.name} capability commands`}>
+                  <div class="terminal-bar" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <ol>
+                    {example.steps.map((step, index) => (
+                      <li>
+                        <code id={`${example.id}-step-${index + 1}`} tabindex="-1">{step.command}</code>
+                        <button
+                          class="copy-button terminal-copy"
+                          type="button"
+                          aria-label={`Copy ${step.label}`}
+                          aria-controls={`${example.id}-step-${index + 1}`}
+                          data-copy-target={`${example.id}-step-${index + 1}`}
+                          data-copy-value={step.command}
+                          data-copy-label={step.label}
+                        >
+                          <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                          <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </article>
+            ))}
           </div>
         </div>
       </section>
@@ -425,6 +676,10 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
       const agentTablist = document.querySelector<HTMLElement>("[data-agent-tablist]");
       const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
       const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
+      const exampleTabsRoot = document.querySelector<HTMLElement>("[data-caplet-examples]");
+      const exampleTablist = document.querySelector<HTMLElement>("[data-example-tablist]");
+      const exampleTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-example-tab]"));
+      const examplePanels = Array.from(document.querySelectorAll<HTMLElement>("[data-example-panel]"));
       const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
       const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
       const themeToggle = document.querySelector<HTMLButtonElement>("[data-theme-toggle]");
@@ -450,6 +705,14 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         return getStoredTheme() ?? (systemThemeQuery.matches ? "dark" : "light");
       }
 
+      function applyResolvedTheme(theme: "light" | "dark") {
+        if (theme === "dark") {
+          document.documentElement.dataset.theme = "dark";
+        } else {
+          document.documentElement.dataset.theme = "light";
+        }
+      }
+
       function syncThemeToggle() {
         if (!themeToggle) return;
 
@@ -457,18 +720,22 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
         themeToggle.dataset.resolvedTheme = resolvedTheme;
         themeToggle.setAttribute("aria-label", `Use ${nextTheme} theme`);
-        themeToggle.setAttribute("aria-pressed", String(Boolean(getStoredTheme())));
+        themeToggle.setAttribute("aria-pressed", String(resolvedTheme === "dark"));
       }
 
       function setTheme(theme: "light" | "dark") {
-        document.documentElement.dataset.theme = theme;
+        applyResolvedTheme(theme);
         storeTheme(theme);
         syncThemeToggle();
       }
 
+      applyResolvedTheme(getResolvedTheme());
       syncThemeToggle();
       systemThemeQuery.addEventListener("change", () => {
-        if (!getStoredTheme()) syncThemeToggle();
+        if (!getStoredTheme()) {
+          applyResolvedTheme(getResolvedTheme());
+          syncThemeToggle();
+        }
       });
 
       themeToggle?.addEventListener("click", () => {
@@ -530,14 +797,68 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         }
       }
 
+      function selectExampleTab(selectedId: string) {
+        for (const tab of exampleTabs) {
+          const tabId = tab.dataset.exampleTab;
+          const isSelected = tabId === selectedId;
+          tab.setAttribute("role", "tab");
+          tab.setAttribute("aria-selected", String(isSelected));
+          if (tabId) tab.setAttribute("aria-controls", `example-panel-${tabId}`);
+          tab.tabIndex = isSelected ? 0 : -1;
+        }
+
+        for (const panel of examplePanels) {
+          const panelId = panel.dataset.examplePanel;
+          panel.setAttribute("role", "tabpanel");
+          if (panelId) panel.setAttribute("aria-labelledby", `example-tab-${panelId}`);
+          panel.hidden = panelId !== selectedId;
+        }
+      }
+
+      if (exampleTabsRoot && exampleTabs.length > 0 && examplePanels.length > 0) {
+        exampleTablist?.setAttribute("role", "tablist");
+        selectExampleTab(exampleTabs[0].dataset.exampleTab ?? "");
+
+        for (const tab of exampleTabs) {
+          tab.addEventListener("click", () => {
+            const selectedId = tab.dataset.exampleTab;
+            if (selectedId) selectExampleTab(selectedId);
+          });
+
+          tab.addEventListener("keydown", (event: KeyboardEvent) => {
+            const currentIndex = exampleTabs.indexOf(tab);
+            const lastIndex = exampleTabs.length - 1;
+            const nextIndex =
+              event.key === "ArrowRight"
+                ? currentIndex + 1
+                : event.key === "ArrowLeft"
+                  ? currentIndex - 1
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? lastIndex
+                      : currentIndex;
+            const wrappedIndex = nextIndex < 0 ? lastIndex : nextIndex > lastIndex ? 0 : nextIndex;
+
+            if (wrappedIndex !== currentIndex) {
+              event.preventDefault();
+              const nextTab = exampleTabs[wrappedIndex];
+              const selectedId = nextTab.dataset.exampleTab;
+              nextTab.focus();
+              if (selectedId) selectExampleTab(selectedId);
+            }
+          });
+        }
+      }
+
       function setCopyFeedback(button: HTMLButtonElement, label: string, timeout = 1600) {
         const copyLabel = button.dataset.copyLabel ?? "value";
-        button.textContent = label;
         button.setAttribute("data-copied", "true");
+        button.setAttribute("aria-live", "polite");
         if (copyStatus) copyStatus.textContent = `${label}: ${copyLabel}.`;
         window.setTimeout(() => {
-          button.textContent = "Copy";
           button.removeAttribute("data-copied");
+          button.removeAttribute("aria-live");
         }, timeout);
       }
 
@@ -587,6 +908,7 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
       const reactorSteps = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-step]"));
       const reactorDots = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-dot]"));
       const reactorBeam = document.querySelector<HTMLElement>("[data-reactor-beam]");
+      const reactorMobileOutput = document.querySelector<HTMLElement>("[data-reactor-mobile-output]");
       let reactorStepIndex = 0;
       let reactorTimer = 0;
       let reactorUserPaused = false;
@@ -598,9 +920,7 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
           "--reactor-progress",
           String(reactorSteps.length > 1 ? index / (reactorSteps.length - 1) : 0)
         );
-        if (reactorBeam) {
-          reactorBeam.style.width = `${index * 25}%`;
-        }
+        reactorBeam?.style.setProperty("--reactor-beam-scale", String(index / 3));
 
         for (const step of reactorSteps) {
           step.classList.toggle("is-active", step.dataset.reactorStep === String(index));
@@ -609,29 +929,57 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         for (const dot of reactorDots) {
           dot.classList.toggle("is-active", dot.dataset.reactorDot === String(index));
         }
+
+        const activeStep = reactorSteps[index];
+        if (reactorMobileOutput && activeStep) {
+          const label = activeStep.querySelector<HTMLElement>(".trace-label")?.textContent ?? "";
+          const result = activeStep.querySelector<HTMLElement>("code")?.textContent ?? "";
+          const detail = activeStep.querySelector<HTMLElement>("p")?.textContent ?? "";
+          reactorMobileOutput.replaceChildren();
+          const labelElement = document.createElement("span");
+          labelElement.textContent = label;
+          const resultElement = document.createElement("code");
+          resultElement.textContent = result;
+          const detailElement = document.createElement("p");
+          detailElement.textContent = detail;
+          reactorMobileOutput.append(labelElement, resultElement, detailElement);
+        }
       }
 
-      if (canAnimate && reactorRoot && reactorSteps.length > 0) {
-        const nextReactorStep = () => setReactorStep((reactorStepIndex + 1) % reactorSteps.length);
-        const stopReactorAutoplay = () => {
-          window.clearInterval(reactorTimer);
-          reactorTimer = 0;
-        };
-        const startReactorAutoplay = () => {
-          if (reactorTimer || reactorUserPaused || document.hidden) return;
-          reactorTimer = window.setInterval(nextReactorStep, 2100);
-        };
-        const setUserReactorStep = (index: number) => {
-          reactorUserPaused = true;
-          stopReactorAutoplay();
-          setReactorStep(index);
-        };
+      const stopReactorAutoplay = () => {
+        window.clearInterval(reactorTimer);
+        reactorTimer = 0;
+      };
+      const startReactorAutoplay = () => {
+        if (!canAnimate || reactorTimer || reactorUserPaused || document.hidden) return;
+        reactorTimer = window.setInterval(() => setReactorStep((reactorStepIndex + 1) % reactorSteps.length), 2100);
+      };
+      const setUserReactorStep = (index: number) => {
+        reactorUserPaused = true;
+        stopReactorAutoplay();
+        setReactorStep(index);
+      };
 
+      if (reactorRoot && reactorSteps.length > 0) {
         setReactorStep(0);
         startReactorAutoplay();
 
         for (const step of reactorSteps) {
           step.addEventListener("pointerenter", () => {
+            const index = Number(step.dataset.reactorStep);
+            if (Number.isInteger(index)) setUserReactorStep(index);
+          });
+          step.addEventListener("click", () => {
+            const index = Number(step.dataset.reactorStep);
+            if (Number.isInteger(index)) setUserReactorStep(index);
+          });
+          step.addEventListener("focus", () => {
+            const index = Number(step.dataset.reactorStep);
+            if (Number.isInteger(index)) setUserReactorStep(index);
+          });
+          step.addEventListener("keydown", (event: KeyboardEvent) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
             const index = Number(step.dataset.reactorStep);
             if (Number.isInteger(index)) setUserReactorStep(index);
           });
@@ -658,7 +1006,7 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
       if (canAnimate && "IntersectionObserver" in window) {
         const revealTargets = Array.from(
           document.querySelectorAll<HTMLElement>(
-            ".proof-strip, .activation, .integrations, .agent-setup-panel, .terminal li"
+            ".proof-strip, .remote-story, .activation, .integrations, .agent-setup-panel, .terminal li"
           )
         );
 
@@ -694,5 +1042,8 @@ const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_
         }
       }
     </script>
-  </body>
+  <!-- impeccable-live-start -->
+<script is:inline src="http://localhost:8400/live.js"></script>
+<!-- impeccable-live-end -->
+</body>
 </html>

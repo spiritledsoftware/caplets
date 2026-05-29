@@ -491,8 +491,11 @@ tags:
   - code
   - review
 mcpServer:
-  command: npx
-  args: ["-y", "github-mcp-server"]
+  transport: http
+  url: https://api.githubcopilot.com/mcp
+  auth:
+    type: bearer
+    token: $env:GH_TOKEN
 ---
 
 # GitHub
@@ -586,7 +589,7 @@ normal Markdown links from `CAPLET.md`.
 
 This repository includes polished working examples under [`caplets/`](caplets/):
 
-- `github`: GitHub's official MCP server container, using `GITHUB_PERSONAL_ACCESS_TOKEN`.
+- `github`: GitHub's hosted MCP endpoint, using `GH_TOKEN`.
 - `linear`: Linear's hosted OAuth MCP endpoint.
 - `context7`: Context7 documentation lookup through `@upstash/context7-mcp`.
 - `repo-cli`: Read-oriented repository CLI workflows through `git` and package scripts.
@@ -1023,6 +1026,34 @@ project Caplet files. Adding, editing, disabling, or removing a Caplet updates t
 top-level MCP tool list without restarting Caplets. When an MCP-backed Caplet changes or is
 removed, Caplets closes only that affected downstream connection; unrelated Caplets and
 their downstream connections keep running.
+
+## Quick Integration Setup
+
+Use `caplets setup` to install or configure an agent integration:
+
+```bash
+caplets setup codex
+caplets setup claude-code
+caplets setup opencode
+caplets setup pi
+caplets setup mcp-client --output ./caplets.mcp.json
+```
+
+Preview the actions before changing anything:
+
+```bash
+caplets setup codex --dry-run
+```
+
+For native integrations that should connect to a remote Caplets HTTP service:
+
+```bash
+caplets setup opencode --remote --server-url https://caplets.example.com/caplets
+```
+
+`caplets setup` runs the supported agent installer commands or writes the explicit config
+path you pass with `--output`. It does not store secrets, edit unknown MCP client config
+locations, or start `caplets serve`.
 
 ## Additional Native Integrations
 

@@ -36,6 +36,7 @@ export type CompletionOptions = {
 const optionValueSuggestions: Record<string, Record<string, string[]>> = {
   "*": { "--format": ["markdown", "md", "plain", "json"] },
   serve: { "--transport": ["stdio", "http"] },
+  setup: { "--format": ["plain", "json"] },
   "add:mcp": { "--transport": ["http", "sse"] },
   "add:cli": { "--include": ["git", "gh", "package"] },
 };

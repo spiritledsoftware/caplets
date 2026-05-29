@@ -35,6 +35,13 @@ import {
 } from "./cli/inspection";
 import { installCaplets } from "./cli/install";
 import {
+  formatSetupMenu,
+  runSetup,
+  type SetupCommandRunner,
+  type SetupFormat,
+  type SetupOptions,
+} from "./cli/setup";
+import {
   type CapletsConfig,
   type ConfigSource,
   type LocalOverlayConfigWithSources,
@@ -71,6 +78,7 @@ type CliIO = {
   version?: string;
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
+  runSetupCommand?: SetupCommandRunner;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -254,6 +262,36 @@ export function createProgram(io: CliIO = {}): Command {
       });
       writeOut(`Created ${localMutationTargetLabel(target, io)}Caplets config at ${path}\n`);
     });
+
+  program
+    .command(cliCommands.setup)
+    .description("Install or configure an agent integration for Caplets.")
+    .argument("[integration]", "integration: codex, claude-code, opencode, pi, or mcp-client")
+    .option("--remote", "configure for a remote Caplets server")
+    .option("--server-url <url>", "remote Caplets service base URL")
+    .option("--output <path>", "config path to write for generic MCP setup")
+    .option("--dry-run", "print actions without running commands or writing files")
+    .option("--format <format>", "output format: plain or json", parseSetupFormat)
+    .action(
+      async (
+        integration: string | undefined,
+        options: {
+          remote?: boolean;
+          serverUrl?: string;
+          output?: string;
+          dryRun?: boolean;
+          format?: SetupFormat;
+        },
+      ) => {
+        if (!integration) {
+          writeOut(formatSetupMenu());
+          return;
+        }
+        const setupOptions: SetupOptions = { ...options, env };
+        if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
+        writeOut(await runSetup(integration, setupOptions));
+      },
+    );
 
   program
     .command(cliCommands.list)
@@ -1323,6 +1361,11 @@ function parseOutputFormat(value: string): CliOutputFormat {
         `Expected output format markdown, md, plain, or json; got ${value}`,
       );
   }
+}
+
+function parseSetupFormat(value: string): SetupFormat {
+  if (value === "plain" || value === "json") return value;
+  throw new CapletsError("REQUEST_INVALID", "setup format must be plain or json");
 }
 
 function parseQualifiedTarget(

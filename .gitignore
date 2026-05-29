@@ -21,3 +21,6 @@ benchmark-results/
 
 .env*
 !.env.example
+
+# impeccable
+.impeccable/live

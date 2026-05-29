@@ -2163,6 +2163,148 @@ describe("cli init", () => {
   });
 });
 
+describe("cli setup", () => {
+  it("prints supported integrations when no integration is provided", async () => {
+    const out: string[] = [];
+
+    await runCli(["setup"], { writeOut: (value) => out.push(value) });
+
+    const text = out.join("");
+    expect(text).toContain("Usage: caplets setup <integration>");
+    expect(text).toContain("codex");
+    expect(text).toContain("claude-code");
+    expect(text).toContain("opencode");
+    expect(text).toContain("pi");
+    expect(text).toContain("mcp-client");
+    expect(text).toContain("--dry-run");
+  });
+
+  it("runs Codex setup commands", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup", "codex"], {
+      writeOut: (value) => out.push(value),
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([
+      { command: "codex", args: ["plugin", "marketplace", "add", "spiritledsoftware/caplets"] },
+      { command: "codex", args: ["plugin", "add", "caplets@caplets"] },
+    ]);
+    expect(out.join("")).toContain("Completed Codex setup");
+  });
+
+  it("does not execute commands during dry-run", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup", "codex", "--dry-run"], {
+      writeOut: (value) => out.push(value),
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([]);
+    expect(out.join("")).toContain("Dry run");
+    expect(out.join("")).toContain("codex plugin marketplace add spiritledsoftware/caplets");
+    expect(out.join("")).toContain("codex plugin add caplets@caplets");
+  });
+
+  it("writes a generic MCP client config when output is provided", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-"));
+    const output = join(dir, "nested", "caplets.mcp.json");
+    const out: string[] = [];
+
+    try {
+      await runCli(["setup", "mcp-client", "--output", output], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
+        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
+      });
+      expect(out.join("")).toContain(`completed: wrote ${output}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects generic MCP client setup without output", async () => {
+    await expect(runCli(["setup", "mcp-client"], { writeErr: () => {} })).rejects.toThrow(
+      expect.objectContaining({
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("requires --output <path>"),
+      }) as CapletsError,
+    );
+  });
+
+  it("runs remote OpenCode setup and reports JSON output", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(
+      [
+        "setup",
+        "opencode",
+        "--remote",
+        "--server-url",
+        "https://caplets.example.test/caplets",
+        "--format",
+        "json",
+      ],
+      {
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(commands).toEqual([
+      { command: "opencode", args: ["plugin", "@caplets/opencode", "--global"] },
+    ]);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      integration: "opencode",
+      name: "OpenCode",
+      mode: "remote",
+      dryRun: false,
+      actions: [
+        {
+          command: "opencode plugin @caplets/opencode --global",
+          status: "completed",
+        },
+      ],
+      nextSteps: [
+        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_SERVER_URL=https://caplets.example.test/caplets.",
+        "Keep CAPLETS_SERVER_PASSWORD in your shell or secret manager.",
+      ],
+    });
+  });
+
+  it("wraps setup command failures with the failed command", async () => {
+    await expect(
+      runCli(["setup", "codex"], {
+        writeErr: () => {},
+        runSetupCommand: async () => {
+          throw new Error("missing codex binary");
+        },
+      }),
+    ).rejects.toThrow(
+      expect.objectContaining({
+        code: "SERVER_UNAVAILABLE",
+        message: expect.stringContaining("codex plugin marketplace add spiritledsoftware/caplets"),
+      }) as CapletsError,
+    );
+  });
+});
+
 describe("cli completion commands", () => {
   it("prints completion scripts", async () => {
     const out: string[] = [];

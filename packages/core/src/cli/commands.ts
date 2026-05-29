@@ -6,6 +6,7 @@ export const cliCommands = {
   completeHidden: "__complete",
   serve: "serve",
   init: "init",
+  setup: "setup",
   list: "list",
   install: "install",
   add: "add",
@@ -30,6 +31,7 @@ export const cliCommands = {
 export const topLevelCommandNames = [
   cliCommands.serve,
   cliCommands.init,
+  cliCommands.setup,
   cliCommands.list,
   cliCommands.install,
   cliCommands.add,
@@ -57,6 +59,7 @@ export const cliSubcommands = {
   [cliCommands.auth]: ["login", "logout", "list"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
+  [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
 } as const satisfies Record<string, readonly string[]>;
 
 export const capletIdCommands = new Set<string>([

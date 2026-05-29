@@ -678,8 +678,8 @@ describe("config", () => {
   });
 
   it("keeps repository example Caplets loadable", () => {
-    const originalGithubToken = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    const originalGithubToken = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "test-github-token";
     try {
       const examples = loadCapletFiles(join(import.meta.dirname, "../../..", "caplets"));
 
@@ -694,16 +694,9 @@ describe("config", () => {
       expect(config.mcpServers.github).toMatchObject({
         server: "github",
         name: "GitHub",
-        command: "docker",
-        args: [
-          "run",
-          "-i",
-          "--rm",
-          "-e",
-          "GITHUB_PERSONAL_ACCESS_TOKEN",
-          "ghcr.io/github/github-mcp-server",
-        ],
-        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" },
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp",
+        auth: { type: "bearer", token: "test-github-token" },
       });
       expect(config.mcpServers.linear).toMatchObject({
         server: "linear",
@@ -786,9 +779,9 @@ describe("config", () => {
       });
     } finally {
       if (originalGithubToken === undefined) {
-        delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+        delete process.env.GH_TOKEN;
       } else {
-        process.env.GITHUB_PERSONAL_ACCESS_TOKEN = originalGithubToken;
+        process.env.GH_TOKEN = originalGithubToken;
       }
     }
   });

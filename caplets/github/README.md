@@ -1,9 +1,10 @@
 # GitHub Caplet
 
-This Caplet wraps GitHub's official MCP server container:
+This Caplet wraps GitHub's hosted MCP endpoint:
 
 ```sh
-docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server
+export GH_TOKEN=github_pat_...
+caplets serve
 ```
 
 Install it from this repo:
