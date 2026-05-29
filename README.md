@@ -4,7 +4,7 @@
   <h1>Caplets</h1>
 
   <p>
-    <strong>Give agents capabilities, not tool walls.</strong><br />
+    <strong>Give your agent capabilities, not tools.</strong><br />
     Turn MCP servers, APIs, and commands into focused agent capabilities.
   </p>
 
@@ -28,9 +28,22 @@
 
 Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card first, searchable tools next, inspectable schemas before calls, and preserved results after.
 
-Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
+Stop dumping every operation into context up front. Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a giant flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
 
 For MCP-backed Caplets, the scoped operation set also includes resource discovery and reading, prompt listing and rendering, resource-template discovery, and completion for prompt or template arguments. Non-MCP backends expose focused tool and action operations.
+
+## Try the aha moment
+
+Install Caplets, add Context7, and watch your agent see one capability before it searches downstream tools.
+
+```sh
+npm install -g caplets
+caplets init
+caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp
+caplets serve
+```
+
+In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.8% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `get_tool`, and `call_tool` only when needed.
 
 ## Quick Start
 
@@ -73,7 +86,7 @@ caplets install spiritledsoftware/caplets github linear context7
 Configured Caplets can be invoked directly from the CLI for agent-friendly scripts and smoke tests:
 
 ```sh
-caplets get-caplet context7
+caplets inspect context7
 caplets list-tools context7
 caplets get-tool context7 resolve-library-id
 caplets call-tool context7 resolve-library-id --args '{"libraryName":"react"}'
@@ -871,7 +884,7 @@ an existing destination file.
 ### Caplet Sets
 
 Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
-as one downstream tool and supports the full Caplets operation set: `get_caplet`, `check_backend`,
+as one downstream tool and supports the full Caplets operation set: `inspect`, `check_backend`,
 `list_tools`, `search_tools`, `get_tool`, and `call_tool`.
 
 ```json
@@ -1076,7 +1089,7 @@ Call one exact downstream tool:
 
 Available operations:
 
-- `get_caplet`: return the configured capability card without starting the downstream server.
+- `inspect`: return the configured capability card without starting the downstream server.
 - `check_backend`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
 - `list_tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.
@@ -1086,7 +1099,7 @@ Available operations:
 Requests are strict: operation-specific extra fields are rejected, and `call_tool` requires
 `arguments` to be a JSON object.
 
-Discovery operations (`get_caplet`, `check_backend`, `list_tools`, `search_tools`, and
+Discovery operations (`inspect`, `check_backend`, `list_tools`, `search_tools`, and
 `get_tool`) return wrapper-generated results whose `structuredContent.caplets` field
 identifies the Caplet with `id`, plus backend, operation, status, and elapsed time when
 available. Discovery result objects and compact tool entries also use `id` for the

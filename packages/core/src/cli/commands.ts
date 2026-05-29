@@ -9,7 +9,7 @@ export const cliCommands = {
   list: "list",
   install: "install",
   add: "add",
-  getCaplet: "get-caplet",
+  inspect: "inspect",
   checkBackend: "check-backend",
   listTools: "list-tools",
   searchTools: "search-tools",
@@ -33,7 +33,7 @@ export const topLevelCommandNames = [
   cliCommands.list,
   cliCommands.install,
   cliCommands.add,
-  cliCommands.getCaplet,
+  cliCommands.inspect,
   cliCommands.checkBackend,
   cliCommands.listTools,
   cliCommands.searchTools,
@@ -60,7 +60,7 @@ export const cliSubcommands = {
 } as const satisfies Record<string, readonly string[]>;
 
 export const capletIdCommands = new Set<string>([
-  cliCommands.getCaplet,
+  cliCommands.inspect,
   cliCommands.checkBackend,
   cliCommands.listTools,
   cliCommands.searchTools,

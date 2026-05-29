@@ -554,14 +554,14 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command(cliCommands.getCaplet)
+    .command(cliCommands.inspect)
     .description("Print a configured Caplet card.")
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
-        { operation: "get_caplet" },
+        { operation: "inspect" },
         {
           writeOut,
           writeErr,
@@ -1085,7 +1085,7 @@ async function openBrowser(url: string): Promise<void> {
 
 function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undefined {
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
     case "check_backend":
     case "list_tools":
     case "search_tools":
@@ -1388,7 +1388,7 @@ function localShadowedCompletionTarget(words: string[], config: CapletsConfig): 
     cliCommands.getPrompt,
   ]);
   const capletCommands = new Set<string>([
-    cliCommands.getCaplet,
+    cliCommands.inspect,
     cliCommands.checkBackend,
     cliCommands.listTools,
     cliCommands.searchTools,
@@ -1749,7 +1749,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
   }
   const id = payloadId(payload);
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
       return [
         `## Caplet \`${id}\``,
         "",
@@ -1902,7 +1902,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
   }
   const id = payloadId(payload);
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
       return [
         `Caplet: ${id}`,
         `Name: ${String(payload.name ?? "Unnamed")}`,

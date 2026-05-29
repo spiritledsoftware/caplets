@@ -15,7 +15,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     "Available Caplets native tools:",
     tools,
     "",
-    "Flow: get_caplet when the domain is unfamiliar; use search_tools/list_tools for actions; MCP-backed Caplets may also expose resources, prompts, and completions in their tool schema.",
+    "Flow: inspect when the domain is unfamiliar; use search_tools/list_tools for actions; MCP-backed Caplets may also expose resources, prompts, and completions in their tool schema.",
     "Use fields on call_tool when a non-GraphQL downstream outputSchema allows selecting only needed structured paths.",
   ].join("\n");
 }

@@ -602,7 +602,7 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["get-caplet", "local", "--format", "json"], {
+      await runCli(["inspect", "local", "--format", "json"], {
         writeOut: (value) => out.push(value),
       });
       await runCli(["check-backend", "local", "--format", "json"], {
@@ -765,7 +765,7 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["get-caplet", "local"], { writeOut: (value) => out.push(value) });
+      await runCli(["inspect", "local"], { writeOut: (value) => out.push(value) });
       await runCli(["check-backend", "local"], { writeOut: (value) => out.push(value) });
       await runCli(["list-tools", "local"], { writeOut: (value) => out.push(value) });
       await runCli(["search-tools", "local", "echo", "--limit", "1"], {
@@ -804,7 +804,7 @@ describe("cli init", () => {
       writeCliOperationConfig(configPath);
       process.env.CAPLETS_CONFIG = configPath;
 
-      await runCli(["get-caplet", "local", "--format", "plain"], {
+      await runCli(["inspect", "local", "--format", "plain"], {
         writeOut: (value) => out.push(value),
       });
       await runCli(["list-tools", "local", "--format", "md"], {
@@ -2223,7 +2223,7 @@ describe("cli completion commands", () => {
     const out: string[] = [];
     try {
       writeInspectionConfig(configPath);
-      await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+      await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
         env: { CAPLETS_CONFIG: configPath },
         writeOut: (value) => out.push(value),
       });

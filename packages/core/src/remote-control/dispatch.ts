@@ -27,7 +27,7 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
 type AddKind = "cli" | "mcp" | "openapi" | "graphql" | "http";
 
 const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
-  "get_caplet",
+  "inspect",
   "check_backend",
   "list_tools",
   "search_tools",

@@ -8,7 +8,7 @@ const heroTrace = {
   auth: "token present, redacted",
   steps: [
     {
-      label: "get_caplet",
+      label: "inspect",
       detail: "Show one capability card before any downstream tool list enters context.",
       result: "search_tools · get_tool · call_tool",
     },
@@ -30,45 +30,24 @@ const heroTrace = {
   ],
 };
 
-const capabilityFramework = [
+const proofStats = [
   {
-    title: "One capability first",
-    copy: "Each tool source enters agent context as a focused card with source, status, and next actions, not a long list of operations.",
+    value: "106",
+    label: "flat tools",
+    detail: "Direct MCP aggregation exposes every downstream operation up front.",
   },
   {
-    title: "Schemas before calls",
-    copy: "Agents search inside one capability, then inspect the exact tool schema before they invoke anything.",
+    value: "3",
+    label: "capability cards",
+    detail: "Caplets starts with one focused card per tool source.",
   },
   {
-    title: "Results stay intact",
-    copy: "Caplets preserves structured content, resource links, images, and downstream errors instead of flattening results away.",
-  },
-];
-
-const trustMechanics = [
-  {
-    label: "Source",
-    value: ".caplets/config.json",
-    copy: "Users can see where the capability came from before trusting it.",
-  },
-  {
-    label: "Auth",
-    value: "GITHUB_TOKEN: redacted",
-    copy: "Secrets stay hidden while auth state remains inspectable.",
-  },
-  {
-    label: "Timeout",
-    value: "30s boundary",
-    copy: "Slow or stuck tools fail visibly instead of disappearing into agent context."
-  },
-  {
-    label: "Error",
-    value: "safe message + raw detail scoped",
-    copy: "Recovery information stays useful without leaking sensitive configuration.",
+    value: "87.8%",
+    label: "smaller initial payload",
+    detail: "The deterministic benchmark cuts serialized tool metadata before discovery.",
   },
 ];
 
-const sources = ["MCP", "OpenAPI", "GraphQL", "HTTP", "CLI"];
 const agentSetups = [
   {
     id: "claude-code",
@@ -130,15 +109,15 @@ pi install npm:@caplets/pi`,
   },
 ];
 
-const integrations = agentSetups.map((agent) => agent.name);
-const themeColor = "oklch(97% 0.012 85)";
+const lightThemeColor = "oklch(97% 0.012 85)";
+const darkThemeColor = "oklch(18% 0.014 100)";
 
-const installSteps = [
-  "npm install -g caplets",
+const context7Steps = [
   "caplets init",
-  "caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp",
-  "caplets serve",
+  "caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp",
 ];
+
+const discoveryPath = ["context7", "inspect", "search_tools", "get_tool", "call_tool"];
 ---
 
 <html lang="en">
@@ -150,24 +129,61 @@ const installSteps = [
     <meta name="generator" content={Astro.generator} />
     <meta
       name="description"
-      content="Caplets turns sprawling tool stacks into focused capability cards for coding agents."
+      content="Caplets gives coding agents focused capabilities instead of giant MCP tool walls."
     />
-    <meta name="theme-color" content={themeColor} />
-    <title>Caplets, capability cards for coding agents</title>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content={lightThemeColor} />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content={darkThemeColor} />
+    <title>Caplets, capabilities instead of giant tool walls</title>
+    <script is:inline>
+      (() => {
+        try {
+          const theme = localStorage.getItem("caplets-theme");
+          if (theme === "light" || theme === "dark") {
+            document.documentElement.dataset.theme = theme;
+          }
+        } catch {}
+      })();
+    </script>
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to content</a>
+    <div class="copy-status" role="status" aria-live="polite" aria-atomic="true" data-copy-status></div>
     <header class="site-header" aria-label="Primary navigation">
       <a class="brand-mark" href="/" aria-label="Caplets home">
-        <img src="/icon.png" alt="" width="32" height="32" />
+        <picture class="brand-icon">
+          <source srcset="/icon-header-dark.png" media="(prefers-color-scheme: dark)" />
+          <img src="/icon-header-light.png" alt="" width="32" height="32" />
+        </picture>
         <span>Caplets</span>
       </a>
-      <nav class="top-nav" aria-label="Page sections">
-        <a href="#trace"><span>01</span> Trace</a>
-        <a href="#proof"><span>02</span> Proof</a>
-        <a href="#install"><span>03</span> Install</a>
+      <nav class="top-nav" aria-label="Landing page sections">
+        <a href="#trace">How it works</a>
+        <a href="#proof">Benchmark</a>
+        <a href="#install">Setup</a>
       </nav>
       <div class="header-actions" aria-label="Project links">
+        <button
+          class="header-action icon-link theme-toggle"
+          type="button"
+          aria-label="Use light theme"
+          aria-pressed="false"
+          data-theme-toggle
+        >
+          <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2"></path>
+            <path d="M12 20v2"></path>
+            <path d="m4.93 4.93 1.41 1.41"></path>
+            <path d="m17.66 17.66 1.41 1.41"></path>
+            <path d="M2 12h2"></path>
+            <path d="M20 12h2"></path>
+            <path d="m6.34 17.66-1.41 1.41"></path>
+            <path d="m19.07 4.93-1.41 1.41"></path>
+          </svg>
+          <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+        </button>
         <a class="header-action icon-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
         </a>
@@ -182,130 +198,84 @@ const installSteps = [
     <main id="main">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="kicker">Capability cards for coding agents</p>
-          <h1 id="hero-title">Give agents capabilities, not tool walls.</h1>
+          <p class="kicker">Agent tools without the wall</p>
+          <h1 id="hero-title">Give your agent capabilities, not tools</h1>
           <p class="hero-lede">
-            Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card
-            first, searchable tools next, inspectable schemas before calls, and preserved results after.
-          </p>
-          <p class="hero-definition">
-            Wrap each MCP server, API, or command set as a capability an agent can discover, inspect,
-            call, and recover from one step at a time.
+            Caplets wraps MCP servers, APIs, and commands as focused capabilities. Your agent picks a source,
+            searches inside it, inspects the schema, then calls the tool.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
-            <a class="button primary" href="#install">Install Caplets</a>
-            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">Inspect the repo</a>
+            <a class="button primary" href="#install">Add Caplets to your agent</a>
+            <a class="button secondary" href="#proof">See the benchmark</a>
           </div>
-          <dl class="hero-facts" aria-label="Supported capability sources">
-            <div>
-              <dt>Sources</dt>
-              <dd>{sources.join(" · ")}</dd>
-            </div>
-            <div>
-              <dt>Clients</dt>
-              <dd>{integrations.join(" · ")}</dd>
-            </div>
-          </dl>
         </div>
 
-        <aside class="trace-stage" id="trace" aria-label="GitHub capability trace example">
-          <div class="trace-header">
-            <span class="trace-status" aria-label={`Capability status: ${heroTrace.status}`}>{heroTrace.status}</span>
-            <span>{heroTrace.capability}</span>
+        <aside class="trace-reactor" id="trace" aria-label="GitHub capability trace example">
+          <div class="reactor-shell">
+            <div class="trace-header">
+              <span class="trace-status" aria-label={`Capability status: ${heroTrace.status}`}>{heroTrace.status}</span>
+              <span>{heroTrace.capability}</span>
+            </div>
+            <dl class="trace-metadata" aria-label="Capability metadata">
+              <div>
+                <dt>source</dt>
+                <dd>{heroTrace.source}</dd>
+              </div>
+              <div>
+                <dt>auth</dt>
+                <dd>{heroTrace.auth}</dd>
+              </div>
+            </dl>
+            <ol class="trace-steps" aria-label="Progressive disclosure trace" data-reactor-steps>
+              {heroTrace.steps.map((step, index) => (
+                <li data-reactor-step={index} class={index === 0 ? "is-active" : undefined}>
+                  <div>
+                    <span class="trace-label">{step.label}</span>
+                    <p>{step.detail}</p>
+                  </div>
+                  <code>{step.result}</code>
+                </li>
+              ))}
+            </ol>
+            <div class="reactor-rail" aria-hidden="true">
+              <div class="reactor-rail-track">
+                <span class="is-active" data-reactor-dot="0"></span>
+                <span data-reactor-dot="1"></span>
+                <span data-reactor-dot="2"></span>
+                <span data-reactor-dot="3"></span>
+                <i data-reactor-beam></i>
+              </div>
+              <div class="reactor-rail-labels">
+                <span>caplet</span>
+                <span>search</span>
+                <span>schema</span>
+                <span>call</span>
+              </div>
+            </div>
           </div>
-          <dl class="trace-metadata" aria-label="Capability metadata">
-            <div>
-              <dt>source</dt>
-              <dd>{heroTrace.source}</dd>
-            </div>
-            <div>
-              <dt>auth</dt>
-              <dd>{heroTrace.auth}</dd>
-            </div>
-          </dl>
-          <ol class="trace-steps" aria-label="Progressive disclosure trace">
-            {heroTrace.steps.map((step) => (
-              <li>
-                <div>
-                  <span class="trace-label">{step.label}</span>
-                  <p>{step.detail}</p>
-                </div>
-                <code>{step.result}</code>
-              </li>
-            ))}
-          </ol>
         </aside>
       </section>
 
-      <section class="problem" aria-labelledby="problem-title">
-        <div class="section-heading">
-          <p class="section-note">The tool wall problem</p>
-          <h2 id="problem-title">Flat tool lists force agents to choose before they understand.</h2>
+      <section class="proof-strip" id="proof" aria-label="Deterministic benchmark proof">
+        <div class="proof-strip-copy">
+          <span>Deterministic benchmark</span>
+          <p>Direct MCP aggregation exposed 106 flat tools. Caplets started with 3 capability cards and an 87.8% smaller initial payload.</p>
         </div>
-        <div class="comparison" aria-label="Comparison between direct aggregation and Caplets">
-          <article class="dense-list" aria-labelledby="before-title">
-            <h3 id="before-title">Before</h3>
-            <p>Every operation enters context before the agent knows which one matters.</p>
-            <div class="tool-noise" aria-hidden="true">
-              {Array.from({ length: 24 }).map((_, index) => <span>tool_{index + 1}</span>)}
+        <dl class="proof-strip-stats">
+          {proofStats.map((stat) => (
+            <div>
+              <dt>{stat.label}</dt>
+              <dd>{stat.value}</dd>
             </div>
-          </article>
-          <article class="ordered-flow" aria-labelledby="after-title">
-            <h3 id="after-title">After</h3>
-            <p>Agents choose a capability, then inspect only the operations inside it.</p>
-            <ol>
-              <li><strong>Choose</strong><span>github</span></li>
-              <li><strong>Inspect</strong><span>search_tools</span></li>
-              <li><strong>Resolve</strong><span>get_tool</span></li>
-              <li><strong>Invoke</strong><span>call_tool</span></li>
-            </ol>
-          </article>
-        </div>
-      </section>
-
-      <section class="proof" id="proof" aria-labelledby="proof-title">
-        <div class="section-heading narrow">
-          <p class="section-note">Capability-shaped tools</p>
-          <h2 id="proof-title">A tool source is safer for agents when it reveals itself in stages.</h2>
-        </div>
-        <div class="proof-list">
-          {capabilityFramework.map((point, index) => (
-            <article class="proof-item">
-              <p class="proof-eyebrow">0{index + 1}</p>
-              <h3>{point.title}</h3>
-              <p>{point.copy}</p>
-            </article>
           ))}
-        </div>
-      </section>
-
-      <section class="trust" aria-labelledby="trust-title">
-        <div class="section-heading">
-          <p class="section-note">Trust before invocation</p>
-          <h2 id="trust-title">Trust is visible before the call.</h2>
-        </div>
-        <div class="trust-grid">
-          {trustMechanics.map((item) => (
-            <article class="trust-item">
-              <span class="agent-setup-label">{item.label}</span>
-              <code>{item.value}</code>
-              <p>{item.copy}</p>
-            </article>
-          ))}
-        </div>
-        <div class="trust-error" role="note" aria-label="Safe error example">
-          <span class="agent-setup-label">Safe recovery example</span>
-          <p>
-            If a tool fails, Caplets keeps the error scoped to that capability, preserves useful
-            recovery detail, and redacts sensitive configuration before it reaches the agent.
-          </p>
-        </div>
+        </dl>
+        <a href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md">Read benchmark method</a>
       </section>
 
       <section class="integrations" aria-labelledby="integrations-title">
         <div>
-          <p class="section-note">Works where agents work</p>
-          <h2 id="integrations-title">Run Caplets from the coding agent you already use.</h2>
+          <p class="section-note">Setup reference</p>
+          <h2 id="integrations-title">Choose the integration your agent should load.</h2>
         </div>
         <div class="agent-setup-card" data-agent-tabs>
           <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
@@ -335,9 +305,11 @@ const installSteps = [
                       <button
                         class="copy-button"
                         type="button"
+                        aria-label={`Copy ${agent.name} install command`}
                         aria-controls={`agent-install-snippet-${agent.id}`}
                         data-copy-target={`agent-install-snippet-${agent.id}`}
                         data-copy-value={agent.installCommand}
+                        data-copy-label={`${agent.name} install command`}
                       >
                         Copy
                       </button>
@@ -350,9 +322,11 @@ const installSteps = [
                       <button
                         class="copy-button"
                         type="button"
+                        aria-label={`Copy ${agent.name} configuration`}
                         aria-controls={`agent-config-snippet-${agent.id}`}
                         data-copy-target={`agent-config-snippet-${agent.id}`}
                         data-copy-value={agent.configSnippet}
+                        data-copy-label={`${agent.name} configuration`}
                       >
                         Copy
                       </button>
@@ -366,41 +340,60 @@ const installSteps = [
         </div>
       </section>
 
-      <section class="install" id="install" aria-labelledby="install-title">
-        <div class="install-copy">
-          <p class="kicker">Start with one tool source</p>
-          <h2 id="install-title">Install Caplets, add a source, serve capabilities.</h2>
+      <section class="activation" id="install" aria-labelledby="activation-title">
+        <div class="activation-copy">
+          <p class="section-note">Add Caplets to your agent</p>
+          <h2 id="activation-title">Install the integration, then add Context7 as your first capability.</h2>
           <p>
-            Caplets can run as a universal MCP server, a native Pi or OpenCode tool layer, or a remote
-            HTTP service for shared environments.
+            Pick the integration above, copy its setup, then add Context7. Your agent should see one
+            <code>context7</code> capability before it sees any downstream tools.
           </p>
         </div>
-        <div class="terminal" role="region" aria-label="Installation commands">
-          <div class="terminal-bar" aria-hidden="true">
-            <span></span><span></span><span></span>
+
+        <div class="context7-setup">
+          <div>
+            <h3>Add Context7</h3>
+            <p>Use this as the first source because it is quick to verify and easy to remove.</p>
+            <div class="discovery-path" aria-label="Expected discovery path">
+              {discoveryPath.map((step, index) => index === 0 ? <code>{step}</code> : <span>{step}</span>)}
+            </div>
+            <p class="setup-help">If setup fails, check Node 22+, <code>npx</code>, plugin installation, and your MCP client command configuration.</p>
           </div>
-          <ol>
-            {installSteps.map((step, index) => (
-              <li>
-                <code id={`install-step-${index + 1}`} tabindex="-1">{step}</code>
-                <button
-                  class="copy-button terminal-copy"
-                  type="button"
-                  aria-controls={`install-step-${index + 1}`}
-                  data-copy-target={`install-step-${index + 1}`}
-                  data-copy-value={step}
-                >
-                  Copy
-                </button>
-              </li>
-            ))}
-          </ol>
+          <div class="terminal" role="region" aria-label="Context7 source commands">
+            <div class="terminal-bar" aria-hidden="true">
+              <span></span><span></span><span></span>
+            </div>
+            <ol>
+              {context7Steps.map((step, index) => (
+                <li>
+                  <code id={`context7-step-${index + 1}`} tabindex="-1">{step}</code>
+                  {(() => {
+                    const copyLabel =
+                      index === 0 ? "Context7 init command" : "Context7 source command";
+                    return (
+                  <button
+                    class="copy-button terminal-copy"
+                    type="button"
+                    aria-label={`Copy ${copyLabel}`}
+                    aria-controls={`context7-step-${index + 1}`}
+                    data-copy-target={`context7-step-${index + 1}`}
+                    data-copy-value={step}
+                    data-copy-label={copyLabel}
+                  >
+                    Copy
+                  </button>
+                    );
+                  })()}
+                </li>
+              ))}
+            </ol>
+          </div>
         </div>
       </section>
     </main>
 
     <footer class="site-footer">
-      <p>Caplets gives agents capabilities, not tool walls.</p>
+      <p>Caplets gives agents capabilities, not giant tool walls.</p>
       <a href="https://www.npmjs.com/package/caplets">npm package</a>
       <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
     </footer>
@@ -433,6 +426,55 @@ const installSteps = [
       const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
       const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
       const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
+      const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
+      const themeToggle = document.querySelector<HTMLButtonElement>("[data-theme-toggle]");
+      const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const themeStorageKey = "caplets-theme";
+
+      function getStoredTheme() {
+        try {
+          const theme = localStorage.getItem(themeStorageKey);
+          return theme === "light" || theme === "dark" ? theme : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function storeTheme(theme: "light" | "dark") {
+        try {
+          localStorage.setItem(themeStorageKey, theme);
+        } catch {}
+      }
+
+      function getResolvedTheme() {
+        return getStoredTheme() ?? (systemThemeQuery.matches ? "dark" : "light");
+      }
+
+      function syncThemeToggle() {
+        if (!themeToggle) return;
+
+        const resolvedTheme = getResolvedTheme();
+        const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
+        themeToggle.dataset.resolvedTheme = resolvedTheme;
+        themeToggle.setAttribute("aria-label", `Use ${nextTheme} theme`);
+        themeToggle.setAttribute("aria-pressed", String(Boolean(getStoredTheme())));
+      }
+
+      function setTheme(theme: "light" | "dark") {
+        document.documentElement.dataset.theme = theme;
+        storeTheme(theme);
+        syncThemeToggle();
+      }
+
+      syncThemeToggle();
+      systemThemeQuery.addEventListener("change", () => {
+        if (!getStoredTheme()) syncThemeToggle();
+      });
+
+      themeToggle?.addEventListener("click", () => {
+        const nextTheme = getResolvedTheme() === "dark" ? "light" : "dark";
+        setTheme(nextTheme);
+      });
 
       function selectAgentTab(selectedId: string) {
         for (const tab of agentTabs) {
@@ -489,8 +531,10 @@ const installSteps = [
       }
 
       function setCopyFeedback(button: HTMLButtonElement, label: string, timeout = 1600) {
+        const copyLabel = button.dataset.copyLabel ?? "value";
         button.textContent = label;
         button.setAttribute("data-copied", "true");
+        if (copyStatus) copyStatus.textContent = `${label}: ${copyLabel}.`;
         window.setTimeout(() => {
           button.textContent = "Copy";
           button.removeAttribute("data-copied");
@@ -539,10 +583,82 @@ const installSteps = [
         button.addEventListener("click", () => void copyValue(button));
       }
 
+      const reactorRoot = document.querySelector<HTMLElement>(".trace-reactor");
+      const reactorSteps = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-step]"));
+      const reactorDots = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-dot]"));
+      const reactorBeam = document.querySelector<HTMLElement>("[data-reactor-beam]");
+      let reactorStepIndex = 0;
+      let reactorTimer = 0;
+      let reactorUserPaused = false;
+
+      function setReactorStep(index: number) {
+        reactorStepIndex = index;
+        reactorRoot?.style.setProperty("--reactor-position", String(index));
+        reactorRoot?.style.setProperty(
+          "--reactor-progress",
+          String(reactorSteps.length > 1 ? index / (reactorSteps.length - 1) : 0)
+        );
+        if (reactorBeam) {
+          reactorBeam.style.width = `${index * 25}%`;
+        }
+
+        for (const step of reactorSteps) {
+          step.classList.toggle("is-active", step.dataset.reactorStep === String(index));
+        }
+
+        for (const dot of reactorDots) {
+          dot.classList.toggle("is-active", dot.dataset.reactorDot === String(index));
+        }
+      }
+
+      if (canAnimate && reactorRoot && reactorSteps.length > 0) {
+        const nextReactorStep = () => setReactorStep((reactorStepIndex + 1) % reactorSteps.length);
+        const stopReactorAutoplay = () => {
+          window.clearInterval(reactorTimer);
+          reactorTimer = 0;
+        };
+        const startReactorAutoplay = () => {
+          if (reactorTimer || reactorUserPaused || document.hidden) return;
+          reactorTimer = window.setInterval(nextReactorStep, 2100);
+        };
+        const setUserReactorStep = (index: number) => {
+          reactorUserPaused = true;
+          stopReactorAutoplay();
+          setReactorStep(index);
+        };
+
+        setReactorStep(0);
+        startReactorAutoplay();
+
+        for (const step of reactorSteps) {
+          step.addEventListener("pointerenter", () => {
+            const index = Number(step.dataset.reactorStep);
+            if (Number.isInteger(index)) setUserReactorStep(index);
+          });
+        }
+
+        for (const dot of reactorDots) {
+          dot.addEventListener("pointerenter", () => {
+            const index = Number(dot.dataset.reactorDot);
+            if (Number.isInteger(index)) setUserReactorStep(index);
+          });
+        }
+
+        reactorRoot.addEventListener("pointerleave", () => {
+          reactorUserPaused = false;
+          startReactorAutoplay();
+        });
+
+        document.addEventListener("visibilitychange", () => {
+          stopReactorAutoplay();
+          startReactorAutoplay();
+        });
+      }
+
       if (canAnimate && "IntersectionObserver" in window) {
         const revealTargets = Array.from(
           document.querySelectorAll<HTMLElement>(
-            ".problem, .proof, .trust, .integrations, .install, .proof-item, .trust-item, .trust-error, .agent-setup-panel, .terminal li"
+            ".proof-strip, .activation, .integrations, .agent-setup-panel, .terminal li"
           )
         );
 

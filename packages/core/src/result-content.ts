@@ -232,7 +232,7 @@ function renderDiscoveryWrapper(
     lines.push("## Tool", "", renderToolSummary(asRecord(result?.tool)), "");
   } else if (context.operation === "check_backend") {
     lines.push("## Backend Status", "", renderBackendStatus(result), "");
-  } else if (context.operation === "get_caplet") {
+  } else if (context.operation === "inspect") {
     lines.push("## Caplet", "", renderCapletSummary(result), "");
   }
   lines.push("## Full Result", "", jsonFence(value.result));
