@@ -1,5 +1,13 @@
 # @caplets/pi
 
+## 0.5.9
+
+### Patch Changes
+
+- 9d28137: Add `caplets setup` to install or configure supported agent integrations.
+- Updated dependencies [9d28137]
+  - @caplets/core@0.18.9
+
 ## 0.5.8
 
 ### Patch Changes

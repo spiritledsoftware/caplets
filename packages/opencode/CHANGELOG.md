@@ -1,5 +1,13 @@
 # @caplets/opencode
 
+## 0.4.9
+
+### Patch Changes
+
+- 9d28137: Add `caplets setup` to install or configure supported agent integrations.
+- Updated dependencies [9d28137]
+  - @caplets/core@0.18.9
+
 ## 0.4.8
 
 ### Patch Changes
