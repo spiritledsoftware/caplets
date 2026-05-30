@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.18.9
+
+### Patch Changes
+
+- 9d28137: Add `caplets setup` to install or configure supported agent integrations.
+
 ## 0.18.8
 
 ### Patch Changes
