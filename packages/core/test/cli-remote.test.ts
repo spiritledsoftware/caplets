@@ -27,7 +27,7 @@ describe("remote CLI routing", () => {
       },
     );
 
-    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+    await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: {
         CAPLETS_MODE: "remote",
         CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
@@ -39,7 +39,7 @@ describe("remote CLI routing", () => {
     });
 
     expect(requests).toEqual([
-      { command: "complete_cli", arguments: { shell: "bash", words: ["get-caplet", ""] } },
+      { command: "complete_cli", arguments: { shell: "bash", words: ["inspect", ""] } },
     ]);
     expect(out.join("")).toBe("github\nlinear\n");
   });
@@ -56,14 +56,14 @@ describe("remote CLI routing", () => {
       },
     );
 
-    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+    await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: remoteEnv(context),
       fetch,
       writeOut: (value) => out.push(value),
     });
 
     expect(requests).toEqual([
-      { command: "complete_cli", arguments: { shell: "bash", words: ["get-caplet", ""] } },
+      { command: "complete_cli", arguments: { shell: "bash", words: ["inspect", ""] } },
     ]);
     expect(out.join("")).toBe("local\nremote\n");
   });
@@ -119,7 +119,7 @@ describe("remote CLI routing", () => {
     const err: string[] = [];
     const fetch = vi.fn(async () => Response.json({ ok: false, error: "server unavailable" }));
 
-    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+    await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: {
         CAPLETS_MODE: "remote",
         CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
@@ -140,7 +140,7 @@ describe("remote CLI routing", () => {
     const fetch = vi.fn(async () => Response.json({ ok: true, result: ["remote"] }));
     writeFileSync(context.configPath, "{ invalid json");
 
-    await runCli(["__complete", "--shell", "bash", "--", "get-caplet", ""], {
+    await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: remoteEnv(context),
       fetch,
       writeOut: (value) => out.push(value),

@@ -124,7 +124,7 @@ describe("generated tool request validation", () => {
     };
 
     expect(schema.properties.operation?.enum).toEqual([
-      "get_caplet",
+      "inspect",
       "check_backend",
       "list_tools",
       "search_tools",
@@ -200,11 +200,11 @@ describe("generated tool handlers", () => {
     },
   ];
 
-  it("returns get_caplet without starting downstream", async () => {
+  it("returns inspect without starting downstream", async () => {
     const downstream = { checkServer: vi.fn(), listTools: vi.fn() } as unknown as DownstreamManager;
     const result = (await handleServerTool(
       server,
-      { operation: "get_caplet" },
+      { operation: "inspect" },
       registry,
       downstream,
     )) as any;
@@ -212,7 +212,7 @@ describe("generated tool handlers", () => {
       id: "alpha",
       name: "Alpha",
       backend: "mcp",
-      operation: "get_caplet",
+      operation: "inspect",
       status: "ok",
       elapsedMs: expect.any(Number),
     });
@@ -232,7 +232,7 @@ describe("generated tool handlers", () => {
     expect(downstream.listTools).not.toHaveBeenCalled();
   });
 
-  it("returns OpenAPI get_caplet without requiring an OpenAPI manager", async () => {
+  it("returns OpenAPI inspect without requiring an OpenAPI manager", async () => {
     const openApiConfig = parseConfig({
       openapiEndpoints: {
         users: {
@@ -249,7 +249,7 @@ describe("generated tool handlers", () => {
 
     const result = (await handleServerTool(
       openApiConfig.openapiEndpoints.users!,
-      { operation: "get_caplet" },
+      { operation: "inspect" },
       openApiRegistry,
       downstream,
     )) as any;
@@ -263,7 +263,7 @@ describe("generated tool handlers", () => {
     });
   });
 
-  it("returns HTTP get_caplet without requiring an HTTP manager", async () => {
+  it("returns HTTP inspect without requiring an HTTP manager", async () => {
     const httpConfig = parseConfig({
       httpApis: {
         status: {
@@ -280,7 +280,7 @@ describe("generated tool handlers", () => {
 
     const result = (await handleServerTool(
       httpConfig.httpApis.status!,
-      { operation: "get_caplet" },
+      { operation: "inspect" },
       httpRegistry,
       downstream,
     )) as any;

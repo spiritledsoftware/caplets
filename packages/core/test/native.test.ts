@@ -61,7 +61,7 @@ describe("native Caplets service", () => {
     }
   });
 
-  it("executes get_caplet through the shared operation handler", async () => {
+  it("executes inspect through the shared operation handler", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
         alpha: {
@@ -76,7 +76,7 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      const result = await service.execute("alpha", { operation: "get_caplet" });
+      const result = await service.execute("alpha", { operation: "inspect" });
 
       expect(JSON.stringify(result)).toContain("Alpha");
       expect(JSON.stringify(result)).not.toContain("super-secret");
@@ -99,7 +99,7 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      const result = await service.execute("missing", { operation: "get_caplet" });
+      const result = await service.execute("missing", { operation: "inspect" });
 
       expect(JSON.stringify(result)).toContain("server not found: missing");
     } finally {
@@ -112,7 +112,7 @@ describe("native Caplets service", () => {
     const guidance = nativeCapletsSystemGuidance(["caplets_linear_api__v2"]);
 
     expect(guidance).toContain("caplets_linear_api__v2");
-    expect(guidance).toContain("Flow: get_caplet when the domain is unfamiliar");
+    expect(guidance).toContain("Flow: inspect when the domain is unfamiliar");
     expect(guidance).toContain(
       "Use fields on call_tool when a non-GraphQL downstream outputSchema allows",
     );
@@ -134,7 +134,7 @@ describe("native Caplets service", () => {
 
     expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
     expect(guidance).not.toContain("For unfamiliar tasks, discover safely");
-    expect(guidance).not.toContain("Call caplets_browser with operation get_caplet before");
+    expect(guidance).not.toContain("Call caplets_browser with operation inspect before");
   });
 
   it("reloads native tool metadata after config changes", async () => {

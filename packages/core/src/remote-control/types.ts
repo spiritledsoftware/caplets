@@ -2,7 +2,7 @@ import type { CapletsErrorCode } from "../errors";
 
 export type RemoteCliCommand =
   | "list"
-  | "get_caplet"
+  | "inspect"
   | "check_backend"
   | "list_tools"
   | "search_tools"

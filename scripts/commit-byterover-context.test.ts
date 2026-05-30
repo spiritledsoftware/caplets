@@ -22,5 +22,10 @@ test("ByteRover check warning is advisory and includes manual commit command", (
 });
 
 test("ByteRover context commits use a conventional docs commit message", () => {
-  expect(buildCommitArgs()).toEqual(["commit", "-m", "docs(agents): byterover context"]);
+  expect(buildCommitArgs()).toEqual([
+    "commit",
+    "--no-verify",
+    "-m",
+    "docs(agents): byterover context",
+  ]);
 });

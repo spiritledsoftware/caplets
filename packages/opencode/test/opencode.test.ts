@@ -56,8 +56,8 @@ describe("@caplets/opencode", () => {
     const capletsTool = hooks.tool!.caplets_git_hub as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
-    const result = await capletsTool.execute({ operation: "get_caplet" }, {} as never);
-    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
+    const result = await capletsTool.execute({ operation: "inspect" }, {} as never);
+    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
     expect(result).toContain('"ok": true');
 
     const output = { system: [] as string[] };
@@ -88,7 +88,7 @@ describe("@caplets/opencode", () => {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
-    const result = await capletsTool.execute({ operation: "get_caplet" }, {} as never);
+    const result = await capletsTool.execute({ operation: "inspect" }, {} as never);
 
     expect(result).toContain("Serialization error");
     expect(result).toContain("BigInt");
@@ -117,9 +117,7 @@ describe("@caplets/opencode", () => {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
-    await expect(capletsTool.execute({ operation: "get_caplet" }, {} as never)).resolves.toBe(
-      "null",
-    );
+    await expect(capletsTool.execute({ operation: "inspect" }, {} as never)).resolves.toBe("null");
   });
 
   it("refreshes system guidance for remaining registered tools only", async () => {

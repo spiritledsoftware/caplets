@@ -88,7 +88,7 @@ describe("registry", () => {
     expect(registry.get("status")?.backend).toBe("http");
     const description = capabilityDescription(config.mcpServers.enabled!);
     expect(description).toContain("Enabled Server");
-    expect(description).toContain("Use get_caplet for details when needed");
+    expect(description).toContain("Use inspect for details when needed");
     expect(description).not.toContain("Recommended flow:");
     expect(description).not.toContain("secret-arg");
     expect(description).not.toContain("secret-env-value");
@@ -100,7 +100,7 @@ describe("registry", () => {
     expect(serialized).not.toContain("secret-bearer-value");
 
     const openApiDescription = capabilityDescription(config.openapiEndpoints.users!);
-    expect(openApiDescription).toContain("Use get_caplet for details when needed");
+    expect(openApiDescription).toContain("Use inspect for details when needed");
     const openApiDetail = registry.detail(config.openapiEndpoints.users!);
     expect(openApiDetail).toEqual({
       id: "users",
@@ -117,7 +117,7 @@ describe("registry", () => {
     expect(JSON.stringify(openApiDetail)).not.toContain("secret-token");
 
     const graphQlDescription = capabilityDescription(config.graphqlEndpoints.catalog!);
-    expect(graphQlDescription).toContain("Use get_caplet for details when needed");
+    expect(graphQlDescription).toContain("Use inspect for details when needed");
     const graphQlDetail = registry.detail(config.graphqlEndpoints.catalog!);
     expect(graphQlDetail).toEqual({
       id: "catalog",
@@ -135,7 +135,7 @@ describe("registry", () => {
     expect(JSON.stringify(graphQlDetail)).not.toContain("secret-graphql");
 
     const httpDescription = capabilityDescription(config.httpApis.status!);
-    expect(httpDescription).toContain("Use get_caplet for details when needed");
+    expect(httpDescription).toContain("Use inspect for details when needed");
     const httpDetail = registry.detail(config.httpApis.status!);
     expect(httpDetail).toEqual({
       id: "status",
@@ -151,7 +151,7 @@ describe("registry", () => {
     expect(JSON.stringify(httpDetail)).not.toContain("secret-http");
 
     const cliDescription = capabilityDescription(config.cliTools.repo!);
-    expect(cliDescription).toContain("Use get_caplet for details when needed");
+    expect(cliDescription).toContain("Use inspect for details when needed");
     const cliDetail = registry.detail(config.cliTools.repo!);
     expect(cliDetail).toEqual({
       id: "repo",
@@ -167,7 +167,7 @@ describe("registry", () => {
     });
 
     const capletSetDescription = capabilityDescription(config.capletSets.nested!);
-    expect(capletSetDescription).toContain("Use get_caplet for details when needed");
+    expect(capletSetDescription).toContain("Use inspect for details when needed");
     const capletSetDetail = registry.detail(config.capletSets.nested!);
     expect(capletSetDetail).toEqual({
       id: "nested",

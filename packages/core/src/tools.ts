@@ -45,10 +45,10 @@ export async function handleServerTool(
   );
 
   switch (parsed.operation) {
-    case "get_caplet":
+    case "inspect":
       return jsonResult(
         registry.detail(server),
-        metadataFor(server, "get_caplet", undefined, startedAt),
+        metadataFor(server, "inspect", undefined, startedAt),
       );
     case "check_backend": {
       const result = await backendFor(
@@ -303,7 +303,7 @@ export function validateOperationRequest(
   };
 
   switch (value.operation) {
-    case "get_caplet":
+    case "inspect":
     case "check_backend":
       allowed([]);
       return { operation: value.operation };
@@ -409,7 +409,7 @@ function mcpBackendFor(server: CapletConfig, downstream: DownstreamManager): Dow
 }
 
 type RequiredOperationRequest =
-  | { operation: "get_caplet" | "check_backend" }
+  | { operation: "inspect" | "check_backend" }
   | { operation: "list_tools"; limit?: number }
   | { operation: "search_tools"; query: string; limit?: number }
   | { operation: "get_tool"; tool: string }

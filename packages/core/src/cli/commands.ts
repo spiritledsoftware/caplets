@@ -6,10 +6,11 @@ export const cliCommands = {
   completeHidden: "__complete",
   serve: "serve",
   init: "init",
+  setup: "setup",
   list: "list",
   install: "install",
   add: "add",
-  getCaplet: "get-caplet",
+  inspect: "inspect",
   checkBackend: "check-backend",
   listTools: "list-tools",
   searchTools: "search-tools",
@@ -30,10 +31,11 @@ export const cliCommands = {
 export const topLevelCommandNames = [
   cliCommands.serve,
   cliCommands.init,
+  cliCommands.setup,
   cliCommands.list,
   cliCommands.install,
   cliCommands.add,
-  cliCommands.getCaplet,
+  cliCommands.inspect,
   cliCommands.checkBackend,
   cliCommands.listTools,
   cliCommands.searchTools,
@@ -57,10 +59,11 @@ export const cliSubcommands = {
   [cliCommands.auth]: ["login", "logout", "list"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
+  [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
 } as const satisfies Record<string, readonly string[]>;
 
 export const capletIdCommands = new Set<string>([
-  cliCommands.getCaplet,
+  cliCommands.inspect,
   cliCommands.checkBackend,
   cliCommands.listTools,
   cliCommands.searchTools,

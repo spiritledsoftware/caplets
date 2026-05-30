@@ -42,13 +42,13 @@ describe("dispatchRemoteCliRequest", () => {
     ]);
   });
 
-  it("executes get_caplet through the server engine", async () => {
+  it("executes inspect through the server engine", async () => {
     const context = testContext();
 
     const response = await dispatchRemoteCliRequest(
       {
-        command: "get_caplet",
-        arguments: { caplet: "server_status", request: { operation: "get_caplet" } },
+        command: "inspect",
+        arguments: { caplet: "server_status", request: { operation: "inspect" } },
       },
       context,
     );
@@ -343,7 +343,7 @@ describe("dispatchRemoteCliRequest", () => {
     );
 
     const response = await dispatchRemoteCliRequest(
-      { command: "complete_cli", arguments: { shell: "bash", words: ["get-caplet", ""] } },
+      { command: "complete_cli", arguments: { shell: "bash", words: ["inspect", ""] } },
       context,
     );
 

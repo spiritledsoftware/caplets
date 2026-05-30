@@ -13,7 +13,7 @@ export function checkByteRoverStatus(porcelainOutput: string): ByteRoverStatus {
 }
 
 export function buildCommitArgs(): string[] {
-  return ["commit", "-m", commitMessage];
+  return ["commit", "--no-verify", "-m", commitMessage];
 }
 
 export function formatCheckWarning(): string {

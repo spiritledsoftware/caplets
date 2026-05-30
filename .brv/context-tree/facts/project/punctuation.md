@@ -5,23 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T18:47:50.642Z'
-updatedAt: '2026-05-27T19:18:57.169Z'
+updatedAt: '2026-05-29T09:19:16.207Z'
 ---
 ## Reason
-Curated facts extracted from context
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document project facts
+Document factual statements
 
-**Timestamp:** 2026-05-27T19:18:57.119Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
 Collected factual statements
 
 ### Highlights
-Contains 1 facts
+Extracted 1 facts for punctuation
 
 ## Facts
-- **punctuation**: No em dashes are allowed; use commas, colons, semicolons, periods, or parentheses instead.
+- **punctuation**: No em dashes are allowed in copy; use commas, colons, semicolons, periods, or parentheses.

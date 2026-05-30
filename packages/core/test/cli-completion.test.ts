@@ -80,6 +80,17 @@ describe("CLI completion resolver", () => {
       "stdio",
       "http",
     ]);
+    await expect(completeCliWords(["setup", ""])).resolves.toEqual([
+      "codex",
+      "claude-code",
+      "opencode",
+      "pi",
+      "mcp-client",
+    ]);
+    await expect(completeCliWords(["setup", "codex", "--format", ""])).resolves.toEqual([
+      "plain",
+      "json",
+    ]);
     await expect(completeCliWords(["call-tool", "github.search", "--format", ""])).resolves.toEqual(
       ["markdown", "md", "plain", "json"],
     );
@@ -112,7 +123,7 @@ describe("CLI completion resolver", () => {
     });
     dirs.push(dir);
 
-    await expect(completeCliWords(["get-caplet", ""], { configPath })).resolves.toEqual([
+    await expect(completeCliWords(["inspect", ""], { configPath })).resolves.toEqual([
       "github",
       "repo",
     ]);
@@ -408,7 +419,7 @@ describe("CLI completion resolver", () => {
 
   it("returns no suggestions instead of throwing when config loading fails", async () => {
     await expect(
-      completeCliWords(["get-caplet", ""], { configPath: "/missing/config.json" }),
+      completeCliWords(["inspect", ""], { configPath: "/missing/config.json" }),
     ).resolves.toEqual([]);
   });
 });

@@ -138,8 +138,8 @@ describe("@caplets/pi", () => {
     expect(tool?.name).toBe("caplets_git_hub");
     expect(tool?.promptGuidelines[0]).toContain("caplets_git_hub");
 
-    const result = await tool?.execute("call-1", { operation: "get_caplet" });
-    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
+    const result = await tool?.execute("call-1", { operation: "inspect" });
+    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
     expect(result?.details.result).toEqual({ ok: true });
   });
 
@@ -161,10 +161,10 @@ describe("@caplets/pi", () => {
       registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
     });
 
-    await expect(registered[0]?.execute("call-1", { operation: "get_caplet" })).rejects.toThrow(
+    await expect(registered[0]?.execute("call-1", { operation: "inspect" })).rejects.toThrow(
       "execution failed",
     );
-    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "get_caplet" });
+    expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
   });
 
   it("returns serialization errors in tool details", async () => {
@@ -184,7 +184,7 @@ describe("@caplets/pi", () => {
       registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
     });
 
-    const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
+    const result = await registered[0]?.execute("call-1", { operation: "inspect" });
     expect(result?.content[0]?.text).toContain("Serialization error");
     expect(result?.details.serializationError).toContain("BigInt");
   });
@@ -206,7 +206,7 @@ describe("@caplets/pi", () => {
       registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
     });
 
-    const result = await registered[0]?.execute("call-1", { operation: "get_caplet" });
+    const result = await registered[0]?.execute("call-1", { operation: "inspect" });
     expect(result?.content[0]?.text).toBe("null");
     expect(result?.details).toEqual({ result: undefined });
   });

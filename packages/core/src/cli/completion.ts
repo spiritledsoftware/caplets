@@ -36,6 +36,7 @@ export type CompletionOptions = {
 const optionValueSuggestions: Record<string, Record<string, string[]>> = {
   "*": { "--format": ["markdown", "md", "plain", "json"] },
   serve: { "--transport": ["stdio", "http"] },
+  setup: { "--format": ["plain", "json"] },
   "add:mcp": { "--transport": ["http", "sse"] },
   "add:cli": { "--include": ["git", "gh", "package"] },
 };
@@ -258,6 +259,6 @@ function cmdCompletionScript(): string {
 REM caplets cmd completion helper
 REM cmd.exe has no native programmable completion API. This doskey macro prints suggestions for the current words.
 doskey caplets-complete=caplets __complete --shell cmd -- $* 2^>nul
-REM Usage: caplets-complete get-caplet 
+REM Usage: caplets-complete inspect
 `;
 }

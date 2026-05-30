@@ -1,0 +1,19 @@
+---
+type HugeIconNode = readonly [string, { readonly [key: string]: string | number }];
+
+type Props = {
+  icon: readonly HugeIconNode[];
+  class?: string;
+};
+
+const { icon, class: className } = Astro.props;
+---
+
+<svg class={className} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  {
+    icon.map(([tag, attrs]) => {
+      const Element = tag;
+      return <Element {...attrs} />;
+    })
+  }
+</svg>

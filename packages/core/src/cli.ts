@@ -35,6 +35,13 @@ import {
 } from "./cli/inspection";
 import { installCaplets } from "./cli/install";
 import {
+  formatSetupMenu,
+  runSetup,
+  type SetupCommandRunner,
+  type SetupFormat,
+  type SetupOptions,
+} from "./cli/setup";
+import {
   type CapletsConfig,
   type ConfigSource,
   type LocalOverlayConfigWithSources,
@@ -71,6 +78,7 @@ type CliIO = {
   version?: string;
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
+  runSetupCommand?: SetupCommandRunner;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -254,6 +262,36 @@ export function createProgram(io: CliIO = {}): Command {
       });
       writeOut(`Created ${localMutationTargetLabel(target, io)}Caplets config at ${path}\n`);
     });
+
+  program
+    .command(cliCommands.setup)
+    .description("Install or configure an agent integration for Caplets.")
+    .argument("[integration]", "integration: codex, claude-code, opencode, pi, or mcp-client")
+    .option("--remote", "configure for a remote Caplets server")
+    .option("--server-url <url>", "remote Caplets service base URL")
+    .option("--output <path>", "config path to write for generic MCP setup")
+    .option("--dry-run", "print actions without running commands or writing files")
+    .option("--format <format>", "output format: plain or json", parseSetupFormat)
+    .action(
+      async (
+        integration: string | undefined,
+        options: {
+          remote?: boolean;
+          serverUrl?: string;
+          output?: string;
+          dryRun?: boolean;
+          format?: SetupFormat;
+        },
+      ) => {
+        if (!integration) {
+          writeOut(formatSetupMenu());
+          return;
+        }
+        const setupOptions: SetupOptions = { ...options, env };
+        if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
+        writeOut(await runSetup(integration, setupOptions));
+      },
+    );
 
   program
     .command(cliCommands.list)
@@ -554,14 +592,14 @@ export function createProgram(io: CliIO = {}): Command {
     );
 
   program
-    .command(cliCommands.getCaplet)
+    .command(cliCommands.inspect)
     .description("Print a configured Caplet card.")
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
-        { operation: "get_caplet" },
+        { operation: "inspect" },
         {
           writeOut,
           writeErr,
@@ -1085,7 +1123,7 @@ async function openBrowser(url: string): Promise<void> {
 
 function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undefined {
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
     case "check_backend":
     case "list_tools":
     case "search_tools":
@@ -1325,6 +1363,11 @@ function parseOutputFormat(value: string): CliOutputFormat {
   }
 }
 
+function parseSetupFormat(value: string): SetupFormat {
+  if (value === "plain" || value === "json") return value;
+  throw new CapletsError("REQUEST_INVALID", "setup format must be plain or json");
+}
+
 function parseQualifiedTarget(
   capletOrTarget: string,
   toolArgument?: string | undefined,
@@ -1388,7 +1431,7 @@ function localShadowedCompletionTarget(words: string[], config: CapletsConfig): 
     cliCommands.getPrompt,
   ]);
   const capletCommands = new Set<string>([
-    cliCommands.getCaplet,
+    cliCommands.inspect,
     cliCommands.checkBackend,
     cliCommands.listTools,
     cliCommands.searchTools,
@@ -1749,7 +1792,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
   }
   const id = payloadId(payload);
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
       return [
         `## Caplet \`${id}\``,
         "",
@@ -1902,7 +1945,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
   }
   const id = payloadId(payload);
   switch (operation) {
-    case "get_caplet":
+    case "inspect":
       return [
         `Caplet: ${id}`,
         `Name: ${String(payload.name ?? "Unnamed")}`,

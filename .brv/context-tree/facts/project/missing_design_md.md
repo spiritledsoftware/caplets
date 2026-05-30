@@ -5,16 +5,16 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T18:47:50.588Z'
-updatedAt: '2026-05-27T19:12:30.278Z'
+updatedAt: '2026-05-29T09:19:16.164Z'
 ---
 ## Reason
-Curated extracted facts from context
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document extracted facts
+Document factual statements
 
-**Timestamp:** 2026-05-27T19:12:30.246Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
@@ -24,4 +24,4 @@ Extracted facts for missing DESIGN.md
 Extracted 1 facts for missing DESIGN.md
 
 ## Facts
-- **missing DESIGN.md**: If DESIGN.md is missing, the assistant should nudge the user once per session to run {{command_prefix}}impeccable document.
+- **missing DESIGN.md**: If DESIGN.md is missing, nudge once per session to run {{command_prefix}}impeccable document.

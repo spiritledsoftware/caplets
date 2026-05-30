@@ -9,16 +9,11 @@ tags:
   - issues
   - reviews
 mcpServer:
-  command: docker
-  args:
-    - run
-    - -i
-    - --rm
-    - -e
-    - GITHUB_PERSONAL_ACCESS_TOKEN
-    - ghcr.io/github/github-mcp-server
-  env:
-    GITHUB_PERSONAL_ACCESS_TOKEN: $env:GITHUB_PERSONAL_ACCESS_TOKEN
+  transport: http
+  url: https://api.githubcopilot.com/mcp
+  auth:
+    type: bearer
+    token: $env:GH_TOKEN
 ---
 
 # GitHub
@@ -37,18 +32,18 @@ issues, pull requests, branches, commits, or review feedback.
 ## Use Carefully
 
 - Mutating operations can affect real repositories. Prefer read operations first.
-- Use a least-privilege `GITHUB_PERSONAL_ACCESS_TOKEN`.
+- Use a least-privilege `GH_TOKEN`.
 - Do not ask the agent to expose token values, repository secrets, or private issue contents outside
   the intended conversation.
 
 ## Setup
 
-Create a GitHub personal access token with the minimum repository scopes needed for your workflow,
-then export it before starting Caplets:
+Create a GitHub token with the minimum repository scopes needed for your workflow, then export it
+before starting Caplets:
 
 ```sh
-export GITHUB_PERSONAL_ACCESS_TOKEN=github_pat_...
+export GH_TOKEN=github_pat_...
 caplets serve
 ```
 
-This Caplet uses GitHub's official MCP server container, so Docker must be available on the host.
+This Caplet uses GitHub's hosted MCP endpoint at `https://api.githubcopilot.com/mcp`.

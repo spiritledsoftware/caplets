@@ -424,7 +424,7 @@ describe("createNativeCapletsService remote mode", () => {
     });
     await service.reload();
 
-    await expect(service.execute("local", { operation: "get_caplet" })).resolves.toEqual(
+    await expect(service.execute("local", { operation: "inspect" })).resolves.toEqual(
       expect.objectContaining({ content: expect.any(Array) }),
     );
     await expect(service.execute("remote-only", { input: true })).resolves.toEqual({

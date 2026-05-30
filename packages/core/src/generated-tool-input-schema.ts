@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const operations = [
-  "get_caplet",
+  "inspect",
   "check_backend",
   "list_tools",
   "search_tools",
@@ -27,7 +27,7 @@ export type CapletSchemaBackend = { backend: string };
 
 export const generatedToolInputDescriptions = {
   operation:
-    "Wrapper operation: get_caplet, check_backend, list_tools, search_tools, get_tool, call_tool. MCP Caplets also expose resources, prompts, and completions.",
+    "Wrapper operation: inspect, check_backend, list_tools, search_tools, get_tool, call_tool. MCP Caplets also expose resources, prompts, and completions.",
   query: "Required for search operations only.",
   limit: "Optional list/search result limit.",
   tool: "Exact downstream tool name for get_tool or call_tool.",

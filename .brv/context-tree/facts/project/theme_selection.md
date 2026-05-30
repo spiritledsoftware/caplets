@@ -5,23 +5,23 @@ tags: []
 related: []
 keywords: []
 createdAt: '2026-05-27T19:12:30.296Z'
-updatedAt: '2026-05-27T19:18:57.148Z'
+updatedAt: '2026-05-29T09:19:16.185Z'
 ---
 ## Reason
-Curated facts extracted from context
+Curated factual statements from context extraction
 
 ## Raw Concept
 **Task:**
-Document project facts
+Document factual statements
 
-**Timestamp:** 2026-05-27T19:18:57.119Z
+**Timestamp:** 2026-05-29T09:19:16.120Z
 
 ## Narrative
 ### Structure
 Collected factual statements
 
 ### Highlights
-Contains 1 facts
+Extracted 1 facts for theme selection
 
 ## Facts
-- **theme selection**: Dark vs. light theme is never a default; choose based on a physical scene description.
+- **theme selection**: Dark vs. light theme is never a default; choose based on a concrete physical scene description.
