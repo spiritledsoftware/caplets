@@ -293,8 +293,8 @@ a {
   position: relative;
   display: inline-grid;
   place-items: center;
-  border-color: var(--header-control-ring);
-  background: var(--header-control-bg);
+  border-color: transparent;
+  background: transparent;
 }
 
 .icon-link {
@@ -340,6 +340,17 @@ a {
 .theme-toggle[data-resolved-theme="dark"] .theme-icon-moon {
   opacity: 0;
   transform: scale(0.78) rotate(18deg);
+}
+
+.mobile-menu-toggle,
+.mobile-nav-drawer {
+  display: none;
+}
+
+.header-action-icon {
+  width: 22px;
+  height: 22px;
+  color: currentColor;
 }
 
 main {
@@ -1760,11 +1771,9 @@ dd {
   }
 
   .top-nav {
-    gap: 0;
-    justify-content: center;
+    display: none;
   }
 
-  .top-nav a,
   .header-action {
     min-height: 44px;
     padding-inline: 7px;
@@ -1772,20 +1781,130 @@ dd {
   }
 
   .header-actions {
-    gap: 2px;
+    gap: 6px;
   }
 
   .icon-link {
     width: 44px;
   }
 
-  .npm-link {
+  .mobile-menu-toggle {
+    display: inline-grid;
+  }
+
+  .npm-link,
+  .header-actions > a[aria-label="Caplets on GitHub"] {
     display: none;
   }
 
   .icon-link svg {
     width: 20px;
     height: 20px;
+  }
+
+  .mobile-nav-drawer {
+    width: min(360px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    margin: 0;
+    inset: 10px 10px 10px auto;
+    padding: 0;
+    border: 1px solid var(--ash);
+    border-radius: var(--radius-shell);
+    background: var(--paper);
+    color: var(--charred-ink);
+    overflow: hidden;
+  }
+
+  .mobile-nav-drawer[open] {
+    display: block;
+  }
+
+  .mobile-nav-drawer::backdrop {
+    background: oklch(18% 0.014 100 / 0.42);
+  }
+
+  .mobile-nav-panel {
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .mobile-nav-header {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ash);
+  }
+
+  .mobile-nav-header p,
+  .mobile-nav-header span {
+    margin: 0;
+  }
+
+  .mobile-nav-header p {
+    color: var(--ember-deep);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 760;
+  }
+
+  .mobile-nav-header span {
+    display: block;
+    margin-top: 2px;
+    font-size: 1.2rem;
+    font-weight: 760;
+    letter-spacing: -0.03em;
+  }
+
+  .mobile-nav-links,
+  .mobile-nav-project {
+    display: grid;
+    gap: 6px;
+  }
+
+  .mobile-nav-links a,
+  .mobile-nav-project a {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 1px solid var(--ash);
+    border-radius: var(--radius-control);
+    padding: 10px 12px;
+    color: var(--charred-ink);
+    font-weight: 760;
+    text-decoration: none;
+    transition:
+      background-color 180ms var(--ease-out),
+      border-color 180ms var(--ease-out),
+      color 180ms var(--ease-out);
+  }
+
+  .mobile-nav-drawer[open] .mobile-nav-links a::after,
+  .mobile-nav-drawer[open] .mobile-nav-project a::after {
+    content: "->";
+    color: var(--ember-deep);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+  }
+
+  .mobile-nav-links a:hover,
+  .mobile-nav-project a:hover {
+    border-color: var(--ember);
+    background: var(--parchment);
+  }
+
+  .mobile-nav-project {
+    padding-top: 12px;
+    border-top: 1px solid var(--ash);
+  }
+
+  .mobile-nav-project a {
+    color: var(--olive);
+    font-size: 0.92rem;
   }
 
   .agent-setup-panel {

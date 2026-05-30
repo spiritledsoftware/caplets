@@ -1,6 +1,6 @@
 ---
 import "../styles/global.css";
-import { CheckIcon, Copy01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, CheckIcon, Copy01Icon, Menu01Icon } from "@hugeicons/core-free-icons";
 import HugeIcon from "../components/HugeIcon.astro";
 
 const heroTrace = {
@@ -277,6 +277,16 @@ const exampleCaplets = [
             <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
           </svg>
         </button>
+        <button
+          class="header-action icon-link mobile-menu-toggle"
+          type="button"
+          aria-label="Open navigation menu"
+          aria-controls="mobile-nav"
+          aria-expanded="false"
+          data-mobile-menu-open
+        >
+          <HugeIcon icon={Menu01Icon} class="header-action-icon" />
+        </button>
         <a class="header-action icon-link npm-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
         </a>
@@ -287,6 +297,29 @@ const exampleCaplets = [
         </a>
       </div>
     </header>
+    <dialog class="mobile-nav-drawer" id="mobile-nav" aria-labelledby="mobile-nav-title" data-mobile-menu>
+      <div class="mobile-nav-panel">
+        <div class="mobile-nav-header">
+          <div>
+            <p id="mobile-nav-title">Navigation</p>
+            <span>Caplets</span>
+          </div>
+          <button class="header-action icon-link" type="button" aria-label="Close navigation menu" data-mobile-menu-close>
+            <HugeIcon icon={Cancel01Icon} class="header-action-icon" />
+          </button>
+        </div>
+        <nav class="mobile-nav-links" aria-label="Landing page sections">
+          <a href="#trace" data-mobile-menu-link>How it works</a>
+          <a href="#proof" data-mobile-menu-link>Benchmark</a>
+          <a href="#remote" data-mobile-menu-link>Remote server</a>
+          <a href="#install" data-mobile-menu-link>Setup</a>
+        </nav>
+        <div class="mobile-nav-project" aria-label="Project links">
+          <a href="https://www.npmjs.com/package/caplets" data-mobile-menu-link>npm package</a>
+          <a href="https://github.com/spiritledsoftware/caplets" data-mobile-menu-link>GitHub repo</a>
+        </div>
+      </div>
+    </dialog>
 
     <main id="main">
       <section class="hero" aria-labelledby="hero-title">
@@ -683,6 +716,10 @@ const exampleCaplets = [
       const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
       const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
       const themeToggle = document.querySelector<HTMLButtonElement>("[data-theme-toggle]");
+      const mobileMenu = document.querySelector<HTMLDialogElement>("[data-mobile-menu]");
+      const mobileMenuOpen = document.querySelector<HTMLButtonElement>("[data-mobile-menu-open]");
+      const mobileMenuClose = document.querySelector<HTMLButtonElement>("[data-mobile-menu-close]");
+      const mobileMenuLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>("[data-mobile-menu-link]"));
       const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
       const themeStorageKey = "caplets-theme";
 
@@ -742,6 +779,37 @@ const exampleCaplets = [
         const nextTheme = getResolvedTheme() === "dark" ? "light" : "dark";
         setTheme(nextTheme);
       });
+
+      function openMobileMenu() {
+        if (!mobileMenu || mobileMenu.open) return;
+        mobileMenu.showModal();
+        mobileMenuOpen?.setAttribute("aria-expanded", "true");
+      }
+
+      function closeMobileMenu() {
+        if (!mobileMenu?.open) return;
+        mobileMenu.close();
+      }
+
+      function syncMobileMenuState() {
+        mobileMenuOpen?.setAttribute("aria-expanded", String(Boolean(mobileMenu?.open)));
+      }
+
+      mobileMenuOpen?.addEventListener("click", openMobileMenu);
+      mobileMenuClose?.addEventListener("click", closeMobileMenu);
+      mobileMenu?.addEventListener("close", () => {
+        syncMobileMenuState();
+        mobileMenuOpen?.focus({ preventScroll: true });
+      });
+      mobileMenu?.addEventListener("click", (event: MouseEvent) => {
+        if (event.target === mobileMenu) closeMobileMenu();
+      });
+
+      for (const link of mobileMenuLinks) {
+        link.addEventListener("click", () => {
+          if (mobileMenu?.open) mobileMenu.close();
+        });
+      }
 
       function selectAgentTab(selectedId: string) {
         for (const tab of agentTabs) {
