@@ -40,7 +40,7 @@ This keeps the page focused on the launch campaign and avoids a full visual rese
 - Show the three proof facts compactly:
   - 106 flat tools
   - 3 capability cards
-  - 87.8% smaller initial payload
+  - 87.9% smaller initial payload
 - Link the proof strip to `docs/benchmarks/coding-agent.md` or an equivalent public benchmark URL if available in the site routing.
 - Avoid the hero-metric template. The proof should feel like a benchmark note or evidence row, not a celebratory stats block.
 
@@ -59,7 +59,7 @@ This keeps the page focused on the launch campaign and avoids a full visual rese
   - `caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp`
 - Show expected result inside the agent:
   - The agent starts with a `context7` capability.
-  - The next path is `get_caplet`, `search_tools`, `get_tool`, `call_tool`.
+  - The next path is `inspect`, `search_tools`, `get_tool`, `call_tool`.
 - Add a concise troubleshooting line for common activation blockers: Node version, `npx`, plugin installation, and MCP client configuration.
 - Preserve copy buttons and keyboard accessibility.
 

@@ -43,7 +43,7 @@ caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp
 caplets serve
 ```
 
-In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.8% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `get_tool`, and `call_tool` only when needed.
+In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.9% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `get_tool`, and `call_tool` only when needed.
 
 ## Quick Start
 

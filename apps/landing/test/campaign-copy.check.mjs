@@ -11,7 +11,7 @@ const required = [
   "Give your agent capabilities, not tools",
   "106",
   "3",
-  "87.8%",
+  "87.9%",
   "Remote Caplets server",
   "Auth into tools once. Use them from every agent.",
   "Provider tokens and OAuth state stay with that",
