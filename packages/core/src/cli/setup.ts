@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { CapletsError } from "../errors";
+import { runCapletSetupCli } from "./setup-caplet";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +33,8 @@ export type SetupOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   format?: SetupFormat;
   runCommand?: SetupCommandRunner;
+  yes?: boolean;
+  target?: "local" | "remote" | "cloud";
 };
 
 type SetupAction =
@@ -84,6 +87,13 @@ export function formatSetupMenu(): string {
 }
 
 export async function runSetup(integration: string, options: SetupOptions = {}): Promise<string> {
+  if (!setupIntegrationIds.includes(integration as SetupIntegrationId)) {
+    return await runCapletSetupCli(integration, {
+      ...(options.yes === undefined ? {} : { yes: options.yes }),
+      ...(options.target === undefined ? {} : { target: options.target }),
+      ...(options.remote === undefined ? {} : { remote: options.remote }),
+    });
+  }
   const result = await executeSetup(integration, options);
   if (options.format === "json") return `${JSON.stringify(result, null, 2)}\n`;
   return formatSetupResult(result);

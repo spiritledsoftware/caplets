@@ -38,6 +38,10 @@
     "./native": {
       "types": "./dist/native.d.ts",
       "default": "./dist/native.js"
+    },
+    "./cloud-runtime": {
+      "types": "./dist/cloud-runtime.d.ts",
+      "default": "./dist/cloud-runtime.js"
     }
   },
   "publishConfig": {

@@ -7,7 +7,7 @@ test("Alchemy fetch compatibility shim removes userland undici dispatcher before
     return new Response("ok");
   };
 
-  await import("./alchemy-fetch-compat");
+  await import("./alchemy-fetch-compat.js");
 
   const response = await globalThis.fetch("https://example.test", {
     dispatcher: { dispatch() {} },

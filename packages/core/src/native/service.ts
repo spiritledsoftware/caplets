@@ -1,5 +1,8 @@
 import type { NativeCapletsServiceResolutionInput } from "./options";
 import { resolveNativeCapletsServiceOptions } from "./options";
+import { CapletsCloudClient } from "../cloud/client";
+import { LocalPresenceManager } from "../cloud/presence";
+import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
 import {
   createSdkRemoteCapletsClient,
   RemoteNativeCapletsService,
@@ -76,7 +79,8 @@ export function createNativeCapletsService(
         pollIntervalMs: resolved.remote.pollIntervalMs,
         ...(options.writeErr ? { writeErr: options.writeErr } : {}),
       });
-      return new CompositeNativeCapletsService(remote, local, options);
+      const presence = createLocalPresenceManager(resolved.remote.cloud, local, options);
+      return new CompositeNativeCapletsService(remote, local, options, presence);
     } catch (error) {
       void local.close().catch((closeError) => {
         writeErr(
@@ -154,12 +158,19 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     private readonly remote: NativeCapletsService,
     private readonly local: NativeCapletsService,
     private readonly options: NativeCapletsServiceOptions,
+    private readonly presence?: LocalPresenceManager,
   ) {
     this.unsubscribers = [
       this.remote.onToolsChanged(() => this.updateMergedTools()),
       this.local.onToolsChanged(() => this.updateMergedTools()),
     ];
     this.tools = this.mergeTools();
+    void this.presence?.start().catch((error) => {
+      writeErr(
+        options,
+        `Could not register Caplets Cloud local presence: ${errorMessage(error)}\n`,
+      );
+    });
   }
 
   listTools(): NativeCapletTool[] {
@@ -184,6 +195,11 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (remoteReloaded === undefined || localReloaded === undefined) {
       return false;
     }
+    if (localReloaded) {
+      await this.presence?.updateAllowedCapletIds(
+        this.local.listTools().map((tool) => tool.caplet),
+      );
+    }
     this.updateMergedTools();
     return remoteReloaded || localReloaded;
   }
@@ -202,7 +218,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       unsubscribe();
     }
     this.listeners.clear();
-    await Promise.all([this.remote.close(), this.local.close()]);
+    await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
   }
 
   private updateMergedTools(): void {
@@ -243,6 +259,37 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       return undefined;
     }
   }
+}
+
+function createLocalPresenceManager(
+  cloud: Extract<
+    ReturnType<typeof resolveNativeCapletsServiceOptions>,
+    { mode: "remote" }
+  >["remote"]["cloud"],
+  local: NativeCapletsService,
+  options: NativeCapletsServiceOptions,
+): LocalPresenceManager | undefined {
+  if (!cloud) {
+    return undefined;
+  }
+  const projectRoot = cloud.projectRoot ?? findProjectRoot();
+  const cloudFetch = options.remote?.fetch ?? options.server?.fetch;
+  const clientOptions = {
+    baseUrl: cloud.url,
+    accessToken: cloud.accessToken,
+    ...(cloudFetch ? { fetch: cloudFetch } : {}),
+  };
+  return new LocalPresenceManager({
+    client: new CapletsCloudClient(clientOptions),
+    workspaceId: cloud.workspaceId,
+    projectRoot,
+    projectFingerprint: fingerprintProjectRoot(projectRoot),
+    allowedCapletIds: local.listTools().map((tool) => tool.caplet),
+    heartbeatIntervalMs: cloud.heartbeatIntervalMs,
+    onError: (error) => {
+      writeErr(options, `Caplets Cloud local presence heartbeat failed: ${errorMessage(error)}\n`);
+    },
+  });
 }
 
 function createLocalOverlayConfigLoader(options: NativeCapletsServiceOptions) {

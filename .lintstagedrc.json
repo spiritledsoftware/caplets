@@ -1,4 +1,3 @@
 {
-  "*.{js,jsx,ts,tsx,mjs,cjs}": ["oxfmt --check", "oxlint"],
-  "*.{json,jsonc,md,yml,yaml,css,astro}": "oxfmt --check"
+  "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,md,yml,yaml,css,astro}": ["oxfmt --check", "oxlint"]
 }

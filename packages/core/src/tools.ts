@@ -430,6 +430,23 @@ export type CapletArtifact = {
   pathResolution: "absolute" | "relative-to-mcp-server";
 };
 
+export type CapletExecutionMetadata = {
+  kind: "local" | "remote" | "cloud" | "local-fallback";
+  runtimeId?: string | undefined;
+  sandboxId?: string | undefined;
+  presenceId?: string | undefined;
+  fallback?: boolean | undefined;
+  fallbackReason?: "hosted_runtime_limit_reached" | "hosted_runtime_degraded" | undefined;
+  project?:
+    | {
+        bound: boolean;
+        fingerprint?: string | undefined;
+        syncReceiptId?: string | undefined;
+        applyReceiptId?: string | undefined;
+      }
+    | undefined;
+};
+
 export type CapletResultMetadata = {
   id: string;
   name: string;
@@ -441,6 +458,7 @@ export type CapletResultMetadata = {
   status: "ok" | "error";
   elapsedMs?: number;
   artifacts?: CapletArtifact[];
+  execution?: CapletExecutionMetadata | undefined;
 };
 
 export function metadataFor(
@@ -448,6 +466,7 @@ export function metadataFor(
   operation: RequiredOperationRequest["operation"],
   target?: string | { tool?: string; uri?: string; prompt?: string },
   startedAt?: number,
+  execution?: CapletExecutionMetadata,
 ): CapletResultMetadata {
   const targetFields = typeof target === "string" ? { tool: target } : (target ?? {});
   return {
@@ -458,6 +477,7 @@ export function metadataFor(
     ...targetFields,
     status: "ok",
     ...(startedAt === undefined ? {} : { elapsedMs: Date.now() - startedAt }),
+    ...(execution === undefined ? {} : { execution }),
   };
 }
 

@@ -7,11 +7,27 @@ tags:
   - testing
   - mcp
   - frontend
+setup:
+  commands:
+    - label: Install Playwright MCP
+      command: npm
+      args: ["install", "-g", "@playwright/mcp@0.0.75"]
+      timeoutMs: 120000
+      maxOutputBytes: 200000
+    - label: Install Chromium browser
+      command: npx
+      args: ["playwright", "install", "chromium"]
+      timeoutMs: 180000
+      maxOutputBytes: 200000
+  verify:
+    - label: Check Playwright MCP
+      command: playwright-mcp
+      args: ["--help"]
+      timeoutMs: 10000
+      maxOutputBytes: 20000
 mcpServer:
-  command: npx
+  command: playwright-mcp
   args:
-    - -y
-    - "@playwright/mcp@0.0.75"
     - --headless
 ---
 
@@ -29,7 +45,10 @@ visual inspection, or end-to-end testing workflows.
 
 ## Setup
 
-This Caplet starts Playwright MCP with `npx -y @playwright/mcp@0.0.75 --headless`.
+This Caplet installs `@playwright/mcp@0.0.75` globally with npm, installs the Chromium browser
+runtime with `npx playwright install chromium`, then verifies `playwright-mcp --help`. Setup is
+explicit because browser automation needs both a stable MCP binary and a browser runtime before the
+hosted or local stdio server starts.
 
 Remove `--headless`, or set `PLAYWRIGHT_MCP_HEADLESS=false` in a custom MCP
 environment, to use a visible browser. For advanced settings, create a

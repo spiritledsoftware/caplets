@@ -20,6 +20,7 @@ import {
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
 import { initConfig } from "./cli/init";
+import { formatDoctorReport } from "./cli/doctor";
 import {
   completeCliWords,
   completionScript,
@@ -271,6 +272,8 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--server-url <url>", "remote Caplets service base URL")
     .option("--output <path>", "config path to write for generic MCP setup")
     .option("--dry-run", "print actions without running commands or writing files")
+    .option("--yes", "approve Caplet setup commands for the exact current content hash")
+    .option("--target <target>", "Caplet setup target: local, remote, or cloud", parseSetupTarget)
     .option("--format <format>", "output format: plain or json", parseSetupFormat)
     .action(
       async (
@@ -280,6 +283,8 @@ export function createProgram(io: CliIO = {}): Command {
           serverUrl?: string;
           output?: string;
           dryRun?: boolean;
+          yes?: boolean;
+          target?: "local" | "remote" | "cloud";
           format?: SetupFormat;
         },
       ) => {
@@ -292,6 +297,13 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(await runSetup(integration, setupOptions));
       },
     );
+
+  program
+    .command(cliCommands.doctor)
+    .description("Diagnose Caplets local, remote, and project-sync configuration.")
+    .action(() => {
+      writeOut(formatDoctorReport({ env }));
+    });
 
   program
     .command(cliCommands.list)
@@ -1366,6 +1378,11 @@ function parseOutputFormat(value: string): CliOutputFormat {
 function parseSetupFormat(value: string): SetupFormat {
   if (value === "plain" || value === "json") return value;
   throw new CapletsError("REQUEST_INVALID", "setup format must be plain or json");
+}
+
+function parseSetupTarget(value: string): "local" | "remote" | "cloud" {
+  if (value === "local" || value === "remote" || value === "cloud") return value;
+  throw new CapletsError("REQUEST_INVALID", "setup target must be local, remote, or cloud");
 }
 
 function parseQualifiedTarget(

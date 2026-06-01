@@ -3,6 +3,19 @@ export { runCli, createProgram } from "./cli";
 export { parseConfig, loadConfig } from "./config";
 export { capabilityDescription, ServerRegistry } from "./registry";
 export { generatedToolInputSchema, handleServerTool } from "./tools";
+export type { CapletExecutionMetadata, CapletResultMetadata } from "./tools";
+export type { CapletSetupCommandConfig, CapletSetupConfig } from "./config";
+export { capletSetupContentHash, stableJson } from "./setup/hash";
+export { LocalSetupStore } from "./setup/local-store";
+export { runCapletSetup } from "./setup/runner";
+export type {
+  SetupActor,
+  SetupApproval,
+  SetupAttempt,
+  SetupAttemptStatus,
+  SetupPlan,
+  SetupTargetKind,
+} from "./setup/types";
 export {
   hasRenderableStructuredContent,
   markdownCallToolResultContent,

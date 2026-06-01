@@ -29,6 +29,117 @@
         "maxLength": 80
       }
     },
+    "setup": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable setup or verification step label."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable command to spawn without a shell."
+              },
+              "args": {
+                "description": "Arguments passed to the command.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "description": "Additional environment variables.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "description": "Working directory for this command.",
+                "type": "string",
+                "minLength": 1
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "maxOutputBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["label", "command"],
+            "additionalProperties": false
+          }
+        },
+        "verify": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable setup or verification step label."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable command to spawn without a shell."
+              },
+              "args": {
+                "description": "Arguments passed to the command.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "description": "Additional environment variables.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "description": "Working directory for this command.",
+                "type": "string",
+                "minLength": 1
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "maxOutputBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["label", "command"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Optional explicit setup and verification metadata for this Caplet."
+    },
     "mcpServer": {
       "type": "object",
       "properties": {

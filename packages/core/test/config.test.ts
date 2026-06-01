@@ -89,6 +89,89 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("loads top-level setup metadata from CAPLET.md", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-files-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "ast-grep.md"),
+      [
+        "---",
+        "name: ast-grep",
+        "description: Structural search through ast-grep MCP.",
+        "setup:",
+        "  commands:",
+        "    - label: Install ast-grep MCP",
+        "      command: npm",
+        "      args: [install, -g, ast-grep-mcp]",
+        "      timeoutMs: 120000",
+        "      maxOutputBytes: 200000",
+        "  verify:",
+        "    - label: Check ast-grep MCP",
+        "      command: ast-grep-mcp",
+        "      args: [--version]",
+        "      timeoutMs: 10000",
+        "      maxOutputBytes: 20000",
+        "mcpServer:",
+        "  command: ast-grep-mcp",
+        "---",
+        "",
+        "# ast-grep",
+        "",
+      ].join("\n"),
+    );
+
+    const config = loadCapletFiles(root);
+
+    expect(config?.mcpServers?.["ast-grep"]).toMatchObject({
+      setup: {
+        commands: [
+          {
+            label: "Install ast-grep MCP",
+            command: "npm",
+            args: ["install", "-g", "ast-grep-mcp"],
+            timeoutMs: 120000,
+            maxOutputBytes: 200000,
+          },
+        ],
+        verify: [
+          {
+            label: "Check ast-grep MCP",
+            command: "ast-grep-mcp",
+            args: ["--version"],
+            timeoutMs: 10000,
+            maxOutputBytes: 20000,
+          },
+        ],
+      },
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects setup commands that look like agent tools", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-setup-invalid-"));
+    writeFileSync(
+      join(root, "bad.md"),
+      [
+        "---",
+        "name: Bad",
+        "description: Invalid setup metadata.",
+        "setup:",
+        "  commands:",
+        "    - label: Bad",
+        "      command: npm",
+        "      inputSchema: {}",
+        "mcpServer:",
+        "  command: bad",
+        "---",
+        "",
+      ].join("\n"),
+    );
+
+    expect(() => loadCapletFiles(root)).toThrow(CapletsError);
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("rejects OpenAPI executable backend maps from project config", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-openapi-"));
     const projectConfigPath = join(dir, ".caplets", "config.json");
@@ -688,8 +771,16 @@ describe("config", () => {
       expect(config.mcpServers.context7).toMatchObject({
         server: "context7",
         name: "Context7 Documentation",
-        command: "npx",
-        args: ["-y", "@upstash/context7-mcp"],
+        command: "context7-mcp",
+        setup: {
+          commands: [
+            {
+              label: "Install Context7 MCP",
+              command: "npm",
+              args: ["install", "-g", "@upstash/context7-mcp"],
+            },
+          ],
+        },
       });
       expect(config.mcpServers.github).toMatchObject({
         server: "github",
@@ -708,8 +799,16 @@ describe("config", () => {
       expect(config.mcpServers["ast-grep"]).toMatchObject({
         server: "ast-grep",
         name: "ast-grep",
-        command: "npx",
-        args: ["-y", "ast-grep-mcp"],
+        command: "ast-grep-mcp",
+        setup: {
+          verify: [
+            {
+              label: "Check ast-grep MCP",
+              command: "ast-grep-mcp",
+              args: ["--help"],
+            },
+          ],
+        },
       });
       expect(config.httpApis.osv).toMatchObject({
         server: "osv",
@@ -763,8 +862,22 @@ describe("config", () => {
       expect(config.mcpServers.playwright).toMatchObject({
         server: "playwright",
         name: "Playwright",
-        command: "npx",
-        args: ["-y", "@playwright/mcp@0.0.75", "--headless"],
+        command: "playwright-mcp",
+        args: ["--headless"],
+        setup: {
+          commands: [
+            {
+              label: "Install Playwright MCP",
+              command: "npm",
+              args: ["install", "-g", "@playwright/mcp@0.0.75"],
+            },
+            {
+              label: "Install Chromium browser",
+              command: "npx",
+              args: ["playwright", "install", "chromium"],
+            },
+          ],
+        },
       });
       expect(config.mcpServers.lsp).toMatchObject({
         server: "lsp",

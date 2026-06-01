@@ -61,6 +61,30 @@ const capletRemoteAuthSchema = z
   ])
   .describe("Authentication settings for a remote MCP server.");
 
+const capletSetupCommandSchema = z
+  .object({
+    label: z.string().min(1).describe("Human-readable setup or verification step label."),
+    command: z.string().min(1).describe("Executable command to spawn without a shell."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the command."),
+    env: z.record(z.string(), z.string()).optional().describe("Additional environment variables."),
+    cwd: z.string().min(1).optional().describe("Working directory for this command."),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const capletSetupSchema = z
+  .object({
+    commands: z.array(capletSetupCommandSchema).optional(),
+    verify: z.array(capletSetupCommandSchema).optional(),
+  })
+  .strict()
+  .refine(
+    (setup) => (setup.commands?.length ?? 0) > 0 || (setup.verify?.length ?? 0) > 0,
+    "setup must define at least one command or verify step",
+  )
+  .describe("Optional explicit setup and verification metadata for this Caplet.");
+
 const capletEndpointAuthSchema = z
   .discriminatedUnion("type", [
     z.object({ type: z.literal("none") }).strict(),
@@ -555,6 +579,7 @@ export const capletFileSchema = z
       .array(z.string().trim().min(1).max(80))
       .optional()
       .describe("Optional tags for grouping or searching Caplets."),
+    setup: capletSetupSchema.optional(),
     mcpServer: capletMcpServerSchema
       .describe("MCP server backend configuration for this Caplet.")
       .optional(),
@@ -962,6 +987,7 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
       body,
     };
   }
@@ -975,6 +1001,7 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
       body,
     };
   }
@@ -986,6 +1013,7 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
       body,
     };
   }
@@ -999,6 +1027,7 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
       body,
     };
   }
@@ -1012,6 +1041,7 @@ function capletToServerConfig(
       name: frontmatter.name,
       description: frontmatter.description,
       ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+      ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
       body,
     };
   }
@@ -1021,6 +1051,7 @@ function capletToServerConfig(
     name: frontmatter.name,
     description: frontmatter.description,
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+    ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
     body,
   };
 }

@@ -703,6 +703,124 @@ describe("createNativeCapletsService remote mode", () => {
     vi.useRealTimers();
   });
 
+  it("registers and tears down local presence in cloud remote mode", async () => {
+    const fixture = client();
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (url.pathname.endsWith("/api/presence") && init?.method === "POST") {
+          return Response.json({
+            presenceId: "presence_1",
+            expiresAt: "2026-05-30T00:05:00.000Z",
+          });
+        }
+        if (url.pathname.endsWith("/api/presence/presence_1") && init?.method === "DELETE") {
+          return Response.json({ ok: true });
+        }
+        if (url.pathname.endsWith("/api/presence/presence_1/caplets") && init?.method === "PATCH") {
+          return Response.json({ ok: true });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387", fetch },
+      remote: {
+        cloud: {
+          url: "https://cloud.caplets.dev",
+          accessToken: "token",
+          workspaceId: "ws_1",
+          projectRoot: dirname(projectConfigPath),
+          heartbeatIntervalMs: 60_000,
+        },
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.anything()));
+    await service.close();
+
+    const presenceBodies = fetch.mock.calls
+      .map(([, init]) => init?.body)
+      .filter((body): body is string => typeof body === "string")
+      .map((body) => JSON.parse(body) as { allowedCapletIds?: string[] });
+    expect(presenceBodies[0]?.allowedCapletIds).toEqual(["local"]);
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://cloud.caplets.dev/api/presence/presence_1"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("updates local presence after local overlay reload changes the Caplet set", async () => {
+    const fixture = client();
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (url.pathname.endsWith("/api/presence") && init?.method === "POST") {
+          return Response.json({
+            presenceId: "presence_1",
+            expiresAt: "2026-05-30T00:05:00.000Z",
+          });
+        }
+        if (url.pathname.endsWith("/api/presence/presence_1/caplets") && init?.method === "PATCH") {
+          return Response.json({ ok: true });
+        }
+        if (url.pathname.endsWith("/api/presence/presence_1") && init?.method === "DELETE") {
+          return Response.json({ ok: true });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387", fetch },
+      remote: {
+        cloud: {
+          url: "https://cloud.caplets.dev",
+          accessToken: "token",
+          workspaceId: "ws_1",
+          projectRoot: dirname(projectConfigPath),
+        },
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.anything()));
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+        },
+      }),
+      "utf8",
+    );
+    await service.reload();
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://cloud.caplets.dev/api/presence/presence_1/caplets"),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ allowedCapletIds: ["local"] }),
+      }),
+    );
+    await service.close();
+  });
+
   it("fails fast for invalid remote config", () => {
     expect(() =>
       createNativeCapletsService({ mode: "remote", server: { url: "http://example.com" } }),

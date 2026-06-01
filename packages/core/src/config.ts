@@ -66,6 +66,21 @@ export type RemoteAuthConfig =
       redirectUri?: string | undefined;
     };
 
+export type CapletSetupCommandConfig = {
+  label: string;
+  command: string;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  timeoutMs?: number | undefined;
+  maxOutputBytes?: number | undefined;
+};
+
+export type CapletSetupConfig = {
+  commands?: CapletSetupCommandConfig[] | undefined;
+  verify?: CapletSetupCommandConfig[] | undefined;
+};
+
 export type CapletServerConfig = {
   server: string;
   backend: "mcp";
@@ -84,6 +99,7 @@ export type CapletServerConfig = {
   callTimeoutMs: number;
   toolCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type OpenApiAuthConfig =
@@ -106,6 +122,7 @@ export type OpenApiEndpointConfig = {
   requestTimeoutMs: number;
   operationCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type GraphQlOperationConfig = {
@@ -132,6 +149,7 @@ export type GraphQlEndpointConfig = {
   operationCacheTtlMs: number;
   selectionDepth: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type HttpActionConfig = {
@@ -158,6 +176,7 @@ export type HttpApiConfig = {
   requestTimeoutMs: number;
   maxResponseBytes: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type CliToolOutputConfig = {
@@ -198,6 +217,7 @@ export type CliToolsConfig = {
   timeoutMs: number;
   maxOutputBytes: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type CapletSetConfig = {
@@ -213,6 +233,7 @@ export type CapletSetConfig = {
   maxSearchLimit: number;
   toolCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
 };
 
 export type CapletConfig =
@@ -360,6 +381,29 @@ const openApiAuthSchema = z
   ])
   .describe("Authentication settings for an OpenAPI endpoint.");
 
+const setupCommandSchema = z
+  .object({
+    label: z.string().min(1).describe("Human-readable setup or verification step label."),
+    command: z.string().min(1).describe("Executable command to spawn without a shell."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the command."),
+    env: z.record(z.string(), z.string()).optional().describe("Additional environment variables."),
+    cwd: z.string().min(1).optional().describe("Working directory for this command."),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const setupSchema = z
+  .object({
+    commands: z.array(setupCommandSchema).optional(),
+    verify: z.array(setupCommandSchema).optional(),
+  })
+  .strict()
+  .refine(
+    (setup) => (setup.commands?.length ?? 0) > 0 || (setup.verify?.length ?? 0) > 0,
+    "setup must define at least one command or verify step",
+  );
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -385,6 +429,7 @@ const publicServerSchema = z
     url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     startupTimeoutMs: z
       .number()
       .int()
@@ -432,6 +477,7 @@ const publicOpenApiEndpointSchema = z
       'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -501,6 +547,7 @@ const publicGraphQlEndpointSchema = z
       'Explicit GraphQL request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -614,6 +661,7 @@ const publicHttpApiSchema = z
       )
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -706,6 +754,7 @@ const publicCliToolsSchema = z
       .optional()
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     timeoutMs: z
       .number()
       .int()
@@ -759,6 +808,7 @@ const publicCapletSetSchema = z
       .default(30_000)
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
     disabled: z.boolean().default(false).describe("When true, omit this Caplet set."),
   })
   .strict()
