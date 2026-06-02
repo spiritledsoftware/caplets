@@ -57,7 +57,7 @@
     "@hono/node-server": "^2.0.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^15.0.0",
-    "graphql": "^16.14.0",
+    "graphql": "^16.14.1",
     "hono": "^4.12.23",
     "vfile": "^6.0.3",
     "vfile-matter": "^5.0.1",
