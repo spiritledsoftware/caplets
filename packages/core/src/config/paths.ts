@@ -95,7 +95,7 @@ export function resolveConfigPath(path?: string): string {
 }
 
 export function resolveProjectConfigPath(cwd = process.cwd()): string {
-  return join(cwd, PROJECT_CONFIG_FILE);
+  return join(displayPath(cwd), PROJECT_CONFIG_FILE);
 }
 
 export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
@@ -103,5 +103,10 @@ export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
 }
 
 export function resolveProjectCapletsRoot(cwd = process.cwd()): string {
-  return join(cwd, ".caplets");
+  return join(displayPath(cwd), ".caplets");
+}
+
+function displayPath(path: string): string {
+  if (process.platform !== "darwin") return path;
+  return path.replace(/^\/private\/(var|tmp)(?=\/|$)/u, "/$1");
 }

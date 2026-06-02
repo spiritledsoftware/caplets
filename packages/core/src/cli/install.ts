@@ -197,6 +197,7 @@ function rejectUnsafeInstallParents(path: string): void {
       return;
     }
     if (stats.isSymbolicLink()) {
+      if (isDarwinSystemAliasSymlink(current)) continue;
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Install destination parent ${current} is a symlink; remove it before installing`,
@@ -208,6 +209,16 @@ function rejectUnsafeInstallParents(path: string): void {
         `Install destination parent ${current} is not a directory; choose another destination`,
       );
     }
+  }
+}
+
+function isDarwinSystemAliasSymlink(path: string): boolean {
+  if (process.platform !== "darwin") return false;
+  if (path !== "/var" && path !== "/tmp") return false;
+  try {
+    return realpathSync(path) === `/private${path}`;
+  } catch {
+    return false;
   }
 }
 

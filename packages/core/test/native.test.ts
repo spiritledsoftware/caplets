@@ -267,6 +267,7 @@ describe("native Caplets service", () => {
     });
 
     try {
+      await watcherReady();
       writeFileSync(
         configPath,
         JSON.stringify({
@@ -345,3 +346,7 @@ describe("native Caplets service", () => {
     return { dir, configPath, projectConfigPath };
   }
 });
+
+async function watcherReady(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}

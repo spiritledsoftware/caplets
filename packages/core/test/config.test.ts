@@ -1595,52 +1595,55 @@ describe("config", () => {
     }
   });
 
-  it("skips all entries for duplicate IDs after precedence in best-effort mode", () => {
-    const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
-    try {
-      writeFileSync(
-        join(root, "tools.md"),
-        [
-          "---",
-          "name: Tools Lower",
-          "description: Lowercase extension Caplet.",
-          "mcpServer:",
-          "  command: lower-tools",
-          "---",
-          "# Tools Lower",
-        ].join("\n"),
-      );
-      writeFileSync(
-        join(root, "tools.MD"),
-        [
-          "---",
-          "name: Tools Upper",
-          "description: Uppercase extension Caplet.",
-          "mcpServer:",
-          "  command: upper-tools",
-          "---",
-          "# Tools Upper",
-        ].join("\n"),
-      );
+  it.runIf(isCaseSensitiveTempFs())(
+    "skips all entries for duplicate IDs after precedence in best-effort mode",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
+      try {
+        writeFileSync(
+          join(root, "tools.md"),
+          [
+            "---",
+            "name: Tools Lower",
+            "description: Lowercase extension Caplet.",
+            "mcpServer:",
+            "  command: lower-tools",
+            "---",
+            "# Tools Lower",
+          ].join("\n"),
+        );
+        writeFileSync(
+          join(root, "tools.MD"),
+          [
+            "---",
+            "name: Tools Upper",
+            "description: Uppercase extension Caplet.",
+            "mcpServer:",
+            "  command: upper-tools",
+            "---",
+            "# Tools Upper",
+          ].join("\n"),
+        );
 
-      const result = loadCapletFilesWithPathsBestEffort(root);
+        const result = loadCapletFilesWithPathsBestEffort(root);
 
-      expect(result).toEqual({
-        config: {},
-        paths: {},
-        warnings: [
-          expect.objectContaining({
-            path: join(root, "tools.MD"),
-            message: expect.stringContaining("Duplicate Caplet ID tools"),
-          }),
-        ],
-      });
-      expect(result?.warnings[0]?.message).toContain(join(root, "tools.md"));
-      expect(result?.warnings[0]?.message).toContain(join(root, "tools.MD"));
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+        expect(result).toEqual({
+          config: {},
+          paths: {},
+          warnings: [
+            expect.objectContaining({
+              path: join(root, "tools.MD"),
+              message: expect.stringContaining("Duplicate Caplet ID tools"),
+            }),
+          ],
+        });
+        expect(result?.warnings[0]?.message).toContain(join(root, "tools.md"));
+        expect(result?.warnings[0]?.message).toContain(join(root, "tools.MD"));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects invalid OIDC URL fields in Caplet files", () => {
     const root = mkdtempSync(join(tmpdir(), "caplets-files-"));
@@ -2064,6 +2067,17 @@ describe("config", () => {
     ).toThrow(CapletsError);
   });
 });
+
+function isCaseSensitiveTempFs(): boolean {
+  const root = mkdtempSync(join(tmpdir(), "caplets-case-check-"));
+  try {
+    writeFileSync(join(root, "case.md"), "lower");
+    writeFileSync(join(root, "case.MD"), "upper");
+    return readdirSync(root).length === 2;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 
 function markdownLinkTargets(markdown: string): string[] {
   return [...markdown.matchAll(/\[[^\]]+\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].flatMap((match) =>

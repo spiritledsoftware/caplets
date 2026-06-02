@@ -50,6 +50,7 @@ export function applyRemoteFileChanges(
   changes: RemoteFileChange[],
 ): ApplyReceipt | { status: "apply_conflict"; recoverable: true; conflicts: ApplyConflict[] } {
   const root = resolve(projectRoot);
+  const realRoot = realpathSync(root);
   const conflicts: ApplyConflict[] = [];
   const writable: Array<{ path: string; absolutePath: string; content: string }> = [];
 
@@ -59,7 +60,7 @@ export function applyRemoteFileChanges(
       conflicts.push({ path: change.path, kind: "content", message: "Path escapes project root." });
       continue;
     }
-    if (pathHasSymlink(root, absolutePath)) {
+    if (pathHasSymlink(root, realRoot, absolutePath)) {
       conflicts.push({ path: change.path, kind: "content", message: "Path traverses a symlink." });
       continue;
     }
@@ -96,7 +97,7 @@ export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function pathHasSymlink(root: string, target: string): boolean {
+function pathHasSymlink(root: string, realRoot: string, target: string): boolean {
   let current = root;
   for (const part of relative(root, target).split(/[\\/]+/u)) {
     if (!part) continue;
@@ -104,7 +105,7 @@ function pathHasSymlink(root: string, target: string): boolean {
     if (!existsSync(current)) continue;
     if (lstatSync(current).isSymbolicLink()) return true;
     const real = realpathSync(current);
-    if (relative(root, real).startsWith("..")) return true;
+    if (relative(realRoot, real).startsWith("..")) return true;
   }
   return false;
 }
