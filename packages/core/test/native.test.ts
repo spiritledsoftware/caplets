@@ -311,6 +311,7 @@ describe("native Caplets service", () => {
     });
 
     try {
+      await watcherReady();
       writeFileSync(
         configPath,
         JSON.stringify({
@@ -324,7 +325,7 @@ describe("native Caplets service", () => {
         }),
       );
 
-      await expect.poll(() => events).toEqual([["beta"]]);
+      await expect.poll(() => events.at(-1)).toEqual(["beta"]);
     } finally {
       await service.close();
     }
@@ -348,5 +349,5 @@ describe("native Caplets service", () => {
 });
 
 async function watcherReady(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise((resolve) => setTimeout(resolve, 100));
 }

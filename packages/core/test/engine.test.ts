@@ -208,6 +208,7 @@ describe("CapletsEngine", () => {
       return true;
     });
 
+    await watcherReady();
     writeConfig(configPath, {
       mcpServers: {
         beta: {
@@ -243,6 +244,7 @@ describe("CapletsEngine", () => {
       return true;
     });
 
+    await watcherReady();
     writeFileSync(nestedFile, "after");
 
     await eventually(() => expect(reloads).toBeGreaterThan(0));
