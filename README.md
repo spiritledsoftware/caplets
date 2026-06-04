@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="plugins/caplets/assets/icon.png" alt="Caplets logo" width="140" height="140" />
+  <img src="docs/assets/caplets-icon.png" alt="Caplets logo" width="140" height="140" />
 
   <h1>Caplets</h1>
 
@@ -134,28 +134,60 @@ Completions include command names, options, common enum values, configured Caple
 
 Backends that require OAuth or token auth may need `caplets auth login <server>` before live downstream completions can return richer results. Completion never starts interactive login flows.
 
-## Agent Plugins
+## Agent Integrations
 
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
 your coding agent supports one.
 
-| Agent          | Install                                                                                             | What It Provides                                                   |
-| -------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Any MCP client | Add `caplets serve` as a stdio MCP server                                                           | Universal progressive-disclosure gateway                           |
-| Claude Code    | `claude plugin marketplace add spiritledsoftware/caplets && claude plugin install caplets@caplets`  | Claude Code plugin metadata, MCP config, and shared skill guidance |
-| Codex          | `codex plugin marketplace add spiritledsoftware/caplets`, then install `caplets` from Codex plugins | Codex plugin metadata, MCP config, and shared skill guidance       |
-| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)                                          | Native `caplets_<id>` tools and prompt guidance hooks              |
-| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                                                      | Native `caplets_<id>` tools with Pi prompt snippets/guidelines     |
+| Agent          | Install                                                        | What It Provides                                               |
+| -------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
+| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal progressive-disclosure gateway                       |
+| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
+| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
+| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets_<id>` tools and prompt guidance hooks          |
+| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets_<id>` tools with Pi prompt snippets/guidelines |
 
-Codex and Claude Code plugins are plugin-native but MCP-backed. The installable plugin
-lives under `plugins/caplets/`, with agent-specific manifests in `.codex-plugin/` and
-`.claude-plugin/`, a shared `skills/` directory, and shared `mcp.json` config. The
-repo-level `.agents/plugins/marketplace.json` and `.claude-plugin/marketplace.json`
-files only advertise that installable plugin root.
+Manual local MCP config:
 
-The Claude Code and Codex commands install from this GitHub repository through each agent's
-plugin marketplace flow; users do not need to clone the repository manually. Plugin MCP
-configs run `caplets serve` directly, so install the Caplets CLI globally first.
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Manual remote or Cloud MCP config:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["attach"]
+    }
+  }
+}
+```
+
+For Caplets Cloud, authenticate once and set the remote selection environment for the agent:
+
+```sh
+caplets cloud auth login
+export CAPLETS_MODE=cloud
+export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
+```
+
+For a self-hosted remote:
+
+```sh
+export CAPLETS_MODE=remote
+export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
+export CAPLETS_REMOTE_TOKEN=...
+```
 
 ## Core Alchemy
 
@@ -179,7 +211,7 @@ Cloud Auth stores one Selected Workspace locally. `caplets attach --workspace <w
 
 Access tokens are short-lived. The CLI refreshes expired hosted credentials before attach, persists the rotated refresh token returned by Cloud, and treats revoked refresh credentials as a fresh-login requirement. `caplets cloud auth logout` clears local credentials; Cloud logout revokes the refresh credential family so rotated refresh tokens stop working together.
 
-Use `caplets attach --once` for a finite Project Binding smoke test, or `caplets attach` for a foreground Binding Session with WebSocket control, heartbeats, one reconnect attempt, and remote cleanup on interrupt.
+Use `caplets attach --once` for a finite Project Binding smoke test, or `caplets attach` to run a remote-backed MCP server over stdio or HTTP with Project Binding and local overlay.
 
 Start a local HTTP service. `--path` is the service base path; Caplets mounts MCP,
 control, and health endpoints underneath it:

@@ -27,13 +27,14 @@ export type RemoteCapletsClient = {
 };
 
 export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
-  mode: "remote";
+  mode: "remote" | "cloud";
 };
 
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
   clientFactory?: () => RemoteCapletsClient;
   pollIntervalMs: number;
+  authKind?: "self_hosted_remote" | "hosted_cloud";
   writeErr?: (value: string) => void;
 };
 
@@ -118,7 +119,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       return await this.client.callTool(capletId, request);
     } catch (error) {
       if (isAuthFailure(error)) {
-        throw remoteAuthError();
+        throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
       }
       if (isSessionFailure(error)) {
         if (!(await this.resetClient()) || this.closed) {
@@ -128,7 +129,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
           return await this.client.callTool(capletId, request);
         } catch (retryError) {
           if (isAuthFailure(retryError)) {
-            throw remoteAuthError();
+            throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
           }
           throw retryError;
         }
@@ -273,10 +274,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function remoteAuthError(): CapletsError {
+function remoteAuthError(kind: "self_hosted_remote" | "hosted_cloud"): CapletsError {
   return new CapletsError(
     "AUTH_FAILED",
-    "Remote Caplets authentication failed; check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+    kind === "hosted_cloud"
+      ? "Caplets Cloud authentication failed; run caplets cloud auth login."
+      : "Remote Caplets authentication failed; check CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
   );
 }
 

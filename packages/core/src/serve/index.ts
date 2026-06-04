@@ -6,6 +6,8 @@ import { serveStdio } from "./stdio";
 export { serveHttp } from "./http";
 export { resolveDaemonServeOptions, resolveServeOptions } from "./options";
 export type { HttpServeOptions, RawServeOptions, ServeOptions, StdioServeOptions } from "./options";
+export { NativeCapletsMcpSession } from "./native-session";
+export type { NativeCapletsMcpSessionOptions, NativeToolServer } from "./native-session";
 export { serveStdio } from "./stdio";
 export {
   buildDaemonPlatformDescriptor,

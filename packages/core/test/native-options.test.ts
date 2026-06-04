@@ -24,6 +24,46 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
+  it("uses cloud mode in auto when CAPLETS_REMOTE_URL points at Caplets Cloud", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toMatchObject({
+      mode: "cloud",
+      remote: {
+        url: new URL("https://cloud.caplets.dev/mcp"),
+      },
+    });
+  });
+
+  it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toMatchObject({ mode: "cloud" });
+  });
+
+  it("rejects CAPLETS_MODE=cloud with a self-hosted remote URL", () => {
+    expect(() =>
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).toThrow(/Caplets Cloud/u);
+  });
+
   it("lets explicit local mode ignore server env vars", () => {
     expect(
       resolveNativeCapletsServiceOptions(

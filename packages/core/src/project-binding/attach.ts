@@ -1,9 +1,8 @@
 import { existsSync } from "node:fs";
 import { CapletsError } from "../errors";
-import { CloudAuthClient } from "../cloud-auth/client";
-import { CloudAuthStore } from "../cloud-auth/store";
-import { resolveCapletsRemote, type ResolvedCapletsRemote } from "../remote/options";
-import { projectBindingError, ProjectBindingError } from "./errors";
+import type { ResolvedCapletsRemote } from "../remote/options";
+import { resolveRemoteSelection } from "../remote/selection";
+import { ProjectBindingError } from "./errors";
 import { bootstrapProjectBindingGitignore } from "./gitignore";
 import { runProjectBindingSession, type ProjectBindingSessionEvent } from "./session";
 import { buildProjectSyncManifest } from "./sync-filter";
@@ -33,26 +32,38 @@ export type ResolvedAttachOptions = {
   selectedWorkspace?: string | undefined;
 };
 
-export function resolveAttachOptions(
+export async function resolveAttachOptions(
   raw: RawAttachOptions = {},
   env: Record<string, string | undefined> = process.env,
-): ResolvedAttachOptions {
+): Promise<ResolvedAttachOptions> {
+  return await resolveAttachOptionsForRun(raw, env);
+}
+
+export async function resolveAttachOptionsForRun(
+  raw: RawAttachOptions = {},
+  env: Record<string, string | undefined> = process.env,
+): Promise<ResolvedAttachOptions> {
   const remoteInput = {
-    ...(raw.remoteUrl !== undefined ? { url: raw.remoteUrl } : {}),
+    ...(raw.remoteUrl !== undefined ? { remoteUrl: raw.remoteUrl } : {}),
     ...(raw.user !== undefined ? { user: raw.user } : {}),
     ...(raw.password !== undefined ? { password: raw.password } : {}),
     ...(raw.token !== undefined ? { token: raw.token } : {}),
     ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
   };
+  const selection = await resolveRemoteSelection(remoteInput, env);
   return {
     projectRoot: raw.projectRoot ?? process.cwd(),
     json: raw.json === true,
     verbose: raw.verbose === true,
     once: raw.once === true,
-    remote: resolveCapletsRemote(remoteInput, env),
-    authMode: "self_hosted_remote",
-    ...(remoteInput.workspace ? { selectedWorkspace: remoteInput.workspace } : {}),
+    remote: selection.remote,
+    authMode: selection.kind,
+    ...(selection.kind === "hosted_cloud"
+      ? { selectedWorkspace: selection.selectedWorkspace }
+      : raw.workspace
+        ? { selectedWorkspace: raw.workspace }
+        : {}),
   };
 }
 
@@ -106,62 +117,6 @@ export async function attachProjectSession(
   });
 }
 
-export async function resolveAttachOptionsForRun(
-  raw: RawAttachOptions = {},
-  env: Record<string, string | undefined> = process.env,
-): Promise<ResolvedAttachOptions> {
-  if (hasExplicitRemote(raw, env)) return resolveAttachOptions(raw, env);
-
-  const store = new CloudAuthStore({ env });
-  let credentials = await store.load();
-  if (!credentials?.accessToken) throw projectBindingError("cloud_auth_required");
-  if (credentialsNeedRefresh(credentials)) {
-    if (!credentials.refreshToken) throw projectBindingError("cloud_auth_required");
-    const refreshed = await new CloudAuthClient({
-      cloudUrl: credentials.cloudUrl,
-      ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
-    }).refresh({ refreshToken: credentials.refreshToken });
-    credentials = {
-      ...credentials,
-      ...refreshed,
-      refreshToken: refreshed.refreshToken ?? credentials.refreshToken,
-      createdAt: credentials.createdAt,
-      lastRefreshAt: new Date().toISOString(),
-    };
-    await store.save(credentials);
-  }
-  const selected = credentials.workspaceSlug ?? credentials.workspaceId;
-  if (
-    raw.workspace &&
-    raw.workspace !== credentials.workspaceId &&
-    raw.workspace !== credentials.workspaceSlug
-  ) {
-    throw projectBindingError(
-      "workspace_switch_required",
-      `Requested workspace ${raw.workspace} differs from saved Selected Workspace ${selected}.`,
-    );
-  }
-
-  const remote = resolveCapletsRemote(
-    {
-      url: credentials.cloudUrl,
-      token: credentials.accessToken,
-      workspace: selected,
-      ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
-    },
-    {},
-  );
-  return {
-    projectRoot: raw.projectRoot ?? process.cwd(),
-    json: raw.json === true,
-    verbose: raw.verbose === true,
-    once: raw.once === true,
-    remote,
-    authMode: "hosted_cloud",
-    selectedWorkspace: selected,
-  };
-}
-
 function projectBindingProbeUrl(remote: ResolvedCapletsRemote): URL {
   const url = new URL(remote.projectBindingWebSocketUrl);
   if (url.protocol === "wss:") url.protocol = "https:";
@@ -175,22 +130,6 @@ async function isWebSocketUpgradeRequired(response: Response): Promise<boolean> 
   if (!contentType.includes("application/json")) return false;
   const body = (await response.json().catch(() => undefined)) as { error?: unknown } | undefined;
   return body?.error === "websocket_upgrade_required";
-}
-
-function hasExplicitRemote(
-  raw: RawAttachOptions,
-  env: Record<string, string | undefined>,
-): boolean {
-  return Boolean(
-    raw.remoteUrl ??
-    raw.user ??
-    raw.password ??
-    raw.token ??
-    env.CAPLETS_REMOTE_URL ??
-    env.CAPLETS_REMOTE_TOKEN ??
-    env.CAPLETS_REMOTE_USER ??
-    env.CAPLETS_REMOTE_PASSWORD,
-  );
 }
 
 function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): void {
@@ -209,10 +148,4 @@ function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): void 
 function hostedTier(env: Record<string, string | undefined>): ProjectSyncTier {
   const value = env.CAPLETS_CLOUD_TIER?.toLowerCase();
   return value === "plus" || value === "pro" || value === "enterprise" ? value : "free";
-}
-
-function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {
-  const expiresAt = Date.parse(credentials.expiresAt);
-  if (!Number.isFinite(expiresAt)) return false;
-  return expiresAt <= Date.now() + 60_000;
 }

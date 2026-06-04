@@ -40,7 +40,11 @@ describe("hosted Cloud Auth refresh before attach", () => {
             return Response.json({ error: "websocket_upgrade_required" }, { status: 426 });
           },
         },
-        { CAPLETS_CLOUD_AUTH_PATH: path },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
       ),
     ).resolves.toMatchObject({ ok: true });
 
@@ -71,9 +75,22 @@ describe("hosted Cloud Auth refresh before attach", () => {
               { status: 401 },
             ),
         },
-        { CAPLETS_CLOUD_AUTH_PATH: path },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
       ),
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+  });
+
+  it("does not implicitly use saved Cloud Auth without cloud mode or a Cloud remote URL", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(hostedCredentials());
+
+    await expect(
+      attachProjectOnce({ projectRoot: "/repo" }, { CAPLETS_CLOUD_AUTH_PATH: path }),
+    ).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
   });
 });
 

@@ -29,7 +29,7 @@
     "test": "vitest run",
     "typecheck": "tsgo --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
-    "version-packages": "changeset version && tsx scripts/sync-plugin-versions.ts && oxfmt plugins/caplets/.codex-plugin/plugin.json plugins/caplets/.claude-plugin/plugin.json"
+    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

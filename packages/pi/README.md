@@ -35,18 +35,17 @@ running without `getActiveTools()` / `setActiveTools()`, stale tools may remain 
 Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' normal structured
 "server not found" error.
 
-## Remote Caplets service
+## Remote Selection
 
-By default the extension uses the local Caplets native service. To connect Pi to a remote
-`caplets serve --transport http` service, prefer environment variables for connection details,
-especially the password:
+By default the extension uses the local Caplets native service. Use `CAPLETS_MODE` and `CAPLETS_REMOTE_*` to select local, self-hosted remote, or Caplets Cloud behavior:
 
 ```sh
-export CAPLETS_MODE="remote"
-export CAPLETS_SERVER_URL="https://caplets.example.com/caplets"
-export CAPLETS_SERVER_USER="caplets"
-export CAPLETS_SERVER_PASSWORD="..." # or load from your shell/secret manager
+CAPLETS_MODE=local pi
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
+CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev pi
 ```
+
+Run `caplets cloud auth login` before Cloud mode. For authenticated self-hosted remotes, prefer `CAPLETS_REMOTE_TOKEN`, or `CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`, from your shell or secret manager.
 
 Pi currently calls extension factories with the Pi API only, so this extension reads its remote
 settings from the top-level `caplets` key in `~/.pi/agent/settings.json` when no programmatic
@@ -97,5 +96,5 @@ export default createCapletsPiExtension({
 ```
 
 The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`.
-Prefer environment variables for `CAPLETS_SERVER_PASSWORD` rather than storing passwords in
+Prefer environment variables for `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
 settings files or source code.

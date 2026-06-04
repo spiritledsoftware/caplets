@@ -25,6 +25,54 @@ describe("resolveRemoteMode", () => {
       expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
     );
   });
+
+  it("supports explicit cloud mode with a Caplets Cloud URL", () => {
+    expect(
+      resolveRemoteMode(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toEqual({ mode: "cloud" });
+  });
+
+  it("detects cloud mode in auto from CAPLETS_REMOTE_URL", () => {
+    expect(resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" })).toEqual({
+      mode: "cloud",
+    });
+  });
+
+  it("keeps non-Cloud CAPLETS_REMOTE_URL in self-hosted remote mode", () => {
+    expect(
+      resolveRemoteMode({}, { CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets" }),
+    ).toEqual({ mode: "remote" });
+  });
+
+  it("rejects explicit cloud mode with a non-Cloud URL", () => {
+    expect(() =>
+      resolveRemoteMode(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).toThrow(/CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL to point at Caplets Cloud/u);
+  });
+
+  it("rejects explicit cloud mode without CAPLETS_REMOTE_URL", () => {
+    expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "cloud" })).toThrow(
+      /CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL/u,
+    );
+  });
+
+  it("parses cloud as a valid CAPLETS_MODE value", () => {
+    expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "sidecar" })).toThrow(
+      /Expected CAPLETS_MODE to be auto, local, remote, or cloud/u,
+    );
+  });
 });
 
 describe("resolveCapletsRemote", () => {
@@ -66,5 +114,14 @@ describe("resolveCapletsRemote", () => {
     expect(new Headers(resolved.requestInit.headers).get("authorization")).toBe(
       "Bearer input-token",
     );
+  });
+
+  it("references CAPLETS_REMOTE_TOKEN or Basic Auth vars for self-hosted auth failures", () => {
+    expect(() =>
+      resolveCapletsRemote(
+        { user: "caplets" },
+        { CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets" },
+      ),
+    ).toThrow(/CAPLETS_REMOTE_PASSWORD/u);
   });
 });

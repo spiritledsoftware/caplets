@@ -4,11 +4,13 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapletsError } from "../src/errors";
+import { CloudAuthStore } from "../src/cloud-auth/store";
 import { RemoteNativeCapletsService, type RemoteCapletsClient } from "../src/native/remote";
 import {
   createNativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
+import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 function client(
   tools: Array<{ name: string; title?: string | undefined; description?: string | undefined }> = [
@@ -243,7 +245,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("alpha", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_REMOTE_USER"),
+      message: expect.stringContaining("CAPLETS_REMOTE_TOKEN"),
     } satisfies Partial<CapletsError>);
 
     await service.close();
@@ -283,6 +285,7 @@ describe("createNativeCapletsService remote mode", () => {
 
   afterEach(() => {
     resetNativeProjectBindingFallbackWarningForTests();
+    vi.unstubAllEnvs();
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -696,6 +699,37 @@ describe("createNativeCapletsService remote mode", () => {
 
     expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
+    await service.close();
+  });
+
+  it("starts Cloud Project Binding when native service runs in cloud mode", async () => {
+    const path = tempCloudAuthPath();
+    vi.stubEnv("CAPLETS_CLOUD_AUTH_PATH", path);
+    await new CloudAuthStore({ path }).save(hostedCredentials({ accessToken: "cloud-access" }));
+    const factory = vi.fn(() => client([{ name: "remote", description: "Remote" }]).api);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+
+    const service = createNativeCapletsService({
+      mode: "cloud",
+      server: { url: "https://cloud.caplets.dev" },
+      remoteClientFactory: factory,
+      configPath,
+      projectConfigPath,
+    });
+
+    await service.reload();
+    expect(service.listTools().map((tool) => tool.caplet)).toContain("remote");
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: new URL("https://cloud.caplets.dev/mcp"),
+        requestInit: { headers: { Authorization: "Bearer cloud-access" } },
+      }),
+    );
     await service.close();
   });
 

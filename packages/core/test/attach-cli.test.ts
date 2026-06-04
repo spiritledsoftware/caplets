@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { attachProjectOnce, resolveAttachOptions } from "../src/project-binding/attach";
 import { runCli } from "../src/cli";
 import { CloudAuthStore } from "../src/cloud-auth/store";
-import type { ProjectBindingWebSocket } from "../src/project-binding/transport";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 const tempDirs: string[] = [];
@@ -22,14 +21,43 @@ describe("caplets attach CLI", () => {
 
     await runCli(["attach", "--help"], { writeOut: (value) => out.push(value) });
 
-    expect(out.join("")).toContain("Attach the current project to a remote Caplets runtime.");
+    expect(out.join("")).toContain("Start a remote-backed Caplets MCP server.");
+    expect(out.join("")).toContain("--transport <transport>");
     expect(out.join("")).toContain("--remote-url <url>");
     expect(out.join("")).toContain("--workspace <workspace>");
     expect(out.join("")).toContain("--once");
   });
 
-  it("resolves attach options from flags, env, and the caller cwd", () => {
-    const resolved = resolveAttachOptions(
+  it("runs attach as a stdio MCP server by default", async () => {
+    const served: unknown[] = [];
+    await runCli(["attach"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+      },
+      attachServe: async (options: unknown) => {
+        served.push(options);
+      },
+    } as never);
+
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      transport: "stdio",
+      selection: { kind: "self_hosted_remote" },
+    });
+  });
+
+  it("rejects attach server in local mode", async () => {
+    await expect(
+      runCli(["attach"], {
+        env: { CAPLETS_MODE: "local" },
+        attachServe: async () => undefined,
+      } as never),
+    ).rejects.toThrow(/use caplets serve for local-only MCP/u);
+  });
+
+  it("resolves attach options from flags, env, and the caller cwd", async () => {
+    const resolved = await resolveAttachOptions(
       {
         remoteUrl: "https://caplets.example.com/caplets",
         token: "token",
@@ -104,6 +132,15 @@ describe("caplets attach CLI", () => {
     );
   });
 
+  it("keeps attach --once as the finite Project Binding smoke path", async () => {
+    const out: string[] = [];
+    await runCli(["attach", "--once", "--remote-url", "https://caplets.example.com/caplets"], {
+      fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
+      writeOut: (value) => out.push(value),
+    });
+    expect(out.join("")).toContain("Project Binding available at");
+  });
+
   it("prints structured JSON for CLI WebSocket failures", async () => {
     const out: string[] = [];
     let exitCode = 0;
@@ -134,6 +171,29 @@ describe("caplets attach CLI", () => {
     });
   });
 
+  it("prints JSON error for attach --once when cloud auth is missing", async () => {
+    const out: string[] = [];
+    let exitCode = 0;
+    await runCli(["attach", "--once", "--json"], {
+      env: {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+      },
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      error: {
+        code: "cloud_auth_required",
+        recoveryCommand: "caplets cloud auth login",
+      },
+    });
+  });
+
   it("rejects attach --workspace when it differs from the saved Selected Workspace", async () => {
     const path = tempCloudAuthPath();
     const out: string[] = [];
@@ -141,7 +201,11 @@ describe("caplets attach CLI", () => {
     await new CloudAuthStore({ path }).save(hostedCredentials({ workspaceSlug: "personal" }));
 
     await runCli(["attach", "--workspace", "team", "--once", "--json", "--project-root", "/repo"], {
-      env: { CAPLETS_CLOUD_AUTH_PATH: path },
+      env: {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
       writeOut: (value) => out.push(value),
       setExitCode: (code) => {
         exitCode = code;
@@ -163,40 +227,16 @@ describe("caplets attach CLI", () => {
     await new CloudAuthStore({ path }).save(hostedCredentials());
 
     await runCli(["attach", "--once", "--json", "--project-root", "/repo"], {
-      env: { CAPLETS_CLOUD_AUTH_PATH: path },
+      env: {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
       fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
       writeOut: (value) => out.push(value),
     });
 
     expect(out.join("")).not.toMatch(/approve|approval|confirm/i);
-  });
-
-  it("runs long-running attach through a Binding Session and ends cleanly on abort", async () => {
-    const path = tempCloudAuthPath();
-    const out: string[] = [];
-    const controller = new AbortController();
-    await new CloudAuthStore({ path }).save(hostedCredentials());
-    const session = fakeProjectBindingSession({ onReady: () => controller.abort() });
-
-    await runCli(["attach", "--json", "--project-root", "/repo"], {
-      env: { CAPLETS_CLOUD_AUTH_PATH: path },
-      fetch: session.fetch,
-      writeOut: (value) => out.push(value),
-      signal: controller.signal,
-      projectBindingWebSocketFactory: session.webSocketFactory,
-    });
-
-    const events = out.map((line) => JSON.parse(line));
-    expect(events).toContainEqual(expect.objectContaining({ type: "state", state: "attaching" }));
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: "ready",
-        bindingId: "binding_1",
-        sessionId: "binding_session_1",
-      }),
-    );
-    expect(events.at(-1)).toMatchObject({ type: "ended" });
-    expect(JSON.stringify(events)).not.toContain("cap_access_secret");
   });
 });
 
@@ -204,70 +244,4 @@ function tempProjectRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "caplets-attach-cli-"));
   tempDirs.push(root);
   return root;
-}
-
-function fakeProjectBindingSession(options: { onReady?: () => void } = {}) {
-  return {
-    fetch: async (url: Parameters<typeof fetch>[0], _init?: RequestInit) => {
-      if (String(url).endsWith("/control/project-bindings/sessions")) {
-        return Response.json(
-          {
-            binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },
-            sessionId: "binding_session_1",
-          },
-          { status: 201 },
-        );
-      }
-      return Response.json({ ok: true, binding: { bindingId: "binding_1" } });
-    },
-    webSocketFactory: () =>
-      new FakeProjectBindingSocket(
-        [
-          {
-            type: "ready",
-            bindingId: "binding_1",
-            sessionId: "binding_session_1",
-            syncState: "idle",
-          },
-        ],
-        options,
-      ),
-  };
-}
-
-class FakeProjectBindingSocket implements ProjectBindingWebSocket {
-  readonly readyState = 1;
-  private readonly listeners = new Map<string, ((event: { data?: unknown }) => void)[]>();
-
-  constructor(
-    private readonly messages: unknown[],
-    private readonly options: { onReady?: () => void },
-  ) {
-    setTimeout(() => {
-      for (const message of this.messages) {
-        this.dispatch("message", { data: JSON.stringify(message) });
-        if (isReadyMessage(message)) this.options.onReady?.();
-      }
-    }, 0);
-  }
-
-  send(): void {}
-  close(): void {}
-
-  addEventListener(
-    type: "open" | "message" | "close" | "error",
-    listener: (event: { data?: unknown }) => void,
-  ): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-  }
-
-  private dispatch(type: string, event: { data?: unknown }): void {
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
-  }
-}
-
-function isReadyMessage(message: unknown): boolean {
-  return (
-    typeof message === "object" && message !== null && "type" in message && message.type === "ready"
-  );
 }

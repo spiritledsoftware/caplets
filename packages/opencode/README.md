@@ -18,21 +18,22 @@ rebuilt from current Caplets state for the tools registered when the plugin load
 current plugin API snapshots `Hooks.tool` at plugin load, so adding, removing, or renaming native
 tools still requires restarting OpenCode; newly added tools are not advertised until restart.
 
-## Remote Caplets service
+## Remote Selection
 
-By default the plugin reads local Caplets config. To use a remote `caplets serve --transport http` service, set environment variables:
+By default the plugin reads local Caplets config. Use `CAPLETS_MODE` and `CAPLETS_REMOTE_*` to select local, self-hosted remote, or Caplets Cloud behavior:
 
 ```sh
-CAPLETS_MODE=remote CAPLETS_SERVER_URL=http://127.0.0.1:5387/caplets opencode
+CAPLETS_MODE=local opencode
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
+CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
 
-For authenticated remote services, keep the password in the environment:
+Run `caplets cloud auth login` before Cloud mode. For authenticated self-hosted remotes, keep credentials in the environment:
 
 ```sh
 CAPLETS_MODE=remote \
-CAPLETS_SERVER_URL=https://caplets.example.com/caplets \
-CAPLETS_SERVER_USER=caplets \
-CAPLETS_SERVER_PASSWORD=... \
+CAPLETS_REMOTE_URL=https://caplets.example.com/caplets \
+CAPLETS_REMOTE_TOKEN=... \
 opencode
 ```
 
@@ -58,4 +59,4 @@ export default {
 };
 ```
 
-Plugin config overrides environment variables. The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`. Prefer `CAPLETS_SERVER_PASSWORD` for the Basic Auth password unless your OpenCode setup provides secure secret storage.
+Plugin config overrides environment variables. The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`. Prefer `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` for self-hosted credentials unless your OpenCode setup provides secure secret storage.

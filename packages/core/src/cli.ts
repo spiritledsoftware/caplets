@@ -62,7 +62,9 @@ import {
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
-import { attachProjectOnce, attachProjectSession } from "./project-binding/attach";
+import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/options";
+import { attachResolvedCaplets } from "./attach/server";
+import { attachProjectOnce } from "./project-binding/attach";
 import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
@@ -102,6 +104,7 @@ type CliIO = {
   version?: string;
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
+  attachServe?: (options: AttachServeOptions) => Promise<void>;
   daemon?: ServeDaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
 };
@@ -453,12 +456,21 @@ export function createProgram(io: CliIO = {}): Command {
 
   program
     .command(cliCommands.attach)
-    .description("Attach the current project to a remote Caplets runtime.")
+    .description("Start a remote-backed Caplets MCP server.")
+    .option("--transport <transport>", "server transport: stdio or http")
+    .option("--host <host>", "HTTP bind host")
+    .option("--port <port>", "HTTP bind port")
+    .option("--path <path>", "HTTP service base path")
     .option("--remote-url <url>", "remote Caplets service base URL")
     .option("--user <user>", "remote Basic Auth username")
     .option("--password <password>", "remote Basic Auth password")
     .option("--token <token>", "remote bearer token")
     .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
+    .option(
+      "--allow-unauthenticated-http",
+      "allow unauthenticated HTTP serving on non-loopback hosts",
+    )
+    .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
     .option("--json", "print JSON status events")
     .option("--verbose", "print detailed attach diagnostics")
     .option("--once", "validate Project Binding once and exit")
@@ -466,10 +478,16 @@ export function createProgram(io: CliIO = {}): Command {
     .action(
       async (options: {
         remoteUrl?: string;
+        transport?: string;
+        host?: string;
+        port?: string;
+        path?: string;
         user?: string;
         password?: string;
         token?: string;
         workspace?: string;
+        allowUnauthenticatedHttp?: boolean;
+        trustProxy?: boolean;
         json?: boolean;
         verbose?: boolean;
         once?: boolean;
@@ -477,22 +495,17 @@ export function createProgram(io: CliIO = {}): Command {
       }) => {
         try {
           const attachOptions = { ...options, ...(io.fetch ? { fetch: io.fetch } : {}) };
-          const sessionOptions = options.json
-            ? {
-                signal: io.signal,
-                webSocketFactory: io.projectBindingWebSocketFactory,
-                onEvent: (event: import("./project-binding/attach").AttachSessionEvent) =>
-                  writeOut(`${JSON.stringify(event, null, 2)}\n`),
-              }
-            : {
-                signal: io.signal,
-                webSocketFactory: io.projectBindingWebSocketFactory,
-              };
-          const result = options.once
-            ? await attachProjectOnce(attachOptions, env)
-            : await attachProjectSession(attachOptions, env, sessionOptions);
+          if (!options.once) {
+            const resolved = await resolveAttachServeOptions(attachOptions, env);
+            await (
+              io.attachServe ??
+              ((serveOptions) => attachResolvedCaplets(serveOptions, { writeErr }))
+            )(resolved);
+            return;
+          }
+          const result = await attachProjectOnce(attachOptions, env);
           if (options.json) {
-            if (options.once) writeOut(`${JSON.stringify(result, null, 2)}\n`);
+            writeOut(`${JSON.stringify(result, null, 2)}\n`);
             return;
           }
           writeOut(`Project Binding available at ${result.webSocketUrl}.\n`);
@@ -533,12 +546,24 @@ export function createProgram(io: CliIO = {}): Command {
             setExitCode(1);
             return;
           }
+          if (options.json && error instanceof CapletsError) {
+            writeOut(
+              `${JSON.stringify(
+                {
+                  ok: false,
+                  error: {
+                    code: error.code,
+                    message: error.message,
+                  },
+                },
+                null,
+                2,
+              )}\n`,
+            );
+            setExitCode(1);
+            return;
+          }
           throw error;
-        }
-        if (!options.once && options.verbose) {
-          writeErr(
-            "Long-running Project Binding attach will keep using the WebSocket transport.\n",
-          );
         }
       },
     );

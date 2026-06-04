@@ -7,7 +7,7 @@ import {
   type CapletsRemoteEnv,
 } from "../remote/options";
 
-type CapletsMode = "auto" | "local" | "remote";
+type CapletsMode = "auto" | "local" | "remote" | "cloud";
 
 export type NativeCapletsMode = CapletsMode;
 
@@ -40,7 +40,7 @@ export type NativeRemoteAuthOptions =
 export type ResolvedNativeCapletsServiceOptions =
   | { mode: "local" }
   | {
-      mode: "remote";
+      mode: "remote" | "cloud";
       remote: {
         url: URL;
         auth: NativeRemoteAuthOptions;
@@ -70,19 +70,32 @@ export function resolveNativeCapletsServiceOptions(
   }
 
   const serverFetch = input.remote?.fetch ?? input.server?.fetch;
-  const server = resolveCapletsRemote(
-    { ...input.server, ...(serverFetch ? { fetch: serverFetch } : {}) },
-    env,
-  );
+  const serverInput = {
+    ...input.server,
+    ...(serverFetch ? { fetch: serverFetch } : {}),
+  };
+  const server =
+    mode.mode === "cloud"
+      ? resolveCapletsRemote(
+          {
+            url: input.server?.url ?? env.CAPLETS_REMOTE_URL ?? "",
+            ...(serverFetch ? { fetch: serverFetch } : {}),
+          },
+          {},
+        )
+      : resolveCapletsRemote(serverInput, env);
 
   const cloud = resolveNativeCloudPresence(input.remote?.cloud, env);
   return {
-    mode: "remote",
+    mode: mode.mode,
     remote: {
       url: mcpUrlForBase(server.baseUrl),
       auth: nativeAuthFromRemoteAuth(server.auth),
       pollIntervalMs: parsePollInterval(input.remote?.pollIntervalMs),
-      requestInit: server.requestInit,
+      requestInit:
+        mode.mode === "cloud" && cloud
+          ? { headers: { Authorization: `Bearer ${cloud.accessToken}` } }
+          : server.requestInit,
       ...(cloud ? { cloud } : {}),
       ...(server.fetch ? { fetch: server.fetch } : {}),
     },
