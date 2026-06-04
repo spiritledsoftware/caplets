@@ -1,10 +1,14 @@
 import type { CapletSetupCommandConfig, CapletSetupConfig } from "../config";
+import type { RuntimeFeature } from "../config-runtime";
 
-export type SetupTargetKind = "local" | "remote" | "cloud";
+export const setupTargetKinds = ["local_host", "remote_host", "hosted_sandbox"] as const;
+
+export type SetupTargetKind = (typeof setupTargetKinds)[number];
 export type SetupActor = "cli-interactive" | "cli-yes" | "ui" | "automation";
 export type SetupAttemptStatus = "running" | "succeeded" | "failed";
 
 export type SetupApproval = {
+  projectFingerprint: string;
   capletId: string;
   contentHash: string;
   targetKind: SetupTargetKind;
@@ -14,9 +18,12 @@ export type SetupApproval = {
 
 export type SetupAttempt = {
   attemptId: string;
+  projectFingerprint: string;
   capletId: string;
   contentHash: string;
+  setupHash?: string | undefined;
   targetKind: SetupTargetKind;
+  runtimeFeatures?: RuntimeFeature[] | undefined;
   actor: SetupActor;
   status: SetupAttemptStatus;
   phase: "commands" | "verify";
@@ -37,6 +44,7 @@ export type SetupAttempt = {
 };
 
 export type SetupPlan = {
+  projectFingerprint: string;
   capletId: string;
   name: string;
   contentHash: string;
@@ -46,3 +54,7 @@ export type SetupPlan = {
   commands: CapletSetupCommandConfig[];
   verify: CapletSetupCommandConfig[];
 };
+
+export function isSetupTargetKind(value: string): value is SetupTargetKind {
+  return setupTargetKinds.includes(value as SetupTargetKind);
+}

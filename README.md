@@ -161,6 +161,22 @@ configs run `caplets serve` directly, so install the Caplets CLI globally first.
 
 OpenCode and Pi can use native `caplets_<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
 
+Hosted Caplets Cloud uses browser-mediated Cloud Auth:
+
+```sh
+caplets cloud auth login --workspace personal
+caplets cloud auth status
+caplets cloud auth workspaces
+caplets cloud auth switch team
+caplets cloud auth logout
+```
+
+Cloud Auth stores one Selected Workspace locally. `caplets attach --workspace <workspace>` must match that saved workspace; switch explicitly before attaching another hosted workspace. Self-hosted remotes continue to use `CAPLETS_REMOTE_URL`, `CAPLETS_REMOTE_TOKEN`, or Basic Auth credentials.
+
+Access tokens are short-lived. The CLI refreshes expired hosted credentials before attach, persists the rotated refresh token returned by Cloud, and treats revoked refresh credentials as a fresh-login requirement. `caplets cloud auth logout` clears local credentials; Cloud logout revokes the refresh credential family so rotated refresh tokens stop working together.
+
+Use `caplets attach --once` for a finite Project Binding smoke test, or `caplets attach` for a foreground Binding Session with WebSocket control, heartbeats, one reconnect attempt, and remote cleanup on interrupt.
+
 Start a local HTTP service. `--path` is the service base path; Caplets mounts MCP,
 control, and health endpoints underneath it:
 

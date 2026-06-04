@@ -1,7 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultCacheBaseDir } from "../config/paths";
-import type { SetupApproval, SetupAttempt, SetupTargetKind } from "./types";
+import { CapletsError } from "../errors";
+import {
+  isSetupTargetKind,
+  type SetupApproval,
+  type SetupAttempt,
+  type SetupTargetKind,
+} from "./types";
+
+type SetupApprovalInput = Omit<SetupApproval, "projectFingerprint"> & {
+  projectFingerprint?: string | undefined;
+};
+
+const DEFAULT_PROJECT_FINGERPRINT = "default";
 
 export type LocalSetupStoreOptions = {
   baseDir?: string;
@@ -27,18 +39,37 @@ export class LocalSetupStore {
     capletId: string,
     contentHash: string,
     targetKind: SetupTargetKind,
-  ): Promise<SetupApproval | undefined> {
+  ): Promise<SetupApproval | undefined>;
+  async getApproval(
+    projectFingerprint: string,
+    capletId: string,
+    contentHash: string,
+    targetKind: SetupTargetKind,
+  ): Promise<SetupApproval | undefined>;
+  async getApproval(
+    ...args: [string, string, SetupTargetKind] | [string, string, string, SetupTargetKind]
+  ) {
+    const [projectFingerprint, capletId, contentHash, targetKind] =
+      args.length === 3 ? [DEFAULT_PROJECT_FINGERPRINT, args[0], args[1], args[2]] : args;
+    assertSetupTargetKind(targetKind);
     return this.approvals().find(
       (approval) =>
+        approval.projectFingerprint === projectFingerprint &&
         approval.capletId === capletId &&
         approval.contentHash === contentHash &&
         approval.targetKind === targetKind,
     );
   }
 
-  async approve(approval: SetupApproval): Promise<SetupApproval> {
+  async approve(input: SetupApprovalInput): Promise<SetupApproval> {
+    const approval = {
+      ...input,
+      projectFingerprint: input.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT,
+    };
+    assertSetupTargetKind(approval.targetKind);
     const approvals = this.approvals().filter(
       (existing) =>
+        existing.projectFingerprint !== approval.projectFingerprint ||
         existing.capletId !== approval.capletId ||
         existing.contentHash !== approval.contentHash ||
         existing.targetKind !== approval.targetKind,
@@ -52,17 +83,26 @@ export class LocalSetupStore {
   }
 
   async recordAttempt(attempt: SetupAttempt): Promise<void> {
-    const attempts = this.prunedAttempts([...this.attempts(attempt.capletId), attempt]);
-    mkdirSync(join(this.root, "attempts"), { recursive: true });
+    assertSetupTargetKind(attempt.targetKind);
+    const projectFingerprint = attempt.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT;
+    const attempts = this.prunedAttempts([
+      ...this.attempts(projectFingerprint, attempt.capletId),
+      { ...attempt, projectFingerprint },
+    ]);
+    mkdirSync(this.attemptsDir(projectFingerprint), { recursive: true });
     writeFileSync(
-      this.attemptsPath(attempt.capletId),
+      this.attemptsPath(projectFingerprint, attempt.capletId),
       attempts.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
       { mode: 0o600 },
     );
   }
 
-  async listAttempts(capletId: string): Promise<SetupAttempt[]> {
-    return this.attempts(capletId);
+  async listAttempts(capletId: string): Promise<SetupAttempt[]>;
+  async listAttempts(projectFingerprint: string, capletId: string): Promise<SetupAttempt[]>;
+  async listAttempts(...args: [string] | [string, string]): Promise<SetupAttempt[]> {
+    const [projectFingerprint, capletId] =
+      args.length === 1 ? [DEFAULT_PROJECT_FINGERPRINT, args[0]] : args;
+    return this.attempts(projectFingerprint, capletId);
   }
 
   retention(): { maxAttempts: number; days: number } {
@@ -72,16 +112,11 @@ export class LocalSetupStore {
   private approvals(): SetupApproval[] {
     const path = this.approvalsPath();
     if (!existsSync(path)) return [];
-    return JSON.parse(readFileSync(path, "utf8")) as SetupApproval[];
-  }
-
-  private attempts(capletId: string): SetupAttempt[] {
-    const path = this.attemptsPath(capletId);
-    if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as SetupAttempt);
+    const approvals = JSON.parse(readFileSync(path, "utf8")) as SetupApprovalInput[];
+    return approvals.map((approval) => ({
+      ...approval,
+      projectFingerprint: approval.projectFingerprint ?? DEFAULT_PROJECT_FINGERPRINT,
+    }));
   }
 
   private prunedAttempts(attempts: SetupAttempt[]): SetupAttempt[] {
@@ -95,11 +130,33 @@ export class LocalSetupStore {
     return join(this.root, "approvals.json");
   }
 
-  private attemptsPath(capletId: string): string {
-    return join(this.root, "attempts", `${safeFileName(capletId)}.jsonl`);
+  private attempts(projectFingerprint: string, capletId: string): SetupAttempt[] {
+    const path = this.attemptsPath(projectFingerprint, capletId);
+    if (!existsSync(path)) return [];
+    return readFileSync(path, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as SetupAttempt);
+  }
+
+  private attemptsDir(projectFingerprint: string): string {
+    return join(this.root, "projects", safeFileName(projectFingerprint), "attempts");
+  }
+
+  private attemptsPath(projectFingerprint: string, capletId: string): string {
+    return join(this.attemptsDir(projectFingerprint), `${safeFileName(capletId)}.jsonl`);
   }
 }
 
 function safeFileName(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/gu, "_");
+}
+
+function assertSetupTargetKind(value: string): asserts value is SetupTargetKind {
+  if (!isSetupTargetKind(value)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "setup target must be one of: local_host, remote_host, hosted_sandbox",
+    );
+  }
 }

@@ -6,7 +6,7 @@ type PresenceClient = Pick<CapletsCloudClient, "registerPresence"> & {
   updatePresenceCaplets?: (presenceId: string, allowedCapletIds: string[]) => Promise<void>;
 };
 
-export type LocalPresenceManagerOptions = RegisterPresenceInput & {
+export type ProjectBindingSessionManagerOptions = RegisterPresenceInput & {
   client: PresenceClient;
   heartbeatIntervalMs?: number;
   setInterval?: typeof setInterval;
@@ -14,12 +14,12 @@ export type LocalPresenceManagerOptions = RegisterPresenceInput & {
   onError?: (error: unknown) => void;
 };
 
-export class LocalPresenceManager {
+export class ProjectBindingSessionManager {
   private presenceId: string | undefined;
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private startPromise: Promise<void> | undefined;
 
-  constructor(private readonly options: LocalPresenceManagerOptions) {}
+  constructor(private readonly options: ProjectBindingSessionManagerOptions) {}
 
   async start(): Promise<void> {
     if (this.startPromise) {
@@ -35,6 +35,7 @@ export class LocalPresenceManager {
       projectRoot: this.options.projectRoot,
       projectFingerprint: this.options.projectFingerprint,
       allowedCapletIds: this.options.allowedCapletIds,
+      projectFiles: this.options.projectFiles,
       fallbackConsent: this.options.fallbackConsent ?? "deny",
     });
     this.presenceId = result.presenceId;
@@ -82,3 +83,6 @@ export class LocalPresenceManager {
     }
   }
 }
+
+export type LocalPresenceManagerOptions = ProjectBindingSessionManagerOptions;
+export const LocalPresenceManager = ProjectBindingSessionManager;

@@ -1,0 +1,6 @@
+{
+  "name": "project-binding-fixture",
+  "scripts": {
+    "build": "node build.js"
+  }
+}

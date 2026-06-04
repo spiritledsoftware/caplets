@@ -81,6 +81,14 @@ export type CapletSetupConfig = {
   verify?: CapletSetupCommandConfig[] | undefined;
 };
 
+export type ProjectBindingConfig = { required: true };
+export type RuntimeFeature = "docker" | "browser";
+export type RuntimeResourceClass = "standard" | "large" | "heavy";
+export type RuntimeRequirementsConfig = {
+  features?: RuntimeFeature[] | undefined;
+  resources?: { class?: RuntimeResourceClass | undefined } | undefined;
+};
+
 export type CapletServerConfig = {
   server: string;
   backend: "mcp";
@@ -100,6 +108,8 @@ export type CapletServerConfig = {
   toolCacheTtlMs: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type OpenApiAuthConfig =
@@ -123,6 +133,8 @@ export type OpenApiEndpointConfig = {
   operationCacheTtlMs: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type GraphQlOperationConfig = {
@@ -150,6 +162,8 @@ export type GraphQlEndpointConfig = {
   selectionDepth: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type HttpActionConfig = {
@@ -177,6 +191,8 @@ export type HttpApiConfig = {
   maxResponseBytes: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CliToolOutputConfig = {
@@ -218,6 +234,8 @@ export type CliToolsConfig = {
   maxOutputBytes: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CapletSetConfig = {
@@ -234,6 +252,8 @@ export type CapletSetConfig = {
   toolCacheTtlMs: number;
   disabled: boolean;
   setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CapletConfig =
@@ -404,6 +424,38 @@ const setupSchema = z
     "setup must define at least one command or verify step",
   );
 
+const projectBindingSchema = z
+  .object({
+    required: z.literal(true).describe("Requires Project Binding before this Caplet can run."),
+  })
+  .strict()
+  .describe("Project Binding requirements for Caplets that need an attached project.");
+
+const runtimeFeatureSchema = z.enum(["docker", "browser"]);
+const runtimeFeaturesSchema = z
+  .array(runtimeFeatureSchema)
+  .refine((features) => new Set(features).size === features.length, {
+    message: "runtime.features must not contain duplicate feature names",
+  })
+  .describe("Runtime features required by this Caplet.");
+
+const runtimeRequirementsSchema = z
+  .object({
+    features: runtimeFeaturesSchema.optional(),
+    resources: z
+      .object({
+        class: z
+          .enum(["standard", "large", "heavy"])
+          .optional()
+          .describe("Requested hosted sandbox resource class."),
+      })
+      .strict()
+      .optional()
+      .describe("Hosted sandbox resource requirements."),
+  })
+  .strict()
+  .describe("Runtime feature and resource requirements for hosted execution.");
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -430,6 +482,8 @@ const publicServerSchema = z
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     startupTimeoutMs: z
       .number()
       .int()
@@ -478,6 +532,8 @@ const publicOpenApiEndpointSchema = z
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -548,6 +604,8 @@ const publicGraphQlEndpointSchema = z
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -662,6 +720,8 @@ const publicHttpApiSchema = z
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -755,6 +815,8 @@ const publicCliToolsSchema = z
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     timeoutMs: z
       .number()
       .int()
@@ -809,6 +871,8 @@ const publicCapletSetSchema = z
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     disabled: z.boolean().default(false).describe("When true, omit this Caplet set."),
   })
   .strict()

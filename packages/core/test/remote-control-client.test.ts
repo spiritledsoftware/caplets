@@ -67,7 +67,7 @@ describe("RemoteControlClient", () => {
 
     await expect(client.request("list", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_SERVER_USER"),
+      message: expect.stringContaining("CAPLETS_REMOTE_USER"),
     });
 
     try {

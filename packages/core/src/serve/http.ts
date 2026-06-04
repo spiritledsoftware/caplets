@@ -149,6 +149,20 @@ export function createHttpServeApp(
     );
   });
 
+  app.get(routePath(paths.control, "project-bindings/connect"), basicAuth(options.auth), (c) =>
+    c.json({ error: "websocket_upgrade_required" }, 426),
+  );
+
+  app.get(
+    routePath(paths.control, "project-bindings/:bindingId/status"),
+    basicAuth(options.auth),
+    (c) =>
+      c.json({
+        bindingId: c.req.param("bindingId"),
+        state: "not_attached",
+      }),
+  );
+
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
     const flowId = c.req.param("flowId");
     const result = await dispatchRemoteCliRequest(

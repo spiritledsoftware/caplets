@@ -120,6 +120,55 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("exposes authenticated Project Binding status under the control namespace", async () => {
+    const { engine } = testEngine();
+    const testPassword = ["test", "password"].join("-");
+    const app = createHttpServeApp(
+      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const missing = await app.request(
+      "http://127.0.0.1:5387/control/project-bindings/bind_123/status",
+    );
+    expect(missing.status).toBe(401);
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/control/project-bindings/bind_123/status",
+      {
+        headers: {
+          authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+        },
+      },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      bindingId: "bind_123",
+      state: "not_attached",
+    });
+
+    await engine.close();
+  });
+
+  it("exposes the Project Binding WebSocket upgrade route under a base path", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
+      writeErr: () => {},
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/caplets/control/project-bindings/connect",
+    );
+
+    expect(response.status).toBe(426);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "websocket_upgrade_required",
+    });
+
+    await engine.close();
+  });
+
   it("mounts service routes under a base path", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {

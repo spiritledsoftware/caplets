@@ -2,9 +2,15 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import type { CapletSetupCommandConfig, CapletSetupConfig } from "../config";
+import type { RuntimeFeature } from "../config-runtime";
 import { CapletsError } from "../errors";
 import type { LocalSetupStore } from "./local-store";
-import type { SetupActor, SetupAttempt, SetupTargetKind } from "./types";
+import {
+  isSetupTargetKind,
+  type SetupActor,
+  type SetupAttempt,
+  type SetupTargetKind,
+} from "./types";
 
 export type SpawnResult = {
   exitCode?: number | undefined;
@@ -26,9 +32,14 @@ export type SetupSpawn = (
 ) => Promise<SpawnResult>;
 
 export type RunCapletSetupOptions = {
+  projectFingerprint?: string;
   capletId: string;
   contentHash: string;
+  setupHash?: string | undefined;
   targetKind: SetupTargetKind;
+  runtimeFeatures?: RuntimeFeature[] | undefined;
+  projectBindingRequired?: boolean | undefined;
+  projectWorkspacePath?: string | undefined;
   setup: CapletSetupConfig;
   actor: SetupActor;
   approved: boolean;
@@ -41,6 +52,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 200_000;
 
 export async function runCapletSetup(options: RunCapletSetupOptions): Promise<SetupAttempt[]> {
+  assertSetupTargetKind(options.targetKind);
   if (!options.approved) {
     throw new CapletsError("REQUEST_INVALID", "Setup approval is required before commands run");
   }
@@ -75,9 +87,15 @@ async function runSetupCommand(
   };
   const timeoutMs = command.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = command.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const cwd = resolveCwd(command.cwd);
+  assertProjectWorkspaceSetupAllowed({
+    cwd,
+    projectBindingRequired: options.projectBindingRequired === true,
+    projectWorkspacePath: options.projectWorkspacePath,
+  });
   const spawnImpl = options.spawn ?? spawnCommand;
   const result = await spawnImpl(command.command, command.args ?? [], {
-    cwd: resolveCwd(command.cwd),
+    cwd,
     env,
     timeoutMs,
     maxOutputBytes,
@@ -88,9 +106,12 @@ async function runSetupCommand(
   const stderr = redactOutput(result.stderr, command.env);
   return {
     attemptId: randomUUID(),
+    projectFingerprint: options.projectFingerprint ?? "default",
     capletId: options.capletId,
     contentHash: options.contentHash,
+    ...(options.setupHash === undefined ? {} : { setupHash: options.setupHash }),
     targetKind: options.targetKind,
+    ...(options.runtimeFeatures === undefined ? {} : { runtimeFeatures: options.runtimeFeatures }),
     actor: options.actor,
     status: result.exitCode === 0 && !result.signal ? "succeeded" : "failed",
     phase,
@@ -106,6 +127,22 @@ async function runSetupCommand(
     redacted,
     retention: options.store.retention(),
   };
+}
+
+function assertProjectWorkspaceSetupAllowed(input: {
+  cwd?: string | undefined;
+  projectBindingRequired: boolean;
+  projectWorkspacePath?: string | undefined;
+}): void {
+  if (input.projectBindingRequired || !input.cwd || !input.projectWorkspacePath) return;
+  const workspacePath = resolve(input.projectWorkspacePath);
+  const cwd = resolve(input.cwd);
+  if (cwd === workspacePath || cwd.startsWith(`${workspacePath}/`)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Non-project setup cannot run inside project workspace without projectBinding.required",
+    );
+  }
 }
 
 export async function spawnCommand(
@@ -184,4 +221,13 @@ function capBytes(value: string, maxBytes: number): string {
   const bytes = Buffer.byteLength(value);
   if (bytes <= maxBytes) return value;
   return Buffer.from(value).subarray(0, maxBytes).toString("utf8");
+}
+
+function assertSetupTargetKind(value: string): asserts value is SetupTargetKind {
+  if (!isSetupTargetKind(value)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "setup target must be one of: local_host, remote_host, hosted_sandbox",
+    );
+  }
 }

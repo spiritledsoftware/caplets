@@ -21,7 +21,7 @@ export async function runCapletSetupCli(
   options: CapletSetupCliOptions = {},
 ): Promise<string> {
   const targetKind = resolveSetupTarget(options);
-  if (targetKind === "cloud") {
+  if (targetKind === "hosted_sandbox") {
     throw new CapletsError(
       "REQUEST_INVALID",
       "Cloud setup runs through the Caplets Cloud API, not the local CLI runner",
@@ -45,8 +45,14 @@ export async function runCapletSetupCli(
   }
 
   const contentHash = capletSetupContentHash(caplet as CapletConfig);
+  const projectFingerprint = "default";
   const store = new LocalSetupStore(options.baseDir ? { baseDir: options.baseDir } : {});
-  const existingApproval = await store.getApproval(caplet.server, contentHash, targetKind);
+  const existingApproval = await store.getApproval(
+    projectFingerprint,
+    caplet.server,
+    contentHash,
+    targetKind,
+  );
   const actor: SetupActor = options.yes ? "cli-yes" : "cli-interactive";
   if (!existingApproval && !options.yes) {
     return [
@@ -66,6 +72,7 @@ export async function runCapletSetupCli(
 
   if (options.yes && !existingApproval) {
     await store.approve({
+      projectFingerprint,
       capletId: caplet.server,
       contentHash,
       targetKind,
@@ -75,6 +82,7 @@ export async function runCapletSetupCli(
   }
 
   const attempts = await runCapletSetup({
+    projectFingerprint,
     capletId: caplet.server,
     contentHash,
     targetKind,
@@ -97,7 +105,7 @@ export async function runCapletSetupCli(
 
 function resolveSetupTarget(options: CapletSetupCliOptions): SetupTargetKind {
   if (options.target) return options.target;
-  return options.remote ? "remote" : "local";
+  return options.remote ? "remote_host" : "local_host";
 }
 
 function formatCommands(

@@ -383,8 +383,7 @@ function localPathRelativeToOutput(path: string, outputDir: string): string {
 }
 
 function displayPath(path: string): string {
-  if (process.platform !== "darwin") return path;
-  return path.replace(/^\/private\/(var|tmp)(?=\/|$)/u, "/$1");
+  return path;
 }
 
 function rejectUnsafeDestinationParents(path: string): void {

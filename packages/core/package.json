@@ -39,9 +39,21 @@
       "types": "./dist/native.d.ts",
       "default": "./dist/native.js"
     },
-    "./cloud-runtime": {
-      "types": "./dist/cloud-runtime.d.ts",
-      "default": "./dist/cloud-runtime.js"
+    "./caplet-source": {
+      "types": "./dist/caplet-source/index.d.ts",
+      "default": "./dist/caplet-source.js"
+    },
+    "./caplet-source/filesystem": {
+      "types": "./dist/caplet-source/filesystem.d.ts",
+      "default": "./dist/caplet-source/filesystem.js"
+    },
+    "./runtime-plan": {
+      "types": "./dist/runtime-plan/index.d.ts",
+      "default": "./dist/runtime-plan.js"
+    },
+    "./config-runtime": {
+      "types": "./dist/config-runtime.d.ts",
+      "default": "./dist/config-runtime.js"
     }
   },
   "publishConfig": {

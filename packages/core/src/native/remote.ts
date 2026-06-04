@@ -276,7 +276,7 @@ function errorMessage(error: unknown): string {
 function remoteAuthError(): CapletsError {
   return new CapletsError(
     "AUTH_FAILED",
-    "Remote Caplets authentication failed; check CAPLETS_SERVER_USER and CAPLETS_SERVER_PASSWORD.",
+    "Remote Caplets authentication failed; check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
   );
 }
 

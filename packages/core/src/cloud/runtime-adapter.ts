@@ -81,12 +81,17 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
   async setupPlan(capletId: string): Promise<SetupPlan> {
     const caplet = this.requireCaplet(capletId);
     const contentHash = capletSetupContentHash(caplet);
-    const approved = Boolean(await this.setupStore.getApproval(capletId, contentHash, "cloud"));
+    const projectFingerprint = "hosted";
+    const targetKind = "hosted_sandbox";
+    const approved = Boolean(
+      await this.setupStore.getApproval(projectFingerprint, capletId, contentHash, targetKind),
+    );
     return {
+      projectFingerprint,
       capletId,
       name: caplet.name,
       contentHash,
-      targetKind: "cloud",
+      targetKind,
       setup: caplet.setup ?? {},
       approved,
       commands: caplet.setup?.commands ?? [],
@@ -101,17 +106,19 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     const plan = await this.setupPlan(capletId);
     if (input.approved && !plan.approved) {
       await this.setupStore.approve({
+        projectFingerprint: plan.projectFingerprint,
         capletId,
         contentHash: plan.contentHash,
-        targetKind: "cloud",
+        targetKind: plan.targetKind,
         actor: input.actor,
         approvedAt: new Date().toISOString(),
       });
     }
     return await runCapletSetup({
       capletId,
+      projectFingerprint: plan.projectFingerprint,
       contentHash: plan.contentHash,
-      targetKind: "cloud",
+      targetKind: plan.targetKind,
       setup: plan.setup,
       actor: input.actor,
       approved: input.approved || plan.approved,

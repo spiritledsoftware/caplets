@@ -89,6 +89,24 @@ describe("package boundaries", () => {
 
     expect(missingTypeDefinitions).toEqual([]);
   });
+
+  it("does not publish obsolete Cloud-specific runtime exports", () => {
+    expect(Object.keys(corePackage.exports)).not.toContain("./cloud-runtime");
+    expect(Object.keys(corePackage.exports)).not.toContain("./cloud/bundle-runtime");
+  });
+
+  it("keeps Worker-safe core exports on dedicated bundles", () => {
+    const dedicatedExports = ["./caplet-source", "./runtime-plan"] as const;
+    const rootDefault = (corePackage.exports["."] as { default: string }).default;
+
+    for (const specifier of dedicatedExports) {
+      const target = corePackage.exports[specifier] as { default: string; types: string };
+
+      expect(target.default, specifier).not.toBe(rootDefault);
+      expect(target.default, specifier).not.toBe("./dist/index.js");
+      expect(target.types, specifier).not.toBe("./dist/index.d.ts");
+    }
+  });
 });
 
 function scanFiles(roots: string[]): string[] {

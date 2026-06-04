@@ -1,12 +1,13 @@
 import { CapletsError } from "../errors";
+import { mcpUrlForBase, type CapletsServerEnv, type CapletsServerInput } from "../server/options";
 import {
-  mcpUrlForBase,
-  resolveCapletsMode,
-  resolveCapletsServer,
-  type CapletsMode,
-  type CapletsServerEnv,
-  type CapletsServerInput,
-} from "../server/options";
+  resolveCapletsRemote,
+  resolveRemoteMode,
+  type CapletsRemoteAuth,
+  type CapletsRemoteEnv,
+} from "../remote/options";
+
+type CapletsMode = "auto" | "local" | "remote";
 
 export type NativeCapletsMode = CapletsMode;
 
@@ -30,7 +31,7 @@ export type NativeCapletsServiceResolutionInput = {
   remote?: NativeRemoteCapletsOptions;
 };
 
-export type NativeCapletsEnv = CapletsServerEnv;
+export type NativeCapletsEnv = CapletsServerEnv & CapletsRemoteEnv;
 
 export type NativeRemoteAuthOptions =
   | { enabled: false; user: string }
@@ -57,10 +58,10 @@ export function resolveNativeCapletsServiceOptions(
   input: NativeCapletsServiceResolutionInput = {},
   env: NativeCapletsEnv = process.env,
 ): ResolvedNativeCapletsServiceOptions {
-  const mode = resolveCapletsMode(
+  const mode = resolveRemoteMode(
     {
       ...(input.mode ? { mode: input.mode } : {}),
-      ...(input.server?.url ? { serverUrl: input.server.url } : {}),
+      ...(input.server?.url ? { remoteUrl: input.server.url } : {}),
     },
     env,
   );
@@ -69,7 +70,7 @@ export function resolveNativeCapletsServiceOptions(
   }
 
   const serverFetch = input.remote?.fetch ?? input.server?.fetch;
-  const server = resolveCapletsServer(
+  const server = resolveCapletsRemote(
     { ...input.server, ...(serverFetch ? { fetch: serverFetch } : {}) },
     env,
   );
@@ -79,13 +80,23 @@ export function resolveNativeCapletsServiceOptions(
     mode: "remote",
     remote: {
       url: mcpUrlForBase(server.baseUrl),
-      auth: server.auth,
+      auth: nativeAuthFromRemoteAuth(server.auth),
       pollIntervalMs: parsePollInterval(input.remote?.pollIntervalMs),
       requestInit: server.requestInit,
       ...(cloud ? { cloud } : {}),
       ...(server.fetch ? { fetch: server.fetch } : {}),
     },
   };
+}
+
+function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOptions {
+  if (auth.type === "basic") {
+    return { enabled: true, user: auth.user, password: auth.password };
+  }
+  if (auth.type === "none") {
+    return { enabled: false, user: auth.user };
+  }
+  return { enabled: false, user: "caplets" };
 }
 
 function parsePollInterval(value: number | undefined): number {

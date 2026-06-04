@@ -411,6 +411,46 @@
             },
             "additionalProperties": false
           },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "startupTimeoutMs": {
             "default": 10000,
             "description": "Timeout in milliseconds for starting or checking a downstream server.",
@@ -763,6 +803,46 @@
               }
             },
             "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "requestTimeoutMs": {
             "default": 60000,
@@ -1148,6 +1228,46 @@
               }
             },
             "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "requestTimeoutMs": {
             "default": 60000,
@@ -1584,6 +1704,46 @@
             },
             "additionalProperties": false
           },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "requestTimeoutMs": {
             "default": 60000,
             "description": "Timeout in milliseconds for HTTP action requests.",
@@ -1868,6 +2028,46 @@
             },
             "additionalProperties": false
           },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "timeoutMs": {
             "default": 60000,
             "description": "Default timeout in milliseconds for CLI actions.",
@@ -2061,6 +2261,46 @@
               }
             },
             "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "disabled": {
             "default": false,

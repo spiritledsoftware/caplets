@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapletsError } from "../src/errors";
 import { RemoteNativeCapletsService, type RemoteCapletsClient } from "../src/native/remote";
-import { createNativeCapletsService } from "../src/native/service";
+import {
+  createNativeCapletsService,
+  resetNativeProjectBindingFallbackWarningForTests,
+} from "../src/native/service";
 
 function client(
   tools: Array<{ name: string; title?: string | undefined; description?: string | undefined }> = [
@@ -240,7 +243,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("alpha", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_SERVER_USER"),
+      message: expect.stringContaining("CAPLETS_REMOTE_USER"),
     } satisfies Partial<CapletsError>);
 
     await service.close();
@@ -279,6 +282,7 @@ describe("createNativeCapletsService remote mode", () => {
   const dirs: string[] = [];
 
   afterEach(() => {
+    resetNativeProjectBindingFallbackWarningForTests();
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -375,6 +379,67 @@ describe("createNativeCapletsService remote mode", () => {
         expect.stringContaining("Could not close local overlay Caplets service: close failed"),
       ),
     );
+  });
+
+  it("fails hard when explicit remote mode cannot create the remote Project Binding service", () => {
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+
+    expect(() =>
+      createNativeCapletsService({
+        mode: "remote",
+        server: { url: "http://127.0.0.1:5387" },
+        localServiceFactory: vi.fn(() => localService),
+        remoteClientFactory: vi.fn(() => {
+          throw new Error("Project Binding unavailable");
+        }),
+      }),
+    ).toThrow("Project Binding unavailable");
+
+    expect(localClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to local overlay once when configured remote Project Binding is unavailable", async () => {
+    const writeErr = vi.fn();
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+
+    const service = createNativeCapletsService({
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => {
+        throw new Error("Project Binding unavailable");
+      }),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+    const secondService = createNativeCapletsService({
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => {
+        throw new Error("Project Binding unavailable");
+      }),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+
+    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["local"]);
+    expect(writeErr).toHaveBeenCalledTimes(1);
+    expect(writeErr).toHaveBeenCalledWith(
+      "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n",
+    );
+    await service.close();
+    await secondService.close();
   });
 
   it("lists local overlay Caplets after remote tools and shadows matching remote Caplets", async () => {
@@ -708,17 +773,15 @@ describe("createNativeCapletsService remote mode", () => {
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
-        if (url.pathname.endsWith("/api/presence") && init?.method === "POST") {
+        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
           return Response.json({
-            presenceId: "presence_1",
-            expiresAt: "2026-05-30T00:05:00.000Z",
+            binding: { bindingId: "presence_1" },
           });
         }
-        if (url.pathname.endsWith("/api/presence/presence_1") && init?.method === "DELETE") {
-          return Response.json({ ok: true });
-        }
-        if (url.pathname.endsWith("/api/presence/presence_1/caplets") && init?.method === "PATCH") {
-          return Response.json({ ok: true });
+        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
+          return Response.json({
+            binding: { bindingId: "presence_1" },
+          });
         }
         return new Response("not found", { status: 404 });
       },
@@ -750,14 +813,19 @@ describe("createNativeCapletsService remote mode", () => {
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.anything()));
     await service.close();
 
-    const presenceBodies = fetch.mock.calls
+    const projectBindingBodies = fetch.mock.calls
       .map(([, init]) => init?.body)
       .filter((body): body is string => typeof body === "string")
-      .map((body) => JSON.parse(body) as { allowedCapletIds?: string[] });
-    expect(presenceBodies[0]?.allowedCapletIds).toEqual(["local"]);
+      .map(
+        (body) => JSON.parse(body) as { projectFiles?: Array<{ path: string; content: string }> },
+      );
+    expect(projectBindingBodies[0]?.projectFiles).toEqual([{ path: "config.json", content: "{}" }]);
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://cloud.caplets.dev/api/presence/presence_1"),
-      expect.objectContaining({ method: "DELETE" }),
+      new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ state: "offline" }),
+      }),
     );
   });
 
@@ -766,17 +834,15 @@ describe("createNativeCapletsService remote mode", () => {
     const fetch = vi.fn(
       async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
         const url = new URL(input.toString());
-        if (url.pathname.endsWith("/api/presence") && init?.method === "POST") {
+        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
           return Response.json({
-            presenceId: "presence_1",
-            expiresAt: "2026-05-30T00:05:00.000Z",
+            binding: { bindingId: "presence_1" },
           });
         }
-        if (url.pathname.endsWith("/api/presence/presence_1/caplets") && init?.method === "PATCH") {
-          return Response.json({ ok: true });
-        }
-        if (url.pathname.endsWith("/api/presence/presence_1") && init?.method === "DELETE") {
-          return Response.json({ ok: true });
+        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
+          return Response.json({
+            binding: { bindingId: "presence_1" },
+          });
         }
         return new Response("not found", { status: 404 });
       },
@@ -812,11 +878,8 @@ describe("createNativeCapletsService remote mode", () => {
     await service.reload();
 
     expect(fetch).toHaveBeenCalledWith(
-      new URL("https://cloud.caplets.dev/api/presence/presence_1/caplets"),
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ allowedCapletIds: ["local"] }),
-      }),
+      new URL("https://cloud.caplets.dev/api/project-bindings"),
+      expect.objectContaining({ method: "POST" }),
     );
     await service.close();
   });

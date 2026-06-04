@@ -1,3 +1,5 @@
+import type { ProjectSyncFile } from "./sync";
+
 export type CapletsCloudClientOptions = {
   baseUrl: URL;
   accessToken: string;
@@ -9,6 +11,7 @@ export type RegisterPresenceInput = {
   projectRoot: string;
   projectFingerprint: string;
   allowedCapletIds: string[];
+  projectFiles?: ProjectSyncFile[] | undefined;
   fallbackConsent?: "allow" | "deny" | undefined;
 };
 
@@ -27,56 +30,63 @@ export class CapletsCloudClient {
   }
 
   async registerPresence(input: RegisterPresenceInput): Promise<RegisterPresenceResult> {
-    const response = await this.fetchImpl(this.endpoint("api/presence"), {
+    const response = await this.fetchImpl(this.endpoint("api/project-bindings"), {
       method: "POST",
       headers: this.headers({ json: true }),
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        workspaceId: input.workspaceId,
+        projectRoot: input.projectRoot,
+        projectFingerprint: input.projectFingerprint,
+        state: "ready",
+        syncState: "idle",
+        projectFiles: input.projectFiles ?? [],
+      }),
     });
     if (!response.ok) {
-      throw new Error(`Caplets Cloud presence registration failed: HTTP ${response.status}`);
+      throw new Error(`Caplets Cloud Project Binding registration failed: HTTP ${response.status}`);
     }
-    return (await response.json()) as RegisterPresenceResult;
+    const body = (await response.json()) as { binding?: { bindingId?: string } };
+    return {
+      presenceId: body.binding?.bindingId ?? `${input.workspaceId}:${input.projectFingerprint}`,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
   }
 
   async stopPresence(presenceId: string): Promise<void> {
     const response = await this.fetchImpl(
-      this.endpoint(`api/presence/${encodeURIComponent(presenceId)}`),
+      this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
       {
-        method: "DELETE",
-        headers: this.headers(),
+        method: "PATCH",
+        headers: this.headers({ json: true }),
+        body: JSON.stringify({ state: "offline" }),
       },
     );
     if (!response.ok && response.status !== 404) {
-      throw new Error(`Caplets Cloud presence stop failed: HTTP ${response.status}`);
+      throw new Error(`Caplets Cloud Project Binding stop failed: HTTP ${response.status}`);
     }
   }
 
   async heartbeatPresence(presenceId: string): Promise<HeartbeatPresenceResult> {
     const response = await this.fetchImpl(
-      this.endpoint(`api/presence/${encodeURIComponent(presenceId)}/heartbeat`),
-      {
-        method: "POST",
-        headers: this.headers(),
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`Caplets Cloud presence heartbeat failed: HTTP ${response.status}`);
-    }
-    return (await response.json()) as HeartbeatPresenceResult;
-  }
-
-  async updatePresenceCaplets(presenceId: string, allowedCapletIds: string[]): Promise<void> {
-    const response = await this.fetchImpl(
-      this.endpoint(`api/presence/${encodeURIComponent(presenceId)}/caplets`),
+      this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
       {
         method: "PATCH",
         headers: this.headers({ json: true }),
-        body: JSON.stringify({ allowedCapletIds }),
+        body: JSON.stringify({ state: "ready", syncState: "idle" }),
       },
     );
     if (!response.ok) {
-      throw new Error(`Caplets Cloud presence update failed: HTTP ${response.status}`);
+      throw new Error(`Caplets Cloud Project Binding heartbeat failed: HTTP ${response.status}`);
     }
+    return {
+      presenceId,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+  }
+
+  async updatePresenceCaplets(presenceId: string, allowedCapletIds: string[]): Promise<void> {
+    void presenceId;
+    void allowedCapletIds;
   }
 
   private headers(options: { json?: boolean } = {}): Headers {

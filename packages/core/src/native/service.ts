@@ -1,7 +1,8 @@
 import type { NativeCapletsServiceResolutionInput } from "./options";
 import { resolveNativeCapletsServiceOptions } from "./options";
 import { CapletsCloudClient } from "../cloud/client";
-import { LocalPresenceManager } from "../cloud/presence";
+import { ProjectBindingSessionManager } from "../cloud/presence";
+import { projectSyncFiles } from "../cloud/sync";
 import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
 import {
   createSdkRemoteCapletsClient,
@@ -22,6 +23,10 @@ import {
   type LocalOverlayConfigWithSources,
 } from "../config";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
+
+const REMOTE_PROJECT_BINDING_FALLBACK_WARNING =
+  "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n";
+let hasWarnedRemoteProjectBindingFallback = false;
 
 export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
   configPath?: string;
@@ -79,9 +84,13 @@ export function createNativeCapletsService(
         pollIntervalMs: resolved.remote.pollIntervalMs,
         ...(options.writeErr ? { writeErr: options.writeErr } : {}),
       });
-      const presence = createLocalPresenceManager(resolved.remote.cloud, local, options);
+      const presence = createProjectBindingSessionManager(resolved.remote.cloud, local, options);
       return new CompositeNativeCapletsService(remote, local, options, presence);
     } catch (error) {
+      if (options.mode !== "remote") {
+        warnRemoteProjectBindingFallback(options);
+        return local;
+      }
       void local.close().catch((closeError) => {
         writeErr(
           options,
@@ -92,6 +101,10 @@ export function createNativeCapletsService(
     }
   }
   return new DefaultNativeCapletsService(options);
+}
+
+export function resetNativeProjectBindingFallbackWarningForTests(): void {
+  hasWarnedRemoteProjectBindingFallback = false;
 }
 
 type LocalNativeCapletsServiceOptions = NativeCapletsServiceOptions & {
@@ -158,7 +171,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     private readonly remote: NativeCapletsService,
     private readonly local: NativeCapletsService,
     private readonly options: NativeCapletsServiceOptions,
-    private readonly presence?: LocalPresenceManager,
+    private readonly presence?: ProjectBindingSessionManager,
   ) {
     this.unsubscribers = [
       this.remote.onToolsChanged(() => this.updateMergedTools()),
@@ -168,7 +181,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     void this.presence?.start().catch((error) => {
       writeErr(
         options,
-        `Could not register Caplets Cloud local presence: ${errorMessage(error)}\n`,
+        `Could not register Caplets Cloud Project Binding: ${errorMessage(error)}\n`,
       );
     });
   }
@@ -261,14 +274,14 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 }
 
-function createLocalPresenceManager(
+function createProjectBindingSessionManager(
   cloud: Extract<
     ReturnType<typeof resolveNativeCapletsServiceOptions>,
     { mode: "remote" }
   >["remote"]["cloud"],
   local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
-): LocalPresenceManager | undefined {
+): ProjectBindingSessionManager | undefined {
   if (!cloud) {
     return undefined;
   }
@@ -279,15 +292,16 @@ function createLocalPresenceManager(
     accessToken: cloud.accessToken,
     ...(cloudFetch ? { fetch: cloudFetch } : {}),
   };
-  return new LocalPresenceManager({
+  return new ProjectBindingSessionManager({
     client: new CapletsCloudClient(clientOptions),
     workspaceId: cloud.workspaceId,
     projectRoot,
     projectFingerprint: fingerprintProjectRoot(projectRoot),
+    projectFiles: projectSyncFiles(projectRoot),
     allowedCapletIds: local.listTools().map((tool) => tool.caplet),
     heartbeatIntervalMs: cloud.heartbeatIntervalMs,
     onError: (error) => {
-      writeErr(options, `Caplets Cloud local presence heartbeat failed: ${errorMessage(error)}\n`);
+      writeErr(options, `Caplets Cloud Project Binding heartbeat failed: ${errorMessage(error)}\n`);
     },
   });
 }
@@ -337,6 +351,14 @@ function warningKey(warning: { kind: string; path: string; message: string }): s
 
 function writeErr(options: NativeCapletsServiceOptions, message: string): void {
   options.writeErr?.(message);
+}
+
+function warnRemoteProjectBindingFallback(options: NativeCapletsServiceOptions): void {
+  if (hasWarnedRemoteProjectBindingFallback) {
+    return;
+  }
+  hasWarnedRemoteProjectBindingFallback = true;
+  writeErr(options, REMOTE_PROJECT_BINDING_FALLBACK_WARNING);
 }
 
 function errorMessage(error: unknown): string {

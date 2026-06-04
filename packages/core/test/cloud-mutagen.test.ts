@@ -1,47 +1,55 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  checkMutagenBinary,
-  mutagenDoctorLine,
+  ManagedMutagenProjectSync,
+  mutagenProjectSyncDoctorData,
   parseMutagenVersionOutput,
-} from "../src/cloud/mutagen";
+} from "../src/project-binding/mutagen";
 
-describe("managed Mutagen adapter", () => {
-  it("reports available MIT-only Mutagen", async () => {
-    const run = vi.fn(async () => "Mutagen version 0.18.1\nLicense profile: mit\n");
+describe("managed Project Binding sync adapter", () => {
+  it("records available Mutagen version information after start", async () => {
+    const run = vi.fn(async (command: string, args: string[]) => {
+      if (args[0] === "version") {
+        return { stdout: "Mutagen version 0.18.1\nLicense profile: mit\n", exitCode: 0 };
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+    const sync = new ManagedMutagenProjectSync({ mutagenBinary: "/bin/mutagen", runner: run });
 
-    await expect(checkMutagenBinary("/bin/mutagen", run)).resolves.toEqual({
-      available: true,
-      path: "/bin/mutagen",
-      version: "0.18.1",
-      licenseProfile: "mit",
+    await sync.start({
+      bindingId: "bind_1",
+      localProjectRoot: "/repo",
+      serverProjectRoot: "/state/workspaces/fingerprint/project",
+    });
+
+    expect(mutagenProjectSyncDoctorData(sync.snapshot())).toMatchObject({
+      state: "syncing",
+      mutagenBinary: "/bin/mutagen",
+      mutagenVersion: "0.18.1",
     });
   });
 
-  it("rejects unsupported license profiles", async () => {
-    const run = vi.fn(async () => "Mutagen version 0.18.1\nLicense profile: sspl\n");
-
-    await expect(checkMutagenBinary("/bin/mutagen", run)).resolves.toEqual({
-      available: false,
-      path: "/bin/mutagen",
-      reason: "unsupported license profile sspl",
+  it("blocks with a stable diagnostic when the binary is unavailable", async () => {
+    const sync = new ManagedMutagenProjectSync({
+      runner: async () => {
+        throw new Error("not found");
+      },
     });
-  });
 
-  it("formats doctor output", () => {
-    expect(
-      mutagenDoctorLine({
-        available: true,
-        path: "/bin/mutagen",
-        version: "0.18.1",
-        licenseProfile: "mit",
-      }),
-    ).toBe("Mutagen: available 0.18.1 (/bin/mutagen)");
+    await sync.start({
+      bindingId: "bind_1",
+      localProjectRoot: "/repo",
+      serverProjectRoot: "/state/workspaces/fingerprint/project",
+    });
+
+    expect(mutagenProjectSyncDoctorData(sync.snapshot())).toMatchObject({
+      state: "blocked",
+      diagnosticCode: "project_sync_binary_missing",
+    });
   });
 
   it("parses unknown version output conservatively", () => {
     expect(parseMutagenVersionOutput("mutagen dev build")).toEqual({
       version: "unknown",
-      licenseProfile: "unknown",
     });
   });
 });
