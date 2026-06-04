@@ -1,9 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { attachProjectOnce, resolveAttachOptions } from "../src/project-binding/attach";
 import { runCli } from "../src/cli";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import type { ProjectBindingWebSocket } from "../src/project-binding/transport";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 describe("caplets attach CLI", () => {
   it("shows attach help", async () => {
@@ -74,11 +85,19 @@ describe("caplets attach CLI", () => {
 
   it("runs once from the CLI and reports WebSocket availability", async () => {
     const out: string[] = [];
+    const cwd = process.cwd();
+    const projectRoot = tempProjectRoot();
 
-    await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--once"], {
-      fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
-      writeOut: (value) => out.push(value),
-    });
+    try {
+      process.chdir(projectRoot);
+
+      await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--once"], {
+        fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
+        writeOut: (value) => out.push(value),
+      });
+    } finally {
+      process.chdir(cwd);
+    }
 
     expect(out.join("")).toContain(
       "Project Binding available at wss://caplets.example.com/caplets/control/project-bindings/connect.",
@@ -88,17 +107,25 @@ describe("caplets attach CLI", () => {
   it("prints structured JSON for CLI WebSocket failures", async () => {
     const out: string[] = [];
     let exitCode = 0;
+    const cwd = process.cwd();
+    const projectRoot = tempProjectRoot();
 
-    await runCli(
-      ["attach", "--remote-url", "https://caplets.example.com/caplets", "--once", "--json"],
-      {
-        fetch: async () => new Response("upgrade blocked", { status: 426 }),
-        writeOut: (value) => out.push(value),
-        setExitCode: (code) => {
-          exitCode = code;
+    try {
+      process.chdir(projectRoot);
+
+      await runCli(
+        ["attach", "--remote-url", "https://caplets.example.com/caplets", "--once", "--json"],
+        {
+          fetch: async () => new Response("upgrade blocked", { status: 426 }),
+          writeOut: (value) => out.push(value),
+          setExitCode: (code) => {
+            exitCode = code;
+          },
         },
-      },
-    );
+      );
+    } finally {
+      process.chdir(cwd);
+    }
 
     expect(exitCode).toBe(1);
     expect(JSON.parse(out.join(""))).toMatchObject({
@@ -172,6 +199,12 @@ describe("caplets attach CLI", () => {
     expect(JSON.stringify(events)).not.toContain("cap_access_secret");
   });
 });
+
+function tempProjectRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "caplets-attach-cli-"));
+  tempDirs.push(root);
+  return root;
+}
 
 function fakeProjectBindingSession(options: { onReady?: () => void } = {}) {
   return {

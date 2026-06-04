@@ -113,11 +113,12 @@ describe("cli init", () => {
     try {
       mkdirSync(projectRoot, { recursive: true });
       process.chdir(projectRoot);
+      const expectedConfigPath = join(process.cwd(), ".caplets", "config.json");
 
       await runCli(["init"], { writeOut: (value) => out.push(value) });
 
       expect(existsSync(projectConfigPath)).toBe(true);
-      expect(out.join("")).toBe(`Created Caplets config at ${projectConfigPath}\n`);
+      expect(out.join("")).toBe(`Created Caplets config at ${expectedConfigPath}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -440,6 +441,7 @@ describe("cli init", () => {
       );
       process.env.CAPLETS_CONFIG = configPath;
       process.chdir(projectRoot);
+      const expectedProjectCapletPath = join(process.cwd(), ".caplets", "github.md");
 
       await runCli(["list", "--json"], { writeOut: (value) => out.push(value) });
 
@@ -447,7 +449,7 @@ describe("cli init", () => {
         expect.objectContaining({
           server: "github",
           source: "project-file",
-          path: projectCapletPath,
+          path: expectedProjectCapletPath,
           shadows: [{ kind: "global-config", path: configPath }],
         }),
       ]);
@@ -972,6 +974,7 @@ describe("cli init", () => {
       writeCliRepo(repo);
       mkdirSync(projectRoot, { recursive: true });
       process.chdir(projectRoot);
+      const expectedOutput = join(process.cwd(), ".caplets", "repo-tools.md");
 
       await runCli(["add", "cli", "repo-tools", "--repo", repo, "--include", "package"], {
         writeOut: (value) => out.push(value),
@@ -979,7 +982,7 @@ describe("cli init", () => {
 
       const output = join(projectRoot, ".caplets", "repo-tools.md");
       expect(readFileSync(output, "utf8")).toContain("package_test:");
-      expect(out.join("")).toBe(`Wrote CLI Caplet to ${output}\n`);
+      expect(out.join("")).toBe(`Wrote CLI Caplet to ${expectedOutput}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -1543,12 +1546,13 @@ describe("cli init", () => {
       process.env.CAPLETS_CONFIG = configPath;
       mkdirSync(projectRoot, { recursive: true });
       process.chdir(projectRoot);
+      const expectedDestination = join(process.cwd(), ".caplets", "github");
 
       await runCli(["install", repo, "github"], { writeOut: (value) => out.push(value) });
 
       expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
       expect(existsSync(join(projectRoot, ".caplets", "filesystem.md"))).toBe(false);
-      expect(out.join("")).toBe(`Installed github to ${join(projectRoot, ".caplets", "github")}\n`);
+      expect(out.join("")).toBe(`Installed github to ${expectedDestination}\n`);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
