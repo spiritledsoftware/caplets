@@ -39,6 +39,8 @@ export class CapletsCloudClient {
         projectFingerprint: input.projectFingerprint,
         state: "ready",
         syncState: "idle",
+        allowedCapletIds: input.allowedCapletIds,
+        fallbackConsent: input.fallbackConsent ?? "deny",
         projectFiles: input.projectFiles ?? [],
       }),
     });

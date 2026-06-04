@@ -39,6 +39,8 @@ describe("CapletsCloudClient", () => {
       projectFingerprint: "sha256:abc",
       state: "ready",
       syncState: "idle",
+      allowedCapletIds: ["repo-cli"],
+      fallbackConsent: "deny",
       projectFiles: [{ path: "src/app.ts", content: "app" }],
     });
   });
