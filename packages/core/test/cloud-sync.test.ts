@@ -63,12 +63,14 @@ describe("ProjectSyncCoordinator", () => {
         ".capletsignore",
         ".env.example",
         ".gitignore",
+        "important.env",
         "src/app.ts",
       ]);
       expect(projectSyncFiles(dir)).toEqual([
         { path: ".capletsignore", content: "secrets\n" },
         { path: ".env.example", content: "SAFE=\n" },
         { path: ".gitignore", content: "dist\n*.env\n!important.env\n" },
+        { path: "important.env", content: "ok" },
         { path: "src/app.ts", content: "app" },
       ]);
     } finally {

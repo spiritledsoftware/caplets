@@ -21,6 +21,11 @@ export type ProjectSyncManifest = {
   exclusionSummary: ProjectSyncExclusionSummary[];
 };
 
+type IgnoreRule = {
+  pattern: string;
+  negated: boolean;
+};
+
 const HARD_DENYLIST = [
   ".git/",
   ".hg/",
@@ -115,21 +120,31 @@ function walk(root: string, visit: (absolutePath: string, directory: boolean) =>
   }
 }
 
-function loadIgnoreFile(root: string, name: string): string[] {
+function loadIgnoreFile(root: string, name: string): IgnoreRule[] {
   const path = join(root, name);
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8")
     .split(/\r?\n/u)
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#") && !line.startsWith("!"));
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => {
+      const negated = line.startsWith("!");
+      return { pattern: negated ? line.slice(1) : line, negated };
+    })
+    .filter((rule) => rule.pattern.length > 0);
 }
 
 function matchingIgnorePattern(
-  patterns: string[],
+  rules: IgnoreRule[],
   relativePath: string,
   directory: boolean,
 ): string | undefined {
-  return patterns.find((pattern) => matchesPattern(relativePath, pattern, directory));
+  let matchedPattern: string | undefined;
+  for (const rule of rules) {
+    if (!matchesPattern(relativePath, rule.pattern, directory)) continue;
+    matchedPattern = rule.negated ? undefined : rule.pattern;
+  }
+  return matchedPattern;
 }
 
 function hardDenylistPattern(relativePath: string, directory: boolean): string | undefined {
@@ -137,19 +152,39 @@ function hardDenylistPattern(relativePath: string, directory: boolean): string |
 }
 
 function matchesPattern(relativePath: string, pattern: string, directory: boolean): boolean {
-  const normalized = pattern.replace(/\\/gu, "/").replace(/^\//u, "");
-  if (normalized.endsWith("/")) {
-    const prefix = normalized.slice(0, -1);
+  const normalized = pattern.replace(/\\/gu, "/");
+  const anchored = normalized.startsWith("/");
+  const body = anchored ? normalized.replace(/^\/+/u, "") : normalized;
+  if (!body) return false;
+  if (body.endsWith("/")) {
+    const prefix = body.slice(0, -1);
+    if (!prefix) return false;
     return directory
-      ? relativePath === prefix || relativePath.startsWith(`${prefix}/`)
-      : relativePath.startsWith(`${prefix}/`);
+      ? matchesPathOrDescendant(relativePath, prefix, anchored)
+      : matchesDescendant(relativePath, prefix, anchored);
   }
-  if (normalized.startsWith("*.")) return relativePath.endsWith(normalized.slice(1));
-  return (
-    relativePath === normalized ||
-    relativePath.startsWith(`${normalized}/`) ||
-    relativePath.split("/").includes(normalized)
-  );
+  if (body.startsWith("*.")) {
+    return anchored
+      ? !relativePath.includes("/") && relativePath.endsWith(body.slice(1))
+      : relativePath.endsWith(body.slice(1));
+  }
+  return matchesPathOrDescendant(relativePath, body, anchored || body.includes("/"));
+}
+
+function matchesDescendant(relativePath: string, pattern: string, anchored: boolean): boolean {
+  if (relativePath.startsWith(`${pattern}/`)) return true;
+  if (anchored) return false;
+  return relativePath.includes(`/${pattern}/`);
+}
+
+function matchesPathOrDescendant(
+  relativePath: string,
+  pattern: string,
+  anchored: boolean,
+): boolean {
+  if (relativePath === pattern || relativePath.startsWith(`${pattern}/`)) return true;
+  if (anchored) return false;
+  return relativePath.split("/").includes(pattern);
 }
 
 function safeTemplate(relativePath: string): boolean {

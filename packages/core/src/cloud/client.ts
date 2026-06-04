@@ -85,8 +85,17 @@ export class CapletsCloudClient {
   }
 
   async updatePresenceCaplets(presenceId: string, allowedCapletIds: string[]): Promise<void> {
-    void presenceId;
-    void allowedCapletIds;
+    const response = await this.fetchImpl(
+      this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
+      {
+        method: "PATCH",
+        headers: this.headers({ json: true }),
+        body: JSON.stringify({ allowedCapletIds }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`Caplets Cloud Project Binding update failed: HTTP ${response.status}`);
+    }
   }
 
   private headers(options: { json?: boolean } = {}): Headers {

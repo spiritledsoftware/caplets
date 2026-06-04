@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { fingerprintProjectRoot } from "../cloud/project-root";
 import { CapletsError } from "../errors";
 import type { ResolvedCapletsRemote } from "../remote/options";
@@ -104,7 +105,8 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
   let ended = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   const publicWebSocketUrl = input.remote.projectBindingWebSocketUrl.toString();
-  const socketUrl = authenticatedSocketUrl(input.remote, bindingId, sessionId, projectFingerprint);
+  const socketUrl = bindingSocketUrl(input.remote, bindingId, sessionId, projectFingerprint);
+  const socketProtocols = bindingSocketProtocols(input.remote);
 
   const emitReady = (requestId?: string | undefined) => {
     input.onEvent?.({
@@ -138,7 +140,7 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
   };
 
   const connect = async (attempt: number): Promise<void> => {
-    const socket = webSocketFactory(socketUrl);
+    const socket = webSocketFactory(socketUrl, socketProtocols);
     await waitForOpen(socket, input.signal);
     if (input.signal?.aborted) {
       closeSocket(socket, 1000, "aborted");
@@ -294,7 +296,7 @@ function controlProjectBindingUrl(remote: ResolvedCapletsRemote, suffix: string)
   return url;
 }
 
-function authenticatedSocketUrl(
+function bindingSocketUrl(
   remote: ResolvedCapletsRemote,
   bindingId: string,
   sessionId: string,
@@ -304,8 +306,15 @@ function authenticatedSocketUrl(
   url.searchParams.set("bindingId", bindingId);
   url.searchParams.set("sessionId", sessionId);
   url.searchParams.set("projectFingerprint", projectFingerprint);
-  if (remote.auth.type === "bearer") url.searchParams.set("accessToken", remote.auth.token);
   return url.toString();
+}
+
+function bindingSocketProtocols(remote: ResolvedCapletsRemote): string[] | undefined {
+  if (remote.auth.type !== "bearer") return undefined;
+  return [
+    "caplets.project-binding.v1",
+    `caplets.bearer.${Buffer.from(remote.auth.token).toString("base64url")}`,
+  ];
 }
 
 function parseSocketMessage(data: unknown): ProjectBindingSocketServerMessage | undefined {
@@ -326,7 +335,7 @@ async function waitForOpen(
   socket: ProjectBindingWebSocket,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  if (socket.readyState === PROJECT_BINDING_SOCKET_OPEN || socket.addEventListener === undefined) {
+  if (socket.readyState === PROJECT_BINDING_SOCKET_OPEN) {
     return;
   }
   await Promise.race([
@@ -367,11 +376,12 @@ function listen(
   }
   const key = `on${type}` as const;
   const existing = socket[key];
-  socket[key] = (event) => {
+  const wrapper = (event: ProjectBindingSocketEvent) => {
     existing?.(event);
     listener(event);
-    if (options?.once && socket[key] === listener) socket[key] = null;
+    if (options?.once && socket[key] === wrapper) socket[key] = existing ?? null;
   };
+  socket[key] = wrapper;
 }
 
 function closeSocket(socket: ProjectBindingWebSocket, code: number, reason: string): void {

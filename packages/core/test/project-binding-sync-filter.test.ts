@@ -40,4 +40,40 @@ describe("Project Binding sync filter", () => {
     expect(JSON.stringify(manifest.exclusionSummary)).not.toContain(".git/config");
     expect(JSON.stringify(manifest.exclusionSummary)).not.toContain("SECRET=1");
   });
+
+  it("honors gitignore negation rules in order", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-sync-filter-negation-"));
+    writeFileSync(join(root, ".gitignore"), "*.log\n!deploy.log\n");
+    writeFileSync(join(root, "debug.log"), "debug");
+    writeFileSync(join(root, "deploy.log"), "deploy");
+
+    const manifest = buildProjectSyncManifest({ projectRoot: root });
+
+    expect(manifest.files.map((file) => file.relativePath).sort()).toEqual([
+      ".gitignore",
+      "deploy.log",
+    ]);
+    expect(manifest.exclusionSummary).toEqual([
+      expect.objectContaining({ source: "gitignore", pattern: "*.log", count: 1 }),
+    ]);
+  });
+
+  it("keeps leading slash ignore patterns anchored to the project root", () => {
+    const root = mkdtempSync(join(tmpdir(), "caplets-sync-filter-anchor-"));
+    mkdirSync(join(root, "artifact"), { recursive: true });
+    mkdirSync(join(root, "src", "artifact"), { recursive: true });
+    writeFileSync(join(root, ".gitignore"), "/artifact\n");
+    writeFileSync(join(root, "artifact", "top.js"), "top");
+    writeFileSync(join(root, "src", "artifact", "nested.js"), "nested");
+
+    const manifest = buildProjectSyncManifest({ projectRoot: root });
+
+    expect(manifest.files.map((file) => file.relativePath).sort()).toEqual([
+      ".gitignore",
+      "src/artifact/nested.js",
+    ]);
+    expect(manifest.exclusionSummary).toEqual([
+      expect.objectContaining({ source: "gitignore", pattern: "/artifact", count: 1 }),
+    ]);
+  });
 });

@@ -81,7 +81,7 @@ describe("CapletsCloudClient", () => {
     );
   });
 
-  it("keeps visible local Caplet updates local for compatibility", async () => {
+  it("updates visible local Caplet allowlist on the Project Binding", async () => {
     const fetch = vi.fn(async () => Response.json({ ok: true }));
     const client = new CapletsCloudClient({
       baseUrl: new URL("https://cloud.caplets.dev"),
@@ -91,6 +91,12 @@ describe("CapletsCloudClient", () => {
 
     await expect(client.updatePresenceCaplets("presence_1", ["repo-cli"])).resolves.toBeUndefined();
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ allowedCapletIds: ["repo-cli"] }),
+      }),
+    );
   });
 });

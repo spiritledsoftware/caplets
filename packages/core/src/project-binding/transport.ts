@@ -23,14 +23,20 @@ export type ProjectBindingWebSocket = {
   onerror?: ((event: ProjectBindingSocketEvent) => void) | null;
 };
 
-export type ProjectBindingWebSocketFactory = (url: string) => ProjectBindingWebSocket;
+export type ProjectBindingWebSocketFactory = (
+  url: string,
+  protocols?: string | string[] | undefined,
+) => ProjectBindingWebSocket;
 
 export const PROJECT_BINDING_SOCKET_OPEN = 1;
 
-export function defaultProjectBindingWebSocketFactory(url: string): ProjectBindingWebSocket {
+export function defaultProjectBindingWebSocketFactory(
+  url: string,
+  protocols?: string | string[] | undefined,
+): ProjectBindingWebSocket {
   const WebSocketCtor = globalThis.WebSocket;
   if (!WebSocketCtor) {
     throw new Error("WebSocket is not available in this runtime.");
   }
-  return new WebSocketCtor(url) as ProjectBindingWebSocket;
+  return new WebSocketCtor(url, protocols) as ProjectBindingWebSocket;
 }
