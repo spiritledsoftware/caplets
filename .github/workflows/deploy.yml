@@ -44,6 +44,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run quality gates
+        run: pnpm verify
+
+      - name: Deploy landing page
         run: pnpm run alchemy:deploy
         env:
           ALCHEMY_STAGE: prod

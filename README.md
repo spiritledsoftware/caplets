@@ -12,7 +12,7 @@
     <a href="https://www.npmjs.com/package/caplets"><img alt="npm" src="https://img.shields.io/npm/v/caplets?style=flat-square&color=E0582F" /></a>
     <a href="https://github.com/spiritledsoftware/caplets/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/spiritledsoftware/caplets/ci.yml?branch=main&style=flat-square&label=ci&color=E0582F" /></a>
     <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F6E8C8?style=flat-square&labelColor=1F2018" /></a>
-    <img alt="Node 22+" src="https://img.shields.io/badge/node-%3E%3D22-F6E8C8?style=flat-square&labelColor=1F2018" />
+    <img alt="Node 24+" src="https://img.shields.io/badge/node-%3E%3D24-F6E8C8?style=flat-square&labelColor=1F2018" />
   </p>
 
   <p>
@@ -47,7 +47,7 @@ In the deterministic benchmark, 106 flat tools became 3 top-level capabilities w
 
 ## Quick Start
 
-Caplets requires Node.js 22 or newer.
+Caplets requires Node.js 24 or newer.
 
 ```sh
 npm install -g caplets
@@ -156,6 +156,10 @@ files only advertise that installable plugin root.
 The Claude Code and Codex commands install from this GitHub repository through each agent's
 plugin marketplace flow; users do not need to clone the repository manually. Plugin MCP
 configs run `caplets serve` directly, so install the Caplets CLI globally first.
+
+## Core Alchemy
+
+Core Alchemy deploys the public landing page from `apps/landing`. It does not deploy the private Cloud Worker or Cloud dashboard; those belong to the nested Cloud repository.
 
 ### Remote Caplets service
 
