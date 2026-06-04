@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.19.0
+
+### Minor Changes
+
+- e388a49: Make `caplets attach` the remote-backed MCP server command, add Cloud-aware `CAPLETS_MODE` resolution, keep OpenCode and Pi on the shared resolver, and remove Codex/Claude plugin artifacts in favor of manual MCP configuration.
+
 ## 0.18.9
 
 ### Patch Changes
