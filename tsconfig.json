@@ -1,4 +1,7 @@
 {
   "extends": "./packages/core/tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
   "exclude": ["node_modules", ".turbo", "dist", "apps", "packages", "tools"]
 }

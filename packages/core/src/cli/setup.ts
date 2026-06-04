@@ -3,6 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { CapletsError } from "../errors";
+import { runCapletSetupCli } from "./setup-caplet";
+import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,6 +18,7 @@ export const setupIntegrationIds = [
 
 export type SetupIntegrationId = (typeof setupIntegrationIds)[number];
 export type SetupFormat = "plain" | "json";
+export type SetupTargetOption = SetupTargetKind | "local" | "remote" | "cloud" | "hosted_worker";
 
 export type SetupCommandResult = {
   stdout: string;
@@ -32,6 +35,8 @@ export type SetupOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   format?: SetupFormat;
   runCommand?: SetupCommandRunner;
+  yes?: boolean;
+  target?: SetupTargetOption;
 };
 
 type SetupAction =
@@ -49,6 +54,7 @@ type SetupResult = {
   integration: SetupIntegrationId;
   name: string;
   mode: "local" | "remote";
+  targetKind: SetupTargetKind;
   dryRun: boolean;
   actions: SetupActionResult[];
   nextSteps: string[];
@@ -84,6 +90,13 @@ export function formatSetupMenu(): string {
 }
 
 export async function runSetup(integration: string, options: SetupOptions = {}): Promise<string> {
+  if (!setupIntegrationIds.includes(integration as SetupIntegrationId)) {
+    return await runCapletSetupCli(integration, {
+      ...(options.yes === undefined ? {} : { yes: options.yes }),
+      target: resolveSetupTargetKind(options),
+      ...(options.remote === undefined ? {} : { remote: options.remote }),
+    });
+  }
   const result = await executeSetup(integration, options);
   if (options.format === "json") return `${JSON.stringify(result, null, 2)}\n`;
   return formatSetupResult(result);
@@ -138,6 +151,7 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
     integration: id,
     name: definition.name,
     mode: options.remote ? "remote" : "local",
+    targetKind: resolveSetupTargetKind(options),
     dryRun: Boolean(options.dryRun),
     actions,
     nextSteps: definition.nextSteps,
@@ -345,7 +359,7 @@ async function defaultSetupCommandRunner(
 
 function formatSetupResult(result: SetupResult): string {
   const lines = [
-    `${result.dryRun ? "Dry run" : "Completed"} ${result.name} setup (${result.mode})`,
+    `${result.dryRun ? "Dry run" : "Completed"} ${result.name} setup (${result.mode}, ${result.targetKind})`,
     "",
   ];
   for (const action of result.actions) {
@@ -367,4 +381,18 @@ function formatCommand(command: string, args: string[]): string {
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function resolveSetupTargetKind(options: SetupOptions): SetupTargetKind {
+  if (options.target !== undefined) {
+    if (isSetupTargetKind(options.target)) return options.target;
+    if (options.target === "local") return "local_host";
+    if (options.target === "remote") return "remote_host";
+    if (options.target === "cloud" || options.target === "hosted_worker") return "hosted_sandbox";
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "setup target must be one of: local_host, remote_host, hosted_sandbox",
+    );
+  }
+  return options.remote ? "remote_host" : "local_host";
 }

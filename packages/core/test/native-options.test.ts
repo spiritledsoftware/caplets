@@ -13,7 +13,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
 
   it("uses remote mode in auto when a server URL is configured", () => {
     expect(
-      resolveNativeCapletsServiceOptions({}, { CAPLETS_SERVER_URL: "http://127.0.0.1:5387" }),
+      resolveNativeCapletsServiceOptions({}, { CAPLETS_REMOTE_URL: "http://127.0.0.1:5387" }),
     ).toMatchObject({
       mode: "remote",
       remote: {
@@ -24,12 +24,58 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
+  it("uses cloud mode in auto when CAPLETS_REMOTE_URL points at Caplets Cloud", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toMatchObject({
+      mode: "cloud",
+      remote: {
+        url: new URL("https://cloud.caplets.dev/mcp"),
+      },
+    });
+  });
+
+  it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toMatchObject({ mode: "cloud" });
+  });
+
+  it("rejects CAPLETS_MODE=cloud with a self-hosted remote URL", () => {
+    expect(() =>
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).toThrow(/Caplets Cloud/u);
+  });
+
   it("lets explicit local mode ignore server env vars", () => {
     expect(
       resolveNativeCapletsServiceOptions(
         { mode: "local" },
-        { CAPLETS_SERVER_URL: "http://127.0.0.1:5387" },
+        { CAPLETS_REMOTE_URL: "http://127.0.0.1:5387" },
       ),
+    ).toEqual({ mode: "local" });
+  });
+
+  it("does not treat server hosting env vars as native remote client settings", () => {
+    expect(
+      resolveNativeCapletsServiceOptions({}, { CAPLETS_SERVER_URL: "http://127.0.0.1:5387" }),
     ).toEqual({ mode: "local" });
   });
 
@@ -76,9 +122,9 @@ describe("resolveNativeCapletsServiceOptions", () => {
           },
         },
         {
-          CAPLETS_SERVER_URL: "https://env.example.com",
-          CAPLETS_SERVER_USER: "env-user",
-          CAPLETS_SERVER_PASSWORD: ["env", "password"].join("-"),
+          CAPLETS_REMOTE_URL: "https://env.example.com",
+          CAPLETS_REMOTE_USER: "env-user",
+          CAPLETS_REMOTE_PASSWORD: ["env", "password"].join("-"),
         },
       ),
     ).toMatchObject({

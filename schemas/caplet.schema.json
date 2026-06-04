@@ -29,6 +29,153 @@
         "maxLength": 80
       }
     },
+    "setup": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable setup or verification step label."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable command to spawn without a shell."
+              },
+              "args": {
+                "description": "Arguments passed to the command.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "description": "Additional environment variables.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "description": "Working directory for this command.",
+                "type": "string",
+                "minLength": 1
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "maxOutputBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["label", "command"],
+            "additionalProperties": false
+          }
+        },
+        "verify": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human-readable setup or verification step label."
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable command to spawn without a shell."
+              },
+              "args": {
+                "description": "Arguments passed to the command.",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "description": "Additional environment variables.",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "description": "Working directory for this command.",
+                "type": "string",
+                "minLength": 1
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "maxOutputBytes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": ["label", "command"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Optional explicit setup and verification metadata for this Caplet."
+    },
+    "projectBinding": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": ["required"],
+      "additionalProperties": false,
+      "description": "Project Binding requirements for Caplets that need an attached project."
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["docker", "browser"]
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "class": {
+              "type": "string",
+              "enum": ["standard", "large", "heavy"]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Runtime feature and resource requirements for hosted execution."
+    },
     "mcpServer": {
       "type": "object",
       "properties": {
@@ -258,6 +405,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery and do not start its MCP server.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "additionalProperties": false,
@@ -464,6 +647,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "required": ["auth"],
@@ -716,6 +935,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "required": ["endpointUrl", "auth"],
@@ -998,6 +1253,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "required": ["baseUrl", "auth", "actions"],
@@ -1137,6 +1428,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "required": ["actions"],
@@ -1174,6 +1501,42 @@
         "disabled": {
           "description": "When true, omit this Caplet from discovery.",
           "type": "boolean"
+        },
+        "projectBinding": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": ["required"],
+          "additionalProperties": false,
+          "description": "Project Binding requirements for Caplets that need an attached project."
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "features": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["docker", "browser"]
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "class": {
+                  "type": "string",
+                  "enum": ["standard", "large", "heavy"]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Runtime feature and resource requirements for hosted execution."
         }
       },
       "additionalProperties": false,

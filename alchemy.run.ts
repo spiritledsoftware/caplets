@@ -3,18 +3,14 @@ import { Astro } from "alchemy/cloudflare";
 import { GitHubComment } from "alchemy/github";
 import { CloudflareStateStore } from "alchemy/state";
 
-const globalBaseDomain = "caplets.dev";
+import { buildAlchemyDomains } from "./infra/alchemy-domains.ts";
 
 const app = await alchemy("caplets", {
   stateStore: (scope) => new CloudflareStateStore(scope),
   password: process.env.ALCHEMY_PASSWORD!,
 });
 
-const baseDomain =
-  app.stage === "prod" ? globalBaseDomain : `${app.stage}.preview.${globalBaseDomain}`;
-
-const landingPageDomain = baseDomain;
-const landingPageUrl = `https://${landingPageDomain}`;
+const { landingPageDomain, landingPageUrl } = buildAlchemyDomains(app.stage, { local: app.local });
 export const landingPage = await Astro("landing-page", {
   cwd: "apps/landing",
   dev: {

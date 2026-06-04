@@ -3,6 +3,8 @@ import { watch } from "rolldown";
 import cliConfig from "../packages/cli/rolldown.config";
 import coreConfig from "../packages/core/rolldown.config";
 
+const coreNodeConfig = Array.isArray(coreConfig) ? coreConfig[0]! : coreConfig;
+
 let child: ChildProcess | null = null;
 let starting = false;
 
@@ -31,10 +33,10 @@ function startServer() {
 
 const watcher = watch([
   {
-    ...coreConfig,
+    ...coreNodeConfig,
     input: "./packages/core/src/index.ts",
     output: {
-      ...coreConfig.output,
+      ...coreNodeConfig.output,
       dir: "./packages/core/dist",
     },
   },

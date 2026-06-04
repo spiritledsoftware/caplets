@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveServeOptions } from "../src/serve/options";
+import { resolveDaemonServeOptions, resolveServeOptions } from "../src/serve/options";
 
 describe("resolveServeOptions", () => {
   it("defaults serve to stdio", () => {
@@ -173,6 +173,21 @@ describe("resolveServeOptions", () => {
   it("rejects HTTP-only options for stdio", () => {
     expect(() => resolveServeOptions({ transport: "stdio", host: "127.0.0.1" }, {})).toThrow(
       /only valid with --transport http/u,
+    );
+  });
+
+  it("defaults daemonized serve to HTTP", () => {
+    expect(resolveDaemonServeOptions({}, {})).toMatchObject({
+      transport: "http",
+      host: "127.0.0.1",
+      port: 5387,
+      path: "/",
+    });
+  });
+
+  it("rejects daemonized stdio serve", () => {
+    expect(() => resolveDaemonServeOptions({ transport: "stdio" }, {})).toThrow(
+      "Daemonized serve requires --transport http.",
     );
   });
 

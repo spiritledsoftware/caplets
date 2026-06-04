@@ -5,8 +5,11 @@ export const cliCommands = {
   completion: "completion",
   completeHidden: "__complete",
   serve: "serve",
+  attach: "attach",
+  cloud: "cloud",
   init: "init",
   setup: "setup",
+  doctor: "doctor",
   list: "list",
   install: "install",
   add: "add",
@@ -30,8 +33,11 @@ export const cliCommands = {
 
 export const topLevelCommandNames = [
   cliCommands.serve,
+  cliCommands.attach,
+  cliCommands.cloud,
   cliCommands.init,
   cliCommands.setup,
+  cliCommands.doctor,
   cliCommands.list,
   cliCommands.install,
   cliCommands.add,
@@ -57,8 +63,10 @@ export const topLevelCommandNames = [
 export const cliSubcommands = {
   [cliCommands.add]: ["cli", "mcp", "openapi", "graphql", "http"],
   [cliCommands.auth]: ["login", "logout", "list"],
+  [cliCommands.cloud]: ["auth"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
+  [cliCommands.serve]: ["start", "stop", "status", "restart", "enable", "disable"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
 } as const satisfies Record<string, readonly string[]>;
 

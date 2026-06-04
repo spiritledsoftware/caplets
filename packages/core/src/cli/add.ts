@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  realpathSync,
   rmSync,
   writeFileSync,
   writeSync,
@@ -373,12 +374,16 @@ function renderLocalPaths(fields: YamlField[], outputDir: string): YamlField[] {
 }
 
 function localPathRelativeToOutput(path: string, outputDir: string): string {
-  const absolutePath = resolve(path);
-  const rendered = relative(outputDir, resolve(path));
+  const absolutePath = displayPath(resolve(path));
+  const rendered = relative(outputDir, absolutePath);
   if (rendered.startsWith("../..") || rendered.startsWith("..\\..")) {
     return absolutePath;
   }
   return rendered === "" ? "." : rendered;
+}
+
+function displayPath(path: string): string {
+  return path;
 }
 
 function rejectUnsafeDestinationParents(path: string): void {
@@ -394,6 +399,7 @@ function rejectUnsafeDestinationParents(path: string): void {
       return;
     }
     if (stats.isSymbolicLink()) {
+      if (isDarwinSystemAliasSymlink(current)) continue;
       throw new CapletsError(
         "CONFIG_EXISTS",
         `Output parent path ${current} is a symlink; remove it before writing`,
@@ -405,6 +411,16 @@ function rejectUnsafeDestinationParents(path: string): void {
         `Output parent path ${current} is not a directory; choose a file path`,
       );
     }
+  }
+}
+
+function isDarwinSystemAliasSymlink(path: string): boolean {
+  if (process.platform !== "darwin") return false;
+  if (path !== "/var" && path !== "/tmp") return false;
+  try {
+    return realpathSync(path) === `/private${path}`;
+  } catch {
+    return false;
   }
 }
 

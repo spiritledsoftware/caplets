@@ -20,6 +20,7 @@ import {
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
 import { initConfig } from "./cli/init";
+import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
 import {
   completeCliWords,
   completionScript,
@@ -27,6 +28,13 @@ import {
   trailingSpaceCompletionToken,
   type CompletionShell,
 } from "./cli/completion";
+import { CloudAuthClient } from "./cloud-auth/client";
+import { openBrowserUrl } from "./cloud-auth/open-url";
+import {
+  CloudAuthStore,
+  redactedCloudAuthStatus,
+  type CloudAuthCredentials,
+} from "./cloud-auth/store";
 import {
   formatCapletList,
   formatConfigPaths,
@@ -54,10 +62,26 @@ import {
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
+import { resolveAttachServeOptions, type AttachServeOptions } from "./attach/options";
+import { attachResolvedCaplets } from "./attach/server";
+import { attachProjectOnce } from "./project-binding/attach";
+import { ProjectBindingError } from "./project-binding/errors";
+import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
 import { resolveCapletsMode, resolveCapletsServer } from "./server/options";
-import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
+import {
+  daemonStatus,
+  disableDaemon,
+  enableDaemon,
+  resolveServeOptions,
+  restartDaemon,
+  serveResolvedCaplets,
+  startDaemon,
+  stopDaemon,
+  type ServeDaemonOperationOptions,
+  type ServeOptions,
+} from "./serve";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -74,10 +98,14 @@ type CliIO = {
   writeErr?: (value: string) => void;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
+  projectBindingWebSocketFactory?: ProjectBindingWebSocketFactory;
   authDir?: string;
   version?: string;
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
+  attachServe?: (options: AttachServeOptions) => Promise<void>;
+  daemon?: ServeDaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
 };
 
@@ -106,6 +134,110 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
 
 function normalizeCompletionWords(words: string[]): string[] {
   return words.map((word) => (word === trailingSpaceCompletionToken ? "" : word));
+}
+
+type ServeDaemonCommandOptions = {
+  transport?: string;
+  host?: string;
+  port?: string;
+  path?: string;
+  user?: string;
+  password?: string;
+  allowUnauthenticatedHttp?: boolean;
+  trustProxy?: boolean;
+  json?: boolean;
+};
+
+function addServeDaemonCommand(
+  parent: Command,
+  name: string,
+  description: string,
+  action: (options: ServeDaemonCommandOptions) => Promise<void>,
+): void {
+  parent
+    .command(name)
+    .description(description)
+    .option("--transport <transport>", "server transport: http")
+    .option("--host <host>", "HTTP bind host")
+    .option("--port <port>", "HTTP bind port")
+    .option("--path <path>", "HTTP service base path")
+    .option("--user <user>", "HTTP Basic Auth username")
+    .option("--password <password>", "HTTP Basic Auth password")
+    .option(
+      "--allow-unauthenticated-http",
+      "allow unauthenticated HTTP serving on non-loopback hosts",
+    )
+    .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
+    .option("--json", "print JSON output")
+    .action(function (this: Command, options: ServeDaemonCommandOptions) {
+      return action({ ...this.parent?.opts(), ...options });
+    });
+}
+
+function cloudAuthStore(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): CloudAuthStore {
+  return new CloudAuthStore({ env });
+}
+
+function cloudAuthStatus(credentials: CloudAuthCredentials | undefined): Record<string, unknown> {
+  return redactedCloudAuthStatus(credentials);
+}
+
+function isProjectBindingWebSocketUnavailable(error: unknown): boolean {
+  return (
+    error instanceof CapletsError &&
+    error.code === "SERVER_UNAVAILABLE" &&
+    error.message.includes("Project Binding WebSocket unavailable")
+  );
+}
+
+function isProjectBindingCliError(error: unknown): error is ProjectBindingError {
+  return error instanceof ProjectBindingError;
+}
+
+function serveRawOptions(options: ServeDaemonCommandOptions) {
+  return {
+    ...(options.transport !== undefined ? { transport: options.transport } : {}),
+    ...(options.host !== undefined ? { host: options.host } : {}),
+    ...(options.port !== undefined ? { port: options.port } : {}),
+    ...(options.path !== undefined ? { path: options.path } : {}),
+    ...(options.user !== undefined ? { user: options.user } : {}),
+    ...(options.password !== undefined ? { password: options.password } : {}),
+    ...(options.allowUnauthenticatedHttp !== undefined
+      ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
+      : {}),
+    ...(options.trustProxy !== undefined ? { trustProxy: options.trustProxy } : {}),
+  };
+}
+
+async function waitForCloudLogin(
+  client: CloudAuthClient,
+  loginId: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+) {
+  const timeoutMs = numberEnv(env.CAPLETS_CLOUD_AUTH_TIMEOUT_MS, 120_000);
+  const intervalMs = numberEnv(env.CAPLETS_CLOUD_AUTH_POLL_INTERVAL_MS, 1_500);
+  const started = Date.now();
+  while (Date.now() - started <= timeoutMs) {
+    const result = await client.pollLogin(loginId);
+    if (result.status !== "pending" && result.status !== "workspace_selection_required") {
+      return result;
+    }
+    await sleep(intervalMs);
+  }
+  return { status: "expired" as const, message: "Cloud Auth login timed out." };
+}
+
+function numberEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function createProgram(io: CliIO = {}): Command {
@@ -196,7 +328,7 @@ export function createProgram(io: CliIO = {}): Command {
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
 
-  program
+  const serve = program
     .command(cliCommands.serve)
     .description("Serve configured Caplets as an MCP server.")
     .option("--transport <transport>", "server transport: stdio or http")
@@ -238,6 +370,389 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
+  const daemonOptions = (): ServeDaemonOperationOptions => ({
+    env,
+    ...io.daemon,
+  });
+
+  addServeDaemonCommand(
+    serve,
+    "start",
+    "Start the default Caplets HTTP daemon.",
+    async (options) => {
+      const result = await startDaemon(serveRawOptions(options), daemonOptions());
+      const serveConfig = result.status.config?.serve;
+      writeOut(
+        `Started Caplets HTTP daemon on ${serveConfig?.host ?? "127.0.0.1"}:${serveConfig?.port ?? 5387}.\n`,
+      );
+      if (options.json) writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
+    },
+  );
+  addServeDaemonCommand(serve, "stop", "Stop the default Caplets HTTP daemon.", async (options) => {
+    const result = await stopDaemon(daemonOptions());
+    if (options.json) {
+      writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
+      return;
+    }
+    writeOut("Stopped Caplets HTTP daemon.\n");
+  });
+  addServeDaemonCommand(
+    serve,
+    "status",
+    "Show the default Caplets HTTP daemon status.",
+    async (options) => {
+      const status = await daemonStatus(daemonOptions());
+      if (options.json) {
+        writeOut(`${JSON.stringify(status, null, 2)}\n`);
+        return;
+      }
+      writeOut(
+        status.running
+          ? `Caplets HTTP daemon is running${status.pid ? ` (pid ${status.pid})` : ""}.\n`
+          : "Caplets HTTP daemon is stopped.\n",
+      );
+    },
+  );
+  addServeDaemonCommand(
+    serve,
+    "restart",
+    "Restart the default Caplets HTTP daemon.",
+    async (options) => {
+      const result = await restartDaemon(serveRawOptions(options), daemonOptions());
+      if (options.json) {
+        writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
+        return;
+      }
+      const serveConfig = result.status.config?.serve;
+      writeOut(
+        `Restarted Caplets HTTP daemon on ${serveConfig?.host ?? "127.0.0.1"}:${serveConfig?.port ?? 5387}.\n`,
+      );
+    },
+  );
+  addServeDaemonCommand(
+    serve,
+    "enable",
+    "Enable the default Caplets HTTP daemon at login.",
+    async (options) => {
+      const result = await enableDaemon(daemonOptions());
+      if (options.json) {
+        writeOut(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Enabled Caplets HTTP daemon at login (${result.descriptor.kind}).\n`);
+    },
+  );
+  addServeDaemonCommand(
+    serve,
+    "disable",
+    "Disable the default Caplets HTTP daemon at login.",
+    async (options) => {
+      const result = await disableDaemon(daemonOptions());
+      if (options.json) {
+        writeOut(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Disabled Caplets HTTP daemon at login (${result.descriptor.kind}).\n`);
+    },
+  );
+
+  program
+    .command(cliCommands.attach)
+    .description("Start a remote-backed Caplets MCP server.")
+    .option("--transport <transport>", "server transport: stdio or http")
+    .option("--host <host>", "HTTP bind host")
+    .option("--port <port>", "HTTP bind port")
+    .option("--path <path>", "HTTP service base path")
+    .option("--remote-url <url>", "remote Caplets service base URL")
+    .option("--user <user>", "remote Basic Auth username")
+    .option("--password <password>", "remote Basic Auth password")
+    .option("--token <token>", "remote bearer token")
+    .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
+    .option(
+      "--allow-unauthenticated-http",
+      "allow unauthenticated HTTP serving on non-loopback hosts",
+    )
+    .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
+    .option("--json", "print JSON status events")
+    .option("--verbose", "print detailed attach diagnostics")
+    .option("--once", "validate Project Binding once and exit")
+    .option("--project-root <path>", "test-only project root override")
+    .action(
+      async (options: {
+        remoteUrl?: string;
+        transport?: string;
+        host?: string;
+        port?: string;
+        path?: string;
+        user?: string;
+        password?: string;
+        token?: string;
+        workspace?: string;
+        allowUnauthenticatedHttp?: boolean;
+        trustProxy?: boolean;
+        json?: boolean;
+        verbose?: boolean;
+        once?: boolean;
+        projectRoot?: string;
+      }) => {
+        try {
+          const attachOptions = { ...options, ...(io.fetch ? { fetch: io.fetch } : {}) };
+          if (!options.once) {
+            const resolved = await resolveAttachServeOptions(attachOptions, env);
+            await (
+              io.attachServe ??
+              ((serveOptions) => attachResolvedCaplets(serveOptions, { writeErr }))
+            )(resolved);
+            return;
+          }
+          const result = await attachProjectOnce(attachOptions, env);
+          if (options.json) {
+            writeOut(`${JSON.stringify(result, null, 2)}\n`);
+            return;
+          }
+          writeOut(`Project Binding available at ${result.webSocketUrl}.\n`);
+        } catch (error) {
+          if (options.json && isProjectBindingWebSocketUnavailable(error)) {
+            writeOut(
+              `${JSON.stringify(
+                {
+                  ok: false,
+                  error: {
+                    code: "PROJECT_BINDING_WEBSOCKET_UNAVAILABLE",
+                    message: error instanceof Error ? error.message : String(error),
+                  },
+                },
+                null,
+                2,
+              )}\n`,
+            );
+            setExitCode(1);
+            return;
+          }
+          if (options.json && isProjectBindingCliError(error)) {
+            writeOut(
+              `${JSON.stringify(
+                {
+                  ok: false,
+                  error: {
+                    code: error.projectBindingCode,
+                    message: error.message,
+                    recoveryCommand: error.recoveryCommand,
+                    requestId: error.requestId,
+                  },
+                },
+                null,
+                2,
+              )}\n`,
+            );
+            setExitCode(1);
+            return;
+          }
+          if (options.json && error instanceof CapletsError) {
+            writeOut(
+              `${JSON.stringify(
+                {
+                  ok: false,
+                  error: {
+                    code: error.code,
+                    message: error.message,
+                  },
+                },
+                null,
+                2,
+              )}\n`,
+            );
+            setExitCode(1);
+            return;
+          }
+          throw error;
+        }
+      },
+    );
+
+  const cloud = program.command(cliCommands.cloud).description("Manage hosted Caplets Cloud.");
+  const cloudAuth = cloud
+    .command("auth")
+    .description("Authenticate this Caplets client to hosted Caplets Cloud.");
+  cloudAuth
+    .command("login")
+    .description("Log in to hosted Caplets Cloud.")
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
+    .option("--workspace <workspace>", "workspace ID or slug to select")
+    .option("--device-name <name>", "device label for this Cloud Auth credential")
+    .option("--no-open", "print the login URL without opening a browser")
+    .option("--json", "print JSON output")
+    .action(
+      async (options: {
+        cloudUrl?: string;
+        workspace?: string;
+        deviceName?: string;
+        open?: boolean;
+        json?: boolean;
+      }) => {
+        const cloudUrl = options.cloudUrl ?? env.CAPLETS_CLOUD_URL ?? "https://cloud.caplets.dev";
+        const client = new CloudAuthClient({ cloudUrl, ...(io.fetch ? { fetch: io.fetch } : {}) });
+        const started = await client.startLogin({
+          requestedWorkspace: options.workspace,
+          deviceName: options.deviceName ?? env.CAPLETS_DEVICE_NAME ?? "Caplets CLI",
+        });
+        if (options.open !== false) await openBrowserUrl(started.loginUrl);
+        if (!options.json) {
+          writeOut(`Open ${started.loginUrl}\n`);
+          writeOut(`Enter code ${started.userCode} if prompted.\n`);
+        }
+
+        const completed = await waitForCloudLogin(client, started.loginId, env);
+        if (completed.status !== "completed") {
+          throw new CapletsError("AUTH_FAILED", `Cloud Auth login ${completed.status}.`);
+        }
+        const exchanged = await client.exchangeToken({
+          loginId: started.loginId,
+          oneTimeCode: completed.oneTimeCode,
+        });
+        const now = new Date().toISOString();
+        const credentials: CloudAuthCredentials = {
+          version: 2,
+          cloudUrl: exchanged.cloudUrl,
+          workspaceId: exchanged.workspaceId,
+          ...(exchanged.workspaceSlug ? { workspaceSlug: exchanged.workspaceSlug } : {}),
+          accessToken: exchanged.accessToken,
+          refreshToken: exchanged.refreshToken ?? "",
+          expiresAt: exchanged.expiresAt,
+          scope: exchanged.scope,
+          tokenType: exchanged.tokenType,
+          credentialFamilyId: exchanged.credentialFamilyId,
+          deviceName: exchanged.deviceName ?? options.deviceName ?? "Caplets CLI",
+          createdAt: now,
+          lastRefreshAt: now,
+        };
+        await cloudAuthStore(env).save(credentials);
+        const status = cloudAuthStatus(credentials);
+        if (options.json) {
+          writeOut(`${JSON.stringify(status, null, 2)}\n`);
+          return;
+        }
+        writeOut(
+          `Authenticated to ${credentials.cloudUrl} as workspace ${credentials.workspaceSlug ?? credentials.workspaceId}.\n`,
+        );
+      },
+    );
+  cloudAuth
+    .command("status")
+    .description("Show hosted Caplets Cloud authentication status.")
+    .option("--json", "print JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const credentials = await cloudAuthStore(env).load();
+      if (options.json) {
+        writeOut(`${JSON.stringify(cloudAuthStatus(credentials), null, 2)}\n`);
+        return;
+      }
+      writeOut(
+        credentials
+          ? `Authenticated to ${credentials.cloudUrl} as workspace ${credentials.workspaceSlug ?? credentials.workspaceId}.\n`
+          : "Not authenticated to hosted Caplets Cloud.\n",
+      );
+    });
+  cloudAuth
+    .command("logout")
+    .description("Log out of hosted Caplets Cloud.")
+    .action(async () => {
+      const store = cloudAuthStore(env);
+      const credentials = await store.load();
+      if (credentials?.refreshToken) {
+        await new CloudAuthClient({
+          cloudUrl: credentials.cloudUrl,
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+        })
+          .logout(credentials.refreshToken)
+          .catch(() => undefined);
+      }
+      await store.clear();
+      writeOut("Logged out of hosted Caplets Cloud.\n");
+    });
+  cloudAuth
+    .command("workspaces")
+    .description("List hosted Caplets Cloud workspaces.")
+    .option("--json", "print JSON output")
+    .action(async (options: { json?: boolean }) => {
+      const credentials = await cloudAuthStore(env).load();
+      const workspaces = credentials?.accessToken
+        ? (
+            await new CloudAuthClient({
+              cloudUrl: credentials.cloudUrl,
+              ...(io.fetch ? { fetch: io.fetch } : {}),
+            })
+              .workspaces(credentials.accessToken)
+              .catch(() => ({
+                workspaces: [
+                  {
+                    workspaceId: credentials.workspaceId,
+                    ...(credentials.workspaceSlug ? { slug: credentials.workspaceSlug } : {}),
+                  },
+                ],
+              }))
+          ).workspaces.map((workspace) => ({
+            ...workspace,
+            selected:
+              workspace.workspaceId === credentials.workspaceId ||
+              workspace.slug === credentials.workspaceSlug,
+          }))
+        : [];
+      if (options.json) {
+        writeOut(`${JSON.stringify({ workspaces }, null, 2)}\n`);
+        return;
+      }
+      if (workspaces.length === 0) {
+        writeOut("No hosted Caplets Cloud workspaces available. Run caplets cloud auth login.\n");
+        return;
+      }
+      for (const workspace of workspaces) {
+        writeOut(`${workspace.selected ? "* " : "  "}${workspace.slug ?? workspace.workspaceId}\n`);
+      }
+    });
+  cloudAuth
+    .command("switch")
+    .description("Switch the hosted Caplets Cloud Selected Workspace.")
+    .argument("<workspace>", "workspace ID or slug")
+    .option("--json", "print JSON output")
+    .action(async (workspace: string, options: { json?: boolean }) => {
+      const store = cloudAuthStore(env);
+      const credentials = await store.load();
+      if (!credentials) {
+        throw new CapletsError("AUTH_REQUIRED", "Run caplets cloud auth login first.");
+      }
+      const client = new CloudAuthClient({
+        cloudUrl: credentials.cloudUrl,
+        ...(io.fetch ? { fetch: io.fetch } : {}),
+      });
+      const switched = await client.switchWorkspace({
+        accessToken: credentials.accessToken,
+        refreshToken: credentials.refreshToken,
+        workspace,
+        deviceName: credentials.deviceName,
+      });
+      const now = new Date().toISOString();
+      const next: CloudAuthCredentials = {
+        ...credentials,
+        workspaceId: switched.workspaceId,
+        workspaceSlug: switched.workspaceSlug,
+        accessToken: switched.accessToken,
+        refreshToken: switched.refreshToken ?? credentials.refreshToken,
+        expiresAt: switched.expiresAt,
+        scope: switched.scope,
+        tokenType: switched.tokenType,
+        credentialFamilyId: switched.credentialFamilyId,
+        lastRefreshAt: now,
+        selectedWorkspaceSwitchedAt: now,
+      };
+      await store.save(next);
+      if (options.json) {
+        writeOut(`${JSON.stringify(cloudAuthStatus(next), null, 2)}\n`);
+        return;
+      }
+      writeOut(`Selected workspace ${next.workspaceSlug ?? next.workspaceId}.\n`);
+    });
+
   program
     .command(cliCommands.init)
     .description("Create a starter Caplets config file.")
@@ -271,6 +786,8 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--server-url <url>", "remote Caplets service base URL")
     .option("--output <path>", "config path to write for generic MCP setup")
     .option("--dry-run", "print actions without running commands or writing files")
+    .option("--yes", "approve Caplet setup commands for the exact current content hash")
+    .option("--target <target>", "Caplet setup target: local, remote, or cloud", parseSetupTarget)
     .option("--format <format>", "output format: plain or json", parseSetupFormat)
     .action(
       async (
@@ -280,6 +797,8 @@ export function createProgram(io: CliIO = {}): Command {
           serverUrl?: string;
           output?: string;
           dryRun?: boolean;
+          yes?: boolean;
+          target?: "local" | "remote" | "cloud";
           format?: SetupFormat;
         },
       ) => {
@@ -292,6 +811,18 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(await runSetup(integration, setupOptions));
       },
     );
+
+  program
+    .command(cliCommands.doctor)
+    .description("Diagnose Caplets local, remote, and project-sync configuration.")
+    .option("--json", "print JSON output")
+    .action(async (options: { json?: boolean }) => {
+      if (options.json) {
+        writeOut(`${JSON.stringify(await doctorJsonReport({ env }), null, 2)}\n`);
+        return;
+      }
+      writeOut(await formatDoctorReport({ env }));
+    });
 
   program
     .command(cliCommands.list)
@@ -1366,6 +1897,11 @@ function parseOutputFormat(value: string): CliOutputFormat {
 function parseSetupFormat(value: string): SetupFormat {
   if (value === "plain" || value === "json") return value;
   throw new CapletsError("REQUEST_INVALID", "setup format must be plain or json");
+}
+
+function parseSetupTarget(value: string): "local" | "remote" | "cloud" {
+  if (value === "local" || value === "remote" || value === "cloud") return value;
+  throw new CapletsError("REQUEST_INVALID", "setup target must be local, remote, or cloud");
 }
 
 function parseQualifiedTarget(

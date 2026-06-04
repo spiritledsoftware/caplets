@@ -301,6 +301,156 @@
               "maxLength": 80
             }
           },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "startupTimeoutMs": {
             "default": 10000,
             "description": "Timeout in milliseconds for starting or checking a downstream server.",
@@ -543,6 +693,156 @@
               "minLength": 1,
               "maxLength": 80
             }
+          },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "requestTimeoutMs": {
             "default": 60000,
@@ -818,6 +1118,156 @@
               "minLength": 1,
               "maxLength": 80
             }
+          },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "requestTimeoutMs": {
             "default": 60000,
@@ -1144,6 +1594,156 @@
               "maxLength": 80
             }
           },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "requestTimeoutMs": {
             "default": 60000,
             "description": "Timeout in milliseconds for HTTP action requests.",
@@ -1318,6 +1918,156 @@
               "maxLength": 80
             }
           },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
           "timeoutMs": {
             "default": 60000,
             "description": "Default timeout in milliseconds for CLI actions.",
@@ -1401,6 +2151,156 @@
               "minLength": 1,
               "maxLength": 80
             }
+          },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
           },
           "disabled": {
             "default": false,

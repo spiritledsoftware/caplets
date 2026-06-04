@@ -48,6 +48,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run quality gates
+        if: ${{ github.event.action != 'closed' }}
+        run: pnpm verify
+
       - name: Deploy preview
         if: ${{ github.event.action != 'closed' }}
         run: pnpm run alchemy:deploy

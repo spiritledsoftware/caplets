@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "caplets": {
-      "command": "caplets",
-      "args": ["serve"]
-    }
-  }
-}

@@ -5,8 +5,8 @@ export default defineConfig({
     projects: [
       {
         test: {
-          name: "scripts",
-          include: ["scripts/**/*.test.ts"],
+          name: "root",
+          include: ["infra/**/*.test.ts", "scripts/**/*.test.ts"],
         },
       },
       "apps/*",

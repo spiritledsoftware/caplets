@@ -66,6 +66,29 @@ export type RemoteAuthConfig =
       redirectUri?: string | undefined;
     };
 
+export type CapletSetupCommandConfig = {
+  label: string;
+  command: string;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  cwd?: string | undefined;
+  timeoutMs?: number | undefined;
+  maxOutputBytes?: number | undefined;
+};
+
+export type CapletSetupConfig = {
+  commands?: CapletSetupCommandConfig[] | undefined;
+  verify?: CapletSetupCommandConfig[] | undefined;
+};
+
+export type ProjectBindingConfig = { required: true };
+export type RuntimeFeature = "docker" | "browser";
+export type RuntimeResourceClass = "standard" | "large" | "heavy";
+export type RuntimeRequirementsConfig = {
+  features?: RuntimeFeature[] | undefined;
+  resources?: { class?: RuntimeResourceClass | undefined } | undefined;
+};
+
 export type CapletServerConfig = {
   server: string;
   backend: "mcp";
@@ -84,6 +107,9 @@ export type CapletServerConfig = {
   callTimeoutMs: number;
   toolCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type OpenApiAuthConfig =
@@ -106,6 +132,9 @@ export type OpenApiEndpointConfig = {
   requestTimeoutMs: number;
   operationCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type GraphQlOperationConfig = {
@@ -132,6 +161,9 @@ export type GraphQlEndpointConfig = {
   operationCacheTtlMs: number;
   selectionDepth: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type HttpActionConfig = {
@@ -158,6 +190,9 @@ export type HttpApiConfig = {
   requestTimeoutMs: number;
   maxResponseBytes: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CliToolOutputConfig = {
@@ -198,6 +233,9 @@ export type CliToolsConfig = {
   timeoutMs: number;
   maxOutputBytes: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CapletSetConfig = {
@@ -213,6 +251,9 @@ export type CapletSetConfig = {
   maxSearchLimit: number;
   toolCacheTtlMs: number;
   disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
 };
 
 export type CapletConfig =
@@ -360,6 +401,61 @@ const openApiAuthSchema = z
   ])
   .describe("Authentication settings for an OpenAPI endpoint.");
 
+const setupCommandSchema = z
+  .object({
+    label: z.string().min(1).describe("Human-readable setup or verification step label."),
+    command: z.string().min(1).describe("Executable command to spawn without a shell."),
+    args: z.array(z.string()).optional().describe("Arguments passed to the command."),
+    env: z.record(z.string(), z.string()).optional().describe("Additional environment variables."),
+    cwd: z.string().min(1).optional().describe("Working directory for this command."),
+    timeoutMs: z.number().int().positive().optional(),
+    maxOutputBytes: z.number().int().positive().optional(),
+  })
+  .strict();
+
+const setupSchema = z
+  .object({
+    commands: z.array(setupCommandSchema).optional(),
+    verify: z.array(setupCommandSchema).optional(),
+  })
+  .strict()
+  .refine(
+    (setup) => (setup.commands?.length ?? 0) > 0 || (setup.verify?.length ?? 0) > 0,
+    "setup must define at least one command or verify step",
+  );
+
+const projectBindingSchema = z
+  .object({
+    required: z.literal(true).describe("Requires Project Binding before this Caplet can run."),
+  })
+  .strict()
+  .describe("Project Binding requirements for Caplets that need an attached project.");
+
+const runtimeFeatureSchema = z.enum(["docker", "browser"]);
+const runtimeFeaturesSchema = z
+  .array(runtimeFeatureSchema)
+  .refine((features) => new Set(features).size === features.length, {
+    message: "runtime.features must not contain duplicate feature names",
+  })
+  .describe("Runtime features required by this Caplet.");
+
+const runtimeRequirementsSchema = z
+  .object({
+    features: runtimeFeaturesSchema.optional(),
+    resources: z
+      .object({
+        class: z
+          .enum(["standard", "large", "heavy"])
+          .optional()
+          .describe("Requested hosted sandbox resource class."),
+      })
+      .strict()
+      .optional()
+      .describe("Hosted sandbox resource requirements."),
+  })
+  .strict()
+  .describe("Runtime feature and resource requirements for hosted execution.");
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -385,6 +481,9 @@ const publicServerSchema = z
     url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     startupTimeoutMs: z
       .number()
       .int()
@@ -432,6 +531,9 @@ const publicOpenApiEndpointSchema = z
       'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -501,6 +603,9 @@ const publicGraphQlEndpointSchema = z
       'Explicit GraphQL request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -614,6 +719,9 @@ const publicHttpApiSchema = z
       )
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     requestTimeoutMs: z
       .number()
       .int()
@@ -706,6 +814,9 @@ const publicCliToolsSchema = z
       .optional()
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     timeoutMs: z
       .number()
       .int()
@@ -759,6 +870,9 @@ const publicCapletSetSchema = z
       .default(30_000)
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
     disabled: z.boolean().default(false).describe("When true, omit this Caplet set."),
   })
   .strict()

@@ -6,7 +6,14 @@ export type CapletsMode = "auto" | "local" | "remote";
 
 export type CapletsServerEnv = Partial<
   Record<
-    "CAPLETS_MODE" | "CAPLETS_SERVER_URL" | "CAPLETS_SERVER_USER" | "CAPLETS_SERVER_PASSWORD",
+    | "CAPLETS_MODE"
+    | "CAPLETS_SERVER_URL"
+    | "CAPLETS_SERVER_USER"
+    | "CAPLETS_SERVER_PASSWORD"
+    | "CAPLETS_CLOUD_URL"
+    | "CAPLETS_CLOUD_TOKEN"
+    | "CAPLETS_CLOUD_WORKSPACE_ID"
+    | "CAPLETS_PROJECT_ROOT",
     string
   >
 >;

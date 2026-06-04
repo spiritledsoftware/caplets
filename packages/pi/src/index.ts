@@ -267,7 +267,9 @@ function parsePiNativeOptions(
   const result: PiCapletsSettings = {};
   const mode = (value as Record<string, unknown>).mode;
   if (mode !== undefined) {
-    if (mode !== "auto" && mode !== "local" && mode !== "remote") return undefined;
+    if (mode !== "auto" && mode !== "local" && mode !== "remote" && mode !== "cloud") {
+      return undefined;
+    }
     result.mode = mode;
   }
   const statusWidget = (value as Record<string, unknown>).statusWidget;
@@ -358,6 +360,7 @@ function shouldShowStatusWidget(
   }
   return (
     options.mode === "remote" ||
+    options.mode === "cloud" ||
     !!options.server?.url ||
     process.env.CAPLETS_SERVER_URL !== undefined
   );

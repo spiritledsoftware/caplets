@@ -1,5 +1,7 @@
 # MCP Resources and Prompts Implementation Plan
 
+> Superseded for remote/server environment naming: current client integrations use `CAPLETS_REMOTE_*`, while the process hosting `caplets serve --transport http` uses `CAPLETS_SERVER_*`. This plan remains historical implementation context.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add MCP resource, resource-template, prompt, and completion support to MCP-backed Caplets while keeping non-MCP backends tool-only.

@@ -980,6 +980,28 @@ describe("@caplets/pi", () => {
     });
   });
 
+  it("loads cloud mode from Pi settings", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    fsMocks.readFile.mockImplementation(async (path: string) =>
+      path.includes(".pi/agent/settings.json")
+        ? JSON.stringify({
+            caplets: { mode: "cloud", server: { url: "https://cloud.caplets.dev" } },
+          })
+        : Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" })),
+    );
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "cloud",
+        server: { url: "https://cloud.caplets.dev" },
+      }),
+    );
+  });
+
   it("ignores package entry args and uses empty settings without top-level caplets config", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);

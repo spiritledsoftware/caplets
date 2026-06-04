@@ -20,10 +20,18 @@ type HttpServeIo = {
   writeErr?: (value: string) => void;
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
   authFlowStore?: RemoteAuthFlowStore;
+  sessionFactory?: HttpMcpSessionFactory;
 };
 
+type HttpMcpSession = {
+  connect(transport: StreamableHTTPTransport): Promise<void>;
+  close(): Promise<void>;
+};
+
+export type HttpMcpSessionFactory = () => HttpMcpSession | Promise<HttpMcpSession>;
+
 type HttpSession = {
-  server: CapletsMcpSession;
+  server: HttpMcpSession;
   transport: StreamableHTTPTransport;
 };
 
@@ -101,7 +109,7 @@ export function createHttpServeApp(
 
     const nextSessionId = randomUUID();
     const session = await createHttpSession(
-      engine,
+      io.sessionFactory ?? (() => new CapletsMcpSession(engine)),
       nextSessionId,
       options,
       async (closedSessionId) => {
@@ -148,6 +156,20 @@ export function createHttpServeApp(
       ),
     );
   });
+
+  app.get(routePath(paths.control, "project-bindings/connect"), basicAuth(options.auth), (c) =>
+    c.json({ error: "websocket_upgrade_required" }, 426),
+  );
+
+  app.get(
+    routePath(paths.control, "project-bindings/:bindingId/status"),
+    basicAuth(options.auth),
+    (c) =>
+      c.json({
+        bindingId: c.req.param("bindingId"),
+        state: "not_attached",
+      }),
+  );
 
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
     const flowId = c.req.param("flowId");
@@ -266,6 +288,35 @@ export async function serveHttp(
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
 
+export async function serveHttpWithSessionFactory(
+  options: HttpServeOptions,
+  createSession: HttpMcpSessionFactory,
+  writeErr: (value: string) => void = (value) => process.stderr.write(value),
+): Promise<void> {
+  const engine = new CapletsEngine({});
+  const app = createHttpServeApp(options, engine, {
+    writeErr,
+    sessionFactory: createSession,
+    control: {
+      projectCapletsRoot: resolveProjectCapletsRoot(),
+    },
+  });
+  const paths = servicePaths(options.path);
+  const origin = `http://${formatHost(options.host)}:${options.port}`;
+  const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
+  const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
+    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+    writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+    writeErr(`Control endpoint: ${origin}${paths.control}\n`);
+    writeErr(`Health check: ${origin}${paths.health}\n`);
+    writeErr(
+      `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
+    );
+  });
+
+  installHttpSignalHandlers(server, app, engine, writeErr);
+}
+
 function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions): string {
   return engineOptions.projectConfigPath
     ? resolveProjectCapletsRootForConfigPath(engineOptions.projectConfigPath)
@@ -295,7 +346,7 @@ export function servicePaths(base: string): {
 }
 
 async function createHttpSession(
-  engine: CapletsEngine,
+  createServer: HttpMcpSessionFactory,
   sessionId: string,
   options: HttpServeOptions,
   onClose: (sessionId: string) => Promise<void>,
@@ -305,7 +356,7 @@ async function createHttpSession(
     onsessionclosed: onClose,
     ...(options.loopback ? dnsRebindingOptions(options) : {}),
   });
-  const server = new CapletsMcpSession(engine);
+  const server = await createServer();
   await server.connect(transport);
   return { server, transport };
 }

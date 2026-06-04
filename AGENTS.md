@@ -2,7 +2,7 @@
 
 ## Commands
 
-- Use `pnpm` only; the repo pins `pnpm@11.0.9` and requires Node `>=22` while CI runs Node 24.
+- Use `pnpm` only; the repo pins `pnpm@11.5.0` and requires Node `>=24`.
 - Install with `pnpm install --frozen-lockfile` when matching CI.
 - Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> typecheck -> schema:check -> test -> benchmark:check -> build`).
 - Fast focused checks: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
@@ -36,3 +36,4 @@
 - CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `no changeset` label.
 - User-facing package changes usually need a changeset; current versioning is handled by Changesets and `pnpm version-packages`/`pnpm release`.
 - Pre-commit only runs `pnpm lint-staged` (`oxfmt --check` and `oxlint` on staged JS/TS/config/docs files); pre-push runs the full `pnpm verify`.
+- Core Alchemy deploys the public landing page only from `apps/landing`; it does not deploy Cloud Worker or dashboard paths.
