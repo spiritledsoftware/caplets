@@ -67,4 +67,59 @@ describe("caplets cloud auth login", () => {
     assertNoSecrets(out.join(""));
     expect(readFileSync(path, "utf8")).toContain("cap_refresh_secret");
   });
+
+  it("continues polling while browser workspace selection is required", async () => {
+    const path = tempCloudAuthPath();
+    const requests: string[] = [];
+    const responses = [
+      Response.json({
+        loginId: "login_123",
+        loginUrl: "https://cloud.caplets.dev/cli-login/login_123",
+        userCode: "ABCD-EFGH",
+        expiresAt: "2026-06-03T12:10:00.000Z",
+      }),
+      Response.json({
+        status: "workspace_selection_required",
+        workspaces: [
+          { workspaceId: "workspace_personal", slug: "personal" },
+          { workspaceId: "workspace_team", slug: "team" },
+        ],
+        expiresAt: "2026-06-03T12:10:00.000Z",
+      }),
+      Response.json({
+        status: "completed",
+        selectedWorkspace: { workspaceId: "workspace_team", slug: "team" },
+        oneTimeCode: "one_time_code_secret",
+      }),
+      Response.json({
+        status: "authenticated",
+        cloudUrl: "https://cloud.caplets.dev",
+        workspaceId: "workspace_team",
+        workspaceSlug: "team",
+        accessToken: "cap_access_secret",
+        refreshToken: "cap_refresh_secret",
+        expiresAt: "2099-06-03T13:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write"],
+        tokenType: "Bearer",
+        credentialFamilyId: "family_123",
+      }),
+    ];
+
+    await runCli(
+      ["cloud", "auth", "login", "--cloud-url", "https://cloud.caplets.dev", "--no-open", "--json"],
+      {
+        env: { CAPLETS_CLOUD_AUTH_PATH: path, CAPLETS_CLOUD_AUTH_POLL_INTERVAL_MS: "0" },
+        fetch: async (input) => {
+          requests.push(String(input));
+          return responses.shift() ?? Response.json({}, { status: 500 });
+        },
+        writeOut: () => undefined,
+      },
+    );
+
+    expect(
+      requests.filter((url) => url.endsWith("/api/cloud-client/login/login_123")),
+    ).toHaveLength(2);
+    expect(readFileSync(path, "utf8")).toContain("workspace_team");
+  });
 });

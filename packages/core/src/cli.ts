@@ -221,7 +221,9 @@ async function waitForCloudLogin(
   const started = Date.now();
   while (Date.now() - started <= timeoutMs) {
     const result = await client.pollLogin(loginId);
-    if (result.status !== "pending") return result;
+    if (result.status !== "pending" && result.status !== "workspace_selection_required") {
+      return result;
+    }
     await sleep(intervalMs);
   }
   return { status: "expired" as const, message: "Cloud Auth login timed out." };
@@ -602,11 +604,7 @@ export function createProgram(io: CliIO = {}): Command {
 
         const completed = await waitForCloudLogin(client, started.loginId, env);
         if (completed.status !== "completed") {
-          const message =
-            completed.status === "workspace_selection_required"
-              ? "Workspace selection is required in the browser."
-              : `Cloud Auth login ${completed.status}.`;
-          throw new CapletsError("AUTH_FAILED", message);
+          throw new CapletsError("AUTH_FAILED", `Cloud Auth login ${completed.status}.`);
         }
         const exchanged = await client.exchangeToken({
           loginId: started.loginId,
