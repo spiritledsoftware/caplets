@@ -11,7 +11,13 @@ export const CLOUD_AUTH_STATES = [
 
 export type CloudAuthState = (typeof CLOUD_AUTH_STATES)[number];
 
-export type CloudAuthScope = "project_binding:read" | "project_binding:write" | string;
+export const HOSTED_CLOUD_AUTH_SCOPES = [
+  "project_binding:read",
+  "project_binding:write",
+  "mcp:tools",
+] as const;
+
+export type CloudAuthScope = (typeof HOSTED_CLOUD_AUTH_SCOPES)[number] | string;
 
 export type CloudAuthWorkspace = {
   workspaceId: string;

@@ -119,6 +119,32 @@ describe("resolveRemoteSelection", () => {
           "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
         ),
       },
+      cloudPresence: {
+        url: new URL("https://cloud.pr-2.preview.caplets.dev/"),
+      },
+    });
+  });
+
+  it("requires Cloud Auth credentials to include hosted MCP tool scope", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        scope: ["project_binding:read", "project_binding:write"],
+      }),
+    );
+
+    await expect(
+      resolveRemoteSelection(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "cloud_auth_required",
+      recoveryCommand: "caplets cloud auth login",
     });
   });
 
@@ -169,7 +195,7 @@ describe("resolveRemoteSelection", () => {
             accessToken: "new-access",
             refreshToken: "new-refresh",
             expiresAt: "2999-01-01T00:00:00.000Z",
-            scope: ["project_binding:read", "project_binding:write"],
+            scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
             tokenType: "Bearer",
             credentialFamilyId: "family_123",
           });

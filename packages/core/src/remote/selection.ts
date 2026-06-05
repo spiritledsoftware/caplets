@@ -1,5 +1,6 @@
 import { CloudAuthClient } from "../cloud-auth/client";
 import { CloudAuthStore, type CloudAuthCredentials } from "../cloud-auth/store";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
 import { CapletsError } from "../errors";
 import { projectBindingError } from "../project-binding/errors";
 import {
@@ -122,6 +123,15 @@ export async function resolveRemoteSelection(
       `Requested workspace ${workspaceFromRemoteUrl} differs from saved Selected Workspace ${selectedWorkspace}.`,
     );
   }
+  const missingScope = HOSTED_CLOUD_AUTH_SCOPES.find(
+    (scope) => !credentials.scope?.includes(scope),
+  );
+  if (missingScope) {
+    throw projectBindingError(
+      "cloud_auth_required",
+      `Hosted Cloud attach requires Cloud Auth scope ${missingScope}. Run caplets cloud auth login again.`,
+    );
+  }
   const remote = resolveHostedCloudRemote(
     {
       url: remoteUrl,
@@ -138,7 +148,7 @@ export async function resolveRemoteSelection(
     selectedWorkspace,
     credentials,
     cloudPresence: {
-      url: new URL(remoteUrl),
+      url: remote.baseUrl,
       accessToken: credentials.accessToken,
       workspaceId: credentials.workspaceId,
     },

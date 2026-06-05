@@ -6,6 +6,7 @@ import type {
   CloudAuthTokenResponse,
   CloudAuthWorkspace,
 } from "./types";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "./types";
 
 export type CloudAuthClientOptions = {
   cloudUrl: string;
@@ -54,7 +55,7 @@ export class CloudAuthClient {
       body: JSON.stringify({
         ...(input.requestedWorkspace ? { requestedWorkspace: input.requestedWorkspace } : {}),
         ...(input.deviceName ? { deviceName: input.deviceName } : {}),
-        ...(input.scope ? { scope: input.scope } : {}),
+        scope: input.scope ?? [...HOSTED_CLOUD_AUTH_SCOPES],
       }),
     });
   }
@@ -150,7 +151,7 @@ function normalizeCredentials(
     ? response.scope.map(String)
     : typeof response.scope === "string"
       ? response.scope.split(/\s+/u).filter(Boolean)
-      : ["project_binding:read", "project_binding:write"];
+      : [...HOSTED_CLOUD_AUTH_SCOPES];
   const credentialFamilyId = response.credentialFamilyId ?? "cloud_client_credential_family";
   const tokenType = response.tokenType ?? "Bearer";
   const credentials: CloudAuthClientCredentials = {

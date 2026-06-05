@@ -128,6 +128,7 @@ describe("caplets attach CLI", () => {
           remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp",
           fetch: async (url) => {
             requestedUrl = String(url);
+            expect(String(url)).not.toContain("/ws/personal-c9b49d/api/project-bindings");
             return Response.json({ error: "websocket_upgrade_required" }, { status: 426 });
           },
         },
