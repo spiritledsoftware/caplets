@@ -2,7 +2,13 @@ import { CloudAuthClient } from "../cloud-auth/client";
 import { CloudAuthStore, type CloudAuthCredentials } from "../cloud-auth/store";
 import { CapletsError } from "../errors";
 import { projectBindingError } from "../project-binding/errors";
-import { resolveCapletsRemote, resolveRemoteMode, type ResolvedCapletsRemote } from "./options";
+import {
+  hostedCloudWorkspaceFromRemoteUrl,
+  resolveCapletsRemote,
+  resolveHostedCloudRemote,
+  resolveRemoteMode,
+  type ResolvedCapletsRemote,
+} from "./options";
 
 export type RemoteSelectionInput = {
   mode?: string;
@@ -105,7 +111,18 @@ export async function resolveRemoteSelection(
   }
 
   const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL ?? credentials.cloudUrl;
-  const remote = resolveCapletsRemote(
+  const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
+  if (
+    workspaceFromRemoteUrl &&
+    workspaceFromRemoteUrl !== credentials.workspaceSlug &&
+    workspaceFromRemoteUrl !== credentials.workspaceId
+  ) {
+    throw projectBindingError(
+      "workspace_switch_required",
+      `Requested workspace ${workspaceFromRemoteUrl} differs from saved Selected Workspace ${selectedWorkspace}.`,
+    );
+  }
+  const remote = resolveHostedCloudRemote(
     {
       url: remoteUrl,
       token: credentials.accessToken,

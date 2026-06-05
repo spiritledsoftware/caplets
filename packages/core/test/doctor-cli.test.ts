@@ -50,6 +50,7 @@ describe("caplets doctor", () => {
       env: {
         CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_REMOTE_URL: "https://cloud.caplets.dev/ws/ian",
+        CAPLETS_CLOUD_AUTH_PATH: "/tmp/caplets-doctor-missing-auth.json",
       },
       writeOut: (value) => out.push(value),
     });

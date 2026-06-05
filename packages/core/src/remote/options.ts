@@ -151,6 +151,51 @@ export function resolveCapletsRemote(
   };
 }
 
+export function resolveHostedCloudRemote(
+  input: CapletsRemoteInput = {},
+  env: CapletsRemoteEnv = process.env,
+): ResolvedCapletsRemote {
+  const rawUrl =
+    nonEmpty(input.url, "url") ?? nonEmpty(env.CAPLETS_REMOTE_URL, "CAPLETS_REMOTE_URL");
+  if (rawUrl === undefined) {
+    throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or url is required.");
+  }
+
+  const cloud = parseHostedCloudRemoteUrl(rawUrl);
+  const workspace = cloud.workspace ?? nonEmpty(input.workspace, "workspace");
+  if (!workspace) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Caplets Cloud remote URL requires a selected workspace.",
+    );
+  }
+
+  const token =
+    nonEmpty(input.token, "token") ?? nonEmpty(env.CAPLETS_REMOTE_TOKEN, "CAPLETS_REMOTE_TOKEN");
+  const auth: CapletsRemoteAuth = token
+    ? { type: "bearer", token }
+    : { type: "none", user: DEFAULT_REMOTE_USER };
+  const requestInit: RequestInit =
+    auth.type === "bearer" ? { headers: { Authorization: `Bearer ${auth.token}` } } : {};
+  const workspaceBaseUrl = appendBasePath(cloud.baseUrl, `ws/${encodeURIComponent(workspace)}`);
+
+  return {
+    baseUrl: cloud.baseUrl,
+    mcpUrl: appendBasePath(workspaceBaseUrl, "mcp"),
+    controlUrl: appendBasePath(cloud.baseUrl, "control"),
+    healthUrl: appendBasePath(cloud.baseUrl, "healthz"),
+    projectBindingWebSocketUrl: projectBindingWebSocketUrlForBase(cloud.baseUrl),
+    auth,
+    requestInit,
+    workspace,
+    ...(input.fetch ? { fetch: input.fetch } : {}),
+  };
+}
+
+export function hostedCloudWorkspaceFromRemoteUrl(value: string): string | undefined {
+  return parseHostedCloudRemoteUrl(value).workspace;
+}
+
 export function projectBindingWebSocketUrlForBase(baseUrl: URL): URL {
   const url = appendBasePath(baseUrl, "control/project-bindings/connect");
   if (url.protocol === "https:") url.protocol = "wss:";
@@ -167,6 +212,32 @@ export function isCapletsCloudUrl(value: string): boolean {
   }
   const host = url.hostname.toLowerCase();
   return host === "cloud.caplets.dev" || host.endsWith(".preview.caplets.dev");
+}
+
+function parseHostedCloudRemoteUrl(value: string): { baseUrl: URL; workspace?: string } {
+  const url = parseServerBaseUrl(value);
+  if (!isCapletsCloudUrl(url.toString())) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Caplets Cloud remote URL must point at Caplets Cloud.",
+    );
+  }
+
+  const baseUrl = new URL(url);
+  baseUrl.pathname = "/";
+  const pathname = url.pathname.replace(/\/+$/u, "");
+  if (pathname === "") return { baseUrl };
+  const match = pathname.match(/^\/ws\/([^/]+)(?:\/mcp)?$/u);
+  if (!match) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Caplets Cloud remote URL must be the Cloud origin or /ws/<workspace>/mcp endpoint.",
+    );
+  }
+  return {
+    baseUrl,
+    workspace: decodeURIComponent(match[1] ?? ""),
+  };
 }
 
 function parseCapletsMode(value: string): "auto" | CapletsRemoteMode {

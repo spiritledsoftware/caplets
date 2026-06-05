@@ -726,7 +726,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(service.listTools().map((tool) => tool.caplet)).toContain("remote");
     expect(factory).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: new URL("https://cloud.caplets.dev/mcp"),
+        url: new URL("https://cloud.caplets.dev/ws/personal/mcp"),
         requestInit: { headers: { Authorization: "Bearer cloud-access" } },
       }),
     );
