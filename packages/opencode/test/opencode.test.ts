@@ -4,7 +4,11 @@ vi.mock("@opencode-ai/plugin", () => ({
   tool: Object.assign((definition: unknown) => definition, {
     schema: {
       enum: () => ({ type: "enum" }),
-      string: () => ({ optional: () => ({ type: "string", optional: true }), min: () => ({}) }),
+      string: () => ({
+        type: "string",
+        optional: () => ({ type: "string", optional: true }),
+        min: () => ({ type: "string" }),
+      }),
       number: () => ({
         int: () => ({ positive: () => ({ optional: () => ({ type: "number", optional: true }) }) }),
       }),
@@ -32,7 +36,7 @@ vi.mock("@opencode-ai/plugin", () => ({
 }));
 
 describe("@caplets/opencode", () => {
-  it("registers one prefixed native tool per Caplet", async () => {
+  it("registers one prefixed native tool per Caplet plus Code Mode", async () => {
     const { createCapletsOpenCodeHooks } = await import("../src/hooks");
     const service = {
       listTools: () => [
@@ -43,6 +47,14 @@ describe("@caplets/opencode", () => {
           description: "GitHub\n\nUse this Caplet.",
           promptGuidance: ["Use caplets_git_hub for GitHub."],
         },
+        {
+          caplet: "run",
+          toolName: "caplets_run",
+          title: "Code Mode",
+          description: "Run Caplets Code Mode TypeScript.",
+          codeModeRun: true,
+          promptGuidance: ["Use caplets_run for multi-step Caplets workflows."],
+        },
       ],
       execute: vi.fn(async () => ({ ok: true })),
       reload: vi.fn(async () => true),
@@ -52,7 +64,7 @@ describe("@caplets/opencode", () => {
 
     const hooks = await createCapletsOpenCodeHooks(service);
 
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub"]);
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets_run"]);
     const capletsTool = hooks.tool!.caplets_git_hub as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
@@ -60,9 +72,22 @@ describe("@caplets/opencode", () => {
     expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
     expect(result).toContain('"ok": true');
 
+    const runTool = hooks.tool!.caplets_run as {
+      args: { code?: unknown; timeoutMs?: unknown };
+      execute(args: unknown, context: unknown): Promise<string>;
+    };
+    expect(runTool.args).toMatchObject({
+      code: { type: "string" },
+      timeoutMs: { type: "number", optional: true },
+    });
+    const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
+    expect(service.execute).toHaveBeenCalledWith("run", { code: "return {ok:true};" });
+    expect(runResult).toContain('"ok": true');
+
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
     expect(output.system.join("\n")).toContain("caplets_git_hub");
+    expect(output.system.join("\n")).toContain("caplets_run");
   });
 
   it("returns stable text when tool result serialization fails", async () => {
