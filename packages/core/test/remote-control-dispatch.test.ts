@@ -80,7 +80,7 @@ describe("dispatchRemoteCliRequest", () => {
       structuredContent: {
         result: {
           query: "check",
-          tools: [expect.objectContaining({ tool: "check" })],
+          items: [expect.objectContaining({ name: "check" })],
         },
       },
     });
@@ -90,7 +90,10 @@ describe("dispatchRemoteCliRequest", () => {
     const context = testContext();
 
     const response = await dispatchRemoteCliRequest(
-      { command: "get_tool", arguments: { caplet: "server_status", request: { tool: "check" } } },
+      {
+        command: "describe_tool",
+        arguments: { caplet: "server_status", request: { name: "check" } },
+      },
       context,
     );
 
@@ -111,7 +114,7 @@ describe("dispatchRemoteCliRequest", () => {
         command: "call_tool",
         arguments: {
           caplet: "server_status",
-          request: { operation: "get_tool", tool: "check", arguments: {} },
+          request: { operation: "describe_tool", name: "check", arguments: {} },
         },
       },
       context,

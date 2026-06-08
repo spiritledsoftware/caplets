@@ -520,7 +520,7 @@ describe("@caplets/pi", () => {
       structuredContent: {
         caplets: {
           name: "Context7",
-          operation: "list_tools",
+          operation: "tools",
         },
       },
     });
@@ -531,15 +531,15 @@ describe("@caplets/pi", () => {
     });
 
     const tool = registered[0];
-    const result = await tool?.execute("call-1", { operation: "list_tools" });
+    const result = await tool?.execute("call-1", { operation: "tools" });
     const rendered = renderText(
       tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme),
     );
 
-    expect(rendered).toContain("✓ Context7 list_tools complete (ctrl+o to collapse)");
+    expect(rendered).toContain("✓ Context7 tools complete (ctrl+o to collapse)");
     expect(rendered).toContain("\nvery long docs");
     expect(rendered).not.toContain("Result summary:");
-    expect(rendered.indexOf("✓ Context7 list_tools complete")).toBeLessThan(
+    expect(rendered.indexOf("✓ Context7 tools complete")).toBeLessThan(
       rendered.indexOf("very long docs"),
     );
   });

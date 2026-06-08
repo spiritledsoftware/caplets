@@ -48,14 +48,25 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      expect(service.listTools()).toEqual([
-        expect.objectContaining({
-          caplet: "git-hub",
-          toolName: "caplets_git_hub",
-          title: "GitHub",
-        }),
-      ]);
-      expect(service.listTools()[0]?.description).toContain("Native tool name: caplets_git_hub");
+      expect(service.listTools()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            caplet: "git-hub",
+            toolName: "caplets_git_hub",
+            title: "GitHub",
+          }),
+          expect.objectContaining({
+            caplet: "run",
+            toolName: "caplets_run",
+            title: "Code Mode",
+          }),
+        ]),
+      );
+      const githubTool = service.listTools().find((tool) => tool.caplet === "git-hub");
+      expect(githubTool?.description).toContain("Native tool name: caplets_git_hub");
+      expect(githubTool?.inputSchema).toMatchObject({
+        properties: expect.objectContaining({ fields: expect.anything() }),
+      });
     } finally {
       await service.close();
     }
@@ -113,9 +124,11 @@ describe("native Caplets service", () => {
 
     expect(guidance).toContain("caplets_linear_api__v2");
     expect(guidance).toContain("Flow: inspect when the domain is unfamiliar");
-    expect(guidance).toContain(
-      "Use fields on call_tool when a non-GraphQL downstream outputSchema allows",
-    );
+    expect(guidance).toContain("exact inputSchema property names");
+    expect(guidance).toContain("Do not guess downstream tool names");
+    expect(guidance).toContain("Do not infer input/output schemas");
+    expect(guidance).toContain("avoid broad provider searches");
+    expect(guidance).toContain("follow its fieldSelection hint");
   });
 
   it("builds concise per-Caplet prompt guidance with safe discovery", () => {
@@ -133,6 +146,9 @@ describe("native Caplets service", () => {
     }).join("\n");
 
     expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
+    expect(guidance).toContain("Use describe_tool before call_tool when args matter");
+    expect(guidance).toContain("call_tool.args must match inputSchema exactly");
+    expect(guidance).toContain("Do not guess tool names or schemas");
     expect(guidance).not.toContain("For unfamiliar tasks, discover safely");
     expect(guidance).not.toContain("Call caplets_browser with operation inspect before");
   });
@@ -151,7 +167,7 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
 
     try {
-      expect(service.listTools().map((tool) => tool.caplet)).toEqual(["alpha"]);
+      expect(configuredCapletIds(service.listTools())).toEqual(["alpha"]);
       writeFileSync(
         configPath,
         JSON.stringify({
@@ -166,9 +182,7 @@ describe("native Caplets service", () => {
       );
 
       await expect(service.reload()).resolves.toBe(true);
-      expect(service.listTools()).toEqual([
-        expect.objectContaining({ caplet: "beta", toolName: "caplets_beta", title: "Beta" }),
-      ]);
+      expect(configuredCapletIds(service.listTools())).toEqual(["beta"]);
     } finally {
       await service.close();
     }
@@ -194,7 +208,7 @@ describe("native Caplets service", () => {
     });
     const events: string[][] = [];
     const unsubscribe = service.onToolsChanged((tools) => {
-      events.push(tools.map((tool) => tool.caplet));
+      events.push(configuredCapletIds(tools));
     });
 
     try {
@@ -263,7 +277,7 @@ describe("native Caplets service", () => {
       };
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
-      events.push(tools.map((tool) => tool.caplet));
+      events.push(configuredCapletIds(tools));
     });
 
     try {
@@ -307,7 +321,7 @@ describe("native Caplets service", () => {
     });
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
-      events.push(tools.map((tool) => tool.caplet));
+      events.push(configuredCapletIds(tools));
     });
 
     try {
@@ -350,4 +364,8 @@ describe("native Caplets service", () => {
 
 async function watcherReady(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 100));
+}
+
+function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {
+  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "run");
 }

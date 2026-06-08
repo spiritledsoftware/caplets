@@ -8,6 +8,7 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./cli/add";
+import { buildCloudCapletBundle } from "./cli/cloud-add";
 import {
   loginAuth,
   logoutAuth,
@@ -19,6 +20,7 @@ import {
   type AuthStatusRow,
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
+import { codeModeTypesCli, runCodeModeCli } from "./cli/code-mode";
 import { initConfig } from "./cli/init";
 import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
 import {
@@ -107,6 +109,7 @@ type CliIO = {
   attachServe?: (options: AttachServeOptions) => Promise<void>;
   daemon?: ServeDaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
+  readStdin?: () => Promise<string>;
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
@@ -182,6 +185,17 @@ function cloudAuthStore(
 
 function cloudAuthStatus(credentials: CloudAuthCredentials | undefined): Record<string, unknown> {
   return redactedCloudAuthStatus(credentials);
+}
+
+function compactCloudCaplet(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.id === "string" ? { id: record.id } : {}),
+    ...(typeof record.name === "string" ? { name: record.name } : {}),
+    ...(typeof record.description === "string" ? { description: record.description } : {}),
+    ...(typeof record.readinessState === "string" ? { readinessState: record.readinessState } : {}),
+  };
 }
 
 function isProjectBindingWebSocketUnavailable(error: unknown): boolean {
@@ -326,6 +340,52 @@ export function createProgram(io: CliIO = {}): Command {
             });
       }
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
+    });
+
+  program
+    .command(cliCommands.run)
+    .description("Run TypeScript Code Mode locally with the generated Caplets API.")
+    .argument("[code]", "inline TypeScript code to run")
+    .option("--file <path>", "read TypeScript code from a file relative to the current directory")
+    .option("--timeout-ms <ms>", "execution timeout in milliseconds", parsePositiveInteger)
+    .option("--json", "print the structured run envelope")
+    .action(
+      async (
+        code: string | undefined,
+        options: { file?: string; timeoutMs?: number; json?: boolean },
+      ) => {
+        await runCodeModeCli({
+          env,
+          ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+          projectConfigPath: envProjectConfigPath(env),
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+          ...(code === undefined ? {} : { inlineCode: code }),
+          ...(options.file === undefined ? {} : { file: options.file }),
+          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+          ...(options.json === undefined ? {} : { json: options.json }),
+          ...(io.readStdin ? { readStdin: io.readStdin } : {}),
+          writeOut,
+          setExitCode,
+        });
+      },
+    );
+
+  const codeMode = program
+    .command(cliCommands.codeMode)
+    .description("Inspect and debug Caplets Code Mode.");
+  codeMode
+    .command("types")
+    .description("Print the generated Code Mode TypeScript declarations.")
+    .option("--json", "print declaration metadata as JSON")
+    .action(async (options: { json?: boolean }) => {
+      await codeModeTypesCli({
+        env,
+        ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+        projectConfigPath: envProjectConfigPath(env),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+        ...(options.json === undefined ? {} : { json: options.json }),
+        writeOut,
+      });
     });
 
   const serve = program
@@ -753,6 +813,44 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(`Selected workspace ${next.workspaceSlug ?? next.workspaceId}.\n`);
     });
 
+  cloud
+    .command("add")
+    .description("Upload local caplet-files to the selected hosted Caplets Cloud workspace.")
+    .argument("[path]", "directory containing caplet-files", ".")
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
+    .option("--workspace <workspace>", "workspace ID or slug")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        pathInput: string,
+        options: { cloudUrl?: string; workspace?: string; json?: boolean },
+      ) => {
+        const credentials = await cloudAuthStore(env).load();
+        if (!credentials) {
+          throw new CapletsError("AUTH_REQUIRED", "Run caplets cloud auth login first.");
+        }
+        const cloudUrl = options.cloudUrl ?? credentials.cloudUrl;
+        const workspace = options.workspace ?? credentials.workspaceSlug ?? credentials.workspaceId;
+        const bundle = buildCloudCapletBundle(pathInput);
+        const result = await new CloudAuthClient({
+          cloudUrl,
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+        }).addCaplets({
+          accessToken: credentials.accessToken,
+          workspace,
+          bundle,
+        });
+        const caplets = result.caplets.map(compactCloudCaplet);
+        if (options.json) {
+          writeOut(`${JSON.stringify({ caplets, workspace }, null, 2)}\n`);
+          return;
+        }
+        for (const caplet of caplets) {
+          writeOut(`Added ${caplet.name ?? caplet.id ?? "Caplet"} to ${workspace}.\n`);
+        }
+      },
+    );
+
   program
     .command(cliCommands.init)
     .description("Create a starter Caplets config file.")
@@ -1151,7 +1249,7 @@ export function createProgram(io: CliIO = {}): Command {
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
-        { operation: "check_backend" },
+        { operation: "check" },
         {
           writeOut,
           writeErr,
@@ -1172,7 +1270,7 @@ export function createProgram(io: CliIO = {}): Command {
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
       await executeOperation(
         caplet,
-        { operation: "list_tools" },
+        { operation: "tools" },
         {
           writeOut,
           writeErr,
@@ -1231,7 +1329,7 @@ export function createProgram(io: CliIO = {}): Command {
         const { caplet, tool } = parseQualifiedTarget(capletOrTarget, toolArgument);
         await executeOperation(
           caplet,
-          { operation: "get_tool", tool },
+          { operation: "describe_tool", name: tool },
           {
             writeOut,
             writeErr,
@@ -1262,8 +1360,8 @@ export function createProgram(io: CliIO = {}): Command {
         const { caplet, tool } = parseQualifiedTarget(capletOrTarget, toolArgument);
         const request = {
           operation: "call_tool",
-          tool,
-          arguments: parseCallToolArgs(options.args),
+          name: tool,
+          args: parseCallToolArgs(options.args),
           ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
         };
         await executeOperation(caplet, request, {
@@ -1288,8 +1386,8 @@ export function createProgram(io: CliIO = {}): Command {
       executeOperation(
         caplet,
         options.limit === undefined
-          ? { operation: "list_resources" }
-          : { operation: "list_resources", limit: options.limit },
+          ? { operation: "resources" }
+          : { operation: "resources", limit: options.limit },
         {
           writeOut,
           writeErr,
@@ -1340,8 +1438,8 @@ export function createProgram(io: CliIO = {}): Command {
       executeOperation(
         caplet,
         options.limit === undefined
-          ? { operation: "list_resource_templates" }
-          : { operation: "list_resource_templates", limit: options.limit },
+          ? { operation: "resource_templates" }
+          : { operation: "resource_templates", limit: options.limit },
         {
           writeOut,
           writeErr,
@@ -1384,8 +1482,8 @@ export function createProgram(io: CliIO = {}): Command {
       executeOperation(
         caplet,
         options.limit === undefined
-          ? { operation: "list_prompts" }
-          : { operation: "list_prompts", limit: options.limit },
+          ? { operation: "prompts" }
+          : { operation: "prompts", limit: options.limit },
         {
           writeOut,
           writeErr,
@@ -1444,8 +1542,8 @@ export function createProgram(io: CliIO = {}): Command {
           caplet,
           {
             operation: "get_prompt",
-            prompt,
-            arguments: parseJsonObjectOption(options.args, "get-prompt --args"),
+            name: prompt,
+            args: parseJsonObjectOption(options.args, "get-prompt --args"),
           },
           {
             writeOut,
@@ -1655,16 +1753,16 @@ async function openBrowser(url: string): Promise<void> {
 function remoteCommandForOperation(operation: unknown): RemoteCliCommand | undefined {
   switch (operation) {
     case "inspect":
-    case "check_backend":
-    case "list_tools":
+    case "check":
+    case "tools":
     case "search_tools":
-    case "get_tool":
+    case "describe_tool":
     case "call_tool":
-    case "list_resources":
+    case "resources":
     case "search_resources":
-    case "list_resource_templates":
+    case "resource_templates":
     case "read_resource":
-    case "list_prompts":
+    case "prompts":
     case "search_prompts":
     case "get_prompt":
     case "complete":
@@ -2342,7 +2440,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
       ]
         .filter((line): line is string => line !== undefined)
         .join("\n");
-    case "check_backend":
+    case "check":
       return [
         `## Backend \`${id}\``,
         "",
@@ -2355,8 +2453,8 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
       ]
         .filter((line): line is string => line !== undefined)
         .join("\n");
-    case "list_tools": {
-      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+    case "tools": {
+      const tools = pageItemsFromPayload(payload);
       return [
         `## Tools for \`${id}\``,
         "",
@@ -2371,7 +2469,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
       ].join("\n");
     }
     case "search_tools": {
-      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      const tools = pageItemsFromPayload(payload);
       return [
         `## Matches for ${JSON.stringify(String(payload.query ?? ""))} in \`${id}\``,
         "",
@@ -2385,7 +2483,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
           : `- Try a broader query or list tools: \`caplets list-tools ${id}\``,
       ].join("\n");
     }
-    case "get_tool": {
+    case "describe_tool": {
       const tool = isPlainObject(payload.tool) ? payload.tool : {};
       const target = `${id}.${String(tool.name ?? "<tool>")}`;
       return [
@@ -2407,7 +2505,7 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         .join("\n");
     }
     case "call_tool": {
-      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.tool ?? "unknown")}`;
+      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.name ?? "unknown")}`;
       return [
         `## Call \`${callTarget}\``,
         "",
@@ -2420,13 +2518,9 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         .filter((line): line is string => line !== undefined)
         .join("\n");
     }
-    case "list_resources":
+    case "resources":
     case "search_resources": {
-      const resources = Array.isArray(payload.resources) ? payload.resources : [];
-      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
-      const matches = Array.isArray(payload.matches)
-        ? payload.matches
-        : [...resources, ...templates];
+      const matches = pageItemsFromPayload(payload);
       return [
         `## MCP resources for \`${id}\``,
         "",
@@ -2435,8 +2529,8 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         ...formatResourceLines(matches, "markdown"),
       ].join("\n");
     }
-    case "list_resource_templates": {
-      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+    case "resource_templates": {
+      const templates = pageItemsFromPayload(payload);
       return [
         `## MCP resource templates for \`${id}\``,
         "",
@@ -2451,16 +2545,16 @@ function markdownSummaryForOperation(result: unknown, request: Record<string, un
         "",
         "Use `--format json` to inspect all contents.",
       ].join("\n");
-    case "list_prompts":
+    case "prompts":
     case "search_prompts": {
-      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      const prompts = pageItemsFromPayload(payload);
       return [`## MCP prompts for \`${id}\``, "", ...formatPromptLines(prompts, "markdown")].join(
         "\n",
       );
     }
     case "get_prompt":
       return [
-        `## Prompt \`${String(request.caplet)}.${String(request.prompt)}\``,
+        `## Prompt \`${String(request.caplet)}.${String(request.name)}\``,
         "",
         summarizePromptResult(payload),
         "",
@@ -2491,7 +2585,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n");
-    case "check_backend":
+    case "check":
       return [
         `Backend: ${id} is ${String(payload.status ?? "unknown")}`,
         typeof payload.toolCount === "number" ? `Tools: ${payload.toolCount}` : undefined,
@@ -2500,8 +2594,8 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n");
-    case "list_tools": {
-      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+    case "tools": {
+      const tools = pageItemsFromPayload(payload);
       return [
         `Tools for ${id} (${tools.length}):`,
         ...formatToolLines(tools, "plain"),
@@ -2509,7 +2603,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
       ].join("\n");
     }
     case "search_tools": {
-      const tools = Array.isArray(payload.tools) ? payload.tools : [];
+      const tools = pageItemsFromPayload(payload);
       return [
         `Matches for ${JSON.stringify(String(payload.query ?? ""))} in ${id} (${tools.length}):`,
         ...formatToolLines(tools, "plain"),
@@ -2518,7 +2612,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
           : `Next: try caplets list-tools ${id} or a broader query.`,
       ].join("\n");
     }
-    case "get_tool": {
+    case "describe_tool": {
       const tool = isPlainObject(payload.tool) ? payload.tool : {};
       const target = `${id}.${String(tool.name ?? "<tool>")}`;
       return [
@@ -2535,7 +2629,7 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
         .join("\n");
     }
     case "call_tool": {
-      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.tool ?? "unknown")}`;
+      const callTarget = `${String(request.caplet ?? "<caplet>")}.${String(request.name ?? "unknown")}`;
       return [
         `Call ${callTarget} ${payload.isError === true ? "failed" : "succeeded"}.`,
         callStatusLine(payload),
@@ -2545,20 +2639,16 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
         .filter((line): line is string => Boolean(line))
         .join("\n");
     }
-    case "list_resources":
+    case "resources":
     case "search_resources": {
-      const resources = Array.isArray(payload.resources) ? payload.resources : [];
-      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
-      const matches = Array.isArray(payload.matches)
-        ? payload.matches
-        : [...resources, ...templates];
+      const matches = pageItemsFromPayload(payload);
       return [
         `MCP resources for ${id} (${matches.length}):`,
         ...formatResourceLines(matches, "plain"),
       ].join("\n");
     }
-    case "list_resource_templates": {
-      const templates = Array.isArray(payload.resourceTemplates) ? payload.resourceTemplates : [];
+    case "resource_templates": {
+      const templates = pageItemsFromPayload(payload);
       return [`MCP resource templates for ${id}:`, ...formatResourceLines(templates, "plain")].join(
         "\n",
       );
@@ -2569,14 +2659,14 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
         summarizeResourceRead(payload),
         "Use --format json to inspect all contents.",
       ].join("\n");
-    case "list_prompts":
+    case "prompts":
     case "search_prompts": {
-      const prompts = Array.isArray(payload.prompts) ? payload.prompts : [];
+      const prompts = pageItemsFromPayload(payload);
       return [`MCP prompts for ${id}:`, ...formatPromptLines(prompts, "plain")].join("\n");
     }
     case "get_prompt":
       return [
-        `Prompt ${String(request.caplet)}.${String(request.prompt)}`,
+        `Prompt ${String(request.caplet)}.${String(request.name)}`,
         summarizePromptResult(payload),
         "Use --format json to inspect all messages.",
       ].join("\n");
@@ -2589,6 +2679,14 @@ function plainSummaryForOperation(result: unknown, request: Record<string, unkno
 
 function payloadId(payload: Record<string, unknown>): string {
   return String(payload.id ?? payload.caplet ?? payload.server ?? "<caplet>");
+}
+
+function pageItemsFromPayload(payload: Record<string, unknown>): unknown[] {
+  if (Array.isArray(payload.items)) return payload.items;
+  for (const key of ["tools", "resources", "resourceTemplates", "prompts", "matches"] as const) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  return [];
 }
 
 function formatToolLines(tools: unknown[], format: "markdown" | "plain"): string[] {

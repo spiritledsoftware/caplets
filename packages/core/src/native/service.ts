@@ -19,7 +19,19 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
+  nativeCodeModeRunToolId,
+  nativeCodeModeRunToolName,
 } from "./tools";
+import {
+  generateCodeModeDeclarations,
+  generateCodeModeRunToolDescription,
+} from "../code-mode/declarations";
+import { runCodeMode } from "../code-mode/runner";
+import {
+  codeModeRunInputJsonSchema,
+  codeModeRunInputSchema,
+  isCodeModeRunRequest,
+} from "../code-mode/tool";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
@@ -50,6 +62,9 @@ export type NativeCapletTool = {
   toolName: string;
   title: string;
   description: string;
+  codeModeRun?: boolean;
+  useWhen?: string;
+  avoidWhen?: string;
   promptGuidance: string[];
   inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
   operationNames?: string[];
@@ -112,7 +127,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   }
 
   listTools(): NativeCapletTool[] {
-    return this.engine.enabledServers().map((caplet) => {
+    const capletTools = this.engine.enabledServers().map((caplet) => {
       const toolName = nativeCapletToolName(caplet.server);
       const inputSchema = generatedToolInputJsonSchemaForCaplet(caplet);
       return {
@@ -120,14 +135,20 @@ class DefaultNativeCapletsService implements NativeCapletsService {
         toolName,
         title: caplet.name,
         description: nativeCapletToolDescription(toolName, caplet),
+        ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+        ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
         promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
         inputSchema,
         operationNames: [...inputSchema.properties.operation.enum],
       };
     });
+    return [...capletTools, codeModeRunNativeTool(capletTools)];
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (capletId === nativeCodeModeRunToolId && isCodeModeRunRequest(request)) {
+      return await executeCodeModeRunNative(this, request);
+    }
     return await this.engine.execute(capletId, request);
   }
 
@@ -142,6 +163,68 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   async close(): Promise<void> {
     await this.engine.close();
   }
+}
+
+function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {
+  const declaration = generateCodeModeDeclarations({
+    caplets: capletTools.map((tool) => ({
+      id: tool.caplet,
+      name: tool.title,
+      description: tool.description,
+      ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
+      ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
+    })),
+  });
+  return {
+    caplet: nativeCodeModeRunToolId,
+    toolName: nativeCodeModeRunToolName,
+    title: "Code Mode",
+    description: [
+      generateCodeModeRunToolDescription(declaration),
+      "",
+      `Native tool name: ${nativeCodeModeRunToolName}`,
+    ].join("\n"),
+    codeModeRun: true,
+    promptGuidance: [
+      `Use ${nativeCodeModeRunToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
+      "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
+      "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
+    ],
+    inputSchema: codeModeRunInputJsonSchema(),
+  };
+}
+
+async function executeCodeModeRunNative(
+  service: NativeCapletsService,
+  request: unknown,
+): Promise<unknown> {
+  const parsed = codeModeRunInputSchema.safeParse(request);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+        details: parsed.error.issues,
+      },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+      meta: {
+        runId: "",
+        traceId: "",
+        declarationHash: "",
+        durationMs: 0,
+        timeoutMs: 0,
+        maxTimeoutMs: 0,
+      },
+    };
+  }
+  return await runCodeMode({
+    code: parsed.data.code,
+    service,
+    ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+  });
 }
 
 function createDefaultNativeCapletsService(
@@ -324,6 +407,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (capletId === nativeCodeModeRunToolId && isCodeModeRunRequest(request)) {
+      return await executeCodeModeRunNative(this, request);
+    }
     if (this.local.listTools().some((tool) => tool.caplet === capletId)) {
       return await this.local.execute(capletId, request);
     }
@@ -386,9 +472,13 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   private mergeTools(): NativeCapletTool[] {
-    const localTools = this.local.listTools();
+    const localTools = this.local.listTools().filter((tool) => tool.codeModeRun !== true);
     const localIds = new Set(localTools.map((tool) => tool.caplet));
-    return [...this.remote.listTools().filter((tool) => !localIds.has(tool.caplet)), ...localTools];
+    const remoteTools = this.remote
+      .listTools()
+      .filter((tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet));
+    const mergedTools = [...remoteTools, ...localTools];
+    return [...mergedTools, codeModeRunNativeTool(mergedTools)];
   }
 
   private async reloadChild(

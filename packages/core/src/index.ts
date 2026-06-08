@@ -26,6 +26,54 @@ export type {
 export { capabilityDescription, ServerRegistry } from "./registry";
 export { generatedToolInputSchema, handleServerTool } from "./tools";
 export type { CapletExecutionMetadata, CapletResultMetadata } from "./tools";
+export { createCodeModeCapletsApi, listCodeModeCallableCaplets } from "./code-mode/api";
+export type {
+  CodeModeCapletHandle,
+  CodeModeCapletsApi,
+  CodeModeDebugApi,
+  CreateCodeModeCapletsApiInput,
+} from "./code-mode/api";
+export {
+  codeModeDeclarationHash,
+  generateCodeModeDeclarations,
+  generateCodeModeRunToolDescription,
+  minifyCodeModeDeclarationText,
+} from "./code-mode/declarations";
+export { diagnoseCodeModeTypeScript } from "./code-mode/diagnostics";
+export type { DiagnoseCodeModeTypeScriptInput } from "./code-mode/diagnostics";
+export { CodeModeLogStore, redactCodeModeLogText } from "./code-mode/logs";
+export type { CodeModeLogStoreOptions, StoreCodeModeLogsResult } from "./code-mode/logs";
+export {
+  FileObservedOutputShapeStore,
+  observeOutputShape,
+  observedOutputShapeKey,
+  type ObservedOutputShape,
+  type ObservedOutputShapeKey,
+  type ObservedOutputShapeStore,
+} from "./observed-output-shapes";
+export { runCodeMode } from "./code-mode/runner";
+export type { RunCodeModeInput } from "./code-mode/runner";
+export { QuickJsCodeModeSandbox } from "./code-mode/sandbox";
+export type {
+  CodeModeSandbox,
+  CodeModeSandboxInput,
+  CodeModeSandboxInvokeInput,
+  CodeModeSandboxResult,
+} from "./code-mode/sandbox";
+export type {
+  CodeModeCallableCaplet,
+  CodeModeDeclarationInput,
+  CodeModeDiagnostic,
+  CodeModeLogs,
+  CodeModeRunEnvelope,
+  CodeModeRunError,
+  CodeModeRunMeta,
+  CodeModeTypesJson,
+  JsonValue,
+  ReadLogsInput,
+  ReadLogsResult,
+  ToolCallResult,
+} from "./code-mode/types";
 export type { CapletSetupCommandConfig, CapletSetupConfig } from "./config";
 export { capletSetupContentHash, stableJson } from "./setup/hash";
 export { LocalSetupStore } from "./setup/local-store";

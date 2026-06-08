@@ -1,5 +1,11 @@
 # caplets
 
+## Unreleased
+
+### Major Changes
+
+- Breaking: Caplet progressive wrapper operation names now use `check`, `tools`, `describe_tool`, resource/prompt operation names without `list_`, and `name`/`args` fields instead of `tool`/`prompt`/`arguments`. Code Mode declarations now expose comprehensive Caplet handles with paginated discovery, result envelopes, resource/prompt methods, loose TypeScript diagnostics, and schema-derived `callSignature`.
+
 ## 0.12.0
 
 ### Minor Changes

@@ -4,7 +4,12 @@ import { parse as parseYaml } from "yaml";
 import { genericOAuthHeaders } from "./auth";
 import type { OpenApiEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
-import type { CompactTool } from "./downstream";
+import {
+  compactToolSafetyHints,
+  compactToolSchemaHints,
+  compactToolSelectionHints,
+  type CompactTool,
+} from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
@@ -179,11 +184,14 @@ export class OpenApiManager {
 
   compact(endpoint: OpenApiEndpointConfig, tool: Tool): CompactTool {
     return {
-      id: endpoint.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: Boolean(tool.outputSchema),
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 

@@ -30,7 +30,12 @@ import {
 import { genericOAuthHeaders } from "./auth";
 import type { GraphQlEndpointConfig } from "./config";
 import { isAllowedRemoteUrl } from "./config/validation";
-import type { CompactTool } from "./downstream";
+import {
+  compactToolSafetyHints,
+  compactToolSchemaHints,
+  compactToolSelectionHints,
+  type CompactTool,
+} from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
@@ -49,6 +54,8 @@ const SCALAR_JSON_SCHEMA: Record<string, Record<string, unknown>> = {
 type GraphQlOperation = {
   name: string;
   description?: string;
+  useWhen?: string;
+  avoidWhen?: string;
   document: string;
   operationName?: string;
   inputSchema: Record<string, unknown>;
@@ -222,11 +229,14 @@ export class GraphQLManager {
 
   compact(endpoint: GraphQlEndpointConfig, tool: Tool): CompactTool {
     return {
-      id: endpoint.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: false,
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 
@@ -306,6 +316,8 @@ export class GraphQLManager {
     return {
       name: operation.name,
       ...(operation.description ? { description: operation.description } : {}),
+      ...(operation.useWhen ? { useWhen: operation.useWhen } : {}),
+      ...(operation.avoidWhen ? { avoidWhen: operation.avoidWhen } : {}),
       inputSchema: operation.inputSchema as Tool["inputSchema"],
       annotations:
         operation.kind === "query"
@@ -384,6 +396,8 @@ function loadConfiguredOperations(
       return {
         name,
         ...(config.description ? { description: config.description } : {}),
+        ...(config.useWhen ? { useWhen: config.useWhen } : {}),
+        ...(config.avoidWhen ? { avoidWhen: config.avoidWhen } : {}),
         document,
         ...(config.operationName ? { operationName: config.operationName } : {}),
         inputSchema: variablesSchema(schema, operation),

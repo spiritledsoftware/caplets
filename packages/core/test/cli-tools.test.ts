@@ -30,7 +30,9 @@ describe("CliToolsManager", () => {
     });
     const tools = await manager.listTools(caplet);
     expect(tools.map((tool) => tool.name)).toEqual(["echo_json", "fail", "fail_json"]);
-    expect(manager.search(caplet, tools, "echo", 5)).toMatchObject([{ tool: "echo_json" }]);
+    expect(manager.search(caplet, tools, "echo", 5)).toMatchObject([
+      { name: "echo_json", readOnlyHint: true },
+    ]);
     expect(await manager.getTool(caplet, "echo_json")).toMatchObject({
       name: "echo_json",
       inputSchema: expect.objectContaining({ type: "object" }),
@@ -159,8 +161,8 @@ describe("CliToolsManager", () => {
       caplet,
       {
         operation: "call_tool",
-        tool: "echo_json",
-        arguments: { message: "hello" },
+        name: "echo_json",
+        args: { message: "hello" },
         fields: ["json.message"],
       },
       registry,

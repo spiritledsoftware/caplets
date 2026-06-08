@@ -94,7 +94,7 @@ describe("Project Binding integration", () => {
     });
 
     await service.reload();
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["deploy", "Remote Deploy"],
       ["build", "Local Build"],
     ]);
@@ -120,4 +120,8 @@ function remoteClientFixture(
     onToolsChanged: vi.fn(() => () => undefined),
     close: vi.fn(async () => undefined),
   };
+}
+
+function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
+  return tools.filter((tool) => tool.caplet !== "run").map((tool) => [tool.caplet, tool.title]);
 }

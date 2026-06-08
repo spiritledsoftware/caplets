@@ -2,7 +2,13 @@ import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sd
 import { resolve } from "node:path";
 import { CliToolsManager } from "./cli-tools";
 import { type CapletConfig, type CapletSetConfig, loadIsolatedConfig } from "./config";
-import { DownstreamManager, type CompactTool } from "./downstream";
+import {
+  compactToolSafetyHints,
+  compactToolSchemaHints,
+  compactToolSelectionHints,
+  DownstreamManager,
+  type CompactTool,
+} from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
 import { HttpActionManager } from "./http-actions";
@@ -146,11 +152,14 @@ export class CapletSetManager {
 
   compact(config: CapletSetConfig, tool: Tool): CompactTool {
     return {
-      id: config.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: Boolean(tool.outputSchema),
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 

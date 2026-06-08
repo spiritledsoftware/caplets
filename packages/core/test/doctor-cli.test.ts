@@ -17,6 +17,7 @@ describe("caplets doctor", () => {
     expect(report).toContain("Project sync");
     expect(report).toContain("Daemon");
     expect(report).toContain("Cloud Auth");
+    expect(report).toContain("Code Mode");
     expect(report).not.toContain("local presence");
   });
 
@@ -62,6 +63,14 @@ describe("caplets doctor", () => {
       sync: { state: "idle" },
       daemon: { running: false },
       cloudAuth: { authenticated: false },
+      codeMode: {
+        typesGeneration: { ok: true },
+        diagnostics: { ok: true },
+        sandboxSmoke: { ok: true },
+        logStorage: { ok: true },
+        callableIndex: { ok: true },
+        observedOutputShapes: { ok: true },
+      },
     });
   });
 });

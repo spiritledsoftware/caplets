@@ -85,9 +85,21 @@ export function defaultCompletionCacheDir(
     : pathJoin(defaultCacheBaseDir(env, home, platform), "caplets", "completions");
 }
 
+export function defaultObservedOutputShapeCacheDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return platform === "win32"
+    ? pathJoin(defaultCacheBaseDir(env, home, platform), "caplets", "cache", "result-shapes")
+    : pathJoin(defaultCacheBaseDir(env, home, platform), "caplets", "result-shapes");
+}
+
 export const DEFAULT_CONFIG_PATH = defaultConfigPath();
 export const DEFAULT_AUTH_DIR = defaultAuthDir();
 export const DEFAULT_COMPLETION_CACHE_DIR = defaultCompletionCacheDir();
+export const DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR = defaultObservedOutputShapeCacheDir();
 export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
 
 export function resolveConfigPath(path?: string): string {

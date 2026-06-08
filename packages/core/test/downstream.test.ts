@@ -25,6 +25,7 @@ describe("compact schema fingerprints", () => {
     const schema = {
       type: "object",
       properties: { value: { type: "string" }, count: { type: "number" } },
+      required: ["value"],
     };
 
     const first = manager.compact(server, { name: "first", inputSchema: schema } as Tool);
@@ -34,7 +35,12 @@ describe("compact schema fingerprints", () => {
       outputSchema: schema,
     } as Tool);
 
-    expect(first).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(first).toMatchObject({
+      hasInputSchema: true,
+      hasOutputSchema: false,
+      requiredArgs: ["value"],
+      acceptedArgs: ["count", "value"],
+    });
     expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
     expect(first).not.toHaveProperty("inputSchemaHash");
     expect(second).not.toHaveProperty("outputSchemaHash");
@@ -53,6 +59,7 @@ describe("compact schema fingerprints", () => {
     } as Tool);
 
     expect(compact).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(compact).toMatchObject({ acceptedArgs: ["a", "b"] });
     expect(compact).not.toHaveProperty("inputSchemaHash");
     expect(compact).not.toHaveProperty("outputSchemaHash");
   });
@@ -117,8 +124,8 @@ describe("downstream stdio lifecycle", () => {
         config.mcpServers.fixture!,
         {
           operation: "call_tool",
-          tool: "echo",
-          arguments: { message: "hello" },
+          name: "echo",
+          args: { message: "hello" },
           fields: ["message"],
         },
         registry,
@@ -282,7 +289,7 @@ describe("downstream stdio lifecycle", () => {
               JSON.stringify({
                 jsonrpc: "2.0",
                 id: message.id,
-                result: { tools: [{ name: "remote_echo", inputSchema: {} }] },
+                result: { tools: [{ name: "remote_echo", inputSchema: { type: "object" } }] },
               }),
             );
             return;
@@ -327,6 +334,100 @@ describe("downstream stdio lifecycle", () => {
       await manager.close();
     } finally {
       releaseFirstInitialize.resolve();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("shares one in-flight remote connection across concurrent operations", async () => {
+    const releaseInitialize = deferred<void>();
+    let initializeCount = 0;
+    let toolsListCount = 0;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { id?: number; method?: string };
+          response.setHeader("content-type", "application/json");
+          if (message.method === "initialize") {
+            initializeCount += 1;
+            await releaseInitialize.promise;
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "fixture-remote", version: "1.0.0" },
+                },
+              }),
+            );
+            return;
+          }
+          if (message.method === "tools/list") {
+            toolsListCount += 1;
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: { tools: [{ name: "remote_echo", inputSchema: { type: "object" } }] },
+              }),
+            );
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const check = manager.checkServer(config.mcpServers.remote!);
+      const list = manager.listTools(config.mcpServers.remote!);
+
+      await waitUntil(() => initializeCount === 1);
+      releaseInitialize.resolve();
+
+      const [checkResult, tools] = await Promise.all([check, list]);
+
+      expect(checkResult).toMatchObject({ id: "remote", status: "available", toolCount: 1 });
+      expect(tools.map((tool) => tool.name)).toEqual(["remote_echo"]);
+      expect(initializeCount).toBe(1);
+      expect(toolsListCount).toBeGreaterThanOrEqual(1);
+      expect(registry.getStatus("remote")).toBe("available");
+
+      await manager.close();
+    } finally {
+      releaseInitialize.resolve();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -559,4 +660,14 @@ function deferred<T>(): {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > 1_000) {
+      throw new Error("Timed out waiting for predicate");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }

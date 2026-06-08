@@ -31,3 +31,10 @@ export function capletsOpenCodeArgs(operationNames: string[] = [...operations]) 
       .optional(),
   };
 }
+
+export function capletsOpenCodeRunArgs() {
+  return {
+    code: tool.schema.string(),
+    timeoutMs: tool.schema.number().int().positive().optional(),
+  };
+}

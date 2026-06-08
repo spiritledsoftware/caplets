@@ -7,6 +7,7 @@ export default defineConfig({
     format: "esm",
     banner: "#!/usr/bin/env node",
   },
+  external: ["@caplets/core"],
   platform: "node",
   tsconfig: true,
 });

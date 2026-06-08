@@ -36,7 +36,8 @@ describe("CapletsRuntime", () => {
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
-    expect(server.registerTool).toHaveBeenCalledTimes(1);
+    expect(server.registerTool).toHaveBeenCalledTimes(2);
+    expect(server.registered.get("run")).toBeDefined();
 
     await runtime.close();
   });

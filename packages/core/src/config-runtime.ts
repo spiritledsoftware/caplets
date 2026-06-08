@@ -53,6 +53,11 @@ export type RuntimeRequirementsConfig = {
   resources?: { class?: RuntimeResourceClass | undefined } | undefined;
 };
 
+export type AgentSelectionHintsConfig = {
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
+};
+
 export type CapletServerConfig = CommonCapletConfig & {
   backend: "mcp";
   transport: "stdio" | "http" | "sse";
@@ -79,7 +84,7 @@ export type OpenApiEndpointConfig = CommonCapletConfig & {
   operationCacheTtlMs: number;
 };
 
-export type GraphQlOperationConfig = {
+export type GraphQlOperationConfig = AgentSelectionHintsConfig & {
   document?: string | undefined;
   documentPath?: string | undefined;
   operationName?: string | undefined;
@@ -99,7 +104,7 @@ export type GraphQlEndpointConfig = CommonCapletConfig & {
   selectionDepth: number;
 };
 
-export type HttpActionConfig = {
+export type HttpActionConfig = AgentSelectionHintsConfig & {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   description?: string | undefined;
@@ -119,7 +124,7 @@ export type HttpApiConfig = CommonCapletConfig & {
   maxResponseBytes: number;
 };
 
-export type CliToolActionConfig = {
+export type CliToolActionConfig = AgentSelectionHintsConfig & {
   description?: string | undefined;
   inputSchema?: Record<string, unknown> | undefined;
   outputSchema?: Record<string, unknown> | undefined;
@@ -186,7 +191,7 @@ export type CapletsConfig = {
   capletSets: Record<string, CapletSetConfig>;
 };
 
-type CommonCapletConfig = {
+type CommonCapletConfig = AgentSelectionHintsConfig & {
   server: string;
   name: string;
   description: string;
@@ -245,6 +250,11 @@ const runtimeRequirementsSchema = z
       .optional(),
   })
   .strict();
+const agentSelectionHintSchema = z.string().trim().min(1).max(500);
+const agentSelectionHintsSchema = {
+  useWhen: agentSelectionHintSchema.optional(),
+  avoidWhen: agentSelectionHintSchema.optional(),
+};
 const commonSchema = {
   name: z.string().trim().min(1).max(80),
   description: z
@@ -255,6 +265,7 @@ const commonSchema = {
     )
     .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
   tags: z.array(z.string().trim().min(1).max(80)).optional(),
+  ...agentSelectionHintsSchema,
   body: z.string().optional(),
   setup: setupSchema.optional(),
   projectBinding: projectBindingSchema.optional(),
@@ -293,6 +304,7 @@ const graphQlOperationSchema = z
     documentPath: z.string().min(1).optional(),
     operationName: z.string().min(1).optional(),
     description: z.string().min(1).optional(),
+    ...agentSelectionHintsSchema,
   })
   .strict()
   .refine((operation) => Boolean(operation.document) !== Boolean(operation.documentPath), {
@@ -323,6 +335,7 @@ const httpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional(),
+    ...agentSelectionHintsSchema,
     inputSchema: z.record(z.string(), z.unknown()).optional(),
     outputSchema: z.record(z.string(), z.unknown()).optional(),
     query: scalarMapSchema.optional(),
@@ -358,6 +371,7 @@ const httpApiSchema = z
 const cliActionSchema = z
   .object({
     description: z.string().min(1).optional(),
+    ...agentSelectionHintsSchema,
     inputSchema: z.record(z.string(), z.unknown()).optional(),
     outputSchema: z.record(z.string(), z.unknown()).optional(),
     command: z.string().min(1),

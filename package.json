@@ -16,6 +16,8 @@
     "changeset": "changeset",
     "clean": "turbo clean",
     "clean-install": "rm -rf **/node_modules pnpm-lock.yaml && pnpm install",
+    "code-mode:check-api": "node scripts/generate-code-mode-runtime-api.mjs --check",
+    "code-mode:generate-api": "node scripts/generate-code-mode-runtime-api.mjs",
     "dev": "tsx ./scripts/dev.ts",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
@@ -28,7 +30,7 @@
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "test": "vitest run",
     "typecheck": "tsgo --noEmit && turbo typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
+    "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {

@@ -27,7 +27,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "pnpm run clean && rolldown -c",
+    "build": "pnpm run clean && rolldown -c && node ./scripts/copy-quickjs-wasm.mjs",
     "build:watch": "pnpm run clean && rolldown -c --watch",
     "prepack": "pnpm build",
     "typecheck": "tsgo --noEmit",
@@ -37,6 +37,7 @@
     "@caplets/core": "workspace:*"
   },
   "devDependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "@types/node": "^25.9.1",
     "@typescript/native-preview": "7.0.0-dev.20260603.1",
     "rolldown": "^1.0.3",

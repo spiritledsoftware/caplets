@@ -210,27 +210,37 @@ function renderDiscoveryWrapper(
 ): string {
   const result = asRecord(value.result);
   const lines = [title, ""];
-  if (context.operation === "list_tools" || context.operation === "search_tools") {
-    lines.push("## Tools", "", renderNamedList(arrayValue(result?.tools), "tool"), "");
-  } else if (context.operation === "list_resources" || context.operation === "search_resources") {
+  if (context.operation === "tools" || context.operation === "search_tools") {
+    lines.push(
+      "## Tools",
+      "",
+      renderNamedList(arrayValue(result?.items ?? result?.tools), "tool"),
+      "",
+    );
+  } else if (context.operation === "resources" || context.operation === "search_resources") {
     lines.push(
       "## Resources",
       "",
-      renderNamedList(arrayValue(result?.resources ?? result?.matches), "uri"),
+      renderNamedList(arrayValue(result?.items ?? result?.resources ?? result?.matches), "uri"),
       "",
     );
-  } else if (context.operation === "list_resource_templates") {
+  } else if (context.operation === "resource_templates") {
     lines.push(
       "## Resource Templates",
       "",
-      renderNamedList(arrayValue(result?.resourceTemplates), "uriTemplate"),
+      renderNamedList(arrayValue(result?.items ?? result?.resourceTemplates), "uriTemplate"),
       "",
     );
-  } else if (context.operation === "list_prompts" || context.operation === "search_prompts") {
-    lines.push("## Prompts", "", renderNamedList(arrayValue(result?.prompts), "prompt"), "");
-  } else if (context.operation === "get_tool") {
+  } else if (context.operation === "prompts" || context.operation === "search_prompts") {
+    lines.push(
+      "## Prompts",
+      "",
+      renderNamedList(arrayValue(result?.items ?? result?.prompts), "prompt"),
+      "",
+    );
+  } else if (context.operation === "describe_tool") {
     lines.push("## Tool", "", renderToolSummary(asRecord(result?.tool)), "");
-  } else if (context.operation === "check_backend") {
+  } else if (context.operation === "check") {
     lines.push("## Backend Status", "", renderBackendStatus(result), "");
   } else if (context.operation === "inspect") {
     lines.push("## Caplet", "", renderCapletSummary(result), "");

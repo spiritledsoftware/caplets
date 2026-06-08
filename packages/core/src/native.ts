@@ -14,6 +14,8 @@ export {
   nativeCapletToolDescription,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
+  nativeCodeModeRunToolId,
+  nativeCodeModeRunToolName,
 } from "./native/tools";
 export { generatedToolInputSchema } from "./tools";
 export { generatedToolInputJsonSchema } from "./generated-tool-input-schema";

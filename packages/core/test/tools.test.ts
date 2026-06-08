@@ -7,6 +7,11 @@ import { CapletsError } from "../src/errors";
 import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql";
 import type { HttpActionManager } from "../src/http-actions";
 import type { OpenApiManager } from "../src/openapi";
+import type {
+  ObservedOutputShape,
+  ObservedOutputShapeKey,
+  ObservedOutputShapeStore,
+} from "../src/observed-output-shapes";
 import { ServerRegistry } from "../src/registry";
 import {
   generatedToolInputSchema,
@@ -18,14 +23,14 @@ import {
 
 describe("generated tool request validation", () => {
   it("rejects operation-specific extra fields", () => {
-    expect(() => validateOperationRequest({ operation: "list_tools", tool: "x" }, 50)).toThrow(
+    expect(() => validateOperationRequest({ operation: "tools", tool: "x" }, 50)).toThrow(
       CapletsError,
     );
     expect(() =>
-      validateOperationRequest({ operation: "get_tool", query: "x", tool: "x" }, 50),
+      validateOperationRequest({ operation: "describe_tool", query: "x", tool: "x" }, 50),
     ).toThrow(CapletsError);
     expect(() =>
-      validateOperationRequest({ operation: "call_tool", tool: "x", arguments: [] }, 50),
+      validateOperationRequest({ operation: "call_tool", name: "x", args: [] }, 50),
     ).toThrow(CapletsError);
   });
 
@@ -34,72 +39,68 @@ describe("generated tool request validation", () => {
       operation: "search_tools",
       query: "read",
     });
-    expect(() =>
+    expect(
       validateOperationRequest({ operation: "search_tools", query: "read", limit: 51 }, 50),
-    ).toThrow(CapletsError);
-    expect(() => validateOperationRequest({ operation: "call_tool", arguments: {} }, 50)).toThrow(
+    ).toEqual({ operation: "search_tools", query: "read", limit: 51 });
+    expect(() => validateOperationRequest({ operation: "call_tool", args: {} }, 50)).toThrow(
       CapletsError,
     );
   });
 
-  it("validates list_tools limit", () => {
-    expect(validateOperationRequest({ operation: "list_tools", limit: 2 }, 50)).toEqual({
-      operation: "list_tools",
+  it("accepts tools pagination input without hard limit failures", () => {
+    expect(validateOperationRequest({ operation: "tools", limit: 2 }, 50)).toEqual({
+      operation: "tools",
       limit: 2,
     });
-    expect(() => validateOperationRequest({ operation: "list_tools", limit: 51 }, 50)).toThrow(
-      CapletsError,
-    );
+    expect(validateOperationRequest({ operation: "tools", limit: 51, cursor: "10" }, 50)).toEqual({
+      operation: "tools",
+      limit: 51,
+      cursor: "10",
+    });
   });
 
   it("accepts top-level field selection only for call_tool", () => {
     expect(
       validateOperationRequest(
-        { operation: "call_tool", tool: "read", arguments: {}, fields: ["body.name"] },
+        { operation: "call_tool", name: "read", args: {}, fields: ["body.name"] },
         50,
       ),
     ).toEqual({
       operation: "call_tool",
-      tool: "read",
-      arguments: {},
+      name: "read",
+      args: {},
       fields: ["body.name"],
     });
     expect(() =>
-      validateOperationRequest({ operation: "get_tool", tool: "read", fields: ["body.name"] }, 50),
+      validateOperationRequest(
+        { operation: "describe_tool", name: "read", fields: ["body.name"] },
+        50,
+      ),
     ).toThrow(CapletsError);
   });
 
   it("rejects invalid top-level field selections", () => {
     expect(() =>
+      validateOperationRequest({ operation: "call_tool", name: "read", args: {}, fields: [] }, 50),
+    ).toThrow(CapletsError);
+    expect(() =>
       validateOperationRequest(
-        { operation: "call_tool", tool: "read", arguments: {}, fields: [] },
+        { operation: "call_tool", name: "read", args: {}, fields: [""] },
         50,
       ),
     ).toThrow(CapletsError);
     expect(() =>
-      validateOperationRequest(
-        { operation: "call_tool", tool: "read", arguments: {}, fields: [""] },
-        50,
-      ),
-    ).toThrow(CapletsError);
-    expect(() =>
-      validateOperationRequest(
-        { operation: "call_tool", tool: "read", arguments: {}, fields: [1] },
-        50,
-      ),
+      validateOperationRequest({ operation: "call_tool", name: "read", args: {}, fields: [1] }, 50),
     ).toThrow(CapletsError);
   });
 
   it("treats arguments.fields as downstream input", () => {
     expect(
-      validateOperationRequest(
-        { operation: "call_tool", tool: "read", arguments: { fields: [] } },
-        50,
-      ),
+      validateOperationRequest({ operation: "call_tool", name: "read", args: { fields: [] } }, 50),
     ).toEqual({
       operation: "call_tool",
-      tool: "read",
-      arguments: { fields: [] },
+      name: "read",
+      args: { fields: [] },
     });
   });
 
@@ -125,25 +126,25 @@ describe("generated tool request validation", () => {
 
     expect(schema.properties.operation?.enum).toEqual([
       "inspect",
-      "check_backend",
-      "list_tools",
+      "check",
+      "tools",
       "search_tools",
-      "get_tool",
+      "describe_tool",
       "call_tool",
     ]);
   });
 
   it("returns Markdown wrapper content while preserving structured result", () => {
-    const result = jsonResult({ id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] });
+    const result = jsonResult({ id: "alpha", items: [{ name: "read" }, { name: "write" }] });
 
     expect(result.structuredContent).toEqual({
-      result: { id: "alpha", tools: [{ tool: "read" }, { tool: "write" }] },
+      result: { id: "alpha", items: [{ name: "read" }, { name: "write" }] },
     });
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain("# Result");
     expect(text).toContain("## Full Result");
-    expect(text).toContain('"tool": "read"');
-    expect(text).toContain('"tool": "write"');
+    expect(text).toContain('"name": "read"');
+    expect(text).toContain('"name": "write"');
   });
 
   it("describes the nested call_tool argument shape to agents", () => {
@@ -152,21 +153,23 @@ describe("generated tool request validation", () => {
     };
 
     const operationDescription = schema.properties.operation?.description;
-    const toolDescription = schema.properties.tool?.description;
-    const argumentsDescription = schema.properties.arguments?.description;
+    const toolDescription = schema.properties.name?.description;
+    const argumentsDescription = schema.properties.args?.description;
     const fieldsDescription = schema.properties.fields?.description;
 
     expect(operationDescription).toContain("call_tool");
-    expect(toolDescription).toContain("Exact downstream tool name");
-    expect(argumentsDescription).toContain("arguments");
-    expect(argumentsDescription).toContain("downstream inputs");
+    expect(toolDescription).toContain("Exact downstream tool or prompt name");
+    expect(argumentsDescription).toContain("call_tool");
+    expect(argumentsDescription).toContain("get_prompt");
     expect(fieldsDescription).toBe(
-      "Optional call_tool structured output paths when outputSchema allows it.",
+      "Optional call_tool structured output paths. Use only after describe_tool returns fieldSelection.supported true.",
     );
   });
 });
 
 describe("generated tool handlers", () => {
+  type HintTool = Tool & { useWhen?: string; avoidWhen?: string };
+
   const graphqlFieldsUnsupportedMessage =
     "call_tool.fields is not supported for GraphQL-backed Caplets; select fields in the GraphQL operation document instead";
   const config = parseConfig({
@@ -185,20 +188,36 @@ describe("generated tool handlers", () => {
   });
   const registry = new ServerRegistry(config);
   const server = config.mcpServers.alpha!;
-  const tools: Tool[] = [
+  const tools: HintTool[] = [
     {
       name: "read",
       description: "Read files",
       inputSchema: { type: "object" },
       outputSchema: { type: "object" },
+      annotations: { readOnlyHint: true, destructiveHint: false },
+      useWhen: "Use for reading file contents.",
+      avoidWhen: "Avoid for writes.",
     },
     {
       name: "write",
       description: "Write files",
       inputSchema: { type: "object" },
       annotations: { destructiveHint: true },
+      useWhen: "Use for updating file contents.",
     },
   ];
+
+  class MemoryObservedOutputShapeStore implements ObservedOutputShapeStore {
+    readonly entries = new Map<string, ObservedOutputShape>();
+
+    async read(key: ObservedOutputShapeKey): Promise<ObservedOutputShape | undefined> {
+      return this.entries.get(JSON.stringify(key));
+    }
+
+    async write(key: ObservedOutputShapeKey, shape: ObservedOutputShape): Promise<void> {
+      this.entries.set(JSON.stringify(key), shape);
+    }
+  }
 
   it("returns inspect without starting downstream", async () => {
     const downstream = { checkServer: vi.fn(), listTools: vi.fn() } as unknown as DownstreamManager;
@@ -303,7 +322,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = (await handleServerTool(
       server,
-      { operation: "check_backend" },
+      { operation: "check" },
       registry,
       downstream,
     )) as any;
@@ -324,18 +343,18 @@ describe("generated tool handlers", () => {
     const browserRegistry = new ServerRegistry(browserConfig);
     const downstream = {
       listTools: vi.fn().mockResolvedValue([{ name: "browser_click", inputSchema: {} }]),
-      compact: (_capletServer: typeof server, tool: Tool) => ({ tool: tool.name }),
+      compact: (_capletServer: typeof server, tool: Tool) => ({ name: tool.name }),
     } as unknown as DownstreamManager;
 
     const browser = (await handleServerTool(
       browserConfig.mcpServers.browser!,
-      { operation: "list_tools" },
+      { operation: "tools" },
       browserRegistry,
       downstream,
     )) as any;
     const stealth = (await handleServerTool(
       browserConfig.mcpServers.stealth!,
-      { operation: "list_tools" },
+      { operation: "tools" },
       browserRegistry,
       downstream,
     )) as any;
@@ -344,31 +363,44 @@ describe("generated tool handlers", () => {
     expect(stealth.content[0]?.text).toContain("browser_click");
     expect(browser.content[0]?.text).toContain("Browser");
     expect(stealth.content[0]?.text).toContain("Stealth Browser");
-    expect(browser.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
-    expect(stealth.structuredContent?.result.tools).toEqual([{ tool: "browser_click" }]);
+    expect(browser.structuredContent?.result.items).toEqual([{ name: "browser_click" }]);
+    expect(stealth.structuredContent?.result.items).toEqual([{ name: "browser_click" }]);
   });
 
-  it("lists compact metadata and preserves full get_tool metadata", async () => {
+  it("lists compact metadata and preserves full describe_tool metadata", async () => {
     expect(new DownstreamManager(registry).compact(server, tools[0]!)).toMatchObject({
+      name: "read",
       hasOutputSchema: true,
+      supportsFields: true,
+      readOnlyHint: true,
+      destructiveHint: false,
+      useWhen: "Use for reading file contents.",
+      avoidWhen: "Avoid for writes.",
     });
 
     const downstream = {
       listTools: vi.fn().mockResolvedValue(tools),
-      compact: (capletServer: typeof server, tool: Tool) => ({
-        id: capletServer.server,
-        tool: tool.name,
+      compact: (_capletServer: typeof server, tool: HintTool) => ({
+        name: tool.name,
         description: tool.description,
-        annotations: tool.annotations,
         hasInputSchema: Boolean(tool.inputSchema),
         hasOutputSchema: Boolean(tool.outputSchema),
+        supportsFields: Boolean(tool.outputSchema),
+        ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
+        ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
+        ...(typeof tool.annotations?.readOnlyHint === "boolean"
+          ? { readOnlyHint: tool.annotations.readOnlyHint }
+          : {}),
+        ...(typeof tool.annotations?.destructiveHint === "boolean"
+          ? { destructiveHint: tool.annotations.destructiveHint }
+          : {}),
       }),
       getTool: vi.fn().mockResolvedValue(tools[1]),
     } as unknown as DownstreamManager;
 
     const list = (await handleServerTool(
       server,
-      { operation: "list_tools" },
+      { operation: "tools" },
       registry,
       downstream,
     )) as any;
@@ -377,36 +409,40 @@ describe("generated tool handlers", () => {
       id: "alpha",
       name: "Alpha",
       backend: "mcp",
-      operation: "list_tools",
+      operation: "tools",
       status: "ok",
       elapsedMs: expect.any(Number),
     });
     expect(list.structuredContent?.result).toEqual({
       id: "alpha",
       name: "Alpha",
-      tools: [
+      items: [
         {
-          id: "alpha",
-          tool: "read",
+          name: "read",
           description: "Read files",
-          annotations: undefined,
           hasInputSchema: true,
           hasOutputSchema: true,
+          supportsFields: true,
+          useWhen: "Use for reading file contents.",
+          avoidWhen: "Avoid for writes.",
+          readOnlyHint: true,
+          destructiveHint: false,
         },
         {
-          id: "alpha",
-          tool: "write",
+          name: "write",
           description: "Write files",
-          annotations: { destructiveHint: true },
           hasInputSchema: true,
           hasOutputSchema: false,
+          supportsFields: false,
+          useWhen: "Use for updating file contents.",
+          destructiveHint: true,
         },
       ],
     });
 
     const full = (await handleServerTool(
       server,
-      { operation: "get_tool", tool: "write" },
+      { operation: "describe_tool", name: "write" },
       registry,
       downstream,
     )) as any;
@@ -414,28 +450,32 @@ describe("generated tool handlers", () => {
       id: "alpha",
       name: "Alpha",
       backend: "mcp",
-      operation: "get_tool",
+      operation: "describe_tool",
       tool: "write",
       status: "ok",
       elapsedMs: expect.any(Number),
     });
-    expect(full.structuredContent?.result).toEqual({ id: "alpha", tool: tools[1] });
+    expect(full.structuredContent?.result).toEqual({
+      id: "alpha",
+      tool: tools[1],
+      fieldSelection: { supported: false, reason: "output_schema_unavailable" },
+    });
   });
 
   it("limits listed tools", async () => {
     const downstream = {
       listTools: vi.fn().mockResolvedValue(tools),
-      compact: (_capletServer: typeof server, tool: Tool) => ({ tool: tool.name }),
+      compact: (_capletServer: typeof server, tool: Tool) => ({ name: tool.name }),
     } as unknown as DownstreamManager;
 
     const list = (await handleServerTool(
       server,
-      { operation: "list_tools", limit: 1 },
+      { operation: "tools", limit: 1 },
       registry,
       downstream,
     )) as any;
 
-    expect(list.structuredContent?.result.tools).toEqual([{ tool: "read" }]);
+    expect(list.structuredContent?.result.items).toEqual([{ name: "read" }]);
   });
 
   it("searches tools by any query token", async () => {
@@ -444,11 +484,13 @@ describe("generated tool handlers", () => {
         name: "browser_navigate",
         description: "Navigate to a URL",
         inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
       },
       {
         name: "browser_take_screenshot",
         description: "Take a screenshot",
         inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
       },
       {
         name: "browser_click",
@@ -459,6 +501,7 @@ describe("generated tool handlers", () => {
         name: "browser_snapshot",
         description: "Capture accessibility snapshot",
         inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
       },
       {
         name: "browser_console_messages",
@@ -470,7 +513,7 @@ describe("generated tool handlers", () => {
 
     const results = downstream
       .search(server, browserTools, "navigate screenshot click snapshot type", 10)
-      .map((tool) => tool.tool);
+      .map((tool) => tool.name);
     expect(results).toHaveLength(4);
     expect(results).toEqual(
       expect.arrayContaining([
@@ -480,6 +523,269 @@ describe("generated tool handlers", () => {
         "browser_take_screenshot",
       ]),
     );
+  });
+
+  it("ranks read-only tool search matches first unless the query asks to mutate", async () => {
+    const issueTools: Tool[] = [
+      {
+        name: "create_issue",
+        description: "Create issue",
+        inputSchema: { type: "object" },
+        annotations: { destructiveHint: false },
+      },
+      {
+        name: "delete_issue",
+        description: "Delete issue",
+        inputSchema: { type: "object" },
+        annotations: { destructiveHint: true },
+      },
+      {
+        name: "search_issues",
+        description: "Search issues",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
+      },
+    ];
+    const downstream = new DownstreamManager(registry);
+
+    expect(downstream.search(server, issueTools, "issue", 10).map((tool) => tool.name)).toEqual([
+      "search_issues",
+      "create_issue",
+      "delete_issue",
+    ]);
+    expect(
+      downstream.search(server, issueTools, "create issue", 10).map((tool) => tool.name),
+    ).toEqual(["create_issue", "delete_issue", "search_issues"]);
+  });
+
+  it("warms observed output shape cache from schema-less call_tool results", async () => {
+    const store = new MemoryObservedOutputShapeStore();
+    const downstream = {
+      getTool: vi.fn(async (_server, name: string) => tools.find((tool) => tool.name === name)!),
+      callTool: vi.fn(async () => ({
+        structuredContent: {
+          issues: [
+            { number: 2, title: "PRD", body: "caplets run" },
+            { number: 1, title: "Binding", body: "remote runtime" },
+          ],
+        },
+        content: [{ type: "text", text: "ok" }],
+      })),
+    } as unknown as DownstreamManager;
+
+    await handleServerTool(
+      server,
+      { operation: "call_tool", name: "write", args: {} },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { observedOutputShapeStore: store, projectFingerprint: "project-a" },
+    );
+    const described = (await handleServerTool(
+      server,
+      { operation: "describe_tool", name: "write" },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { observedOutputShapeStore: store, projectFingerprint: "project-a" },
+    )) as any;
+
+    expect(described.structuredContent.result.observedOutputShape).toMatchObject({
+      source: "observed",
+      sampleCount: 1,
+    });
+    expect(described.structuredContent.result.observedOutputShape.typeScript).toContain("issues?:");
+    expect(JSON.stringify(described.structuredContent.result.observedOutputShape)).not.toContain(
+      "caplets run",
+    );
+  });
+
+  it("omits observed output shape when describe_tool has a useful output schema", async () => {
+    const store = new MemoryObservedOutputShapeStore();
+    const downstream = {
+      getTool: vi.fn(async (_server, name: string) => ({
+        ...tools.find((tool) => tool.name === name)!,
+        outputSchema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+        },
+      })),
+      callTool: vi.fn(async () => ({
+        structuredContent: { message: "ok" },
+        content: [{ type: "text", text: "ok" }],
+      })),
+    } as unknown as DownstreamManager;
+
+    await handleServerTool(
+      server,
+      { operation: "call_tool", name: "read", args: {} },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { observedOutputShapeStore: store },
+    );
+    const described = (await handleServerTool(
+      server,
+      { operation: "describe_tool", name: "read" },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { observedOutputShapeStore: store },
+    )) as any;
+
+    expect(described.structuredContent.result.fieldSelection).toEqual({ supported: true });
+    expect(described.structuredContent.result.observedOutputShape).toBeUndefined();
+  });
+
+  it("does not fail call_tool when observed output shape storage fails", async () => {
+    const store: ObservedOutputShapeStore = {
+      read: vi.fn(async () => undefined),
+      write: vi.fn(async () => {
+        throw new Error("cache unavailable");
+      }),
+    };
+    const downstream = {
+      callTool: vi.fn(async () => ({
+        structuredContent: { items: [{ id: 1 }] },
+        content: [{ type: "text", text: "ok" }],
+      })),
+    } as unknown as DownstreamManager;
+
+    const result = (await handleServerTool(
+      server,
+      { operation: "call_tool", name: "write", args: {} },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { observedOutputShapeStore: store },
+    )) as any;
+
+    expect(result.structuredContent).toEqual({ items: [{ id: 1 }] });
+    expect(result._meta.caplets.status).toBe("ok");
+  });
+
+  it("returns descriptor-driven guidance for wrong call_tool argument names", async () => {
+    const downstream = {
+      getTool: vi.fn(async () => ({
+        name: "search_issues",
+        description: "Search issues",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            perPage: { type: "number" },
+          },
+          required: ["query"],
+        },
+      })),
+      callTool: vi.fn(),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        { operation: "call_tool", name: "search_issues", args: { q: "repo:o/r", per_page: 10 } },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: expect.stringContaining("missing required argument(s): query"),
+      details: {
+        tool: "search_issues",
+        requiredArgs: ["query"],
+        acceptedArgs: ["perPage", "query"],
+        unexpectedArgs: ["per_page", "q"],
+        callSignature:
+          'callTool(name: "search_issues", args: SearchIssuesInput): Promise<CapletsResult<SearchIssuesOutput>>',
+        inputTypeScript: "type SearchIssuesInput = { perPage?: number; query: string; };",
+        retry: expect.stringContaining("describe_tool"),
+      },
+    });
+    expect(vi.mocked(downstream.callTool)).not.toHaveBeenCalled();
+  });
+
+  it("returns schema validation repair hints for invalid call_tool argument shapes", async () => {
+    const downstream = {
+      getTool: vi.fn(async () => ({
+        name: "search_issues",
+        description: "Search issues",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "integer" },
+            state: { enum: ["open", "closed"] },
+            labels: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["query", "labels"],
+          additionalProperties: false,
+        },
+      })),
+      callTool: vi.fn(),
+    } as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        server,
+        {
+          operation: "call_tool",
+          name: "search_issues",
+          args: {
+            query: 123,
+            limit: "10",
+            state: "merged",
+            labels: "bug",
+          },
+        },
+        registry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: expect.stringContaining("call_tool args for search_issues are invalid"),
+      details: {
+        tool: "search_issues",
+        requiredArgs: ["labels", "query"],
+        acceptedArgs: ["labels", "limit", "query", "state"],
+        minimalArgsTemplate: { labels: [], query: "" },
+        schemaErrors: expect.arrayContaining([
+          { path: "/labels", rule: "type", expected: "array" },
+          { path: "/limit", rule: "type", expected: "integer" },
+          { path: "/query", rule: "type", expected: "string" },
+          { path: "/state", rule: "enum", allowed: ["open", "closed"] },
+        ]),
+        callSignature:
+          'callTool(name: "search_issues", args: SearchIssuesInput): Promise<CapletsResult<SearchIssuesOutput>>',
+        inputTypeScript:
+          'type SearchIssuesInput = { labels: string[]; limit?: number; query: string; state?: "open" | "closed"; };',
+        retry: expect.stringContaining("matching inputSchema/inputTypeScript exactly"),
+      },
+    });
+    expect(vi.mocked(downstream.callTool)).not.toHaveBeenCalled();
   });
 
   it("annotates call_tool result metadata without changing downstream shape", async () => {
@@ -494,7 +800,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = await handleServerTool(
       server,
-      { operation: "call_tool", tool: "read", arguments: { path: "x" } },
+      { operation: "call_tool", name: "read", args: { path: "x" } },
       registry,
       downstream,
     );
@@ -530,7 +836,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = await handleServerTool(
       server,
-      { operation: "call_tool", tool: "write", arguments: {} },
+      { operation: "call_tool", name: "write", args: {} },
       registry,
       downstream,
     );
@@ -567,7 +873,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     const result = await handleServerTool(
       server,
-      { operation: "call_tool", tool: "read", arguments: { path: "x" } },
+      { operation: "call_tool", name: "read", args: { path: "x" } },
       registry,
       downstream,
     );
@@ -706,7 +1012,7 @@ describe("generated tool handlers", () => {
     } as unknown as DownstreamManager;
     return handleServerTool(
       server,
-      { operation: "call_tool", tool: "read", arguments: {} },
+      { operation: "call_tool", name: "read", args: {} },
       registry,
       downstream,
     );
@@ -721,7 +1027,7 @@ describe("generated tool handlers", () => {
     };
     const downstream = {
       getTool: vi.fn().mockResolvedValue({
-        name: "read",
+        tool: "read",
         inputSchema: { type: "object" },
         outputSchema: {
           type: "object",
@@ -736,7 +1042,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       server,
-      { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+      { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
       registry,
       downstream,
     );
@@ -806,7 +1112,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       openApiServer,
-      { operation: "call_tool", tool: "getUser", arguments: { id: "42" }, fields: ["body.name"] },
+      { operation: "call_tool", name: "getUser", args: { id: "42" }, fields: ["body.name"] },
       openApiRegistry,
       downstream,
       openapi,
@@ -840,7 +1146,7 @@ describe("generated tool handlers", () => {
     const downstream = { callTool: vi.fn() } as unknown as DownstreamManager;
     const http = {
       getTool: vi.fn().mockResolvedValue({
-        name: "check",
+        tool: "check",
         inputSchema: { type: "object" },
         outputSchema: {
           type: "object",
@@ -859,7 +1165,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       httpServer,
-      { operation: "call_tool", tool: "check", arguments: { id: "42" }, fields: ["ok"] },
+      { operation: "call_tool", name: "check", args: { id: "42" }, fields: ["ok"] },
       httpRegistry,
       downstream,
       undefined,
@@ -917,7 +1223,7 @@ describe("generated tool handlers", () => {
     };
     const downstream = {
       getTool: vi.fn().mockResolvedValue({
-        name: "read",
+        tool: "read",
         inputSchema: { type: "object" },
         outputSchema: {
           type: "object",
@@ -931,7 +1237,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       server,
-      { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+      { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
       registry,
       downstream,
     );
@@ -962,7 +1268,7 @@ describe("generated tool handlers", () => {
   it("reports downstream protocol errors when field selection lacks structured output", async () => {
     const downstream = {
       getTool: vi.fn().mockResolvedValue({
-        name: "read",
+        tool: "read",
         inputSchema: { type: "object" },
         outputSchema: { type: "object", properties: { message: { type: "string" } } },
       }),
@@ -974,7 +1280,7 @@ describe("generated tool handlers", () => {
     await expect(
       handleServerTool(
         server,
-        { operation: "call_tool", tool: "read", arguments: { path: "x" }, fields: ["message"] },
+        { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
         registry,
         downstream,
       ),
@@ -993,7 +1299,7 @@ describe("generated tool handlers", () => {
     await expect(
       handleServerTool(
         server,
-        { operation: "call_tool", tool: "write", arguments: {}, fields: ["secret"] },
+        { operation: "call_tool", name: "write", args: {}, fields: ["secret"] },
         registry,
         downstream,
       ),
@@ -1004,7 +1310,7 @@ describe("generated tool handlers", () => {
   it("rejects invalid field paths before calling tools with output schemas", async () => {
     const downstream = {
       getTool: vi.fn().mockResolvedValue({
-        name: "read",
+        tool: "read",
         inputSchema: { type: "object" },
         outputSchema: {
           type: "object",
@@ -1022,7 +1328,7 @@ describe("generated tool handlers", () => {
     await expect(
       handleServerTool(
         server,
-        { operation: "call_tool", tool: "read", arguments: {}, fields: ["secret"] },
+        { operation: "call_tool", name: "read", args: {}, fields: ["secret"] },
         registry,
         downstream,
       ),
@@ -1060,7 +1366,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       graphqlCaplet as never,
-      { operation: "call_tool", tool: "query_user", arguments: { id: "42" } },
+      { operation: "call_tool", name: "query_user", args: { id: "42" } },
       graphRegistry,
       downstream,
       undefined,
@@ -1118,7 +1424,7 @@ describe("generated tool handlers", () => {
     await expect(
       handleServerTool(
         graphqlCaplet as never,
-        { operation: "call_tool", tool: "query_user", arguments: { id: "42" }, fields: ["user"] },
+        { operation: "call_tool", name: "query_user", args: { id: "42" }, fields: ["user"] },
         graphRegistry,
         downstream,
         undefined,
@@ -1159,7 +1465,7 @@ describe("generated tool handlers", () => {
 
     const result = await handleServerTool(
       httpCaplet,
-      { operation: "call_tool", tool: "check", arguments: { id: "42" } },
+      { operation: "call_tool", name: "check", args: { id: "42" } },
       httpRegistry,
       downstream,
       undefined,

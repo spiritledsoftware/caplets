@@ -4,7 +4,7 @@
 
 - Use `pnpm` only; the repo pins `pnpm@11.5.0` and requires Node `>=24`.
 - Install with `pnpm install --frozen-lockfile` when matching CI.
-- Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> typecheck -> schema:check -> test -> benchmark:check -> build`).
+- Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> code-mode:check-api -> typecheck -> schema:check -> test -> benchmark:check -> build`).
 - Fast focused checks: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
 - Run one package: `pnpm --filter @caplets/core test`, `pnpm --filter caplets build`, or replace the filter with `@caplets/opencode`, `@caplets/pi`, `@caplets/benchmarks`.
 - Run one Vitest file by passing it after the package script, e.g. `pnpm --filter @caplets/core test -- test/config.test.ts`.
@@ -21,6 +21,7 @@
 
 - Put design specs in `docs/specs/`, implementation plans in `docs/plans/`, and product requirements documents in `docs/product/`; do not use `docs/superpowers/` in this repo.
 - Config schema source of truth is Zod in `packages/core/src/config.ts`; update `schemas/caplets-config.schema.json` with `pnpm schema:generate` and verify with `pnpm schema:check`.
+- Code Mode runtime API declaration source of truth is `packages/core/src/code-mode/runtime-api.d.ts`; update `packages/core/src/code-mode/runtime-api.generated.ts` with `pnpm code-mode:generate-api` and verify with `pnpm code-mode:check-api`.
 - `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` fails if the committed report is stale.
 - Live benchmarks are opt-in only: build first, then run `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode` or `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi`; results are local/model-dependent and not deterministic product claims.
 

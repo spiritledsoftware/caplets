@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:f
 import { dirname, join, parse } from "node:path";
 import { CapletSetManager } from "./caplet-sets";
 import { CliToolsManager } from "./cli-tools";
+import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
 import {
   type CapletConfig,
   type CapletsConfig,
@@ -10,11 +11,17 @@ import {
   resolveConfigPath,
   resolveProjectConfigPath,
 } from "./config";
+import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
 import { DownstreamManager } from "./downstream";
 import { errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
 import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
+import {
+  FileObservedOutputShapeStore,
+  type ObservedOutputShapeKey,
+  type ObservedOutputShapeStore,
+} from "./observed-output-shapes";
 import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
 
@@ -28,6 +35,10 @@ export type CapletsEngineOptions = {
   watch?: boolean;
   writeErr?: (value: string) => void;
   configLoader?: (configPath: string, projectConfigPath: string) => CapletsConfig;
+  observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
+  observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
+  observedOutputShapeCacheDir?: string | undefined;
+  projectFingerprint?: string | undefined;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -59,6 +70,9 @@ export class CapletsEngine {
   private readonly watchEnabled: boolean;
   private readonly writeErr: (value: string) => void;
   private readonly configLoader: (configPath: string, projectConfigPath: string) => CapletsConfig;
+  private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
+  private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
+  private readonly projectFingerprint: string | undefined;
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
@@ -84,6 +98,13 @@ export class CapletsEngine {
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
+    this.observedOutputShapeStore =
+      options.observedOutputShapeStore ??
+      new FileObservedOutputShapeStore(
+        options.observedOutputShapeCacheDir ?? DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR,
+      );
+    this.observedOutputShapeScope = options.observedOutputShapeScope ?? "local";
+    this.projectFingerprint = options.projectFingerprint ?? safeProjectFingerprint();
     if (this.watchEnabled) {
       this.resetWatchers();
     }
@@ -148,6 +169,11 @@ export class CapletsEngine {
         this.http,
         this.cli,
         this.capletSets,
+        {
+          observedOutputShapeStore: this.observedOutputShapeStore,
+          observedOutputShapeScope: this.observedOutputShapeScope,
+          projectFingerprint: this.projectFingerprint,
+        },
       );
     } catch (error) {
       return errorResult(error);
@@ -415,6 +441,14 @@ export class CapletsEngine {
 
 function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
   return authDir ? { authDir } : {};
+}
+
+function safeProjectFingerprint(): string | undefined {
+  try {
+    return fingerprintProjectRoot(findProjectRoot());
+  } catch {
+    return undefined;
+  }
 }
 
 function watchedPaths(paths: RuntimePaths): WatchedPath[] {

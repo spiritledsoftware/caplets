@@ -13,6 +13,8 @@ export type CapletServerSummary = {
   id: string;
   name: string;
   description: string;
+  useWhen?: string;
+  avoidWhen?: string;
   disabled?: boolean;
   status: ServerStatus;
   lastError?: SafeErrorSummary;
@@ -22,6 +24,8 @@ export type CapletServerDetail = {
   id: string;
   name: string;
   description: string;
+  useWhen?: string;
+  avoidWhen?: string;
   tags?: string[];
   backend:
     | {
@@ -119,6 +123,8 @@ export class ServerRegistry {
       id: server.server,
       name: server.name,
       description: server.description,
+      ...(server.useWhen ? { useWhen: server.useWhen } : {}),
+      ...(server.avoidWhen ? { avoidWhen: server.avoidWhen } : {}),
       ...(server.disabled ? { disabled: true } : {}),
       status: status?.status ?? (server.disabled ? "disabled" : "not_started"),
       ...(status?.lastError ? { lastError: status.lastError } : {}),
@@ -131,6 +137,8 @@ export class ServerRegistry {
       id: server.server,
       name: server.name,
       description: server.description,
+      ...(server.useWhen ? { useWhen: server.useWhen } : {}),
+      ...(server.avoidWhen ? { avoidWhen: server.avoidWhen } : {}),
       ...(server.tags ? { tags: server.tags } : {}),
       backend,
     };

@@ -28,7 +28,7 @@
 
 Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card first, searchable tools next, inspectable schemas before calls, and preserved results after.
 
-Stop dumping every operation into context up front. Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a giant flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
+Stop dumping every operation into context up front. Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a giant flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `describe_tool`, and `call_tool` only when it needs more detail.
 
 For MCP-backed Caplets, the scoped operation set also includes resource discovery and reading, prompt listing and rendering, resource-template discovery, and completion for prompt or template arguments. Non-MCP backends expose focused tool and action operations.
 
@@ -43,7 +43,7 @@ caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp
 caplets serve
 ```
 
-In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.9% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `get_tool`, and `call_tool` only when needed.
+In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.9% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `describe_tool`, and `call_tool` only when needed.
 
 ## Quick Start
 
@@ -312,8 +312,8 @@ Flat tool lists make agents guess before they understand. If every downstream se
 Caplets turns that flat wall into a staged path:
 
 1. **Choose** a capability, such as `GitHub`.
-2. **Inspect** matching operations with `search_tools` or `list_tools`.
-3. **Resolve** the exact schema with `get_tool`.
+2. **Inspect** matching operations with `search_tools` or `tools`.
+3. **Resolve** the exact schema with `describe_tool`.
 4. **Invoke** with `call_tool` while preserving downstream content, structured data, and error state.
 
 A backend enters agent context as a focused card with source, status, and next actions, not a wall of operations.
@@ -390,7 +390,7 @@ If a backend fails, Caplets keeps the error scoped to the capability, preserves 
 - Uses the configured `name` and `description` as the capability card shown to agents.
 - Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
 - Supports stdio, Streamable HTTP, and legacy HTTP+SSE downstream servers.
-- Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected Caplet namespace.
+- Lets agents `tools`, `search_tools`, `describe_tool`, and `call_tool` within one selected Caplet namespace.
 - Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
 - Converts configured GraphQL operations into MCP-style tool metadata, and can auto-generate GraphQL tools from schema root query and mutation fields.
 - Converts explicitly configured HTTP actions into MCP-style tool metadata and executes HTTP calls directly.
@@ -780,7 +780,7 @@ OpenAPI auth is explicit and supports:
 - `{"type": "oauth2", ...}`
 - `{"type": "oidc", ...}`
 
-OpenAPI `call_tool.arguments` uses grouped HTTP inputs:
+OpenAPI `call_tool.args` uses grouped HTTP inputs:
 
 ```json
 {
@@ -824,7 +824,7 @@ endpoint and exactly one schema source: `schemaPath`, `schemaUrl`, or `introspec
 
 When `operations` is omitted or empty, Caplets auto-generates tools from schema root
 fields: `query_<field>` and `mutation_<field>`. Generated tools use bounded scalar
-selection sets and pass `call_tool.arguments` directly as GraphQL variables/root-field
+selection sets and pass `call_tool.args` directly as GraphQL variables/root-field
 arguments.
 
 Every GraphQL endpoint can set:
@@ -878,7 +878,7 @@ must start with `/` and be URL paths that cannot change origin or escape the bas
 Action mappings can set `query`, `headers`, and `jsonBody`. `query` and `headers` must resolve
 to object maps whose values are strings, numbers, or booleans. `jsonBody` may use literals,
 nested arrays/objects, `$input.field` references, or `$input` for the whole argument object.
-Path placeholders such as `{service}` are read directly from `call_tool.arguments` and URL-encoded.
+Path placeholders such as `{service}` are read directly from `call_tool.args` and URL-encoded.
 Configured action headers cannot set managed headers such as `authorization`, `host`,
 `content-length`, `connection`, or `content-type`; JSON bodies set `content-type` automatically.
 
@@ -939,8 +939,8 @@ an existing destination file.
 ### Caplet Sets
 
 Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
-as one downstream tool and supports the full Caplets operation set: `inspect`, `check_backend`,
-`list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+as one downstream tool and supports the full Caplets operation set: `inspect`, `check`,
+`tools`, `search_tools`, `describe_tool`, and `call_tool`.
 
 ```json
 {
@@ -1135,7 +1135,7 @@ Each generated Caplet tool accepts an `operation`:
 
 ```json
 {
-  "operation": "list_tools"
+  "operation": "tools"
 }
 ```
 
@@ -1153,7 +1153,7 @@ Inspect one exact downstream tool:
 
 ```json
 {
-  "operation": "get_tool",
+  "operation": "describe_tool",
   "tool": "read_file"
 }
 ```
@@ -1173,23 +1173,23 @@ Call one exact downstream tool:
 Available operations:
 
 - `inspect`: return the configured capability card without starting the downstream server.
-- `check_backend`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
-- `list_tools`: return compact downstream tool metadata.
+- `check`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
+- `tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.
-- `get_tool`: return full metadata for one exact downstream tool.
+- `describe_tool`: return full metadata for one exact downstream tool.
 - `call_tool`: invoke one exact downstream tool with JSON object arguments.
 
 Requests are strict: operation-specific extra fields are rejected, and `call_tool` requires
 `arguments` to be a JSON object.
 
-Discovery operations (`inspect`, `check_backend`, `list_tools`, `search_tools`, and
-`get_tool`) return wrapper-generated results whose `structuredContent.caplets` field
+Discovery operations (`inspect`, `check`, `tools`, `search_tools`, and
+`describe_tool`) return wrapper-generated results whose `structuredContent.caplets` field
 identifies the Caplet with `id`, plus backend, operation, status, and elapsed time when
 available. Discovery result objects and compact tool entries also use `id` for the
-configured Caplet identity. Compact `list_tools` and `search_tools` entries may include
+configured Caplet identity. Compact `tools` and `search_tools` entries may include
 input/output schema hashes; treat those
 hashes as reuse hints for a schema you have already inspected, not as a replacement for
-`get_tool` when arguments, output, or semantics are unclear.
+`describe_tool` when arguments, output, or semantics are unclear.
 
 Direct `call_tool` preserves the downstream tool result shape instead of wrapping it in
 `structuredContent.result`. When the result can carry MCP metadata, Caplets adds
@@ -1200,7 +1200,7 @@ relative to the downstream MCP server process, not necessarily relative to the c
 project or Caplets process.
 
 For first use, the explicit progressive-discovery path is still safest: choose a Caplet,
-`search_tools` or `list_tools`, inspect uncertain tools with `get_tool`, then `call_tool`.
+`search_tools` or `tools`, inspect uncertain tools with `describe_tool`, then `call_tool`.
 
 ## Development
 

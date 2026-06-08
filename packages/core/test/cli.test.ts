@@ -640,9 +640,9 @@ describe("cli init", () => {
         status: "available",
         toolCount: 3,
       });
-      expect(results[2].tools).toHaveLength(3);
+      expect(results[2].items).toHaveLength(3);
       expect(results[3]).toMatchObject({ query: "echo" });
-      expect(results[3].tools).toHaveLength(1);
+      expect(results[3].items).toHaveLength(1);
       expect(results[4].tool.name).toBe("echo_json");
       expect(results[5].structuredContent).toEqual({ json: { message: "hello" } });
     } finally {
@@ -750,8 +750,8 @@ describe("cli init", () => {
           caplet: "linear",
           request: {
             operation: "get_prompt",
-            prompt: "review_issue",
-            arguments: { issueId: "CAP-123" },
+            name: "review_issue",
+            args: { issueId: "CAP-123" },
           },
         },
       },

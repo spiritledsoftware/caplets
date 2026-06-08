@@ -2,7 +2,12 @@ import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sd
 import { genericOAuthHeaders } from "./auth";
 import type { HttpActionConfig, HttpApiConfig } from "./config";
 import { FORBIDDEN_HEADERS, isAllowedRemoteUrl } from "./config/validation";
-import type { CompactTool } from "./downstream";
+import {
+  compactToolSafetyHints,
+  compactToolSchemaHints,
+  compactToolSelectionHints,
+  type CompactTool,
+} from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
@@ -128,11 +133,14 @@ export class HttpActionManager {
 
   compact(api: HttpApiConfig, tool: Tool): CompactTool {
     return {
-      id: api.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: Boolean(tool.outputSchema),
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 
@@ -144,6 +152,8 @@ export class HttpActionManager {
     return {
       name: operation.name,
       ...(operation.description ? { description: operation.description } : {}),
+      ...(operation.useWhen ? { useWhen: operation.useWhen } : {}),
+      ...(operation.avoidWhen ? { avoidWhen: operation.avoidWhen } : {}),
       inputSchema: (operation.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
       ...(operation.outputSchema
         ? { outputSchema: operation.outputSchema as Tool["outputSchema"] }

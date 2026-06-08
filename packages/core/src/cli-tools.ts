@@ -3,7 +3,12 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import type { CliToolActionConfig, CliToolsConfig } from "./config";
-import type { CompactTool } from "./downstream";
+import {
+  compactToolSafetyHints,
+  compactToolSchemaHints,
+  compactToolSelectionHints,
+  type CompactTool,
+} from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
@@ -119,11 +124,14 @@ export class CliToolsManager {
 
   compact(config: CliToolsConfig, tool: Tool): CompactTool {
     return {
-      id: config.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: Boolean(tool.outputSchema),
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 
@@ -135,6 +143,8 @@ export class CliToolsManager {
     return {
       name: action.name,
       ...(action.description ? { description: action.description } : {}),
+      ...(action.useWhen ? { useWhen: action.useWhen } : {}),
+      ...(action.avoidWhen ? { avoidWhen: action.avoidWhen } : {}),
       inputSchema: (action.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
       ...(action.outputSchema ? { outputSchema: action.outputSchema as Tool["outputSchema"] } : {}),
       ...(action.annotations ? { annotations: action.annotations as Tool["annotations"] } : {}),

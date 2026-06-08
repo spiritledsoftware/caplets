@@ -396,8 +396,8 @@ describe("remote CLI routing", () => {
             caplet: "github",
             request: {
               operation: "call_tool",
-              tool: "search",
-              arguments: { query: "caplets" },
+              name: "search",
+              args: { query: "caplets" },
             },
           },
         }),
@@ -462,7 +462,7 @@ describe("remote CLI routing", () => {
         command: "call_tool",
         arguments: {
           caplet: "shared",
-          request: { operation: "call_tool", tool: "echo", arguments: {} },
+          request: { operation: "call_tool", name: "echo", args: {} },
         },
       },
     ]);
@@ -492,7 +492,7 @@ describe("remote CLI routing", () => {
         command: "call_tool",
         arguments: {
           caplet: "remote",
-          request: { operation: "call_tool", tool: "echo", arguments: {} },
+          request: { operation: "call_tool", name: "echo", args: {} },
         },
       },
     ]);
@@ -524,7 +524,7 @@ describe("remote CLI routing", () => {
         command: "call_tool",
         arguments: {
           caplet: "remote",
-          request: { operation: "call_tool", tool: "echo", arguments: {} },
+          request: { operation: "call_tool", name: "echo", args: {} },
         },
       },
     ]);
@@ -538,7 +538,7 @@ describe("remote CLI routing", () => {
     const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { command: string };
       requests.push({ url: String(url), body: init?.body });
-      if (body.command === "list_resources") {
+      if (body.command === "resources") {
         return Response.json({
           ok: true,
           result: {
@@ -598,7 +598,7 @@ describe("remote CLI routing", () => {
     expect(JSON.parse(out[2] ?? "{}")).toEqual({ completion: { values: ["src/index.ts"] } });
     expect(
       requests.map((request) => JSON.parse(String((request as { body: string }).body)).command),
-    ).toEqual(["list_resources", "read_resource", "complete"]);
+    ).toEqual(["resources", "read_resource", "complete"]);
   });
 
   it("keeps config path local-only in remote mode", async () => {

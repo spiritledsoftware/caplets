@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import {
   CompatibilityCallToolResultSchema,
   type CompleteRequestParams,
@@ -26,11 +27,17 @@ import type { ServerRegistry } from "./registry";
 import { searchToolList } from "./tool-search";
 
 export type CompactTool = {
-  id: string;
-  tool: string;
+  name: string;
   description?: string;
+  useWhen?: string;
+  avoidWhen?: string;
   hasInputSchema: boolean;
   hasOutputSchema: boolean;
+  supportsFields: boolean;
+  requiredArgs?: string[];
+  acceptedArgs?: string[];
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
 };
 
 export type CompactResource = {
@@ -59,7 +66,7 @@ export type CompactPrompt = {
 
 type ManagedConnection = {
   client: Client;
-  transport: { close(): Promise<void>; onclose?: () => void; onerror?: (error: Error) => void };
+  transport: Transport;
   configFingerprint: string;
   tools?: Tool[] | undefined;
   toolsFetchedAt?: number | undefined;
@@ -73,9 +80,14 @@ type ManagedConnection = {
   closing?: boolean;
 };
 
+type PendingConnection = {
+  connection: ManagedConnection;
+  promise: Promise<ManagedConnection>;
+};
+
 export class DownstreamManager {
   private readonly connections = new Map<string, ManagedConnection>();
-  private readonly connecting = new Map<string, ManagedConnection>();
+  private readonly connecting = new Map<string, PendingConnection>();
   private readonly restartState = new Map<string, { restartUsed: boolean; backoffUntil: number }>();
 
   constructor(
@@ -88,7 +100,10 @@ export class DownstreamManager {
   }
 
   async close(): Promise<void> {
-    const connections = [...this.connections.values(), ...this.connecting.values()];
+    const connections = [
+      ...this.connections.values(),
+      ...[...this.connecting.values()].map((pending) => pending.connection),
+    ];
     for (const connection of connections) {
       connection.closing = true;
     }
@@ -98,7 +113,7 @@ export class DownstreamManager {
   }
 
   async closeServer(serverId: string): Promise<void> {
-    const connection = this.connections.get(serverId) ?? this.connecting.get(serverId);
+    const connection = this.connections.get(serverId) ?? this.connecting.get(serverId)?.connection;
     this.connections.delete(serverId);
     this.connecting.delete(serverId);
     this.restartState.delete(serverId);
@@ -342,11 +357,14 @@ export class DownstreamManager {
 
   compact(server: CapletServerConfig, tool: Tool): CompactTool {
     return {
-      id: server.server,
-      tool: tool.name,
+      name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
       hasInputSchema: Boolean(tool.inputSchema),
       hasOutputSchema: Boolean(tool.outputSchema),
+      supportsFields: Boolean(tool.outputSchema),
+      ...compactToolSelectionHints(tool),
+      ...compactToolSchemaHints(tool),
+      ...compactToolSafetyHints(tool),
     };
   }
 
@@ -502,6 +520,16 @@ export class DownstreamManager {
         return existing;
       }
     }
+    const pending = this.connecting.get(server.server);
+    if (pending) {
+      if (pending.connection.configFingerprint !== expectedFingerprint) {
+        this.connecting.delete(server.server);
+        pending.connection.closing = true;
+        await pending.connection.transport.close();
+      } else {
+        return await pending.promise;
+      }
+    }
     if (this.currentServerFingerprint(server) !== expectedFingerprint) {
       throw staleServerConfigError(server.server);
     }
@@ -515,7 +543,6 @@ export class DownstreamManager {
     }
 
     this.registry.setStatus(server.server, "starting");
-    let pendingConnection: ManagedConnection | undefined;
     try {
       const client = new Client({ name: "caplets", version: "1.0.0" }, { capabilities: {} });
       const transport = this.createTransport(server);
@@ -538,8 +565,6 @@ export class DownstreamManager {
         connection.prompts = undefined;
         connection.promptsFetchedAt = undefined;
       });
-      pendingConnection = connection;
-      this.connecting.set(server.server, connection);
       transport.onclose = () => {
         const current = this.connections.get(server.server);
         if (current === connection) {
@@ -574,29 +599,13 @@ export class DownstreamManager {
           toSafeError(error, "SERVER_UNAVAILABLE"),
         );
       };
-      await client.connect(transport, { timeout: server.startupTimeoutMs });
-      if (connection.closing) {
-        await transport.close();
-        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was closed`);
-      }
-      if (this.currentServerFingerprint(server) !== expectedFingerprint) {
-        connection.closing = true;
-        await transport.close();
-        throw staleServerConfigError(server.server);
-      }
-      if (this.connecting.get(server.server) !== connection) {
-        connection.closing = true;
-        await transport.close();
-        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was replaced`);
-      }
-      this.connecting.delete(server.server);
-      this.connections.set(server.server, connection);
-      this.registry.setStatus(server.server, "available");
-      return connection;
+      const pendingConnection: PendingConnection = {
+        connection,
+        promise: this.startConnection(server, expectedFingerprint, connection),
+      };
+      this.connecting.set(server.server, pendingConnection);
+      return await pendingConnection.promise;
     } catch (error) {
-      if (pendingConnection && this.connecting.get(server.server) === pendingConnection) {
-        this.connecting.delete(server.server);
-      }
       const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
       const safe = toSafeError(error, code);
       this.registry.setStatus(server.server, "unavailable", safe);
@@ -604,6 +613,41 @@ export class DownstreamManager {
         throw error;
       }
       throw new CapletsError(code, `Could not start ${server.server}`, safe);
+    }
+  }
+
+  private async startConnection(
+    server: CapletServerConfig,
+    expectedFingerprint: string,
+    connection: ManagedConnection,
+  ): Promise<ManagedConnection> {
+    try {
+      await connection.client.connect(connection.transport, { timeout: server.startupTimeoutMs });
+      if (connection.closing) {
+        await connection.transport.close();
+        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was closed`);
+      }
+      if (this.currentServerFingerprint(server) !== expectedFingerprint) {
+        connection.closing = true;
+        await connection.transport.close();
+        throw staleServerConfigError(server.server);
+      }
+      const pending = this.connecting.get(server.server);
+      if (pending?.connection !== connection) {
+        connection.closing = true;
+        await connection.transport.close();
+        throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was replaced`);
+      }
+      this.connecting.delete(server.server);
+      this.connections.set(server.server, connection);
+      this.registry.setStatus(server.server, "available");
+      return connection;
+    } catch (error) {
+      const pending = this.connecting.get(server.server);
+      if (pending?.connection === connection) {
+        this.connecting.delete(server.server);
+      }
+      throw error;
     }
   }
 
@@ -716,6 +760,53 @@ export class DownstreamManager {
     }
     return serializeServerConfig(current);
   }
+}
+
+export function compactToolSafetyHints(
+  tool: Tool,
+): Pick<CompactTool, "readOnlyHint" | "destructiveHint"> {
+  const annotations = tool.annotations;
+  return {
+    ...(typeof annotations?.readOnlyHint === "boolean"
+      ? { readOnlyHint: annotations.readOnlyHint }
+      : {}),
+    ...(typeof annotations?.destructiveHint === "boolean"
+      ? { destructiveHint: annotations.destructiveHint }
+      : {}),
+  };
+}
+
+export function compactToolSchemaHints(
+  tool: Tool,
+): Pick<CompactTool, "requiredArgs" | "acceptedArgs"> {
+  const schema = isRecord(tool.inputSchema) ? tool.inputSchema : undefined;
+  const properties = isRecord(schema?.properties) ? schema.properties : {};
+  const acceptedArgs = Object.keys(properties).sort();
+  const requiredArgs = Array.isArray(schema?.required)
+    ? schema.required.filter((value): value is string => typeof value === "string").sort()
+    : [];
+  return {
+    ...(requiredArgs.length > 0 ? { requiredArgs } : {}),
+    ...(acceptedArgs.length > 0 ? { acceptedArgs } : {}),
+  };
+}
+
+export function compactToolSelectionHints(
+  tool: unknown,
+): Pick<CompactTool, "useWhen" | "avoidWhen"> {
+  if (!isRecord(tool)) return {};
+  return {
+    ...(typeof tool.useWhen === "string" && tool.useWhen.trim()
+      ? { useWhen: tool.useWhen.trim() }
+      : {}),
+    ...(typeof tool.avoidWhen === "string" && tool.avoidWhen.trim()
+      ? { avoidWhen: tool.avoidWhen.trim() }
+      : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function sameServerConfig(left: CapletServerConfig, right: CapletServerConfig): boolean {

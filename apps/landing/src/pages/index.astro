@@ -12,7 +12,7 @@ const heroTrace = {
     {
       label: "inspect",
       detail: "Show one capability card before any downstream tool list enters context.",
-      result: "search_tools · get_tool · call_tool",
+      result: "search_tools · describe_tool · call_tool",
     },
     {
       label: 'search_tools("pull request")',
@@ -20,7 +20,7 @@ const heroTrace = {
       result: "create_pull_request · list_pull_requests · request_review",
     },
     {
-      label: 'get_tool("create_pull_request")',
+      label: 'describe_tool("create_pull_request")',
       detail: "Inspect the exact schema before an agent can invoke the operation.",
       result: "title · body · base · head · reviewers?",
     },
@@ -165,7 +165,7 @@ const exampleCaplets = [
     name: "GitHub",
     summary: "A huge hosted MCP surface for repositories, issues, pull requests, branches, commits, and reviews.",
     why: "Use it when the value is avoiding a giant GitHub tool wall.",
-    path: ["github", "inspect", "search_tools", "get_tool", "call_tool"],
+    path: ["github", "inspect", "search_tools", "describe_tool", "call_tool"],
     steps: [
       { command: "export GH_TOKEN=github_pat_...", label: "GitHub token export" },
       {
@@ -181,7 +181,7 @@ const exampleCaplets = [
     name: "Sourcegraph",
     summary: "Hosted code search for finding examples, references, and implementation patterns across repositories.",
     why: "Use it when the agent should search code first, then inspect only the matching operations.",
-    path: ["sourcegraph", "inspect", "search_tools", "get_tool", "call_tool"],
+    path: ["sourcegraph", "inspect", "search_tools", "describe_tool", "call_tool"],
     steps: [
       {
         command: "caplets install spiritledsoftware/caplets sourcegraph",
@@ -197,7 +197,7 @@ const exampleCaplets = [
     name: "OSV",
     summary: "A small explicit HTTP API for vulnerability lookups by package, purl, commit, or batch query.",
     why: "Use it when Caplets should bound a sharp task without exposing arbitrary HTTP calls.",
-    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
+    path: ["osv", "inspect", "search_tools", "describe_tool", "call_tool"],
     steps: [
       {
         command: "caplets install spiritledsoftware/caplets osv",

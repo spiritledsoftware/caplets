@@ -134,7 +134,7 @@ describe("HttpActionManager", () => {
     ]);
   });
 
-  it("exposes output schemas through get_tool, compact metadata, and call_tool.fields", async () => {
+  it("exposes output schemas through describe_tool, compact metadata, and call_tool.fields", async () => {
     requests.length = 0;
     const config = parseConfig({
       httpApis: {
@@ -176,15 +176,16 @@ describe("HttpActionManager", () => {
       properties: { body: { properties: { ok: { type: "boolean" } } } },
     });
     expect(http.compact(caplet, tool)).toMatchObject({
-      id: "http",
-      tool: "ping",
+      name: "ping",
       hasInputSchema: true,
       hasOutputSchema: true,
+      readOnlyHint: true,
+      destructiveHint: false,
     });
 
     const fetched = (await handleServerTool(
       caplet,
-      { operation: "get_tool", tool: "ping" },
+      { operation: "describe_tool", name: "ping" },
       registry,
       downstream,
       undefined,
@@ -197,7 +198,7 @@ describe("HttpActionManager", () => {
 
     const projected = (await handleServerTool(
       caplet,
-      { operation: "call_tool", tool: "ping", arguments: {}, fields: ["body.ok"] },
+      { operation: "call_tool", name: "ping", args: {}, fields: ["body.ok"] },
       registry,
       downstream,
       undefined,

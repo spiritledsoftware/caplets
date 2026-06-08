@@ -25,6 +25,11 @@ import {
   computeSurfaceBenchmark,
   validateSurfaceBenchmark,
 } from "../lib/surface";
+import {
+  CODE_MODE_BENCHMARK_THRESHOLDS,
+  computeCodeModeBenchmark,
+  validateCodeModeBenchmark,
+} from "../lib/code-mode";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -62,6 +67,27 @@ describe("progressive disclosure benchmark fixture", () => {
       result.runtime.duplicatedStructuredContentBytes,
     );
     expect(result.runtime.compactReduction).toBeGreaterThan(0.5);
+  });
+
+  it("covers Code Mode V1 round-trip and token-efficiency evaluation categories", () => {
+    const result = computeCodeModeBenchmark();
+
+    expect(validateCodeModeBenchmark(result)).toEqual([]);
+    expect(result.tasks).toHaveLength(CODE_MODE_BENCHMARK_THRESHOLDS.minTaskCount);
+    expect(new Set(result.tasks.map((task) => task.category))).toEqual(
+      new Set([
+        "single-caplet",
+        "multi-caplet",
+        "discovery-fallback",
+        "project-binding",
+        "hosted-sandbox",
+        "validation-recovery",
+      ]),
+    );
+    expect(result.totals.roundTripReduction).toBeGreaterThanOrEqual(
+      CODE_MODE_BENCHMARK_THRESHOLDS.minRoundTripReduction,
+    );
+    expect(result.totals.contextTokenReduction).toBeGreaterThanOrEqual(0);
   });
 
   it("captures process output, safe env metadata, JSONL events, and truncation state", async () => {

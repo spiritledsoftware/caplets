@@ -4,6 +4,8 @@ export type CompletionShell = (typeof completionShells)[number];
 export const cliCommands = {
   completion: "completion",
   completeHidden: "__complete",
+  run: "run",
+  codeMode: "code-mode",
   serve: "serve",
   attach: "attach",
   cloud: "cloud",
@@ -33,6 +35,8 @@ export const cliCommands = {
 
 export const topLevelCommandNames = [
   cliCommands.serve,
+  cliCommands.run,
+  cliCommands.codeMode,
   cliCommands.attach,
   cliCommands.cloud,
   cliCommands.init,
@@ -64,6 +68,7 @@ export const cliSubcommands = {
   [cliCommands.add]: ["cli", "mcp", "openapi", "graphql", "http"],
   [cliCommands.auth]: ["login", "logout", "list"],
   [cliCommands.cloud]: ["auth"],
+  [cliCommands.codeMode]: ["types"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.serve]: ["start", "stop", "status", "restart", "enable", "disable"],

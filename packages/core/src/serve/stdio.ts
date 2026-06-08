@@ -33,8 +33,18 @@ export async function serveStdio(options: ServeStdioOptions = {}): Promise<void>
     process.once("SIGTERM", sigtermHandler);
   }
 
+  const transport = new StdioServerTransport();
+  const transportClosed = new Promise<void>((resolve) => {
+    const previousOnClose = transport.onclose;
+    transport.onclose = () => {
+      previousOnClose?.();
+      resolve();
+    };
+  });
+
   try {
-    await session.connect(new StdioServerTransport());
+    await session.connect(transport);
+    await transportClosed;
   } finally {
     if (sigintHandler) process.off("SIGINT", sigintHandler);
     if (sigtermHandler) process.off("SIGTERM", sigtermHandler);

@@ -436,7 +436,7 @@ describe("createNativeCapletsService remote mode", () => {
       writeErr,
     });
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["local"]);
     expect(writeErr).toHaveBeenCalledTimes(1);
     expect(writeErr).toHaveBeenCalledWith(
       "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n",
@@ -467,7 +467,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await service.reload();
 
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["remote-only", "Remote Only"],
       ["shared", "Local Shared"],
       ["local-only", "Local Only"],
@@ -528,10 +528,7 @@ describe("createNativeCapletsService remote mode", () => {
     fixture.emit();
     await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
 
-    expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta" }),
-      expect.objectContaining({ caplet: "local" }),
-    ]);
+    expect(configuredCapletIds(listener.mock.calls[0]?.[0] ?? [])).toEqual(["beta", "local"]);
     await expect(service.reload()).resolves.toBe(true);
     expect(listener).toHaveBeenCalledTimes(1);
     await service.close();
@@ -569,9 +566,9 @@ describe("createNativeCapletsService remote mode", () => {
     await expect(service.reload()).resolves.toBe(true);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta", title: "Beta" }),
-      expect.objectContaining({ caplet: "local", title: "Local Renamed" }),
+    expect(configuredCapletTitles(listener.mock.calls[0]?.[0] ?? [])).toEqual([
+      ["beta", "Beta"],
+      ["local", "Local Renamed"],
     ]);
     await service.close();
   });
@@ -603,10 +600,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(secondListener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta" }),
-      expect.objectContaining({ caplet: "local" }),
-    ]);
+    expect(configuredCapletIds(secondListener.mock.calls[0]?.[0] ?? [])).toEqual(["beta", "local"]);
     expect(writeErr).toHaveBeenCalledWith(
       expect.stringContaining("Caplets tools-changed listener failed"),
     );
@@ -641,7 +635,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(false);
 
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["alpha", "Alpha"],
       ["local", "Local"],
     ]);
@@ -674,7 +668,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
     await service.close();
   });
@@ -697,7 +691,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await service.reload();
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
     await service.close();
   });
@@ -770,7 +764,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining(badCapletPath));
     await service.close();
   });
@@ -936,4 +930,12 @@ function tempConfig(config: unknown) {
   writeFileSync(configPath, JSON.stringify(config), "utf8");
   writeFileSync(projectConfigPath, JSON.stringify({}), "utf8");
   return { dir, configPath, projectConfigPath };
+}
+
+function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {
+  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "run");
+}
+
+function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
+  return tools.filter((tool) => tool.caplet !== "run").map((tool) => [tool.caplet, tool.title]);
 }

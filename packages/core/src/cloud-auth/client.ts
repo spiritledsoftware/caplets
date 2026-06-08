@@ -28,6 +28,17 @@ export type RefreshTokenInput = {
   refreshToken: string;
 };
 
+export type CloudAddCapletsInput = {
+  accessToken: string;
+  workspace: string;
+  bundle: { files: Array<{ path: string; content: string }> };
+};
+
+export type CloudAddCapletsResult = {
+  caplet?: unknown;
+  caplets: unknown[];
+};
+
 export type CloudAuthClientCredentials = Required<
   Pick<
     CloudAuthTokenResponse,
@@ -112,6 +123,21 @@ export class CloudAuthClient {
       }),
     });
     return normalizeCredentials(response, this.cloudUrl.origin);
+  }
+
+  async addCaplets(input: CloudAddCapletsInput): Promise<CloudAddCapletsResult> {
+    const response = await this.requestJson<CloudAddCapletsResult>(
+      `/api/workspaces/${encodeURIComponent(input.workspace)}/caplets/custom`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${input.accessToken}` },
+        body: JSON.stringify({ bundle: input.bundle }),
+      },
+    );
+    return {
+      ...response,
+      caplets: Array.isArray(response.caplets) ? response.caplets : [],
+    };
   }
 
   private async requestJson<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
