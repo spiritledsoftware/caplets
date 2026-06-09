@@ -77,6 +77,32 @@ describe("runCodeMode", () => {
     );
   });
 
+  it("allows import syntax inside returned documentation strings", async () => {
+    const result = await runCodeMode({
+      code: `
+        return {
+          guidance: [
+            "import { McpServer } from '@modelcontextprotocol/server';",
+            "import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';",
+            "const server = new McpServer({ name: 'demo', version: '1.0.0' });",
+          ],
+        };
+      `,
+      service: service(),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        guidance: [
+          "import { McpServer } from '@modelcontextprotocol/server';",
+          "import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';",
+          "const server = new McpServer({ name: 'demo', version: '1.0.0' });",
+        ],
+      },
+    });
+  });
+
   it("captures redacted logs and expands them through debug.readLogs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-runner-"));
     try {

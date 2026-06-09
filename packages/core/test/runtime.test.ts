@@ -37,7 +37,8 @@ describe("CapletsRuntime", () => {
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
     expect(server.registerTool).toHaveBeenCalledTimes(2);
-    expect(server.registered.get("run")).toBeDefined();
+    expect(server.registered.get("code_mode")).toBeDefined();
+    expect(server.registered.get("run")).toBeUndefined();
 
     await runtime.close();
   });

@@ -10,7 +10,7 @@ import type {
   NativeCapletsToolsChangedListener,
   NativeCapletTool,
 } from "./service";
-import { nativeCapletToolName, nativeCodeModeRunToolId } from "./tools";
+import { nativeCapletToolName, nativeCodeModeToolId } from "./tools";
 
 export type RemoteCapletsTool = {
   name: string;
@@ -253,7 +253,7 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
       `Remote Caplet ID: ${tool.name}`,
     ].join("\n"),
     promptGuidance: [`Use ${toolName} through the remote Caplets service.`],
-    ...(tool.name === nativeCodeModeRunToolId ? { codeModeRun: true } : {}),
+    ...(tool.name === nativeCodeModeToolId ? { codeModeRun: true } : {}),
     inputSchema,
     operationNames: operationNamesFromSchema(inputSchema),
   };

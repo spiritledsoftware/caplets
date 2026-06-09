@@ -933,9 +933,11 @@ function tempConfig(config: unknown) {
 }
 
 function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {
-  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "run");
+  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "code_mode");
 }
 
 function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
-  return tools.filter((tool) => tool.caplet !== "run").map((tool) => [tool.caplet, tool.title]);
+  return tools
+    .filter((tool) => tool.caplet !== "code_mode")
+    .map((tool) => [tool.caplet, tool.title]);
 }

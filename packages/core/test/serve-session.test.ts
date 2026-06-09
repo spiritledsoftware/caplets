@@ -29,7 +29,8 @@ describe("CapletsMcpSession", () => {
 
     expect(session.registeredToolIds()).toEqual(["alpha"]);
     expect(server.registerTool).toHaveBeenCalledTimes(2);
-    expect(server.registered.get("run")).toBeDefined();
+    expect(server.registered.get("code_mode")).toBeDefined();
+    expect(server.registered.get("run")).toBeUndefined();
     expect(server.registerTool).toHaveBeenCalledWith(
       "alpha",
       expect.objectContaining({
@@ -53,7 +54,7 @@ describe("CapletsMcpSession", () => {
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
     const alpha = server.registered.get("alpha")!;
-    const run = server.registered.get("run")!;
+    const codeMode = server.registered.get("code_mode")!;
 
     writeConfig(configPath, {
       httpApis: {
@@ -69,12 +70,12 @@ describe("CapletsMcpSession", () => {
     await engine.reload();
 
     expect(alpha.remove).toHaveBeenCalledTimes(1);
-    expect(run.update).toHaveBeenCalledWith(
+    expect(codeMode.update).toHaveBeenCalledWith(
       expect.objectContaining({
         description: expect.stringContaining('gamma:CapletHandle<"gamma">'),
       }),
     );
-    expect(run.update).toHaveBeenCalledWith(
+    expect(codeMode.update).toHaveBeenCalledWith(
       expect.not.objectContaining({
         description: expect.stringContaining('alpha:CapletHandle<"alpha">'),
       }),

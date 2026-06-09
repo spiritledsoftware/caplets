@@ -38,7 +38,7 @@ describe("Code Mode CLI", () => {
     try {
       process.env.CAPLETS_CONFIG = writeConfig(dir, {});
 
-      await runCli(["run", "return { ok: true };", "--json"], {
+      await runCli(["code-mode", "return { ok: true };", "--json"], {
         writeOut: (value) => out.push(value),
       });
 
@@ -62,7 +62,7 @@ describe("Code Mode CLI", () => {
       writeFileSync(join(project, "workflow.ts"), "return { source: 'file' };\n");
       process.chdir(project);
 
-      await runCli(["run", "--file", "workflow.ts", "--json"], {
+      await runCli(["code-mode", "--file", "workflow.ts", "--json"], {
         writeOut: (value) => out.push(value),
       });
 
@@ -82,7 +82,7 @@ describe("Code Mode CLI", () => {
     try {
       process.env.CAPLETS_CONFIG = writeConfig(dir, {});
 
-      await runCli(["run", "--json"], {
+      await runCli(["code-mode", "--json"], {
         writeOut: (value) => out.push(value),
         readStdin: async () => "return { source: 'stdin' };",
       });

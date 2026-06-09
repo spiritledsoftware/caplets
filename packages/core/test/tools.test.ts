@@ -565,7 +565,7 @@ describe("generated tool handlers", () => {
       callTool: vi.fn(async () => ({
         structuredContent: {
           issues: [
-            { number: 2, title: "PRD", body: "caplets run" },
+            { number: 2, title: "PRD", body: "caplets code-mode" },
             { number: 1, title: "Binding", body: "remote runtime" },
           ],
         },
@@ -604,7 +604,7 @@ describe("generated tool handlers", () => {
     });
     expect(described.structuredContent.result.observedOutputShape.typeScript).toContain("issues?:");
     expect(JSON.stringify(described.structuredContent.result.observedOutputShape)).not.toContain(
-      "caplets run",
+      "caplets code-mode",
     );
   });
 

@@ -48,12 +48,12 @@ describe("@caplets/opencode", () => {
           promptGuidance: ["Use caplets_git_hub for GitHub."],
         },
         {
-          caplet: "run",
-          toolName: "caplets_run",
+          caplet: "code_mode",
+          toolName: "caplets_code_mode",
           title: "Code Mode",
           description: "Run Caplets Code Mode TypeScript.",
           codeModeRun: true,
-          promptGuidance: ["Use caplets_run for multi-step Caplets workflows."],
+          promptGuidance: ["Use caplets_code_mode for multi-step Caplets workflows."],
         },
       ],
       execute: vi.fn(async () => ({ ok: true })),
@@ -64,7 +64,7 @@ describe("@caplets/opencode", () => {
 
     const hooks = await createCapletsOpenCodeHooks(service);
 
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets_run"]);
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets_code_mode"]);
     const capletsTool = hooks.tool!.caplets_git_hub as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
@@ -72,7 +72,7 @@ describe("@caplets/opencode", () => {
     expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
     expect(result).toContain('"ok": true');
 
-    const runTool = hooks.tool!.caplets_run as {
+    const runTool = hooks.tool!.caplets_code_mode as {
       args: { code?: unknown; timeoutMs?: unknown };
       execute(args: unknown, context: unknown): Promise<string>;
     };
@@ -81,13 +81,13 @@ describe("@caplets/opencode", () => {
       timeoutMs: { type: "number", optional: true },
     });
     const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
-    expect(service.execute).toHaveBeenCalledWith("run", { code: "return {ok:true};" });
+    expect(service.execute).toHaveBeenCalledWith("code_mode", { code: "return {ok:true};" });
     expect(runResult).toContain('"ok": true');
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
     expect(output.system.join("\n")).toContain("caplets_git_hub");
-    expect(output.system.join("\n")).toContain("caplets_run");
+    expect(output.system.join("\n")).toContain("caplets_code_mode");
   });
 
   it("returns stable text when tool result serialization fails", async () => {

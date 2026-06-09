@@ -12,7 +12,6 @@ const CODE_FILE = "/caplets-code-mode/input.ts";
 const DECLARATION_FILE = "/caplets-code-mode/caplets.d.ts";
 const AMBIENT_FILE = "/caplets-code-mode/ambient.d.ts";
 
-const IMPORT_PATTERN = /\bimport\s*(?:\(|[\s{*"A-Za-z_$])/u;
 const TS_NOCHECK_PATTERN =
   /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*?(?:(?:\/\/\s*@ts-nocheck\b[^\n]*)|(?:\/\*\s*@ts-nocheck\b[\s\S]*?\*\/))/u;
 const BAD_CALL_METHOD_PATTERN = /\bcaplets(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\.call\s*\(/u;
@@ -88,7 +87,7 @@ export function diagnoseCodeModeTypeScript(
 
 function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
   const diagnostics: CodeModeDiagnostic[] = [];
-  if (!IMPORT_PATTERN.test(code)) {
+  if (!hasExecutableImport(code)) {
     // continue with other custom checks below
   } else {
     diagnostics.push({
@@ -112,6 +111,37 @@ function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
     });
   }
   return diagnostics;
+}
+
+function hasExecutableImport(code: string): boolean {
+  const source = ts.createSourceFile(
+    CODE_FILE,
+    code,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let found = false;
+
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isImportDeclaration(node) ||
+      ts.isImportEqualsDeclaration(node) ||
+      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined)
+    ) {
+      found = true;
+      return;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(source);
+  return found;
 }
 
 function createVirtualCompilerHost(

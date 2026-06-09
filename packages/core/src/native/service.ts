@@ -19,8 +19,8 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
-  nativeCodeModeRunToolId,
-  nativeCodeModeRunToolName,
+  nativeCodeModeToolId,
+  nativeCodeModeToolName,
 } from "./tools";
 import {
   generateCodeModeDeclarations,
@@ -146,7 +146,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    if (capletId === nativeCodeModeRunToolId && isCodeModeRunRequest(request)) {
+    if (capletId === nativeCodeModeToolId && isCodeModeRunRequest(request)) {
       return await executeCodeModeRunNative(this, request);
     }
     return await this.engine.execute(capletId, request);
@@ -176,17 +176,17 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     })),
   });
   return {
-    caplet: nativeCodeModeRunToolId,
-    toolName: nativeCodeModeRunToolName,
+    caplet: nativeCodeModeToolId,
+    toolName: nativeCodeModeToolName,
     title: "Code Mode",
     description: [
       generateCodeModeRunToolDescription(declaration),
       "",
-      `Native tool name: ${nativeCodeModeRunToolName}`,
+      `Native tool name: ${nativeCodeModeToolName}`,
     ].join("\n"),
     codeModeRun: true,
     promptGuidance: [
-      `Use ${nativeCodeModeRunToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
+      `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
       "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
       "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
     ],
@@ -407,7 +407,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    if (capletId === nativeCodeModeRunToolId && isCodeModeRunRequest(request)) {
+    if (capletId === nativeCodeModeToolId && isCodeModeRunRequest(request)) {
       return await executeCodeModeRunNative(this, request);
     }
     if (this.local.listTools().some((tool) => tool.caplet === capletId)) {

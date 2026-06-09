@@ -4,7 +4,6 @@ export type CompletionShell = (typeof completionShells)[number];
 export const cliCommands = {
   completion: "completion",
   completeHidden: "__complete",
-  run: "run",
   codeMode: "code-mode",
   serve: "serve",
   attach: "attach",
@@ -35,7 +34,6 @@ export const cliCommands = {
 
 export const topLevelCommandNames = [
   cliCommands.serve,
-  cliCommands.run,
   cliCommands.codeMode,
   cliCommands.attach,
   cliCommands.cloud,

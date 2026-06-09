@@ -56,8 +56,8 @@ describe("native Caplets service", () => {
             title: "GitHub",
           }),
           expect.objectContaining({
-            caplet: "run",
-            toolName: "caplets_run",
+            caplet: "code_mode",
+            toolName: "caplets_code_mode",
             title: "Code Mode",
           }),
         ]),
@@ -367,5 +367,5 @@ async function watcherReady(): Promise<void> {
 }
 
 function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {
-  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "run");
+  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "code_mode");
 }

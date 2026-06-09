@@ -51,11 +51,11 @@ The deterministic Code Mode fixture covers 12 PRD task categories and shows 80.5
 
 Task: Discover GitHub issue/PR tools, inspect schemas or observed shapes, fetch open work, preserve labels and URLs, and synthesize a next-action triage brief.
 
-| Strategy               | External calls | LLM round trips | Code Mode run calls | Internal Caplet calls | Approx. payload tokens | Success score |
-| ---------------------- | -------------: | --------------: | ------------------: | --------------------: | ---------------------: | ------------: |
-| Vanilla MCP            |              4 |               4 |                   0 |                     0 |                   4200 |          0.72 |
-| Progressive disclosure |             13 |              13 |                   0 |                     0 |                   8600 |          0.95 |
-| Code Mode              |              1 |               1 |                   1 |                     7 |                   2300 |          0.93 |
+| Strategy               | External calls | LLM round trips | Code Mode calls | Internal Caplet calls | Approx. payload tokens | Success score |
+| ---------------------- | -------------: | --------------: | --------------: | --------------------: | ---------------------: | ------------: |
+| Vanilla MCP            |              4 |               4 |               0 |                     0 |                   4200 |          0.72 |
+| Progressive disclosure |             13 |              13 |               0 |                     0 |                   8600 |          0.95 |
+| Code Mode              |              1 |               1 |               1 |                     7 |                   2300 |          0.93 |
 
 Code Mode preserves required triage fields (`number`, `title`, `state`, `url`, `html_url`, `labels`, `created_at`, `updated_at`) while reducing external calls versus progressive disclosure by 92.3% and approximate payload tokens by 73.3%.
 

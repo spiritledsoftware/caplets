@@ -65,7 +65,7 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).not.toContain(" = ");
   });
 
-  it("builds the shared run tool description from generated declarations", () => {
+  it("builds the shared Code Mode tool description from generated declarations", () => {
     const declaration = 'declare const caplets:{docs:CapletHandle<"docs">;};';
     const description = generateCodeModeRunToolDescription(declaration);
 

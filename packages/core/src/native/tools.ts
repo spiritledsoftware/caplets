@@ -1,8 +1,8 @@
 import type { CapletConfig } from "../config";
 import { capabilityDescription } from "../registry";
 
-export const nativeCodeModeRunToolId = "run";
-export const nativeCodeModeRunToolName = "caplets_run";
+export const nativeCodeModeToolId = "code_mode";
+export const nativeCodeModeToolName = "caplets_code_mode";
 
 export function nativeCapletToolName(capletId: string): string {
   return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_")}`;
@@ -18,7 +18,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     "Available Caplets native tools:",
     tools,
     "",
-    `${nativeCodeModeRunToolName} executes Caplets Code Mode: TypeScript with generated caplets.<id> handles for multi-step discovery, tool calls, filtering, and compact synthesis in one native call.`,
+    `${nativeCodeModeToolName} executes Caplets Code Mode: TypeScript with generated caplets.<id> handles for multi-step discovery, tool calls, filtering, and compact synthesis in one native call.`,
     "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names; use describe_tool before call_tool when args matter; pass call_tool.args with exact inputSchema property names.",
     "Do not guess downstream tool names, resource URIs, prompt names, input args, output fields, or schemas. Do not infer input/output schemas from memory.",
     "Prefer list/read/search operations for triage and avoid broad provider searches that can return huge payloads or hit rate limits.",

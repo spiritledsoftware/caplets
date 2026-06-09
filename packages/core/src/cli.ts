@@ -342,9 +342,9 @@ export function createProgram(io: CliIO = {}): Command {
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
 
-  program
-    .command(cliCommands.run)
-    .description("Run TypeScript Code Mode locally with the generated Caplets API.")
+  const codeMode = program
+    .command(cliCommands.codeMode)
+    .description("Run, inspect, and debug Caplets Code Mode.")
     .argument("[code]", "inline TypeScript code to run")
     .option("--file <path>", "read TypeScript code from a file relative to the current directory")
     .option("--timeout-ms <ms>", "execution timeout in milliseconds", parsePositiveInteger)
@@ -369,24 +369,25 @@ export function createProgram(io: CliIO = {}): Command {
         });
       },
     );
-
-  const codeMode = program
-    .command(cliCommands.codeMode)
-    .description("Inspect and debug Caplets Code Mode.");
   codeMode
     .command("types")
     .description("Print the generated Code Mode TypeScript declarations.")
     .option("--json", "print declaration metadata as JSON")
-    .action(async (options: { json?: boolean }) => {
-      await codeModeTypesCli({
-        env,
-        ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
-        projectConfigPath: envProjectConfigPath(env),
-        ...(io.authDir ? { authDir: io.authDir } : {}),
-        ...(options.json === undefined ? {} : { json: options.json }),
-        writeOut,
-      });
-    });
+    .action(
+      async (options: { json?: boolean }, command: { parent?: { opts(): { json?: boolean } } }) => {
+        const parentOptions = command.parent?.opts() ?? {};
+        await codeModeTypesCli({
+          env,
+          ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+          projectConfigPath: envProjectConfigPath(env),
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+          ...(options.json === undefined && parentOptions.json === undefined
+            ? {}
+            : { json: options.json ?? parentOptions.json }),
+          writeOut,
+        });
+      },
+    );
 
   const serve = program
     .command(cliCommands.serve)

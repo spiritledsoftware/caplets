@@ -29,7 +29,7 @@ export type CapletsMcpSessionOptions = {
 export class CapletsMcpSession {
   readonly server: ToolServer;
   private readonly tools = new Map<string, RegisteredTool>();
-  private readonly codeModeRunTool: RegisteredTool;
+  private readonly codeModeTool: RegisteredTool;
   private readonly unsubscribeReload: () => void;
   private closed = false;
 
@@ -43,7 +43,7 @@ export class CapletsMcpSession {
         name: "caplets",
         version: packageJsonVersion,
       });
-    this.codeModeRunTool = this.registerCodeModeRunTool();
+    this.codeModeTool = this.registerCodeModeTool();
     this.unsubscribeReload = this.engine.onReload(({ previous, next }) =>
       this.reconcileTools(previous, next),
     );
@@ -64,15 +64,15 @@ export class CapletsMcpSession {
     }
     this.closed = true;
     this.unsubscribeReload();
-    this.codeModeRunTool.remove();
+    this.codeModeTool.remove();
     this.tools.clear();
     await this.server.close();
   }
 
-  private registerCodeModeRunTool(): RegisteredTool {
+  private registerCodeModeTool(): RegisteredTool {
     const codeModeService = new EngineNativeCapletsService(this.engine);
     return this.server.registerTool(
-      "run",
+      "code_mode",
       {
         title: "Code Mode",
         description: codeModeRunToolDescription(codeModeService),
@@ -118,7 +118,7 @@ export class CapletsMcpSession {
 
   private reconcileTools(previous: CapletsConfig | undefined, next: CapletsConfig): void {
     if (previous) {
-      this.codeModeRunTool.update({
+      this.codeModeTool.update({
         title: "Code Mode",
         description: codeModeRunToolDescription(new EngineNativeCapletsService(this.engine)),
         paramsSchema: codeModeRunParamsSchema,

@@ -399,11 +399,11 @@ The deterministic Code Mode fixture covers ${benchmark.tasks.length} PRD task ca
 
 Task: ${complex.task.description}
 
-| Strategy               | External calls | LLM round trips | Code Mode run calls | Internal Caplet calls | Approx. payload tokens | Success score |
-| ---------------------- | -------------: | --------------: | ------------------: | --------------------: | ---------------------: | ------------: |
-| Vanilla MCP            |              ${vanilla.externalToolCalls} |               ${vanilla.llmRoundTrips} |                   ${vanilla.codeModeRunCalls} |                     ${vanilla.internalCapletCalls} |                   ${vanilla.approxPayloadTokens} |          ${vanilla.successScore.toFixed(2)} |
-| Progressive disclosure |             ${progressive.externalToolCalls} |              ${progressive.llmRoundTrips} |                   ${progressive.codeModeRunCalls} |                     ${progressive.internalCapletCalls} |                   ${progressive.approxPayloadTokens} |          ${progressive.successScore.toFixed(2)} |
-| Code Mode              |              ${codeMode.externalToolCalls} |               ${codeMode.llmRoundTrips} |                   ${codeMode.codeModeRunCalls} |                     ${codeMode.internalCapletCalls} |                   ${codeMode.approxPayloadTokens} |          ${codeMode.successScore.toFixed(2)} |
+| Strategy               | External calls | LLM round trips | Code Mode calls | Internal Caplet calls | Approx. payload tokens | Success score |
+| ---------------------- | -------------: | --------------: | --------------: | --------------------: | ---------------------: | ------------: |
+| Vanilla MCP            |              ${vanilla.externalToolCalls} |               ${vanilla.llmRoundTrips} |               ${vanilla.codeModeRunCalls} |                     ${vanilla.internalCapletCalls} |                   ${vanilla.approxPayloadTokens} |          ${vanilla.successScore.toFixed(2)} |
+| Progressive disclosure |             ${progressive.externalToolCalls} |              ${progressive.llmRoundTrips} |               ${progressive.codeModeRunCalls} |                     ${progressive.internalCapletCalls} |                   ${progressive.approxPayloadTokens} |          ${progressive.successScore.toFixed(2)} |
+| Code Mode              |              ${codeMode.externalToolCalls} |               ${codeMode.llmRoundTrips} |               ${codeMode.codeModeRunCalls} |                     ${codeMode.internalCapletCalls} |                   ${codeMode.approxPayloadTokens} |          ${codeMode.successScore.toFixed(2)} |
 
 Code Mode preserves required triage fields (${complex.task.requiredFields.map((field) => `\`${field}\``).join(", ")}) while reducing external calls versus progressive disclosure by ${percent(complex.reductions.codeModeVsProgressiveExternalCalls)} and approximate payload tokens by ${percent(complex.reductions.codeModeVsProgressivePayloadTokens)}.
 

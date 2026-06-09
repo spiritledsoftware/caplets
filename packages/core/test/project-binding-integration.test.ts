@@ -123,5 +123,7 @@ function remoteClientFixture(
 }
 
 function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
-  return tools.filter((tool) => tool.caplet !== "run").map((tool) => [tool.caplet, tool.title]);
+  return tools
+    .filter((tool) => tool.caplet !== "code_mode")
+    .map((tool) => [tool.caplet, tool.title]);
 }
