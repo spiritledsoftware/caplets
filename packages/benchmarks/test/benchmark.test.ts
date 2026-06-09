@@ -1358,6 +1358,23 @@ describe("Pi live tool surface eval harness", () => {
     });
   });
 
+  it("does not classify direct Caplets tools as progressive wrappers", () => {
+    expect(
+      summarizePiEvalMetrics([
+        { type: "tool_execution_start", toolName: "caplets__issues__active_incidents" },
+        { type: "tool_execution_start", toolName: "caplets__api__get_endpoint" },
+        { type: "tool_execution_start", toolName: "bash" },
+      ]).hybridChoice,
+    ).toBe("direct-only");
+
+    expect(
+      summarizePiEvalMetrics([
+        { type: "tool_execution_start", toolName: "caplets_issues" },
+        { type: "tool_execution_start", toolName: "caplets_api" },
+      ]).hybridChoice,
+    ).toBe("progressive-only");
+  });
+
   it("scores required checkout evidence from observed domain coverage", () => {
     const coverage = computeDomainCoverage([
       { text: "BENCH-451 from issues" },

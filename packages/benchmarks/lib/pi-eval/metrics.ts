@@ -127,7 +127,7 @@ export function classifyHybridChoice(toolNames: string[]) {
     (name) => name === "caplets_code_mode" || name.includes("caplets_code_mode"),
   );
   const usedDirect = toolNames.some((name) => name.startsWith("caplets__"));
-  const usedProgressive = toolNames.some((name) => /^caplets_(?!code_mode\b)/u.test(name));
+  const usedProgressive = toolNames.some((name) => /^caplets_(?!_|code_mode\b)/u.test(name));
   if (usedDirect && usedCodeMode && usedProgressive) return "mixed-direct-progressive-code-mode";
   if (usedDirect && usedCodeMode) return "direct-and-code-mode";
   if (usedDirect && usedProgressive) return "mixed-direct-progressive";
