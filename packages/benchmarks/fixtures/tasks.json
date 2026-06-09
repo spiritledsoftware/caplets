@@ -16,5 +16,18 @@
     "hiddenValidationCommand": "node --import tsx --test ../validators/retry-validator.ts",
     "expectedFiles": ["src/retry.js"],
     "requiredFact": "Retry delays are 100ms, 250ms, and 500ms for attempts 1 through 3; retryable status codes are 408, 429, 500, 502, 503, and 504."
+  },
+  {
+    "id": "checkout-incident-retry-hardening",
+    "prompt": "Fix the checkout authorization retry bug. A production incident says some card authorization attempts are retried incorrectly and can double-submit provider calls. Use the available external tools to identify the active issue, inspect the failing CI signal, read the current checkout retry runbook, and confirm the API contract before editing files. The production fix must update the shared retry helper as needed, not just the checkout authorization wrapper: align retryable statuses, non-retryable statuses, and retry delays with the runbook/API contract. Add or update regression tests for idempotency-key reuse, documented retry delays, and 409/conflict non-retry behavior. Do not hard-code benchmark-only behavior.",
+    "validationCommand": "node --test test/checkout-authorization.node-test.js",
+    "hiddenValidator": "validators/checkout-incident-validator.ts",
+    "hiddenValidationCommand": "node --import tsx --test ../validators/checkout-incident-validator.ts",
+    "expectedFiles": [
+      "src/retry.js",
+      "src/checkout-authorization.js",
+      "test/checkout-authorization.node-test.js"
+    ],
+    "requiredFact": "Checkout authorization retries must use delays 100ms, 250ms, and 500ms; retryable status codes are 408, 429, 500, 502, 503, and 504; 409 conflicts and other non-retryable statuses must not be retried; all retry attempts for one logical authorization must reuse the same Idempotency-Key."
   }
 ]

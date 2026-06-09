@@ -165,7 +165,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId && isCodeModeRunRequest(request)) {
-      return await executeCodeModeRunNative(this, request);
+      return await executeCodeModeRunNative(this.codeModeDelegate(), request);
     }
     const route = this.directToolRoutes.get(capletId);
     if (route) {
@@ -291,6 +291,28 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   private async refreshExposureSnapshot(): Promise<void> {
     this.exposureSnapshot = await this.engine.exposureSnapshot();
+  }
+
+  private codeModeDelegate(): NativeCapletsService {
+    return {
+      listTools: () => this.codeModeNativeTools(),
+      execute: async (capletId, request) => await this.engine.execute(capletId, request),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
+  }
+
+  private codeModeNativeTools(): NativeCapletTool[] {
+    const snapshotCaplets = this.exposureSnapshot?.codeModeCaplets.map((entry) => entry.caplet);
+    const caplets =
+      snapshotCaplets ??
+      this.engine.enabledServers().filter((caplet) => {
+        if (caplet.setup || caplet.projectBinding?.required) return false;
+        return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure)
+          .codeMode;
+      });
+    return caplets.map(codeModeCapletDescriptor);
   }
 }
 

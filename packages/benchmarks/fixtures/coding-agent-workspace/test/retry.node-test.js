@@ -1,7 +1,7 @@
-const assert = require("node:assert/strict");
-const test = require("node:test");
+import assert from "node:assert/strict";
+import test from "node:test";
 
-const { getRetryDelay, shouldRetry } = require("../src/retry.js");
+import { getRetryDelay, shouldRetry } from "../src/retry.js";
 
 test("exports retry helpers", () => {
   assert.equal(typeof getRetryDelay, "function");

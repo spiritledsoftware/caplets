@@ -31,7 +31,8 @@
     "test": "vitest run",
     "typecheck": "tsgo --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm typecheck && pnpm schema:check && pnpm test && pnpm benchmark:check && pnpm build",
-    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
+    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write .",
+    "benchmark:live:pi-eval": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

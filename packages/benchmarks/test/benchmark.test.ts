@@ -30,6 +30,20 @@ import {
   computeCodeModeBenchmark,
   validateCodeModeBenchmark,
 } from "../lib/code-mode";
+import {
+  PI_EVAL_MODES,
+  buildPiEvalCommand,
+  buildPiEvalPrompt,
+  createPiEvalRunConfig,
+} from "../lib/pi-eval/config";
+import {
+  computeDomainCoverage,
+  requiredEvidenceScore,
+  summarizePiEvalMetrics,
+} from "../lib/pi-eval/metrics";
+import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
+import { buildPiEvalMatrix, parsePiEvalArgs, runPiEvalBenchmark } from "../run-pi-eval";
+import { createNativeCapletsService } from "@caplets/core/native";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -1172,3 +1186,241 @@ function withoutExitCode<T extends { exitCode?: unknown }>(result: T): Omit<T, "
   const { exitCode: _exitCode, ...rest } = result;
   return rest;
 }
+
+describe("Pi live tool surface eval harness", () => {
+  it("parses modes and builds the complete Pi eval matrix", () => {
+    expect(buildPiEvalMatrix({}).map((entry) => entry.mode)).toEqual([...PI_EVAL_MODES]);
+    expect(
+      parsePiEvalArgs(["--mode", "caplets-code-mode,caplets-progressive-code-mode", "--runs", "2"]),
+    ).toMatchObject({
+      modes: ["caplets-code-mode", "caplets-progressive-code-mode"],
+      runs: 2,
+    });
+    expect(() => parsePiEvalArgs(["--mode", "unknown"])).toThrow(/Unknown Pi eval mode/u);
+  });
+
+  it("builds mode-specific prompts and Pi commands without user context files", () => {
+    const task = { prompt: "Fix checkout retries." };
+    expect(buildPiEvalPrompt(task, "caplets-direct")).toContain("caplets__<server>__<tool>");
+    expect(buildPiEvalPrompt(task, "caplets-progressive-code-mode")).toContain(
+      "Both Caplets capability tools and caplets_code_mode are available",
+    );
+
+    const command = buildPiEvalCommand({
+      command: "pi-test",
+      prompt: "hello",
+      model: "provider/model",
+      extensionPaths: ["/tmp/a.js", "/tmp/b.js"],
+    });
+    expect(command).toEqual({
+      command: "pi-test",
+      args: [
+        "--mode",
+        "json",
+        "-p",
+        "hello",
+        "--approve",
+        "--no-context-files",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--model",
+        "provider/model",
+        "-e",
+        "/tmp/a.js",
+        "-e",
+        "/tmp/b.js",
+      ],
+    });
+  });
+
+  it("creates isolated Pi eval config and copies only auth-bearing Pi files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    const fakePiExtension = join(root, "pi-extension.js");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fakePiExtension, "export default function extension() {}\n");
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "caplets-progressive-code-mode",
+        piExtensionPath: fakePiExtension,
+        piAgentSourceDir: sourceAgentDir,
+      });
+
+      expect(config.config.options.exposure).toBe("progressive_and_code_mode");
+      expect(Object.keys(config.config.mcpServers).sort()).toEqual([
+        "api",
+        "ci",
+        "code-map",
+        "docs",
+        "issues",
+      ]);
+      expect(config.copiedPiAuthFiles.sort()).toEqual(["auth.json", "models.json"]);
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(config.env.CAPLETS_CONFIG).toBe(config.configPath);
+      expect(config.env.PI_CODING_AGENT_DIR).toBe(config.agentDir);
+      expect(config.extensionPaths).toEqual([config.instrumentationPath, resolve(fakePiExtension)]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes direct Caplets tools from the Pi eval fixture servers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-direct-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    const fakePiExtension = join(root, "pi-extension.js");
+    const previousPath = process.env.PATH;
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fakePiExtension, "export default function extension() {}\n");
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "caplets-direct",
+        piExtensionPath: fakePiExtension,
+        piAgentSourceDir: sourceAgentDir,
+      });
+      process.env.PATH = config.env.PATH;
+      const service = createNativeCapletsService({
+        mode: "local",
+        configPath: config.configPath,
+        watch: false,
+      });
+
+      try {
+        await expect(service.reload()).resolves.toBe(true);
+        const names = service.listTools().map((tool) => tool.toolName);
+        expect(names).toContain("caplets__issues__search");
+        expect(names).toContain("caplets__ci__get_run");
+        expect(names).toContain("caplets__docs__idempotency_guidance");
+        expect(names).toContain("caplets__api__get_endpoint");
+        expect(names).toContain("caplets__code-map__target_files");
+      } finally {
+        await service.close();
+      }
+    } finally {
+      process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts real tool executions and classifies direct, progressive, and Code Mode choices", () => {
+    const events = [
+      {
+        type: "before_provider_request",
+        model: "test-model",
+        requestPayloadBytes: 100,
+        requestPayloadEstimatedTokens: 25,
+        toolSurfaceBytes: 40,
+        toolSurfaceEstimatedTokens: 10,
+        messagePayloadBytes: 60,
+        messagePayloadEstimatedTokens: 15,
+      },
+      { type: "tool_execution_start", toolName: "caplets__issues__search" },
+      { type: "tool_execution_end", toolName: "caplets__issues__search" },
+      { type: "tool_execution_start", toolName: "caplets_code_mode" },
+      { type: "tool_execution_end", toolName: "caplets_code_mode" },
+      { type: "tool_execution_start", toolName: "caplets_docs" },
+      { type: "tool_execution_end", toolName: "caplets_docs" },
+      { type: "after_provider_response", usage: { input_tokens: 1, output_tokens: 2 } },
+    ];
+
+    const metrics = summarizePiEvalMetrics(events, []);
+
+    expect(metrics.toolCallCount).toBe(3);
+    expect(metrics.toolEventCount).toBe(6);
+    expect(metrics.toolNames).toEqual([
+      "caplets__issues__search",
+      "caplets_code_mode",
+      "caplets_docs",
+    ]);
+    expect(metrics.hybridChoice).toBe("mixed-direct-progressive-code-mode");
+    expect(metrics.requestPayloadEstimatedTokens).toBe(25);
+    expect(metrics.toolSurfaceEstimatedTokens).toBe(10);
+    expect(metrics.nonSurfaceEstimatedTokens).toBe(15);
+    expect(metrics.providerUsage).toEqual({
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    });
+  });
+
+  it("scores required checkout evidence from observed domain coverage", () => {
+    const coverage = computeDomainCoverage([
+      { text: "BENCH-451 from issues" },
+      { text: "CI-9182 failingTests" },
+      { text: "checkout retry runbook idempotency guidance" },
+      { text: "/checkout/authorize API" },
+    ]);
+
+    expect(coverage).toMatchObject({ issues: true, ci: true, docs: true, api: true });
+    expect(
+      requiredEvidenceScore(
+        { domainCoverage: coverage },
+        { id: "checkout-incident-retry-hardening" },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+  });
+
+  it("refuses live Pi eval runs unless explicitly enabled", async () => {
+    await expect(
+      runPiEvalBenchmark({
+        options: { outputDir: join(tmpdir(), "caplets-pi-eval-refuse") },
+        env: {},
+        piDetector: async () => ({ available: true, command: "pi" }),
+      }),
+    ).rejects.toThrow(/CAPLETS_BENCH_LIVE=1/u);
+  });
+
+  it("summarizes Pi eval reports with token, round-trip, and tool-call comparisons", () => {
+    const result = {
+      mode: "caplets-code-mode",
+      taskId: "checkout-incident-retry-hardening",
+      run: 1,
+      score: { success: true },
+      agentResult: { durationMs: 1000 },
+      metrics: {
+        providerRequestCount: 1,
+        requestPayloadEstimatedTokens: 100,
+        nonSurfaceEstimatedTokens: 40,
+        toolSurfaceEstimatedTokens: 60,
+        toolCallCount: 1,
+        toolEventCount: 2,
+        hybridChoice: "code-mode-only",
+        domainCoverage: { issues: true, ci: true, docs: true, api: true, codeMap: false },
+        providerUsage: { totalTokens: 120 },
+      },
+    };
+    const summary = summarizePiEvalResults([result]);
+    const markdown = renderPiEvalMarkdownReport({
+      completedAt: "2026-06-09T00:00:00.000Z",
+      options: { model: "test-model", runs: 1, timeoutMs: 1000 },
+      summary,
+      results: [result],
+    });
+
+    expect(summary.byMode).toEqual([
+      expect.objectContaining({
+        mode: "caplets-code-mode",
+        passed: 1,
+        total: 1,
+        averageProviderRequestCount: 1,
+        averageToolCalls: 1,
+        hybridChoice: { "code-mode-only": 1 },
+      }),
+    ]);
+    expect(markdown).toContain("Avg LLM round trips");
+    expect(markdown).toContain("Avg non-surface estimated tokens");
+    expect(markdown).toContain("caplets-code-mode");
+  });
+});

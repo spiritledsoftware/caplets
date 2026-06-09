@@ -6,6 +6,7 @@ import { benchmarkServerDefinitions } from "./surface";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CAPLETS_CLI_PATH = resolve(REPO_ROOT, "../cli/dist/index.js");
+const DEFAULT_BENCHMARK_SERVERS = ["policy", "tickets", "api"];
 
 export function getBenchmarkPaths({ repoRoot = REPO_ROOT }: any = {}) {
   const absoluteRepoRoot = resolve(repoRoot);
@@ -21,23 +22,28 @@ export function createBenchmarkFixtureMcpServers({
   fixtureServerPath,
   cwd,
   extra = {},
+  servers,
+  command = "tsx",
   ...inlineExtra
 }: any = {}) {
   const paths = getBenchmarkPaths({ repoRoot });
   const serverPath = resolve(fixtureServerPath ?? paths.fixtureServerPath);
   const serverCwd = resolve(cwd ?? paths.repoRoot);
   const serverExtra = { ...inlineExtra, ...extra };
+  const selectedServers = servers ?? DEFAULT_BENCHMARK_SERVERS;
   return Object.fromEntries(
-    Object.entries(benchmarkServerDefinitions()).map(([server, definition]) => [
-      server,
-      {
-        ...definition,
-        ...serverExtra,
-        command: "tsx",
-        args: [serverPath, "--server", server],
-        cwd: serverCwd,
-      },
-    ]),
+    Object.entries(benchmarkServerDefinitions())
+      .filter(([server]) => selectedServers.includes(server))
+      .map(([server, definition]) => [
+        server,
+        {
+          ...definition,
+          ...serverExtra,
+          command,
+          args: [serverPath, "--server", server],
+          cwd: serverCwd,
+        },
+      ]),
   );
 }
 
@@ -90,6 +96,7 @@ export async function createBenchmarkCapletsConfig({
       repoRoot: paths.repoRoot,
       fixtureServerPath: support.fixtureServerPath,
       cwd: support.supportDir,
+      servers: ["policy", "tickets", "api"],
     }),
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);

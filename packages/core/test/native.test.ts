@@ -222,6 +222,39 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("provides code-only Caplets as handles inside Code Mode", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+    try {
+      const result = await service.execute("code_mode", {
+        code: `
+          const card = await caplets.status.inspect();
+          return { id: caplets.status.id, hasStatus: JSON.stringify(card).includes("Status HTTP") };
+        `,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: { id: "status", hasStatus: true },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("returns structured errors for unknown Caplets", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
