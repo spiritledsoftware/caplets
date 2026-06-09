@@ -249,6 +249,58 @@ describe("Code Mode Caplets API", () => {
     expect(tool.icons).toBeUndefined();
   });
 
+  it("shortens tool summary descriptions without shortening describeTool details", async () => {
+    const longDescription = `${"Use this tool to inspect repository issues and pull requests. ".repeat(8)}It remains fully available through describeTool.`;
+    const native = service([
+      {
+        caplet: "github",
+        toolName: "caplets_github",
+        title: "GitHub",
+        description: "GitHub repo operations.",
+        promptGuidance: [],
+      },
+    ]);
+    vi.mocked(native.execute)
+      .mockResolvedValueOnce({
+        structuredContent: {
+          result: {
+            items: [
+              {
+                name: "search_issues",
+                title: "Search issues",
+                description: longDescription,
+                readOnlyHint: true,
+              },
+            ],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        structuredContent: {
+          result: {
+            tool: {
+              name: "search_issues",
+              title: "Search issues",
+              description: longDescription,
+            },
+          },
+        },
+      });
+    const api = createCodeModeCapletsApi({ service: native });
+    const github = api.github as CodeModeCapletHandle;
+
+    const tools = await github.tools();
+    const descriptor = await github.describeTool("search_issues");
+
+    const summary = tools.items[0] as { description?: unknown } | undefined;
+    expect(String(summary?.description).length).toBeLessThan(longDescription.length);
+    expect(tools.items[0]).toMatchObject({ name: "search_issues", readOnlyHint: true });
+    expect(descriptor).toMatchObject({
+      ok: true,
+      data: { tool: { name: "search_issues", description: longDescription } },
+    });
+  });
+
   it("returns expected tool failures as result envelopes", async () => {
     const native = service([
       {
