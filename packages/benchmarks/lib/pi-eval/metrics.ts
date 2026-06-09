@@ -37,12 +37,22 @@ export async function readMetricsJsonl(path: string | null | undefined): Promise
 export function summarizePiEvalMetrics(events: any[] = [], jsonEvents: any[] = []) {
   const providerRequests = events.filter((event) => event.type === "before_provider_request");
   const providerResponses = events.filter((event) => event.type === "after_provider_response");
-  const toolEvents = [...events, ...jsonEvents].filter((event) =>
+  const instrumentedToolEvents = events.filter((event) =>
     String(event.type ?? event.event ?? "").includes("tool"),
   );
-  const toolStartEvents = [...events, ...jsonEvents].filter(
+  const jsonToolEvents = jsonEvents.filter((event) =>
+    String(event.type ?? event.event ?? "").includes("tool"),
+  );
+  const toolEvents = instrumentedToolEvents.length ? instrumentedToolEvents : jsonToolEvents;
+  const instrumentedToolStartEvents = events.filter(
     (event) => String(event.type ?? event.event ?? "") === "tool_execution_start",
   );
+  const jsonToolStartEvents = jsonEvents.filter(
+    (event) => String(event.type ?? event.event ?? "") === "tool_execution_start",
+  );
+  const toolStartEvents = instrumentedToolStartEvents.length
+    ? instrumentedToolStartEvents
+    : jsonToolStartEvents;
   const toolCallNames = toolStartEvents.map(toolNameFromEvent).filter(Boolean) as string[];
   const domainCoverage = computeDomainCoverage([...events, ...jsonEvents]);
   const latestRequest = providerRequests.at(-1) ?? null;
@@ -57,6 +67,7 @@ export function summarizePiEvalMetrics(events: any[] = [], jsonEvents: any[] = [
     providerRequestCount: providerRequests.length,
     providerResponseCount: providerResponses.length,
     toolCallCount: toolCallNames.length,
+    toolCallEventSource: instrumentedToolStartEvents.length ? "metrics-jsonl" : "agent-json-events",
     toolEventCount: toolEvents.length,
     toolNames: toolCallNames,
     domainCoverage,

@@ -1333,9 +1333,12 @@ describe("Pi live tool surface eval harness", () => {
       { type: "after_provider_response", usage: { input_tokens: 1, output_tokens: 2 } },
     ];
 
-    const metrics = summarizePiEvalMetrics(events, []);
+    const metrics = summarizePiEvalMetrics(events, [
+      { type: "tool_execution_start", toolName: "caplets_code_mode" },
+    ]);
 
     expect(metrics.toolCallCount).toBe(3);
+    expect(metrics.toolCallEventSource).toBe("metrics-jsonl");
     expect(metrics.toolEventCount).toBe(6);
     expect(metrics.toolNames).toEqual([
       "caplets__issues__search",
