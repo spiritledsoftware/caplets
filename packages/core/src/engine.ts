@@ -13,7 +13,7 @@ import {
 } from "./config";
 import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
 import { DownstreamManager } from "./downstream";
-import { errorResult, toSafeError } from "./errors";
+import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
 import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
@@ -24,6 +24,7 @@ import {
 } from "./observed-output-shapes";
 import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
+import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
 
 type ToolSummary = { name: string; description?: string };
 
@@ -74,6 +75,7 @@ export class CapletsEngine {
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
+  private lastExposureSnapshot: ExposureSnapshot | undefined;
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
@@ -116,6 +118,25 @@ export class CapletsEngine {
 
   enabledServers(): CapletConfig[] {
     return nextEnabledServers(this.registry.config);
+  }
+
+  async exposureSnapshot(): Promise<ExposureSnapshot> {
+    this.lastExposureSnapshot = await discoverExposureSnapshot({
+      config: this.registry.config,
+      caplets: this.enabledServers(),
+      listTools: async (caplet) => this.listTools(caplet),
+      listResources: async (caplet) =>
+        this.optionalMcpList(caplet, () => this.downstream.listResources(caplet, true)),
+      listResourceTemplates: async (caplet) =>
+        this.optionalMcpList(caplet, () => this.downstream.listResourceTemplates(caplet, true)),
+      listPrompts: async (caplet) =>
+        this.optionalMcpList(caplet, () => this.downstream.listPrompts(caplet, true)),
+    });
+    return this.lastExposureSnapshot;
+  }
+
+  currentExposureSnapshot(): ExposureSnapshot | undefined {
+    return this.lastExposureSnapshot;
   }
 
   watchedPaths(): string[] {
@@ -175,6 +196,46 @@ export class CapletsEngine {
           projectFingerprint: this.projectFingerprint,
         },
       );
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+
+  async executeDirectTool(
+    serverId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    try {
+      const caplet = this.registry.require(serverId);
+      const result = await this.callTool(caplet, toolName, args);
+      return annotateDirectResult(result, caplet, toolName);
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+
+  async readDirectResource(serverId: string, downstreamUri: string): Promise<unknown> {
+    try {
+      const caplet = this.registry.require(serverId);
+      if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP resources`);
+      const result = await this.downstream.readResource(caplet, downstreamUri);
+      return annotateDirectResult(result, caplet, "read_resource");
+    } catch (error) {
+      return errorResult(error);
+    }
+  }
+
+  async getDirectPrompt(
+    serverId: string,
+    promptName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
+    try {
+      const caplet = this.registry.require(serverId);
+      if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP prompts`);
+      const result = await this.downstream.getPrompt(caplet, promptName, args);
+      return annotateDirectResult(result, caplet, promptName);
     } catch (error) {
       return errorResult(error);
     }
@@ -252,6 +313,46 @@ export class CapletsEngine {
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
     }));
+  }
+
+  private async listTools(server: CapletConfig) {
+    return server.backend === "mcp"
+      ? await this.downstream.listTools(server)
+      : server.backend === "openapi"
+        ? await this.openapi.listTools(server)
+        : server.backend === "graphql"
+          ? await this.graphql.listTools(server)
+          : server.backend === "http"
+            ? await this.http.listTools(server)
+            : server.backend === "cli"
+              ? await this.cli.listTools(server)
+              : await this.capletSets.listTools(server);
+  }
+
+  private async callTool(server: CapletConfig, toolName: string, args: Record<string, unknown>) {
+    return server.backend === "mcp"
+      ? await this.downstream.callTool(server, toolName, args)
+      : server.backend === "openapi"
+        ? await this.openapi.callTool(server, toolName, args)
+        : server.backend === "graphql"
+          ? await this.graphql.callTool(server, toolName, args)
+          : server.backend === "http"
+            ? await this.http.callTool(server, toolName, args)
+            : server.backend === "cli"
+              ? await this.cli.callTool(server, toolName, args)
+              : await this.capletSets.callTool(server, toolName, args);
+  }
+
+  private async optionalMcpList<T>(
+    caplet: Extract<CapletConfig, { backend: "mcp" }>,
+    list: () => Promise<T[]>,
+  ): Promise<T[]> {
+    try {
+      return await list();
+    } catch (error) {
+      if (isUnsupportedCapability(error)) return [];
+      throw error;
+    }
   }
 
   private async reloadOnce(): Promise<boolean> {
@@ -524,4 +625,31 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function annotateDirectResult(result: unknown, caplet: CapletConfig, operation: string): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return result;
+  }
+  const existingMeta = (result as { _meta?: unknown })._meta;
+  return {
+    ...result,
+    _meta: {
+      ...(isRecord(existingMeta) ? existingMeta : {}),
+      caplets: {
+        capletId: caplet.server,
+        backend: caplet.backend,
+        operation,
+        exposure: "direct",
+      },
+    },
+  };
+}
+
+function isUnsupportedCapability(error: unknown): boolean {
+  return error instanceof CapletsError && error.code === "UNSUPPORTED_CAPABILITY";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

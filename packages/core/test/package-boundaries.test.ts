@@ -99,7 +99,10 @@ describe("package boundaries", () => {
     const dedicatedExports = [
       "./caplet-source",
       "./observed-output-shapes/pure",
+      "./project-binding",
+      "./redaction",
       "./runtime-plan",
+      "./stable-json",
     ] as const;
     const rootDefault = (corePackage.exports["."] as { default: string }).default;
 

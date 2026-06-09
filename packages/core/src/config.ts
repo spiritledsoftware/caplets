@@ -94,11 +94,19 @@ export type AgentSelectionHintsConfig = {
   avoidWhen?: string | undefined;
 };
 
+export type CapletExposure =
+  | "direct"
+  | "progressive"
+  | "code_mode"
+  | "direct_and_code_mode"
+  | "progressive_and_code_mode";
+
 export type CapletServerConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "mcp";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   transport: "stdio" | "http" | "sse";
@@ -128,6 +136,7 @@ export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
   backend: "openapi";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   specPath?: string | undefined;
@@ -154,6 +163,7 @@ export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
   backend: "graphql";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   endpointUrl: string;
@@ -187,6 +197,7 @@ export type HttpApiConfig = AgentSelectionHintsConfig & {
   backend: "http";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   baseUrl: string;
@@ -230,6 +241,7 @@ export type CliToolsConfig = AgentSelectionHintsConfig & {
   backend: "cli";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   actions: Record<string, CliToolActionConfig>;
@@ -248,6 +260,7 @@ export type CapletSetConfig = AgentSelectionHintsConfig & {
   backend: "caplets";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   configPath?: string | undefined;
@@ -272,6 +285,9 @@ export type CapletConfig =
 export type CapletsOptions = {
   defaultSearchLimit: number;
   maxSearchLimit: number;
+  exposure: CapletExposure;
+  exposureDiscoveryTimeoutMs: number;
+  exposureDiscoveryConcurrency: number;
   completion: CompletionConfig;
 };
 
@@ -477,6 +493,10 @@ const agentSelectionHintsSchema = {
     .describe("When agents should avoid this Caplet or configured action."),
 };
 
+const exposureSchema = z
+  .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
+  .describe("How this Caplet is exposed to agents.");
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -502,6 +522,7 @@ const publicServerSchema = z
     url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -553,6 +574,7 @@ const publicOpenApiEndpointSchema = z
       'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -627,6 +649,7 @@ const publicGraphQlEndpointSchema = z
       'Explicit GraphQL request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -745,6 +768,7 @@ const publicHttpApiSchema = z
       )
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -842,6 +866,7 @@ const publicCliToolsSchema = z
       .optional()
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -899,6 +924,7 @@ const publicCapletSetSchema = z
       .default(30_000)
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -986,6 +1012,19 @@ function configSchemaFor(
           negativeCacheTtlMs: 30_000,
         })
         .describe("Shell completion discovery timeout and cache settings."),
+      options: z
+        .object({
+          exposure: exposureSchema.default("progressive_and_code_mode"),
+          exposureDiscoveryTimeoutMs: z.number().int().positive().default(15_000),
+          exposureDiscoveryConcurrency: z.number().int().positive().max(32).default(4),
+        })
+        .strict()
+        .default({
+          exposure: "progressive_and_code_mode",
+          exposureDiscoveryTimeoutMs: 15_000,
+          exposureDiscoveryConcurrency: 4,
+        })
+        .describe("Global Caplets runtime options."),
       mcpServers: z
         .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
         .default({})
@@ -1908,6 +1947,9 @@ export function parseConfig(input: unknown): CapletsConfig {
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,
+      exposure: parsed.data.options.exposure,
+      exposureDiscoveryTimeoutMs: parsed.data.options.exposureDiscoveryTimeoutMs,
+      exposureDiscoveryConcurrency: parsed.data.options.exposureDiscoveryConcurrency,
       completion: parsed.data.completion,
     },
     mcpServers: servers,

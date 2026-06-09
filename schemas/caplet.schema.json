@@ -29,6 +29,17 @@
         "maxLength": 80
       }
     },
+    "exposure": {
+      "type": "string",
+      "enum": [
+        "direct",
+        "progressive",
+        "code_mode",
+        "direct_and_code_mode",
+        "progressive_and_code_mode"
+      ],
+      "description": "How this Caplet is exposed to agents."
+    },
     "useWhen": {
       "description": "When agents should prefer this Caplet or configured action.",
       "type": "string",

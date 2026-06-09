@@ -10,6 +10,7 @@ export {
   codeModeRunParamsSchema,
   isCodeModeRunRequest,
 } from "./tool";
+export { hasDirectFetchCall, hasExecutableImport } from "./static-analysis";
 export type {
   CodeModeCallableCaplet,
   CodeModeDeclarationInput,

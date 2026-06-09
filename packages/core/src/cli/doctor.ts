@@ -13,8 +13,14 @@ import { diagnoseCodeModeTypeScript } from "../code-mode/diagnostics";
 import { CodeModeLogStore } from "../code-mode/logs";
 import { runCodeMode } from "../code-mode/runner";
 import { listCodeModeCallableCaplets } from "../code-mode/api";
-import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "../config/paths";
+import {
+  DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+} from "../config/paths";
 import { FileObservedOutputShapeStore } from "../observed-output-shapes";
+import { loadConfig, type CapletConfig } from "../config";
+import { resolveExposure } from "../exposure/policy";
 
 export type DoctorOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -31,6 +37,7 @@ export type DoctorJsonReport = {
   sync: Record<string, unknown>;
   daemon: Record<string, unknown>;
   cloudAuth: Record<string, unknown>;
+  exposure: Record<string, unknown>;
   codeMode: Record<string, unknown>;
 };
 
@@ -76,6 +83,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
       running: false,
     },
     cloudAuth: redactedCloudAuthStatus(credentials),
+    exposure: await resolveExposureSection(env),
     codeMode: await resolveCodeModeSection(options, env),
   };
 }
@@ -124,6 +132,18 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
       ? [`  Selected Workspace: ${report.cloudAuth.workspaceSlug ?? report.cloudAuth.workspaceId}`]
       : []),
     "",
+    "Exposure",
+    `  Default: ${report.exposure.default ?? "unknown"}`,
+    `  Discovery timeout: ${report.exposure.discoveryTimeoutMs ?? "unknown"}ms`,
+    `  Discovery concurrency: ${report.exposure.discoveryConcurrency ?? "unknown"}`,
+    `  Callable native tools: ${report.exposure.callableNativeToolCount ?? 0}`,
+    ...(Array.isArray(report.exposure.caplets)
+      ? (report.exposure.caplets as Array<Record<string, unknown>>).map(
+          (caplet) =>
+            `  ${caplet.id}: ${caplet.exposure} (${caplet.callable ? "callable" : `hidden: ${caplet.hiddenReason}`})`,
+        )
+      : []),
+    "",
     "Code Mode",
     `  Types generation: ${doctorOk(report.codeMode.typesGeneration)}`,
     `  Diagnostics: ${doctorOk(report.codeMode.diagnostics)}`,
@@ -138,6 +158,54 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
       : []),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+async function resolveExposureSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+  const configPath = env.CAPLETS_CONFIG?.trim() ? env.CAPLETS_CONFIG.trim() : resolveConfigPath();
+  const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim()
+    ? env.CAPLETS_PROJECT_CONFIG.trim()
+    : resolveProjectConfigPath();
+  try {
+    const config = loadConfig(configPath, projectConfigPath);
+    const service = createNativeCapletsService({
+      mode: "local",
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: () => undefined,
+    });
+    try {
+      const nativeTools = service.listTools();
+      const callableIds = new Set(nativeTools.map((tool) => tool.caplet));
+      return {
+        ok: true,
+        default: config.options.exposure,
+        discoveryTimeoutMs: config.options.exposureDiscoveryTimeoutMs,
+        discoveryConcurrency: config.options.exposureDiscoveryConcurrency,
+        callableNativeToolCount: nativeTools.length,
+        caplets: allCaplets(config).map((caplet) => {
+          const exposure = resolveExposure(caplet.exposure, config.options.exposure);
+          const callable =
+            callableIds.has(caplet.server) ||
+            [...callableIds].some((id) => id.startsWith(`${caplet.server}__`));
+          return {
+            id: caplet.server,
+            exposure: exposure.value,
+            callable,
+            ...(callable ? {} : { hiddenReason: hiddenReasonFor(caplet) }),
+          };
+        }),
+      };
+    } finally {
+      await service.close();
+    }
+  } catch (error) {
+    return {
+      ok: true,
+      configLoaded: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function resolveServerSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
@@ -293,4 +361,30 @@ function observedOutputShapePath(value: unknown): string | undefined {
     typeof (value as { path?: unknown }).path === "string"
     ? (value as { path: string }).path
     : undefined;
+}
+
+function allCaplets(config: { [key: string]: unknown }): CapletConfig[] {
+  const typed = config as {
+    mcpServers?: Record<string, CapletConfig>;
+    openapiEndpoints?: Record<string, CapletConfig>;
+    graphqlEndpoints?: Record<string, CapletConfig>;
+    httpApis?: Record<string, CapletConfig>;
+    cliTools?: Record<string, CapletConfig>;
+    capletSets?: Record<string, CapletConfig>;
+  };
+  return [
+    ...Object.values(typed.mcpServers ?? {}),
+    ...Object.values(typed.openapiEndpoints ?? {}),
+    ...Object.values(typed.graphqlEndpoints ?? {}),
+    ...Object.values(typed.httpApis ?? {}),
+    ...Object.values(typed.cliTools ?? {}),
+    ...Object.values(typed.capletSets ?? {}),
+  ];
+}
+
+function hiddenReasonFor(caplet: CapletConfig): string {
+  if (caplet.disabled) return "disabled";
+  if (caplet.setup) return "setup_required";
+  if (caplet.projectBinding?.required) return "project_binding_required";
+  return "not_exposed";
 }

@@ -86,6 +86,51 @@ describe("CapletsMcpSession", () => {
     await session.close();
     await engine.close();
   });
+
+  it("registers direct operation tools without progressive wrapper or Code Mode", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "direct",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: {
+            ping: {
+              method: "GET",
+              path: "/ping",
+              description: "Ping the service.",
+              inputSchema: {
+                type: "object",
+                properties: { verbose: { type: "boolean" } },
+              },
+            },
+          },
+        },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+
+    await session.refreshExposure();
+
+    expect(session.registeredToolIds()).toEqual(["status__ping"]);
+    expect(server.registered.get("status")).toBeUndefined();
+    expect(server.registered.get("code_mode")).toBeUndefined();
+    expect(server.definitions.get("status__ping")).toMatchObject({
+      description: "Ping the service.",
+      inputSchema: {
+        type: "object",
+        properties: { verbose: { type: "boolean" } },
+      },
+    });
+
+    await session.close();
+    await engine.close();
+  });
 });
 
 function tempConfig(config: unknown): {
@@ -110,9 +155,11 @@ function writeConfig(path: string, config: unknown): void {
 
 function mockServer() {
   const registered = new Map<string, RegisteredTool>();
+  const definitions = new Map<string, Record<string, unknown>>();
   return {
     registered,
-    registerTool: vi.fn((name: string) => {
+    definitions,
+    registerTool: vi.fn((name: string, definition: Record<string, unknown>) => {
       const tool = {
         update: vi.fn(),
         remove: vi.fn(() => registered.delete(name)),
@@ -122,8 +169,11 @@ function mockServer() {
         handler: vi.fn(),
       } as unknown as RegisteredTool;
       registered.set(name, tool);
+      definitions.set(name, definition);
       return tool;
     }),
+    registerResource: vi.fn(),
+    registerPrompt: vi.fn(),
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };

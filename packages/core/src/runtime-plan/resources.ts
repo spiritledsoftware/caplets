@@ -20,6 +20,14 @@ const rank: Record<string, number> = {
   heavy: 3,
 };
 
+export function resourceClassRank(value: string): number {
+  return rank[value] ?? 0;
+}
+
+export function isRuntimeResourceClassAllowed(requested: string, maximum: string): boolean {
+  return resourceClassRank(requested) <= resourceClassRank(maximum);
+}
+
 type ResourceInput = {
   backend?: string | undefined;
   features: string[];
@@ -84,5 +92,5 @@ function capClass(
   maxClass: HostedRuntimeResourceClass | undefined,
 ) {
   if (!maxClass) return requested;
-  return (rank[requested] ?? 0) > (rank[maxClass] ?? 0) ? maxClass : requested;
+  return isRuntimeResourceClassAllowed(requested, maxClass) ? requested : maxClass;
 }

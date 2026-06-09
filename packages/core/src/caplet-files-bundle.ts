@@ -124,6 +124,10 @@ const capletAgentSelectionHintsSchema = {
     .describe("When agents should avoid this Caplet or configured action."),
 };
 
+const capletExposureSchema = z
+  .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
+  .describe("How this Caplet is exposed to agents.");
+
 const capletEndpointAuthSchema = z
   .discriminatedUnion("type", [
     z.object({ type: z.literal("none") }).strict(),
@@ -633,6 +637,7 @@ export const capletFileSchema = z
       .array(z.string().trim().min(1).max(80))
       .optional()
       .describe("Optional tags for grouping or searching Caplets."),
+    exposure: capletExposureSchema.optional(),
     ...capletAgentSelectionHintsSchema,
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
@@ -976,6 +981,7 @@ function capletToServerConfig(
 function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, unknown> {
   return {
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+    ...(frontmatter.exposure ? { exposure: frontmatter.exposure } : {}),
     ...(frontmatter.useWhen ? { useWhen: frontmatter.useWhen } : {}),
     ...(frontmatter.avoidWhen ? { avoidWhen: frontmatter.avoidWhen } : {}),
     ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),

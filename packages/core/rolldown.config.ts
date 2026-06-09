@@ -22,7 +22,10 @@ export default defineConfig([
       "caplet-source": "src/caplet-source/index.ts",
       "code-mode": "src/code-mode/index.ts",
       "observed-output-shapes/pure": "src/observed-output-shapes/pure.ts",
+      "project-binding": "src/project-binding/index.ts",
+      redaction: "src/redaction.ts",
       "runtime-plan": "src/runtime-plan/index.ts",
+      "stable-json": "src/stable-json.ts",
     },
     output: {
       dir: "./dist",

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createNativeCapletsService,
@@ -8,6 +9,9 @@ import {
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
 } from "../src/native";
+
+const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
+const tsxImport = import.meta.resolve("tsx");
 
 describe("native Caplets service", () => {
   const dirs: string[] = [];
@@ -91,6 +95,128 @@ describe("native Caplets service", () => {
 
       expect(JSON.stringify(result)).toContain("Alpha");
       expect(JSON.stringify(result)).not.toContain("super-secret");
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("lists direct native operation tools with the caplets double-underscore prefix", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "direct",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: {
+            ping: {
+              method: "GET",
+              path: "/ping",
+              description: "Ping the service.",
+              inputSchema: {
+                type: "object",
+                properties: { verbose: { type: "boolean" } },
+              },
+            },
+          },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+    try {
+      expect(service.listTools()).toEqual([
+        expect.objectContaining({
+          caplet: "status__ping",
+          toolName: "caplets__status__ping",
+          title: "ping",
+          description: "Ping the service.",
+          inputSchema: {
+            type: "object",
+            properties: { verbose: { type: "boolean" } },
+          },
+        }),
+      ]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("discovers direct MCP tools for native integrations during reload", async () => {
+    const fixture = join(fixturesDir, "stdio-server.ts");
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture MCP",
+          description: "Expose fixture MCP directly.",
+          exposure: "direct",
+          command: process.execPath,
+          args: ["--import", tsxImport, fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+
+    try {
+      await expect(service.reload()).resolves.toBe(true);
+      expect(service.listTools()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            caplet: "fixture__echo",
+            toolName: "caplets__fixture__echo",
+            title: "echo",
+            description: "Echo a message.",
+            inputSchema: expect.objectContaining({ type: "object" }),
+            outputSchema: expect.objectContaining({ type: "object" }),
+          }),
+          expect.objectContaining({
+            caplet: "fixture__list_resources",
+            toolName: "caplets__fixture__list_resources",
+          }),
+          expect.objectContaining({
+            caplet: "fixture__get_prompt",
+            toolName: "caplets__fixture__get_prompt",
+          }),
+        ]),
+      );
+
+      await expect(service.execute("fixture__echo", { message: "hello" })).resolves.toMatchObject({
+        structuredContent: { message: "hello" },
+        _meta: {
+          caplets: expect.objectContaining({
+            capletId: "fixture",
+            operation: "echo",
+            exposure: "direct",
+          }),
+        },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("lists Code Mode only when exposure includes Code Mode", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+    try {
+      expect(service.listTools().map((tool) => tool.toolName)).toEqual(["caplets_code_mode"]);
     } finally {
       await service.close();
     }

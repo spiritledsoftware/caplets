@@ -41,6 +41,37 @@ describe("config", () => {
     }
   });
 
+  it("defaults exposure options and accepts per-Caplet exposure overrides", () => {
+    expect(parseConfig({}).options).toMatchObject({
+      exposure: "progressive_and_code_mode",
+      exposureDiscoveryTimeoutMs: 15000,
+      exposureDiscoveryConcurrency: 4,
+    });
+
+    const config = parseConfig({
+      options: {
+        exposure: "direct",
+        exposureDiscoveryTimeoutMs: 5000,
+        exposureDiscoveryConcurrency: 8,
+      },
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "Manage GitHub repositories.",
+          exposure: "direct_and_code_mode",
+          command: "github-mcp",
+        },
+      },
+    });
+
+    expect(config.options).toMatchObject({
+      exposure: "direct",
+      exposureDiscoveryTimeoutMs: 5000,
+      exposureDiscoveryConcurrency: 8,
+    });
+    expect(config.mcpServers.github?.exposure).toBe("direct_and_code_mode");
+  });
+
   it("loads user config from a path with defaults and interpolation", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
     const path = join(dir, "config.json");
@@ -470,6 +501,9 @@ describe("config", () => {
     expect(config.options).toEqual({
       defaultSearchLimit: 7,
       maxSearchLimit: 40,
+      exposure: "progressive_and_code_mode",
+      exposureDiscoveryTimeoutMs: 15000,
+      exposureDiscoveryConcurrency: 4,
       completion: {
         discoveryTimeoutMs: 750,
         overallTimeoutMs: 1500,
@@ -1826,6 +1860,9 @@ describe("config", () => {
     expect(config.options).toEqual({
       defaultSearchLimit: 5,
       maxSearchLimit: 10,
+      exposure: "progressive_and_code_mode",
+      exposureDiscoveryTimeoutMs: 15000,
+      exposureDiscoveryConcurrency: 4,
       completion: {
         discoveryTimeoutMs: 750,
         overallTimeoutMs: 1500,

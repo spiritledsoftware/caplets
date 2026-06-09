@@ -32,6 +32,21 @@ describe("diagnoseCodeModeTypeScript", () => {
     );
   });
 
+  it("does not block fetch text or non-global fetch member calls", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        const guidance = "Use the browser Caplet instead of await fetch('https://example.com')";
+        const client = { fetch: (value: string) => ({ value }) };
+        const result = client.fetch(guidance);
+        return result;
+      `,
+    });
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).not.toContain("FETCH_UNAVAILABLE");
+    expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+  });
+
   it("allows standard JavaScript, console, URL, JSON, and Caplet callTool", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,

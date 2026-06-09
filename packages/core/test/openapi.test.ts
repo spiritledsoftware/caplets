@@ -809,6 +809,9 @@ describe("native OpenAPI Caplets", () => {
         options: {
           defaultSearchLimit: 20,
           maxSearchLimit: 50,
+          exposure: "progressive_and_code_mode",
+          exposureDiscoveryTimeoutMs: 15000,
+          exposureDiscoveryConcurrency: 4,
           completion: {
             discoveryTimeoutMs: 750,
             overallTimeoutMs: 1500,

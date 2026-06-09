@@ -59,9 +59,21 @@
       "types": "./dist/observed-output-shapes/pure.d.ts",
       "default": "./dist/observed-output-shapes/pure.js"
     },
+    "./project-binding": {
+      "types": "./dist/project-binding/index.d.ts",
+      "default": "./dist/project-binding.js"
+    },
+    "./redaction": {
+      "types": "./dist/redaction.d.ts",
+      "default": "./dist/redaction.js"
+    },
     "./runtime-plan": {
       "types": "./dist/runtime-plan/index.d.ts",
       "default": "./dist/runtime-plan.js"
+    },
+    "./stable-json": {
+      "types": "./dist/stable-json.d.ts",
+      "default": "./dist/stable-json.js"
     },
     "./config-runtime": {
       "types": "./dist/config-runtime.d.ts",

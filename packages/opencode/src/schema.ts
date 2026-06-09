@@ -38,3 +38,41 @@ export function capletsOpenCodeRunArgs() {
     timeoutMs: tool.schema.number().int().positive().optional(),
   };
 }
+
+export function capletsOpenCodeJsonSchemaArgs(schema: Record<string, unknown> | undefined) {
+  const properties =
+    schema &&
+    typeof schema.properties === "object" &&
+    schema.properties &&
+    !Array.isArray(schema.properties)
+      ? (schema.properties as Record<string, unknown>)
+      : {};
+  if (Object.keys(properties).length === 0) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(properties).map(([key, value]) => [key, jsonSchemaPropertyToOpenCode(value)]),
+  );
+}
+
+function jsonSchemaPropertyToOpenCode(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return tool.schema.unknown();
+  const schema = value as Record<string, unknown>;
+  if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "string")) {
+    return tool.schema.enum(schema.enum as [string, ...string[]]);
+  }
+  if (schema.type === "string") return tool.schema.string().optional();
+  if (schema.type === "number" || schema.type === "integer") {
+    return tool.schema.number().int().positive().optional();
+  }
+  if (schema.type === "boolean" && "boolean" in tool.schema) {
+    return (tool.schema as typeof tool.schema & { boolean: () => unknown }).boolean();
+  }
+  if (schema.type === "object") {
+    return tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional();
+  }
+  if (schema.type === "array") {
+    return tool.schema.array(tool.schema.unknown()).min(1).optional();
+  }
+  return tool.schema.unknown();
+}

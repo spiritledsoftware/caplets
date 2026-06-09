@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { hasDirectFetchCall } from "./static-analysis";
 import type { CodeModeDiagnostic } from "./types";
 
 export type DiagnoseCodeModeTypeScriptInput = {
@@ -15,7 +16,6 @@ const AMBIENT_FILE = "/caplets-code-mode/ambient.d.ts";
 const TS_NOCHECK_PATTERN =
   /^\s*(?:(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)*?(?:(?:\/\/\s*@ts-nocheck\b[^\n]*)|(?:\/\*\s*@ts-nocheck\b[\s\S]*?\*\/))/u;
 const BAD_CALL_METHOD_PATTERN = /\bcaplets(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\.call\s*\(/u;
-const FETCH_PATTERN = /\bfetch\s*\(/u;
 
 export function diagnoseCodeModeTypeScript(
   input: DiagnoseCodeModeTypeScriptInput,
@@ -103,7 +103,7 @@ function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
       message: "CapletHandle does not expose call(). Use callTool(name, args) for tool calls.",
     });
   }
-  if (FETCH_PATTERN.test(code)) {
+  if (hasDirectFetchCall(code)) {
     diagnostics.push({
       code: "FETCH_UNAVAILABLE",
       severity: "error",

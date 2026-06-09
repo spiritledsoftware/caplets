@@ -9,6 +9,7 @@ vi.mock("@opencode-ai/plugin", () => ({
         optional: () => ({ type: "string", optional: true }),
         min: () => ({ type: "string" }),
       }),
+      boolean: () => ({ type: "boolean" }),
       number: () => ({
         int: () => ({ positive: () => ({ optional: () => ({ type: "number", optional: true }) }) }),
       }),
@@ -117,6 +118,39 @@ describe("@caplets/opencode", () => {
 
     expect(result).toContain("Serialization error");
     expect(result).toContain("BigInt");
+  });
+
+  it("uses direct native input schemas without progressive operation args", async () => {
+    const { createCapletsOpenCodeHooks } = await import("../src/hooks");
+    const service = {
+      listTools: () => [
+        {
+          caplet: "status__ping",
+          toolName: "caplets__status__ping",
+          title: "ping",
+          description: "Ping the service.",
+          promptGuidance: ["Use caplets__status__ping."],
+          inputSchema: {
+            type: "object",
+            properties: { verbose: { type: "boolean" } },
+          },
+        },
+      ],
+      execute: vi.fn(async () => ({ ok: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    };
+
+    const hooks = await createCapletsOpenCodeHooks(service);
+    const directTool = hooks.tool!.caplets__status__ping as {
+      args: Record<string, unknown>;
+      execute(args: unknown, context: unknown): Promise<string>;
+    };
+
+    expect(directTool.args).toEqual({ verbose: { type: "boolean" } });
+    await directTool.execute({ verbose: true }, {} as never);
+    expect(service.execute).toHaveBeenCalledWith("status__ping", { verbose: true });
   });
 
   it("returns stable text when JSON.stringify returns undefined", async () => {

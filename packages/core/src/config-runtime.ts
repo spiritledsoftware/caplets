@@ -58,6 +58,13 @@ export type AgentSelectionHintsConfig = {
   avoidWhen?: string | undefined;
 };
 
+export type CapletExposure =
+  | "direct"
+  | "progressive"
+  | "code_mode"
+  | "direct_and_code_mode"
+  | "progressive_and_code_mode";
+
 export type CapletServerConfig = CommonCapletConfig & {
   backend: "mcp";
   transport: "stdio" | "http" | "sse";
@@ -176,6 +183,9 @@ export type CapletsConfig = {
   options: {
     defaultSearchLimit: number;
     maxSearchLimit: number;
+    exposure: CapletExposure;
+    exposureDiscoveryTimeoutMs: number;
+    exposureDiscoveryConcurrency: number;
     completion: {
       discoveryTimeoutMs: number;
       overallTimeoutMs: number;
@@ -195,6 +205,7 @@ type CommonCapletConfig = AgentSelectionHintsConfig & {
   server: string;
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   setup?: CapletSetupConfig | undefined;
@@ -255,6 +266,13 @@ const agentSelectionHintsSchema = {
   useWhen: agentSelectionHintSchema.optional(),
   avoidWhen: agentSelectionHintSchema.optional(),
 };
+const exposureSchema = z.enum([
+  "direct",
+  "progressive",
+  "code_mode",
+  "direct_and_code_mode",
+  "progressive_and_code_mode",
+]);
 const commonSchema = {
   name: z.string().trim().min(1).max(80),
   description: z
@@ -265,6 +283,7 @@ const commonSchema = {
     )
     .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
   tags: z.array(z.string().trim().min(1).max(80)).optional(),
+  exposure: exposureSchema.optional(),
   ...agentSelectionHintsSchema,
   body: z.string().optional(),
   setup: setupSchema.optional(),
@@ -440,6 +459,18 @@ const configSchema = z
         cacheTtlMs: 300_000,
         negativeCacheTtlMs: 30_000,
       }),
+    options: z
+      .object({
+        exposure: exposureSchema.default("progressive_and_code_mode"),
+        exposureDiscoveryTimeoutMs: z.number().int().positive().default(15_000),
+        exposureDiscoveryConcurrency: z.number().int().positive().max(32).default(4),
+      })
+      .strict()
+      .default({
+        exposure: "progressive_and_code_mode",
+        exposureDiscoveryTimeoutMs: 15_000,
+        exposureDiscoveryConcurrency: 4,
+      }),
     mcpServers: z.record(z.string().regex(SERVER_ID_PATTERN), mcpServerSchema).default({}),
     openapiEndpoints: z
       .record(z.string().regex(SERVER_ID_PATTERN), openApiEndpointSchema)
@@ -474,6 +505,9 @@ export function parseConfig(input: unknown): CapletsConfig {
     options: {
       defaultSearchLimit: config.defaultSearchLimit,
       maxSearchLimit: config.maxSearchLimit,
+      exposure: config.options.exposure,
+      exposureDiscoveryTimeoutMs: config.options.exposureDiscoveryTimeoutMs,
+      exposureDiscoveryConcurrency: config.options.exposureDiscoveryConcurrency,
       completion: config.completion,
     },
     mcpServers: mapBackend(config.mcpServers, "mcp", (id, raw) => {
