@@ -21,6 +21,7 @@ export default defineConfig([
     input: {
       "caplet-source": "src/caplet-source/index.ts",
       "code-mode": "src/code-mode/index.ts",
+      "observed-output-shapes/pure": "src/observed-output-shapes/pure.ts",
       "runtime-plan": "src/runtime-plan/index.ts",
     },
     output: {

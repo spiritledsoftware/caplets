@@ -55,6 +55,10 @@
       "types": "./dist/observed-output-shapes/index.d.ts",
       "default": "./dist/observed-output-shapes.js"
     },
+    "./observed-output-shapes/pure": {
+      "types": "./dist/observed-output-shapes/pure.d.ts",
+      "default": "./dist/observed-output-shapes/pure.js"
+    },
     "./runtime-plan": {
       "types": "./dist/runtime-plan/index.d.ts",
       "default": "./dist/runtime-plan.js"
