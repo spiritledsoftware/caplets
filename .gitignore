@@ -25,3 +25,4 @@ benchmark-results/
 
 # impeccable
 .impeccable/live
+.auto/
