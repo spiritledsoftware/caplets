@@ -32,43 +32,35 @@ describe("Code Mode MCP tool", () => {
     expect(server.registered.get("run")).toBeUndefined();
     expect(server.definitions.get("code_mode")?.description).toContain("caplets.<id>");
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "Prefer a two-pass workflow for non-trivial tasks",
+      "Prefer a compact one-pass script for most tasks",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "Pass 1: discover and inspect candidate caplets/tools/resources/prompts",
+      "Do not return full tool lists",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "return chosen handles, call signatures/schemas, and planned args",
+      "keep bulky intermediate data inside the script",
     );
+    expect(server.definitions.get("code_mode")?.description).toContain("Execute with exact args");
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "Pass 2: execute with exact args",
-    );
-    expect(server.definitions.get("code_mode")?.description).toContain(
-      "Return decision-ready JSON, not raw tool payloads",
+      "return only decision-ready JSON",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "derive final recommendations from all relevant records",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "summary, key evidence, derived fields, recommendation",
+      "summaries, key ids/names/titles/statuses/urls, derived fields, recommendation",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "if records disagree or have ranges/statuses, compute the strictest applicable conclusion",
-    );
-    expect(server.definitions.get("code_mode")?.description).toContain(
-      "prefer `outputSchema` or `outputTypeScript`",
-    );
-    expect(server.definitions.get("code_mode")?.description).toContain(
-      "do not guess from provider memory",
+      "If records disagree or have ranges/statuses, compute the strictest applicable conclusion",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "Never invent tool names, resource URIs, prompt names",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "Never infer input/output schemas from memory",
+      "when args matter, use describeTool",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "use describeTool for the exact callSignature",
+      "exact callSignature/inputSchema/inputTypeScript",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "list broad candidate records",
@@ -76,12 +68,9 @@ describe("Code Mode MCP tool", () => {
     expect(server.definitions.get("code_mode")?.description).toContain(
       'const h=caplets["caplet-id"]',
     );
-    expect(server.definitions.get("code_mode")?.description).toContain("observedOutputShape");
-    expect(server.definitions.get("code_mode")?.description).toContain("absent or generic");
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "Filter bulky results in script",
+      "remove unused descriptors/schemas/raw content",
     );
-    expect(server.definitions.get("code_mode")?.description).toContain("html_url");
     expect(server.definitions.get("code_mode")?.description).not.toContain(
       "Do not split discovery and execution",
     );

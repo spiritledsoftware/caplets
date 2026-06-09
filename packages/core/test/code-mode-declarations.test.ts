@@ -69,17 +69,16 @@ describe("generateCodeModeDeclarations", () => {
     const declaration = 'declare const caplets:{docs:CapletHandle<"docs">;};';
     const description = generateCodeModeRunToolDescription(declaration);
 
-    expect(description).toContain("Prefer a two-pass workflow for non-trivial tasks");
-    expect(description).toContain(
-      "Pass 1: discover and inspect candidate caplets/tools/resources/prompts",
-    );
-    expect(description).toContain("Pass 2: execute with exact args");
-    expect(description).toContain("Return decision-ready JSON, not raw tool payloads");
+    expect(description).toContain("Prefer a compact one-pass script for most tasks");
+    expect(description).toContain("Do not return full tool lists");
+    expect(description).toContain("keep bulky intermediate data inside the script");
+    expect(description).toContain("Execute with exact args");
+    expect(description).toContain("return only decision-ready JSON");
     expect(description).toContain("For fallback, check candidate handles first");
     expect(description).toContain("const ready=await h.check()");
     expect(description).toContain("Never invent tool names, resource URIs, prompt names");
-    expect(description).toContain("Never infer input/output schemas from memory");
-    expect(description).toContain("use describeTool for the exact callSignature");
+    expect(description).toContain("when args matter, use describeTool");
+    expect(description).toContain("exact callSignature/inputSchema/inputTypeScript");
     expect(description).toContain("Generated declaration hints:");
     expect(description).toContain(declaration);
     expect(description).not.toContain("Do not split discovery and execution");
