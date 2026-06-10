@@ -31,18 +31,38 @@ import {
   validateCodeModeBenchmark,
 } from "../lib/code-mode";
 import {
+  EXECUTOR_MCP_DIRECT_TOOLS_ENV,
+  EXECUTOR_PI_EVAL_ADAPTER_EXPOSURE,
   PI_EVAL_MODES,
+  PI_MCP_ADAPTER_EXTENSION_SOURCE,
+  VANILLA_MCP_DIRECT_TOOLS_ENV,
+  VANILLA_MCP_PI_EVAL_ADAPTER_EXPOSURE,
   buildPiEvalCommand,
+  buildPiEvalPrewarmPrompt,
   buildPiEvalPrompt,
+  createExecutorMcpAdapterConfig,
   createPiEvalRunConfig,
+  createVanillaMcpAdapterConfig,
+  piEvalModeProduct,
 } from "../lib/pi-eval/config";
 import {
   computeDomainCoverage,
   requiredEvidenceScore,
   summarizePiEvalMetrics,
 } from "../lib/pi-eval/metrics";
+import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
-import { buildPiEvalMatrix, parsePiEvalArgs, runPiEvalBenchmark } from "../run-pi-eval";
+import {
+  buildPiEvalMatrix,
+  parsePiEvalArgs,
+  prewarmMcpAdapterDirectTools,
+  runPiEvalBenchmark,
+} from "../run-pi-eval";
+import {
+  createExecutorFixtureSourcePayloads,
+  detectExecutorCli,
+  setupExecutorFixtureSources,
+} from "../lib/pi-eval/executor";
 import { createNativeCapletsService } from "@caplets/core/native";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -1190,11 +1210,38 @@ function withoutExitCode<T extends { exitCode?: unknown }>(result: T): Omit<T, "
 describe("Pi live tool surface eval harness", () => {
   it("parses modes and builds the complete Pi eval matrix", () => {
     expect(buildPiEvalMatrix({}).map((entry) => entry.mode)).toEqual([...PI_EVAL_MODES]);
+    expect(buildPiEvalMatrix({}).find((entry) => entry.mode === "vanilla-mcp")).toMatchObject({
+      mode: "vanilla-mcp",
+      product: "mcp",
+    });
+    expect(buildPiEvalMatrix({}).find((entry) => entry.mode === "executor-mcp")).toMatchObject({
+      mode: "executor-mcp",
+      product: "executor",
+    });
+    expect(piEvalModeProduct("caplets-code-mode")).toBe("caplets");
+    expect(piEvalModeProduct("vanilla-mcp")).toBe("mcp");
+    expect(piEvalModeProduct("executor-mcp")).toBe("executor");
     expect(
       parsePiEvalArgs(["--mode", "caplets-code-mode,caplets-progressive-code-mode", "--runs", "2"]),
     ).toMatchObject({
       modes: ["caplets-code-mode", "caplets-progressive-code-mode"],
       runs: 2,
+      concurrency: 1,
+    });
+    expect(parsePiEvalArgs(["--concurrency", "3"])).toMatchObject({ concurrency: 3 });
+    expect(() => parsePiEvalArgs(["--concurrency", "0"])).toThrow(/positive integer/u);
+    expect(
+      parsePiEvalArgs([
+        "--mode",
+        "executor-mcp",
+        "--executor-command",
+        "executor-test",
+        "--skip-missing-competitors",
+      ]),
+    ).toMatchObject({
+      modes: ["executor-mcp"],
+      executorCommand: "executor-test",
+      skipMissingCompetitors: true,
     });
     expect(() => parsePiEvalArgs(["--mode", "unknown"])).toThrow(/Unknown Pi eval mode/u);
   });
@@ -1205,12 +1252,20 @@ describe("Pi live tool surface eval harness", () => {
     expect(buildPiEvalPrompt(task, "caplets-progressive-code-mode")).toContain(
       "Both Caplets capability tools and caplets_code_mode are available",
     );
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("issues_...");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("without Caplets or Executor");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("executor_...");
+    expect(buildPiEvalPrompt(task, "executor-mcp")).toContain("executor_...");
+    expect(buildPiEvalPrompt(task, "executor-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrewarmPrompt()).toContain("configured server(s)");
 
     const command = buildPiEvalCommand({
       command: "pi-test",
       prompt: "hello",
       model: "provider/model",
       extensionPaths: ["/tmp/a.js", "/tmp/b.js"],
+      extraArgs: ["--mcp-config", "/tmp/mcp.json"],
     });
     expect(command).toEqual({
       command: "pi-test",
@@ -1230,8 +1285,328 @@ describe("Pi live tool surface eval harness", () => {
         "/tmp/a.js",
         "-e",
         "/tmp/b.js",
+        "--mcp-config",
+        "/tmp/mcp.json",
       ],
     });
+  });
+
+  it("creates isolated vanilla MCP eval config with pi-mcp-adapter direct tools only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-vanilla-mcp-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "vanilla-mcp",
+        piAgentSourceDir: sourceAgentDir,
+      });
+
+      expect(config.product).toBe("mcp");
+      expect(config.adapterExposure).toBe(VANILLA_MCP_PI_EVAL_ADAPTER_EXPOSURE);
+      expect(config.extensionPaths).toEqual([
+        config.instrumentationPath,
+        PI_MCP_ADAPTER_EXTENSION_SOURCE,
+      ]);
+      expect(config.extraArgs).toEqual(["--mcp-config", config.adapterConfigPath]);
+      expect(config.env.MCP_DIRECT_TOOLS).toBe(VANILLA_MCP_DIRECT_TOOLS_ENV);
+      expect(config.env.CAPLETS_CONFIG).toBeUndefined();
+      expect(config.env.HOME).toBeUndefined();
+      expect(config.executorCommand).toBeUndefined();
+      expect(config.executorDataDir).toBeUndefined();
+      expect(config.adapterConfig.settings).toMatchObject({
+        directTools: true,
+        disableProxyTool: true,
+        sampling: false,
+        elicitation: false,
+      });
+      expect(Object.keys(config.adapterConfig.mcpServers).sort()).toEqual([
+        "api",
+        "ci",
+        "code-map",
+        "docs",
+        "issues",
+      ]);
+      expect(config.adapterConfig.mcpServers.issues).toMatchObject({
+        command: "tsx",
+        args: [config.fixtureServerPath, "--server", "issues"],
+        lifecycle: "eager",
+        directTools: true,
+        cwd: config.supportDir,
+      });
+      expect(config.adapterConfig).toEqual(
+        createVanillaMcpAdapterConfig({
+          fixtureServerPath: config.fixtureServerPath,
+          supportDir: config.supportDir,
+          path: config.env.PATH,
+        }),
+      );
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const adapterConfig = JSON.parse(await readFile(config.adapterConfigPath, "utf8"));
+      expect(adapterConfig).toEqual(config.adapterConfig);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates isolated Executor MCP eval config with pi-mcp-adapter direct tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-executor-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "executor-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        executorCommand: "executor-test",
+      });
+
+      expect(config.product).toBe("executor");
+      expect(config.adapterExposure).toBe(EXECUTOR_PI_EVAL_ADAPTER_EXPOSURE);
+      expect(config.extensionPaths).toEqual([
+        config.instrumentationPath,
+        PI_MCP_ADAPTER_EXTENSION_SOURCE,
+      ]);
+      expect(config.extraArgs).toEqual(["--mcp-config", config.adapterConfigPath]);
+      expect(config.env.HOME).toBe(config.adapterHomeDir);
+      expect(config.env.PI_CODING_AGENT_DIR).toBe(config.agentDir);
+      expect(config.env.MCP_DIRECT_TOOLS).toBe(EXECUTOR_MCP_DIRECT_TOOLS_ENV);
+      expect(config.env.CAPLETS_CONFIG).toBeUndefined();
+      expect(config.adapterConfig.settings).toMatchObject({
+        directTools: true,
+        disableProxyTool: true,
+        sampling: false,
+        elicitation: false,
+      });
+      expect(config.adapterConfig.mcpServers.executor).toMatchObject({
+        command: "executor-test",
+        args: ["mcp"],
+        lifecycle: "eager",
+        directTools: true,
+        cwd: config.supportDir,
+      });
+      expect(config.adapterConfig.mcpServers.executor.env).toMatchObject({
+        EXECUTOR_DATA_DIR: config.executorDataDir,
+        EXECUTOR_SCOPE_DIR: config.executorScopeDir,
+      });
+      expect(config.adapterConfig).toEqual(
+        createExecutorMcpAdapterConfig({
+          executorCommand: "executor-test",
+          executorDataDir: config.executorDataDir,
+          executorScopeDir: config.executorScopeDir,
+          supportDir: config.supportDir,
+          path: config.env.PATH,
+        }),
+      );
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const adapterConfig = JSON.parse(await readFile(config.adapterConfigPath, "utf8"));
+      expect(adapterConfig).toEqual(config.adapterConfig);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("builds Executor fixture source payloads and setup commands", async () => {
+    const payloads = createExecutorFixtureSourcePayloads({
+      fixtureServerPath: "/tmp/mcp-server.ts",
+      supportDir: "/tmp/support",
+      sourceCommand: "tsx-test",
+    });
+    expect(payloads).toHaveLength(5);
+    expect(payloads[0]).toEqual({
+      transport: "stdio",
+      name: "issues",
+      command: "tsx-test",
+      args: ["/tmp/mcp-server.ts", "--server", "issues"],
+      cwd: "/tmp/support",
+    });
+
+    const calls: any[] = [];
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        sourceCommand: "tsx-test",
+        env: { EXECUTOR_DATA_DIR: "/tmp/executor-data" },
+        processRunner: async (call: any) => {
+          calls.push(call);
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({
+              namespace: JSON.parse(call.args[4]).name,
+              source: { id: JSON.parse(call.args[4]).name, scope: "scope-test" },
+              toolCount: 28,
+              discovery: { status: "ok" },
+            }),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ payloads });
+    expect(calls).toHaveLength(5);
+    expect(calls[0]).toMatchObject({
+      command: "executor-test",
+      args: ["call", "executor", "mcp", "addSource", JSON.stringify(payloads[0])],
+      cwd: "/tmp/support",
+    });
+  });
+
+  it("resumes paused Executor fixture source setup and rejects missing tool registration", async () => {
+    const calls: any[] = [];
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        servers: ["issues"],
+        processRunner: async (call: any) => {
+          calls.push(call);
+          if (call.args[0] === "resume") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({
+                ok: true,
+                data: {
+                  namespace: "issues",
+                  source: { id: "issues", scope: "scope-test" },
+                  toolCount: 28,
+                  discovery: { status: "ok" },
+                },
+              }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: [
+              "Execution paused: Add an MCP source",
+              "executionId: exec_1",
+              "Approve in browser:",
+              "  http://localhost:49181/resume/exec_1",
+            ].join("\n"),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({
+      results: [
+        expect.objectContaining({
+          output: expect.objectContaining({
+            ok: true,
+            data: expect.objectContaining({ toolCount: 28 }),
+          }),
+        }),
+      ],
+    });
+    expect(calls.map((call) => call.args[0])).toEqual(["call", "resume"]);
+    expect(calls[1].args).toEqual([
+      "resume",
+      "--execution-id",
+      "exec_1",
+      "--base-url",
+      "http://localhost:49181",
+      "--action",
+      "accept",
+      "--content",
+      "{}",
+    ]);
+
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        servers: ["issues"],
+        processRunner: async (call: any) => ({
+          ...emptyProcessResult({ command: call.command, args: call.args }),
+          stdout: JSON.stringify({
+            namespace: "issues",
+            toolCount: 0,
+            discovery: { status: "ok" },
+          }),
+        }),
+      }),
+    ).rejects.toThrow(/expected registered tools/u);
+  });
+
+  it("detects Executor CLI availability and missing CLI failures", async () => {
+    await expect(
+      detectExecutorCli({
+        command: "executor-test",
+        runProcess: async () => ({ ...emptyProcessResult(), stdout: "executor 1.2.3\n" }),
+      }),
+    ).resolves.toMatchObject({
+      available: true,
+      command: "executor-test",
+      version: "executor 1.2.3",
+    });
+
+    await expect(
+      detectExecutorCli({
+        command: "missing-executor",
+        runProcess: async () => {
+          const error = new Error("missing") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        },
+      }),
+    ).resolves.toMatchObject({ available: false, command: "missing-executor" });
+  });
+
+  it("prewarms Executor direct tools with separate unmeasured metrics and sessions", async () => {
+    const calls: any[] = [];
+    const runConfig = {
+      extensionPaths: ["/tmp/instrumentation.ts", PI_MCP_ADAPTER_EXTENSION_SOURCE],
+      extraArgs: ["--mcp-config", "/tmp/executor-mcp.json"],
+      env: {
+        HOME: "/tmp/home",
+        PI_CODING_AGENT_DIR: "/tmp/agent",
+        PI_CODING_AGENT_SESSION_DIR: "/tmp/sessions",
+        CAPLETS_PI_EVAL_METRICS: "/tmp/metrics.jsonl",
+        MCP_DIRECT_TOOLS: EXECUTOR_MCP_DIRECT_TOOLS_ENV,
+      },
+      prewarmMetricsPath: "/tmp/prewarm-metrics.jsonl",
+      prewarmSessionsDir: "/tmp/prewarm-sessions",
+    };
+
+    const result = await prewarmMcpAdapterDirectTools({
+      piCommand: "pi-test",
+      model: "provider/model",
+      runConfig,
+      candidateWorkspace: "/tmp/workspace",
+      env: { CAPLETS_BENCH_LIVE: "1", HOME: "/tmp/outer-home" },
+      processRunner: async (call: any) => {
+        calls.push(call);
+        return emptyProcessResult({ command: call.command, args: call.args });
+      },
+    });
+
+    expect(result.command).toBe("pi-test");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain("--mcp-config");
+    expect(calls[0].args).toContain("/tmp/executor-mcp.json");
+    expect(calls[0].args).toContain(PI_MCP_ADAPTER_EXTENSION_SOURCE);
+    expect(calls[0].env.CAPLETS_PI_EVAL_METRICS).toBe("/tmp/prewarm-metrics.jsonl");
+    expect(calls[0].env.PI_CODING_AGENT_SESSION_DIR).toBe("/tmp/prewarm-sessions");
+    expect(calls[0].env.PI_CODING_AGENT_DIR).toBe("/tmp/agent");
+    expect(calls[0].env.HOME).toBe("/tmp/home");
+    expect(calls[0].cwd).toBe("/tmp/workspace");
   });
 
   it("creates isolated Pi eval config and copies only auth-bearing Pi files", async () => {
@@ -1349,6 +1724,17 @@ describe("Pi live tool surface eval harness", () => {
     expect(metrics.requestPayloadEstimatedTokens).toBe(25);
     expect(metrics.toolSurfaceEstimatedTokens).toBe(10);
     expect(metrics.nonSurfaceEstimatedTokens).toBe(15);
+    expect(metrics.requestTokenBuckets).toMatchObject({
+      requestCount: 1,
+      totals: {
+        requestPayloadEstimatedTokens: 25,
+        toolSurfaceEstimatedTokens: 10,
+        nonSurfaceEstimatedTokens: 15,
+        messagePayloadEstimatedTokens: 15,
+        attributedNonSurfaceEstimatedTokens: 15,
+        requestOverheadEstimatedTokens: 0,
+      },
+    });
     expect(metrics.providerUsage).toEqual({
       inputTokens: 1,
       outputTokens: 2,
@@ -1356,6 +1742,143 @@ describe("Pi live tool surface eval harness", () => {
       cacheWriteTokens: 0,
       totalTokens: 0,
     });
+  });
+
+  it("preserves per-request token buckets for prompt attribution", () => {
+    const metrics = summarizePiEvalMetrics([
+      {
+        type: "before_provider_request",
+        requestPayloadEstimatedTokens: 100,
+        toolSurfaceEstimatedTokens: 30,
+        messagePayloadEstimatedTokens: 50,
+        requestTokenBuckets: {
+          requestPayloadEstimatedTokens: 100,
+          toolSurfaceEstimatedTokens: 30,
+          nonSurfaceEstimatedTokens: 70,
+          messagePayloadEstimatedTokens: 50,
+          instructionEstimatedTokens: 10,
+          userMessageEstimatedTokens: 20,
+          assistantMessageEstimatedTokens: 15,
+          toolCallMessageEstimatedTokens: 2,
+          toolResultMessageEstimatedTokens: 13,
+          attributedNonSurfaceEstimatedTokens: 60,
+          requestOverheadEstimatedTokens: 10,
+        },
+      },
+      {
+        type: "before_provider_request",
+        requestPayloadEstimatedTokens: 80,
+        toolSurfaceEstimatedTokens: 20,
+        messagePayloadEstimatedTokens: 45,
+        requestTokenBuckets: {
+          requestPayloadEstimatedTokens: 80,
+          toolSurfaceEstimatedTokens: 20,
+          nonSurfaceEstimatedTokens: 60,
+          messagePayloadEstimatedTokens: 45,
+          instructionEstimatedTokens: 10,
+          userMessageEstimatedTokens: 15,
+          assistantMessageEstimatedTokens: 20,
+          toolResultMessageEstimatedTokens: 10,
+          attributedNonSurfaceEstimatedTokens: 55,
+          requestOverheadEstimatedTokens: 5,
+        },
+      },
+    ]);
+
+    expect(metrics.requestTokenBuckets).toMatchObject({
+      requestCount: 2,
+      totals: {
+        requestPayloadEstimatedTokens: 180,
+        toolSurfaceEstimatedTokens: 50,
+        nonSurfaceEstimatedTokens: 130,
+        messagePayloadEstimatedTokens: 95,
+        instructionEstimatedTokens: 20,
+        userMessageEstimatedTokens: 35,
+        assistantMessageEstimatedTokens: 35,
+        toolCallMessageEstimatedTokens: 2,
+        toolResultMessageEstimatedTokens: 23,
+        attributedNonSurfaceEstimatedTokens: 115,
+        requestOverheadEstimatedTokens: 15,
+      },
+      averagesPerRequest: {
+        requestPayloadEstimatedTokens: 90,
+        toolSurfaceEstimatedTokens: 25,
+        nonSurfaceEstimatedTokens: 65,
+      },
+    });
+    expect(metrics.requestTokenBuckets.sharesOfRequest.toolSurfaceEstimatedTokens).toBeCloseTo(
+      50 / 180,
+    );
+  });
+
+  it("instruments OpenAI Responses input payloads into request token buckets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-instrumentation-test-"));
+    const metricsPath = join(root, "metrics.jsonl");
+    const previousMetricsPath = process.env.CAPLETS_PI_EVAL_METRICS;
+    const handlers = new Map<string, (event: any) => void>();
+    try {
+      process.env.CAPLETS_PI_EVAL_METRICS = metricsPath;
+      piEvalInstrumentation({
+        on: (event: string, handler: (payload: any) => void) => handlers.set(event, handler),
+      });
+
+      handlers.get("before_provider_request")?.({
+        provider: "openai",
+        payload: {
+          model: "test-model",
+          instructions: "Use tools only when they provide external evidence.",
+          input: [
+            { role: "system", content: "System prompt with benchmark rules." },
+            { role: "user", content: "Investigate BENCH-451 and CI-9182." },
+            {
+              role: "assistant",
+              content: "I will inspect the incident and CI state.",
+            },
+            { type: "function_call", name: "issues_active_incidents", arguments: "{}" },
+            {
+              type: "function_call_output",
+              call_id: "call-1",
+              output: "BENCH-451 checkout retry hardening incident.",
+            },
+          ],
+          tools: [
+            {
+              type: "function",
+              name: "issues_active_incidents",
+              description: "List active incidents.",
+            },
+          ],
+        },
+      });
+      handlers.get("tool_result")?.({
+        toolName: "issues_active_incidents",
+        input: { query: "BENCH-451 must not be attributed from input" },
+        result: [{ id: "BENCH-451", title: "Checkout retry hardening" }],
+      });
+
+      const events = (await readFile(metricsPath, "utf8"))
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => JSON.parse(line));
+      const request = events.find((event) => event.type === "before_provider_request");
+      expect(request.messagePayloadBytes).toBeGreaterThan(2);
+      expect(request.requestTokenBuckets.messagePayloadEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.instructionEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.instructionMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.userMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.assistantMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.toolCallMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.toolResultMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.requestOverheadEstimatedTokens).toBeGreaterThanOrEqual(0);
+
+      const toolResult = events.find((event) => event.type === "tool_result");
+      expect(toolResult.resultPreview).toContain("BENCH-451");
+      expect(toolResult.resultPreview).not.toContain("must not be attributed from input");
+    } finally {
+      if (previousMetricsPath == null) delete process.env.CAPLETS_PI_EVAL_METRICS;
+      else process.env.CAPLETS_PI_EVAL_METRICS = previousMetricsPath;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not classify direct Caplets tools as progressive wrappers", () => {
@@ -1375,6 +1898,43 @@ describe("Pi live tool surface eval harness", () => {
     ).toBe("progressive-only");
   });
 
+  it("classifies pi-mcp-adapter direct tools and flags measured proxy fallback", () => {
+    const directMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "executor_search" }],
+      [],
+      { mode: "executor-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(directMetrics.hybridChoice).toBe("executor-only");
+    expect(directMetrics.directToolsPrewarmFailure).toBe(false);
+
+    const vanillaMetrics = summarizePiEvalMetrics(
+      [
+        { type: "tool_execution_start", toolName: "issues_active_incidents" },
+        { type: "tool_execution_start", toolName: "api_get_endpoint" },
+      ],
+      [],
+      { mode: "vanilla-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(vanillaMetrics.hybridChoice).toBe("vanilla-mcp-only");
+    expect(vanillaMetrics.directToolsPrewarmFailure).toBe(false);
+
+    const proxyMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "mcp" }],
+      [],
+      { mode: "executor-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(proxyMetrics.hybridChoice).toBe("executor-proxy-fallback");
+    expect(proxyMetrics.directToolsPrewarmFailure).toBe(true);
+
+    const vanillaProxyMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "mcp" }],
+      [],
+      { mode: "vanilla-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(vanillaProxyMetrics.hybridChoice).toBe("vanilla-mcp-proxy-fallback");
+    expect(vanillaProxyMetrics.directToolsPrewarmFailure).toBe(true);
+  });
+
   it("scores required checkout evidence from observed domain coverage", () => {
     const coverage = computeDomainCoverage([
       { text: "BENCH-451 from issues" },
@@ -1392,6 +1952,44 @@ describe("Pi live tool surface eval harness", () => {
     ).toMatchObject({ required: true, success: true, missingDomains: [] });
   });
 
+  it("counts domain coverage from tool results, not prompt or tool input text", () => {
+    const inputOnlyCoverage = computeDomainCoverage([
+      {
+        type: "tool_result",
+        toolName: "executor_execute",
+        input: {
+          code: "search for BENCH-451 CI-9182 runbook /checkout/authorize code-map",
+        },
+        resultPreview: "[]",
+      },
+    ]);
+    expect(inputOnlyCoverage).toMatchObject({
+      issues: false,
+      ci: false,
+      docs: false,
+      api: false,
+      codeMap: false,
+      requiredComplete: false,
+    });
+
+    const resultCoverage = computeDomainCoverage([
+      {
+        type: "tool_result",
+        toolName: "executor_execute",
+        resultPreview:
+          "BENCH-451 CI-9182 checkout retry runbook idempotency guidance /checkout/authorize targetFiles",
+      },
+    ]);
+    expect(resultCoverage).toMatchObject({
+      issues: true,
+      ci: true,
+      docs: true,
+      api: true,
+      codeMap: true,
+      requiredComplete: true,
+    });
+  });
+
   it("refuses live Pi eval runs unless explicitly enabled", async () => {
     await expect(
       runPiEvalBenchmark({
@@ -1402,9 +2000,183 @@ describe("Pi live tool surface eval harness", () => {
     ).rejects.toThrow(/CAPLETS_BENCH_LIVE=1/u);
   });
 
+  it("requires Executor only when executor-mcp is selected", async () => {
+    await expect(
+      runPiEvalBenchmark({
+        options: {
+          outputDir: join(tmpdir(), "caplets-pi-eval-missing-executor"),
+          modes: ["executor-mcp"],
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        piDetector: async () => ({ available: true, command: "pi-test" }),
+        executorDetector: async () => ({
+          available: false,
+          command: "executor-test",
+          reason: "Executor CLI is missing.",
+        }),
+      }),
+    ).rejects.toThrow(/Executor CLI is missing/u);
+  });
+
+  it("does not require Executor for vanilla-mcp mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-vanilla-no-executor-test-"));
+    const fixtureWorkspace = join(root, "workspace-fixture");
+    const outputDir = join(root, "reports");
+    const tasksPath = join(root, "tasks.json");
+    let executorDetectorCalled = false;
+
+    try {
+      await mkdir(fixtureWorkspace, { recursive: true });
+      await writeFile(join(fixtureWorkspace, "package.json"), '{"type":"module"}\n');
+      await writeFile(tasksPath, JSON.stringify([{ id: "task-a", prompt: "Do task A." }], null, 2));
+
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          modes: ["vanilla-mcp"],
+          tasks: ["task-a"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        fixtureWorkspaceRoot: fixtureWorkspace,
+        tasksPath,
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        executorDetector: async () => {
+          executorDetectorCalled = true;
+          return { available: false, reason: "Executor is intentionally unavailable." };
+        },
+        runConfigFactory: async ({ mode }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          return {
+            runRoot,
+            mode,
+            product: "mcp",
+            adapterExposure: "direct-tools",
+            configPath: null,
+            adapterConfigPath: join(runRoot, "vanilla-mcp.json"),
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: join(runRoot, "prewarm-metrics.jsonl"),
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: join(runRoot, "prewarm-sessions"),
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [PI_MCP_ADAPTER_EXTENSION_SOURCE],
+            extraArgs: ["--mcp-config", join(runRoot, "vanilla-mcp.json")],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) =>
+          emptyProcessResult({ command: call.command, args: call.args }),
+      });
+
+      expect(executorDetectorCalled).toBe(false);
+      expect(result.report.results[0]).toMatchObject({ mode: "vanilla-mcp", product: "mcp" });
+      expect(result.report.results[0].prewarm).toMatchObject({ unmeasured: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs Pi eval mode/task/run jobs with bounded concurrency and stable result ordering", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-concurrency-test-"));
+    const fixtureWorkspace = join(root, "workspace-fixture");
+    const outputDir = join(root, "reports");
+    const tasksPath = join(root, "tasks.json");
+    const runRoots: string[] = [];
+    let activeAgentRuns = 0;
+    let maxActiveAgentRuns = 0;
+    const progress: string[] = [];
+
+    try {
+      await mkdir(fixtureWorkspace, { recursive: true });
+      await writeFile(join(fixtureWorkspace, "package.json"), '{"type":"module"}\n');
+      await writeFile(
+        tasksPath,
+        JSON.stringify(
+          [
+            { id: "task-a", prompt: "Do task A." },
+            { id: "task-b", prompt: "Do task B." },
+          ],
+          null,
+          2,
+        ),
+      );
+
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          modes: ["caplets-code-mode"],
+          tasks: ["task-a", "task-b"],
+          runs: 2,
+          concurrency: 2,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        fixtureWorkspaceRoot: fixtureWorkspace,
+        tasksPath,
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        runConfigFactory: async ({ mode }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          runRoots.push(runRoot);
+          return {
+            runRoot,
+            mode,
+            product: "caplets",
+            adapterExposure: null,
+            configPath: null,
+            adapterConfigPath: null,
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: null,
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: null,
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [],
+            extraArgs: [],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) => {
+          activeAgentRuns += 1;
+          maxActiveAgentRuns = Math.max(maxActiveAgentRuns, activeAgentRuns);
+          await sleep(30);
+          activeAgentRuns -= 1;
+          return emptyProcessResult({ command: call.command, args: call.args });
+        },
+        onProgress: (message: string) => progress.push(message),
+      });
+
+      expect(maxActiveAgentRuns).toBe(2);
+      expect(result.report.options.concurrency).toBe(2);
+      expect(result.report.results.map((row: any) => `${row.taskId}:${row.run}`)).toEqual([
+        "task-a:1",
+        "task-a:2",
+        "task-b:1",
+        "task-b:2",
+      ]);
+      expect(progress[0]).toContain("concurrency 2");
+      expect(await readFile(result.markdownPath, "utf8")).toContain("Concurrency: 2");
+      for (const runRoot of runRoots)
+        await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("summarizes Pi eval reports with token, round-trip, and tool-call comparisons", () => {
     const result = {
       mode: "caplets-code-mode",
+      product: "caplets",
+      adapterExposure: null,
       taskId: "checkout-incident-retry-hardening",
       run: 1,
       score: { success: true },
@@ -1414,6 +2186,21 @@ describe("Pi live tool surface eval harness", () => {
         requestPayloadEstimatedTokens: 100,
         nonSurfaceEstimatedTokens: 40,
         toolSurfaceEstimatedTokens: 60,
+        requestTokenBuckets: {
+          totals: {
+            requestPayloadEstimatedTokens: 100,
+            toolSurfaceEstimatedTokens: 60,
+            nonSurfaceEstimatedTokens: 40,
+            instructionEstimatedTokens: 4,
+            instructionMessageEstimatedTokens: 3,
+            userMessageEstimatedTokens: 10,
+            assistantMessageEstimatedTokens: 8,
+            toolCallMessageEstimatedTokens: 2,
+            toolResultMessageEstimatedTokens: 12,
+            otherMessageEstimatedTokens: 1,
+            requestOverheadEstimatedTokens: 0,
+          },
+        },
         toolCallCount: 1,
         toolEventCount: 2,
         hybridChoice: "code-mode-only",
@@ -1421,26 +2208,64 @@ describe("Pi live tool surface eval harness", () => {
         providerUsage: { totalTokens: 120 },
       },
     };
-    const summary = summarizePiEvalResults([result]);
+    const executorResult = {
+      ...result,
+      mode: "executor-mcp",
+      product: "executor",
+      adapterExposure: "direct-tools",
+      metrics: {
+        ...result.metrics,
+        toolCallCount: 2,
+        toolEventCount: 4,
+        hybridChoice: "executor-only",
+        providerUsage: { totalTokens: 180 },
+      },
+    };
+    const summary = summarizePiEvalResults([result, executorResult]);
     const markdown = renderPiEvalMarkdownReport({
       completedAt: "2026-06-09T00:00:00.000Z",
-      options: { model: "test-model", runs: 1, timeoutMs: 1000 },
+      options: { model: "test-model", runs: 1, timeoutMs: 1000, concurrency: 2 },
       summary,
-      results: [result],
+      results: [result, executorResult],
     });
 
-    expect(summary.byMode).toEqual([
-      expect.objectContaining({
-        mode: "caplets-code-mode",
-        passed: 1,
-        total: 1,
-        averageProviderRequestCount: 1,
-        averageToolCalls: 1,
-        hybridChoice: { "code-mode-only": 1 },
-      }),
-    ]);
+    expect(summary.byMode).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: "caplets-code-mode",
+          product: "caplets",
+          adapterExposure: null,
+          passed: 1,
+          total: 1,
+          averageProviderRequestCount: 1,
+          averageToolCalls: 1,
+          averageRequestTokenBuckets: expect.objectContaining({
+            requestPayloadEstimatedTokens: 100,
+            toolSurfaceEstimatedTokens: 60,
+            toolResultMessageEstimatedTokens: 12,
+          }),
+          hybridChoice: { "code-mode-only": 1 },
+        }),
+        expect.objectContaining({
+          mode: "executor-mcp",
+          product: "executor",
+          adapterExposure: "direct-tools",
+          averageToolCalls: 2,
+          hybridChoice: { "executor-only": 1 },
+        }),
+      ]),
+    );
+    expect(summary.comparisons.map((comparison: any) => comparison.label)).toContain(
+      "executor-mcp vs caplets-code-mode",
+    );
+    expect(markdown).toContain("# Pi Live Tool Gateway Eval");
+    expect(markdown).toContain("Concurrency: 2");
+    expect(markdown).toContain("| Mode | Product | Adapter exposure |");
+    expect(markdown).toContain("## Token Bucket Breakdown");
+    expect(markdown).toContain("| Mode | Total | Tool surface | Non-surface |");
     expect(markdown).toContain("Avg LLM round trips");
     expect(markdown).toContain("Avg non-surface estimated tokens");
     expect(markdown).toContain("caplets-code-mode");
+    expect(markdown).toContain("executor-mcp");
   });
 });

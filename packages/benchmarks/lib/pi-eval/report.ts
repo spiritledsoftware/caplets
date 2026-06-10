@@ -2,8 +2,11 @@ export function summarizePiEvalResults(results: any[] = []) {
   const byMode = groupBy(results, (result) => result.mode).map(([mode, rows]) => {
     const total = rows.length;
     const passed = rows.filter((row) => row.score?.success).length;
+    const first = rows[0] ?? {};
     return {
       mode,
+      product: first.product ?? null,
+      adapterExposure: first.adapterExposure ?? null,
       total,
       passed,
       failed: total - passed,
@@ -22,6 +25,7 @@ export function summarizePiEvalResults(results: any[] = []) {
       averageToolSurfaceEstimatedTokens: average(
         rows.map((row) => row.metrics?.toolSurfaceEstimatedTokens),
       ),
+      averageRequestTokenBuckets: averageRequestTokenBuckets(rows),
       averageToolCalls: average(
         rows.map((row) => row.metrics?.toolCallCount ?? row.score?.metrics?.toolCallCount),
       ),
@@ -38,12 +42,16 @@ export function summarizePiEvalResults(results: any[] = []) {
 export function renderPiEvalMarkdownReport(report: any): string {
   const rows = report.summary.byMode.map(
     (row: any) =>
-      `| ${row.mode} | ${row.passed}/${row.total} | ${formatMs(row.averageDurationMs)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageRequestEstimatedTokens)} | ${formatNumber(row.averageNonSurfaceEstimatedTokens)} | ${formatNumber(row.averageProviderTokens)} | ${formatNumber(row.averageToolSurfaceEstimatedTokens)} | ${formatNumber(row.averageToolCalls)} |`,
+      `| ${row.mode} | ${row.product ?? "n/a"} | ${row.adapterExposure ?? "n/a"} | ${row.passed}/${row.total} | ${formatMs(row.averageDurationMs)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageRequestEstimatedTokens)} | ${formatNumber(row.averageNonSurfaceEstimatedTokens)} | ${formatNumber(row.averageProviderTokens)} | ${formatNumber(row.averageToolSurfaceEstimatedTokens)} | ${formatNumber(row.averageToolCalls)} |`,
   );
   const comparisonRows = report.summary.comparisons.map(
     (comparison: any) =>
       `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}`,
   );
+  const bucketRows = report.summary.byMode.map((row: any) => {
+    const buckets = row.averageRequestTokenBuckets ?? {};
+    return `| ${row.mode} | ${formatNumber(buckets.requestPayloadEstimatedTokens)} | ${formatNumber(buckets.toolSurfaceEstimatedTokens)} | ${formatNumber(buckets.nonSurfaceEstimatedTokens)} | ${formatNumber(buckets.instructionEstimatedTokens)} | ${formatNumber(buckets.instructionMessageEstimatedTokens)} | ${formatNumber(buckets.userMessageEstimatedTokens)} | ${formatNumber(buckets.assistantMessageEstimatedTokens)} | ${formatNumber(buckets.toolCallMessageEstimatedTokens)} | ${formatNumber(buckets.toolResultMessageEstimatedTokens)} | ${formatNumber(buckets.otherMessageEstimatedTokens)} | ${formatNumber(buckets.requestOverheadEstimatedTokens)} |`;
+  });
   const failures = report.results
     .filter((result: any) => !result.score?.success)
     .map(
@@ -51,18 +59,27 @@ export function renderPiEvalMarkdownReport(report: any): string {
         `- ${result.mode} ${result.taskId} run ${result.run}: ${failureReason(result)}`,
     );
   return `${[
-    "# Pi Live Tool Surface Eval",
+    "# Pi Live Tool Gateway Eval",
     "",
     `Generated: ${report.completedAt}`,
     `Model: ${report.options.model ?? "Pi default"}`,
     `Runs per task/mode: ${report.options.runs}`,
+    `Concurrency: ${report.options.concurrency ?? 1}`,
     `Timeout: ${report.options.timeoutMs}ms`,
     "",
     "## Summary",
     "",
-    "| Mode | Passed | Avg total duration | Avg LLM round trips | Avg tokenizer-estimated tokens | Avg non-surface estimated tokens | Avg provider tokens | Avg tool surface estimated tokens | Avg tool calls |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Mode | Product | Adapter exposure | Passed | Avg total duration | Avg LLM round trips | Avg tokenizer-estimated tokens | Avg non-surface estimated tokens | Avg provider tokens | Avg tool surface estimated tokens | Avg tool calls |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...rows,
+    "",
+    "## Token Bucket Breakdown",
+    "",
+    "Average tokenizer-estimated request tokens per run, split by payload bucket. These buckets explain why total tokens can be close even when tool surfaces differ.",
+    "",
+    "| Mode | Total | Tool surface | Non-surface | Instructions | System/developer messages | User messages | Assistant messages | Tool-call messages | Tool-result messages | Other messages | Request overhead |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ...bucketRows,
     "",
     "## Comparisons",
     "",
@@ -91,6 +108,17 @@ function comparisons(byMode: any[]) {
       "caplets-progressive-code-mode vs caplets-code-mode",
     ],
     ["caplets-code-mode", "caplets-direct", "caplets-code-mode vs caplets-direct"],
+    ["vanilla-mcp", "caplets-direct", "vanilla-mcp vs caplets-direct"],
+    ["vanilla-mcp", "caplets-code-mode", "vanilla-mcp vs caplets-code-mode"],
+    ["executor-mcp", "vanilla-mcp", "executor-mcp vs vanilla-mcp"],
+    ["executor-mcp", "caplets-direct", "executor-mcp vs caplets-direct"],
+    ["executor-mcp", "caplets-progressive", "executor-mcp vs caplets-progressive"],
+    ["executor-mcp", "caplets-code-mode", "executor-mcp vs caplets-code-mode"],
+    [
+      "executor-mcp",
+      "caplets-progressive-code-mode",
+      "executor-mcp vs caplets-progressive-code-mode",
+    ],
   ]
     .map(([a, b, label]) => compareRows(byName.get(a), byName.get(b), label))
     .filter(Boolean);
@@ -133,6 +161,30 @@ function hybridChoiceSummary(rows: any[]) {
     choices[row.metrics?.hybridChoice ?? "unknown"] =
       (choices[row.metrics?.hybridChoice ?? "unknown"] ?? 0) + 1;
   return choices;
+}
+
+function averageRequestTokenBuckets(rows: any[]) {
+  const bucketNames = [
+    "requestPayloadEstimatedTokens",
+    "toolSurfaceEstimatedTokens",
+    "nonSurfaceEstimatedTokens",
+    "messagePayloadEstimatedTokens",
+    "instructionEstimatedTokens",
+    "instructionMessageEstimatedTokens",
+    "userMessageEstimatedTokens",
+    "assistantMessageEstimatedTokens",
+    "toolCallMessageEstimatedTokens",
+    "toolResultMessageEstimatedTokens",
+    "otherMessageEstimatedTokens",
+    "attributedNonSurfaceEstimatedTokens",
+    "requestOverheadEstimatedTokens",
+  ];
+  return Object.fromEntries(
+    bucketNames.map((bucket) => [
+      bucket,
+      average(rows.map((row) => row.metrics?.requestTokenBuckets?.totals?.[bucket])),
+    ]),
+  );
 }
 
 function groupBy<T>(items: T[], keyFn: (item: T) => string): Array<[string, T[]]> {
