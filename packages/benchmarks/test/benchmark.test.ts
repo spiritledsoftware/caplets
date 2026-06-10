@@ -46,6 +46,11 @@ import {
   piEvalModeProduct,
 } from "../lib/pi-eval/config";
 import {
+  DEFAULT_PI_EVAL_SUITE_ID,
+  resolvePiEvalSuite,
+  validatePiEvalSuiteId,
+} from "../lib/pi-eval/suites";
+import {
   computeDomainCoverage,
   requiredEvidenceScore,
   summarizePiEvalMetrics,
@@ -1260,6 +1265,38 @@ describe("Pi live tool surface eval harness", () => {
       skipMissingCompetitors: true,
     });
     expect(() => parsePiEvalArgs(["--mode", "unknown"])).toThrow(/Unknown Pi eval mode/u);
+  });
+
+  it("parses Pi eval task suites without changing the coding default", () => {
+    expect(DEFAULT_PI_EVAL_SUITE_ID).toBe("coding");
+    expect(parsePiEvalArgs([])).toMatchObject({
+      taskSuite: "coding",
+      tasks: ["checkout-incident-retry-hardening"],
+    });
+    expect(parsePiEvalArgs(["--task-suite", "mcp-tool-use"])).toMatchObject({
+      taskSuite: "mcp-tool-use",
+      tasks: [
+        "api-pagination-audit",
+        "incident-customer-impact-join",
+        "release-readiness-risk-report",
+      ],
+    });
+    expect(() => parsePiEvalArgs(["--task-suite", "missing-suite"])).toThrow(
+      /Unknown Pi eval task suite missing-suite/u,
+    );
+    expect(() => validatePiEvalSuiteId("missing-suite")).toThrow(
+      /Unknown Pi eval task suite missing-suite/u,
+    );
+    expect(resolvePiEvalSuite("coding")).toMatchObject({
+      id: "coding",
+      label: "Coding agent workspace",
+      workspaceRequired: true,
+    });
+    expect(resolvePiEvalSuite("mcp-tool-use")).toMatchObject({
+      id: "mcp-tool-use",
+      label: "MCP tool-use workflows",
+      workspaceRequired: false,
+    });
   });
 
   it("builds mode-specific prompts and Pi commands without user context files", () => {

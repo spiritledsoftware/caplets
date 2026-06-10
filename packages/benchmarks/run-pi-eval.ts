@@ -8,7 +8,6 @@ import { detectPiCli } from "./lib/pi-runner";
 import { createTempWorkspaceFromFixture, scoreTaskRun } from "./lib/scoring";
 import {
   DEFAULT_PI_EVAL_RUNS,
-  DEFAULT_PI_EVAL_TASKS,
   EXECUTOR_PI_EVAL_MODE,
   isPiMcpAdapterPiEvalMode,
   buildPiEvalCommand,
@@ -19,6 +18,11 @@ import {
   PI_EVAL_MODES,
   validatePiEvalMode,
 } from "./lib/pi-eval/config";
+import {
+  DEFAULT_PI_EVAL_SUITE_ID,
+  resolvePiEvalSuite,
+  validatePiEvalSuiteId,
+} from "./lib/pi-eval/suites";
 import {
   readMetricsJsonl,
   requiredEvidenceScore,
@@ -46,9 +50,10 @@ export function parsePiEvalArgs(argv = process.argv.slice(2)) {
     .allowExcessArguments(false)
     .exitOverride()
     .configureOutput({ writeOut: () => {}, writeErr: () => {} })
+    .option("--task-suite <suite>", "task suite to run", DEFAULT_PI_EVAL_SUITE_ID)
     .option("--mode <modes>", "comma-separated eval modes", splitCsv)
     .option("--model <model>", "Pi model identifier")
-    .option("--tasks <ids>", "comma-separated benchmark task ids", splitCsv, DEFAULT_PI_EVAL_TASKS)
+    .option("--tasks <ids>", "comma-separated benchmark task ids", splitCsv)
     .option(
       "--runs <count>",
       "runs per task/mode",
@@ -95,14 +100,18 @@ export function parsePiEvalArgs(argv = process.argv.slice(2)) {
 }
 
 export function validatePiEvalOptions(options: any = {}) {
+  const taskSuite = options.taskSuite ?? DEFAULT_PI_EVAL_SUITE_ID;
+  validatePiEvalSuiteId(taskSuite);
+  const suite = resolvePiEvalSuite(taskSuite);
   const modes = options.modes?.length ? options.modes : undefined;
   if (modes) {
     for (const mode of modes) validatePiEvalMode(mode);
   }
   return {
+    taskSuite,
     modes,
     model: options.model,
-    tasks: options.tasks?.length ? options.tasks : DEFAULT_PI_EVAL_TASKS,
+    tasks: options.tasks?.length ? options.tasks : suite.defaultTasks,
     runs:
       options.runs === undefined
         ? DEFAULT_PI_EVAL_RUNS
