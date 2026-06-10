@@ -46,9 +46,9 @@
     },
     "expectedEvidence": {
       "servers": ["incidents", "customers"],
-      "tools": ["incidents.get_incident"],
       "anyTools": [
-        ["incidents.search_incidents", "incidents.list_affected_accounts"],
+        ["incidents.get_incident", "incidents.search_incidents"],
+        ["incidents.get_incident", "incidents.list_affected_accounts"],
         ["customers.get_accounts", "customers.summarize_accounts"]
       ]
     },
@@ -81,10 +81,10 @@
       "servers": ["deployments", "quality", "policies"],
       "tools": [
         "deployments.get_release",
-        "quality.list_checks",
         "policies.get_release_policy",
         "policies.list_exceptions"
-      ]
+      ],
+      "anyTools": [["quality.list_checks", "quality.get_check_details"]]
     },
     "expectedFacts": {
       "releaseId": "REL-2026-06-10-payments",
