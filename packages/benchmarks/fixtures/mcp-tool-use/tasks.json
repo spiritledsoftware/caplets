@@ -50,7 +50,11 @@
     },
     "expectedEvidence": {
       "servers": ["incidents", "customers"],
-      "tools": ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"]
+      "tools": ["incidents.get_incident"],
+      "anyTools": [
+        ["incidents.search_incidents", "incidents.list_affected_accounts"],
+        ["customers.get_accounts", "customers.summarize_accounts"]
+      ]
     },
     "expectedFacts": {
       "activeIncidentId": "INC-2026-0610-2",

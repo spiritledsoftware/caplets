@@ -193,21 +193,26 @@ function coverageTextFromEvent(event: any): string {
   return "";
 }
 
-export function requiredEvidenceScore(metrics: any, task: any) {
+export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) {
   if (task?.expectedEvidence?.tools?.length) {
-    const observedTools = new Set(metrics?.toolNames ?? []);
-    const missingTools = task.expectedEvidence.tools.filter(
-      (tool: string) => !observedTools.has(tool),
+    const observedTools = new Set((metrics?.toolNames ?? []).map(normalizeToolName));
+    const evidenceText = normalizeToolName(finalAnswerEvidenceText(score?.parsedFinalAnswer));
+    const missingTools = expectedEvidenceFailures({
+      expectedTools: task.expectedEvidence.tools,
+      anyTools: task.expectedEvidence.anyTools,
+      observedTools,
+      evidenceText,
+    });
+    const coverageTools = Object.fromEntries(
+      [...task.expectedEvidence.tools, ...(task.expectedEvidence.anyTools ?? []).flat()].map(
+        (tool: string) => [tool, hasEvidence({ tool, observedTools, evidenceText })],
+      ),
     );
     return {
       required: true,
       success: missingTools.length === 0,
       missingDomains: missingTools,
-      coverage: {
-        tools: Object.fromEntries(
-          task.expectedEvidence.tools.map((tool: string) => [tool, observedTools.has(tool)]),
-        ),
-      },
+      coverage: { tools: coverageTools },
     };
   }
   if (task?.id !== "checkout-incident-retry-hardening") {
@@ -316,4 +321,51 @@ function sumNullable(values: unknown[]): number | null {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeToolName(value: string) {
+  return String(value).replaceAll("_", ".");
+}
+
+function expectedEvidenceFailures({
+  expectedTools = [],
+  anyTools = [],
+  observedTools,
+  evidenceText,
+}: any) {
+  const missingTools = expectedTools.filter(
+    (tool: string) => !hasEvidence({ tool, observedTools, evidenceText }),
+  );
+  for (const alternatives of anyTools) {
+    if (!alternatives.some((tool: string) => hasEvidence({ tool, observedTools, evidenceText }))) {
+      missingTools.push(`one of ${alternatives.join(", ")}`);
+    }
+  }
+  return missingTools;
+}
+
+function hasEvidence({ tool, observedTools, evidenceText }: any) {
+  const normalizedTool = normalizeToolName(tool);
+  return observedTools.has(normalizedTool) || evidenceText.includes(normalizedTool);
+}
+
+function finalAnswerEvidenceText(answer: any) {
+  const facts = Array.isArray(answer?.facts) ? answer.facts : [];
+  return JSON.stringify(facts.flatMap((fact: any) => evidenceEntries(fact?.evidence)));
+}
+
+function evidenceEntries(evidence: any): string[] {
+  if (evidence == null) return [];
+  if (typeof evidence === "string") return [evidence];
+  if (Array.isArray(evidence)) return evidence.flatMap(evidenceEntries);
+  if (typeof evidence === "object") {
+    const entries = [JSON.stringify(evidence)];
+    const server = typeof evidence.server === "string" ? evidence.server : null;
+    if (server && typeof evidence.tool === "string") entries.push(`${server}.${evidence.tool}`);
+    if (server && Array.isArray(evidence.tools)) {
+      entries.push(...evidence.tools.map((tool: string) => `${server}.${tool}`));
+    }
+    return entries;
+  }
+  return [String(evidence)];
 }

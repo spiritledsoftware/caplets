@@ -56,6 +56,7 @@ import {
   summarizePiEvalMetrics,
 } from "../lib/pi-eval/metrics";
 import { extractMcpToolUseFinalJson, scoreMcpToolUseRun } from "../lib/pi-eval/mcp-tool-use-score";
+import { createDeterministicSemanticJudge } from "../lib/pi-eval/semantic-judge";
 import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
 import {
@@ -1251,6 +1252,24 @@ describe("Pi live tool surface eval harness", () => {
       concurrency: 1,
     });
     expect(parsePiEvalArgs(["--concurrency", "3"])).toMatchObject({ concurrency: 3 });
+    expect(parsePiEvalArgs(["--model", "openai-codex/gpt-5.5"])).toMatchObject({
+      model: "openai-codex/gpt-5.5",
+      judgeModel: "openai-codex/gpt-5.5",
+    });
+    expect(parsePiEvalArgs(["--judge-model", "openai-codex/gpt-5.4-mini"])).toMatchObject({
+      judgeModel: "openai-codex/gpt-5.4-mini",
+    });
+    expect(
+      parsePiEvalArgs([
+        "--model",
+        "openai-codex/gpt-5.5",
+        "--judge-model",
+        "openai-codex/gpt-5.4-mini",
+      ]),
+    ).toMatchObject({
+      model: "openai-codex/gpt-5.5",
+      judgeModel: "openai-codex/gpt-5.4-mini",
+    });
     expect(() => parsePiEvalArgs(["--concurrency", "0"])).toThrow(/positive integer/u);
     expect(
       parsePiEvalArgs([
@@ -2125,6 +2144,38 @@ describe("Pi live tool surface eval harness", () => {
     ).toMatchObject({ required: true, success: true, missingDomains: [] });
   });
 
+  it("scores MCP tool-use evidence from parsed final-answer citations", () => {
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
+            tools: ["incidents.get_incident"],
+            anyTools: [
+              ["incidents.search_incidents", "incidents.list_affected_accounts"],
+              ["customers.get_accounts", "customers.summarize_accounts"],
+            ],
+          },
+        },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: {
+                  server: "incidents",
+                  tools: ["get_incident", "list_affected_accounts"],
+                },
+              },
+              {
+                evidence: { server: "customers", tool: "summarize_accounts" },
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+  });
+
   it("counts domain coverage from tool results, not prompt or tool input text", () => {
     const inputOnlyCoverage = computeDomainCoverage([
       {
@@ -2227,6 +2278,122 @@ describe("Pi live tool surface eval harness", () => {
     });
   });
 
+  it("scores MCP tool-use runs with nested facts and direct-tool name evidence", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        tools: ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        activeIncidentId: "INC-2026-0610-2",
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+        escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+      },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "completed",
+        facts: [
+          {
+            key: "activeIncident",
+            value: { id: "INC-2026-0610-2", status: "active" },
+            evidence: "incidents_search_incidents; incidents_get_incident",
+          },
+          {
+            key: "impactSummary",
+            value: {
+              affectedAccountCount: 4,
+              tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+              escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+            },
+            evidence: "customers_get_accounts",
+          },
+        ],
+        summary: "Four accounts affected.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents_search_incidents" },
+        { type: "tool_execution_start", toolName: "incidents_get_incident" },
+        { type: "tool_execution_start", toolName: "customers_get_accounts" },
+      ],
+    };
+
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      validation: { success: true },
+    });
+  });
+
+  it("scores MCP tool-use aggregate facts derived from returned records", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        tools: ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+        regionBreakdown: { na: 2, eu: 1, apac: 1 },
+        escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+      },
+      distractorFacts: [],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "customer_impact_summary_ready",
+        facts: [
+          {
+            key: "impactedCustomers",
+            value: [
+              {
+                id: "acct-atlas",
+                tier: "enterprise",
+                region: "na",
+                escalationTarget: "atlas-oncall",
+              },
+              {
+                id: "acct-beacon",
+                tier: "enterprise",
+                region: "eu",
+                escalationTarget: "beacon-csm",
+              },
+              {
+                id: "acct-crane",
+                tier: "growth",
+                region: "na",
+                escalationTarget: "crane-support",
+              },
+              {
+                id: "acct-delta",
+                tier: "startup",
+                region: "apac",
+                escalationTarget: "crane-support",
+              },
+            ],
+            evidence: "customers.get_accounts",
+          },
+        ],
+        summary: "Active incident affects four customers.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents_search_incidents" },
+        { type: "tool_execution_start", toolName: "incidents_get_incident" },
+        { type: "tool_execution_start", toolName: "customers_get_accounts" },
+      ],
+    };
+
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      validation: { success: true },
+    });
+  });
+
   it("fails MCP tool-use scoring when distractor facts appear", async () => {
     const task = {
       id: "incident-customer-impact-join",
@@ -2243,6 +2410,49 @@ describe("Pi live tool surface eval harness", () => {
     const score = await scoreMcpToolUseRun({ task, agentResult });
     expect(score.success).toBe(false);
     expect(score.validation.stdout).toContain("distractor fact appeared: INC-2026-0610-1");
+  });
+
+  it("scores MCP tool-use semantic correctness with an injected judge", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: { tools: ["incidents.search_incidents"] },
+      expectedFacts: { activeIncidentId: "INC-2026-0610-2" },
+      distractorFacts: [],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "summary",
+        facts: [
+          {
+            key: "activeIncident",
+            value: { id: "INC-2026-0610-2" },
+            evidence: "incidents.search_incidents",
+          },
+        ],
+        summary: "Correct but not exact schema.",
+      }),
+      jsonEvents: [{ type: "tool_execution_start", toolName: "caplets_code_mode" }],
+    };
+
+    await expect(
+      scoreMcpToolUseRun({
+        task,
+        agentResult,
+        semanticJudge: createDeterministicSemanticJudge({
+          success: true,
+          reason: "semantic judge accepted equivalent answer",
+          model: "openai-codex/gpt-5.4-mini",
+        }),
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      semanticJudge: {
+        success: true,
+        model: "openai-codex/gpt-5.4-mini",
+      },
+    });
   });
 
   it("refuses live Pi eval runs unless explicitly enabled", async () => {

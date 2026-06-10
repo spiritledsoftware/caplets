@@ -104,18 +104,13 @@ const mcpToolUseSuite: PiEvalSuite = {
 };
 
 function buildMcpToolUsePrompt(task: any, mode: string): string {
-  const modeHint = buildPiEvalPrompt({ prompt: "" }, mode)
-    .split("\n")
-    .filter((line) => line && !line.includes("Complete the task in this workspace"))
-    .filter((line) => !line.includes("After editing"))
-    .join("\n");
   return [
     "You are running a benchmark. Complete the backend tool-use task using the configured MCP tools.",
     "Do not inspect or edit repository files.",
     "Use tool evidence for every material fact. Do not guess.",
     "Return a concise final answer containing one JSON object with keys: taskId, decision, facts, summary.",
     "Each facts entry must include key, value, and evidence.",
-    modeHint,
+    mcpToolUseModeHint(mode),
     "",
     `Task ID: ${task.id}`,
     task.task_description ?? task.prompt,
@@ -123,4 +118,20 @@ function buildMcpToolUsePrompt(task: any, mode: string): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function mcpToolUseModeHint(mode: string) {
+  const hints: Record<string, string> = {
+    "caplets-direct": "Direct Caplets tools are exposed as caplets__<server>__<tool>.",
+    "caplets-progressive":
+      "Caplets capability tools expose inspect/list/search/describe/call operations; use describe before call when args matter.",
+    "caplets-code-mode":
+      "Use caplets_code_mode for compact Caplets discovery and retrieval; return only the facts needed for the final JSON.",
+    "caplets-progressive-code-mode":
+      "Both Caplets capability tools and caplets_code_mode are available; choose the shortest reliable path.",
+    "vanilla-mcp":
+      "The fixture MCP servers are exposed as plain direct MCP tools, without Caplets or Executor.",
+    "executor-mcp": "Executor is available through direct Pi tools registered by the MCP adapter.",
+  };
+  return hints[mode] ?? "";
 }

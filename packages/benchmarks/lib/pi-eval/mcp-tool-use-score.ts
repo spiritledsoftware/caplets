@@ -1,4 +1,5 @@
 import { toolNameFromEvent } from "./metrics";
+import type { SemanticJudge } from "./semantic-judge";
 
 export function extractMcpToolUseFinalJson(events: any[] = [], stdout = "") {
   const candidates = [stdout, ...assistantTexts(events)].filter(Boolean);
@@ -9,7 +10,7 @@ export function extractMcpToolUseFinalJson(events: any[] = [], stdout = "") {
   return null;
 }
 
-export async function scoreMcpToolUseRun({ task, agentResult }: any = {}) {
+export async function scoreMcpToolUseRun({ task, agentResult, semanticJudge }: any = {}) {
   if (!task) throw new TypeError("scoreMcpToolUseRun requires a task.");
   const processFailureReason = agentProcessFailureReason(agentResult);
   const processSuccess = !processFailureReason;
@@ -17,11 +18,18 @@ export async function scoreMcpToolUseRun({ task, agentResult }: any = {}) {
     agentResult?.jsonEvents ?? [],
     agentResult?.stdout ?? "",
   );
-  const validation = validateMcpToolUseAnswer({
-    task,
-    parsed,
-    events: agentResult?.jsonEvents ?? [],
-  });
+  const validation = semanticJudge
+    ? await judgeMcpToolUseAnswer({
+        task,
+        parsed,
+        events: agentResult?.jsonEvents ?? [],
+        semanticJudge,
+      })
+    : validateMcpToolUseAnswer({
+        task,
+        parsed,
+        events: agentResult?.jsonEvents ?? [],
+      });
   return {
     taskId: task.id,
     success: processSuccess && validation.success,
@@ -30,6 +38,7 @@ export async function scoreMcpToolUseRun({ task, agentResult }: any = {}) {
     processFailureReason,
     validation,
     hiddenValidation: { success: true, skipped: true, command: undefined },
+    semanticJudge: validation.semanticJudge ?? null,
     process: agentResult
       ? {
           exitCode: agentResult.exitCode,
@@ -46,6 +55,41 @@ export async function scoreMcpToolUseRun({ task, agentResult }: any = {}) {
       : undefined,
     parsedFinalAnswer: parsed,
   };
+}
+
+async function judgeMcpToolUseAnswer({
+  task,
+  parsed,
+  events,
+  semanticJudge,
+}: {
+  task: any;
+  parsed: any;
+  events: any[];
+  semanticJudge: SemanticJudge;
+}) {
+  const failures: string[] = [];
+  if (!parsed || typeof parsed !== "object") {
+    failures.push("final JSON object was not found");
+  } else if (parsed.taskId !== task.id) {
+    failures.push(`taskId mismatch: ${String(parsed.taskId)}`);
+  }
+
+  if (failures.length > 0) {
+    return validationResult({ failures, semanticJudgeResult: null });
+  }
+
+  const semanticJudgeResult = await semanticJudge({
+    task,
+    finalAnswer: parsed,
+    toolEvidence: collectToolEvidence({ events, parsed }),
+  });
+  if (!semanticJudgeResult.success) {
+    failures.push(semanticJudgeResult.reason || "semantic judge failed");
+    failures.push(...semanticJudgeResult.missing.map((entry) => `missing: ${entry}`));
+    failures.push(...semanticJudgeResult.incorrect.map((entry) => `incorrect: ${entry}`));
+  }
+  return validationResult({ failures, semanticJudgeResult });
 }
 
 function validateMcpToolUseAnswer({ task, parsed, events }: any) {
@@ -67,17 +111,39 @@ function validateMcpToolUseAnswer({ task, parsed, events }: any) {
   }
 
   const observedTools = new Set(events.map(toolNameFromEvent).filter(Boolean));
+  const normalizedObservedTools = new Set([...observedTools].map(normalizeToolName));
   const evidenceText = toolEvidenceText(parsed);
+  const normalizedEvidenceText = normalizeToolName(evidenceText);
   for (const expectedTool of task.expectedEvidence?.tools ?? []) {
-    if (!observedTools.has(expectedTool) && !evidenceText.includes(expectedTool)) {
+    const normalizedExpectedTool = normalizeToolName(expectedTool);
+    if (
+      !normalizedObservedTools.has(normalizedExpectedTool) &&
+      !normalizedEvidenceText.includes(normalizedExpectedTool)
+    ) {
       failures.push(`missing expected tool evidence: ${expectedTool}`);
     }
   }
+  for (const alternatives of task.expectedEvidence?.anyTools ?? []) {
+    if (!alternatives.some((tool: string) => hasToolEvidence(tool))) {
+      failures.push(`missing expected tool evidence: one of ${alternatives.join(", ")}`);
+    }
+  }
 
+  return validationResult({ failures, semanticJudgeResult: null });
+
+  function hasToolEvidence(tool: string) {
+    const normalizedTool = normalizeToolName(tool);
+    return (
+      normalizedObservedTools.has(normalizedTool) || normalizedEvidenceText.includes(normalizedTool)
+    );
+  }
+}
+
+function validationResult({ failures, semanticJudgeResult }: any) {
   return {
     success: failures.length === 0,
     command: "mcp-tool-use-final-answer-validator",
-    args: [task.id],
+    args: [],
     exitCode: failures.length === 0 ? 0 : 1,
     signal: null,
     timedOut: false,
@@ -88,13 +154,17 @@ function validateMcpToolUseAnswer({ task, parsed, events }: any) {
     stderrBytes: 0,
     stdoutTruncated: false,
     stderrTruncated: false,
+    semanticJudge: semanticJudgeResult,
   };
 }
 
 function answerContainsExpectedFact(parsed: any, key: string, expected: unknown) {
   if (deepEqual(parsed?.[key], expected)) return true;
   const facts = Array.isArray(parsed?.facts) ? parsed.facts : [];
-  return facts.some((fact: any) => fact?.key === key && deepEqual(fact.value, expected));
+  return (
+    facts.some((fact: any) => fact?.key === key && deepEqual(fact.value, expected)) ||
+    containsExpectedValue(parsed, expected)
+  );
 }
 
 function answerContainsDistractor(parsed: any, distractor: string) {
@@ -104,7 +174,39 @@ function answerContainsDistractor(parsed: any, distractor: string) {
 
 function toolEvidenceText(parsed: any) {
   const facts = Array.isArray(parsed?.facts) ? parsed.facts : [];
-  return JSON.stringify(facts.flatMap((fact: any) => fact?.evidence ?? []));
+  return JSON.stringify(facts.flatMap((fact: any) => evidenceEntries(fact?.evidence)));
+}
+
+function evidenceEntries(evidence: any): string[] {
+  if (evidence == null) return [];
+  if (typeof evidence === "string") return [evidence];
+  if (Array.isArray(evidence)) return evidence.flatMap(evidenceEntries);
+  if (typeof evidence === "object") {
+    const entries = [JSON.stringify(evidence)];
+    const server = typeof evidence.server === "string" ? evidence.server : null;
+    if (server && typeof evidence.tool === "string") entries.push(`${server}.${evidence.tool}`);
+    if (server && Array.isArray(evidence.tools)) {
+      entries.push(...evidence.tools.map((tool: string) => `${server}.${tool}`));
+    }
+    return entries;
+  }
+  return [String(evidence)];
+}
+
+function collectToolEvidence({ events, parsed }: { events: any[]; parsed: any }) {
+  return [
+    ...events
+      .map((event) => toolNameFromEvent(event))
+      .filter(Boolean)
+      .map((toolName) => ({ source: "event", toolName })),
+    ...((Array.isArray(parsed?.facts) ? parsed.facts : []) as any[]).flatMap((fact) =>
+      evidenceEntries(fact?.evidence).map((evidence) => ({
+        source: "final_answer",
+        key: fact?.key,
+        evidence,
+      })),
+    ),
+  ];
 }
 
 function assistantTexts(events: any[]) {
@@ -148,6 +250,77 @@ function sortJson(value: unknown): unknown {
 
 function compareJsonValues(a: unknown, b: unknown) {
   return JSON.stringify(a).localeCompare(JSON.stringify(b));
+}
+
+function containsExpectedValue(container: unknown, expected: unknown): boolean {
+  if (deepEqual(container, expected)) return true;
+  if (Array.isArray(container) && derivedArrayContainsExpected(container, expected)) return true;
+  if (Array.isArray(container)) {
+    return container.some((entry) => containsExpectedValue(entry, expected));
+  }
+  if (!container || typeof container !== "object") return false;
+  return Object.values(container).some((value) => containsExpectedValue(value, expected));
+}
+
+function derivedArrayContainsExpected(container: unknown[], expected: unknown) {
+  if (typeof expected === "number" && container.length === expected) return true;
+  if (isStringArray(expected)) {
+    return candidateStringFields(container).some((field) => {
+      const values = [
+        ...new Set(
+          container
+            .map((entry) => (isRecord(entry) ? entry[field] : undefined))
+            .filter((value): value is string => typeof value === "string"),
+        ),
+      ].sort();
+      return deepEqual(values, expected);
+    });
+  }
+  if (isCountObject(expected)) {
+    return candidateStringFields(container).some((field) => {
+      const counts: Record<string, number> = {};
+      for (const entry of container) {
+        if (!isRecord(entry) || typeof entry[field] !== "string") continue;
+        counts[entry[field]] = (counts[entry[field]] ?? 0) + 1;
+      }
+      return deepEqual(counts, expected);
+    });
+  }
+  return false;
+}
+
+function candidateStringFields(container: unknown[]) {
+  return [
+    ...new Set(
+      container.flatMap((entry) =>
+        isRecord(entry)
+          ? Object.entries(entry)
+              .filter(([, value]) => typeof value === "string")
+              .map(([key]) => key)
+          : [],
+      ),
+    ),
+  ];
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isCountObject(value: unknown): value is Record<string, number> {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length > 0 &&
+    Object.values(value).every((entry) => typeof entry === "number")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeToolName(value: string) {
+  return String(value).replaceAll("_", ".");
 }
 
 function agentProcessFailureReason(agentResult: any) {

@@ -67,6 +67,7 @@ export function renderPiEvalMarkdownReport(report: any): string {
     "",
     `Generated: ${report.completedAt}`,
     `Model: ${report.options.model ?? "Pi default"}`,
+    `Judge model: ${report.options.judgeModel ?? "none"}`,
     `Suite: ${report.suite?.label ?? "Coding agent workspace"}`,
     `Runs per task/mode: ${report.options.runs}`,
     `Concurrency: ${report.options.concurrency ?? 1}`,

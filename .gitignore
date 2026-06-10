@@ -27,5 +27,8 @@ benchmark-results/
 # impeccable
 .impeccable/live/
 
+# brv
+.brv/
+
 # autoresearch
 .auto/

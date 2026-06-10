@@ -23,6 +23,7 @@ import {
   resolvePiEvalSuite,
   validatePiEvalSuiteId,
 } from "./lib/pi-eval/suites";
+import { createPiSemanticJudge } from "./lib/pi-eval/semantic-judge";
 import {
   readMetricsJsonl,
   requiredEvidenceScore,
@@ -50,6 +51,7 @@ export function parsePiEvalArgs(argv = process.argv.slice(2)) {
     .option("--task-suite <suite>", "task suite to run", DEFAULT_PI_EVAL_SUITE_ID)
     .option("--mode <modes>", "comma-separated eval modes", splitCsv)
     .option("--model <model>", "Pi model identifier")
+    .option("--judge-model <model>", "Pi model identifier for semantic scoring judge")
     .option("--tasks <ids>", "comma-separated benchmark task ids", splitCsv)
     .option(
       "--runs <count>",
@@ -108,6 +110,7 @@ export function validatePiEvalOptions(options: any = {}) {
     taskSuite,
     modes,
     model: options.model,
+    judgeModel: options.judgeModel ?? options.model,
     tasks: options.tasks?.length ? options.tasks : suite.defaultTasks,
     runs:
       options.runs === undefined
@@ -140,6 +143,7 @@ export async function runPiEvalBenchmark({
   executorDetector = detectExecutorCli,
   processRunner = runProcess,
   runConfigFactory = createPiEvalRunConfig,
+  semanticJudge: inputSemanticJudge,
 }: any = {}) {
   const evalOptions = validatePiEvalOptions(options ?? {});
   const suite = resolvePiEvalSuite(evalOptions.taskSuite);
@@ -154,6 +158,17 @@ export async function runPiEvalBenchmark({
   if (!pi?.available) {
     throw new Error(pi?.reason ?? "Pi CLI was not available.");
   }
+  const semanticJudge =
+    inputSemanticJudge ??
+    (evalOptions.judgeModel
+      ? createPiSemanticJudge({
+          piCommand: pi.command ?? "pi",
+          model: evalOptions.judgeModel,
+          env,
+          timeoutMs: Math.min(evalOptions.timeoutMs, 120_000),
+          processRunner,
+        })
+      : undefined);
 
   await mkdir(evalOptions.outputDir, { recursive: true });
 
@@ -265,9 +280,10 @@ export async function runPiEvalBenchmark({
         candidateWorkspace,
         fixtureRoot,
         agentResult,
+        semanticJudge,
         validationTimeoutMs: Math.min(evalOptions.timeoutMs, 60_000),
       });
-      const evidenceScore = requiredEvidenceScore(metrics, task);
+      const evidenceScore = requiredEvidenceScore(metrics, task, score);
       if (evidenceScore.required && !evidenceScore.success) {
         score.success = false;
       }
@@ -409,7 +425,7 @@ async function createPiEvalWorkspace({ suite, fixtureWorkspaceRoot }: any) {
   return await mkdtemp(join(tmpdir(), "caplets-pi-eval-workspace-"));
 }
 
-export async function loadTasks(tasksPath = defaultTasksPath) {
+export async function loadTasks(tasksPath = resolvePiEvalSuite().tasksPath) {
   const tasks = JSON.parse(await readFile(tasksPath, "utf8"));
   if (!Array.isArray(tasks)) throw new Error(`${tasksPath} must contain an array of tasks.`);
   const ids = new Set();
@@ -492,6 +508,7 @@ function serializableOptions(options: any) {
     taskSuite: options.taskSuite,
     modes: options.modes ?? null,
     model: options.model ?? null,
+    judgeModel: options.judgeModel ?? null,
     tasks: options.tasks ?? null,
     runs: options.runs,
     timeoutMs: options.timeoutMs,
