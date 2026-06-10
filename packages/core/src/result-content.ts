@@ -210,6 +210,7 @@ function renderDiscoveryWrapper(
 ): string {
   const result = asRecord(value.result);
   const lines = [title, ""];
+  let renderedKnownWrapper = true;
   if (context.operation === "tools" || context.operation === "search_tools") {
     lines.push(
       "## Tools",
@@ -244,9 +245,15 @@ function renderDiscoveryWrapper(
     lines.push("## Backend Status", "", renderBackendStatus(result), "");
   } else if (context.operation === "inspect") {
     lines.push("## Caplet", "", renderCapletSummary(result), "");
+  } else {
+    renderedKnownWrapper = false;
   }
-  lines.push("## Full Result", "", jsonFence(value.result));
-  if (value.caplets !== undefined)
+  if (renderedKnownWrapper) {
+    lines.push("Structured result is available in `structuredContent.result`.");
+  } else {
+    lines.push("## Full Result", "", jsonFence(value.result));
+  }
+  if (!renderedKnownWrapper && value.caplets !== undefined)
     lines.push("", "## Caplets Metadata", "", jsonFence(value.caplets));
   return lines.join("\n");
 }
@@ -320,11 +327,30 @@ function renderNamedList(items: unknown[], nameKey: string): string {
       const name =
         stringValue(record?.[nameKey]) ?? stringValue(record?.name) ?? `Item ${index + 1}`;
       const description = stringValue(record?.description);
-      return description
-        ? `${index + 1}. \`${name}\` — ${description}`
-        : `${index + 1}. \`${name}\``;
+      const hints = compactListHints(record);
+      const suffix = [description, hints].filter(Boolean).join("; ");
+      return suffix ? `${index + 1}. \`${name}\` — ${suffix}` : `${index + 1}. \`${name}\``;
     })
     .join("\n");
+}
+function compactListHints(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined;
+  const hints: string[] = [];
+  const requiredArgs = stringArrayValue(record.requiredArgs);
+  const acceptedArgs = stringArrayValue(record.acceptedArgs);
+  if (requiredArgs.length > 0) {
+    hints.push(`required args: ${requiredArgs.join(", ")}`);
+  } else if (acceptedArgs.length > 0) {
+    hints.push(`args: ${acceptedArgs.join(", ")}`);
+  }
+  if (record.supportsFields === true) hints.push("supports fields");
+  if (record.readOnlyHint === true) hints.push("read-only");
+  if (record.destructiveHint === true) hints.push("destructive");
+  const useWhen = stringValue(record.useWhen);
+  if (useWhen) hints.push(`use: ${useWhen}`);
+  const avoidWhen = stringValue(record.avoidWhen);
+  if (avoidWhen) hints.push(`avoid: ${avoidWhen}`);
+  return hints.length > 0 ? hints.join("; ") : undefined;
 }
 function renderToolSummary(tool: Record<string, unknown> | undefined): string {
   if (!tool) return "_Tool details unavailable._";
@@ -380,6 +406,11 @@ function arrayValue(value: unknown): unknown[] {
 }
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
 }
 function humanizeKey(key: string): string {
   return key.replace(/([A-Z])/gu, " $1").replace(/^./u, (char) => char.toUpperCase());

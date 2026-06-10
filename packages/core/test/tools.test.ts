@@ -405,6 +405,10 @@ describe("generated tool handlers", () => {
       downstream,
     )) as any;
     expect(list.content[0]?.text).toContain("read");
+    expect(list.content[0]?.text).toContain("supports fields");
+    expect(list.content[0]?.text).toContain("read-only");
+    expect(list.content[0]?.text).toContain("structuredContent.result");
+    expect(list.content[0]?.text).not.toContain("## Full Result");
     expect(list.structuredContent?.caplets).toEqual({
       id: "alpha",
       name: "Alpha",
