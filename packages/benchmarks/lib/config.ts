@@ -27,12 +27,23 @@ export function createBenchmarkFixtureMcpServers({
   ...inlineExtra
 }: any = {}) {
   const paths = getBenchmarkPaths({ repoRoot });
+  const selectedServers = servers ?? DEFAULT_BENCHMARK_SERVERS;
+  const definitions = benchmarkServerDefinitions();
+  const unknownServers = selectedServers.filter((server: string) => !definitions[server]);
+  if (unknownServers.length > 0) {
+    return createNamedFixtureMcpServers({
+      fixtureServerPath: fixtureServerPath ?? paths.fixtureServerPath,
+      cwd: cwd ?? paths.repoRoot,
+      servers: selectedServers,
+      command,
+      extra: { ...inlineExtra, ...extra },
+    });
+  }
   const serverPath = resolve(fixtureServerPath ?? paths.fixtureServerPath);
   const serverCwd = resolve(cwd ?? paths.repoRoot);
   const serverExtra = { ...inlineExtra, ...extra };
-  const selectedServers = servers ?? DEFAULT_BENCHMARK_SERVERS;
   return Object.fromEntries(
-    Object.entries(benchmarkServerDefinitions())
+    Object.entries(definitions)
       .filter(([server]) => selectedServers.includes(server))
       .map(([server, definition]) => [
         server,
@@ -44,6 +55,33 @@ export function createBenchmarkFixtureMcpServers({
           cwd: serverCwd,
         },
       ]),
+  );
+}
+
+export function createNamedFixtureMcpServers({
+  fixtureServerPath,
+  cwd,
+  servers,
+  command = "tsx",
+  extra = {},
+}: any = {}) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    throw new TypeError("createNamedFixtureMcpServers requires at least one server.");
+  }
+  const serverPath = resolve(fixtureServerPath);
+  const serverCwd = resolve(cwd);
+  return Object.fromEntries(
+    servers.map((server: string) => [
+      server,
+      {
+        name: server.replaceAll("_", " "),
+        description: `Deterministic ${server.replaceAll("_", " ")} fixture server.`,
+        ...extra,
+        command,
+        args: [serverPath, "--server", server],
+        cwd: serverCwd,
+      },
+    ]),
   );
 }
 

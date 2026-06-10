@@ -145,6 +145,7 @@ export async function runPiEvalBenchmark({
   runConfigFactory = createPiEvalRunConfig,
 }: any = {}) {
   const evalOptions = validatePiEvalOptions(options ?? {});
+  const suite = resolvePiEvalSuite(evalOptions.taskSuite);
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Refusing to run live Pi eval unless CAPLETS_BENCH_LIVE=1.");
   }
@@ -206,6 +207,9 @@ export async function runPiEvalBenchmark({
         mode: entry.mode,
         requireBuild: true,
         executorCommand: evalOptions.executorCommand,
+        fixtureServerSourcePath: suite.fixtureServerSourcePath,
+        fixtureServers: suite.fixtureServers,
+        directToolsEnv: suite.directToolsEnv,
       });
       let executorSetup = null;
       let prewarmResult = null;
@@ -216,6 +220,7 @@ export async function runPiEvalBenchmark({
           supportDir: runConfig.supportDir,
           env: { ...env, ...runConfig.env, CAPLETS_BENCH_LIVE: "1" },
           processRunner,
+          servers: suite.fixtureServers,
         });
       }
       if (isPiMcpAdapterPiEvalMode(entry.mode)) {

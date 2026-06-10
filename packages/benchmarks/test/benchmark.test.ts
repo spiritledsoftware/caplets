@@ -1411,6 +1411,47 @@ describe("Pi live tool surface eval harness", () => {
     }
   });
 
+  it("creates Pi eval configs from suite-specific fixture servers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-suite-config-test-"));
+    const fixtureServerSourcePath = join(root, "suite-server.ts");
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fixtureServerSourcePath, "console.log('suite server')\n");
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+
+      const capletsConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "caplets"),
+        mode: "caplets-progressive",
+        piAgentSourceDir: sourceAgentDir,
+        fixtureServerSourcePath,
+        fixtureServers: ["api_catalog", "incidents"],
+        directToolsEnv: "api_catalog,incidents",
+      });
+      expect(Object.keys(capletsConfig.config.mcpServers).sort()).toEqual([
+        "api_catalog",
+        "incidents",
+      ]);
+      expect(await readFile(capletsConfig.fixtureServerPath, "utf8")).toContain("suite server");
+
+      const vanillaConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "vanilla"),
+        mode: "vanilla-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        fixtureServerSourcePath,
+        fixtureServers: ["api_catalog", "incidents"],
+        directToolsEnv: "api_catalog,incidents",
+      });
+      expect(Object.keys(vanillaConfig.adapterConfig.mcpServers).sort()).toEqual([
+        "api_catalog",
+        "incidents",
+      ]);
+      expect(vanillaConfig.env.MCP_DIRECT_TOOLS).toBe("api_catalog,incidents");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates isolated Executor MCP eval config with pi-mcp-adapter direct tools", async () => {
     const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-executor-config-test-"));
     const sourceAgentDir = join(root, "source-agent");
@@ -1475,6 +1516,16 @@ describe("Pi live tool surface eval harness", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("creates Executor fixture source payloads for suite-specific servers", () => {
+    expect(
+      createExecutorFixtureSourcePayloads({
+        fixtureServerPath: "/tmp/server.ts",
+        supportDir: "/tmp/support",
+        servers: ["api_catalog", "incidents"],
+      }).map((payload) => payload.name),
+    ).toEqual(["api_catalog", "incidents"]);
   });
 
   it("builds Executor fixture source payloads and setup commands", async () => {

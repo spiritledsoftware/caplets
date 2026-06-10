@@ -157,6 +157,8 @@ export async function createCapletsPiEvalRunConfig({
   piExtensionPath = defaultPiExtensionPath,
   repoRoot: inputRepoRoot = packageRoot,
   piAgentSourceDir = defaultPiAgentSourceDir,
+  fixtureServerSourcePath,
+  fixtureServers = [...PI_EVAL_FIXTURE_SERVERS],
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (isPiMcpAdapterPiEvalMode(mode)) {
@@ -184,7 +186,7 @@ export async function createCapletsPiEvalRunConfig({
   await mkdir(sessionsDir, { recursive: true });
   await mkdir(agentDir, { recursive: true });
   await mkdir(extensionDir, { recursive: true });
-  await copyFile(paths.fixtureServerPath, fixtureServerPath);
+  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -198,7 +200,7 @@ export async function createCapletsPiEvalRunConfig({
       repoRoot: inputRepoRoot,
       fixtureServerPath,
       cwd: supportDir,
-      servers: [...PI_EVAL_FIXTURE_SERVERS],
+      servers: fixtureServers,
     }),
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -240,6 +242,9 @@ export async function createVanillaMcpPiEvalRunConfig({
   mode = VANILLA_MCP_PI_EVAL_MODE,
   repoRoot: inputRepoRoot = packageRoot,
   piAgentSourceDir = defaultPiAgentSourceDir,
+  fixtureServerSourcePath,
+  fixtureServers = [...PI_EVAL_FIXTURE_SERVERS],
+  directToolsEnv = VANILLA_MCP_DIRECT_TOOLS_ENV,
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (mode !== VANILLA_MCP_PI_EVAL_MODE) {
@@ -268,7 +273,7 @@ export async function createVanillaMcpPiEvalRunConfig({
   await mkdir(agentDir, { recursive: true });
   await mkdir(xdgConfigHome, { recursive: true });
   await mkdir(extensionDir, { recursive: true });
-  await copyFile(paths.fixtureServerPath, fixtureServerPath);
+  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -281,6 +286,7 @@ export async function createVanillaMcpPiEvalRunConfig({
     fixtureServerPath,
     supportDir,
     path: envPath,
+    servers: fixtureServers,
   });
   await writeFile(adapterConfigPath, `${JSON.stringify(adapterConfig, null, 2)}\n`);
 
@@ -312,7 +318,7 @@ export async function createVanillaMcpPiEvalRunConfig({
       PI_CODING_AGENT_DIR: agentDir,
       PI_CODING_AGENT_SESSION_DIR: sessionsDir,
       XDG_CONFIG_HOME: xdgConfigHome,
-      MCP_DIRECT_TOOLS: VANILLA_MCP_DIRECT_TOOLS_ENV,
+      MCP_DIRECT_TOOLS: directToolsEnv,
       PATH: envPath,
     },
   };
@@ -324,6 +330,7 @@ export async function createExecutorPiEvalRunConfig({
   repoRoot: inputRepoRoot = packageRoot,
   piAgentSourceDir = defaultPiAgentSourceDir,
   executorCommand = "executor",
+  fixtureServerSourcePath,
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (mode !== EXECUTOR_PI_EVAL_MODE) {
@@ -358,7 +365,7 @@ export async function createExecutorPiEvalRunConfig({
   await mkdir(extensionDir, { recursive: true });
   await mkdir(executorDataDir, { recursive: true });
   await mkdir(executorScopeDir, { recursive: true });
-  await copyFile(paths.fixtureServerPath, fixtureServerPath);
+  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -458,6 +465,7 @@ export function createVanillaMcpAdapterConfig({
   fixtureServerPath,
   supportDir,
   path = benchmarkPath(),
+  servers = [...PI_EVAL_FIXTURE_SERVERS],
 }: any = {}) {
   return {
     settings: {
@@ -472,7 +480,7 @@ export function createVanillaMcpAdapterConfig({
       repoRoot,
       fixtureServerPath,
       cwd: supportDir,
-      servers: [...PI_EVAL_FIXTURE_SERVERS],
+      servers,
       extra: {
         env: { PATH: path },
         lifecycle: "eager",
