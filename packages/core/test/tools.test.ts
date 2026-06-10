@@ -386,6 +386,7 @@ describe("generated tool handlers", () => {
         hasInputSchema: Boolean(tool.inputSchema),
         hasOutputSchema: Boolean(tool.outputSchema),
         supportsFields: Boolean(tool.outputSchema),
+        ...(tool.name === "read" ? { argsTemplate: { path: "" } } : {}),
         ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
         ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
         ...(typeof tool.annotations?.readOnlyHint === "boolean"
@@ -406,6 +407,7 @@ describe("generated tool handlers", () => {
     )) as any;
     expect(list.content[0]?.text).toContain("read");
     expect(list.content[0]?.text).toContain("supports fields");
+    expect(list.content[0]?.text).toContain('args template: {"path":""}');
     expect(list.content[0]?.text).toContain("read-only");
     expect(list.content[0]?.text).toContain("structuredContent.result");
     expect(list.content[0]?.text).not.toContain("## Full Result");
@@ -427,6 +429,7 @@ describe("generated tool handlers", () => {
           hasInputSchema: true,
           hasOutputSchema: true,
           supportsFields: true,
+          argsTemplate: { path: "" },
           useWhen: "Use for reading file contents.",
           avoidWhen: "Avoid for writes.",
           readOnlyHint: true,

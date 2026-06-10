@@ -40,6 +40,7 @@ describe("compact schema fingerprints", () => {
       hasOutputSchema: false,
       requiredArgs: ["value"],
       acceptedArgs: ["count", "value"],
+      argsTemplate: { value: "" },
     });
     expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
     expect(first).not.toHaveProperty("inputSchemaHash");
@@ -60,6 +61,7 @@ describe("compact schema fingerprints", () => {
 
     expect(compact).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
     expect(compact).toMatchObject({ acceptedArgs: ["a", "b"] });
+    expect(compact).not.toHaveProperty("argsTemplate");
     expect(compact).not.toHaveProperty("inputSchemaHash");
     expect(compact).not.toHaveProperty("outputSchemaHash");
   });

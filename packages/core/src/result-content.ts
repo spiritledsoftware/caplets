@@ -343,6 +343,9 @@ function compactListHints(record: Record<string, unknown> | undefined): string |
   } else if (acceptedArgs.length > 0) {
     hints.push(`args: ${acceptedArgs.join(", ")}`);
   }
+  if (isRecord(record.argsTemplate)) {
+    hints.push(`args template: ${compactJsonText(record.argsTemplate, 160)}`);
+  }
   if (record.supportsFields === true) hints.push("supports fields");
   if (record.readOnlyHint === true) hints.push("read-only");
   if (record.destructiveHint === true) hints.push("destructive");

@@ -36,6 +36,7 @@ export type CompactTool = {
   supportsFields: boolean;
   requiredArgs?: string[];
   acceptedArgs?: string[];
+  argsTemplate?: Record<string, unknown>;
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
 };
@@ -778,17 +779,62 @@ export function compactToolSafetyHints(
 
 export function compactToolSchemaHints(
   tool: Tool,
-): Pick<CompactTool, "requiredArgs" | "acceptedArgs"> {
+): Pick<CompactTool, "requiredArgs" | "acceptedArgs" | "argsTemplate"> {
   const schema = isRecord(tool.inputSchema) ? tool.inputSchema : undefined;
   const properties = isRecord(schema?.properties) ? schema.properties : {};
   const acceptedArgs = Object.keys(properties).sort();
   const requiredArgs = Array.isArray(schema?.required)
     ? schema.required.filter((value): value is string => typeof value === "string").sort()
     : [];
+  const argsTemplate = compactArgsTemplate(properties, requiredArgs);
   return {
     ...(requiredArgs.length > 0 ? { requiredArgs } : {}),
     ...(acceptedArgs.length > 0 ? { acceptedArgs } : {}),
+    ...(argsTemplate ? { argsTemplate } : {}),
   };
+}
+
+function compactArgsTemplate(
+  properties: Record<string, unknown>,
+  requiredArgs: string[],
+): Record<string, unknown> | undefined {
+  if (requiredArgs.length === 0 || requiredArgs.length > 4) return undefined;
+  const entries = requiredArgs.flatMap((name) => {
+    const property = isRecord(properties[name]) ? properties[name] : undefined;
+    const value = placeholderForSchema(property);
+    return value === undefined ? [] : ([[name, value]] as const);
+  });
+  return entries.length === requiredArgs.length ? Object.fromEntries(entries) : undefined;
+}
+
+function placeholderForSchema(schema: Record<string, unknown> | undefined): unknown {
+  const enumValues = Array.isArray(schema?.enum) ? schema.enum : [];
+  const enumValue = enumValues.find(
+    (value) =>
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null,
+  );
+  if (enumValue !== undefined) return enumValue;
+  const type = Array.isArray(schema?.type) ? schema.type[0] : schema?.type;
+  switch (type) {
+    case "string":
+      return "";
+    case "integer":
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+    case "object":
+      return {};
+    case "null":
+      return null;
+    default:
+      return undefined;
+  }
 }
 
 export function compactToolSelectionHints(
