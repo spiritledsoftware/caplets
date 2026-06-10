@@ -66,8 +66,8 @@
     "id": "release-readiness-risk-report",
     "title": "Release readiness risk report",
     "prompt": "Decide whether the release can proceed by combining deployment, quality, and policy evidence. Return only the requested JSON final answer.",
-    "task_description": "Decide whether a release can proceed from deploy status, failing checks, policy exceptions, and risk thresholds.",
-    "fuzzy_description": "The agent must inspect the current release, failing quality checks, policy thresholds, and exception scope before deciding go or no-go.",
+    "task_description": "Decide whether a release can proceed from deploy status, failing checks, policy exceptions, and risk thresholds. Return the release ID, go/no-go decision, blocker IDs, valid exception IDs, and invalid exception IDs.",
+    "fuzzy_description": "The agent must inspect the current release, failing quality checks, policy thresholds, and exception scope before deciding go or no-go and classifying exceptions by validity.",
     "dependency_analysis": {
       "servers": ["deployments", "quality", "policies"],
       "requires": [
