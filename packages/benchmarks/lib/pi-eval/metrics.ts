@@ -194,6 +194,22 @@ function coverageTextFromEvent(event: any): string {
 }
 
 export function requiredEvidenceScore(metrics: any, task: any) {
+  if (task?.expectedEvidence?.tools?.length) {
+    const observedTools = new Set(metrics?.toolNames ?? []);
+    const missingTools = task.expectedEvidence.tools.filter(
+      (tool: string) => !observedTools.has(tool),
+    );
+    return {
+      required: true,
+      success: missingTools.length === 0,
+      missingDomains: missingTools,
+      coverage: {
+        tools: Object.fromEntries(
+          task.expectedEvidence.tools.map((tool: string) => [tool, observedTools.has(tool)]),
+        ),
+      },
+    };
+  }
   if (task?.id !== "checkout-incident-retry-hardening") {
     return {
       required: false,

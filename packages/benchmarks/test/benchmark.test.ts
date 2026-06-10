@@ -2427,6 +2427,107 @@ describe("Pi live tool surface eval harness", () => {
     }
   });
 
+  it("runs MCP tool-use suite jobs without copying a coding workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-mcp-suite-run-test-"));
+    const outputDir = join(root, "reports");
+    const runRoots: string[] = [];
+    try {
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          taskSuite: "mcp-tool-use",
+          modes: ["caplets-code-mode"],
+          tasks: ["incident-customer-impact-join"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        runConfigFactory: async ({ mode, fixtureServers }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          runRoots.push(runRoot);
+          expect(fixtureServers).toEqual([
+            "api_catalog",
+            "incidents",
+            "customers",
+            "deployments",
+            "quality",
+            "policies",
+          ]);
+          return {
+            runRoot,
+            mode,
+            product: "caplets",
+            adapterExposure: null,
+            configPath: null,
+            adapterConfigPath: null,
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: null,
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: null,
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [],
+            extraArgs: [],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) => ({
+          ...emptyProcessResult({ command: call.command, args: call.args }),
+          stdout: JSON.stringify({
+            taskId: "incident-customer-impact-join",
+            decision: "summary",
+            facts: [
+              {
+                key: "activeIncidentId",
+                value: "INC-2026-0610-2",
+                evidence: ["incidents.get_incident"],
+              },
+              { key: "affectedAccountCount", value: 4, evidence: ["customers.get_accounts"] },
+              {
+                key: "tierBreakdown",
+                value: { enterprise: 2, growth: 1, startup: 1 },
+                evidence: ["customers.get_accounts"],
+              },
+              {
+                key: "regionBreakdown",
+                value: { na: 2, eu: 1, apac: 1 },
+                evidence: ["customers.get_accounts"],
+              },
+              {
+                key: "escalationTargets",
+                value: ["atlas-oncall", "beacon-csm", "crane-support"],
+                evidence: ["customers.get_accounts"],
+              },
+            ],
+            summary: "Four accounts affected.",
+          }),
+          jsonEvents: [
+            { type: "tool_execution_start", toolName: "incidents.search_incidents" },
+            { type: "tool_execution_start", toolName: "incidents.get_incident" },
+            { type: "tool_execution_start", toolName: "customers.get_accounts" },
+          ],
+        }),
+      });
+
+      expect(result.report.suite).toMatchObject({
+        id: "mcp-tool-use",
+        label: "MCP tool-use workflows",
+      });
+      expect(result.report.results[0].score.success).toBe(true);
+      expect(result.report.results[0].candidateWorkspace).toBeNull();
+      expect(await readFile(result.markdownPath, "utf8")).toContain(
+        "Suite: MCP tool-use workflows",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("summarizes Pi eval reports with token, round-trip, and tool-call comparisons", () => {
     const result = {
       mode: "caplets-code-mode",

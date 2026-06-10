@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import { DEFAULT_TIMEOUT_MS, runProcess } from "./lib/live-agent";
 import { detectPiCli } from "./lib/pi-runner";
-import { createTempWorkspaceFromFixture, scoreTaskRun } from "./lib/scoring";
+import { createTempWorkspaceFromFixture } from "./lib/scoring";
 import {
   DEFAULT_PI_EVAL_RUNS,
   EXECUTOR_PI_EVAL_MODE,
   isPiMcpAdapterPiEvalMode,
   buildPiEvalCommand,
   buildPiEvalPrewarmPrompt,
-  buildPiEvalPrompt,
   createPiEvalRunConfig,
   piEvalModeProduct,
   PI_EVAL_MODES,
@@ -37,9 +37,6 @@ import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "./lib/pi-eva
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
-const defaultFixtureRoot = resolve(repoRoot, "benchmarks", "fixtures");
-const defaultFixtureWorkspaceRoot = resolve(defaultFixtureRoot, "coding-agent-workspace");
-const defaultTasksPath = resolve(defaultFixtureRoot, "tasks.json");
 const defaultOutputDir = resolve(repoRoot, "benchmark-results", "live", "pi-eval");
 
 export function parsePiEvalArgs(argv = process.argv.slice(2)) {
@@ -134,9 +131,9 @@ export function validatePiEvalOptions(options: any = {}) {
 export async function runPiEvalBenchmark({
   options,
   env = process.env,
-  fixtureRoot = defaultFixtureRoot,
-  fixtureWorkspaceRoot = defaultFixtureWorkspaceRoot,
-  tasksPath = defaultTasksPath,
+  fixtureRoot: inputFixtureRoot,
+  fixtureWorkspaceRoot: inputFixtureWorkspaceRoot,
+  tasksPath: inputTasksPath,
   now = () => new Date(),
   onProgress,
   piDetector = detectPiCli,
@@ -146,6 +143,9 @@ export async function runPiEvalBenchmark({
 }: any = {}) {
   const evalOptions = validatePiEvalOptions(options ?? {});
   const suite = resolvePiEvalSuite(evalOptions.taskSuite);
+  const fixtureRoot = inputFixtureRoot ?? suite.fixtureRoot;
+  const fixtureWorkspaceRoot = inputFixtureWorkspaceRoot ?? suite.workspaceRoot;
+  const tasksPath = inputTasksPath ?? suite.tasksPath;
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Refusing to run live Pi eval unless CAPLETS_BENCH_LIVE=1.");
   }
@@ -197,7 +197,7 @@ export async function runPiEvalBenchmark({
 
   const runResults = await runWithConcurrency(jobs, evalOptions.concurrency, async (job: any) => {
     const { entry, task, runIndex, index } = job;
-    const candidateWorkspace = await createTempWorkspaceFromFixture(fixtureWorkspaceRoot);
+    const candidateWorkspace = await createPiEvalWorkspace({ suite, fixtureWorkspaceRoot });
     const label = `${entry.mode} ${task.id} run ${runIndex}/${evalOptions.runs}`;
     onProgress?.(`Running ${label} (${index + 1}/${totalRuns})...`);
     let runConfig: any;
@@ -235,7 +235,7 @@ export async function runPiEvalBenchmark({
         });
       }
 
-      const prompt = buildPiEvalPrompt(task, entry.mode);
+      const prompt = suite.buildPrompt(task, entry.mode);
       const command = buildPiEvalCommand({
         command: pi.command ?? "pi",
         prompt,
@@ -260,7 +260,7 @@ export async function runPiEvalBenchmark({
         mode: entry.mode,
         adapterExposure: runConfig.adapterExposure,
       });
-      const score = await scoreTaskRun({
+      const score = await suite.scoreRun({
         task,
         candidateWorkspace,
         fixtureRoot,
@@ -336,12 +336,18 @@ export async function runPiEvalBenchmark({
   const report = {
     schemaVersion: 2,
     benchmark: "pi-live-tool-gateway-eval",
+    suite: {
+      id: suite.id,
+      label: suite.label,
+      workspaceRequired: suite.workspaceRequired,
+      fixtureServers: suite.fixtureServers,
+    },
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMs: completedAt.getTime() - startedAt.getTime(),
     options: serializableOptions(evalOptions),
     matrix,
-    tasks: tasks.map(publicTaskMetadata),
+    tasks: tasks.map(suite.publicTaskMetadata),
     summary: summarizePiEvalResults(results),
     results,
   };
@@ -396,6 +402,13 @@ export async function prewarmMcpAdapterDirectTools({
 
 export const prewarmExecutorDirectTools = prewarmMcpAdapterDirectTools;
 
+async function createPiEvalWorkspace({ suite, fixtureWorkspaceRoot }: any) {
+  if (suite.workspaceRequired) {
+    return await createTempWorkspaceFromFixture(fixtureWorkspaceRoot);
+  }
+  return await mkdtemp(join(tmpdir(), "caplets-pi-eval-workspace-"));
+}
+
 export async function loadTasks(tasksPath = defaultTasksPath) {
   const tasks = JSON.parse(await readFile(tasksPath, "utf8"));
   if (!Array.isArray(tasks)) throw new Error(`${tasksPath} must contain an array of tasks.`);
@@ -448,16 +461,6 @@ function selectTasks(tasks: any[], ids?: string[]) {
   return selected;
 }
 
-function publicTaskMetadata(task: any) {
-  return {
-    id: task.id,
-    prompt: task.prompt,
-    validationCommand: task.validationCommand,
-    expectedFiles: task.expectedFiles ?? [],
-    requiredFact: task.requiredFact ?? null,
-  };
-}
-
 function publicRunConfig(runConfig: any) {
   return {
     mode: runConfig.mode,
@@ -486,6 +489,7 @@ function publicRunConfig(runConfig: any) {
 
 function serializableOptions(options: any) {
   return {
+    taskSuite: options.taskSuite,
     modes: options.modes ?? null,
     model: options.model ?? null,
     tasks: options.tasks ?? null,
