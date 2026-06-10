@@ -89,7 +89,7 @@
     "expectedFacts": {
       "releaseId": "REL-2026-06-10-payments",
       "decision": "no-go",
-      "blockers": ["contract-tests", "rollback-plan"],
+      "blockers": ["risk-score", "contract-tests", "rollback-plan"],
       "validExceptions": ["EXC-442"],
       "invalidExceptions": ["EXC-410", "EXC-499"]
     },

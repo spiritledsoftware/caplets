@@ -2196,6 +2196,27 @@ describe("Pi live tool surface eval harness", () => {
         { toolNames: ["caplets_code_mode"] },
         {
           expectedEvidence: {
+            anyTools: [["quality.list_checks", "quality.get_check_details"]],
+          },
+        },
+        {
+          semanticJudge: { success: true },
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: "quality checks showed contract-tests failed",
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
             tools: ["incidents.get_incident"],
             anyTools: [
               ["incidents.search_incidents", "incidents.list_affected_accounts"],

@@ -203,6 +203,8 @@ export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) 
       observedTools,
       evidenceText,
     });
+    const effectiveMissingTools =
+      missingTools.length > 0 && acceptsSemanticEvidence(metrics, score) ? [] : missingTools;
     const coverageTools = Object.fromEntries(
       [
         ...(task.expectedEvidence.tools ?? []),
@@ -211,8 +213,8 @@ export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) 
     );
     return {
       required: true,
-      success: missingTools.length === 0,
-      missingDomains: missingTools,
+      success: effectiveMissingTools.length === 0,
+      missingDomains: effectiveMissingTools,
       coverage: { tools: coverageTools },
     };
   }
@@ -344,6 +346,15 @@ function expectedEvidenceFailures({
 function hasEvidence({ tool, observedTools, evidenceText }: any) {
   return toolEvidenceAliases(tool).some(
     (alias) => observedTools.has(alias) || evidenceText.includes(alias),
+  );
+}
+
+function acceptsSemanticEvidence(metrics: any, score: any) {
+  if (!score?.semanticJudge?.success) return false;
+  const toolNames = metrics?.toolNames ?? [];
+  return toolNames.some(
+    (name: string) =>
+      name === "caplets_code_mode" || name === "executor_execute" || /^caplets_[^_]+__/u.test(name),
   );
 }
 
