@@ -787,7 +787,7 @@ export function compactToolSchemaHints(
   const requiredArgs = Array.isArray(schema?.required)
     ? schema.required.filter((value): value is string => typeof value === "string").sort()
     : [];
-  const argsTemplate = compactArgsTemplate(properties, requiredArgs);
+  const argsTemplate = compactArgsTemplate(properties, requiredArgs, acceptedArgs);
   return {
     ...(requiredArgs.length > 0 ? { requiredArgs } : {}),
     ...(acceptedArgs.length > 0 ? { acceptedArgs } : {}),
@@ -814,14 +814,17 @@ function callTemplateForTool(
 function compactArgsTemplate(
   properties: Record<string, unknown>,
   requiredArgs: string[],
+  acceptedArgs: string[],
 ): Record<string, unknown> | undefined {
-  if (requiredArgs.length === 0 || requiredArgs.length > 4) return undefined;
-  const entries = requiredArgs.flatMap((name) => {
+  const templateArgs = requiredArgs.length > 0 ? requiredArgs : acceptedArgs;
+  if (templateArgs.length === 0 || templateArgs.length > 4) return undefined;
+  if (requiredArgs.length === 0 && acceptedArgs.length > 3) return undefined;
+  const entries = templateArgs.flatMap((name) => {
     const property = isRecord(properties[name]) ? properties[name] : undefined;
     const value = placeholderForSchema(property);
     return value === undefined ? [] : ([[name, value]] as const);
   });
-  return entries.length === requiredArgs.length ? Object.fromEntries(entries) : undefined;
+  return entries.length === templateArgs.length ? Object.fromEntries(entries) : undefined;
 }
 
 function placeholderForSchema(schema: Record<string, unknown> | undefined): unknown {
