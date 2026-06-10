@@ -46,7 +46,7 @@ export function renderPiEvalMarkdownReport(report: any): string {
   );
   const comparisonRows = report.summary.comparisons.map(
     (comparison: any) =>
-      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}`,
+      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}, provider tokens ${formatPercent(comparison.providerTokenReduction)}`,
   );
   const bucketRows = report.summary.byMode.map((row: any) => {
     const buckets = row.averageRequestTokenBuckets ?? {};
@@ -58,6 +58,10 @@ export function renderPiEvalMarkdownReport(report: any): string {
       (result: any) =>
         `- ${result.mode} ${result.taskId} run ${result.run}: ${failureReason(result)}`,
     );
+  const validatorRows = report.results.map(
+    (result: any) =>
+      `| ${result.mode} | ${result.taskId} | ${result.run} | ${result.score?.validation?.success ? "pass" : "fail"} | ${validatorNote(result)} |`,
+  );
   return `${[
     "# Pi Live Tool Gateway Eval",
     "",
@@ -85,6 +89,12 @@ export function renderPiEvalMarkdownReport(report: any): string {
     "## Comparisons",
     "",
     ...(comparisonRows.length ? comparisonRows : ["- Not enough data"]),
+    "",
+    "## Validator Summary",
+    "",
+    "| Mode | Task | Run | Validator | Notes |",
+    "| --- | --- | ---: | --- | --- |",
+    ...validatorRows,
     "",
     "## Failures",
     "",
@@ -138,6 +148,7 @@ function compareRows(a: any, b: any, label: any) {
       b.averageRequestEstimatedTokens,
       a.averageRequestEstimatedTokens,
     ),
+    providerTokenReduction: reduction(b.averageProviderTokens, a.averageProviderTokens),
   };
 }
 
@@ -243,4 +254,12 @@ function validationFailureExcerpt(stdout: any) {
     .filter((line, index, lines) => lines.indexOf(line) === index)
     .slice(0, 4);
   return interesting.join("; ");
+}
+
+function validatorNote(result: any) {
+  const note = String(result.score?.validation?.stdout ?? "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 160);
+  return note || "n/a";
 }

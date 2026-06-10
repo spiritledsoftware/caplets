@@ -2579,6 +2579,7 @@ describe("Pi live tool surface eval harness", () => {
     };
     const summary = summarizePiEvalResults([result, executorResult]);
     const markdown = renderPiEvalMarkdownReport({
+      suite: { id: "mcp-tool-use", label: "MCP tool-use workflows" },
       completedAt: "2026-06-09T00:00:00.000Z",
       options: { model: "test-model", runs: 1, timeoutMs: 1000, concurrency: 2 },
       summary,
@@ -2616,11 +2617,15 @@ describe("Pi live tool surface eval harness", () => {
     );
     expect(markdown).toContain("# Pi Live Tool Gateway Eval");
     expect(markdown).toContain("Concurrency: 2");
+    expect(markdown).toContain("Suite: MCP tool-use workflows");
     expect(markdown).toContain("| Mode | Product | Adapter exposure |");
     expect(markdown).toContain("## Token Bucket Breakdown");
     expect(markdown).toContain("| Mode | Total | Tool surface | Non-surface |");
     expect(markdown).toContain("Avg LLM round trips");
+    expect(markdown).toContain("Avg provider tokens");
     expect(markdown).toContain("Avg non-surface estimated tokens");
+    expect(markdown).toContain("provider tokens");
+    expect(markdown).toContain("## Validator Summary");
     expect(markdown).toContain("caplets-code-mode");
     expect(markdown).toContain("executor-mcp");
   });
