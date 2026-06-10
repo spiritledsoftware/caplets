@@ -94,7 +94,7 @@ export function summarizePiEvalMetrics(
       providerRequests.map((event) => event.messagePayloadEstimatedTokens),
     ),
     requestTokenBuckets,
-    providerUsage: mergeUsage(events),
+    providerUsage: mergeUsage(events, jsonEvents),
     resolvedModel: latestRequest?.model ?? null,
   };
 }
@@ -253,7 +253,7 @@ export function toolNameFromEvent(event: any): string | null {
   );
 }
 
-function mergeUsage(events: any[]) {
+function mergeUsage(events: any[], jsonEvents: any[] = []) {
   const usage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -262,21 +262,31 @@ function mergeUsage(events: any[]) {
     totalTokens: 0,
   };
   let found = false;
-  for (const event of events) {
-    const value = event.usage ?? event.response?.usage ?? event.message?.usage;
-    if (!value || typeof value !== "object") continue;
+  const metricUsages = events
+    .filter((event) => event.type === "after_provider_response")
+    .map((event) => event.usage ?? event.response?.usage)
+    .filter(isRecord);
+  const jsonUsages = jsonEvents
+    .filter((event) => event.type === "message_end" && event.message?.role === "assistant")
+    .map((event) => event.message?.usage)
+    .filter(isRecord);
+  for (const value of metricUsages.length ? metricUsages : jsonUsages) {
     found = true;
-    usage.inputTokens += numberValue(
-      value.inputTokens ?? value.input_tokens ?? value.prompt_tokens,
+    usage.inputTokens += numberValue(value.inputTokens ?? value.input_tokens ?? value.input);
+    usage.outputTokens += numberValue(value.outputTokens ?? value.output_tokens ?? value.output);
+    usage.cacheReadTokens += numberValue(
+      value.cacheReadTokens ?? value.cache_read_tokens ?? value.cacheRead,
     );
-    usage.outputTokens += numberValue(
-      value.outputTokens ?? value.output_tokens ?? value.completion_tokens,
+    usage.cacheWriteTokens += numberValue(
+      value.cacheWriteTokens ?? value.cache_write_tokens ?? value.cacheWrite,
     );
-    usage.cacheReadTokens += numberValue(value.cacheReadTokens ?? value.cache_read_tokens);
-    usage.cacheWriteTokens += numberValue(value.cacheWriteTokens ?? value.cache_write_tokens);
     usage.totalTokens += numberValue(value.totalTokens ?? value.total_tokens);
   }
   return found ? usage : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function sum(values: unknown[]): number {

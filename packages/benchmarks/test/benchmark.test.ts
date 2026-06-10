@@ -144,7 +144,7 @@ describe("progressive disclosure benchmark fixture", () => {
     expect(result.stdoutTruncated).toBe(true);
     expect(result.stderrTruncated).toBe(true);
     expect(result.stderrBytes).toBe(6);
-    expect(result.jsonEvents).toEqual([]);
+    expect(result.jsonEvents).toEqual([{ type: "tool_call", toolName: "policy_get" }]);
     expect(JSON.stringify(result)).not.toContain("not-recorded");
     expect(PROCESS_TERMINATION_BEHAVIOR).toContain("process.kill(-pid, signal)");
     expect(PROCESS_TERMINATION_BEHAVIOR).toContain("taskkill");
@@ -157,6 +157,22 @@ describe("progressive disclosure benchmark fixture", () => {
       { type: "message" },
     ]);
     expect(parseJsonEvents('not json\n{"type":"tool_call"}')).toEqual([{ type: "tool_call" }]);
+  });
+
+  it("parses JSONL events from the full stream even when stdout is capped", async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "console.log(JSON.stringify({ type: 'message_end', usage: { totalTokens: 12 } })); console.log('x'.repeat(2000));",
+      ],
+      timeoutMs: 5_000,
+      outputMaxBytes: 16,
+    });
+
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.stdout).toHaveLength(16);
+    expect(result.jsonEvents).toEqual([{ type: "message_end", usage: { totalTokens: 12 } }]);
   });
 
   it("redacts secret env values and common token patterns from captured output", async () => {
@@ -1741,6 +1757,36 @@ describe("Pi live tool surface eval harness", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       totalTokens: 0,
+    });
+  });
+
+  it("uses Pi JSON message usage when instrumented provider usage is unavailable", () => {
+    const metrics = summarizePiEvalMetrics(
+      [],
+      [
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            usage: { input: 10, output: 3, cacheRead: 20, totalTokens: 33 },
+          },
+        },
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            usage: { input: 10, output: 3, cacheRead: 20, totalTokens: 33 },
+          },
+        },
+      ],
+    );
+
+    expect(metrics.providerUsage).toEqual({
+      inputTokens: 10,
+      outputTokens: 3,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 0,
+      totalTokens: 33,
     });
   });
 
