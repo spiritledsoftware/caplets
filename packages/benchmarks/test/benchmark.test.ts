@@ -10,7 +10,7 @@ import {
   redactOutput,
   runProcess,
 } from "../lib/live-agent";
-import { createBenchmarkCapletsConfig } from "../lib/config";
+import { createBenchmarkCapletsConfig, createNamedFixtureMcpServers } from "../lib/config";
 import { PI_CONFIG_MODES, createPiMcpConfigs, detectPiCli, piRunner } from "../lib/pi-runner";
 import {
   OPENCODE_CONFIG_MODES,
@@ -1526,6 +1526,44 @@ describe("Pi live tool surface eval harness", () => {
         servers: ["api_catalog", "incidents"],
       }).map((payload) => payload.name),
     ).toEqual(["api_catalog", "incidents"]);
+  });
+
+  it("loads MCP tool-use suite tasks with expected dependency metadata", async () => {
+    const suite = resolvePiEvalSuite("mcp-tool-use");
+    const tasks = await loadTasks(suite.tasksPath);
+    expect(tasks.map((task: any) => task.id)).toEqual([
+      "api-pagination-audit",
+      "incident-customer-impact-join",
+      "release-readiness-risk-report",
+    ]);
+    expect(tasks[0]).toMatchObject({
+      dependency_analysis: { servers: ["api_catalog"] },
+      expectedEvidence: { servers: ["api_catalog"] },
+    });
+    expect(tasks[1].dependency_analysis.servers).toEqual(["incidents", "customers"]);
+    expect(tasks[2].dependency_analysis.servers).toEqual(["deployments", "quality", "policies"]);
+  });
+
+  it("exposes MCP tool-use fixture server metadata", async () => {
+    const suite = resolvePiEvalSuite("mcp-tool-use");
+    const config = createNamedFixtureMcpServers({
+      fixtureServerPath: suite.fixtureServerSourcePath,
+      cwd: suite.fixtureRoot,
+      servers: suite.fixtureServers,
+    });
+    expect(Object.keys(config).sort()).toEqual([
+      "api_catalog",
+      "customers",
+      "deployments",
+      "incidents",
+      "policies",
+      "quality",
+    ]);
+    expect(config.api_catalog.args).toEqual([
+      suite.fixtureServerSourcePath,
+      "--server",
+      "api_catalog",
+    ]);
   });
 
   it("builds Executor fixture source payloads and setup commands", async () => {

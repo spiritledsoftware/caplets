@@ -1,0 +1,99 @@
+[
+  {
+    "id": "api-pagination-audit",
+    "title": "API pagination audit",
+    "prompt": "Audit the API catalog for pagination behavior across product, customer, and audit APIs. Return only the requested JSON final answer.",
+    "task_description": "Compare search/list endpoints across three product APIs and identify which operations are paginated, how pagination works, and the required parameter names.",
+    "fuzzy_description": "The agent must inspect operation details, distinguish paginated endpoints from lookalikes, and ignore a fallback list endpoint that is not paginated.",
+    "dependency_analysis": {
+      "servers": ["api_catalog"],
+      "requires": ["search catalog", "inspect operation details", "compare pagination parameters"]
+    },
+    "expectedEvidence": {
+      "servers": ["api_catalog"],
+      "tools": [
+        "api_catalog.search_apis",
+        "api_catalog.list_operations",
+        "api_catalog.get_operation"
+      ]
+    },
+    "expectedFacts": {
+      "paginatedOperations": ["products.search", "customers.list", "audit.events"],
+      "paginationStyles": {
+        "products.search": "cursor",
+        "customers.list": "offset",
+        "audit.events": "time_window"
+      },
+      "requiredParameters": {
+        "products.search": ["query", "page_size", "cursor"],
+        "customers.list": ["limit", "offset"],
+        "audit.events": ["start_time", "end_time", "next_token"]
+      },
+      "notPaginated": ["products.list_legacy"]
+    },
+    "distractorFacts": ["products.list_legacy is paginated", "orders.export is required"],
+    "validator": "api-pagination-audit"
+  },
+  {
+    "id": "incident-customer-impact-join",
+    "title": "Incident customer impact join",
+    "prompt": "Find the active incident and join affected account IDs to customer records. Return only the requested JSON final answer.",
+    "task_description": "Find the active incident, fetch affected account IDs, join customer details, and return the customer impact summary.",
+    "fuzzy_description": "The agent must discover which incident and customer tools matter, ignore unrelated records, and combine results across servers.",
+    "dependency_analysis": {
+      "servers": ["incidents", "customers"],
+      "requires": [
+        "find active incident",
+        "read affected account IDs",
+        "join account tiers, regions, and escalation contacts"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["incidents", "customers"],
+      "tools": ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"]
+    },
+    "expectedFacts": {
+      "activeIncidentId": "INC-2026-0610-2",
+      "affectedAccountCount": 4,
+      "tierBreakdown": { "enterprise": 2, "growth": 1, "startup": 1 },
+      "regionBreakdown": { "na": 2, "eu": 1, "apac": 1 },
+      "escalationTargets": ["atlas-oncall", "beacon-csm", "crane-support"]
+    },
+    "distractorFacts": ["INC-2026-0610-1", "acme-retail"],
+    "validator": "incident-customer-impact-join"
+  },
+  {
+    "id": "release-readiness-risk-report",
+    "title": "Release readiness risk report",
+    "prompt": "Decide whether the release can proceed by combining deployment, quality, and policy evidence. Return only the requested JSON final answer.",
+    "task_description": "Decide whether a release can proceed from deploy status, failing checks, policy exceptions, and risk thresholds.",
+    "fuzzy_description": "The agent must inspect the current release, failing quality checks, policy thresholds, and exception scope before deciding go or no-go.",
+    "dependency_analysis": {
+      "servers": ["deployments", "quality", "policies"],
+      "requires": [
+        "find current release",
+        "inspect quality checks",
+        "apply policy thresholds",
+        "validate exceptions"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["deployments", "quality", "policies"],
+      "tools": [
+        "deployments.get_release",
+        "quality.list_checks",
+        "policies.get_release_policy",
+        "policies.list_exceptions"
+      ]
+    },
+    "expectedFacts": {
+      "releaseId": "REL-2026-06-10-payments",
+      "decision": "no-go",
+      "blockers": ["contract-tests", "rollback-plan"],
+      "validExceptions": ["EXC-442"],
+      "invalidExceptions": ["EXC-410", "EXC-499"]
+    },
+    "distractorFacts": ["go", "REL-2026-06-10-search", "EXC-410 is valid"],
+    "validator": "release-readiness-risk-report"
+  }
+]
