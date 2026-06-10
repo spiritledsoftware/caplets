@@ -37,6 +37,7 @@ export type CompactTool = {
   requiredArgs?: string[];
   acceptedArgs?: string[];
   argsTemplate?: Record<string, unknown>;
+  callTemplate?: { operation: "call_tool"; name: string; args: Record<string, unknown> };
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
 };
@@ -779,7 +780,7 @@ export function compactToolSafetyHints(
 
 export function compactToolSchemaHints(
   tool: Tool,
-): Pick<CompactTool, "requiredArgs" | "acceptedArgs" | "argsTemplate"> {
+): Pick<CompactTool, "requiredArgs" | "acceptedArgs" | "argsTemplate" | "callTemplate"> {
   const schema = isRecord(tool.inputSchema) ? tool.inputSchema : undefined;
   const properties = isRecord(schema?.properties) ? schema.properties : {};
   const acceptedArgs = Object.keys(properties).sort();
@@ -791,6 +792,22 @@ export function compactToolSchemaHints(
     ...(requiredArgs.length > 0 ? { requiredArgs } : {}),
     ...(acceptedArgs.length > 0 ? { acceptedArgs } : {}),
     ...(argsTemplate ? { argsTemplate } : {}),
+    ...callTemplateForTool(tool.name, argsTemplate, requiredArgs),
+  };
+}
+
+function callTemplateForTool(
+  name: string,
+  argsTemplate: Record<string, unknown> | undefined,
+  requiredArgs: string[],
+): Pick<CompactTool, "callTemplate"> | undefined {
+  if (requiredArgs.length > 0 && !argsTemplate) return undefined;
+  return {
+    callTemplate: {
+      operation: "call_tool",
+      name,
+      args: argsTemplate ?? {},
+    },
   };
 }
 

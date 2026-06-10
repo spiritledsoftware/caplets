@@ -41,6 +41,7 @@ describe("compact schema fingerprints", () => {
       requiredArgs: ["value"],
       acceptedArgs: ["count", "value"],
       argsTemplate: { value: "" },
+      callTemplate: { operation: "call_tool", name: "first", args: { value: "" } },
     });
     expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
     expect(first).not.toHaveProperty("inputSchemaHash");
