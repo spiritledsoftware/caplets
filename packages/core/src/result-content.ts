@@ -58,6 +58,9 @@ export function markdownCallToolResultContent(
     if (downstreamText && downstreamText === renderedStructured) {
       return textContent(downstreamText);
     }
+    if (downstreamText) {
+      return textContent(downstreamText);
+    }
     return [
       ...(result.content ?? []),
       {

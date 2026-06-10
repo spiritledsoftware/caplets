@@ -814,8 +814,8 @@ describe("generated tool handlers", () => {
     expect(result).not.toBe(downstreamResult);
     expect(downstreamResult).toEqual(originalDownstreamResult);
     expect(result.content[0]?.text).toContain("ok");
-    expect(result.content[1]?.text).toContain("## Structured Content");
-    expect(result.content[1]?.text).toContain('"ok": true');
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]?.text).not.toContain("## Structured Content");
     expect({ ...result, content: originalDownstreamResult.content }).toEqual({
       ...originalDownstreamResult,
       _meta: {
@@ -848,8 +848,8 @@ describe("generated tool handlers", () => {
       downstream,
     );
     expect(result.content[0]?.text).toContain("ok");
-    expect(result.content[1]?.text).toContain("## Structured Content");
-    expect(result.content[1]?.text).toContain('"ok": true');
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]?.text).not.toContain("## Structured Content");
     expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {
@@ -885,8 +885,8 @@ describe("generated tool handlers", () => {
       downstream,
     );
     expect(result.content[0]?.text).toContain("failed");
-    expect(result.content[1]?.text).toContain("## Structured Content");
-    expect(result.content[1]?.text).toContain('"error": "nope"');
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]?.text).not.toContain("## Structured Content");
     expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {

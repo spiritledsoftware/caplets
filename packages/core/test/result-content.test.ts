@@ -70,7 +70,7 @@ describe("result content helpers", () => {
     expect(text).toContain('"matches": []');
   });
 
-  it("preserves downstream MCP text and appends structured content", () => {
+  it("preserves downstream MCP text without duplicating structured content", () => {
     const content = markdownCallToolResultContent(
       {
         content: [{ type: "text", text: "Downstream text" }],
@@ -80,8 +80,8 @@ describe("result content helpers", () => {
     );
 
     expect(content[0]?.text).toContain("Downstream text");
-    expect(content[1]?.text).toContain("## Structured Content");
-    expect(content[1]?.text).toContain('"snapshot": {');
+    expect(content).toHaveLength(1);
+    expect(content[0]?.text).not.toContain("## Structured Content");
   });
 
   it("detects renderable structured content while ignoring metadata-only objects", () => {
