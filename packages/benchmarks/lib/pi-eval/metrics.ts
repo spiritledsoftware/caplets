@@ -194,9 +194,9 @@ function coverageTextFromEvent(event: any): string {
 }
 
 export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) {
-  if (task?.expectedEvidence?.tools?.length) {
-    const observedTools = new Set((metrics?.toolNames ?? []).map(normalizeToolName));
-    const evidenceText = normalizeToolName(finalAnswerEvidenceText(score?.parsedFinalAnswer));
+  if (task?.expectedEvidence?.tools?.length || task?.expectedEvidence?.anyTools?.length) {
+    const observedTools = new Set(metrics?.toolNames ?? []);
+    const evidenceText = finalAnswerEvidenceText(score?.parsedFinalAnswer);
     const missingTools = expectedEvidenceFailures({
       expectedTools: task.expectedEvidence.tools,
       anyTools: task.expectedEvidence.anyTools,
@@ -204,9 +204,10 @@ export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) 
       evidenceText,
     });
     const coverageTools = Object.fromEntries(
-      [...task.expectedEvidence.tools, ...(task.expectedEvidence.anyTools ?? []).flat()].map(
-        (tool: string) => [tool, hasEvidence({ tool, observedTools, evidenceText })],
-      ),
+      [
+        ...(task.expectedEvidence.tools ?? []),
+        ...(task.expectedEvidence.anyTools ?? []).flat(),
+      ].map((tool: string) => [tool, hasEvidence({ tool, observedTools, evidenceText })]),
     );
     return {
       required: true,
@@ -323,10 +324,6 @@ function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function normalizeToolName(value: string) {
-  return String(value).replaceAll("_", ".");
-}
-
 function expectedEvidenceFailures({
   expectedTools = [],
   anyTools = [],
@@ -345,8 +342,24 @@ function expectedEvidenceFailures({
 }
 
 function hasEvidence({ tool, observedTools, evidenceText }: any) {
-  const normalizedTool = normalizeToolName(tool);
-  return observedTools.has(normalizedTool) || evidenceText.includes(normalizedTool);
+  return toolEvidenceAliases(tool).some(
+    (alias) => observedTools.has(alias) || evidenceText.includes(alias),
+  );
+}
+
+function toolEvidenceAliases(tool: string) {
+  const value = String(tool);
+  const aliases = new Set([value]);
+  const dot = value.indexOf(".");
+  if (dot > 0) {
+    const server = value.slice(0, dot);
+    const toolName = value.slice(dot + 1);
+    aliases.add(toolName);
+    aliases.add(`${server}_${toolName}`);
+    aliases.add(`${server}__${toolName}`);
+    aliases.add(`caplets__${server}__${toolName}`);
+  }
+  return [...aliases];
 }
 
 function finalAnswerEvidenceText(answer: any) {

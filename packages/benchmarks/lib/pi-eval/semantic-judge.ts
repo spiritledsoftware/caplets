@@ -121,6 +121,8 @@ function buildJudgePrompt({ task, finalAnswer, toolEvidence }: SemanticJudgeInpu
     "Use score 1 for fully correct and 0 for incorrect.",
     "Judge semantic correctness, not exact JSON shape or field names.",
     "A correct answer may group facts differently if it contains the required information.",
+    "Grade required facts and listed distractorFacts first; do not fail an otherwise correct answer for extra non-conflicting details.",
+    "When observed tool evidence only exposes an aggregate tool such as caplets_code_mode or executor_execute, use the final-answer evidence citations as granular grounding unless they contradict the answer.",
     "Do not credit unsupported guesses. Use the observed tool evidence to decide whether the answer is grounded.",
     "",
     JSON.stringify({

@@ -2147,6 +2147,52 @@ describe("Pi live tool surface eval harness", () => {
   it("scores MCP tool-use evidence from parsed final-answer citations", () => {
     expect(
       requiredEvidenceScore(
+        { toolNames: ["caplets__api_catalog__get_operation"] },
+        { expectedEvidence: { tools: ["api_catalog.get_operation"] } },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        { expectedEvidence: { tools: ["api_catalog.get_operation"] } },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: "api_catalog_get_operation(products.search) returned paginated=true.",
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
+            anyTools: [["api_catalog.get_operation", "api_catalog.compare_operations"]],
+          },
+        },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: {
+                  tool: "api_catalog.compare_operations",
+                  record: { id: "products.search", paginated: true },
+                },
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
         { toolNames: ["caplets_code_mode"] },
         {
           expectedEvidence: {

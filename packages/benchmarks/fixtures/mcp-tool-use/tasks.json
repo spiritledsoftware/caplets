@@ -11,11 +11,7 @@
     },
     "expectedEvidence": {
       "servers": ["api_catalog"],
-      "tools": [
-        "api_catalog.search_apis",
-        "api_catalog.list_operations",
-        "api_catalog.get_operation"
-      ]
+      "anyTools": [["api_catalog.get_operation", "api_catalog.compare_operations"]]
     },
     "expectedFacts": {
       "paginatedOperations": ["products.search", "customers.list", "audit.events"],

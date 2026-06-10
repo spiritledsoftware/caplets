@@ -111,15 +111,9 @@ function validateMcpToolUseAnswer({ task, parsed, events }: any) {
   }
 
   const observedTools = new Set(events.map(toolNameFromEvent).filter(Boolean));
-  const normalizedObservedTools = new Set([...observedTools].map(normalizeToolName));
   const evidenceText = toolEvidenceText(parsed);
-  const normalizedEvidenceText = normalizeToolName(evidenceText);
   for (const expectedTool of task.expectedEvidence?.tools ?? []) {
-    const normalizedExpectedTool = normalizeToolName(expectedTool);
-    if (
-      !normalizedObservedTools.has(normalizedExpectedTool) &&
-      !normalizedEvidenceText.includes(normalizedExpectedTool)
-    ) {
+    if (!hasToolEvidence(expectedTool)) {
       failures.push(`missing expected tool evidence: ${expectedTool}`);
     }
   }
@@ -132,9 +126,8 @@ function validateMcpToolUseAnswer({ task, parsed, events }: any) {
   return validationResult({ failures, semanticJudgeResult: null });
 
   function hasToolEvidence(tool: string) {
-    const normalizedTool = normalizeToolName(tool);
-    return (
-      normalizedObservedTools.has(normalizedTool) || normalizedEvidenceText.includes(normalizedTool)
+    return toolEvidenceAliases(tool).some(
+      (alias) => observedTools.has(alias) || evidenceText.includes(alias),
     );
   }
 }
@@ -319,8 +312,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeToolName(value: string) {
-  return String(value).replaceAll("_", ".");
+function toolEvidenceAliases(tool: string) {
+  const value = String(tool);
+  const aliases = new Set([value]);
+  const dot = value.indexOf(".");
+  if (dot > 0) {
+    const server = value.slice(0, dot);
+    const toolName = value.slice(dot + 1);
+    aliases.add(toolName);
+    aliases.add(`${server}_${toolName}`);
+    aliases.add(`${server}__${toolName}`);
+    aliases.add(`caplets__${server}__${toolName}`);
+  }
+  return [...aliases];
 }
 
 function agentProcessFailureReason(agentResult: any) {
