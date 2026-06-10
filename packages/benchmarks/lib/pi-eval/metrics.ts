@@ -354,7 +354,9 @@ function acceptsSemanticEvidence(metrics: any, score: any) {
   const toolNames = metrics?.toolNames ?? [];
   return toolNames.some(
     (name: string) =>
-      name === "caplets_code_mode" || name === "executor_execute" || /^caplets_[^_]+__/u.test(name),
+      name === "caplets_code_mode" ||
+      name === "executor_execute" ||
+      /^caplets_[^_]+(?:__.*)?$/u.test(name),
   );
 }
 

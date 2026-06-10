@@ -61,6 +61,8 @@ import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
 import {
   buildPiEvalMatrix,
+  compactPiEvalAgentResult,
+  compactPiEvalScore,
   parsePiEvalArgs,
   prewarmMcpAdapterDirectTools,
   runPiEvalBenchmark,
@@ -1301,6 +1303,15 @@ describe("Pi live tool surface eval harness", () => {
         "release-readiness-risk-report",
       ],
     });
+    expect(parsePiEvalArgs(["--task-suite", "mcp-realistic-noauth"])).toMatchObject({
+      taskSuite: "mcp-realistic-noauth",
+      tasks: [
+        "production-incident-briefing",
+        "release-risk-triage",
+        "enterprise-renewal-readiness",
+        "oncall-handoff-synthesis",
+      ],
+    });
     expect(() => parsePiEvalArgs(["--task-suite", "missing-suite"])).toThrow(
       /Unknown Pi eval task suite missing-suite/u,
     );
@@ -1315,6 +1326,11 @@ describe("Pi live tool surface eval harness", () => {
     expect(resolvePiEvalSuite("mcp-tool-use")).toMatchObject({
       id: "mcp-tool-use",
       label: "MCP tool-use workflows",
+      workspaceRequired: false,
+    });
+    expect(resolvePiEvalSuite("mcp-realistic-noauth")).toMatchObject({
+      id: "mcp-realistic-noauth",
+      label: "Realistic no-auth MCP workflows",
       workspaceRequired: false,
     });
   });
@@ -1562,6 +1578,52 @@ describe("Pi live tool surface eval harness", () => {
     });
     expect(tasks[1].dependency_analysis.servers).toEqual(["incidents", "customers"]);
     expect(tasks[2].dependency_analysis.servers).toEqual(["deployments", "quality", "policies"]);
+  });
+
+  it("loads realistic no-auth MCP workflow tasks with broad multi-server dependencies", async () => {
+    const suite = resolvePiEvalSuite("mcp-realistic-noauth");
+    const tasks = await loadTasks(suite.tasksPath);
+    expect(tasks.map((task: any) => task.id)).toEqual([
+      "production-incident-briefing",
+      "release-risk-triage",
+      "enterprise-renewal-readiness",
+      "oncall-handoff-synthesis",
+    ]);
+    expect(tasks.every((task: any) => task.expectedFacts && task.expectedEvidence)).toBe(true);
+    expect(tasks.map((task: any) => task.dependency_analysis.servers.length)).toEqual([5, 6, 6, 7]);
+    expect(
+      new Set(tasks.flatMap((task: any) => task.dependency_analysis.servers)).size,
+    ).toBeGreaterThanOrEqual(10);
+  });
+
+  it("exposes a large realistic no-auth MCP fixture tool stack with overlapping tool names", async () => {
+    const suite = resolvePiEvalSuite("mcp-realistic-noauth");
+    const fixture = await import("../fixtures/mcp-realistic-noauth/mcp-server");
+    expect(suite.fixtureServers).toEqual([
+      "repo",
+      "filesystem",
+      "sqlite",
+      "docs",
+      "browser",
+      "memory",
+      "time",
+      "slack",
+      "jira",
+      "github",
+      "observability",
+      "deployments",
+      "feature_flags",
+      "customers",
+      "incidents",
+    ]);
+    expect(fixture.SERVER_NAMES).toEqual(suite.fixtureServers);
+    const tools = suite.fixtureServers.flatMap((server: string) =>
+      fixture.listToolMetadata(server),
+    );
+    expect(tools.length).toBeGreaterThanOrEqual(120);
+    expect(new Set(tools.map((tool: any) => tool.name)).size).toBeLessThan(tools.length);
+    expect(tools.filter((tool: any) => tool.name === "search")).toHaveLength(15);
+    expect(JSON.stringify(tools)).toContain("No API key is required");
   });
 
   it("exposes MCP tool-use fixture server metadata", async () => {
@@ -2241,6 +2303,31 @@ describe("Pi live tool surface eval harness", () => {
         },
       ),
     ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_incidents", "caplets_observability", "caplets_docs"] },
+        {
+          expectedEvidence: {
+            anyTools: [
+              ["incidents.get", "incidents.search"],
+              ["observability.query", "observability.get"],
+              ["docs.get", "docs.search"],
+            ],
+          },
+        },
+        {
+          semanticJudge: { success: true },
+          parsedFinalAnswer: {
+            facts: [
+              { evidence: "incidents.affected id=INC-9071 returned status=active" },
+              { evidence: "observability.metrics returned OBS-payments-errors" },
+              { evidence: "docs.read id=RB-PAY-042 returned the runbook" },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
   });
 
   it("counts domain coverage from tool results, not prompt or tool input text", () => {
@@ -2784,6 +2871,11 @@ describe("Pi live tool surface eval harness", () => {
             summary: "Four accounts affected.",
           }),
           jsonEvents: [
+            ...Array.from({ length: 50 }, (_, index) => ({
+              type: "message",
+              index,
+              payload: "z".repeat(20_000),
+            })),
             { type: "tool_execution_start", toolName: "incidents.search_incidents" },
             { type: "tool_execution_start", toolName: "incidents.get_incident" },
             { type: "tool_execution_start", toolName: "customers.get_accounts" },
@@ -2797,12 +2889,77 @@ describe("Pi live tool surface eval harness", () => {
       });
       expect(result.report.results[0].score.success).toBe(true);
       expect(result.report.results[0].candidateWorkspace).toBeNull();
+      expect(result.report.results[0].agentResult.jsonEventsTotalCount).toBe(53);
+      expect(result.report.results[0].agentResult.jsonEvents).toHaveLength(25);
       expect(await readFile(result.markdownPath, "utf8")).toContain(
         "Suite: MCP tool-use workflows",
       );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("bounds persisted Pi eval agent output after scoring large MCP tool stacks", () => {
+    const compact = compactPiEvalAgentResult({
+      command: "pi-test",
+      args: ["--mode", "json"],
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      durationMs: 123,
+      envKeys: ["CAPLETS_BENCH_LIVE"],
+      stdout: "x".repeat(200_000),
+      stderr: "y".repeat(20_000),
+      stdoutBytes: 200_000,
+      stderrBytes: 20_000,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      jsonEvents: Array.from({ length: 200 }, (_, index) => ({
+        type: "message",
+        index,
+        payload: "z".repeat(20_000),
+      })),
+    });
+
+    expect(compact.stdout).toHaveLength(16_384);
+    expect(compact.stderr).toHaveLength(8_192);
+    expect(compact.stdoutTruncated).toBe(true);
+    expect(compact.stderrTruncated).toBe(true);
+    expect(compact.jsonEvents).toHaveLength(25);
+    expect(compact.jsonEventsTruncated).toBe(true);
+    expect(JSON.stringify(compact.jsonEvents).length).toBeLessThan(100_000);
+    expect(JSON.stringify(compact).length).toBeLessThan(1_000_000);
+  });
+
+  it("bounds persisted Pi eval score payloads after semantic scoring", () => {
+    const compact = compactPiEvalScore({
+      success: false,
+      validation: {
+        success: false,
+        stdout: "missing\n".repeat(50_000),
+        semanticJudge: {
+          success: false,
+          reason: "r".repeat(100_000),
+          missing: ["a".repeat(50_000)],
+          incorrect: ["b".repeat(50_000)],
+          args: ["--mode", "json", "-p", "prompt ".repeat(200_000)],
+        },
+      },
+      parsedFinalAnswer: {
+        taskId: "large",
+        facts: Array.from({ length: 200 }, (_, index) => ({
+          key: `fact-${index}`,
+          value: "x".repeat(20_000),
+          evidence: [{ server: "docs", tool: "get", payload: "y".repeat(20_000) }],
+        })),
+      },
+    });
+
+    expect(compact.validation.stdout.length).toBeLessThanOrEqual(16_384);
+    expect(compact.validation.semanticJudge.args[3]).toHaveLength(8_192);
+    expect(compact.parsedFinalAnswer.facts).toHaveLength(20);
+    expect(compact.parsedFinalAnswerTruncated).toBe(true);
+    expect(JSON.stringify(compact).length).toBeLessThan(1_000_000);
   });
 
   it("summarizes Pi eval reports with token, round-trip, and tool-call comparisons", () => {

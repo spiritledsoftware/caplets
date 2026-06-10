@@ -1,0 +1,172 @@
+[
+  {
+    "id": "production-incident-briefing",
+    "title": "Production incident briefing",
+    "prompt": "Prepare the incident briefing from live operations tools. Return only the requested JSON final answer.",
+    "task_description": "Find the active payments incident, confirm customer impact, correlate the current error spike, identify the runbook and owner, and return a concise executive briefing. The briefing must explicitly include incidentId, severity, service, impactedRegions, affectedEnterpriseAccounts, rootCause, runbook, and owner.",
+    "fuzzy_description": "This mimics a real on-call workflow with overlapping incident, observability, customer, chat, docs, and time tools. Ignore resolved incidents, stale Slack chatter, and unrelated checkout noise.",
+    "dependency_analysis": {
+      "servers": ["incidents", "observability", "customers", "slack", "docs"],
+      "requires": [
+        "identify the active production incident",
+        "correlate telemetry",
+        "join affected enterprise accounts",
+        "confirm owner and runbook from operational notes"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["incidents", "observability", "customers", "slack", "docs"],
+      "anyTools": [
+        ["incidents.get", "incidents.search"],
+        ["observability.query", "observability.get"],
+        ["customers.impact_summary", "customers.search"],
+        ["slack.search", "slack.get"],
+        ["docs.get", "docs.search"]
+      ]
+    },
+    "expectedFacts": {
+      "incidentId": "INC-9071",
+      "severity": "sev1",
+      "service": "payments",
+      "impactedRegions": ["eu-west-1", "us-east-1"],
+      "affectedEnterpriseAccounts": 3,
+      "rootCause": "payment token refresh regression",
+      "runbook": "RB-PAY-042",
+      "owner": "payments-platform"
+    },
+    "distractorFacts": ["INC-9012", "checkout", "cache warming regression"],
+    "validator": "production-incident-briefing"
+  },
+  {
+    "id": "release-risk-triage",
+    "title": "Release risk triage",
+    "prompt": "Decide whether the current release should ship. Return only the requested JSON final answer.",
+    "task_description": "Combine deployment state, GitHub changes, Jira blockers, feature flag status, observability risk, and release docs to decide whether the payments release can proceed.",
+    "fuzzy_description": "The agent must work through a large tool stack with many tempting but irrelevant list/search/get tools. The right answer requires cross-checking release metadata, source changes, tickets, flags, telemetry, and rollback guidance.",
+    "dependency_analysis": {
+      "servers": ["deployments", "github", "jira", "feature_flags", "observability", "docs"],
+      "requires": [
+        "find current release",
+        "inspect linked pull requests",
+        "classify blocking tickets",
+        "read flag rollout state",
+        "check error-budget risk",
+        "verify rollback guidance"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["deployments", "github", "jira", "feature_flags", "observability", "docs"],
+      "anyTools": [
+        ["deployments.get", "deployments.search"],
+        ["github.get", "github.search"],
+        ["jira.get", "jira.search"],
+        ["feature_flags.get", "feature_flags.search"],
+        ["observability.query", "observability.get"],
+        ["docs.get", "docs.search"]
+      ]
+    },
+    "expectedFacts": {
+      "releaseId": "REL-4419",
+      "decision": "hold",
+      "blockers": ["GH-8842", "JIRA-PAY-317", "error-budget"],
+      "safeFlagState": "disabled",
+      "rollbackDoc": "DOC-RUN-rollback-payments"
+    },
+    "distractorFacts": ["ship", "REL-4408", "JIRA-SEARCH-118"],
+    "validator": "release-risk-triage"
+  },
+  {
+    "id": "enterprise-renewal-readiness",
+    "title": "Enterprise renewal readiness",
+    "prompt": "Prepare the renewal readiness summary. Return only the requested JSON final answer.",
+    "task_description": "For the largest upcoming enterprise renewal, combine CRM-like customer data, local SQL records, Slack notes, Jira blockers, memory facts, and docs to identify risk and the next action.",
+    "fuzzy_description": "This task is intentionally not a coding task. It mirrors account-readiness work across several backend MCP tools with noisy search/list/read operations and duplicated names.",
+    "dependency_analysis": {
+      "servers": ["customers", "sqlite", "slack", "jira", "memory", "docs"],
+      "requires": [
+        "find largest upcoming renewal",
+        "query renewal health",
+        "read latest account notes",
+        "join open blockers",
+        "recover executive-owner memory",
+        "use renewal playbook"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["customers", "sqlite", "slack", "jira", "memory", "docs"],
+      "anyTools": [
+        ["customers.get", "customers.search"],
+        ["sqlite.query", "sqlite.get"],
+        ["slack.search", "slack.get"],
+        ["jira.search", "jira.get"],
+        ["memory.get", "memory.search"],
+        ["docs.get", "docs.search"]
+      ]
+    },
+    "expectedFacts": {
+      "account": "Northstar Bank",
+      "renewalStatus": "at-risk",
+      "arr": 2400000,
+      "openBlockers": ["JIRA-CUST-802", "JIRA-PAY-317"],
+      "executiveOwner": "Maya Chen",
+      "nextAction": "schedule exec review"
+    },
+    "distractorFacts": ["Brightline Retail", "healthy", "renew automatically"],
+    "validator": "enterprise-renewal-readiness"
+  },
+  {
+    "id": "oncall-handoff-synthesis",
+    "title": "On-call handoff synthesis",
+    "prompt": "Write the next-shift handoff from the available MCP tools. Return only the requested JSON final answer.",
+    "task_description": "Synthesize repo, filesystem, GitHub, observability, incident, deployment, and time evidence into a handoff for the next on-call shift.",
+    "fuzzy_description": "This is a long-horizon agent-style workflow compressed into an eval: browse local operational files, inspect source-control state, correlate active incidents and telemetry, and identify concrete risk items without using shell or repo inspection outside MCP.",
+    "dependency_analysis": {
+      "servers": [
+        "repo",
+        "filesystem",
+        "github",
+        "observability",
+        "incidents",
+        "deployments",
+        "time"
+      ],
+      "requires": [
+        "read handoff notes",
+        "inspect repo state",
+        "check open PRs",
+        "correlate active incidents",
+        "inspect deployments",
+        "bound the shift window"
+      ]
+    },
+    "expectedEvidence": {
+      "servers": [
+        "repo",
+        "filesystem",
+        "github",
+        "observability",
+        "incidents",
+        "deployments",
+        "time"
+      ],
+      "anyTools": [
+        ["repo.status", "repo.search"],
+        ["filesystem.read", "filesystem.search"],
+        ["github.search", "github.get"],
+        ["observability.query", "observability.get"],
+        ["incidents.search", "incidents.get"],
+        ["deployments.search", "deployments.get"],
+        ["time.now", "time.convert"]
+      ]
+    },
+    "expectedFacts": {
+      "handoffWindow": "2026-06-10T20:00:00Z/2026-06-11T08:00:00Z",
+      "riskyServices": ["checkout", "payments"],
+      "unmergedFixes": ["GH-8842"],
+      "staleRunbooks": ["runbooks/payments-rollback.md"],
+      "activeIncidentCount": 1
+    },
+    "distractorFacts": ["search-indexer", "GH-8801", "no active incidents"],
+    "validator": "oncall-handoff-synthesis"
+  }
+]

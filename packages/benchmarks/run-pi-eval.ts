@@ -327,10 +327,10 @@ export async function runPiEvalBenchmark({
                 unmeasured: true,
               },
         runConfig: publicRunConfig(runConfig),
-        agentResult,
+        agentResult: compactPiEvalAgentResult(agentResult),
         metrics,
         evidenceScore,
-        score,
+        score: compactPiEvalScore(score),
       };
       completedRuns += 1;
       onProgress?.(
@@ -518,6 +518,150 @@ function serializableOptions(options: any) {
     skipMissingCompetitors: options.skipMissingCompetitors,
     preserveArtifacts: options.preserveArtifacts,
   };
+}
+
+export function compactPiEvalAgentResult(agentResult: any = {}) {
+  const jsonEvents = Array.isArray(agentResult.jsonEvents) ? agentResult.jsonEvents : [];
+  return {
+    ...agentResult,
+    args: compactCommandArgs(agentResult.args),
+    stdout: truncateText(agentResult.stdout, 16_384),
+    stderr: truncateText(agentResult.stderr, 8_192),
+    stdoutTruncated:
+      Boolean(agentResult.stdoutTruncated) ||
+      Buffer.byteLength(String(agentResult.stdout ?? ""), "utf8") > 16_384,
+    stderrTruncated:
+      Boolean(agentResult.stderrTruncated) ||
+      Buffer.byteLength(String(agentResult.stderr ?? ""), "utf8") > 8_192,
+    jsonEvents: jsonEvents.slice(-25).map(compactJsonEvent),
+    jsonEventsTotalCount: jsonEvents.length,
+    jsonEventsTruncated: jsonEvents.length > 25,
+  };
+}
+
+export function compactPiEvalScore(score: any = {}) {
+  const parsedFinalAnswer = truncateDeep(score.parsedFinalAnswer, 4);
+  return {
+    ...score,
+    validation: compactProcessLikeResult(score.validation),
+    hiddenValidation: compactProcessLikeResult(score.hiddenValidation),
+    semanticJudge: score.semanticJudge ? compactSemanticJudgeResult(score.semanticJudge) : null,
+    parsedFinalAnswer,
+    parsedFinalAnswerTruncated: wouldTruncateDeep(score.parsedFinalAnswer, 4),
+  };
+}
+
+function compactProcessLikeResult(result: any) {
+  if (!result || typeof result !== "object") return result;
+  return {
+    ...result,
+    stdout: truncateText(result.stdout, 16_384),
+    stderr: truncateText(result.stderr, 8_192),
+    stdoutTruncated:
+      Boolean(result.stdoutTruncated) ||
+      Buffer.byteLength(String(result.stdout ?? ""), "utf8") > 16_384,
+    stderrTruncated:
+      Boolean(result.stderrTruncated) ||
+      Buffer.byteLength(String(result.stderr ?? ""), "utf8") > 8_192,
+    semanticJudge: result.semanticJudge
+      ? compactSemanticJudgeResult(result.semanticJudge)
+      : result.semanticJudge,
+  };
+}
+
+function compactSemanticJudgeResult(result: any) {
+  if (!result || typeof result !== "object") return result;
+  return {
+    ...result,
+    args: compactCommandArgs(result.args),
+    reason: truncateText(result.reason, 4_096),
+    missing: Array.isArray(result.missing)
+      ? result.missing.slice(0, 20).map((entry: any) => truncateText(entry, 2_048))
+      : result.missing,
+    incorrect: Array.isArray(result.incorrect)
+      ? result.incorrect.slice(0, 20).map((entry: any) => truncateText(entry, 2_048))
+      : result.incorrect,
+  };
+}
+
+function compactCommandArgs(args: any) {
+  if (!Array.isArray(args)) return args;
+  return args.map((arg) => truncateText(arg, 8_192));
+}
+
+function compactJsonEvent(event: any) {
+  return {
+    type: event?.type ?? event?.event ?? "event",
+    event: event?.event,
+    toolName:
+      event?.toolName ??
+      event?.tool_name ??
+      event?.name ??
+      event?.tool?.name ??
+      event?.params?.name,
+    role: event?.message?.role ?? event?.role,
+    usage: event?.message?.usage ?? event?.usage,
+    exitCode: event?.exitCode,
+    timedOut: event?.timedOut,
+    durationMs: event?.durationMs,
+    text: firstStringExcerpt([
+      event?.text,
+      event?.resultPreview,
+      event?.output,
+      event?.message?.content,
+      event?.content,
+    ]),
+  };
+}
+
+function firstStringExcerpt(values: any[]) {
+  for (const value of values) {
+    const text = extractString(value);
+    if (text) return truncateText(text, 1_024);
+  }
+  return undefined;
+}
+
+function extractString(value: any): string | null {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const text = extractString(entry?.text ?? entry);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+function truncateDeep(value: any, depth: number): any {
+  if (typeof value === "string") return truncateText(value, 4_096);
+  if (typeof value !== "object" || value == null) return value;
+  if (depth <= 0) return "[truncated]";
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((entry) => truncateDeep(entry, depth - 1));
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 40)
+      .map(([key, entry]) => [key, truncateDeep(entry, depth - 1)]),
+  );
+}
+
+function wouldTruncateDeep(value: any, depth: number): boolean {
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8") > 4_096;
+  if (typeof value !== "object" || value == null) return false;
+  if (depth <= 0) return true;
+  if (Array.isArray(value)) {
+    return value.length > 20 || value.some((entry) => wouldTruncateDeep(entry, depth - 1));
+  }
+  const entries = Object.entries(value);
+  return entries.length > 40 || entries.some(([, entry]) => wouldTruncateDeep(entry, depth - 1));
+}
+
+function truncateText(value: any, maxBytes: number) {
+  const text = String(value ?? "");
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  return text.slice(0, maxBytes);
 }
 
 function formatTimestamp(date: Date) {

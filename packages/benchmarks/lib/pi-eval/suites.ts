@@ -7,8 +7,9 @@ const packageRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const defaultFixtureRoot = resolve(packageRoot, "fixtures");
 const codingFixtureRoot = defaultFixtureRoot;
 const mcpToolUseFixtureRoot = resolve(defaultFixtureRoot, "mcp-tool-use");
+const mcpRealisticNoAuthFixtureRoot = resolve(defaultFixtureRoot, "mcp-realistic-noauth");
 
-export const PI_EVAL_SUITE_IDS = ["coding", "mcp-tool-use"] as const;
+export const PI_EVAL_SUITE_IDS = ["coding", "mcp-tool-use", "mcp-realistic-noauth"] as const;
 export type PiEvalSuiteId = (typeof PI_EVAL_SUITE_IDS)[number];
 export const DEFAULT_PI_EVAL_SUITE_ID: PiEvalSuiteId = "coding";
 
@@ -39,6 +40,7 @@ export function validatePiEvalSuiteId(value: string): asserts value is PiEvalSui
 export function resolvePiEvalSuite(value = DEFAULT_PI_EVAL_SUITE_ID): PiEvalSuite {
   validatePiEvalSuiteId(value);
   if (value === "mcp-tool-use") return mcpToolUseSuite;
+  if (value === "mcp-realistic-noauth") return mcpRealisticNoAuthSuite;
   return codingSuite;
 }
 
@@ -95,6 +97,48 @@ const mcpToolUseSuite: PiEvalSuite = {
   fixtureServerSourcePath: resolve(mcpToolUseFixtureRoot, "mcp-server.ts"),
   fixtureServers: ["api_catalog", "incidents", "customers", "deployments", "quality", "policies"],
   directToolsEnv: "api_catalog,incidents,customers,deployments,quality,policies",
+  buildPrompt: buildMcpToolUsePrompt,
+  scoreRun: async (input: any) => {
+    const { scoreMcpToolUseRun } = await import("./mcp-tool-use-score");
+    return await scoreMcpToolUseRun(input);
+  },
+  publicTaskMetadata: publicMcpToolUseTaskMetadata,
+};
+
+const realisticNoAuthServers = [
+  "repo",
+  "filesystem",
+  "sqlite",
+  "docs",
+  "browser",
+  "memory",
+  "time",
+  "slack",
+  "jira",
+  "github",
+  "observability",
+  "deployments",
+  "feature_flags",
+  "customers",
+  "incidents",
+];
+
+const mcpRealisticNoAuthSuite: PiEvalSuite = {
+  id: "mcp-realistic-noauth",
+  label: "Realistic no-auth MCP workflows",
+  defaultTasks: [
+    "production-incident-briefing",
+    "release-risk-triage",
+    "enterprise-renewal-readiness",
+    "oncall-handoff-synthesis",
+  ],
+  fixtureRoot: mcpRealisticNoAuthFixtureRoot,
+  tasksPath: resolve(mcpRealisticNoAuthFixtureRoot, "tasks.json"),
+  workspaceRoot: null,
+  workspaceRequired: false,
+  fixtureServerSourcePath: resolve(mcpRealisticNoAuthFixtureRoot, "mcp-server.ts"),
+  fixtureServers: realisticNoAuthServers,
+  directToolsEnv: realisticNoAuthServers.join(","),
   buildPrompt: buildMcpToolUsePrompt,
   scoreRun: async (input: any) => {
     const { scoreMcpToolUseRun } = await import("./mcp-tool-use-score");
