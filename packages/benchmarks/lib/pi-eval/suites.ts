@@ -168,7 +168,7 @@ function mcpToolUseModeHint(mode: string) {
   const hints: Record<string, string> = {
     "caplets-direct": "Direct Caplets tools are exposed as caplets__<server>__<tool>.",
     "caplets-progressive":
-      "Caplets capability tools expose inspect/list/search/describe/call operations; use describe before call when args matter.",
+      "Caplets capability tools expose inspect/list/search/describe/call operations; use tools/search_tools callTemplate and arg hints for simple direct calls, and reserve describe_tool for complex or uncertain schemas.",
     "caplets-code-mode":
       "Use caplets_code_mode for compact Caplets discovery and retrieval; return only the facts needed for the final JSON.",
     "caplets-progressive-code-mode":

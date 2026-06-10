@@ -19,7 +19,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     tools,
     "",
     `${nativeCodeModeToolName} executes Caplets Code Mode: TypeScript with generated caplets.<id> handles for multi-step discovery, tool calls, filtering, and compact synthesis in one native call.`,
-    "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names and arg hints; call_tool directly when requiredArgs/acceptedArgs are sufficient; use describe_tool for exact schemas, nested args, fields, or uncertainty.",
+    "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names, arg hints, and callTemplate; call_tool directly from callTemplate/argsTemplate for simple calls; reserve describe_tool for complex schemas, nested args, fields, or uncertainty.",
     "Do not guess downstream tool names, resource URIs, prompt names, input args, output fields, or schemas. Do not infer input/output schemas from memory.",
     "Prefer list/read/search operations for triage and avoid broad provider searches that can return huge payloads or hit rate limits.",
     "When output shaping matters, inspect one tool with describe_tool and follow its fieldSelection hint.",
@@ -28,7 +28,7 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
 
 export function nativeCapletPromptGuidance(toolName: string, caplet: CapletConfig): string[] {
   const descriptorFirst =
-    "Use tools/search_tools arg hints for simple calls; use describe_tool for exact schemas, nested args, fields, or uncertainty. call_tool.args must match inputSchema exactly. Do not guess tool names or schemas.";
+    "Use tools/search_tools callTemplate/arg hints for simple calls; reserve describe_tool for exact schemas, nested args, fields, or uncertainty. call_tool.args must match inputSchema exactly. Do not guess tool names or schemas.";
   return caplet.backend === "mcp"
     ? [
         `Use ${toolName} for the ${caplet.name} Caplet capability domain.`,
@@ -41,7 +41,7 @@ export function nativeCapletPromptGuidance(toolName: string, caplet: CapletConfi
 export function nativeCapletToolDescription(toolName: string, caplet: CapletConfig): string {
   return [
     capabilityDescription(caplet),
-    "Use tools/search_tools to find downstream names and arg hints. Call call_tool directly when requiredArgs/acceptedArgs are sufficient; use describe_tool for exact schemas, nested args, fields, or uncertainty. call_tool.args must match inputSchema exactly. Do not guess tool names or schemas. Prefer read/search/list tools for triage.",
+    "Use tools/search_tools to find downstream names, arg hints, and callTemplate. Call call_tool directly from callTemplate/argsTemplate for simple calls; reserve describe_tool for exact schemas, nested args, fields, or uncertainty. call_tool.args must match inputSchema exactly. Do not guess tool names or schemas. Prefer read/search/list tools for triage.",
     "",
     `Native tool name: ${toolName}`,
     `Original Caplet ID: ${caplet.server}`,
