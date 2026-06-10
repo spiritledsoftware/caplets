@@ -283,7 +283,7 @@ describe("native Caplets service", () => {
 
     expect(guidance).toContain("caplets_linear_api__v2");
     expect(guidance).toContain("Flow: inspect when the domain is unfamiliar");
-    expect(guidance).toContain("exact inputSchema property names");
+    expect(guidance).toContain("requiredArgs/acceptedArgs are sufficient");
     expect(guidance).toContain("Do not guess downstream tool names");
     expect(guidance).toContain("Do not infer input/output schemas");
     expect(guidance).toContain("avoid broad provider searches");
@@ -305,7 +305,7 @@ describe("native Caplets service", () => {
     }).join("\n");
 
     expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
-    expect(guidance).toContain("Use describe_tool before call_tool when args matter");
+    expect(guidance).toContain("Use tools/search_tools arg hints for simple calls");
     expect(guidance).toContain("call_tool.args must match inputSchema exactly");
     expect(guidance).toContain("Do not guess tool names or schemas");
     expect(guidance).not.toContain("For unfamiliar tasks, discover safely");

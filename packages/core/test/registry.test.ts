@@ -93,7 +93,7 @@ describe("registry", () => {
     expect(description).toContain("Use when: Use for enabled test workflows.");
     expect(description).toContain("Avoid when: Avoid for disabled server checks.");
     expect(description).toContain("Use inspect for details when needed");
-    expect(description).toContain("use describe_tool before call_tool when args matter");
+    expect(description).toContain("requiredArgs/acceptedArgs are sufficient");
     expect(description).toContain("call_tool.args must match inputSchema exactly");
     expect(description).toContain("do not guess tool names or schemas");
     expect(description).toContain("Resources/prompts/completions may exist");
@@ -133,7 +133,7 @@ describe("registry", () => {
 
     const graphQlDescription = capabilityDescription(config.graphqlEndpoints.catalog!);
     expect(graphQlDescription).toContain("Use inspect for details when needed");
-    expect(graphQlDescription).toContain("use describe_tool before call_tool when args matter");
+    expect(graphQlDescription).toContain("use describe_tool for exact schemas");
     const graphQlDetail = registry.detail(config.graphqlEndpoints.catalog!);
     expect(graphQlDetail).toEqual({
       id: "catalog",
@@ -152,7 +152,7 @@ describe("registry", () => {
 
     const httpDescription = capabilityDescription(config.httpApis.status!);
     expect(httpDescription).toContain("Use inspect for details when needed");
-    expect(httpDescription).toContain("use tools/search_tools to discover downstream operations");
+    expect(httpDescription).toContain("use tools/search_tools for downstream names and arg hints");
     const httpDetail = registry.detail(config.httpApis.status!);
     expect(httpDetail).toEqual({
       id: "status",
@@ -186,7 +186,7 @@ describe("registry", () => {
 
     const capletSetDescription = capabilityDescription(config.capletSets.nested!);
     expect(capletSetDescription).toContain("Use inspect for details when needed");
-    expect(capletSetDescription).toContain("use describe_tool before call_tool when args matter");
+    expect(capletSetDescription).toContain("requiredArgs/acceptedArgs are sufficient");
     const capletSetDetail = registry.detail(config.capletSets.nested!);
     expect(capletSetDetail).toEqual({
       id: "nested",

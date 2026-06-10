@@ -57,7 +57,7 @@ describe("Code Mode MCP tool", () => {
       "Never invent tool names, resource URIs, prompt names",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
-      "when args matter, use describeTool",
+      "use requiredArgs/acceptedArgs for simple calls",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "exact callSignature/inputSchema/inputTypeScript",

@@ -77,7 +77,7 @@ describe("generateCodeModeDeclarations", () => {
     expect(description).toContain("For fallback, check candidate handles first");
     expect(description).toContain("const ready=await h.check()");
     expect(description).toContain("Never invent tool names, resource URIs, prompt names");
-    expect(description).toContain("when args matter, use describeTool");
+    expect(description).toContain("use requiredArgs/acceptedArgs for simple calls");
     expect(description).toContain("exact callSignature/inputSchema/inputTypeScript");
     expect(description).toContain("Generated declaration hints:");
     expect(description).toContain(declaration);

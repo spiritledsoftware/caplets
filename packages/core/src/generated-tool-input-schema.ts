@@ -35,7 +35,7 @@ export const generatedToolInputDescriptions = {
   limit: "Optional list/search result limit.",
   cursor: "Opaque pagination cursor returned by list/search operations.",
   name: "Exact downstream tool or prompt name from tools/search_tools/prompts/search_prompts; do not guess.",
-  args: "JSON object for call_tool or get_prompt arguments; must match describe_tool inputSchema exactly.",
+  args: "JSON object for call_tool/get_prompt arguments; use tools/search_tools arg hints when enough, otherwise describe_tool inputSchema.",
   fields:
     "Optional call_tool structured output paths. Use only after describe_tool returns fieldSelection.supported true.",
   uri: "Exact downstream resource URI for read_resource.",
