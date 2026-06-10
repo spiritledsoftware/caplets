@@ -55,6 +55,7 @@ import {
   requiredEvidenceScore,
   summarizePiEvalMetrics,
 } from "../lib/pi-eval/metrics";
+import { extractMcpToolUseFinalJson, scoreMcpToolUseRun } from "../lib/pi-eval/mcp-tool-use-score";
 import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
 import {
@@ -2160,6 +2161,88 @@ describe("Pi live tool surface eval harness", () => {
       codeMap: true,
       requiredComplete: true,
     });
+  });
+
+  it("extracts MCP tool-use final JSON from assistant text", () => {
+    const parsed = extractMcpToolUseFinalJson([
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: 'Done\n```json\n{"taskId":"x","decision":"ok","facts":[],"summary":"ok"}\n```',
+            },
+          ],
+        },
+      },
+    ]);
+    expect(parsed).toEqual({ taskId: "x", decision: "ok", facts: [], summary: "ok" });
+  });
+
+  it("scores MCP tool-use runs from expected facts and tool evidence", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        servers: ["incidents", "customers"],
+        tools: ["incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        activeIncidentId: "INC-2026-0610-2",
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+      },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "summary",
+        facts: [
+          {
+            key: "activeIncidentId",
+            value: "INC-2026-0610-2",
+            evidence: ["incidents.get_incident"],
+          },
+          { key: "affectedAccountCount", value: 4, evidence: ["customers.get_accounts"] },
+          {
+            key: "tierBreakdown",
+            value: { enterprise: 2, growth: 1, startup: 1 },
+            evidence: ["customers.get_accounts"],
+          },
+        ],
+        summary: "Four accounts affected.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents.get_incident" },
+        { type: "tool_execution_start", toolName: "customers.get_accounts" },
+      ],
+    };
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      processSuccess: true,
+      validation: { success: true },
+    });
+  });
+
+  it("fails MCP tool-use scoring when distractor facts appear", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: { tools: ["incidents.get_incident"] },
+      expectedFacts: { activeIncidentId: "INC-2026-0610-2" },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout:
+        '{"taskId":"incident-customer-impact-join","decision":"summary","facts":[{"key":"activeIncidentId","value":"INC-2026-0610-1","evidence":["incidents.get_incident"]}],"summary":"wrong incident"}',
+      jsonEvents: [{ type: "tool_execution_start", toolName: "incidents.get_incident" }],
+    };
+    const score = await scoreMcpToolUseRun({ task, agentResult });
+    expect(score.success).toBe(false);
+    expect(score.validation.stdout).toContain("distractor fact appeared: INC-2026-0610-1");
   });
 
   it("refuses live Pi eval runs unless explicitly enabled", async () => {
