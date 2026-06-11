@@ -412,6 +412,50 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("notifies native tool listeners after refreshing direct MCP exposure", async () => {
+    const fixture = join(fixturesDir, "stdio-server.ts");
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => {
+      events.push(configuredCapletIds(tools));
+    });
+
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            fixture: {
+              name: "Fixture MCP",
+              description: "Expose fixture MCP directly.",
+              exposure: "direct",
+              command: process.execPath,
+              args: ["--import", tsxImport, fixture],
+              toolCacheTtlMs: 30_000,
+            },
+          },
+        }),
+      );
+
+      await expect(service.reload()).resolves.toBe(true);
+      expect(events).toEqual([
+        expect.arrayContaining(["fixture__echo", "fixture__list_resources", "fixture__get_prompt"]),
+      ]);
+    } finally {
+      await service.close();
+    }
+  });
+
   it("notifies native tool listeners when backend invalidation fails", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

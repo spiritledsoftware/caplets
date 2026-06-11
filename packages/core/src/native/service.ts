@@ -122,13 +122,25 @@ type LocalNativeCapletsServiceOptions = NativeCapletsServiceOptions & {
 
 class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly engine: CapletsEngine;
+  private readonly writeErr: (value: string) => void;
+  private readonly unsubscribeEngineReload: () => void;
+  private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
   private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
   private exposureSnapshot: ExposureSnapshot | undefined;
+  private postReloadRefresh: Promise<void> | undefined;
 
   constructor(options: LocalNativeCapletsServiceOptions) {
+    this.writeErr = options.writeErr ?? (() => undefined);
     this.engine = new CapletsEngine({
       ...options,
-      writeErr: options.writeErr ?? (() => undefined),
+      writeErr: this.writeErr,
+    });
+    this.unsubscribeEngineReload = this.engine.onReload(() => {
+      this.postReloadRefresh = this.refreshExposureSnapshot().then(() => this.emitToolsChanged());
+      void this.postReloadRefresh.catch((error: unknown) => {
+        this.writeErr(`Caplets native tool reload failed.\n`);
+        this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+      });
     });
   }
 
@@ -186,15 +198,20 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async reload(): Promise<boolean> {
     const reloaded = await this.engine.reload();
-    await this.refreshExposureSnapshot();
+    await this.postReloadRefresh;
     return reloaded;
   }
 
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void {
-    return this.engine.onReload(() => listener(this.listTools()));
+    this.toolListeners.add(listener);
+    return () => {
+      this.toolListeners.delete(listener);
+    };
   }
 
   async close(): Promise<void> {
+    this.unsubscribeEngineReload();
+    this.toolListeners.clear();
     await this.engine.close();
   }
 
@@ -293,6 +310,18 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.exposureSnapshot = await this.engine.exposureSnapshot({
       discoverNonDirectMcpSurfaces: false,
     });
+  }
+
+  private emitToolsChanged(): void {
+    const tools = this.listTools();
+    for (const listener of this.toolListeners) {
+      try {
+        listener(tools);
+      } catch (error) {
+        this.writeErr(`Caplets native tool listener failed.\n`);
+        this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
   }
 
   private codeModeDelegate(): NativeCapletsService {
