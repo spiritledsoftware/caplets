@@ -111,7 +111,13 @@ export async function resolveRemoteSelection(
     );
   }
 
-  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL ?? credentials.cloudUrl;
+  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
+  if (!remoteUrl) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL or remoteUrl.",
+    );
+  }
   const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
   if (
     workspaceFromRemoteUrl &&
@@ -123,7 +129,7 @@ export async function resolveRemoteSelection(
       `Requested workspace ${workspaceFromRemoteUrl} differs from saved Selected Workspace ${selectedWorkspace}.`,
     );
   }
-  const missingScope = HOSTED_CLOUD_AUTH_SCOPES.find(
+  const missingScope = requiredHostedCloudAttachScopes().find(
     (scope) => !credentials.scope?.includes(scope),
   );
   if (missingScope) {
@@ -158,4 +164,8 @@ export async function resolveRemoteSelection(
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {
   const expiresAt = Date.parse(credentials.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000;
+}
+
+function requiredHostedCloudAttachScopes(): string[] {
+  return HOSTED_CLOUD_AUTH_SCOPES.filter((scope) => scope !== "mcp:tools");
 }

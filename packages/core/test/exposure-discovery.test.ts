@@ -1,4 +1,4 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types";
+import type { ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types";
 import { describe, expect, it, vi } from "vitest";
 import type { CapletConfig, CapletsConfig } from "../src/config";
 import { discoverExposureSnapshot } from "../src/exposure/discovery";
@@ -36,6 +36,38 @@ describe("exposure discovery", () => {
     ]);
     expect(snapshot.hiddenCaplets).toEqual([
       expect.objectContaining({ capletId: "direct", reason: "discovery_failed" }),
+    ]);
+  });
+
+  it("hides non-direct caplets with an empty discovered surface", async () => {
+    const progressive = httpCaplet("progressive", "progressive_and_code_mode");
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([progressive]),
+      caplets: [progressive],
+      listTools: async () => [],
+    });
+
+    expect(snapshot.callableCaplets).toEqual([]);
+    expect(snapshot.hiddenCaplets).toEqual([
+      expect.objectContaining({ capletId: "progressive", reason: "empty_surface" }),
+    ]);
+  });
+
+  it("keeps direct resource templates unique per downstream template", async () => {
+    const docs = mcpCaplet("docs", "direct");
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([docs]),
+      caplets: [docs],
+      listTools: async () => [],
+      listResourceTemplates: async () => [
+        resourceTemplate("file:///repo/{path}"),
+        resourceTemplate("git://repo/{ref}/{path}"),
+      ],
+    });
+
+    expect(snapshot.directResourceTemplates.map((entry) => entry.uriTemplate)).toEqual([
+      "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Frepo%2F%7Bpath%7D",
+      "caplets://docs/resources/{encodedUri}?template=git%3A%2F%2Frepo%2F%7Bref%7D%2F%7Bpath%7D",
     ]);
   });
 
@@ -84,7 +116,9 @@ function configFor(
       },
       ...options,
     },
-    mcpServers: {},
+    mcpServers: Object.fromEntries(
+      caplets.filter((caplet) => caplet.backend === "mcp").map((caplet) => [caplet.server, caplet]),
+    ) as CapletsConfig["mcpServers"],
     openapiEndpoints: {},
     graphqlEndpoints: {},
     httpApis: Object.fromEntries(
@@ -116,6 +150,29 @@ function httpCaplet(
   };
 }
 
+function mcpCaplet(
+  server: string,
+  exposure: CapletConfig["exposure"],
+): Extract<CapletConfig, { backend: "mcp" }> {
+  return {
+    server,
+    backend: "mcp",
+    name: server,
+    description: `Call ${server} MCP server.`,
+    exposure,
+    transport: "stdio",
+    command: process.execPath,
+    disabled: false,
+    startupTimeoutMs: 60000,
+    callTimeoutMs: 60000,
+    toolCacheTtlMs: 300000,
+  };
+}
+
 function tool(name: string): Tool {
   return { name, description: `Run ${name}.`, inputSchema: { type: "object" } };
+}
+
+function resourceTemplate(uriTemplate: string): ResourceTemplate {
+  return { uriTemplate, name: uriTemplate };
 }

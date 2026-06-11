@@ -1,7 +1,11 @@
 import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import type { CapletsError } from "../src/errors";
-import { resolveCapletsRemote, resolveRemoteMode } from "../src/remote/options";
+import {
+  hostedCloudWorkspaceFromRemoteUrl,
+  resolveCapletsRemote,
+  resolveRemoteMode,
+} from "../src/remote/options";
 
 describe("resolveRemoteMode", () => {
   it("uses local mode by default without remote client settings", () => {
@@ -123,5 +127,19 @@ describe("resolveCapletsRemote", () => {
         { CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets" },
       ),
     ).toThrow(/CAPLETS_REMOTE_PASSWORD/u);
+  });
+});
+
+describe("hostedCloudWorkspaceFromRemoteUrl", () => {
+  it("extracts workspace slugs from copied Cloud MCP endpoints", () => {
+    expect(
+      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/ws/personal-c9b49d/mcp"),
+    ).toBe("personal-c9b49d");
+  });
+
+  it("returns undefined for unrecognized Cloud paths", () => {
+    expect(
+      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/api/v1/foo"),
+    ).toBeUndefined();
   });
 });

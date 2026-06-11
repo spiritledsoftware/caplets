@@ -125,11 +125,34 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
-  it("requires Cloud Auth credentials to include hosted MCP tool scope", async () => {
+  it("accepts legacy Cloud Auth credentials that predate hosted MCP tool scope", async () => {
     const path = tempCloudAuthPath();
     await new CloudAuthStore({ path }).save(
       hostedCredentials({
         scope: ["project_binding:read", "project_binding:write"],
+      }),
+    );
+
+    const resolved = await resolveRemoteSelection(
+      {},
+      {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "hosted_cloud",
+      selectedWorkspace: "personal",
+    });
+  });
+
+  it("requires Cloud Auth credentials to include project binding scopes", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        scope: ["project_binding:read"],
       }),
     );
 

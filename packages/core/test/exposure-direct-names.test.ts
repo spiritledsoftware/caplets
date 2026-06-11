@@ -22,6 +22,8 @@ describe("direct exposure names", () => {
       capletId: "docs",
       downstreamUri: "file:///src/README.md?rev=main",
     });
-    expect(directResourceTemplateUri("docs")).toBe("caplets://docs/resources/{encodedUri}");
+    expect(directResourceTemplateUri("docs", "file:///src/{path}")).toBe(
+      "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Fsrc%2F%7Bpath%7D",
+    );
   });
 });

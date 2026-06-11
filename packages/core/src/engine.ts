@@ -120,10 +120,15 @@ export class CapletsEngine {
     return nextEnabledServers(this.registry.config);
   }
 
-  async exposureSnapshot(): Promise<ExposureSnapshot> {
+  async exposureSnapshot(
+    options: { discoverNonDirectMcpSurfaces?: boolean | undefined } = {},
+  ): Promise<ExposureSnapshot> {
     this.lastExposureSnapshot = await discoverExposureSnapshot({
       config: this.registry.config,
       caplets: this.enabledServers(),
+      ...(options.discoverNonDirectMcpSurfaces === undefined
+        ? {}
+        : { discoverNonDirectMcpSurfaces: options.discoverNonDirectMcpSurfaces }),
       listTools: async (caplet) => this.listTools(caplet),
       listResources: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listResources(caplet, true)),

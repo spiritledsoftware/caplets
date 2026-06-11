@@ -290,7 +290,9 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   }
 
   private async refreshExposureSnapshot(): Promise<void> {
-    this.exposureSnapshot = await this.engine.exposureSnapshot();
+    this.exposureSnapshot = await this.engine.exposureSnapshot({
+      discoverNonDirectMcpSurfaces: false,
+    });
   }
 
   private codeModeDelegate(): NativeCapletsService {

@@ -184,7 +184,7 @@ export class CapletsMcpSession {
     for (const entry of snapshot.directResources) {
       this.resources.set(entry.uri, this.registerDirectResource(entry));
     }
-    for (const entry of coalesceResourceTemplates(snapshot.directResourceTemplates)) {
+    for (const entry of snapshot.directResourceTemplates) {
       this.resources.set(entry.uriTemplate, this.registerDirectResourceTemplate(entry));
     }
     for (const entry of snapshot.directPrompts) {
@@ -306,7 +306,7 @@ export class CapletsMcpSession {
       throw new Error("MCP server does not support resource registration");
     }
     return this.server.registerResource(
-      entry.caplet.server,
+      `${entry.caplet.server}:${entry.resourceTemplate.name ?? entry.downstreamUriTemplate}`,
       new ResourceTemplate(entry.uriTemplate, { list: undefined }),
       resourceTemplateMetadata(entry.resourceTemplate),
       async (uri) => {
@@ -433,16 +433,6 @@ function stringifyRecord(value: Record<string, unknown>): Record<string, string>
   return Object.fromEntries(
     Object.entries(value).map(([key, nested]) => [key, nested === undefined ? "" : String(nested)]),
   );
-}
-
-function coalesceResourceTemplates(
-  entries: DirectResourceTemplateRegistration[],
-): DirectResourceTemplateRegistration[] {
-  const byCaplet = new Map<string, DirectResourceTemplateRegistration>();
-  for (const entry of entries) {
-    byCaplet.set(entry.caplet.server, entry);
-  }
-  return [...byCaplet.values()];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -74,6 +74,7 @@ export type ExposureSnapshot = {
 export type DiscoverExposureSnapshotOptions = {
   config: CapletsConfig;
   caplets: CapletConfig[];
+  discoverNonDirectMcpSurfaces?: boolean | undefined;
   listTools(caplet: CapletConfig): Promise<Tool[]>;
   listResources?(caplet: Extract<CapletConfig, { backend: "mcp" }>): Promise<Resource[]>;
   listResourceTemplates?(
@@ -131,7 +132,7 @@ function directResourceTemplatesFor(entry: CallableCaplet): DirectResourceTempla
   return entry.resourceTemplates.map((resourceTemplate) => ({
     caplet,
     downstreamUriTemplate: resourceTemplate.uriTemplate,
-    uriTemplate: directResourceTemplateUri(caplet.server),
+    uriTemplate: directResourceTemplateUri(caplet.server, resourceTemplate.uriTemplate),
     resourceTemplate,
   }));
 }
@@ -162,7 +163,11 @@ async function discoverCaplet(
   }
 
   const exposure = resolveExposure(caplet.exposure, options.config.options.exposure);
-  if (!exposure.direct) {
+  if (
+    !exposure.direct &&
+    caplet.backend === "mcp" &&
+    options.discoverNonDirectMcpSurfaces === false
+  ) {
     return {
       callable: {
         caplet,

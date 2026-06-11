@@ -16,8 +16,8 @@ export function directResourceUri(capletId: string, downstreamUri: string): stri
   return `caplets://${capletId}/resources/${encodeURIComponent(downstreamUri)}`;
 }
 
-export function directResourceTemplateUri(capletId: string): string {
-  return `caplets://${capletId}/resources/{encodedUri}`;
+export function directResourceTemplateUri(capletId: string, downstreamUriTemplate: string): string {
+  return `caplets://${capletId}/resources/{encodedUri}?template=${encodeURIComponent(downstreamUriTemplate)}`;
 }
 
 export function decodeDirectResourceUri(uri: string): {

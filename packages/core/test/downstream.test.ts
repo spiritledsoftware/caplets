@@ -464,6 +464,93 @@ describe("downstream stdio lifecycle", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it("wraps shared pending connection failures for concurrent callers", async () => {
+    const releaseInitialize = deferred<void>();
+    let initializeCount = 0;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { method?: string };
+          if (message.method === "initialize") {
+            initializeCount += 1;
+            await releaseInitialize.promise;
+            response.statusCode = 500;
+            response.end("initialize failed");
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A failing remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const first = manager.listTools(config.mcpServers.remote!);
+
+      await waitUntil(() => initializeCount === 1);
+      const second = manager.listTools(config.mcpServers.remote!);
+      releaseInitialize.resolve();
+
+      const results = await Promise.allSettled([first, second]);
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SERVER_UNAVAILABLE" }),
+        }),
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SERVER_UNAVAILABLE" }),
+        }),
+      ]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") {
+          expect(result.reason).toBeInstanceOf(Error);
+          expect(result.reason).toMatchObject({
+            code: "SERVER_UNAVAILABLE",
+            message: "Could not start remote",
+          } satisfies Partial<CapletsError>);
+        }
+      }
+      expect(registry.getStatus("remote")).toBe("unavailable");
+
+      await manager.close();
+    } finally {
+      releaseInitialize.resolve();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 describe("downstream remote OAuth lifecycle", () => {

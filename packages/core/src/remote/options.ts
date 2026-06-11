@@ -193,7 +193,11 @@ export function resolveHostedCloudRemote(
 }
 
 export function hostedCloudWorkspaceFromRemoteUrl(value: string): string | undefined {
-  return parseHostedCloudRemoteUrl(value).workspace;
+  try {
+    return parseHostedCloudRemoteUrl(value).workspace;
+  } catch {
+    return undefined;
+  }
 }
 
 export function projectBindingWebSocketUrlForBase(baseUrl: URL): URL {

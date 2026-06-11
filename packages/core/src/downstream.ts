@@ -22,7 +22,7 @@ import {
   readTokenBundle,
   staticRemoteHeaders,
 } from "./auth";
-import { CapletsError, toSafeError } from "./errors";
+import { CapletsError, toSafeError, type CapletsErrorCode, type SafeErrorSummary } from "./errors";
 import type { ServerRegistry } from "./registry";
 import { searchToolList } from "./tool-search";
 
@@ -529,7 +529,15 @@ export class DownstreamManager {
         pending.connection.closing = true;
         await pending.connection.transport.close();
       } else {
-        return await pending.promise;
+        try {
+          return await pending.promise;
+        } catch (error) {
+          if (isAuthRemediationError(error)) {
+            this.markConnectionStartUnavailable(server, error);
+            throw error;
+          }
+          throw this.connectionStartError(server, error);
+        }
       }
     }
     if (this.currentServerFingerprint(server) !== expectedFingerprint) {
@@ -608,14 +616,27 @@ export class DownstreamManager {
       this.connecting.set(server.server, pendingConnection);
       return await pendingConnection.promise;
     } catch (error) {
-      const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
-      const safe = toSafeError(error, code);
-      this.registry.setStatus(server.server, "unavailable", safe);
       if (isAuthRemediationError(error)) {
+        this.markConnectionStartUnavailable(server, error);
         throw error;
       }
-      throw new CapletsError(code, `Could not start ${server.server}`, safe);
+      throw this.connectionStartError(server, error);
     }
+  }
+
+  private connectionStartError(server: CapletServerConfig, error: unknown): CapletsError {
+    const { code, safe } = this.markConnectionStartUnavailable(server, error);
+    return new CapletsError(code, `Could not start ${server.server}`, safe);
+  }
+
+  private markConnectionStartUnavailable(
+    server: CapletServerConfig,
+    error: unknown,
+  ): { code: CapletsErrorCode; safe: SafeErrorSummary } {
+    const code = isTimeoutLike(error) ? "SERVER_START_TIMEOUT" : "SERVER_UNAVAILABLE";
+    const safe = toSafeError(error, code);
+    this.registry.setStatus(server.server, "unavailable", safe);
+    return { code, safe };
   }
 
   private async startConnection(
