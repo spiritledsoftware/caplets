@@ -10,7 +10,7 @@ import {
   redactOutput,
   runProcess,
 } from "../lib/live-agent";
-import { createBenchmarkCapletsConfig } from "../lib/config";
+import { createBenchmarkCapletsConfig, createNamedFixtureMcpServers } from "../lib/config";
 import { PI_CONFIG_MODES, createPiMcpConfigs, detectPiCli, piRunner } from "../lib/pi-runner";
 import {
   OPENCODE_CONFIG_MODES,
@@ -30,6 +30,52 @@ import {
   computeCodeModeBenchmark,
   validateCodeModeBenchmark,
 } from "../lib/code-mode";
+import {
+  EXECUTOR_MCP_DIRECT_TOOLS_ENV,
+  EXECUTOR_PI_EVAL_ADAPTER_EXPOSURE,
+  PI_EVAL_MODES,
+  PI_MCP_ADAPTER_EXTENSION_SOURCE,
+  VANILLA_MCP_DIRECT_TOOLS_ENV,
+  VANILLA_MCP_PI_EVAL_ADAPTER_EXPOSURE,
+  buildPiEvalCommand,
+  buildPiEvalPrewarmPrompt,
+  buildPiEvalPrompt,
+  createExecutorMcpAdapterConfig,
+  createPiEvalRealMcpServers,
+  createPiEvalRunConfig,
+  createVanillaMcpAdapterConfig,
+  piEvalModeProduct,
+} from "../lib/pi-eval/config";
+import {
+  DEFAULT_PI_EVAL_SUITE_ID,
+  resolvePiEvalSuite,
+  validatePiEvalSuiteId,
+} from "../lib/pi-eval/suites";
+import {
+  computeDomainCoverage,
+  requiredEvidenceScore,
+  summarizePiEvalMetrics,
+} from "../lib/pi-eval/metrics";
+import { extractMcpToolUseFinalJson, scoreMcpToolUseRun } from "../lib/pi-eval/mcp-tool-use-score";
+import { createDeterministicSemanticJudge } from "../lib/pi-eval/semantic-judge";
+import piEvalInstrumentation from "../lib/pi-eval/instrumentation-extension";
+import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "../lib/pi-eval/report";
+import {
+  buildPiEvalMatrix,
+  compactPiEvalAgentResult,
+  compactPiEvalScore,
+  parsePiEvalArgs,
+  prewarmMcpAdapterDirectTools,
+  runPiEvalBenchmark,
+} from "../run-pi-eval";
+import {
+  createExecutorMcpSourcePayloads,
+  createExecutorFixtureSourcePayloads,
+  detectExecutorCli,
+  setupExecutorFixtureSources,
+  setupExecutorMcpSources,
+} from "../lib/pi-eval/executor";
+import { createNativeCapletsService } from "@caplets/core/native";
 
 const packageRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -110,7 +156,7 @@ describe("progressive disclosure benchmark fixture", () => {
     expect(result.stdoutTruncated).toBe(true);
     expect(result.stderrTruncated).toBe(true);
     expect(result.stderrBytes).toBe(6);
-    expect(result.jsonEvents).toEqual([]);
+    expect(result.jsonEvents).toEqual([{ type: "tool_call", toolName: "policy_get" }]);
     expect(JSON.stringify(result)).not.toContain("not-recorded");
     expect(PROCESS_TERMINATION_BEHAVIOR).toContain("process.kill(-pid, signal)");
     expect(PROCESS_TERMINATION_BEHAVIOR).toContain("taskkill");
@@ -123,6 +169,22 @@ describe("progressive disclosure benchmark fixture", () => {
       { type: "message" },
     ]);
     expect(parseJsonEvents('not json\n{"type":"tool_call"}')).toEqual([{ type: "tool_call" }]);
+  });
+
+  it("parses JSONL events from the full stream even when stdout is capped", async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "console.log(JSON.stringify({ type: 'message_end', usage: { totalTokens: 12 } })); console.log('x'.repeat(2000));",
+      ],
+      timeoutMs: 5_000,
+      outputMaxBytes: 16,
+    });
+
+    expect(result.stdoutTruncated).toBe(true);
+    expect(result.stdout).toHaveLength(16);
+    expect(result.jsonEvents).toEqual([{ type: "message_end", usage: { totalTokens: 12 } }]);
   });
 
   it("redacts secret env values and common token patterns from captured output", async () => {
@@ -1172,3 +1234,2720 @@ function withoutExitCode<T extends { exitCode?: unknown }>(result: T): Omit<T, "
   const { exitCode: _exitCode, ...rest } = result;
   return rest;
 }
+
+describe("Pi live tool surface eval harness", () => {
+  it("parses modes and builds the complete Pi eval matrix", () => {
+    expect(buildPiEvalMatrix({}).map((entry) => entry.mode)).toEqual([...PI_EVAL_MODES]);
+    expect(buildPiEvalMatrix({}).find((entry) => entry.mode === "vanilla-mcp")).toMatchObject({
+      mode: "vanilla-mcp",
+      product: "mcp",
+    });
+    expect(buildPiEvalMatrix({}).find((entry) => entry.mode === "executor-mcp")).toMatchObject({
+      mode: "executor-mcp",
+      product: "executor",
+    });
+    expect(
+      buildPiEvalMatrix({}).find((entry) => entry.mode === "caplets-direct-code-mode"),
+    ).toMatchObject({
+      mode: "caplets-direct-code-mode",
+      product: "caplets",
+    });
+    expect(piEvalModeProduct("caplets-code-mode")).toBe("caplets");
+    expect(piEvalModeProduct("caplets-direct-code-mode")).toBe("caplets");
+    expect(piEvalModeProduct("vanilla-mcp")).toBe("mcp");
+    expect(piEvalModeProduct("executor-mcp")).toBe("executor");
+    expect(
+      parsePiEvalArgs([
+        "--mode",
+        "caplets-code-mode,caplets-direct-code-mode,caplets-progressive-code-mode",
+        "--runs",
+        "2",
+      ]),
+    ).toMatchObject({
+      modes: ["caplets-code-mode", "caplets-direct-code-mode", "caplets-progressive-code-mode"],
+      runs: 2,
+      concurrency: 1,
+    });
+    expect(parsePiEvalArgs(["--concurrency", "3"])).toMatchObject({ concurrency: 3 });
+    expect(parsePiEvalArgs(["--model", "openai-codex/gpt-5.5"])).toMatchObject({
+      model: "openai-codex/gpt-5.5",
+      judgeModel: "openai-codex/gpt-5.5",
+    });
+    expect(parsePiEvalArgs(["--judge-model", "openai-codex/gpt-5.4-mini"])).toMatchObject({
+      judgeModel: "openai-codex/gpt-5.4-mini",
+    });
+    expect(
+      parsePiEvalArgs([
+        "--model",
+        "openai-codex/gpt-5.5",
+        "--judge-model",
+        "openai-codex/gpt-5.4-mini",
+      ]),
+    ).toMatchObject({
+      model: "openai-codex/gpt-5.5",
+      judgeModel: "openai-codex/gpt-5.4-mini",
+    });
+    expect(() => parsePiEvalArgs(["--concurrency", "0"])).toThrow(/positive integer/u);
+    expect(
+      parsePiEvalArgs([
+        "--mode",
+        "executor-mcp",
+        "--executor-command",
+        "executor-test",
+        "--skip-missing-competitors",
+      ]),
+    ).toMatchObject({
+      modes: ["executor-mcp"],
+      executorCommand: "executor-test",
+      skipMissingCompetitors: true,
+    });
+    expect(() => parsePiEvalArgs(["--mode", "unknown"])).toThrow(/Unknown Pi eval mode/u);
+  });
+
+  it("parses Pi eval task suites without changing the coding default", () => {
+    expect(DEFAULT_PI_EVAL_SUITE_ID).toBe("coding");
+    expect(parsePiEvalArgs([])).toMatchObject({
+      taskSuite: "coding",
+      tasks: ["checkout-incident-retry-hardening"],
+    });
+    expect(parsePiEvalArgs(["--task-suite", "mcp-tool-use"])).toMatchObject({
+      taskSuite: "mcp-tool-use",
+      tasks: [
+        "api-pagination-audit",
+        "incident-customer-impact-join",
+        "release-readiness-risk-report",
+      ],
+    });
+    expect(parsePiEvalArgs(["--task-suite", "mcp-realistic-noauth"])).toMatchObject({
+      taskSuite: "mcp-realistic-noauth",
+      tasks: [
+        "production-incident-briefing",
+        "release-risk-triage",
+        "enterprise-renewal-readiness",
+        "oncall-handoff-synthesis",
+      ],
+    });
+    expect(parsePiEvalArgs(["--task-suite", "mcp-real-world-large"])).toMatchObject({
+      taskSuite: "mcp-real-world-large",
+      tasks: [
+        "real-release-risk-brief",
+        "dependency-docs-migration-check",
+        "code-navigation-impact-brief",
+        "browser-runbook-verification",
+        "public-repo-architecture-scout",
+      ],
+    });
+    expect(() => parsePiEvalArgs(["--task-suite", "missing-suite"])).toThrow(
+      /Unknown Pi eval task suite missing-suite/u,
+    );
+    expect(() => validatePiEvalSuiteId("missing-suite")).toThrow(
+      /Unknown Pi eval task suite missing-suite/u,
+    );
+    expect(resolvePiEvalSuite("coding")).toMatchObject({
+      id: "coding",
+      label: "Coding agent workspace",
+      workspaceRequired: true,
+    });
+    expect(resolvePiEvalSuite("mcp-tool-use")).toMatchObject({
+      id: "mcp-tool-use",
+      label: "MCP tool-use workflows",
+      workspaceRequired: false,
+    });
+    expect(resolvePiEvalSuite("mcp-realistic-noauth")).toMatchObject({
+      id: "mcp-realistic-noauth",
+      label: "Realistic no-auth MCP workflows",
+      workspaceRequired: false,
+    });
+    expect(resolvePiEvalSuite("mcp-real-world-large")).toMatchObject({
+      id: "mcp-real-world-large",
+      label: "Real-world large MCP stack workflows",
+      workspaceRequired: true,
+      disablePiBuiltinTools: true,
+      requiredEnv: ["GH_TOKEN", "CONTEXT7_API_KEY"],
+      realMcpServers: [
+        "github",
+        "context7",
+        "deepwiki",
+        "git",
+        "filesystem",
+        "playwright",
+        "ast_grep",
+        "language_server",
+        "duckduckgo",
+      ],
+    });
+  });
+
+  it("builds mode-specific prompts and Pi commands without user context files", () => {
+    const task = { prompt: "Fix checkout retries." };
+    expect(buildPiEvalPrompt(task, "caplets-direct")).toContain("caplets__<server>__<tool>");
+    expect(buildPiEvalPrompt(task, "caplets-direct-code-mode")).toContain(
+      "Direct Caplets tools and caplets_code_mode are available",
+    );
+    expect(buildPiEvalPrompt(task, "caplets-progressive-code-mode")).toContain(
+      "Both Caplets capability tools and caplets_code_mode are available",
+    );
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("issues_...");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("without Caplets or Executor");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("executor_...");
+    expect(buildPiEvalPrompt(task, "executor-mcp")).toContain("executor_...");
+    expect(buildPiEvalPrompt(task, "executor-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrewarmPrompt()).toContain("configured server(s)");
+
+    const command = buildPiEvalCommand({
+      command: "pi-test",
+      prompt: "hello",
+      model: "provider/model",
+      extensionPaths: ["/tmp/a.js", "/tmp/b.js"],
+      extraArgs: ["--mcp-config", "/tmp/mcp.json"],
+    });
+    expect(command).toEqual({
+      command: "pi-test",
+      args: [
+        "--mode",
+        "json",
+        "-p",
+        "hello",
+        "--approve",
+        "--no-context-files",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--model",
+        "provider/model",
+        "-e",
+        "/tmp/a.js",
+        "-e",
+        "/tmp/b.js",
+        "--mcp-config",
+        "/tmp/mcp.json",
+      ],
+    });
+
+    const noBuiltinToolsCommand = buildPiEvalCommand({
+      command: "pi-test",
+      prompt: "hello",
+      disableBuiltinTools: true,
+      extensionPaths: ["/tmp/a.js"],
+    });
+    expect(noBuiltinToolsCommand.args).toContain("--no-builtin-tools");
+    expect(noBuiltinToolsCommand.args.indexOf("--no-builtin-tools")).toBeLessThan(
+      noBuiltinToolsCommand.args.indexOf("-e"),
+    );
+  });
+
+  it("keeps MCP tool-use scorer guidance out of candidate prompts", async () => {
+    const suite = resolvePiEvalSuite("mcp-real-world-large");
+    const tasks = await loadTasks(suite.tasksPath);
+    const prompt = suite.buildPrompt(tasks[3], "vanilla-mcp");
+
+    expect(tasks[3].fuzzy_description).toContain("page recommendation is hold");
+    expect(prompt).not.toContain(tasks[3].fuzzy_description);
+    expect(prompt).not.toContain("Context:");
+    expect(prompt).not.toContain("page recommendation is hold");
+  });
+
+  it("describes real-world MCP tasks by evidence goals instead of exact server names", async () => {
+    const suite = resolvePiEvalSuite("mcp-real-world-large");
+    const tasks = await loadTasks(suite.tasksPath);
+    const visiblePrompts = tasks
+      .map((task: any) => suite.buildPrompt(task, "vanilla-mcp"))
+      .join("\n\n")
+      .toLowerCase();
+
+    for (const forbidden of [
+      "playwright",
+      "filesystem",
+      "context7",
+      "duckduckgo",
+      "deepwiki",
+      "ast-grep",
+      "language-server",
+      "github mcp",
+    ]) {
+      expect(visiblePrompts).not.toContain(forbidden);
+    }
+  });
+
+  it("creates isolated vanilla MCP eval config with pi-mcp-adapter direct tools only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-vanilla-mcp-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "vanilla-mcp",
+        piAgentSourceDir: sourceAgentDir,
+      });
+
+      expect(config.product).toBe("mcp");
+      expect(config.adapterExposure).toBe(VANILLA_MCP_PI_EVAL_ADAPTER_EXPOSURE);
+      expect(config.extensionPaths).toEqual([
+        config.instrumentationPath,
+        PI_MCP_ADAPTER_EXTENSION_SOURCE,
+      ]);
+      expect(config.extraArgs).toEqual(["--mcp-config", config.adapterConfigPath]);
+      expect(config.env.MCP_DIRECT_TOOLS).toBe(VANILLA_MCP_DIRECT_TOOLS_ENV);
+      expect(config.env.CAPLETS_CONFIG).toBeUndefined();
+      expect(config.env.HOME).toBeUndefined();
+      expect(config.executorCommand).toBeUndefined();
+      expect(config.executorDataDir).toBeUndefined();
+      expect(config.adapterConfig.settings).toMatchObject({
+        directTools: true,
+        disableProxyTool: true,
+        sampling: false,
+        elicitation: false,
+      });
+      expect(Object.keys(config.adapterConfig.mcpServers).sort()).toEqual([
+        "api",
+        "ci",
+        "code-map",
+        "docs",
+        "issues",
+      ]);
+      expect(config.adapterConfig.mcpServers.issues).toMatchObject({
+        command: "tsx",
+        args: [config.fixtureServerPath, "--server", "issues"],
+        lifecycle: "eager",
+        directTools: true,
+        cwd: config.supportDir,
+      });
+      expect(config.adapterConfig).toEqual(
+        createVanillaMcpAdapterConfig({
+          fixtureServerPath: config.fixtureServerPath,
+          supportDir: config.supportDir,
+          path: config.env.PATH,
+        }),
+      );
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const adapterConfig = JSON.parse(await readFile(config.adapterConfigPath, "utf8"));
+      expect(adapterConfig).toEqual(config.adapterConfig);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates Pi eval configs from suite-specific fixture servers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-suite-config-test-"));
+    const fixtureServerSourcePath = join(root, "suite-server.ts");
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fixtureServerSourcePath, "console.log('suite server')\n");
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+
+      const capletsConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "caplets"),
+        mode: "caplets-progressive",
+        piAgentSourceDir: sourceAgentDir,
+        fixtureServerSourcePath,
+        fixtureServers: ["api_catalog", "incidents"],
+        directToolsEnv: "api_catalog,incidents",
+      });
+      expect(Object.keys(capletsConfig.config.mcpServers).sort()).toEqual([
+        "api_catalog",
+        "incidents",
+      ]);
+      expect(await readFile(capletsConfig.fixtureServerPath, "utf8")).toContain("suite server");
+
+      const vanillaConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "vanilla"),
+        mode: "vanilla-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        fixtureServerSourcePath,
+        fixtureServers: ["api_catalog", "incidents"],
+        directToolsEnv: "api_catalog,incidents",
+      });
+      expect(Object.keys(vanillaConfig.adapterConfig.mcpServers).sort()).toEqual([
+        "api_catalog",
+        "incidents",
+      ]);
+      expect(vanillaConfig.env.MCP_DIRECT_TOOLS).toBe("api_catalog,incidents");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates Pi eval configs from real MCP server profiles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-real-mcp-config-test-"));
+    const workspaceRoot = join(root, "workspace");
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(workspaceRoot, { recursive: true });
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      const realMcpServers = [
+        "github",
+        "context7",
+        "deepwiki",
+        "git",
+        "filesystem",
+        "playwright",
+        "ast_grep",
+        "language_server",
+        "duckduckgo",
+      ];
+      const env = { GH_TOKEN: "gh-test", CONTEXT7_API_KEY: "ctx-test", PATH: "/usr/bin" };
+
+      const capletsConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "caplets"),
+        mode: "caplets-progressive",
+        piAgentSourceDir: sourceAgentDir,
+        candidateWorkspace: workspaceRoot,
+        realMcpServers,
+        directToolsEnv: realMcpServers.join(","),
+        env,
+      });
+      expect(capletsConfig.fixtureServerPath).toBeNull();
+      expect(Object.keys(capletsConfig.config.mcpServers).sort()).toEqual(
+        [...realMcpServers].sort(),
+      );
+      expect(capletsConfig.config.mcpServers.github).toMatchObject({
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        auth: { type: "bearer", token: "gh-test" },
+      });
+      expect(capletsConfig.config.mcpServers.github.auth).toEqual({
+        type: "bearer",
+        token: "gh-test",
+      });
+      expect(capletsConfig.config.mcpServers.context7).toMatchObject({
+        command: "npx",
+        args: ["-y", "@upstash/context7-mcp"],
+        cwd: workspaceRoot,
+        env: { CONTEXT7_API_KEY: "ctx-test" },
+      });
+      expect(capletsConfig.config.mcpServers.filesystem).toMatchObject({
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", workspaceRoot],
+        cwd: workspaceRoot,
+      });
+      expect(capletsConfig.config.mcpServers.playwright).toMatchObject({
+        command: "npx",
+        args: ["-y", "@playwright/mcp@0.0.75", "--headless", "--allow-unrestricted-file-access"],
+        cwd: workspaceRoot,
+      });
+
+      const vanillaConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "vanilla"),
+        mode: "vanilla-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        candidateWorkspace: workspaceRoot,
+        realMcpServers,
+        directToolsEnv: realMcpServers.join(","),
+        env,
+      });
+      expect(vanillaConfig.fixtureServerPath).toBeNull();
+      expect(vanillaConfig.env.MCP_DIRECT_TOOLS).toBe(realMcpServers.join(","));
+      expect(Object.keys(vanillaConfig.adapterConfig.mcpServers).sort()).toEqual(
+        [...realMcpServers].sort(),
+      );
+      expect(vanillaConfig.adapterConfig.mcpServers.github).toMatchObject({
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        auth: "bearer",
+        bearerTokenEnv: "GH_TOKEN",
+        directTools: true,
+      });
+      expect(vanillaConfig.adapterConfig.mcpServers.github.auth).not.toEqual({
+        type: "bearer",
+        token: "gh-test",
+      });
+      expect(vanillaConfig.adapterConfig.mcpServers.context7).toMatchObject({
+        command: "npx",
+        cwd: workspaceRoot,
+        directTools: true,
+        lifecycle: "eager",
+      });
+      expect(vanillaConfig.adapterConfig).toEqual(
+        createVanillaMcpAdapterConfig({
+          mcpServers: createPiEvalRealMcpServers({
+            servers: realMcpServers,
+            workspaceRoot,
+            env,
+            path: vanillaConfig.env.PATH,
+          }),
+          supportDir: vanillaConfig.supportDir,
+          path: vanillaConfig.env.PATH,
+        }),
+      );
+
+      const executorConfig = await createPiEvalRunConfig({
+        rootDir: join(root, "executor"),
+        mode: "executor-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        executorCommand: "executor-test",
+        candidateWorkspace: workspaceRoot,
+        realMcpServers,
+        env,
+      });
+      expect(executorConfig.fixtureServerPath).toBeNull();
+      expect(Object.keys(executorConfig.executorSourceMcpServers).sort()).toEqual(
+        [...realMcpServers].sort(),
+      );
+      expect(executorConfig.executorSourceMcpServers.github).toMatchObject({
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        auth: { type: "bearer", token: "gh-test" },
+      });
+      expect(executorConfig.executorSourceMcpServers.github.auth).toEqual({
+        type: "bearer",
+        token: "gh-test",
+      });
+      expect(executorConfig.adapterConfig.mcpServers.executor).toMatchObject({
+        command: "executor-test",
+        args: ["mcp", "--scope", executorConfig.executorScopeDir],
+        directTools: true,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates isolated Executor MCP eval config with pi-mcp-adapter direct tools", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-executor-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "executor-mcp",
+        piAgentSourceDir: sourceAgentDir,
+        executorCommand: "executor-test",
+      });
+
+      expect(config.product).toBe("executor");
+      expect(config.adapterExposure).toBe(EXECUTOR_PI_EVAL_ADAPTER_EXPOSURE);
+      expect(config.extensionPaths).toEqual([
+        config.instrumentationPath,
+        PI_MCP_ADAPTER_EXTENSION_SOURCE,
+      ]);
+      expect(config.extraArgs).toEqual(["--mcp-config", config.adapterConfigPath]);
+      expect(config.env.HOME).toBe(config.adapterHomeDir);
+      expect(config.env.PI_CODING_AGENT_DIR).toBe(config.agentDir);
+      expect(config.env.MCP_DIRECT_TOOLS).toBe(EXECUTOR_MCP_DIRECT_TOOLS_ENV);
+      expect(config.env.CAPLETS_CONFIG).toBeUndefined();
+      expect(config.adapterConfig.settings).toMatchObject({
+        directTools: true,
+        disableProxyTool: true,
+        sampling: false,
+        elicitation: false,
+      });
+      expect(config.adapterConfig.mcpServers.executor).toMatchObject({
+        command: "executor-test",
+        args: ["mcp", "--scope", config.executorScopeDir],
+        lifecycle: "eager",
+        directTools: true,
+        cwd: config.supportDir,
+      });
+      expect(config.adapterConfig.mcpServers.executor.env).toMatchObject({
+        EXECUTOR_DATA_DIR: config.executorDataDir,
+        EXECUTOR_SCOPE_DIR: config.executorScopeDir,
+      });
+      expect(config.adapterConfig).toEqual(
+        createExecutorMcpAdapterConfig({
+          executorCommand: "executor-test",
+          executorDataDir: config.executorDataDir,
+          executorScopeDir: config.executorScopeDir,
+          supportDir: config.supportDir,
+          path: config.env.PATH,
+        }),
+      );
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      const adapterConfig = JSON.parse(await readFile(config.adapterConfigPath, "utf8"));
+      expect(adapterConfig).toEqual(config.adapterConfig);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates Executor fixture source payloads for suite-specific servers", () => {
+    expect(
+      createExecutorFixtureSourcePayloads({
+        fixtureServerPath: "/tmp/server.ts",
+        supportDir: "/tmp/support",
+        servers: ["api_catalog", "incidents"],
+      }).map((payload) => payload.name),
+    ).toEqual(["api_catalog", "incidents"]);
+  });
+
+  it("creates and registers Executor source payloads from real MCP server configs", async () => {
+    const mcpServers = {
+      github: {
+        name: "GitHub",
+        transport: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        auth: { type: "bearer", token: "gh-test" },
+      },
+      filesystem: {
+        name: "Filesystem",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
+        cwd: "/tmp/workspace",
+        env: { PATH: "/bin" },
+      },
+    };
+    const payloads = createExecutorMcpSourcePayloads({ mcpServers });
+    expect(payloads).toEqual([
+      {
+        name: "GitHub",
+        slug: "github",
+        transport: "remote",
+        endpoint: "https://api.githubcopilot.com/mcp/",
+        remoteTransport: "streamable-http",
+        headers: { Authorization: "Bearer gh-test" },
+        auth: { kind: "none" },
+      },
+      {
+        name: "Filesystem",
+        slug: "filesystem",
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
+        cwd: "/tmp/workspace",
+        env: { PATH: "/bin" },
+      },
+    ]);
+
+    const calls: any[] = [];
+    await expect(
+      setupExecutorMcpSources({
+        executorCommand: "executor-test",
+        supportDir: "/tmp/support",
+        mcpServers,
+        env: { EXECUTOR_SCOPE_DIR: "/tmp/executor-scope" },
+        processRunner: async (call: any) => {
+          calls.push(call);
+          if (call.args[0] === "daemon") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: "Daemon ready on http://localhost:55555\n",
+            };
+          }
+          if (call.args.includes("addServer")) {
+            const payload = JSON.parse(call.args[4]);
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { slug: payload.slug } }),
+            };
+          }
+          if (call.args.includes("create")) {
+            const connection = JSON.parse(call.args[5]);
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({
+                ok: true,
+                data: { status: "created", name: `${connection.name}Connection` },
+              }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({ ok: true, data: { tools: [{ name: "search" }] } }),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ payloads });
+    expect(calls.map((call) => call.args.slice(0, 5))).toEqual([
+      ["daemon", "run"],
+      ["call", "executor", "mcp", "addServer", JSON.stringify(payloads[0])],
+      ["call", "executor", "coreTools", "connections", "create"],
+      ["call", "executor", "coreTools", "connections", "refresh"],
+      ["call", "executor", "mcp", "addServer", JSON.stringify(payloads[1])],
+      ["call", "executor", "coreTools", "connections", "create"],
+      ["call", "executor", "coreTools", "connections", "refresh"],
+      ["daemon", "stop", "--base-url", "http://localhost:55555"],
+    ]);
+    expect(calls.every((call) => !call.args.includes("--scope"))).toBe(true);
+    expect(JSON.parse(calls[3].args[5])).toEqual({
+      owner: "user",
+      name: "githubConnection",
+      integration: "github",
+    });
+  });
+
+  it("loads MCP tool-use suite tasks with expected dependency metadata", async () => {
+    const suite = resolvePiEvalSuite("mcp-tool-use");
+    const tasks = await loadTasks(suite.tasksPath);
+    expect(tasks.map((task: any) => task.id)).toEqual([
+      "api-pagination-audit",
+      "incident-customer-impact-join",
+      "release-readiness-risk-report",
+    ]);
+    expect(tasks[0]).toMatchObject({
+      dependency_analysis: { servers: ["api_catalog"] },
+      expectedEvidence: { servers: ["api_catalog"] },
+    });
+    expect(tasks[1].dependency_analysis.servers).toEqual(["incidents", "customers"]);
+    expect(tasks[2].dependency_analysis.servers).toEqual(["deployments", "quality", "policies"]);
+  });
+
+  it("loads realistic no-auth MCP workflow tasks with broad multi-server dependencies", async () => {
+    const suite = resolvePiEvalSuite("mcp-realistic-noauth");
+    const tasks = await loadTasks(suite.tasksPath);
+    expect(tasks.map((task: any) => task.id)).toEqual([
+      "production-incident-briefing",
+      "release-risk-triage",
+      "enterprise-renewal-readiness",
+      "oncall-handoff-synthesis",
+    ]);
+    expect(tasks.every((task: any) => task.expectedFacts && task.expectedEvidence)).toBe(true);
+    expect(tasks.map((task: any) => task.dependency_analysis.servers.length)).toEqual([5, 6, 6, 7]);
+    expect(
+      new Set(tasks.flatMap((task: any) => task.dependency_analysis.servers)).size,
+    ).toBeGreaterThanOrEqual(10);
+  });
+
+  it("uses natural decision contracts and substantive facts for real-world large tasks", async () => {
+    const suite = resolvePiEvalSuite("mcp-real-world-large");
+    const tasks = await loadTasks(suite.tasksPath);
+    const byId = new Map(tasks.map((task: any) => [task.id, task]));
+
+    expect(byId.get("dependency-docs-migration-check")).toMatchObject({
+      expectedFacts: { decision: "review_required" },
+      decisionOptions: ["review_required", "low_migration_risk"],
+    });
+    expect(byId.get("dependency-docs-migration-check").task_description).toContain(
+      "Set decision to review_required",
+    );
+
+    expect(byId.get("code-navigation-impact-brief").expectedFacts).toEqual({
+      affectedFiles: ["src/feature-flags.ts", "src/release-risk.ts"],
+    });
+    expect(byId.get("public-repo-architecture-scout").expectedFacts).toEqual({
+      serverCategories: [
+        "repository hosting",
+        "documentation",
+        "local repository",
+        "browser automation",
+        "code search",
+        "language intelligence",
+        "web search",
+      ],
+    });
+    expect(byId.get("public-repo-architecture-scout").task_description).toContain(
+      "explicitly cover these benchmark stack categories",
+    );
+  });
+
+  it("exposes a large realistic no-auth MCP fixture tool stack with overlapping tool names", async () => {
+    const suite = resolvePiEvalSuite("mcp-realistic-noauth");
+    const fixture = await import("../fixtures/mcp-realistic-noauth/mcp-server");
+    expect(suite.fixtureServers).toEqual([
+      "repo",
+      "filesystem",
+      "sqlite",
+      "docs",
+      "browser",
+      "memory",
+      "time",
+      "slack",
+      "jira",
+      "github",
+      "observability",
+      "deployments",
+      "feature_flags",
+      "customers",
+      "incidents",
+    ]);
+    expect(fixture.SERVER_NAMES).toEqual(suite.fixtureServers);
+    const tools = suite.fixtureServers.flatMap((server: string) =>
+      fixture.listToolMetadata(server),
+    );
+    expect(tools.length).toBeGreaterThanOrEqual(120);
+    expect(new Set(tools.map((tool: any) => tool.name)).size).toBeLessThan(tools.length);
+    expect(tools.filter((tool: any) => tool.name === "search")).toHaveLength(15);
+    expect(JSON.stringify(tools)).toContain("No API key is required");
+  });
+
+  it("exposes MCP tool-use fixture server metadata", async () => {
+    const suite = resolvePiEvalSuite("mcp-tool-use");
+    const config = createNamedFixtureMcpServers({
+      fixtureServerPath: suite.fixtureServerSourcePath,
+      cwd: suite.fixtureRoot,
+      servers: suite.fixtureServers,
+    });
+    expect(Object.keys(config).sort()).toEqual([
+      "api_catalog",
+      "customers",
+      "deployments",
+      "incidents",
+      "policies",
+      "quality",
+    ]);
+    expect(config.api_catalog.args).toEqual([
+      suite.fixtureServerSourcePath,
+      "--server",
+      "api_catalog",
+    ]);
+  });
+
+  it("builds Executor fixture source payloads and setup commands", async () => {
+    const payloads = createExecutorFixtureSourcePayloads({
+      fixtureServerPath: "/tmp/mcp-server.ts",
+      supportDir: "/tmp/support",
+      sourceCommand: "tsx-test",
+    });
+    expect(payloads).toHaveLength(5);
+    expect(payloads[0]).toEqual({
+      transport: "stdio",
+      name: "issues",
+      command: "tsx-test",
+      args: ["/tmp/mcp-server.ts", "--server", "issues"],
+      cwd: "/tmp/support",
+    });
+
+    const calls: any[] = [];
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        sourceCommand: "tsx-test",
+        env: { EXECUTOR_DATA_DIR: "/tmp/executor-data", EXECUTOR_SCOPE_DIR: "/tmp/executor-scope" },
+        processRunner: async (call: any) => {
+          calls.push(call);
+          if (call.args[0] === "daemon") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: "Daemon ready on http://localhost:55555\n",
+            };
+          }
+          if (call.args.includes("addServer")) {
+            const payload = JSON.parse(call.args[4]);
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { slug: payload.name } }),
+            };
+          }
+          if (call.args.includes("create")) {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { status: "created" } }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({ ok: true, data: { tools: [{ name: "search" }] } }),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({ payloads });
+    expect(calls).toHaveLength(17);
+    expect(calls[0]).toMatchObject({
+      command: "executor-test",
+      args: ["daemon", "run"],
+      cwd: "/tmp/support",
+    });
+    expect(calls[1]).toMatchObject({
+      command: "executor-test",
+      args: ["call", "executor", "mcp", "addServer", JSON.stringify(payloads[0])],
+      cwd: "/tmp/support",
+    });
+  });
+
+  it("resumes paused Executor fixture source setup and rejects missing tool registration", async () => {
+    const calls: any[] = [];
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        servers: ["issues"],
+        processRunner: async (call: any) => {
+          calls.push(call);
+          if (call.args[0] === "daemon") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: "Daemon ready on http://localhost:49181\n",
+            };
+          }
+          if (call.args[0] === "resume") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({
+                ok: true,
+                data: { slug: "issues" },
+              }),
+            };
+          }
+          if (call.args.includes("create")) {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { status: "created" } }),
+            };
+          }
+          if (call.args.includes("refresh")) {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { tools: [{ name: "search" }] } }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: [
+              "Execution paused: Add an MCP source",
+              "executionId: exec_1",
+              "Approve in browser:",
+              "  http://localhost:49181/resume/exec_1",
+            ].join("\n"),
+          };
+        },
+      }),
+    ).resolves.toMatchObject({
+      results: [
+        expect.objectContaining({
+          output: expect.objectContaining({
+            ok: true,
+            data: expect.objectContaining({ slug: "issues" }),
+          }),
+        }),
+      ],
+    });
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "daemon",
+      "call",
+      "resume",
+      "call",
+      "call",
+      "daemon",
+    ]);
+    expect(calls[2].args).toEqual([
+      "resume",
+      "--execution-id",
+      "exec_1",
+      "--base-url",
+      "http://localhost:49181",
+      "--action",
+      "accept",
+      "--content",
+      "{}",
+    ]);
+
+    await expect(
+      setupExecutorFixtureSources({
+        executorCommand: "executor-test",
+        fixtureServerPath: "/tmp/mcp-server.ts",
+        supportDir: "/tmp/support",
+        servers: ["issues"],
+        processRunner: async (call: any) => {
+          if (call.args[0] === "daemon") {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: "Daemon ready on http://localhost:55555\n",
+            };
+          }
+          if (call.args.includes("addServer")) {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { slug: "issues" } }),
+            };
+          }
+          if (call.args.includes("create")) {
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { status: "created" } }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({ ok: true, data: { tools: [] } }),
+          };
+        },
+      }),
+    ).rejects.toThrow(/expected registered tools/u);
+  });
+
+  it("detects Executor CLI availability and missing CLI failures", async () => {
+    await expect(
+      detectExecutorCli({
+        command: "executor-test",
+        runProcess: async () => ({ ...emptyProcessResult(), stdout: "executor 1.2.3\n" }),
+      }),
+    ).resolves.toMatchObject({
+      available: true,
+      command: "executor-test",
+      version: "executor 1.2.3",
+    });
+
+    await expect(
+      detectExecutorCli({
+        command: "missing-executor",
+        runProcess: async () => {
+          const error = new Error("missing") as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        },
+      }),
+    ).resolves.toMatchObject({ available: false, command: "missing-executor" });
+  });
+
+  it("prewarms Executor direct tools with separate unmeasured metrics and sessions", async () => {
+    const calls: any[] = [];
+    const runConfig = {
+      disableBuiltinTools: true,
+      extensionPaths: ["/tmp/instrumentation.ts", PI_MCP_ADAPTER_EXTENSION_SOURCE],
+      extraArgs: ["--mcp-config", "/tmp/executor-mcp.json"],
+      env: {
+        HOME: "/tmp/home",
+        PI_CODING_AGENT_DIR: "/tmp/agent",
+        PI_CODING_AGENT_SESSION_DIR: "/tmp/sessions",
+        CAPLETS_PI_EVAL_METRICS: "/tmp/metrics.jsonl",
+        MCP_DIRECT_TOOLS: EXECUTOR_MCP_DIRECT_TOOLS_ENV,
+      },
+      prewarmMetricsPath: "/tmp/prewarm-metrics.jsonl",
+      prewarmSessionsDir: "/tmp/prewarm-sessions",
+    };
+
+    const result = await prewarmMcpAdapterDirectTools({
+      piCommand: "pi-test",
+      model: "provider/model",
+      runConfig,
+      candidateWorkspace: "/tmp/workspace",
+      env: { CAPLETS_BENCH_LIVE: "1", HOME: "/tmp/outer-home" },
+      processRunner: async (call: any) => {
+        calls.push(call);
+        return emptyProcessResult({ command: call.command, args: call.args });
+      },
+    });
+
+    expect(result.command).toBe("pi-test");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain("--mcp-config");
+    expect(calls[0].args).toContain("/tmp/executor-mcp.json");
+    expect(calls[0].args).toContain(PI_MCP_ADAPTER_EXTENSION_SOURCE);
+    expect(calls[0].args).toContain("--no-builtin-tools");
+    expect(calls[0].env.CAPLETS_PI_EVAL_METRICS).toBe("/tmp/prewarm-metrics.jsonl");
+    expect(calls[0].env.PI_CODING_AGENT_SESSION_DIR).toBe("/tmp/prewarm-sessions");
+    expect(calls[0].env.PI_CODING_AGENT_DIR).toBe("/tmp/agent");
+    expect(calls[0].env.HOME).toBe("/tmp/home");
+    expect(calls[0].cwd).toBe("/tmp/workspace");
+  });
+
+  it("returns prewarm failures instead of aborting the live eval run", async () => {
+    const runConfig = {
+      extensionPaths: ["/tmp/instrumentation.ts", PI_MCP_ADAPTER_EXTENSION_SOURCE],
+      extraArgs: ["--mcp-config", "/tmp/vanilla-mcp.json"],
+      env: {
+        PI_CODING_AGENT_DIR: "/tmp/agent",
+        MCP_DIRECT_TOOLS: VANILLA_MCP_DIRECT_TOOLS_ENV,
+      },
+      prewarmMetricsPath: "/tmp/prewarm-metrics.jsonl",
+      prewarmSessionsDir: "/tmp/prewarm-sessions",
+    };
+
+    await expect(
+      prewarmMcpAdapterDirectTools({
+        piCommand: "pi-test",
+        model: "provider/model",
+        runConfig,
+        candidateWorkspace: "/tmp/workspace",
+        processRunner: async (call: any) => ({
+          ...emptyProcessResult({ command: call.command, args: call.args }),
+          exitCode: 143,
+          signal: "SIGTERM",
+          timedOut: true,
+        }),
+      }),
+    ).resolves.toMatchObject({
+      prewarmSuccess: false,
+      timedOut: true,
+      exitCode: 143,
+      prewarmFailureReason: /timed out/u,
+    });
+  });
+
+  it("creates isolated Pi eval config and copies only auth-bearing Pi files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    const fakePiExtension = join(root, "pi-extension.js");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fakePiExtension, "export default function extension() {}\n");
+      await writeFile(join(sourceAgentDir, "auth.json"), '{"token":"secret"}\n');
+      await writeFile(join(sourceAgentDir, "models.json"), '{"default":"model"}\n');
+      await writeFile(join(sourceAgentDir, "plugin.js"), "throw new Error('must not copy')\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "caplets-progressive-code-mode",
+        piExtensionPath: fakePiExtension,
+        piAgentSourceDir: sourceAgentDir,
+      });
+
+      expect(config.config.options.exposure).toBe("progressive_and_code_mode");
+      expect(Object.keys(config.config.mcpServers).sort()).toEqual([
+        "api",
+        "ci",
+        "code-map",
+        "docs",
+        "issues",
+      ]);
+      expect(config.copiedPiAuthFiles.sort()).toEqual(["auth.json", "models.json"]);
+      await expect(access(join(config.agentDir, "auth.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "models.json"))).resolves.toBeUndefined();
+      await expect(access(join(config.agentDir, "plugin.js"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(config.env.CAPLETS_CONFIG).toBe(config.configPath);
+      expect(config.env.PI_CODING_AGENT_DIR).toBe(config.agentDir);
+      expect(config.extensionPaths).toEqual([config.instrumentationPath, resolve(fakePiExtension)]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates direct plus Code Mode Pi eval config", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-direct-code-mode-config-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    const fakePiExtension = join(root, "pi-extension.js");
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fakePiExtension, "export default function extension() {}\n");
+
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "caplets-direct-code-mode",
+        piExtensionPath: fakePiExtension,
+        piAgentSourceDir: sourceAgentDir,
+      });
+
+      expect(config.product).toBe("caplets");
+      expect(config.config.options.exposure).toBe("direct_and_code_mode");
+      expect(config.extensionPaths).toContain(fakePiExtension);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes direct Caplets tools from the Pi eval fixture servers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-direct-test-"));
+    const sourceAgentDir = join(root, "source-agent");
+    const fakePiExtension = join(root, "pi-extension.js");
+    const previousPath = process.env.PATH;
+    try {
+      await mkdir(sourceAgentDir, { recursive: true });
+      await writeFile(fakePiExtension, "export default function extension() {}\n");
+      const config = await createPiEvalRunConfig({
+        rootDir: root,
+        mode: "caplets-direct",
+        piExtensionPath: fakePiExtension,
+        piAgentSourceDir: sourceAgentDir,
+      });
+      process.env.PATH = config.env.PATH;
+      const service = createNativeCapletsService({
+        mode: "local",
+        configPath: config.configPath,
+        watch: false,
+      });
+
+      try {
+        await expect(service.reload()).resolves.toBe(true);
+        const names = service.listTools().map((tool) => tool.toolName);
+        expect(names).toContain("caplets__issues__search");
+        expect(names).toContain("caplets__ci__get_run");
+        expect(names).toContain("caplets__docs__idempotency_guidance");
+        expect(names).toContain("caplets__api__get_endpoint");
+        expect(names).toContain("caplets__code-map__target_files");
+      } finally {
+        await service.close();
+      }
+    } finally {
+      process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts real tool executions and classifies direct, progressive, and Code Mode choices", () => {
+    const events = [
+      {
+        type: "before_provider_request",
+        model: "test-model",
+        requestPayloadBytes: 100,
+        requestPayloadEstimatedTokens: 25,
+        toolSurfaceBytes: 40,
+        toolSurfaceEstimatedTokens: 10,
+        messagePayloadBytes: 60,
+        messagePayloadEstimatedTokens: 15,
+      },
+      { type: "tool_execution_start", toolName: "caplets__issues__search" },
+      { type: "tool_execution_end", toolName: "caplets__issues__search" },
+      { type: "tool_execution_start", toolName: "caplets_code_mode" },
+      { type: "tool_execution_end", toolName: "caplets_code_mode" },
+      { type: "tool_execution_start", toolName: "caplets_docs" },
+      { type: "tool_execution_end", toolName: "caplets_docs" },
+      { type: "after_provider_response", usage: { input_tokens: 1, output_tokens: 2 } },
+    ];
+
+    const metrics = summarizePiEvalMetrics(events, [
+      { type: "tool_execution_start", toolName: "caplets_code_mode" },
+    ]);
+
+    expect(metrics.toolCallCount).toBe(3);
+    expect(metrics.toolCallEventSource).toBe("metrics-jsonl");
+    expect(metrics.toolEventCount).toBe(6);
+    expect(metrics.toolNames).toEqual([
+      "caplets__issues__search",
+      "caplets_code_mode",
+      "caplets_docs",
+    ]);
+    expect(metrics.hybridChoice).toBe("mixed-direct-progressive-code-mode");
+    expect(metrics.requestPayloadEstimatedTokens).toBe(25);
+    expect(metrics.toolSurfaceEstimatedTokens).toBe(10);
+    expect(metrics.nonSurfaceEstimatedTokens).toBe(15);
+    expect(metrics.requestTokenBuckets).toMatchObject({
+      requestCount: 1,
+      totals: {
+        requestPayloadEstimatedTokens: 25,
+        toolSurfaceEstimatedTokens: 10,
+        nonSurfaceEstimatedTokens: 15,
+        messagePayloadEstimatedTokens: 15,
+        attributedNonSurfaceEstimatedTokens: 15,
+        requestOverheadEstimatedTokens: 0,
+      },
+    });
+    expect(metrics.providerUsage).toEqual({
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 0,
+    });
+  });
+
+  it("uses Pi JSON message usage when instrumented provider usage is unavailable", () => {
+    const metrics = summarizePiEvalMetrics(
+      [],
+      [
+        {
+          type: "message_end",
+          message: {
+            role: "assistant",
+            usage: { input: 10, output: 3, cacheRead: 20, totalTokens: 33 },
+          },
+        },
+        {
+          type: "turn_end",
+          message: {
+            role: "assistant",
+            usage: { input: 10, output: 3, cacheRead: 20, totalTokens: 33 },
+          },
+        },
+      ],
+    );
+
+    expect(metrics.providerUsage).toEqual({
+      inputTokens: 10,
+      outputTokens: 3,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 0,
+      totalTokens: 33,
+    });
+  });
+
+  it("preserves per-request token buckets for prompt attribution", () => {
+    const metrics = summarizePiEvalMetrics([
+      {
+        type: "before_provider_request",
+        requestPayloadEstimatedTokens: 100,
+        toolSurfaceEstimatedTokens: 30,
+        messagePayloadEstimatedTokens: 50,
+        requestTokenBuckets: {
+          requestPayloadEstimatedTokens: 100,
+          toolSurfaceEstimatedTokens: 30,
+          nonSurfaceEstimatedTokens: 70,
+          messagePayloadEstimatedTokens: 50,
+          instructionEstimatedTokens: 10,
+          userMessageEstimatedTokens: 20,
+          assistantMessageEstimatedTokens: 15,
+          toolCallMessageEstimatedTokens: 2,
+          toolResultMessageEstimatedTokens: 13,
+          attributedNonSurfaceEstimatedTokens: 60,
+          requestOverheadEstimatedTokens: 10,
+        },
+      },
+      {
+        type: "before_provider_request",
+        requestPayloadEstimatedTokens: 80,
+        toolSurfaceEstimatedTokens: 20,
+        messagePayloadEstimatedTokens: 45,
+        requestTokenBuckets: {
+          requestPayloadEstimatedTokens: 80,
+          toolSurfaceEstimatedTokens: 20,
+          nonSurfaceEstimatedTokens: 60,
+          messagePayloadEstimatedTokens: 45,
+          instructionEstimatedTokens: 10,
+          userMessageEstimatedTokens: 15,
+          assistantMessageEstimatedTokens: 20,
+          toolResultMessageEstimatedTokens: 10,
+          attributedNonSurfaceEstimatedTokens: 55,
+          requestOverheadEstimatedTokens: 5,
+        },
+      },
+    ]);
+
+    expect(metrics.requestTokenBuckets).toMatchObject({
+      requestCount: 2,
+      totals: {
+        requestPayloadEstimatedTokens: 180,
+        toolSurfaceEstimatedTokens: 50,
+        nonSurfaceEstimatedTokens: 130,
+        messagePayloadEstimatedTokens: 95,
+        instructionEstimatedTokens: 20,
+        userMessageEstimatedTokens: 35,
+        assistantMessageEstimatedTokens: 35,
+        toolCallMessageEstimatedTokens: 2,
+        toolResultMessageEstimatedTokens: 23,
+        attributedNonSurfaceEstimatedTokens: 115,
+        requestOverheadEstimatedTokens: 15,
+      },
+      averagesPerRequest: {
+        requestPayloadEstimatedTokens: 90,
+        toolSurfaceEstimatedTokens: 25,
+        nonSurfaceEstimatedTokens: 65,
+      },
+    });
+    expect(metrics.requestTokenBuckets.sharesOfRequest.toolSurfaceEstimatedTokens).toBeCloseTo(
+      50 / 180,
+    );
+  });
+
+  it("instruments OpenAI Responses input payloads into request token buckets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-instrumentation-test-"));
+    const metricsPath = join(root, "metrics.jsonl");
+    const previousMetricsPath = process.env.CAPLETS_PI_EVAL_METRICS;
+    const handlers = new Map<string, (event: any) => void>();
+    try {
+      process.env.CAPLETS_PI_EVAL_METRICS = metricsPath;
+      piEvalInstrumentation({
+        on: (event: string, handler: (payload: any) => void) => handlers.set(event, handler),
+      });
+
+      handlers.get("before_provider_request")?.({
+        provider: "openai",
+        payload: {
+          model: "test-model",
+          instructions: "Use tools only when they provide external evidence.",
+          input: [
+            { role: "system", content: "System prompt with benchmark rules." },
+            { role: "user", content: "Investigate BENCH-451 and CI-9182." },
+            {
+              role: "assistant",
+              content: "I will inspect the incident and CI state.",
+            },
+            { type: "function_call", name: "issues_active_incidents", arguments: "{}" },
+            {
+              type: "function_call_output",
+              call_id: "call-1",
+              output: "BENCH-451 checkout retry hardening incident.",
+            },
+          ],
+          tools: [
+            {
+              type: "function",
+              name: "issues_active_incidents",
+              description: "List active incidents.",
+            },
+          ],
+        },
+      });
+      handlers.get("tool_result")?.({
+        toolName: "issues_active_incidents",
+        input: { query: "BENCH-451 must not be attributed from input" },
+        result: [{ id: "BENCH-451", title: "Checkout retry hardening" }],
+      });
+
+      const events = (await readFile(metricsPath, "utf8"))
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => JSON.parse(line));
+      const request = events.find((event) => event.type === "before_provider_request");
+      expect(request.messagePayloadBytes).toBeGreaterThan(2);
+      expect(request.requestTokenBuckets.messagePayloadEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.instructionEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.instructionMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.userMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.assistantMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.toolCallMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.toolResultMessageEstimatedTokens).toBeGreaterThan(0);
+      expect(request.requestTokenBuckets.requestOverheadEstimatedTokens).toBeGreaterThanOrEqual(0);
+
+      const toolResult = events.find((event) => event.type === "tool_result");
+      expect(toolResult.resultPreview).toContain("BENCH-451");
+      expect(toolResult.resultPreview).not.toContain("must not be attributed from input");
+    } finally {
+      if (previousMetricsPath == null) delete process.env.CAPLETS_PI_EVAL_METRICS;
+      else process.env.CAPLETS_PI_EVAL_METRICS = previousMetricsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify direct Caplets tools as progressive wrappers", () => {
+    expect(
+      summarizePiEvalMetrics([
+        { type: "tool_execution_start", toolName: "caplets__issues__active_incidents" },
+        { type: "tool_execution_start", toolName: "caplets__api__get_endpoint" },
+        { type: "tool_execution_start", toolName: "bash" },
+      ]).hybridChoice,
+    ).toBe("direct-only");
+
+    expect(
+      summarizePiEvalMetrics([
+        { type: "tool_execution_start", toolName: "caplets_issues" },
+        { type: "tool_execution_start", toolName: "caplets_api" },
+      ]).hybridChoice,
+    ).toBe("progressive-only");
+  });
+
+  it("classifies pi-mcp-adapter direct tools and flags measured proxy fallback", () => {
+    const directMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "executor_search" }],
+      [],
+      { mode: "executor-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(directMetrics.hybridChoice).toBe("executor-only");
+    expect(directMetrics.directToolsPrewarmFailure).toBe(false);
+
+    const vanillaMetrics = summarizePiEvalMetrics(
+      [
+        { type: "tool_execution_start", toolName: "issues_active_incidents" },
+        { type: "tool_execution_start", toolName: "api_get_endpoint" },
+      ],
+      [],
+      { mode: "vanilla-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(vanillaMetrics.hybridChoice).toBe("vanilla-mcp-only");
+    expect(vanillaMetrics.directToolsPrewarmFailure).toBe(false);
+
+    const vanillaRealMetrics = summarizePiEvalMetrics(
+      [
+        { type: "tool_execution_start", toolName: "playwright_browser_navigate" },
+        { type: "tool_execution_start", toolName: "filesystem_read_text_file" },
+      ],
+      [],
+      { mode: "vanilla-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(vanillaRealMetrics.hybridChoice).toBe("vanilla-mcp-only");
+    expect(vanillaRealMetrics.directToolsPrewarmFailure).toBe(false);
+
+    const proxyMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "mcp" }],
+      [],
+      { mode: "executor-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(proxyMetrics.hybridChoice).toBe("executor-proxy-fallback");
+    expect(proxyMetrics.directToolsPrewarmFailure).toBe(true);
+
+    const vanillaProxyMetrics = summarizePiEvalMetrics(
+      [{ type: "tool_execution_start", toolName: "mcp" }],
+      [],
+      { mode: "vanilla-mcp", adapterExposure: "direct-tools" },
+    );
+    expect(vanillaProxyMetrics.hybridChoice).toBe("vanilla-mcp-proxy-fallback");
+    expect(vanillaProxyMetrics.directToolsPrewarmFailure).toBe(true);
+  });
+
+  it("scores required checkout evidence from observed domain coverage", () => {
+    const coverage = computeDomainCoverage([
+      { text: "BENCH-451 from issues" },
+      { text: "CI-9182 failingTests" },
+      { text: "checkout retry runbook idempotency guidance" },
+      { text: "/checkout/authorize API" },
+    ]);
+
+    expect(coverage).toMatchObject({ issues: true, ci: true, docs: true, api: true });
+    expect(
+      requiredEvidenceScore(
+        { domainCoverage: coverage },
+        { id: "checkout-incident-retry-hardening" },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+  });
+
+  it("scores MCP tool-use evidence from parsed final-answer citations", () => {
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets__api_catalog__get_operation"] },
+        { expectedEvidence: { tools: ["api_catalog.get_operation"] } },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        { expectedEvidence: { tools: ["api_catalog.get_operation"] } },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: "api_catalog_get_operation(products.search) returned paginated=true.",
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
+            anyTools: [["api_catalog.get_operation", "api_catalog.compare_operations"]],
+          },
+        },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: {
+                  tool: "api_catalog.compare_operations",
+                  record: { id: "products.search", paginated: true },
+                },
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
+            anyTools: [["quality.list_checks", "quality.get_check_details"]],
+          },
+        },
+        {
+          semanticJudge: { success: true },
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: "quality checks showed contract-tests failed",
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_code_mode"] },
+        {
+          expectedEvidence: {
+            tools: ["incidents.get_incident"],
+            anyTools: [
+              ["incidents.search_incidents", "incidents.list_affected_accounts"],
+              ["customers.get_accounts", "customers.summarize_accounts"],
+            ],
+          },
+        },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              {
+                evidence: {
+                  server: "incidents",
+                  tools: ["get_incident", "list_affected_accounts"],
+                },
+              },
+              {
+                evidence: { server: "customers", tool: "summarize_accounts" },
+              },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["caplets_incidents", "caplets_observability", "caplets_docs"] },
+        {
+          expectedEvidence: {
+            anyTools: [
+              ["incidents.get", "incidents.search"],
+              ["observability.query", "observability.get"],
+              ["docs.get", "docs.search"],
+            ],
+          },
+        },
+        {
+          semanticJudge: { success: true },
+          parsedFinalAnswer: {
+            facts: [
+              { evidence: "incidents.affected id=INC-9071 returned status=active" },
+              { evidence: "observability.metrics returned OBS-payments-errors" },
+              { evidence: "docs.read id=RB-PAY-042 returned the runbook" },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({ required: true, success: true, missingDomains: [] });
+
+    expect(
+      requiredEvidenceScore(
+        { toolNames: ["playwright_browser_navigate", "filesystem_read_text_file"] },
+        { expectedEvidence: { anyTools: [["playwright"], ["filesystem", "git"]] } },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              { evidence: 'Playwright snapshot showed "Current recommendation: hold".' },
+              { evidence: "Filesystem read of docs/runbook.md showed the release gate." },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({
+      required: true,
+      success: true,
+      missingDomains: [],
+      coverage: { tools: { playwright: true, filesystem: true, git: false } },
+    });
+
+    expect(
+      requiredEvidenceScore(
+        {
+          toolNames: ["caplets__ast_grep__ast_grep_search", "caplets__filesystem__read_text_file"],
+        },
+        {
+          expectedEvidence: {
+            anyTools: [
+              ["ast_grep", "language_server"],
+              ["filesystem", "git"],
+            ],
+          },
+        },
+        {
+          parsedFinalAnswer: {
+            facts: [
+              { evidence: "ast-grep found retryBudgetPolicy references" },
+              { evidence: "Filesystem read of src/release-risk.ts confirmed classifyReleaseRisk" },
+            ],
+          },
+        },
+      ),
+    ).toMatchObject({
+      required: true,
+      success: true,
+      missingDomains: [],
+      coverage: {
+        tools: { ast_grep: true, language_server: false, filesystem: true, git: false },
+      },
+    });
+  });
+
+  it("counts domain coverage from tool results, not prompt or tool input text", () => {
+    const inputOnlyCoverage = computeDomainCoverage([
+      {
+        type: "tool_result",
+        toolName: "executor_execute",
+        input: {
+          code: "search for BENCH-451 CI-9182 runbook /checkout/authorize code-map",
+        },
+        resultPreview: "[]",
+      },
+    ]);
+    expect(inputOnlyCoverage).toMatchObject({
+      issues: false,
+      ci: false,
+      docs: false,
+      api: false,
+      codeMap: false,
+      requiredComplete: false,
+    });
+
+    const resultCoverage = computeDomainCoverage([
+      {
+        type: "tool_result",
+        toolName: "executor_execute",
+        resultPreview:
+          "BENCH-451 CI-9182 checkout retry runbook idempotency guidance /checkout/authorize targetFiles",
+      },
+    ]);
+    expect(resultCoverage).toMatchObject({
+      issues: true,
+      ci: true,
+      docs: true,
+      api: true,
+      codeMap: true,
+      requiredComplete: true,
+    });
+  });
+
+  it("extracts MCP tool-use final JSON from assistant text", () => {
+    const parsed = extractMcpToolUseFinalJson([
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: 'Done\n```json\n{"taskId":"x","decision":"ok","facts":[],"summary":"ok"}\n```',
+            },
+          ],
+        },
+      },
+    ]);
+    expect(parsed).toEqual({ taskId: "x", decision: "ok", facts: [], summary: "ok" });
+  });
+
+  it("scores MCP tool-use runs from expected facts and tool evidence", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        servers: ["incidents", "customers"],
+        tools: ["incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        activeIncidentId: "INC-2026-0610-2",
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+      },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "summary",
+        facts: [
+          {
+            key: "activeIncidentId",
+            value: "INC-2026-0610-2",
+            evidence: ["incidents.get_incident"],
+          },
+          { key: "affectedAccountCount", value: 4, evidence: ["customers.get_accounts"] },
+          {
+            key: "tierBreakdown",
+            value: { enterprise: 2, growth: 1, startup: 1 },
+            evidence: ["customers.get_accounts"],
+          },
+        ],
+        summary: "Four accounts affected.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents.get_incident" },
+        { type: "tool_execution_start", toolName: "customers.get_accounts" },
+      ],
+    };
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      processSuccess: true,
+      validation: { success: true },
+    });
+  });
+
+  it("scores MCP tool-use runs with nested facts and direct-tool name evidence", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        tools: ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        activeIncidentId: "INC-2026-0610-2",
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+        escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+      },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "completed",
+        facts: [
+          {
+            key: "activeIncident",
+            value: { id: "INC-2026-0610-2", status: "active" },
+            evidence: "incidents_search_incidents; incidents_get_incident",
+          },
+          {
+            key: "impactSummary",
+            value: {
+              affectedAccountCount: 4,
+              tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+              escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+            },
+            evidence: "customers_get_accounts",
+          },
+        ],
+        summary: "Four accounts affected.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents_search_incidents" },
+        { type: "tool_execution_start", toolName: "incidents_get_incident" },
+        { type: "tool_execution_start", toolName: "customers_get_accounts" },
+      ],
+    };
+
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      validation: { success: true },
+    });
+  });
+
+  it("scores MCP tool-use aggregate facts derived from returned records", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: {
+        tools: ["incidents.search_incidents", "incidents.get_incident", "customers.get_accounts"],
+      },
+      expectedFacts: {
+        affectedAccountCount: 4,
+        tierBreakdown: { enterprise: 2, growth: 1, startup: 1 },
+        regionBreakdown: { na: 2, eu: 1, apac: 1 },
+        escalationTargets: ["atlas-oncall", "beacon-csm", "crane-support"],
+      },
+      distractorFacts: [],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "customer_impact_summary_ready",
+        facts: [
+          {
+            key: "impactedCustomers",
+            value: [
+              {
+                id: "acct-atlas",
+                tier: "enterprise",
+                region: "na",
+                escalationTarget: "atlas-oncall",
+              },
+              {
+                id: "acct-beacon",
+                tier: "enterprise",
+                region: "eu",
+                escalationTarget: "beacon-csm",
+              },
+              {
+                id: "acct-crane",
+                tier: "growth",
+                region: "na",
+                escalationTarget: "crane-support",
+              },
+              {
+                id: "acct-delta",
+                tier: "startup",
+                region: "apac",
+                escalationTarget: "crane-support",
+              },
+            ],
+            evidence: "customers.get_accounts",
+          },
+        ],
+        summary: "Active incident affects four customers.",
+      }),
+      jsonEvents: [
+        { type: "tool_execution_start", toolName: "incidents_search_incidents" },
+        { type: "tool_execution_start", toolName: "incidents_get_incident" },
+        { type: "tool_execution_start", toolName: "customers_get_accounts" },
+      ],
+    };
+
+    await expect(scoreMcpToolUseRun({ task, agentResult })).resolves.toMatchObject({
+      success: true,
+      validation: { success: true },
+    });
+  });
+
+  it("fails MCP tool-use scoring when distractor facts appear", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: { tools: ["incidents.get_incident"] },
+      expectedFacts: { activeIncidentId: "INC-2026-0610-2" },
+      distractorFacts: ["INC-2026-0610-1"],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout:
+        '{"taskId":"incident-customer-impact-join","decision":"summary","facts":[{"key":"activeIncidentId","value":"INC-2026-0610-1","evidence":["incidents.get_incident"]}],"summary":"wrong incident"}',
+      jsonEvents: [{ type: "tool_execution_start", toolName: "incidents.get_incident" }],
+    };
+    const score = await scoreMcpToolUseRun({ task, agentResult });
+    expect(score.success).toBe(false);
+    expect(score.validation.stdout).toContain("distractor fact appeared: INC-2026-0610-1");
+  });
+
+  it("scores MCP tool-use semantic correctness with an injected judge", async () => {
+    const task = {
+      id: "incident-customer-impact-join",
+      expectedEvidence: { tools: ["incidents.search_incidents"] },
+      expectedFacts: { activeIncidentId: "INC-2026-0610-2" },
+      distractorFacts: [],
+    };
+    const agentResult = {
+      ...emptyProcessResult({ command: "pi-test", args: [] }),
+      stdout: JSON.stringify({
+        taskId: "incident-customer-impact-join",
+        decision: "summary",
+        facts: [
+          {
+            key: "activeIncident",
+            value: { id: "INC-2026-0610-2" },
+            evidence: "incidents.search_incidents",
+          },
+        ],
+        summary: "Correct but not exact schema.",
+      }),
+      jsonEvents: [{ type: "tool_execution_start", toolName: "caplets_code_mode" }],
+    };
+
+    await expect(
+      scoreMcpToolUseRun({
+        task,
+        agentResult,
+        semanticJudge: createDeterministicSemanticJudge({
+          success: true,
+          reason: "semantic judge accepted equivalent answer",
+          model: "openai-codex/gpt-5.4-mini",
+        }),
+      }),
+    ).resolves.toMatchObject({
+      success: true,
+      semanticJudge: {
+        success: true,
+        model: "openai-codex/gpt-5.4-mini",
+      },
+    });
+  });
+
+  it("refuses live Pi eval runs unless explicitly enabled", async () => {
+    await expect(
+      runPiEvalBenchmark({
+        options: { outputDir: join(tmpdir(), "caplets-pi-eval-refuse") },
+        env: {},
+        piDetector: async () => ({ available: true, command: "pi" }),
+      }),
+    ).rejects.toThrow(/CAPLETS_BENCH_LIVE=1/u);
+  });
+
+  it("requires Executor only when executor-mcp is selected", async () => {
+    await expect(
+      runPiEvalBenchmark({
+        options: {
+          outputDir: join(tmpdir(), "caplets-pi-eval-missing-executor"),
+          modes: ["executor-mcp"],
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        piDetector: async () => ({ available: true, command: "pi-test" }),
+        executorDetector: async () => ({
+          available: false,
+          command: "executor-test",
+          reason: "Executor CLI is missing.",
+        }),
+      }),
+    ).rejects.toThrow(/Executor CLI is missing/u);
+  });
+
+  it("does not require Executor for vanilla-mcp mode", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-vanilla-no-executor-test-"));
+    const fixtureWorkspace = join(root, "workspace-fixture");
+    const outputDir = join(root, "reports");
+    const tasksPath = join(root, "tasks.json");
+    let executorDetectorCalled = false;
+
+    try {
+      await mkdir(fixtureWorkspace, { recursive: true });
+      await writeFile(join(fixtureWorkspace, "package.json"), '{"type":"module"}\n');
+      await writeFile(tasksPath, JSON.stringify([{ id: "task-a", prompt: "Do task A." }], null, 2));
+
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          modes: ["vanilla-mcp"],
+          tasks: ["task-a"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        fixtureWorkspaceRoot: fixtureWorkspace,
+        tasksPath,
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        executorDetector: async () => {
+          executorDetectorCalled = true;
+          return { available: false, reason: "Executor is intentionally unavailable." };
+        },
+        runConfigFactory: async ({ mode }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          return {
+            runRoot,
+            mode,
+            product: "mcp",
+            adapterExposure: "direct-tools",
+            configPath: null,
+            adapterConfigPath: join(runRoot, "vanilla-mcp.json"),
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: join(runRoot, "prewarm-metrics.jsonl"),
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: join(runRoot, "prewarm-sessions"),
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [PI_MCP_ADAPTER_EXTENSION_SOURCE],
+            extraArgs: ["--mcp-config", join(runRoot, "vanilla-mcp.json")],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) =>
+          emptyProcessResult({ command: call.command, args: call.args }),
+      });
+
+      expect(executorDetectorCalled).toBe(false);
+      expect(result.report.results[0]).toMatchObject({ mode: "vanilla-mcp", product: "mcp" });
+      expect(result.report.results[0].prewarm).toMatchObject({ unmeasured: true });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails real-world large suite preflight when required env is missing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-real-mcp-env-test-"));
+    const outputDir = join(root, "reports");
+    try {
+      await expect(
+        runPiEvalBenchmark({
+          options: {
+            outputDir,
+            taskSuite: "mcp-real-world-large",
+            modes: ["caplets-progressive"],
+            tasks: ["real-release-risk-brief"],
+            runs: 1,
+            timeoutMs: 10_000,
+          },
+          env: { CAPLETS_BENCH_LIVE: "1", GH_TOKEN: "gh-test" },
+          piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+          processRunner: async (call: any) =>
+            emptyProcessResult({ command: call.command, args: call.args }),
+        }),
+      ).rejects.toThrow(
+        /Pi eval suite mcp-real-world-large requires environment variable: CONTEXT7_API_KEY/u,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs Pi eval mode/task/run jobs with bounded concurrency and stable result ordering", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-concurrency-test-"));
+    const fixtureWorkspace = join(root, "workspace-fixture");
+    const outputDir = join(root, "reports");
+    const tasksPath = join(root, "tasks.json");
+    const runRoots: string[] = [];
+    let activeAgentRuns = 0;
+    let maxActiveAgentRuns = 0;
+    const progress: string[] = [];
+
+    try {
+      await mkdir(fixtureWorkspace, { recursive: true });
+      await writeFile(join(fixtureWorkspace, "package.json"), '{"type":"module"}\n');
+      await writeFile(
+        tasksPath,
+        JSON.stringify(
+          [
+            { id: "task-a", prompt: "Do task A." },
+            { id: "task-b", prompt: "Do task B." },
+          ],
+          null,
+          2,
+        ),
+      );
+
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          modes: ["caplets-code-mode"],
+          tasks: ["task-a", "task-b"],
+          runs: 2,
+          concurrency: 2,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        fixtureWorkspaceRoot: fixtureWorkspace,
+        tasksPath,
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        runConfigFactory: async ({ mode }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          runRoots.push(runRoot);
+          return {
+            runRoot,
+            mode,
+            product: "caplets",
+            adapterExposure: null,
+            configPath: null,
+            adapterConfigPath: null,
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: null,
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: null,
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [],
+            extraArgs: [],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) => {
+          activeAgentRuns += 1;
+          maxActiveAgentRuns = Math.max(maxActiveAgentRuns, activeAgentRuns);
+          await sleep(30);
+          activeAgentRuns -= 1;
+          return emptyProcessResult({ command: call.command, args: call.args });
+        },
+        onProgress: (message: string) => progress.push(message),
+      });
+
+      expect(maxActiveAgentRuns).toBe(2);
+      expect(result.report.options.concurrency).toBe(2);
+      expect(result.report.results.map((row: any) => `${row.taskId}:${row.run}`)).toEqual([
+        "task-a:1",
+        "task-a:2",
+        "task-b:1",
+        "task-b:2",
+      ]);
+      expect(progress[0]).toContain("concurrency 2");
+      expect(await readFile(result.markdownPath, "utf8")).toContain("Concurrency: 2");
+      for (const runRoot of runRoots)
+        await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs MCP tool-use suite jobs without copying a coding workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-mcp-suite-run-test-"));
+    const outputDir = join(root, "reports");
+    const runRoots: string[] = [];
+    try {
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          taskSuite: "mcp-tool-use",
+          modes: ["caplets-code-mode"],
+          tasks: ["incident-customer-impact-join"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: { CAPLETS_BENCH_LIVE: "1" },
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        runConfigFactory: async ({ mode, fixtureServers }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          runRoots.push(runRoot);
+          expect(fixtureServers).toEqual([
+            "api_catalog",
+            "incidents",
+            "customers",
+            "deployments",
+            "quality",
+            "policies",
+          ]);
+          return {
+            runRoot,
+            mode,
+            product: "caplets",
+            adapterExposure: null,
+            configPath: null,
+            adapterConfigPath: null,
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: null,
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: null,
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [],
+            extraArgs: [],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) => ({
+          ...emptyProcessResult({ command: call.command, args: call.args }),
+          stdout: JSON.stringify({
+            taskId: "incident-customer-impact-join",
+            decision: "summary",
+            facts: [
+              {
+                key: "activeIncidentId",
+                value: "INC-2026-0610-2",
+                evidence: ["incidents.get_incident"],
+              },
+              { key: "affectedAccountCount", value: 4, evidence: ["customers.get_accounts"] },
+              {
+                key: "tierBreakdown",
+                value: { enterprise: 2, growth: 1, startup: 1 },
+                evidence: ["customers.get_accounts"],
+              },
+              {
+                key: "regionBreakdown",
+                value: { na: 2, eu: 1, apac: 1 },
+                evidence: ["customers.get_accounts"],
+              },
+              {
+                key: "escalationTargets",
+                value: ["atlas-oncall", "beacon-csm", "crane-support"],
+                evidence: ["customers.get_accounts"],
+              },
+            ],
+            summary: "Four accounts affected.",
+          }),
+          jsonEvents: [
+            ...Array.from({ length: 50 }, (_, index) => ({
+              type: "message",
+              index,
+              payload: "z".repeat(20_000),
+            })),
+            { type: "tool_execution_start", toolName: "incidents.search_incidents" },
+            { type: "tool_execution_start", toolName: "incidents.get_incident" },
+            { type: "tool_execution_start", toolName: "customers.get_accounts" },
+          ],
+        }),
+      });
+
+      expect(result.report.suite).toMatchObject({
+        id: "mcp-tool-use",
+        label: "MCP tool-use workflows",
+      });
+      expect(result.report.results[0].score.success).toBe(true);
+      expect(result.report.results[0].candidateWorkspace).toBeNull();
+      expect(result.report.results[0].agentResult.jsonEventsTotalCount).toBe(53);
+      expect(result.report.results[0].agentResult.jsonEvents).toHaveLength(25);
+      expect(await readFile(result.markdownPath, "utf8")).toContain(
+        "Suite: MCP tool-use workflows",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs real-world large suite jobs with prepared workspace and real MCP metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-real-world-suite-test-"));
+    const outputDir = join(root, "reports");
+    const runRoots: string[] = [];
+    const setupCommands: string[] = [];
+    const piCommandArgs: string[][] = [];
+    try {
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          taskSuite: "mcp-real-world-large",
+          modes: ["caplets-progressive"],
+          tasks: ["real-release-risk-brief"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: {
+          CAPLETS_BENCH_LIVE: "1",
+          GH_TOKEN: "gh-test",
+          CONTEXT7_API_KEY: "ctx-test",
+        },
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        runConfigFactory: async ({
+          mode,
+          realMcpServers,
+          candidateWorkspace,
+          disableBuiltinTools,
+        }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          runRoots.push(runRoot);
+          expect(mode).toBe("caplets-progressive");
+          expect(disableBuiltinTools).toBe(true);
+          expect(realMcpServers).toEqual([
+            "github",
+            "context7",
+            "deepwiki",
+            "git",
+            "filesystem",
+            "playwright",
+            "ast_grep",
+            "language_server",
+            "duckduckgo",
+          ]);
+          await expect(
+            access(join(candidateWorkspace, "src", "release-risk.ts")),
+          ).resolves.toBeUndefined();
+          return {
+            runRoot,
+            mode,
+            product: "caplets",
+            disableBuiltinTools,
+            adapterExposure: null,
+            configPath: null,
+            adapterConfigPath: null,
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: null,
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: null,
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [],
+            extraArgs: [],
+            env: { PI_CODING_AGENT_DIR: join(runRoot, "agent") },
+          };
+        },
+        processRunner: async (call: any) => {
+          if (call.command === "git") {
+            setupCommands.push([call.command, ...call.args].join(" "));
+            return emptyProcessResult({ command: call.command, args: call.args });
+          }
+          if (call.command === "pi-test") {
+            piCommandArgs.push(call.args);
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({
+              taskId: "real-release-risk-brief",
+              decision: "hold",
+              facts: [
+                {
+                  key: "decision",
+                  value: "hold",
+                  evidence: ["filesystem", "github"],
+                },
+              ],
+              summary: "Hold the release based on local gate and GitHub context.",
+            }),
+          };
+        },
+      });
+
+      expect(setupCommands).toEqual([
+        "git init",
+        "git config user.email benchmark@example.invalid",
+        "git config user.name Caplets Benchmark",
+        "git config commit.gpgsign false",
+        "git add .",
+        "git commit --no-gpg-sign -m seed benchmark workspace",
+      ]);
+      expect(result.report.suite).toMatchObject({
+        id: "mcp-real-world-large",
+        disablePiBuiltinTools: true,
+        realMcpServers: [
+          "github",
+          "context7",
+          "deepwiki",
+          "git",
+          "filesystem",
+          "playwright",
+          "ast_grep",
+          "language_server",
+          "duckduckgo",
+        ],
+        requiredEnv: ["GH_TOKEN", "CONTEXT7_API_KEY"],
+      });
+      expect(result.report.results[0]).toMatchObject({
+        mode: "caplets-progressive",
+        taskId: "real-release-risk-brief",
+        score: { success: true },
+      });
+      expect(piCommandArgs).toHaveLength(1);
+      expect(piCommandArgs[0]).toContain("--no-builtin-tools");
+      for (const runRoot of runRoots)
+        await expect(access(runRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs real-world large suite executor jobs by registering real MCP sources", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-pi-eval-real-world-executor-test-"));
+    const outputDir = join(root, "reports");
+    const setupPayloadNames: string[] = [];
+    try {
+      const result = await runPiEvalBenchmark({
+        options: {
+          outputDir,
+          taskSuite: "mcp-real-world-large",
+          modes: ["executor-mcp"],
+          tasks: ["browser-runbook-verification"],
+          runs: 1,
+          timeoutMs: 10_000,
+        },
+        env: {
+          CAPLETS_BENCH_LIVE: "1",
+          GH_TOKEN: "gh-test",
+          CONTEXT7_API_KEY: "ctx-test",
+        },
+        piDetector: async () => ({ available: true, command: "pi-test", version: "pi-test 1" }),
+        executorDetector: async () => ({
+          available: true,
+          command: "executor-test",
+          version: "executor-test 1",
+        }),
+        runConfigFactory: async ({ mode, realMcpServers, candidateWorkspace }: any) => {
+          const runRoot = await mkdtemp(join(root, "run-"));
+          const executorSourceMcpServers = createPiEvalRealMcpServers({
+            servers: realMcpServers,
+            workspaceRoot: candidateWorkspace,
+            env: { GH_TOKEN: "gh-test", CONTEXT7_API_KEY: "ctx-test" },
+            path: "/bin",
+          });
+          return {
+            runRoot,
+            mode,
+            product: "executor",
+            adapterExposure: "direct-tools",
+            configPath: null,
+            adapterConfigPath: join(runRoot, "executor-mcp.json"),
+            xdgConfigHome: null,
+            xdgCapletsConfigPath: null,
+            supportDir: runRoot,
+            fixtureServerPath: null,
+            executorSourceMcpServers,
+            metricsPath: join(runRoot, "metrics.jsonl"),
+            prewarmMetricsPath: join(runRoot, "prewarm-metrics.jsonl"),
+            sessionsDir: join(runRoot, "sessions"),
+            prewarmSessionsDir: join(runRoot, "prewarm-sessions"),
+            agentDir: join(runRoot, "agent"),
+            copiedPiAuthFiles: [],
+            extensionPaths: [PI_MCP_ADAPTER_EXTENSION_SOURCE],
+            extraArgs: ["--mcp-config", join(runRoot, "executor-mcp.json")],
+            env: {
+              PI_CODING_AGENT_DIR: join(runRoot, "agent"),
+              EXECUTOR_DATA_DIR: join(runRoot, "executor-data"),
+              EXECUTOR_SCOPE_DIR: join(runRoot, "executor-scope"),
+            },
+          };
+        },
+        processRunner: async (call: any) => {
+          if (call.command === "git") {
+            return emptyProcessResult({ command: call.command, args: call.args });
+          }
+          if (call.command === "executor") {
+            if (call.args[0] === "daemon") {
+              return {
+                ...emptyProcessResult({ command: call.command, args: call.args }),
+                stdout: "Daemon ready on http://localhost:55555\n",
+              };
+            }
+            if (call.args.includes("addServer")) {
+              const payload = JSON.parse(call.args[4]);
+              setupPayloadNames.push(payload.slug);
+              return {
+                ...emptyProcessResult({ command: call.command, args: call.args }),
+                stdout: JSON.stringify({ ok: true, data: { slug: payload.slug } }),
+              };
+            }
+            if (call.args.includes("create")) {
+              return {
+                ...emptyProcessResult({ command: call.command, args: call.args }),
+                stdout: JSON.stringify({ ok: true, data: { status: "created" } }),
+              };
+            }
+            return {
+              ...emptyProcessResult({ command: call.command, args: call.args }),
+              stdout: JSON.stringify({ ok: true, data: { tools: [{ name: "search" }] } }),
+            };
+          }
+          return {
+            ...emptyProcessResult({ command: call.command, args: call.args }),
+            stdout: JSON.stringify({
+              taskId: "browser-runbook-verification",
+              decision: "consistent",
+              facts: [
+                {
+                  key: "decision",
+                  value: "consistent",
+                  evidence: ["playwright", "filesystem"],
+                },
+              ],
+              summary: "The static page agrees with the runbook hold recommendation.",
+            }),
+          };
+        },
+      });
+
+      expect(setupPayloadNames).toEqual([
+        "github",
+        "context7",
+        "deepwiki",
+        "git",
+        "filesystem",
+        "playwright",
+        "ast_grep",
+        "language_server",
+        "duckduckgo",
+      ]);
+      expect(result.report.results[0]).toMatchObject({
+        mode: "executor-mcp",
+        product: "executor",
+        executor: {
+          setupSources: setupPayloadNames,
+        },
+        score: { success: true },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds persisted Pi eval agent output after scoring large MCP tool stacks", () => {
+    const compact = compactPiEvalAgentResult({
+      command: "pi-test",
+      args: ["--mode", "json"],
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      durationMs: 123,
+      envKeys: ["CAPLETS_BENCH_LIVE"],
+      stdout: "x".repeat(200_000),
+      stderr: "y".repeat(20_000),
+      stdoutBytes: 200_000,
+      stderrBytes: 20_000,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      jsonEvents: Array.from({ length: 200 }, (_, index) => ({
+        type: "message",
+        index,
+        payload: "z".repeat(20_000),
+      })),
+    });
+
+    expect(compact.stdout).toHaveLength(16_384);
+    expect(compact.stderr).toHaveLength(8_192);
+    expect(compact.stdoutTruncated).toBe(true);
+    expect(compact.stderrTruncated).toBe(true);
+    expect(compact.jsonEvents).toHaveLength(25);
+    expect(compact.jsonEventsTruncated).toBe(true);
+    expect(JSON.stringify(compact.jsonEvents).length).toBeLessThan(100_000);
+    expect(JSON.stringify(compact).length).toBeLessThan(1_000_000);
+  });
+
+  it("bounds persisted Pi eval score payloads after semantic scoring", () => {
+    const compact = compactPiEvalScore({
+      success: false,
+      validation: {
+        success: false,
+        stdout: "missing\n".repeat(50_000),
+        semanticJudge: {
+          success: false,
+          reason: "r".repeat(100_000),
+          missing: ["a".repeat(50_000)],
+          incorrect: ["b".repeat(50_000)],
+          args: ["--mode", "json", "-p", "prompt ".repeat(200_000)],
+        },
+      },
+      parsedFinalAnswer: {
+        taskId: "large",
+        facts: Array.from({ length: 200 }, (_, index) => ({
+          key: `fact-${index}`,
+          value: "x".repeat(20_000),
+          evidence: [{ server: "docs", tool: "get", payload: "y".repeat(20_000) }],
+        })),
+      },
+    });
+
+    expect(compact.validation.stdout.length).toBeLessThanOrEqual(16_384);
+    expect(compact.validation.semanticJudge.args[3]).toHaveLength(8_192);
+    expect(compact.parsedFinalAnswer.facts).toHaveLength(20);
+    expect(compact.parsedFinalAnswerTruncated).toBe(true);
+    expect(JSON.stringify(compact).length).toBeLessThan(1_000_000);
+  });
+
+  it("summarizes Pi eval reports with token, round-trip, and tool-call comparisons", () => {
+    const result = {
+      mode: "caplets-code-mode",
+      product: "caplets",
+      adapterExposure: null,
+      taskId: "checkout-incident-retry-hardening",
+      run: 1,
+      score: { success: true },
+      agentResult: { durationMs: 1000 },
+      metrics: {
+        providerRequestCount: 1,
+        requestPayloadEstimatedTokens: 100,
+        nonSurfaceEstimatedTokens: 40,
+        toolSurfaceEstimatedTokens: 60,
+        requestTokenBuckets: {
+          totals: {
+            requestPayloadEstimatedTokens: 100,
+            toolSurfaceEstimatedTokens: 60,
+            nonSurfaceEstimatedTokens: 40,
+            instructionEstimatedTokens: 4,
+            instructionMessageEstimatedTokens: 3,
+            userMessageEstimatedTokens: 10,
+            assistantMessageEstimatedTokens: 8,
+            toolCallMessageEstimatedTokens: 2,
+            toolResultMessageEstimatedTokens: 12,
+            otherMessageEstimatedTokens: 1,
+            requestOverheadEstimatedTokens: 0,
+          },
+        },
+        toolCallCount: 1,
+        toolEventCount: 2,
+        hybridChoice: "code-mode-only",
+        domainCoverage: { issues: true, ci: true, docs: true, api: true, codeMap: false },
+        providerUsage: { totalTokens: 120 },
+      },
+    };
+    const executorResult = {
+      ...result,
+      mode: "executor-mcp",
+      product: "executor",
+      adapterExposure: "direct-tools",
+      score: { success: false },
+      metrics: {
+        ...result.metrics,
+        requestPayloadEstimatedTokens: 200,
+        providerRequestCount: 2,
+        toolCallCount: 2,
+        toolEventCount: 4,
+        hybridChoice: "executor-only",
+        providerUsage: { totalTokens: 180, outputTokens: 12 },
+      },
+    };
+    const vanillaResult = {
+      ...result,
+      mode: "vanilla-mcp",
+      product: "mcp",
+      adapterExposure: "direct-tools",
+      metrics: {
+        ...result.metrics,
+        requestPayloadEstimatedTokens: 300,
+        providerRequestCount: 1,
+        toolCallCount: 3,
+        toolEventCount: 6,
+        hybridChoice: "vanilla-mcp-only",
+        providerUsage: { totalTokens: 240, outputTokens: 20 },
+      },
+    };
+    const summary = summarizePiEvalResults([result, executorResult, vanillaResult]);
+    const markdown = renderPiEvalMarkdownReport({
+      suite: { id: "mcp-tool-use", label: "MCP tool-use workflows" },
+      completedAt: "2026-06-09T00:00:00.000Z",
+      options: { model: "test-model", runs: 1, timeoutMs: 1000, concurrency: 2 },
+      summary,
+      results: [result, executorResult, vanillaResult],
+    });
+
+    expect(summary.byMode).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: "caplets-code-mode",
+          product: "caplets",
+          adapterExposure: null,
+          passed: 1,
+          total: 1,
+          averageProviderRequestCount: 1,
+          averageEstimatedOutputTokens: 0,
+          averageRequestPlusOutputEstimatedTokens: 100,
+          passedOnly: expect.objectContaining({
+            averageRequestPlusOutputEstimatedTokens: 100,
+            averageProviderTokens: 120,
+          }),
+          averageToolCalls: 1,
+          averageRequestTokenBuckets: expect.objectContaining({
+            requestPayloadEstimatedTokens: 100,
+            toolSurfaceEstimatedTokens: 60,
+            toolResultMessageEstimatedTokens: 12,
+          }),
+          hybridChoice: { "code-mode-only": 1 },
+        }),
+        expect.objectContaining({
+          mode: "executor-mcp",
+          product: "executor",
+          adapterExposure: "direct-tools",
+          passRate: 0,
+          averageRequestPlusOutputEstimatedTokens: 212,
+          passedOnly: null,
+          averageToolCalls: 2,
+          hybridChoice: { "executor-only": 1 },
+        }),
+      ]),
+    );
+    expect(summary.comparisons.map((comparison: any) => comparison.label)).toContain(
+      "executor-mcp vs caplets-code-mode",
+    );
+    const directCodeResult = {
+      ...result,
+      mode: "caplets-direct-code-mode",
+      metrics: {
+        ...result.metrics,
+        requestPayloadEstimatedTokens: 90,
+        providerUsage: { totalTokens: 110, outputTokens: 5 },
+        hybridChoice: "direct-and-code-mode",
+      },
+    };
+    expect(
+      summarizePiEvalResults([result, directCodeResult]).comparisons.map(
+        (comparison: any) => comparison.label,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "caplets-direct-code-mode vs caplets-code-mode",
+        "caplets-code-mode vs caplets-direct-code-mode",
+      ]),
+    );
+    expect(summary.comparisons).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: "caplets-code-mode vs vanilla-mcp",
+          requestPlusOutputTokenReduction: expect.any(Number),
+          passRateComparable: true,
+          publishableTokenEfficiencyClaim: true,
+        }),
+        expect.objectContaining({
+          label: "executor-mcp vs caplets-code-mode",
+          passRateComparable: false,
+          publishableTokenEfficiencyClaim: false,
+        }),
+      ]),
+    );
+    expect(markdown).toContain("# Pi Live Tool Gateway Eval");
+    expect(markdown).toContain("Concurrency: 2");
+    expect(markdown).toContain("Suite: MCP tool-use workflows");
+    expect(markdown).toContain("| Mode | Product | Adapter exposure |");
+    expect(markdown).toContain("Avg request+output estimated tokens");
+    expect(markdown).toContain("Passed-only request+output estimated tokens");
+    expect(markdown).toContain("## Token Bucket Breakdown");
+    expect(markdown).toContain("| Mode | Total | Tool surface | Non-surface |");
+    expect(markdown).toContain("## Publishability Gates");
+    expect(markdown).toContain("Pass-rate gate");
+    expect(markdown).toContain("request+output tokens");
+    expect(markdown).toContain("Avg LLM round trips");
+    expect(markdown).toContain("Avg provider tokens");
+    expect(markdown).toContain("Avg non-surface estimated tokens");
+    expect(markdown).toContain("provider tokens");
+    expect(markdown).toContain("## Validator Summary");
+    expect(markdown).toContain("caplets-code-mode");
+    expect(markdown).toContain("executor-mcp");
+  });
+});

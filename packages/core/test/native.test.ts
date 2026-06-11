@@ -222,6 +222,39 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("provides code-only Caplets as handles inside Code Mode", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+    try {
+      const result = await service.execute("code_mode", {
+        code: `
+          const card = await caplets.status.inspect();
+          return { id: caplets.status.id, hasStatus: JSON.stringify(card).includes("Status HTTP") };
+        `,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: { id: "status", hasStatus: true },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("returns structured errors for unknown Caplets", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -250,7 +283,8 @@ describe("native Caplets service", () => {
 
     expect(guidance).toContain("caplets_linear_api__v2");
     expect(guidance).toContain("Flow: inspect when the domain is unfamiliar");
-    expect(guidance).toContain("exact inputSchema property names");
+    expect(guidance).toContain("callTemplate");
+    expect(guidance).toContain("reserve describe_tool");
     expect(guidance).toContain("Do not guess downstream tool names");
     expect(guidance).toContain("Do not infer input/output schemas");
     expect(guidance).toContain("avoid broad provider searches");
@@ -272,7 +306,7 @@ describe("native Caplets service", () => {
     }).join("\n");
 
     expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
-    expect(guidance).toContain("Use describe_tool before call_tool when args matter");
+    expect(guidance).toContain("Use tools/search_tools callTemplate/arg hints for simple calls");
     expect(guidance).toContain("call_tool.args must match inputSchema exactly");
     expect(guidance).toContain("Do not guess tool names or schemas");
     expect(guidance).not.toContain("For unfamiliar tasks, discover safely");

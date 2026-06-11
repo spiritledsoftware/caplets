@@ -220,7 +220,37 @@ Run the OpenCode live matrix:
 CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode
 \`\`\`
 
-Both live commands accept benchmark runner options after \`--\`, for example \`--model <provider/model>\`, \`--runs 3\`, \`--tasks discount-policy,retry-policy\`, and \`--timeout-ms 300000\`.
+Run the Pi tool-gateway eval that compares Caplets modes against Executor:
+
+\`\`\`sh
+npm install -g executor
+pnpm build
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval:competitors
+\`\`\`
+
+The competitor script runs \`caplets-code-mode\`, \`caplets-progressive-code-mode\`,
+\`vanilla-mcp\`, and \`executor-mcp\`. The \`vanilla-mcp\` mode exposes the fixture
+MCP servers directly through \`npm:pi-mcp-adapter\` direct tools, without Caplets or
+Executor. The \`executor-mcp\` mode exposes Executor to Pi through
+\`npm:pi-mcp-adapter\` direct tools (\`MCP_DIRECT_TOOLS=executor\`) and writes all
+Executor, Pi, and adapter state under the per-run artifact directory with isolated
+\`EXECUTOR_DATA_DIR\`, \`EXECUTOR_SCOPE_DIR\`, \`PI_CODING_AGENT_DIR\`, and \`HOME\`. Both
+MCP-adapter modes write Pi and adapter state under the per-run artifact directory so
+the benchmark does not read or mutate the user's real MCP adapter configuration.
+
+All live commands accept benchmark runner options after \`--\`, for example \`--model <provider/model>\`, \`--runs 3\`, \`--tasks discount-policy,retry-policy\`, and \`--timeout-ms 300000\`.
+The Pi eval runner also accepts \`--executor-command <command>\` and
+\`--skip-missing-competitors\`; for a single vanilla MCP smoke run use:
+
+\`\`\`sh
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval -- --mode vanilla-mcp --tasks checkout-incident-retry-hardening --runs 1 --timeout-ms 600000 --preserve-artifacts
+\`\`\`
+
+For a single Executor smoke run use:
+
+\`\`\`sh
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval -- --mode executor-mcp --tasks checkout-incident-retry-hardening --runs 1 --timeout-ms 600000 --preserve-artifacts
+\`\`\`
 
 ## Limitations And Residual Risks
 
@@ -229,6 +259,7 @@ Both live commands accept benchmark runner options after \`--\`, for example \`-
 - The fixture uses mock MCP servers, so real downstream servers may have different schemas, descriptions, latency, and error behavior.
 - Caplets adds scoped discovery calls before invoking a downstream tool; the benchmark reports this expected path length but does not claim it is always faster wall-clock.
 - Live benchmark results are model-dependent and should be compared only with the recorded agent, model, command, and run metadata.
+- Vanilla MCP and Executor competitor results depend on \`pi-mcp-adapter\` direct-tool metadata prewarm; reports flag measured runs that fall back to the proxy \`mcp\` tool. Executor results additionally depend on the locally installed \`executor\` CLI version and record the Executor command/version.
 `;
 }
 

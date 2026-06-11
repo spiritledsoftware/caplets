@@ -36,6 +36,8 @@ export type CompactTool = {
   supportsFields: boolean;
   requiredArgs?: string[];
   acceptedArgs?: string[];
+  argsTemplate?: Record<string, unknown>;
+  callTemplate?: { operation: "call_tool"; name: string; args: Record<string, unknown> };
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
 };
@@ -778,17 +780,81 @@ export function compactToolSafetyHints(
 
 export function compactToolSchemaHints(
   tool: Tool,
-): Pick<CompactTool, "requiredArgs" | "acceptedArgs"> {
+): Pick<CompactTool, "requiredArgs" | "acceptedArgs" | "argsTemplate" | "callTemplate"> {
   const schema = isRecord(tool.inputSchema) ? tool.inputSchema : undefined;
   const properties = isRecord(schema?.properties) ? schema.properties : {};
   const acceptedArgs = Object.keys(properties).sort();
   const requiredArgs = Array.isArray(schema?.required)
     ? schema.required.filter((value): value is string => typeof value === "string").sort()
     : [];
+  const argsTemplate = compactArgsTemplate(properties, requiredArgs, acceptedArgs);
   return {
     ...(requiredArgs.length > 0 ? { requiredArgs } : {}),
     ...(acceptedArgs.length > 0 ? { acceptedArgs } : {}),
+    ...(argsTemplate ? { argsTemplate } : {}),
+    ...callTemplateForTool(tool.name, argsTemplate, requiredArgs),
   };
+}
+
+function callTemplateForTool(
+  name: string,
+  argsTemplate: Record<string, unknown> | undefined,
+  requiredArgs: string[],
+): Pick<CompactTool, "callTemplate"> | undefined {
+  if (requiredArgs.length > 0 && !argsTemplate) return undefined;
+  return {
+    callTemplate: {
+      operation: "call_tool",
+      name,
+      args: argsTemplate ?? {},
+    },
+  };
+}
+
+function compactArgsTemplate(
+  properties: Record<string, unknown>,
+  requiredArgs: string[],
+  acceptedArgs: string[],
+): Record<string, unknown> | undefined {
+  const templateArgs = requiredArgs.length > 0 ? requiredArgs : acceptedArgs;
+  if (templateArgs.length === 0 || templateArgs.length > 4) return undefined;
+  if (requiredArgs.length === 0 && acceptedArgs.length > 3) return undefined;
+  const entries = templateArgs.flatMap((name) => {
+    const property = isRecord(properties[name]) ? properties[name] : undefined;
+    const value = placeholderForSchema(property);
+    return value === undefined ? [] : ([[name, value]] as const);
+  });
+  return entries.length === templateArgs.length ? Object.fromEntries(entries) : undefined;
+}
+
+function placeholderForSchema(schema: Record<string, unknown> | undefined): unknown {
+  const enumValues = Array.isArray(schema?.enum) ? schema.enum : [];
+  const enumValue = enumValues.find(
+    (value) =>
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      value === null,
+  );
+  if (enumValue !== undefined) return enumValue;
+  const type = Array.isArray(schema?.type) ? schema.type[0] : schema?.type;
+  switch (type) {
+    case "string":
+      return "";
+    case "integer":
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+    case "object":
+      return {};
+    case "null":
+      return null;
+    default:
+      return undefined;
+  }
 }
 
 export function compactToolSelectionHints(

@@ -1,0 +1,82 @@
+[
+  {
+    "id": "real-release-risk-brief",
+    "title": "Release risk brief from a large real MCP stack",
+    "prompt": "Use configured external context to decide whether the checkout release should ship or hold. Combine local code, local release docs, repository-state evidence, and public upstream project context. Return one JSON object with keys taskId, decision, facts, summary.",
+    "task_description": "Decide whether the checkout release should ship or hold. Combine local code evidence, release documentation, repository state or history, and public upstream project context. Do not edit files.",
+    "fuzzy_description": "The correct answer should notice the local runbook hold gate and the enabled checkout.retryBudget.v2 flag below 50 percent rollout. GitHub evidence can be any relevant repository, issue, pull request, or workflow context used to support release-risk reasoning.",
+    "expectedFacts": {
+      "decision": "hold"
+    },
+    "expectedEvidence": {
+      "anyTools": [["filesystem", "git", "ast_grep", "language_server"], ["github"]]
+    }
+  },
+  {
+    "id": "dependency-docs-migration-check",
+    "title": "Dependency documentation migration check",
+    "prompt": "Use configured external context to assess whether the workspace's TypeScript NodeNext setup needs review before module-resolution migration work. Combine local package/config evidence, current authoritative documentation, and broader web documentation only if needed. Return one JSON object with keys taskId, decision, facts, summary. Set decision to review_required when migration work should be reviewed against local config and current docs before proceeding; set decision to low_migration_risk only when no review-worthy mismatch or migration risk is found.",
+    "task_description": "Assess whether the workspace's TypeScript NodeNext setup has migration risk. Inspect local package/config evidence and compare it with current authoritative documentation; use broader web documentation only if the primary docs are insufficient. Set decision to review_required when migration work should be reviewed against local config and current docs before proceeding; set decision to low_migration_risk only when no review-worthy mismatch or migration risk is found. Do not edit files.",
+    "decisionOptions": ["review_required", "low_migration_risk"],
+    "fuzzy_description": "The answer should cite local NodeNext/strict settings and documentation-backed reasoning about TypeScript module resolution or migration risk.",
+    "expectedFacts": {
+      "decision": "review_required"
+    },
+    "expectedEvidence": {
+      "anyTools": [["filesystem", "git"], ["context7"], ["duckduckgo", "context7"]]
+    }
+  },
+  {
+    "id": "code-navigation-impact-brief",
+    "title": "Code navigation impact brief",
+    "prompt": "Use configured external context to explain what code would be affected by changing checkout.retryBudget.v2 rollout behavior. Use structural or semantic code navigation rather than only opening obvious files, and anchor the answer in local source evidence. Return one JSON object with keys taskId, decision, facts, summary.",
+    "task_description": "Explain what code would be affected by changing checkout.retryBudget.v2 rollout behavior. Use structural or semantic code navigation rather than only opening obvious files, and anchor the answer in local source evidence. Do not edit files.",
+    "fuzzy_description": "The answer should identify src/feature-flags.ts and src/release-risk.ts as affected files and explain that riskyEnabledFlags feeds classifyReleaseRisk.",
+    "expectedFacts": {
+      "affectedFiles": ["src/feature-flags.ts", "src/release-risk.ts"]
+    },
+    "expectedEvidence": {
+      "anyTools": [
+        ["ast_grep", "language_server"],
+        ["filesystem", "git"]
+      ]
+    }
+  },
+  {
+    "id": "browser-runbook-verification",
+    "title": "Browser runbook verification",
+    "prompt": "Use configured external context to verify whether the static checkout status page agrees with the release runbook. Combine rendered-page evidence with local release documentation and repository-state evidence. Return one JSON object with keys taskId, decision, facts, summary.",
+    "task_description": "Verify whether web/index.html agrees with docs/runbook.md. Combine rendered-page evidence with local release documentation and repository-state evidence. Do not edit files.",
+    "fuzzy_description": "The answer should report that the page recommendation is hold and that this agrees with the runbook release gate.",
+    "expectedFacts": {
+      "decision": "consistent"
+    },
+    "expectedEvidence": {
+      "anyTools": [["playwright"], ["filesystem", "git"]]
+    }
+  },
+  {
+    "id": "public-repo-architecture-scout",
+    "title": "Public repo architecture scout",
+    "prompt": "Use configured external context to summarize how the upstream Model Context Protocol server ecosystem relates to this benchmark stack. Combine public repository or documentation context with local benchmark workspace evidence, and explicitly cover these benchmark stack categories: repository hosting, documentation, local repository, browser automation, code search, language intelligence, and web search. Return one JSON object with keys taskId, decision, facts, summary.",
+    "task_description": "Summarize how the upstream Model Context Protocol server ecosystem relates to this benchmark stack. Combine public repository or documentation context with local benchmark workspace evidence, and explicitly cover these benchmark stack categories: repository hosting, documentation, local repository, browser automation, code search, language intelligence, and web search. Do not edit files.",
+    "fuzzy_description": "The answer should connect the benchmark's server choices to real MCP server categories such as repository hosting, documentation, local git/filesystem, browser automation, code search, language intelligence, and web search.",
+    "expectedFacts": {
+      "serverCategories": [
+        "repository hosting",
+        "documentation",
+        "local repository",
+        "browser automation",
+        "code search",
+        "language intelligence",
+        "web search"
+      ]
+    },
+    "expectedEvidence": {
+      "anyTools": [
+        ["deepwiki", "github"],
+        ["filesystem", "git"]
+      ]
+    }
+  }
+]

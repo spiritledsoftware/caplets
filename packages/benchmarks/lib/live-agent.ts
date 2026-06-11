@@ -94,6 +94,7 @@ export async function runProcess({
   const redactions = secretRedactions(childEnv);
   const stdoutCapture = createOutputCapture(outputMaxBytes, redactions);
   const stderrCapture = createOutputCapture(outputMaxBytes, redactions);
+  const stdoutJsonEvents = createJsonEventCapture();
   let timedOut = false;
   let timeout: NodeJS.Timeout | undefined;
   let graceTimeout: NodeJS.Timeout | undefined;
@@ -121,6 +122,7 @@ export async function runProcess({
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => {
       stdoutCapture.append(chunk);
+      stdoutJsonEvents.append(chunk);
     });
     child.stderr?.on("data", (chunk) => {
       stderrCapture.append(chunk);
@@ -168,7 +170,7 @@ export async function runProcess({
         signal,
         timedOut,
         durationMs,
-        jsonEvents: parseJsonEvents(stdout),
+        jsonEvents: stdoutJsonEvents.value(stdout),
       });
     });
   });
@@ -293,6 +295,40 @@ function createOutputCapture(maxBytes: number, redactions: string[]) {
       return sanitizeCappedOutput(truncatedOutput, redactions, limit);
     },
   };
+}
+
+function createJsonEventCapture() {
+  const events: unknown[] = [];
+  let buffered = "";
+  return {
+    append(chunk: unknown) {
+      buffered += String(chunk);
+      const lines = buffered.split(/\r?\n/u);
+      buffered = lines.pop() ?? "";
+      for (const line of lines) {
+        appendParsedJsonLine(events, line);
+      }
+    },
+    value(cappedStdout: string) {
+      if (buffered.trim()) {
+        appendParsedJsonLine(events, buffered);
+        buffered = "";
+      }
+      return events.length ? events : parseJsonEvents(cappedStdout);
+    },
+  };
+}
+
+function appendParsedJsonLine(events: unknown[], line: string): void {
+  const candidate = line.trim();
+  if (!candidate) return;
+  const parsed = parseJson(candidate);
+  if (!parsed.ok) return;
+  if (Array.isArray(parsed.value)) {
+    events.push(...parsed.value);
+    return;
+  }
+  events.push(parsed.value);
 }
 
 function sanitizeCappedOutput(value: string, redactions: string[], limit: number): string {

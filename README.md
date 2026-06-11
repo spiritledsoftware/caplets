@@ -320,30 +320,46 @@ A backend enters agent context as a focused card with source, status, and next a
 
 ## Benchmark
 
-In Caplets' reproducible coding-agent benchmark, the same three mock MCP servers are
+Caplets reduces the tool surface an agent has to carry while preserving access to the
+same downstream operations.
+
+In Caplets' deterministic coding-agent benchmark, the same seven mock MCP servers are
 exposed two ways: direct flat MCP aggregation versus Caplets progressive disclosure.
 
 | Initial Agent Surface     |   Direct Flat MCP |      Caplets |     Reduction |
 | ------------------------- | ----------------: | -----------: | ------------: |
-| Visible tools             |               106 |            3 |   97.2% fewer |
-| Serialized MCP payload    |      32,090 bytes |  8,442 bytes | 73.7% smaller |
-| Approx. context surface   |      8,023 tokens | 2,111 tokens |   5,912 fewer |
+| Visible tools             |               215 |            7 |   96.7% fewer |
+| Serialized MCP payload    |      63,250 bytes | 12,720 bytes | 79.9% smaller |
+| Approx. context surface   |     15,813 tokens | 3,180 tokens |  12,633 fewer |
 | Top-level name collisions | 3 duplicate names |            0 |    eliminated |
 
 Caplets does not remove access to downstream tools. It places them behind scoped
 discovery operations, so the agent sees less up front while retaining access to the same
 capabilities when needed.
 
-A local OpenCode live benchmark also completed the full benchmark matrix successfully:
+In a live Pi eval on a real-world large MCP stack, Caplets Code Mode completed the same
+10/10 tasks as direct MCP and Executor while using far fewer total tokens. The stack used
+GitHub, Context7, DeepWiki, Git, filesystem, Playwright, ast-grep, language-server, and
+web-search MCP servers. The run used `openai-codex/gpt-5.5` as both the main model and
+judge model, with 2 runs per task per mode.
 
-| Agent                          | Mode            | Tasks Passed |
-| ------------------------------ | --------------- | -----------: |
-| OpenCode `openai/gpt-5.5-fast` | Direct flat MCP |          2/2 |
-| OpenCode `openai/gpt-5.5-fast` | Caplets         |          2/2 |
+| Mode                            | Tasks Passed | Avg request + output tokens | Avg provider tokens |
+| ------------------------------- | -----------: | --------------------------: | ------------------: |
+| Caplets Code Mode               |        10/10 |                     236,803 |             126,877 |
+| Caplets progressive + Code Mode |        10/10 |                     422,861 |             264,624 |
+| Caplets progressive             |        10/10 |                     461,171 |             294,217 |
+| Executor MCP                    |        10/10 |                     675,842 |             369,992 |
+| Direct vanilla MCP              |        10/10 |                     846,048 |             544,121 |
 
-Live results are intentionally not committed as product claims because they depend on
-local agent CLIs, credentials, models, providers, and agent behavior. The deterministic
-surface benchmark is the reproducible claim.
+Against the same pass-rate baseline, Caplets Code Mode used 72.0% fewer request+output
+tokens than direct vanilla MCP and 65.0% fewer than Executor MCP. Caplets progressive
+disclosure also beat direct vanilla MCP by 45.5% and Executor MCP by 31.8% on
+request+output tokens.
+
+Live results depend on local agent CLIs, credentials, model/provider behavior, and the
+date of the run. The deterministic surface benchmark remains the reproducible,
+credential-free claim; the live eval demonstrates the same trend in a realistic large
+MCP harness.
 
 See [`docs/benchmarks/coding-agent.md`](docs/benchmarks/coding-agent.md) for methodology,
 limitations, and reproduction commands.
@@ -352,7 +368,7 @@ limitations, and reproduction commands.
 pnpm benchmark
 pnpm benchmark:check
 pnpm build
-CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode -- --model openai/gpt-5.5-fast
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval -- --task-suite mcp-real-world-large --mode caplets-code-mode,caplets-progressive,vanilla-mcp,executor-mcp --model openai-codex/gpt-5.5 --runs 2
 ```
 
 ## Design Model

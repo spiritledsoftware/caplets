@@ -306,7 +306,9 @@ function toolPageFromResult(result: unknown): Page<unknown> {
   return {
     ...page,
     items: page.items
-      .map((item) => (isPlainObject(item) ? compactToolSummary(item) : undefined))
+      .map((item) =>
+        isPlainObject(item) ? compactToolSummary(item, { descriptionLimit: 160 }) : undefined,
+      )
       .filter((item): item is Record<string, unknown> => item !== undefined),
   };
 }
@@ -353,10 +355,18 @@ function toolTypeBaseName(toolName: string): string {
   return base || "Tool";
 }
 
-function compactToolSummary(tool: Record<string, unknown>): Record<string, unknown> {
+function compactToolSummary(
+  tool: Record<string, unknown>,
+  options: { descriptionLimit?: number } = {},
+): Record<string, unknown> {
   const compact: Record<string, unknown> = {};
   for (const key of ["name", "title", "description", "useWhen", "avoidWhen"] as const) {
-    if (tool[key] !== undefined) compact[key] = tool[key];
+    if (tool[key] !== undefined) {
+      compact[key] =
+        key === "description" && typeof tool[key] === "string" && options.descriptionLimit
+          ? compactCodeModeSummaryText(tool[key], options.descriptionLimit)
+          : tool[key];
+    }
   }
   const annotations = isPlainObject(tool.annotations) ? tool.annotations : {};
   const readOnlyHint = tool.readOnlyHint ?? annotations.readOnlyHint;
@@ -364,6 +374,14 @@ function compactToolSummary(tool: Record<string, unknown>): Record<string, unkno
   if (typeof readOnlyHint === "boolean") compact.readOnlyHint = readOnlyHint;
   if (typeof destructiveHint === "boolean") compact.destructiveHint = destructiveHint;
   return compact;
+}
+
+function compactCodeModeSummaryText(value: string, maxLength: number): string {
+  const cleaned = value.replace(/\s+/gu, " ").trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  const sentenceEnd = cleaned.lastIndexOf(".", maxLength);
+  if (sentenceEnd >= Math.floor(maxLength / 3)) return cleaned.slice(0, sentenceEnd + 1);
+  return `${cleaned.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 function schemaToTypeScript(schema: unknown, fallbackName: string): string {

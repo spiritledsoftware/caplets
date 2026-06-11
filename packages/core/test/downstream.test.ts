@@ -40,13 +40,15 @@ describe("compact schema fingerprints", () => {
       hasOutputSchema: false,
       requiredArgs: ["value"],
       acceptedArgs: ["count", "value"],
+      argsTemplate: { value: "" },
+      callTemplate: { operation: "call_tool", name: "first", args: { value: "" } },
     });
     expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
     expect(first).not.toHaveProperty("inputSchemaHash");
     expect(second).not.toHaveProperty("outputSchemaHash");
   });
 
-  it("does not include schema hashes in compact metadata", () => {
+  it("includes compact optional argument templates without schema hashes", () => {
     const config = parseConfig({
       mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
     });
@@ -60,8 +62,39 @@ describe("compact schema fingerprints", () => {
 
     expect(compact).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
     expect(compact).toMatchObject({ acceptedArgs: ["a", "b"] });
+    expect(compact).toMatchObject({
+      argsTemplate: { a: "", b: 0 },
+      callTemplate: { operation: "call_tool", name: "first", args: { a: "", b: 0 } },
+    });
     expect(compact).not.toHaveProperty("inputSchemaHash");
     expect(compact).not.toHaveProperty("outputSchemaHash");
+  });
+
+  it("omits optional argument templates when they would be too large", () => {
+    const config = parseConfig({
+      mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
+    });
+    const server = config.mcpServers.alpha!;
+    const manager = new DownstreamManager(new ServerRegistry(config));
+
+    const compact = manager.compact(server, {
+      name: "first",
+      inputSchema: {
+        type: "object",
+        properties: {
+          a: { type: "string" },
+          b: { type: "number" },
+          c: { type: "boolean" },
+          d: { type: "array" },
+        },
+      },
+    } as Tool);
+
+    expect(compact).toMatchObject({ acceptedArgs: ["a", "b", "c", "d"] });
+    expect(compact).not.toHaveProperty("argsTemplate");
+    expect(compact).toMatchObject({
+      callTemplate: { operation: "call_tool", name: "first", args: {} },
+    });
   });
 });
 

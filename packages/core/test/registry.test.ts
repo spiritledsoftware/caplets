@@ -92,8 +92,9 @@ describe("registry", () => {
     expect(description).toContain("Enabled Server");
     expect(description).toContain("Use when: Use for enabled test workflows.");
     expect(description).toContain("Avoid when: Avoid for disabled server checks.");
-    expect(description).toContain("Use inspect for details when needed");
-    expect(description).toContain("use describe_tool before call_tool when args matter");
+    expect(description).toContain("Use tools/search_tools for downstream names");
+    expect(description).toContain("callTemplate");
+    expect(description).toContain("Prefer direct call_tool");
     expect(description).toContain("call_tool.args must match inputSchema exactly");
     expect(description).toContain("do not guess tool names or schemas");
     expect(description).toContain("Resources/prompts/completions may exist");
@@ -113,7 +114,7 @@ describe("registry", () => {
     expect(serialized).not.toContain("secret-bearer-value");
 
     const openApiDescription = capabilityDescription(config.openapiEndpoints.users!);
-    expect(openApiDescription).toContain("Use inspect for details when needed");
+    expect(openApiDescription).toContain("Use tools/search_tools for downstream names");
     expect(openApiDescription).toContain("call_tool.args must match inputSchema exactly");
     expect(openApiDescription).toContain("do not guess tool names or schemas");
     const openApiDetail = registry.detail(config.openapiEndpoints.users!);
@@ -132,8 +133,8 @@ describe("registry", () => {
     expect(JSON.stringify(openApiDetail)).not.toContain("secret-token");
 
     const graphQlDescription = capabilityDescription(config.graphqlEndpoints.catalog!);
-    expect(graphQlDescription).toContain("Use inspect for details when needed");
-    expect(graphQlDescription).toContain("use describe_tool before call_tool when args matter");
+    expect(graphQlDescription).toContain("Use tools/search_tools for downstream names");
+    expect(graphQlDescription).toContain("reserve describe_tool for complex schemas");
     const graphQlDetail = registry.detail(config.graphqlEndpoints.catalog!);
     expect(graphQlDetail).toEqual({
       id: "catalog",
@@ -151,8 +152,8 @@ describe("registry", () => {
     expect(JSON.stringify(graphQlDetail)).not.toContain("secret-graphql");
 
     const httpDescription = capabilityDescription(config.httpApis.status!);
-    expect(httpDescription).toContain("Use inspect for details when needed");
-    expect(httpDescription).toContain("use tools/search_tools to discover downstream operations");
+    expect(httpDescription).toContain("Use tools/search_tools for downstream names");
+    expect(httpDescription).toContain("callTemplate");
     const httpDetail = registry.detail(config.httpApis.status!);
     expect(httpDetail).toEqual({
       id: "status",
@@ -168,7 +169,7 @@ describe("registry", () => {
     expect(JSON.stringify(httpDetail)).not.toContain("secret-http");
 
     const cliDescription = capabilityDescription(config.cliTools.repo!);
-    expect(cliDescription).toContain("Use inspect for details when needed");
+    expect(cliDescription).toContain("Use tools/search_tools for downstream names");
     expect(cliDescription).toContain("call_tool.args must match inputSchema exactly");
     const cliDetail = registry.detail(config.cliTools.repo!);
     expect(cliDetail).toEqual({
@@ -185,8 +186,8 @@ describe("registry", () => {
     });
 
     const capletSetDescription = capabilityDescription(config.capletSets.nested!);
-    expect(capletSetDescription).toContain("Use inspect for details when needed");
-    expect(capletSetDescription).toContain("use describe_tool before call_tool when args matter");
+    expect(capletSetDescription).toContain("Use tools/search_tools for downstream names");
+    expect(capletSetDescription).toContain("Prefer direct call_tool");
     const capletSetDetail = registry.detail(config.capletSets.nested!);
     expect(capletSetDetail).toEqual({
       id: "nested",

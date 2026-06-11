@@ -20,8 +20,15 @@ benchmark-results/
 # alchemy
 .alchemy
 
+# .env files
 .env*
 !.env.example
 
 # impeccable
-.impeccable/live
+.impeccable/live/
+
+# brv
+.brv/
+
+# autoresearch
+.auto/

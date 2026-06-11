@@ -211,6 +211,82 @@ describe("@caplets/pi", () => {
     expect(result?.details).toEqual({ result: undefined });
   });
 
+  it("compacts noisy Code Mode values before returning agent-facing text", async () => {
+    const service = mockService([
+      {
+        caplet: "code-mode",
+        toolName: "caplets_code_mode",
+        title: "Code Mode",
+        description: "Code Mode Caplet",
+        promptGuidance: ["Use caplets_code_mode for Code Mode."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        issue: {
+          ok: true,
+          data: { id: "BENCH-451", title: "Checkout authorization retry double-submit" },
+          meta: { capletId: "issues", tool: "get_issue", durationMs: 12, status: "ok" },
+        },
+        descriptor: {
+          id: "api",
+          tool: {
+            name: "lookup_schema",
+            description: "Lookup an API schema.",
+            inputSchema: { type: "object", properties: { id: { type: "string" } } },
+          },
+          inputSchema: { type: "object", properties: { id: { type: "string" } } },
+          outputSchema: { type: "object", additionalProperties: true },
+          callSignature: 'callTool(name: "lookup_schema", args: LookupSchemaInput)',
+          inputTypeScript: "type LookupSchemaInput = { id: string; };",
+        },
+        many: Array.from({ length: 45 }, (_, index) => ({ index })),
+      },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+      meta: {
+        runId: "run-1",
+        traceId: "trace-1",
+        declarationHash: "hash-1",
+        timeoutMs: 10000,
+        maxTimeoutMs: 10000,
+        durationMs: 25,
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
+
+    const result = await registered[0]?.execute("call-1", { code: "return facts;" });
+    const text = result?.content[0]?.text ?? "{}";
+    const parsed = JSON.parse(text);
+
+    expect(parsed.value.issue).toEqual({
+      id: "BENCH-451",
+      title: "Checkout authorization retry double-submit",
+    });
+    expect(parsed.value.descriptor).toEqual({
+      id: "api",
+      tool: { name: "lookup_schema", description: "Lookup an API schema." },
+      callSignature: 'callTool(name: "lookup_schema", args: LookupSchemaInput)',
+      inputTypeScript: "type LookupSchemaInput = { id: string; };",
+    });
+    expect(parsed.value.many).toHaveLength(41);
+    expect(parsed.value.many.at(-1)).toEqual({ truncatedItems: 5 });
+    expect(text).not.toContain("capletId");
+    expect(text).not.toContain("inputSchema");
+    expect(result?.details.result).toMatchObject({
+      value: {
+        issue: {
+          meta: { capletId: "issues", tool: "get_issue", durationMs: 12, status: "ok" },
+        },
+      },
+    });
+  });
+
   it("renders caplet tool calls and collapsed results compactly", async () => {
     const service = mockService([
       {
