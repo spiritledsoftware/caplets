@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createNativeCapletsService } from "../native/service";
+import { nativeCodeModeToolId } from "../native/tools";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "../code-mode/declarations";
-import { CodeModeLogStore } from "../code-mode/logs";
-import { runCodeMode } from "../code-mode/runner";
-import { listCodeModeCallableCaplets } from "../code-mode/api";
-import type { CodeModeTypesJson } from "../code-mode/types";
+import type {
+  CodeModeCallableCaplet,
+  CodeModeRunEnvelope,
+  CodeModeTypesJson,
+} from "../code-mode/types";
+import { CapletsEngine } from "../engine";
+import { resolveExposure } from "../exposure/policy";
 
 export type CodeModeCliOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -30,13 +34,10 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
   });
   try {
     const code = await readCodeModeCliCode(options);
-    const result = await runCodeMode({
+    const result = (await service.execute(nativeCodeModeToolId, {
       code,
-      service,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      logStore: new CodeModeLogStore(),
-      runtimeScope: runtimeScope(options.env),
-    });
+    })) as CodeModeRunEnvelope;
     if (options.json) {
       options.writeOut(`${JSON.stringify(result, null, 2)}\n`);
     } else if (result.ok) {
@@ -63,14 +64,13 @@ export async function codeModeTypesCli(
     "env" | "configPath" | "projectConfigPath" | "authDir" | "json" | "writeOut"
   >,
 ): Promise<void> {
-  const service = createNativeCapletsService({
-    mode: "local",
+  const engine = new CapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
   });
   try {
-    const caplets = listCodeModeCallableCaplets(service);
+    const caplets = listCodeModeCallableCaplets(engine);
     const declaration = generateCodeModeDeclarations({ caplets });
     if (!options.json) {
       options.writeOut(declaration);
@@ -85,7 +85,7 @@ export async function codeModeTypesCli(
     };
     options.writeOut(`${JSON.stringify(output, null, 2)}\n`);
   } finally {
-    await service.close();
+    await engine.close();
   }
 }
 
@@ -115,4 +115,22 @@ function formatHumanValue(value: unknown): string {
 
 function runtimeScope(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env) {
   return env.CAPLETS_MODE?.trim() || "local";
+}
+
+function listCodeModeCallableCaplets(engine: CapletsEngine): CodeModeCallableCaplet[] {
+  const defaultExposure = engine.currentConfig().options.exposure;
+  return engine
+    .enabledServers()
+    .filter((caplet) => {
+      if (caplet.setup || caplet.projectBinding?.required) return false;
+      return resolveExposure(caplet.exposure, defaultExposure).codeMode;
+    })
+    .map((caplet) => ({
+      id: caplet.server,
+      name: caplet.name,
+      description: caplet.description,
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
 }

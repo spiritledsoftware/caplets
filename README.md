@@ -141,9 +141,9 @@ your coding agent supports one.
 
 | Agent          | Install                                                        | What It Provides                                                |
 | -------------- | -------------------------------------------------------------- | --------------------------------------------------------------- |
-| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal progressive-disclosure gateway                        |
-| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway            |
-| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway            |
+| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal Code Mode gateway; progressive exposure is opt-in     |
+| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud Code Mode gateway                         |
+| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud Code Mode gateway                         |
 | OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets__<id>` tools and prompt guidance hooks          |
 | Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets__<id>` tools with Pi prompt snippets/guidelines |
 
@@ -1215,8 +1215,9 @@ or other saved files. Artifact `displayPath` values are either absolute local pa
 relative to the downstream MCP server process, not necessarily relative to the current
 project or Caplets process.
 
-For first use, the explicit progressive-discovery path is still safest: choose a Caplet,
-`search_tools` or `tools`, inspect uncertain tools with `describe_tool`, then `call_tool`.
+Code Mode is the default exposure because it keeps discovery, filtering, execution, and
+summary work inside one compact tool call. To expose the older progressive wrapper tools,
+set `options.exposure` to `progressive` or `progressive_and_code_mode`.
 
 ## Development
 

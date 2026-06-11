@@ -43,7 +43,7 @@ describe("config", () => {
 
   it("defaults exposure options and accepts per-Caplet exposure overrides", () => {
     expect(parseConfig({}).options).toMatchObject({
-      exposure: "progressive_and_code_mode",
+      exposure: "code_mode",
       exposureDiscoveryTimeoutMs: 15000,
       exposureDiscoveryConcurrency: 4,
     });
@@ -501,7 +501,7 @@ describe("config", () => {
     expect(config.options).toEqual({
       defaultSearchLimit: 7,
       maxSearchLimit: 40,
-      exposure: "progressive_and_code_mode",
+      exposure: "code_mode",
       exposureDiscoveryTimeoutMs: 15000,
       exposureDiscoveryConcurrency: 4,
       completion: {
@@ -1860,7 +1860,7 @@ describe("config", () => {
     expect(config.options).toEqual({
       defaultSearchLimit: 5,
       maxSearchLimit: 10,
-      exposure: "progressive_and_code_mode",
+      exposure: "code_mode",
       exposureDiscoveryTimeoutMs: 15000,
       exposureDiscoveryConcurrency: 4,
       completion: {

@@ -131,8 +131,15 @@ function tempConfig(config: unknown): {
   mkdirSync(projectRoot, { recursive: true });
   const configPath = join(userRoot, "config.json");
   const projectConfigPath = join(projectRoot, "config.json");
-  writeFileSync(configPath, JSON.stringify(config));
+  writeFileSync(configPath, JSON.stringify(progressiveTestConfig(config)));
   return { dir, configPath, projectConfigPath };
+}
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
 }
 
 function mockServer() {

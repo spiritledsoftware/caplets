@@ -461,13 +461,13 @@ const configSchema = z
       }),
     options: z
       .object({
-        exposure: exposureSchema.default("progressive_and_code_mode"),
+        exposure: exposureSchema.default("code_mode"),
         exposureDiscoveryTimeoutMs: z.number().int().positive().default(15_000),
         exposureDiscoveryConcurrency: z.number().int().positive().max(32).default(4),
       })
       .strict()
       .default({
-        exposure: "progressive_and_code_mode",
+        exposure: "code_mode",
         exposureDiscoveryTimeoutMs: 15_000,
         exposureDiscoveryConcurrency: 4,
       }),

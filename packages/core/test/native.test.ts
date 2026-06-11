@@ -330,19 +330,44 @@ describe("native Caplets service", () => {
       expect(configuredCapletIds(service.listTools())).toEqual(["alpha"]);
       writeFileSync(
         configPath,
-        JSON.stringify({
-          mcpServers: {
-            beta: {
-              name: "Beta",
-              description: "Search beta project documents.",
-              command: process.execPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              beta: {
+                name: "Beta",
+                description: "Search beta project documents.",
+                command: process.execPath,
+              },
             },
-          },
-        }),
+          }),
+        ),
       );
 
       await expect(service.reload()).resolves.toBe(true);
       expect(configuredCapletIds(service.listTools())).toEqual(["beta"]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("defaults native exposure to Code Mode without progressive wrappers", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig(
+      {
+        mcpServers: {
+          alpha: {
+            name: "Alpha",
+            description: "Search alpha project documents.",
+            command: process.execPath,
+          },
+        },
+      },
+      { preserveExposureDefault: true },
+    );
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+
+    try {
+      expect(service.listTools().map((tool) => tool.caplet)).toEqual(["code_mode"]);
     } finally {
       await service.close();
     }
@@ -379,15 +404,17 @@ describe("native Caplets service", () => {
 
       writeFileSync(
         configPath,
-        JSON.stringify({
-          mcpServers: {
-            gamma: {
-              name: "Gamma",
-              description: "Search gamma project documents.",
-              command: process.execPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              gamma: {
+                name: "Gamma",
+                description: "Search gamma project documents.",
+                command: process.execPath,
+              },
             },
-          },
-        }),
+          }),
+        ),
       );
       await expect(service.reload()).resolves.toBe(true);
       expect(events).toEqual([["gamma"]]);
@@ -395,15 +422,17 @@ describe("native Caplets service", () => {
       unsubscribe();
       writeFileSync(
         configPath,
-        JSON.stringify({
-          mcpServers: {
-            delta: {
-              name: "Delta",
-              description: "Search delta project documents.",
-              command: process.execPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              delta: {
+                name: "Delta",
+                description: "Search delta project documents.",
+                command: process.execPath,
+              },
             },
-          },
-        }),
+          }),
+        ),
       );
       await expect(service.reload()).resolves.toBe(true);
       expect(events).toEqual([["gamma"]]);
@@ -488,15 +517,17 @@ describe("native Caplets service", () => {
       await watcherReady();
       writeFileSync(
         configPath,
-        JSON.stringify({
-          mcpServers: {
-            beta: {
-              name: "Beta",
-              description: "Search beta project documents.",
-              command: process.execPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              beta: {
+                name: "Beta",
+                description: "Search beta project documents.",
+                command: process.execPath,
+              },
             },
-          },
-        }),
+          }),
+        ),
       );
 
       await expect(service.reload()).resolves.toBe(false);
@@ -532,15 +563,17 @@ describe("native Caplets service", () => {
       await watcherReady();
       writeFileSync(
         configPath,
-        JSON.stringify({
-          mcpServers: {
-            beta: {
-              name: "Beta",
-              description: "Search beta project documents.",
-              command: process.execPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              beta: {
+                name: "Beta",
+                description: "Search beta project documents.",
+                command: process.execPath,
+              },
             },
-          },
-        }),
+          }),
+        ),
       );
 
       await expect.poll(() => events.at(-1)).toEqual(["beta"]);
@@ -549,7 +582,10 @@ describe("native Caplets service", () => {
     }
   });
 
-  function tempConfig(config: unknown): {
+  function tempConfig(
+    config: unknown,
+    options: { preserveExposureDefault?: boolean } = {},
+  ): {
     dir: string;
     configPath: string;
     projectConfigPath: string;
@@ -561,10 +597,20 @@ describe("native Caplets service", () => {
     mkdirSync(projectRoot, { recursive: true });
     const configPath = join(userRoot, "config.json");
     const projectConfigPath = join(projectRoot, "config.json");
-    writeFileSync(configPath, JSON.stringify(config));
+    writeFileSync(
+      configPath,
+      JSON.stringify(options.preserveExposureDefault ? config : progressiveTestConfig(config)),
+    );
     return { dir, configPath, projectConfigPath };
   }
 });
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
+}
 
 async function watcherReady(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 100));

@@ -150,7 +150,14 @@ function tempConfig(config: unknown): {
 }
 
 function writeConfig(path: string, config: unknown): void {
-  writeFileSync(path, JSON.stringify(config));
+  writeFileSync(path, JSON.stringify(progressiveTestConfig(config)));
+}
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
 }
 
 function mockServer() {

@@ -3,10 +3,10 @@ import { resolveExposure } from "../src/exposure/policy";
 
 describe("exposure policy", () => {
   it("uses the global default when a Caplet has no override", () => {
-    expect(resolveExposure(undefined, "progressive_and_code_mode")).toEqual({
-      value: "progressive_and_code_mode",
+    expect(resolveExposure(undefined, "code_mode")).toEqual({
+      value: "code_mode",
       direct: false,
-      progressive: true,
+      progressive: false,
       codeMode: true,
     });
   });

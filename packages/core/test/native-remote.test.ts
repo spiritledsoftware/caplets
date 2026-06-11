@@ -555,11 +555,17 @@ describe("createNativeCapletsService remote mode", () => {
     fixture.setTools([{ name: "beta", title: "Beta" }]);
     writeFileSync(
       configPath,
-      JSON.stringify({
-        mcpServers: {
-          local: { name: "Local Renamed", description: "Local Caplet.", command: process.execPath },
-        },
-      }),
+      JSON.stringify(
+        progressiveTestConfig({
+          mcpServers: {
+            local: {
+              name: "Local Renamed",
+              description: "Local Caplet.",
+              command: process.execPath,
+            },
+          },
+        }),
+      ),
       "utf8",
     );
 
@@ -754,6 +760,7 @@ describe("createNativeCapletsService remote mode", () => {
         "---",
         "name: Local",
         "description: Local Caplet.",
+        "exposure: progressive_and_code_mode",
         "mcpServer:",
         `  command: ${JSON.stringify(process.execPath)}`,
         "---",
@@ -927,9 +934,16 @@ function tempConfig(config: unknown) {
   mkdirSync(projectDir, { recursive: true });
   const configPath = join(userDir, "config.json");
   const projectConfigPath = join(projectDir, "config.json");
-  writeFileSync(configPath, JSON.stringify(config), "utf8");
+  writeFileSync(configPath, JSON.stringify(progressiveTestConfig(config)), "utf8");
   writeFileSync(projectConfigPath, JSON.stringify({}), "utf8");
   return { dir, configPath, projectConfigPath };
+}
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
 }
 
 function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {

@@ -74,6 +74,7 @@ describe("Project Binding integration", () => {
     writeFileSync(
       configPath,
       JSON.stringify({
+        options: { exposure: "progressive_and_code_mode" },
         mcpServers: {
           build: { name: "Local Build", description: "Local build.", command: process.execPath },
         },
