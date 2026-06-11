@@ -367,6 +367,34 @@ describe("generated tool handlers", () => {
     expect(stealth.structuredContent?.result.items).toEqual([{ name: "browser_click" }]);
   });
 
+  it("hoists repeated discovery description suffixes once", async () => {
+    const commonDescription =
+      "No API key is required. The records follow the same compact operational data model used across this workspace.";
+    const compactTools = [
+      { name: "search", description: `Search records by query. ${commonDescription}` },
+      { name: "list", description: `List recent records. ${commonDescription}` },
+      { name: "get", description: `Get one record by id. ${commonDescription}` },
+    ];
+    const downstream = {
+      listTools: vi.fn().mockResolvedValue(compactTools),
+      compact: (_capletServer: typeof server, tool: Tool) => tool,
+    } as unknown as DownstreamManager;
+
+    const list = (await handleServerTool(
+      server,
+      { operation: "tools" },
+      registry,
+      downstream,
+    )) as any;
+    const text = list.content[0]?.text ?? "";
+
+    expect(text).toContain("1. `search` — Search records by query.");
+    expect(text).toContain("2. `list` — List recent records.");
+    expect(text).toContain("3. `get` — Get one record by id.");
+    expect(text).toContain(`Common description: ${commonDescription}`);
+    expect(text.match(/No API key is required/gu)).toHaveLength(1);
+  });
+
   it("lists compact metadata and preserves full describe_tool metadata", async () => {
     expect(new DownstreamManager(registry).compact(server, tools[0]!)).toMatchObject({
       name: "read",

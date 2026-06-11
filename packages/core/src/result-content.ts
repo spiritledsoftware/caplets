@@ -324,18 +324,63 @@ function textBlocksToString(content: CallToolResultLike["content"] | undefined):
 }
 function renderNamedList(items: unknown[], nameKey: string): string {
   if (items.length === 0) return "_No items._";
-  return items
-    .map((item, index) => {
-      const record = asRecord(item);
-      const name =
-        stringValue(record?.[nameKey]) ?? stringValue(record?.name) ?? `Item ${index + 1}`;
-      const description = stringValue(record?.description);
-      const hints = compactListHints(record);
-      const suffix = [description, hints].filter(Boolean).join("; ");
-      return suffix ? `${index + 1}. \`${name}\` — ${suffix}` : `${index + 1}. \`${name}\``;
-    })
-    .join("\n");
+  const records = items.map((item) => asRecord(item));
+  const commonDescriptionSuffix = repeatedDescriptionSuffix(
+    records
+      .map((record) => stringValue(record?.description))
+      .filter((description): description is string => Boolean(description)),
+  );
+  const renderedItems = records.map((record, index) => {
+    const name = stringValue(record?.[nameKey]) ?? stringValue(record?.name) ?? `Item ${index + 1}`;
+    const description = trimDescriptionSuffix(
+      stringValue(record?.description),
+      commonDescriptionSuffix,
+    );
+    const hints = compactListHints(record);
+    const suffix = [description, hints].filter(Boolean).join("; ");
+    return suffix ? `${index + 1}. \`${name}\` — ${suffix}` : `${index + 1}. \`${name}\``;
+  });
+  if (commonDescriptionSuffix) {
+    renderedItems.push("", `Common description: ${commonDescriptionSuffix}`);
+  }
+  return renderedItems.join("\n");
 }
+
+function repeatedDescriptionSuffix(descriptions: string[]): string | undefined {
+  if (descriptions.length < 3) return undefined;
+  const sentenceLists = descriptions.map(descriptionSentences);
+  const minLength = Math.min(...sentenceLists.map((sentences) => sentences.length));
+  let suffix: string | undefined;
+  for (let size = 1; size <= minLength; size += 1) {
+    const candidate = sentenceLists[0]?.slice(-size).join(" ");
+    if (!candidate || candidate.length < 60) continue;
+    if (sentenceLists.every((sentences) => sentences.slice(-size).join(" ") === candidate)) {
+      suffix = candidate;
+    } else {
+      break;
+    }
+  }
+  return suffix;
+}
+
+function descriptionSentences(description: string): string[] {
+  return (
+    description
+      .match(/[^.!?]+[.!?](?=\s|$)|[^.!?]+$/gu)
+      ?.map((sentence) => sentence.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
+function trimDescriptionSuffix(
+  description: string | undefined,
+  suffix: string | undefined,
+): string | undefined {
+  if (!description || !suffix || !description.endsWith(suffix)) return description;
+  const trimmed = description.slice(0, -suffix.length).trim();
+  return trimmed || undefined;
+}
+
 function compactListHints(record: Record<string, unknown> | undefined): string | undefined {
   if (!record) return undefined;
   const hints: string[] = [];
