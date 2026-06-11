@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { watch } from "rolldown";
+import { watch, type WatchOptions } from "rolldown";
 import cliConfig from "../packages/cli/rolldown.config";
 import coreConfig from "../packages/core/rolldown.config";
 
@@ -31,7 +31,7 @@ function startServer() {
   starting = false;
 }
 
-const watcher = watch([
+const watchConfigs = [
   {
     ...coreNodeConfig,
     input: "./packages/core/src/index.ts",
@@ -48,7 +48,9 @@ const watcher = watch([
       dir: "./packages/cli/dist",
     },
   },
-]);
+] as unknown as WatchOptions[];
+
+const watcher = watch(watchConfigs);
 
 watcher.on("event", (event) => {
   if (event.code === "START") {
