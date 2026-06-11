@@ -223,11 +223,11 @@ function mcpToolUseModeHint(mode: string) {
     "caplets-progressive":
       "Caplets capability tools expose inspect/list/search/describe/call operations; use tools/search_tools callTemplate and arg hints for simple direct calls, and reserve describe_tool for complex or uncertain schemas.",
     "caplets-code-mode":
-      "Use caplets_code_mode for compact Caplets discovery and retrieval; return only the facts needed for the final JSON.",
+      "Use caplets__code_mode for compact Caplets discovery and retrieval; return only the facts needed for the final JSON.",
     "caplets-direct-code-mode":
-      "Direct Caplets tools and caplets_code_mode are available; choose the shortest reliable path.",
+      "Direct Caplets tools and caplets__code_mode are available; choose the shortest reliable path.",
     "caplets-progressive-code-mode":
-      "Both Caplets capability tools and caplets_code_mode are available; choose the shortest reliable path.",
+      "Both Caplets capability tools and caplets__code_mode are available; choose the shortest reliable path.",
     "vanilla-mcp":
       "The MCP servers are exposed as plain direct MCP tools, without Caplets or Executor.",
     "executor-mcp": "Executor is available through direct Pi tools registered by the MCP adapter.",

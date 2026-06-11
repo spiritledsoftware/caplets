@@ -50,11 +50,11 @@ describe("@caplets/opencode", () => {
         },
         {
           caplet: "code_mode",
-          toolName: "caplets_code_mode",
+          toolName: "caplets__code_mode",
           title: "Code Mode",
           description: "Run Caplets Code Mode TypeScript.",
           codeModeRun: true,
-          promptGuidance: ["Use caplets_code_mode for multi-step Caplets workflows."],
+          promptGuidance: ["Use caplets__code_mode for multi-step Caplets workflows."],
         },
       ],
       execute: vi.fn(async () => ({ ok: true })),
@@ -65,7 +65,7 @@ describe("@caplets/opencode", () => {
 
     const hooks = await createCapletsOpenCodeHooks(service);
 
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets_code_mode"]);
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets__code_mode"]);
     const capletsTool = hooks.tool!.caplets_git_hub as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
@@ -73,7 +73,7 @@ describe("@caplets/opencode", () => {
     expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
     expect(result).toContain('"ok": true');
 
-    const runTool = hooks.tool!.caplets_code_mode as {
+    const runTool = hooks.tool!.caplets__code_mode as {
       args: { code?: unknown; timeoutMs?: unknown };
       execute(args: unknown, context: unknown): Promise<string>;
     };
@@ -88,7 +88,7 @@ describe("@caplets/opencode", () => {
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
     expect(output.system.join("\n")).toContain("caplets_git_hub");
-    expect(output.system.join("\n")).toContain("caplets_code_mode");
+    expect(output.system.join("\n")).toContain("caplets__code_mode");
   });
 
   it("returns stable text when tool result serialization fails", async () => {

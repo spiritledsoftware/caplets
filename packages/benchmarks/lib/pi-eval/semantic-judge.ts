@@ -123,7 +123,7 @@ function buildJudgePrompt({ task, finalAnswer, toolEvidence }: SemanticJudgeInpu
     "A correct answer may group facts differently if it contains the required information.",
     "Grade required facts and listed distractorFacts first; do not fail an otherwise correct answer for extra non-conflicting details.",
     "For expected array facts, require the expected items to be present; allow extra items if they are supported and do not contradict the task.",
-    "When observed tool evidence only exposes an aggregate tool such as caplets_code_mode or executor_execute, use the final-answer evidence citations as granular grounding unless they contradict the answer.",
+    "When observed tool evidence only exposes an aggregate tool such as caplets__code_mode or executor_execute, use the final-answer evidence citations as granular grounding unless they contradict the answer.",
     "Do not credit unsupported guesses. Use the observed tool evidence to decide whether the answer is grounded.",
     "",
     JSON.stringify({

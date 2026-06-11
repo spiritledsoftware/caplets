@@ -238,7 +238,7 @@ export function classifyHybridChoice(
   options: { mode?: string; adapterExposure?: string | null } = {},
 ) {
   const usedCodeMode = toolNames.some(
-    (name) => name === "caplets_code_mode" || name.includes("caplets_code_mode"),
+    (name) => name === "caplets__code_mode" || name.includes("caplets__code_mode"),
   );
   const usedDirect = toolNames.some((name) => name.startsWith("caplets__"));
   const usedProgressive = toolNames.some((name) => /^caplets_(?!_|code_mode\b)/u.test(name));
@@ -377,7 +377,7 @@ function acceptsSemanticEvidence(metrics: any, score: any) {
   const toolNames = metrics?.toolNames ?? [];
   return toolNames.some(
     (name: string) =>
-      name === "caplets_code_mode" ||
+      name === "caplets__code_mode" ||
       name === "executor_execute" ||
       /^caplets_[^_]+(?:__.*)?$/u.test(name),
   );

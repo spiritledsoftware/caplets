@@ -215,10 +215,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "code-mode",
-        toolName: "caplets_code_mode",
+        toolName: "caplets__code_mode",
         title: "Code Mode",
         description: "Code Mode Caplet",
-        promptGuidance: ["Use caplets_code_mode for Code Mode."],
+        promptGuidance: ["Use caplets__code_mode for Code Mode."],
       },
     ]);
     service.execute.mockResolvedValueOnce({

@@ -94,7 +94,7 @@ Compare agent-facing integration strategies, not raw MCP servers:
 | ------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------- |
 | `caplets-direct`                | flattened native Caplets tools                                                   | Caplets Pi extension                  | direct tool-surface baseline                  |
 | `caplets-progressive`           | Caplets progressive native tools                                                 | Caplets Pi extension                  | capability-card discovery/tool-call overhead  |
-| `caplets-code-mode`             | `caplets_code_mode` native tool                                                  | Caplets Pi extension                  | one-call typed discovery/retrieval efficiency |
+| `caplets-code-mode`             | `caplets__code_mode` native tool                                                 | Caplets Pi extension                  | one-call typed discovery/retrieval efficiency |
 | `caplets-progressive-code-mode` | progressive + Code Mode                                                          | Caplets Pi extension                  | best hybrid Caplets UX                        |
 | `executor-mcp`                  | Executor MCP tools exposed as direct Pi tools via `pi-mcp-adapter` `directTools` | Executor CLI/runtime + Pi MCP adapter | competitor direct-tool gateway behavior       |
 

@@ -92,11 +92,11 @@ export function buildPiEvalPrompt(task: any, mode: string): string {
     "caplets-progressive":
       "Caplets capability tools expose inspect/list/search/describe/call operations; use describe before call when args matter.",
     "caplets-code-mode":
-      "Use caplets_code_mode for Caplets discovery and compact retrieval in one external call; return only the facts needed for the edit.",
+      "Use caplets__code_mode for Caplets discovery and compact retrieval in one external call; return only the facts needed for the edit.",
     "caplets-direct-code-mode":
-      "Direct Caplets tools and caplets_code_mode are available; choose the shortest reliable path.",
+      "Direct Caplets tools and caplets__code_mode are available; choose the shortest reliable path.",
     "caplets-progressive-code-mode":
-      "Both Caplets capability tools and caplets_code_mode are available; choose the shortest reliable path.",
+      "Both Caplets capability tools and caplets__code_mode are available; choose the shortest reliable path.",
     "vanilla-mcp":
       "The fixture MCP servers are exposed through pi-mcp-adapter as plain direct MCP tools, without Caplets or Executor. Use the issues_..., ci_..., docs_..., api_..., and code_map_... tools to inspect current issue, CI, docs, API facts, and code-map hints before editing.",
     "executor-mcp":

@@ -61,7 +61,7 @@ describe("native Caplets service", () => {
           }),
           expect.objectContaining({
             caplet: "code_mode",
-            toolName: "caplets_code_mode",
+            toolName: "caplets__code_mode",
             title: "Code Mode",
           }),
         ]),
@@ -216,7 +216,7 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      expect(service.listTools().map((tool) => tool.toolName)).toEqual(["caplets_code_mode"]);
+      expect(service.listTools().map((tool) => tool.toolName)).toEqual(["caplets__code_mode"]);
     } finally {
       await service.close();
     }

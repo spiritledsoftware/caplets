@@ -2,7 +2,7 @@ import type { CapletConfig } from "../config";
 import { capabilityDescription } from "../registry";
 
 export const nativeCodeModeToolId = "code_mode";
-export const nativeCodeModeToolName = "caplets_code_mode";
+export const nativeCodeModeToolName = "caplets__code_mode";
 
 export function nativeCapletToolName(capletId: string): string {
   return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_")}`;

@@ -1382,17 +1382,17 @@ describe("Pi live tool surface eval harness", () => {
     const task = { prompt: "Fix checkout retries." };
     expect(buildPiEvalPrompt(task, "caplets-direct")).toContain("caplets__<server>__<tool>");
     expect(buildPiEvalPrompt(task, "caplets-direct-code-mode")).toContain(
-      "Direct Caplets tools and caplets_code_mode are available",
+      "Direct Caplets tools and caplets__code_mode are available",
     );
     expect(buildPiEvalPrompt(task, "caplets-progressive-code-mode")).toContain(
-      "Both Caplets capability tools and caplets_code_mode are available",
+      "Both Caplets capability tools and caplets__code_mode are available",
     );
     expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("issues_...");
     expect(buildPiEvalPrompt(task, "vanilla-mcp")).toContain("without Caplets or Executor");
-    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("caplets__code_mode");
     expect(buildPiEvalPrompt(task, "vanilla-mcp")).not.toContain("executor_...");
     expect(buildPiEvalPrompt(task, "executor-mcp")).toContain("executor_...");
-    expect(buildPiEvalPrompt(task, "executor-mcp")).not.toContain("caplets_code_mode");
+    expect(buildPiEvalPrompt(task, "executor-mcp")).not.toContain("caplets__code_mode");
     expect(buildPiEvalPrewarmPrompt()).toContain("configured server(s)");
 
     const command = buildPiEvalCommand({
@@ -2391,15 +2391,15 @@ describe("Pi live tool surface eval harness", () => {
       },
       { type: "tool_execution_start", toolName: "caplets__issues__search" },
       { type: "tool_execution_end", toolName: "caplets__issues__search" },
-      { type: "tool_execution_start", toolName: "caplets_code_mode" },
-      { type: "tool_execution_end", toolName: "caplets_code_mode" },
+      { type: "tool_execution_start", toolName: "caplets__code_mode" },
+      { type: "tool_execution_end", toolName: "caplets__code_mode" },
       { type: "tool_execution_start", toolName: "caplets_docs" },
       { type: "tool_execution_end", toolName: "caplets_docs" },
       { type: "after_provider_response", usage: { input_tokens: 1, output_tokens: 2 } },
     ];
 
     const metrics = summarizePiEvalMetrics(events, [
-      { type: "tool_execution_start", toolName: "caplets_code_mode" },
+      { type: "tool_execution_start", toolName: "caplets__code_mode" },
     ]);
 
     expect(metrics.toolCallCount).toBe(3);
@@ -2407,7 +2407,7 @@ describe("Pi live tool surface eval harness", () => {
     expect(metrics.toolEventCount).toBe(6);
     expect(metrics.toolNames).toEqual([
       "caplets__issues__search",
-      "caplets_code_mode",
+      "caplets__code_mode",
       "caplets_docs",
     ]);
     expect(metrics.hybridChoice).toBe("mixed-direct-progressive-code-mode");
@@ -2693,7 +2693,7 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       requiredEvidenceScore(
-        { toolNames: ["caplets_code_mode"] },
+        { toolNames: ["caplets__code_mode"] },
         { expectedEvidence: { tools: ["api_catalog.get_operation"] } },
         {
           parsedFinalAnswer: {
@@ -2709,7 +2709,7 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       requiredEvidenceScore(
-        { toolNames: ["caplets_code_mode"] },
+        { toolNames: ["caplets__code_mode"] },
         {
           expectedEvidence: {
             anyTools: [["api_catalog.get_operation", "api_catalog.compare_operations"]],
@@ -2732,7 +2732,7 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       requiredEvidenceScore(
-        { toolNames: ["caplets_code_mode"] },
+        { toolNames: ["caplets__code_mode"] },
         {
           expectedEvidence: {
             anyTools: [["quality.list_checks", "quality.get_check_details"]],
@@ -2753,7 +2753,7 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       requiredEvidenceScore(
-        { toolNames: ["caplets_code_mode"] },
+        { toolNames: ["caplets__code_mode"] },
         {
           expectedEvidence: {
             tools: ["incidents.get_incident"],
@@ -3115,7 +3115,7 @@ describe("Pi live tool surface eval harness", () => {
         ],
         summary: "Correct but not exact schema.",
       }),
-      jsonEvents: [{ type: "tool_execution_start", toolName: "caplets_code_mode" }],
+      jsonEvents: [{ type: "tool_execution_start", toolName: "caplets__code_mode" }],
     };
 
     await expect(
