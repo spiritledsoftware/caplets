@@ -56,7 +56,7 @@ describe("native Caplets service", () => {
         expect.arrayContaining([
           expect.objectContaining({
             caplet: "git-hub",
-            toolName: "caplets_git_hub",
+            toolName: "caplets__git-hub",
             title: "GitHub",
           }),
           expect.objectContaining({
@@ -67,7 +67,7 @@ describe("native Caplets service", () => {
         ]),
       );
       const githubTool = service.listTools().find((tool) => tool.caplet === "git-hub");
-      expect(githubTool?.description).toContain("Native tool name: caplets_git_hub");
+      expect(githubTool?.description).toContain("Native tool name: caplets__git-hub");
       expect(githubTool?.inputSchema).toMatchObject({
         properties: expect.objectContaining({ fields: expect.anything() }),
       });
@@ -278,10 +278,10 @@ describe("native Caplets service", () => {
   });
 
   it("builds shared native system guidance", () => {
-    expect(nativeCapletToolName("linear-api_v2")).toBe("caplets_linear_api__v2");
-    const guidance = nativeCapletsSystemGuidance(["caplets_linear_api__v2"]);
+    expect(nativeCapletToolName("linear-api_v2")).toBe("caplets__linear-api_v2");
+    const guidance = nativeCapletsSystemGuidance(["caplets__linear-api_v2"]);
 
-    expect(guidance).toContain("caplets_linear_api__v2");
+    expect(guidance).toContain("caplets__linear-api_v2");
     expect(guidance).toContain("Flow: inspect when the domain is unfamiliar");
     expect(guidance).toContain("callTemplate");
     expect(guidance).toContain("reserve describe_tool");
@@ -292,7 +292,7 @@ describe("native Caplets service", () => {
   });
 
   it("builds concise per-Caplet prompt guidance with safe discovery", () => {
-    const guidance = nativeCapletPromptGuidance("caplets_browser", {
+    const guidance = nativeCapletPromptGuidance("caplets__browser", {
       name: "Browser",
       description: "Drive a browser.",
       server: "browser",
@@ -305,12 +305,12 @@ describe("native Caplets service", () => {
       disabled: false,
     }).join("\n");
 
-    expect(guidance).toContain("Use caplets_browser for the Browser Caplet capability domain.");
+    expect(guidance).toContain("Use caplets__browser for the Browser Caplet capability domain.");
     expect(guidance).toContain("Use tools/search_tools callTemplate/arg hints for simple calls");
     expect(guidance).toContain("call_tool.args must match inputSchema exactly");
     expect(guidance).toContain("Do not guess tool names or schemas");
     expect(guidance).not.toContain("For unfamiliar tasks, discover safely");
-    expect(guidance).not.toContain("Call caplets_browser with operation inspect before");
+    expect(guidance).not.toContain("Call caplets__browser with operation inspect before");
   });
 
   it("reloads native tool metadata after config changes", async () => {

@@ -10,7 +10,7 @@ function service(): NativeCapletsService {
   const tools: NativeCapletTool[] = [
     {
       caplet: "github",
-      toolName: "caplets_github",
+      toolName: "caplets__github",
       title: "GitHub",
       description: "GitHub repo operations.",
       promptGuidance: [],

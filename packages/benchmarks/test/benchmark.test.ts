@@ -2393,8 +2393,8 @@ describe("Pi live tool surface eval harness", () => {
       { type: "tool_execution_end", toolName: "caplets__issues__search" },
       { type: "tool_execution_start", toolName: "caplets__code_mode" },
       { type: "tool_execution_end", toolName: "caplets__code_mode" },
-      { type: "tool_execution_start", toolName: "caplets_docs" },
-      { type: "tool_execution_end", toolName: "caplets_docs" },
+      { type: "tool_execution_start", toolName: "caplets__docs" },
+      { type: "tool_execution_end", toolName: "caplets__docs" },
       { type: "after_provider_response", usage: { input_tokens: 1, output_tokens: 2 } },
     ];
 
@@ -2408,7 +2408,7 @@ describe("Pi live tool surface eval harness", () => {
     expect(metrics.toolNames).toEqual([
       "caplets__issues__search",
       "caplets__code_mode",
-      "caplets_docs",
+      "caplets__docs",
     ]);
     expect(metrics.hybridChoice).toBe("mixed-direct-progressive-code-mode");
     expect(metrics.requestPayloadEstimatedTokens).toBe(25);
@@ -2612,8 +2612,8 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       summarizePiEvalMetrics([
-        { type: "tool_execution_start", toolName: "caplets_issues" },
-        { type: "tool_execution_start", toolName: "caplets_api" },
+        { type: "tool_execution_start", toolName: "caplets__issues" },
+        { type: "tool_execution_start", toolName: "caplets__api" },
       ]).hybridChoice,
     ).toBe("progressive-only");
   });
@@ -2783,7 +2783,7 @@ describe("Pi live tool surface eval harness", () => {
 
     expect(
       requiredEvidenceScore(
-        { toolNames: ["caplets_incidents", "caplets_observability", "caplets_docs"] },
+        { toolNames: ["caplets__incidents", "caplets__observability", "caplets__docs"] },
         {
           expectedEvidence: {
             anyTools: [

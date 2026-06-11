@@ -108,7 +108,7 @@ describe("generateCodeModeDeclarations", () => {
           id: "github",
           name: "GitHub",
           description:
-            "GitHub Caplet. Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows. Use inspect for details when needed; use tools for actions, resources for readable context, prompts for reusable workflows, and complete for prompt/resource-template arguments. Native tool name: caplets_github Original Caplet ID: github",
+            "GitHub Caplet. Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows. Use inspect for details when needed; use tools for actions, resources for readable context, prompts for reusable workflows, and complete for prompt/resource-template arguments. Native tool name: caplets__github Original Caplet ID: github",
         },
       ],
     });

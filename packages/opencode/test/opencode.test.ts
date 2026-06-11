@@ -43,10 +43,10 @@ describe("@caplets/opencode", () => {
       listTools: () => [
         {
           caplet: "git-hub",
-          toolName: "caplets_git_hub",
+          toolName: "caplets__git-hub",
           title: "GitHub",
           description: "GitHub\n\nUse this Caplet.",
-          promptGuidance: ["Use caplets_git_hub for GitHub."],
+          promptGuidance: ["Use caplets__git-hub for GitHub."],
         },
         {
           caplet: "code_mode",
@@ -65,8 +65,8 @@ describe("@caplets/opencode", () => {
 
     const hooks = await createCapletsOpenCodeHooks(service);
 
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub", "caplets__code_mode"]);
-    const capletsTool = hooks.tool!.caplets_git_hub as {
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets__git-hub", "caplets__code_mode"]);
+    const capletsTool = hooks.tool!["caplets__git-hub"] as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
     const result = await capletsTool.execute({ operation: "inspect" }, {} as never);
@@ -87,7 +87,7 @@ describe("@caplets/opencode", () => {
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
-    expect(output.system.join("\n")).toContain("caplets_git_hub");
+    expect(output.system.join("\n")).toContain("caplets__git-hub");
     expect(output.system.join("\n")).toContain("caplets__code_mode");
   });
 
@@ -97,10 +97,10 @@ describe("@caplets/opencode", () => {
       listTools: () => [
         {
           caplet: "git-hub",
-          toolName: "caplets_git_hub",
+          toolName: "caplets__git-hub",
           title: "GitHub",
           description: "GitHub\n\nUse this Caplet.",
-          promptGuidance: ["Use caplets_git_hub for GitHub."],
+          promptGuidance: ["Use caplets__git-hub for GitHub."],
         },
       ],
       execute: vi.fn(async () => ({ count: 1n })),
@@ -110,7 +110,7 @@ describe("@caplets/opencode", () => {
     };
 
     const hooks = await createCapletsOpenCodeHooks(service);
-    const capletsTool = hooks.tool!.caplets_git_hub as {
+    const capletsTool = hooks.tool!["caplets__git-hub"] as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
@@ -159,10 +159,10 @@ describe("@caplets/opencode", () => {
       listTools: () => [
         {
           caplet: "git-hub",
-          toolName: "caplets_git_hub",
+          toolName: "caplets__git-hub",
           title: "GitHub",
           description: "GitHub\n\nUse this Caplet.",
-          promptGuidance: ["Use caplets_git_hub for GitHub."],
+          promptGuidance: ["Use caplets__git-hub for GitHub."],
         },
       ],
       execute: vi.fn(async () => undefined),
@@ -172,7 +172,7 @@ describe("@caplets/opencode", () => {
     };
 
     const hooks = await createCapletsOpenCodeHooks(service);
-    const capletsTool = hooks.tool!.caplets_git_hub as {
+    const capletsTool = hooks.tool!["caplets__git-hub"] as {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
@@ -184,17 +184,17 @@ describe("@caplets/opencode", () => {
     let tools = [
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ];
     const service = {
@@ -209,17 +209,17 @@ describe("@caplets/opencode", () => {
     tools = [
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
       {
         caplet: "slack",
-        toolName: "caplets_slack",
+        toolName: "caplets__slack",
         title: "Slack",
         description: "Slack\n\nUse this Caplet.",
-        promptGuidance: ["Use caplets_slack for Slack."],
+        promptGuidance: ["Use caplets__slack for Slack."],
       },
     ];
 
@@ -227,9 +227,9 @@ describe("@caplets/opencode", () => {
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
 
     const system = output.system.join("\n");
-    expect(system).toContain("caplets_linear");
-    expect(system).not.toContain("caplets_git_hub");
-    expect(system).not.toContain("caplets_slack");
+    expect(system).toContain("caplets__linear");
+    expect(system).not.toContain("caplets__git-hub");
+    expect(system).not.toContain("caplets__slack");
   });
 
   it("passes second-argument config into the native service", async () => {
@@ -304,10 +304,10 @@ describe("@caplets/opencode", () => {
     const tools = [
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ];
     let reloaded = false;
@@ -332,6 +332,6 @@ describe("@caplets/opencode", () => {
 
     expect(service.reload).toHaveBeenCalledOnce();
     expect(service.listTools).toHaveBeenCalledAfter(service.reload);
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets_git_hub"]);
+    expect(Object.keys(hooks.tool ?? {})).toEqual(["caplets__git-hub"]);
   });
 });

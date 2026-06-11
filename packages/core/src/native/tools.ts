@@ -5,7 +5,7 @@ export const nativeCodeModeToolId = "code_mode";
 export const nativeCodeModeToolName = "caplets__code_mode";
 
 export function nativeCapletToolName(capletId: string): string {
-  return `caplets_${capletId.replace(/_/g, "__").replace(/-/g, "_")}`;
+  return `caplets__${capletId}`;
 }
 
 export function nativeCapletsSystemGuidance(toolNames: string[]): string {

@@ -58,12 +58,12 @@ describe("RemoteNativeCapletsService", () => {
     expect(service.listTools()).toEqual([
       expect.objectContaining({
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "git-hub",
       }),
     ]);
     expect(service.listTools()[0]?.description).toContain("GitHub tools");
-    expect(service.listTools()[0]?.description).toContain("Native tool name: caplets_git_hub");
+    expect(service.listTools()[0]?.description).toContain("Native tool name: caplets__git-hub");
     expect(service.listTools()[0]?.description).toContain("Remote Caplet ID: git-hub");
     expect(service.listTools()[0]?.promptGuidance.join("\n")).toContain("remote Caplets service");
 
@@ -127,7 +127,7 @@ describe("RemoteNativeCapletsService", () => {
     await vi.waitFor(() => expect(listener).toHaveBeenCalled());
 
     expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta", toolName: "caplets_beta" }),
+      expect.objectContaining({ caplet: "beta", toolName: "caplets__beta" }),
     ]);
     await service.close();
   });

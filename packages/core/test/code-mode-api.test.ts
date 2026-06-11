@@ -23,7 +23,7 @@ describe("Code Mode Caplets API", () => {
       service([
         {
           caplet: "github",
-          toolName: "caplets_github",
+          toolName: "caplets__github",
           title: "GitHub",
           description: "GitHub repo operations.",
           promptGuidance: [],
@@ -40,7 +40,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -85,7 +85,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "browser",
-        toolName: "caplets_browser",
+        toolName: "caplets__browser",
         title: "Browser",
         description: "Browser automation.",
         promptGuidance: [],
@@ -129,7 +129,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -254,7 +254,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -305,7 +305,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -330,7 +330,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -370,7 +370,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -428,7 +428,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -468,7 +468,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "osv",
-        toolName: "caplets_osv",
+        toolName: "caplets__osv",
         title: "OSV",
         description: "Open Source Vulnerabilities operations.",
         promptGuidance: [],
@@ -513,7 +513,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "github",
-        toolName: "caplets_github",
+        toolName: "caplets__github",
         title: "GitHub",
         description: "GitHub repo operations.",
         promptGuidance: [],
@@ -560,7 +560,7 @@ describe("Code Mode Caplets API", () => {
     const native = service([
       {
         caplet: "debug",
-        toolName: "caplets_debug",
+        toolName: "caplets__debug",
         title: "Debug",
         description: "Debug caplet.",
         promptGuidance: [],

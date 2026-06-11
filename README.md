@@ -139,13 +139,13 @@ Backends that require OAuth or token auth may need `caplets auth login <server>`
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
 your coding agent supports one.
 
-| Agent          | Install                                                        | What It Provides                                               |
-| -------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
-| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal progressive-disclosure gateway                       |
-| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
-| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
-| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets_<id>` tools and prompt guidance hooks          |
-| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets_<id>` tools with Pi prompt snippets/guidelines |
+| Agent          | Install                                                        | What It Provides                                                |
+| -------------- | -------------------------------------------------------------- | --------------------------------------------------------------- |
+| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal progressive-disclosure gateway                        |
+| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway            |
+| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway            |
+| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets__<id>` tools and prompt guidance hooks          |
+| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets__<id>` tools with Pi prompt snippets/guidelines |
 
 Manual local MCP config:
 
@@ -195,7 +195,7 @@ Core Alchemy deploys the public landing page from `apps/landing`. It does not de
 
 ### Remote Caplets service
 
-OpenCode and Pi can use native `caplets_<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
+OpenCode and Pi can use native `caplets__<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
 
 Hosted Caplets Cloud uses browser-mediated Cloud Auth:
 
@@ -1126,7 +1126,7 @@ locations, or start `caplets serve`.
 ## Additional Native Integrations
 
 OpenCode and Pi support true native tool registration. Those integrations expose one
-prefixed tool per configured Caplet, such as `caplets_github`, while reusing the same
+prefixed tool per configured Caplet, such as `caplets__github`, while reusing the same
 Caplets config and backend runtime.
 
 - [`@caplets/opencode`](packages/opencode/README.md): OpenCode plugin that injects prompt guidance through plugin hooks instead of editing `opencode.json`.

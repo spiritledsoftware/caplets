@@ -162,13 +162,11 @@ function legacyRequestTokenBuckets(event: any): Record<string, number> {
 export function computeDomainCoverage(events: any[] = []) {
   const domains = { issues: false, ci: false, docs: false, api: false, codeMap: false };
   const serialized = events.map(coverageTextFromEvent).join("\n").toLowerCase();
-  domains.issues = /bench-451|caplets_issues|caplets__issues|\bissues\b/u.test(serialized);
-  domains.ci = /ci-9182|caplets_ci|caplets__ci|\bci\b|failingtests/u.test(serialized);
-  domains.docs = /runbook|idempotency guidance|caplets_docs|caplets__docs|\bdocs\b/u.test(
-    serialized,
-  );
-  domains.api = /checkout\/authorize|caplets_api|caplets__api|\bapi\b/u.test(serialized);
-  domains.codeMap = /code-map|code_map|caplets_code_map|targetfiles/u.test(serialized);
+  domains.issues = /bench-451|caplets__issues|\bissues\b/u.test(serialized);
+  domains.ci = /ci-9182|caplets__ci|\bci\b|failingtests/u.test(serialized);
+  domains.docs = /runbook|idempotency guidance|caplets__docs|\bdocs\b/u.test(serialized);
+  domains.api = /checkout\/authorize|caplets__api|\bapi\b/u.test(serialized);
+  domains.codeMap = /code-map|code_map|caplets__code_map|targetfiles/u.test(serialized);
   return {
     ...domains,
     requiredComplete: domains.issues && domains.ci && domains.docs && domains.api,
@@ -240,8 +238,8 @@ export function classifyHybridChoice(
   const usedCodeMode = toolNames.some(
     (name) => name === "caplets__code_mode" || name.includes("caplets__code_mode"),
   );
-  const usedDirect = toolNames.some((name) => name.startsWith("caplets__"));
-  const usedProgressive = toolNames.some((name) => /^caplets_(?!_|code_mode\b)/u.test(name));
+  const usedDirect = toolNames.some(isCapletsDirectToolName);
+  const usedProgressive = toolNames.some(isCapletsProgressiveToolName);
   const usedExecutorDirect = toolNames.some((name) => name.startsWith("executor_"));
   const usedMcpProxy = toolNames.includes("mcp");
   const usedVanillaMcpDirect = toolNames.some((name) => isVanillaMcpDirectTool(name, options));
@@ -364,8 +362,7 @@ function hasEvidence({ tool, observedTools, evidenceText }: any) {
           name.startsWith(`${normalizedAlias}.`) ||
           name.startsWith(`${normalizedAlias}__`) ||
           name.startsWith(`caplets__${normalizedAlias}__`) ||
-          name === `caplets_${normalizedAlias}` ||
-          name.startsWith(`caplets_${normalizedAlias}_`),
+          name === `caplets__${normalizedAlias}`,
       ) ||
       evidenceText.includes(normalizedAlias)
     );
@@ -379,8 +376,23 @@ function acceptsSemanticEvidence(metrics: any, score: any) {
     (name: string) =>
       name === "caplets__code_mode" ||
       name === "executor_execute" ||
-      /^caplets_[^_]+(?:__.*)?$/u.test(name),
+      isCapletsDirectToolName(name) ||
+      isCapletsProgressiveToolName(name),
   );
+}
+
+function isCapletsDirectToolName(name: string): boolean {
+  if (!name.startsWith("caplets__") || name === "caplets__code_mode") {
+    return false;
+  }
+  return name.slice("caplets__".length).includes("__");
+}
+
+function isCapletsProgressiveToolName(name: string): boolean {
+  if (!name.startsWith("caplets__") || name === "caplets__code_mode") {
+    return false;
+  }
+  return !name.slice("caplets__".length).includes("__");
 }
 
 function toolEvidenceAliases(tool: string) {
