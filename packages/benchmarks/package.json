@@ -11,7 +11,7 @@
     "typecheck": "tsgo --noEmit",
     "test": "vitest run",
     "benchmark:live:pi-eval": "tsx run-pi-eval.ts",
-    "benchmark:live:pi-eval:competitors": "tsx run-pi-eval.ts --mode caplets-code-mode,caplets-progressive-code-mode,vanilla-mcp,executor-mcp"
+    "benchmark:live:pi-eval:competitors": "tsx run-pi-eval.ts --mode caplets-code-mode,caplets-direct-code-mode,caplets-progressive-code-mode,vanilla-mcp,executor-mcp"
   },
   "dependencies": {
     "@caplets/core": "workspace:*",

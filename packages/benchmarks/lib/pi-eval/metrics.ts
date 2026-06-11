@@ -195,8 +195,10 @@ function coverageTextFromEvent(event: any): string {
 
 export function requiredEvidenceScore(metrics: any, task: any, score: any = {}) {
   if (task?.expectedEvidence?.tools?.length || task?.expectedEvidence?.anyTools?.length) {
-    const observedTools = new Set(metrics?.toolNames ?? []);
-    const evidenceText = finalAnswerEvidenceText(score?.parsedFinalAnswer);
+    const observedTools = new Set(
+      (metrics?.toolNames ?? []).map((name: unknown) => String(name).toLowerCase()),
+    );
+    const evidenceText = finalAnswerEvidenceText(score?.parsedFinalAnswer).toLowerCase();
     const missingTools = expectedEvidenceFailures({
       expectedTools: task.expectedEvidence.tools,
       anyTools: task.expectedEvidence.anyTools,
@@ -242,9 +244,7 @@ export function classifyHybridChoice(
   const usedProgressive = toolNames.some((name) => /^caplets_(?!_|code_mode\b)/u.test(name));
   const usedExecutorDirect = toolNames.some((name) => name.startsWith("executor_"));
   const usedMcpProxy = toolNames.includes("mcp");
-  const usedVanillaMcpDirect = toolNames.some((name) =>
-    /^(issues|ci|docs|api|code_map)_/u.test(name),
-  );
+  const usedVanillaMcpDirect = toolNames.some((name) => isVanillaMcpDirectTool(name, options));
   const usedExecutor = usedExecutorDirect || options.mode === "executor-mcp";
   const usedVanillaMcp = usedVanillaMcpDirect || options.mode === "vanilla-mcp";
   const usedCaplets = usedDirect || usedCodeMode || usedProgressive;
@@ -264,6 +264,15 @@ export function classifyHybridChoice(
   if (usedCodeMode) return "code-mode-only";
   if (usedProgressive) return "progressive-only";
   return "unused";
+}
+
+function isVanillaMcpDirectTool(
+  name: string,
+  options: { mode?: string; adapterExposure?: string | null } = {},
+) {
+  if (/^(issues|ci|docs|api|code_map)_/u.test(name)) return true;
+  if (options.mode !== "vanilla-mcp" || options.adapterExposure !== "direct-tools") return false;
+  return !["bash", "edit", "mcp", "read", "write"].includes(name);
 }
 
 export function toolNameFromEvent(event: any): string | null {
@@ -344,9 +353,23 @@ function expectedEvidenceFailures({
 }
 
 function hasEvidence({ tool, observedTools, evidenceText }: any) {
-  return toolEvidenceAliases(tool).some(
-    (alias) => observedTools.has(alias) || evidenceText.includes(alias),
-  );
+  const observedToolNames = [...observedTools];
+  return toolEvidenceAliases(tool).some((alias) => {
+    const normalizedAlias = String(alias).toLowerCase();
+    return (
+      observedTools.has(normalizedAlias) ||
+      observedToolNames.some(
+        (name) =>
+          name.startsWith(`${normalizedAlias}_`) ||
+          name.startsWith(`${normalizedAlias}.`) ||
+          name.startsWith(`${normalizedAlias}__`) ||
+          name.startsWith(`caplets__${normalizedAlias}__`) ||
+          name === `caplets_${normalizedAlias}` ||
+          name.startsWith(`caplets_${normalizedAlias}_`),
+      ) ||
+      evidenceText.includes(normalizedAlias)
+    );
+  });
 }
 
 function acceptsSemanticEvidence(metrics: any, score: any) {

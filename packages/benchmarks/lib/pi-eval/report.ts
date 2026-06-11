@@ -18,6 +18,8 @@ export function summarizePiEvalResults(results: any[] = []) {
       averageRequestEstimatedTokens: average(
         rows.map((row) => row.metrics?.requestPayloadEstimatedTokens),
       ),
+      averageEstimatedOutputTokens: average(rows.map(estimatedOutputTokens)),
+      averageRequestPlusOutputEstimatedTokens: average(rows.map(requestPlusOutputTokens)),
       averageNonSurfaceEstimatedTokens: average(
         rows.map((row) => row.metrics?.nonSurfaceEstimatedTokens),
       ),
@@ -34,6 +36,7 @@ export function summarizePiEvalResults(results: any[] = []) {
       hybridChoice: hybridChoiceSummary(rows),
       timedOut: rows.filter((row) => row.agentResult?.timedOut).length,
       skipped: rows.filter((row) => row.agentResult?.skipped).length,
+      passedOnly: passed > 0 ? passedOnlySummary(rows.filter((row) => row.score?.success)) : null,
     };
   });
   return { byMode, comparisons: comparisons(byMode) };
@@ -42,11 +45,15 @@ export function summarizePiEvalResults(results: any[] = []) {
 export function renderPiEvalMarkdownReport(report: any): string {
   const rows = report.summary.byMode.map(
     (row: any) =>
-      `| ${row.mode} | ${row.product ?? "n/a"} | ${row.adapterExposure ?? "n/a"} | ${row.passed}/${row.total} | ${formatMs(row.averageDurationMs)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageRequestEstimatedTokens)} | ${formatNumber(row.averageNonSurfaceEstimatedTokens)} | ${formatNumber(row.averageProviderTokens)} | ${formatNumber(row.averageToolSurfaceEstimatedTokens)} | ${formatNumber(row.averageToolCalls)} |`,
+      `| ${row.mode} | ${row.product ?? "n/a"} | ${row.adapterExposure ?? "n/a"} | ${row.passed}/${row.total} | ${formatMs(row.averageDurationMs)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageRequestEstimatedTokens)} | ${formatNumber(row.averageEstimatedOutputTokens)} | ${formatNumber(row.averageRequestPlusOutputEstimatedTokens)} | ${formatNumber(row.passedOnly?.averageRequestPlusOutputEstimatedTokens)} | ${formatNumber(row.averageNonSurfaceEstimatedTokens)} | ${formatNumber(row.averageProviderTokens)} | ${formatNumber(row.passedOnly?.averageProviderTokens)} | ${formatNumber(row.averageToolSurfaceEstimatedTokens)} | ${formatNumber(row.averageToolCalls)} |`,
   );
   const comparisonRows = report.summary.comparisons.map(
     (comparison: any) =>
-      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}, provider tokens ${formatPercent(comparison.providerTokenReduction)}`,
+      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}, request+output tokens ${formatPercent(comparison.requestPlusOutputTokenReduction)}, provider tokens ${formatPercent(comparison.providerTokenReduction)}`,
+  );
+  const publishabilityRows = report.summary.comparisons.map(
+    (comparison: any) =>
+      `| ${comparison.label} | ${comparison.passRateComparable ? "pass" : "fail"} | ${formatPercent(comparison.passRateDelta)} | ${formatPercent(comparison.requestPlusOutputTokenReduction)} | ${formatPercent(comparison.providerTokenReduction)} | ${comparison.publishableTokenEfficiencyClaim ? "yes" : "no"} |`,
   );
   const bucketRows = report.summary.byMode.map((row: any) => {
     const buckets = row.averageRequestTokenBuckets ?? {};
@@ -75,8 +82,8 @@ export function renderPiEvalMarkdownReport(report: any): string {
     "",
     "## Summary",
     "",
-    "| Mode | Product | Adapter exposure | Passed | Avg total duration | Avg LLM round trips | Avg tokenizer-estimated tokens | Avg non-surface estimated tokens | Avg provider tokens | Avg tool surface estimated tokens | Avg tool calls |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Mode | Product | Adapter exposure | Passed | Avg total duration | Avg LLM round trips | Avg tokenizer-estimated request tokens | Avg estimated output tokens | Avg request+output estimated tokens | Passed-only request+output estimated tokens | Avg non-surface estimated tokens | Avg provider tokens | Passed-only provider tokens | Avg tool surface estimated tokens | Avg tool calls |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...rows,
     "",
     "## Token Bucket Breakdown",
@@ -90,6 +97,14 @@ export function renderPiEvalMarkdownReport(report: any): string {
     "## Comparisons",
     "",
     ...(comparisonRows.length ? comparisonRows : ["- Not enough data"]),
+    "",
+    "## Publishability Gates",
+    "",
+    "Pass-rate gate requires the candidate mode to have a pass rate at least as high as the comparison baseline before making a token-efficiency claim.",
+    "",
+    "| Comparison | Pass-rate gate | Pass-rate delta | Request+output token reduction | Provider token reduction | Publishable token-efficiency claim |",
+    "| --- | --- | ---: | ---: | ---: | --- |",
+    ...(publishabilityRows.length ? publishabilityRows : ["| n/a | n/a | n/a | n/a | n/a | no |"]),
     "",
     "## Validator Summary",
     "",
@@ -108,7 +123,24 @@ function comparisons(byMode: any[]) {
   const byName = new Map(byMode.map((row) => [row.mode, row]));
   return [
     ["caplets-progressive", "caplets-direct", "caplets-progressive vs caplets-direct"],
+    ["caplets-progressive", "vanilla-mcp", "caplets-progressive vs vanilla-mcp"],
+    ["caplets-progressive", "executor-mcp", "caplets-progressive vs executor-mcp"],
     ["caplets-code-mode", "caplets-progressive", "caplets-code-mode vs caplets-progressive"],
+    ["caplets-code-mode", "vanilla-mcp", "caplets-code-mode vs vanilla-mcp"],
+    ["caplets-code-mode", "executor-mcp", "caplets-code-mode vs executor-mcp"],
+    ["caplets-direct-code-mode", "caplets-direct", "caplets-direct-code-mode vs caplets-direct"],
+    [
+      "caplets-direct-code-mode",
+      "caplets-code-mode",
+      "caplets-direct-code-mode vs caplets-code-mode",
+    ],
+    [
+      "caplets-code-mode",
+      "caplets-direct-code-mode",
+      "caplets-code-mode vs caplets-direct-code-mode",
+    ],
+    ["caplets-direct-code-mode", "vanilla-mcp", "caplets-direct-code-mode vs vanilla-mcp"],
+    ["caplets-direct-code-mode", "executor-mcp", "caplets-direct-code-mode vs executor-mcp"],
     [
       "caplets-progressive-code-mode",
       "caplets-progressive",
@@ -126,6 +158,7 @@ function comparisons(byMode: any[]) {
     ["executor-mcp", "caplets-direct", "executor-mcp vs caplets-direct"],
     ["executor-mcp", "caplets-progressive", "executor-mcp vs caplets-progressive"],
     ["executor-mcp", "caplets-code-mode", "executor-mcp vs caplets-code-mode"],
+    ["executor-mcp", "caplets-direct-code-mode", "executor-mcp vs caplets-direct-code-mode"],
     [
       "executor-mcp",
       "caplets-progressive-code-mode",
@@ -138,6 +171,16 @@ function comparisons(byMode: any[]) {
 
 function compareRows(a: any, b: any, label: any) {
   if (!a || !b) return null;
+  const passRateDelta =
+    typeof a.passRate === "number" && typeof b.passRate === "number"
+      ? a.passRate - b.passRate
+      : null;
+  const passRateComparable = typeof passRateDelta === "number" && passRateDelta >= 0;
+  const requestPlusOutputTokenReduction = reduction(
+    b.averageRequestPlusOutputEstimatedTokens,
+    a.averageRequestPlusOutputEstimatedTokens,
+  );
+  const providerTokenReduction = reduction(b.averageProviderTokens, a.averageProviderTokens);
   return {
     label,
     durationReduction: reduction(b.averageDurationMs, a.averageDurationMs),
@@ -149,7 +192,14 @@ function compareRows(a: any, b: any, label: any) {
       b.averageRequestEstimatedTokens,
       a.averageRequestEstimatedTokens,
     ),
-    providerTokenReduction: reduction(b.averageProviderTokens, a.averageProviderTokens),
+    requestPlusOutputTokenReduction,
+    providerTokenReduction,
+    passRateDelta,
+    passRateComparable,
+    publishableTokenEfficiencyClaim:
+      passRateComparable &&
+      typeof requestPlusOutputTokenReduction === "number" &&
+      requestPlusOutputTokenReduction > 0,
   };
 }
 
@@ -198,6 +248,33 @@ function averageRequestTokenBuckets(rows: any[]) {
       average(rows.map((row) => row.metrics?.requestTokenBuckets?.totals?.[bucket])),
     ]),
   );
+}
+
+function passedOnlySummary(rows: any[]) {
+  return {
+    total: rows.length,
+    averageRequestEstimatedTokens: average(
+      rows.map((row) => row.metrics?.requestPayloadEstimatedTokens),
+    ),
+    averageEstimatedOutputTokens: average(rows.map(estimatedOutputTokens)),
+    averageRequestPlusOutputEstimatedTokens: average(rows.map(requestPlusOutputTokens)),
+    averageProviderTokens: average(rows.map((row) => row.metrics?.providerUsage?.totalTokens)),
+    averageToolCalls: average(
+      rows.map((row) => row.metrics?.toolCallCount ?? row.score?.metrics?.toolCallCount),
+    ),
+    averageProviderRequestCount: average(rows.map((row) => row.metrics?.providerRequestCount)),
+  };
+}
+
+function estimatedOutputTokens(row: any) {
+  const value = row?.metrics?.providerUsage?.outputTokens;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function requestPlusOutputTokens(row: any) {
+  const requestTokens = row?.metrics?.requestPayloadEstimatedTokens;
+  if (typeof requestTokens !== "number" || !Number.isFinite(requestTokens)) return null;
+  return requestTokens + estimatedOutputTokens(row);
 }
 
 function groupBy<T>(items: T[], keyFn: (item: T) => string): Array<[string, T[]]> {

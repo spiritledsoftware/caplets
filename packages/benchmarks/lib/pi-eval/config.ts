@@ -8,6 +8,7 @@ export const PI_EVAL_MODES = [
   "caplets-direct",
   "caplets-progressive",
   "caplets-code-mode",
+  "caplets-direct-code-mode",
   "caplets-progressive-code-mode",
   "vanilla-mcp",
   "executor-mcp",
@@ -43,11 +44,15 @@ const defaultPiAgentSourceDir = resolve(
 );
 const PI_AUTH_FILES_TO_COPY = ["auth.json", "models.json"] as const;
 const PI_EVAL_FIXTURE_SERVERS = ["issues", "ci", "docs", "api", "code-map"] as const;
+const PI_MCP_ADAPTER_BEARER_TOKEN_ENV_BY_SERVER: Record<string, string> = {
+  github: "GH_TOKEN",
+};
 
 const exposureByMode = {
   "caplets-direct": "direct",
   "caplets-progressive": "progressive",
   "caplets-code-mode": "code_mode",
+  "caplets-direct-code-mode": "direct_and_code_mode",
   "caplets-progressive-code-mode": "progressive_and_code_mode",
 } as const;
 
@@ -88,6 +93,8 @@ export function buildPiEvalPrompt(task: any, mode: string): string {
       "Caplets capability tools expose inspect/list/search/describe/call operations; use describe before call when args matter.",
     "caplets-code-mode":
       "Use caplets_code_mode for Caplets discovery and compact retrieval in one external call; return only the facts needed for the edit.",
+    "caplets-direct-code-mode":
+      "Direct Caplets tools and caplets_code_mode are available; choose the shortest reliable path.",
     "caplets-progressive-code-mode":
       "Both Caplets capability tools and caplets_code_mode are available; choose the shortest reliable path.",
     "vanilla-mcp":
@@ -118,6 +125,7 @@ export function buildPiEvalCommand({
   command = "pi",
   prompt,
   model,
+  disableBuiltinTools = false,
   extensionPaths = [],
   extraArgs = [],
 }: any = {}) {
@@ -133,6 +141,7 @@ export function buildPiEvalCommand({
     "--no-prompt-templates",
     "--no-themes",
   ];
+  if (disableBuiltinTools) args.push("--no-builtin-tools");
   if (model) args.push("--model", model);
   for (const extensionPath of extensionPaths) args.push("-e", extensionPath);
   args.push(...extraArgs);
@@ -141,13 +150,25 @@ export function buildPiEvalCommand({
 
 export async function createPiEvalRunConfig(input: any = {}): Promise<any> {
   validatePiEvalMode(input.mode);
+  const resolvedInput =
+    input.realMcpServers?.length && !input.mcpServers
+      ? {
+          ...input,
+          mcpServers: createPiEvalRealMcpServers({
+            servers: input.realMcpServers,
+            workspaceRoot: input.candidateWorkspace,
+            supportDir: input.supportDir,
+            env: input.env,
+          }),
+        }
+      : input;
   if (input.mode === VANILLA_MCP_PI_EVAL_MODE) {
-    return await createVanillaMcpPiEvalRunConfig(input);
+    return await createVanillaMcpPiEvalRunConfig(resolvedInput);
   }
   if (input.mode === EXECUTOR_PI_EVAL_MODE) {
-    return await createExecutorPiEvalRunConfig(input);
+    return await createExecutorPiEvalRunConfig(resolvedInput);
   }
-  return await createCapletsPiEvalRunConfig(input);
+  return await createCapletsPiEvalRunConfig(resolvedInput);
 }
 
 export async function createCapletsPiEvalRunConfig({
@@ -159,6 +180,8 @@ export async function createCapletsPiEvalRunConfig({
   piAgentSourceDir = defaultPiAgentSourceDir,
   fixtureServerSourcePath,
   fixtureServers = [...PI_EVAL_FIXTURE_SERVERS],
+  mcpServers,
+  disableBuiltinTools = false,
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (isPiMcpAdapterPiEvalMode(mode)) {
@@ -167,7 +190,7 @@ export async function createCapletsPiEvalRunConfig({
   const runRoot = rootDir ? resolve(rootDir) : await mkdtemp(join(tmpdir(), "caplets-pi-eval-"));
   const paths = getBenchmarkPaths({ repoRoot: inputRepoRoot });
   const supportDir = join(runRoot, "support");
-  const fixtureServerPath = join(supportDir, "mcp-server.ts");
+  const fixtureServerPath = mcpServers ? null : join(supportDir, "mcp-server.ts");
   const modeDir = join(runRoot, mode);
   const configPath = join(modeDir, "caplets.config.json");
   const xdgConfigHome = join(runRoot, "xdg-config", mode);
@@ -186,7 +209,9 @@ export async function createCapletsPiEvalRunConfig({
   await mkdir(sessionsDir, { recursive: true });
   await mkdir(agentDir, { recursive: true });
   await mkdir(extensionDir, { recursive: true });
-  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  if (fixtureServerPath) {
+    await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  }
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -196,12 +221,14 @@ export async function createCapletsPiEvalRunConfig({
 
   const config = {
     options: { exposure: exposureByMode[mode as keyof typeof exposureByMode] },
-    mcpServers: createBenchmarkFixtureMcpServers({
-      repoRoot: inputRepoRoot,
-      fixtureServerPath,
-      cwd: supportDir,
-      servers: fixtureServers,
-    }),
+    mcpServers:
+      mcpServers ??
+      createBenchmarkFixtureMcpServers({
+        repoRoot: inputRepoRoot,
+        fixtureServerPath,
+        cwd: supportDir,
+        servers: fixtureServers,
+      }),
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   await writeFile(xdgCapletsConfigPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -210,6 +237,7 @@ export async function createCapletsPiEvalRunConfig({
     runRoot,
     mode,
     product: "caplets" as const,
+    disableBuiltinTools: Boolean(disableBuiltinTools),
     adapterExposure: null,
     config,
     configPath,
@@ -245,6 +273,8 @@ export async function createVanillaMcpPiEvalRunConfig({
   fixtureServerSourcePath,
   fixtureServers = [...PI_EVAL_FIXTURE_SERVERS],
   directToolsEnv = VANILLA_MCP_DIRECT_TOOLS_ENV,
+  mcpServers,
+  disableBuiltinTools = false,
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (mode !== VANILLA_MCP_PI_EVAL_MODE) {
@@ -254,7 +284,7 @@ export async function createVanillaMcpPiEvalRunConfig({
   const runRoot = rootDir ? resolve(rootDir) : await mkdtemp(join(tmpdir(), "caplets-pi-eval-"));
   const paths = getBenchmarkPaths({ repoRoot: inputRepoRoot });
   const supportDir = join(runRoot, "support");
-  const fixtureServerPath = join(supportDir, "mcp-server.ts");
+  const fixtureServerPath = mcpServers ? null : join(supportDir, "mcp-server.ts");
   const sessionsDir = join(runRoot, "sessions");
   const prewarmSessionsDir = join(runRoot, "prewarm-sessions");
   const agentDir = join(runRoot, "agent");
@@ -273,7 +303,9 @@ export async function createVanillaMcpPiEvalRunConfig({
   await mkdir(agentDir, { recursive: true });
   await mkdir(xdgConfigHome, { recursive: true });
   await mkdir(extensionDir, { recursive: true });
-  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  if (fixtureServerPath) {
+    await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  }
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -287,6 +319,7 @@ export async function createVanillaMcpPiEvalRunConfig({
     supportDir,
     path: envPath,
     servers: fixtureServers,
+    mcpServers,
   });
   await writeFile(adapterConfigPath, `${JSON.stringify(adapterConfig, null, 2)}\n`);
 
@@ -294,6 +327,7 @@ export async function createVanillaMcpPiEvalRunConfig({
     runRoot,
     mode,
     product: "mcp" as const,
+    disableBuiltinTools: Boolean(disableBuiltinTools),
     adapterExposure: VANILLA_MCP_PI_EVAL_ADAPTER_EXPOSURE,
     config: adapterConfig,
     adapterConfig,
@@ -331,6 +365,8 @@ export async function createExecutorPiEvalRunConfig({
   piAgentSourceDir = defaultPiAgentSourceDir,
   executorCommand = "executor",
   fixtureServerSourcePath,
+  mcpServers,
+  disableBuiltinTools = false,
 }: any = {}): Promise<any> {
   validatePiEvalMode(mode);
   if (mode !== EXECUTOR_PI_EVAL_MODE) {
@@ -340,7 +376,7 @@ export async function createExecutorPiEvalRunConfig({
   const runRoot = rootDir ? resolve(rootDir) : await mkdtemp(join(tmpdir(), "caplets-pi-eval-"));
   const paths = getBenchmarkPaths({ repoRoot: inputRepoRoot });
   const supportDir = join(runRoot, "support");
-  const fixtureServerPath = join(supportDir, "mcp-server.ts");
+  const fixtureServerPath = mcpServers ? null : join(supportDir, "mcp-server.ts");
   const sessionsDir = join(runRoot, "sessions");
   const prewarmSessionsDir = join(runRoot, "prewarm-sessions");
   const agentDir = join(runRoot, "pi-agent");
@@ -365,7 +401,9 @@ export async function createExecutorPiEvalRunConfig({
   await mkdir(extensionDir, { recursive: true });
   await mkdir(executorDataDir, { recursive: true });
   await mkdir(executorScopeDir, { recursive: true });
-  await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  if (fixtureServerPath) {
+    await copyFile(fixtureServerSourcePath ?? paths.fixtureServerPath, fixtureServerPath);
+  }
   await copyFile(instrumentationSourcePath, instrumentationPath);
   await copyFile(instrumentationMetricsSourcePath, instrumentationMetricsPath);
   const copiedPiAuthFiles = await copyPiAuthFiles({
@@ -386,9 +424,11 @@ export async function createExecutorPiEvalRunConfig({
     runRoot,
     mode,
     product: "executor" as const,
+    disableBuiltinTools: Boolean(disableBuiltinTools),
     adapterExposure: EXECUTOR_PI_EVAL_ADAPTER_EXPOSURE,
     config: adapterConfig,
     adapterConfig,
+    executorSourceMcpServers: mcpServers ?? null,
     adapterConfigPath,
     configPath: null,
     xdgConfigHome,
@@ -443,7 +483,7 @@ export function createExecutorMcpAdapterConfig({
     mcpServers: {
       executor: {
         command: executorCommand,
-        args: ["mcp"],
+        args: ["mcp", "--scope", executorScopeDir],
         env: {
           EXECUTOR_DATA_DIR: executorDataDir,
           EXECUTOR_SCOPE_DIR: executorScopeDir,
@@ -466,6 +506,7 @@ export function createVanillaMcpAdapterConfig({
   supportDir,
   path = benchmarkPath(),
   servers = [...PI_EVAL_FIXTURE_SERVERS],
+  mcpServers,
 }: any = {}) {
   return {
     settings: {
@@ -476,21 +517,172 @@ export function createVanillaMcpAdapterConfig({
       elicitation: false,
       idleTimeout: 0,
     },
-    mcpServers: createBenchmarkFixtureMcpServers({
-      repoRoot,
-      fixtureServerPath,
-      cwd: supportDir,
-      servers,
-      extra: {
-        env: { PATH: path },
-        lifecycle: "eager",
-        idleTimeout: 0,
-        exposeResources: true,
-        directTools: true,
-        debug: false,
-      },
-    }),
+    mcpServers: mcpServers
+      ? withVanillaMcpServerDefaults(mcpServers, { supportDir, path })
+      : createBenchmarkFixtureMcpServers({
+          repoRoot,
+          fixtureServerPath,
+          cwd: supportDir,
+          servers,
+          extra: {
+            env: { PATH: path },
+            lifecycle: "eager",
+            idleTimeout: 0,
+            exposeResources: true,
+            directTools: true,
+            debug: false,
+          },
+        }),
   };
+}
+
+export function createPiEvalRealMcpServers({
+  servers,
+  workspaceRoot,
+  env = process.env,
+  path = benchmarkPath(),
+}: any = {}) {
+  if (!workspaceRoot) {
+    throw new TypeError("createPiEvalRealMcpServers requires workspaceRoot.");
+  }
+  const serverConfigs: Record<string, any> = {};
+  for (const server of servers ?? []) {
+    serverConfigs[server] = createPiEvalRealMcpServer(server, { workspaceRoot, env, path });
+  }
+  return serverConfigs;
+}
+
+function createPiEvalRealMcpServer(server: string, { workspaceRoot, env, path }: any) {
+  const stdioEnv = { PATH: path };
+  if (server === "github") {
+    return {
+      name: "GitHub",
+      description:
+        "GitHub's hosted MCP server for repository, issue, pull request, Actions, and code workflows.",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      auth: { type: "bearer", token: env?.GH_TOKEN },
+    };
+  }
+  if (server === "context7") {
+    return {
+      name: "Context7 Documentation",
+      description: "Current library and framework documentation through Context7.",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      cwd: workspaceRoot,
+      env: { ...stdioEnv, CONTEXT7_API_KEY: env?.CONTEXT7_API_KEY },
+    };
+  }
+  if (server === "deepwiki") {
+    return {
+      name: "DeepWiki",
+      description: "Repository-focused documentation and codebase explanations through DeepWiki.",
+      transport: "http",
+      url: "https://mcp.deepwiki.com/mcp",
+      auth: { type: "none" },
+    };
+  }
+  if (server === "git") {
+    return {
+      name: "Git",
+      description: "Local Git repository inspection through the reference Git MCP server.",
+      command: "uvx",
+      args: ["mcp-server-git"],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  if (server === "filesystem") {
+    return {
+      name: "Filesystem",
+      description: "Scoped local filesystem access for the benchmark workspace.",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", workspaceRoot],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  if (server === "playwright") {
+    return {
+      name: "Playwright",
+      description: "Headless browser automation through Playwright MCP.",
+      command: "npx",
+      args: ["-y", "@playwright/mcp@0.0.75", "--headless", "--allow-unrestricted-file-access"],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  if (server === "ast_grep") {
+    return {
+      name: "ast-grep",
+      description: "Structural code search, scan, and rule workflows through ast-grep MCP.",
+      command: "npx",
+      args: ["-y", "ast-grep-mcp"],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  if (server === "language_server") {
+    return {
+      name: "Language Server",
+      description: "Language Server Protocol code intelligence through language-server-mcp.",
+      command: "npx",
+      args: ["-y", "language-server-mcp"],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  if (server === "duckduckgo") {
+    return {
+      name: "DuckDuckGo",
+      description: "No-key web search through DuckDuckGo MCP.",
+      command: "uvx",
+      args: ["duckduckgo-mcp-server"],
+      cwd: workspaceRoot,
+      env: stdioEnv,
+    };
+  }
+  throw new Error(`Unknown real MCP server ${server}.`);
+}
+
+function withVanillaMcpServerDefaults(mcpServers: Record<string, any>, { supportDir, path }: any) {
+  return Object.fromEntries(
+    Object.entries(mcpServers).map(([server, config]) => {
+      const adapterConfig = toPiMcpAdapterServerConfig(server, config as any);
+      const hasCommand = Boolean(adapterConfig.command);
+      return [
+        server,
+        {
+          ...adapterConfig,
+          ...(hasCommand ? { cwd: adapterConfig.cwd ?? supportDir } : {}),
+          ...(hasCommand ? { env: { ...adapterConfig.env, PATH: path } } : {}),
+          lifecycle: "eager",
+          idleTimeout: 0,
+          exposeResources: true,
+          directTools: true,
+          debug: false,
+        },
+      ];
+    }),
+  );
+}
+
+function toPiMcpAdapterServerConfig(server: string, config: any) {
+  const { auth, ...adapterConfig } = config;
+  if (auth?.type === "bearer") {
+    const bearerTokenEnv = auth.tokenEnv ?? PI_MCP_ADAPTER_BEARER_TOKEN_ENV_BY_SERVER[server];
+    return {
+      ...adapterConfig,
+      auth: "bearer",
+      ...(bearerTokenEnv ? { bearerTokenEnv } : {}),
+      ...(!bearerTokenEnv && auth.token ? { bearerToken: auth.token } : {}),
+    };
+  }
+  if (auth?.type === "none") {
+    return { ...adapterConfig, auth: false };
+  }
+  return auth === undefined ? adapterConfig : { ...adapterConfig, auth };
 }
 
 function benchmarkPath() {

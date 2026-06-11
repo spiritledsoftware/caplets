@@ -8,8 +8,18 @@ const defaultFixtureRoot = resolve(packageRoot, "fixtures");
 const codingFixtureRoot = defaultFixtureRoot;
 const mcpToolUseFixtureRoot = resolve(defaultFixtureRoot, "mcp-tool-use");
 const mcpRealisticNoAuthFixtureRoot = resolve(defaultFixtureRoot, "mcp-realistic-noauth");
+const mcpRealWorldLargeFixtureRoot = resolve(defaultFixtureRoot, "mcp-real-world-large");
+const mcpRealWorldLargeWorkspaceRoot = resolve(
+  defaultFixtureRoot,
+  "mcp-real-world-large-workspace",
+);
 
-export const PI_EVAL_SUITE_IDS = ["coding", "mcp-tool-use", "mcp-realistic-noauth"] as const;
+export const PI_EVAL_SUITE_IDS = [
+  "coding",
+  "mcp-tool-use",
+  "mcp-realistic-noauth",
+  "mcp-real-world-large",
+] as const;
 export type PiEvalSuiteId = (typeof PI_EVAL_SUITE_IDS)[number];
 export const DEFAULT_PI_EVAL_SUITE_ID: PiEvalSuiteId = "coding";
 
@@ -23,6 +33,9 @@ export type PiEvalSuite = {
   workspaceRequired: boolean;
   fixtureServerSourcePath: string;
   fixtureServers: string[];
+  realMcpServers?: string[];
+  requiredEnv?: string[];
+  disablePiBuiltinTools?: boolean;
   directToolsEnv: string;
   buildPrompt: (task: any, mode: string) => string;
   scoreRun: (input: any) => Promise<any>;
@@ -41,6 +54,7 @@ export function resolvePiEvalSuite(value = DEFAULT_PI_EVAL_SUITE_ID): PiEvalSuit
   validatePiEvalSuiteId(value);
   if (value === "mcp-tool-use") return mcpToolUseSuite;
   if (value === "mcp-realistic-noauth") return mcpRealisticNoAuthSuite;
+  if (value === "mcp-real-world-large") return mcpRealWorldLargeSuite;
   return codingSuite;
 }
 
@@ -123,6 +137,18 @@ const realisticNoAuthServers = [
   "incidents",
 ];
 
+const realWorldLargeServers = [
+  "github",
+  "context7",
+  "deepwiki",
+  "git",
+  "filesystem",
+  "playwright",
+  "ast_grep",
+  "language_server",
+  "duckduckgo",
+];
+
 const mcpRealisticNoAuthSuite: PiEvalSuite = {
   id: "mcp-realistic-noauth",
   label: "Realistic no-auth MCP workflows",
@@ -147,10 +173,38 @@ const mcpRealisticNoAuthSuite: PiEvalSuite = {
   publicTaskMetadata: publicMcpToolUseTaskMetadata,
 };
 
+const mcpRealWorldLargeSuite: PiEvalSuite = {
+  id: "mcp-real-world-large",
+  label: "Real-world large MCP stack workflows",
+  defaultTasks: [
+    "real-release-risk-brief",
+    "dependency-docs-migration-check",
+    "code-navigation-impact-brief",
+    "browser-runbook-verification",
+    "public-repo-architecture-scout",
+  ],
+  fixtureRoot: mcpRealWorldLargeFixtureRoot,
+  tasksPath: resolve(mcpRealWorldLargeFixtureRoot, "tasks.json"),
+  workspaceRoot: mcpRealWorldLargeWorkspaceRoot,
+  workspaceRequired: true,
+  fixtureServerSourcePath: "",
+  fixtureServers: [],
+  realMcpServers: realWorldLargeServers,
+  requiredEnv: ["GH_TOKEN", "CONTEXT7_API_KEY"],
+  disablePiBuiltinTools: true,
+  directToolsEnv: realWorldLargeServers.join(","),
+  buildPrompt: buildMcpToolUsePrompt,
+  scoreRun: async (input: any) => {
+    const { scoreMcpToolUseRun } = await import("./mcp-tool-use-score");
+    return await scoreMcpToolUseRun(input);
+  },
+  publicTaskMetadata: publicMcpToolUseTaskMetadata,
+};
+
 function buildMcpToolUsePrompt(task: any, mode: string): string {
   return [
     "You are running a benchmark. Complete the backend tool-use task using the configured MCP tools.",
-    "Do not inspect or edit repository files.",
+    "Do not inspect benchmark harness files. Do not edit task files.",
     "Use tool evidence for every material fact. Do not guess.",
     "Return a concise final answer containing one JSON object with keys: taskId, decision, facts, summary.",
     "Each facts entry must include key, value, and evidence.",
@@ -158,7 +212,6 @@ function buildMcpToolUsePrompt(task: any, mode: string): string {
     "",
     `Task ID: ${task.id}`,
     task.task_description ?? task.prompt,
-    task.fuzzy_description ? `Context: ${task.fuzzy_description}` : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -171,10 +224,12 @@ function mcpToolUseModeHint(mode: string) {
       "Caplets capability tools expose inspect/list/search/describe/call operations; use tools/search_tools callTemplate and arg hints for simple direct calls, and reserve describe_tool for complex or uncertain schemas.",
     "caplets-code-mode":
       "Use caplets_code_mode for compact Caplets discovery and retrieval; return only the facts needed for the final JSON.",
+    "caplets-direct-code-mode":
+      "Direct Caplets tools and caplets_code_mode are available; choose the shortest reliable path.",
     "caplets-progressive-code-mode":
       "Both Caplets capability tools and caplets_code_mode are available; choose the shortest reliable path.",
     "vanilla-mcp":
-      "The fixture MCP servers are exposed as plain direct MCP tools, without Caplets or Executor.",
+      "The MCP servers are exposed as plain direct MCP tools, without Caplets or Executor.",
     "executor-mcp": "Executor is available through direct Pi tools registered by the MCP adapter.",
   };
   return hints[mode] ?? "";

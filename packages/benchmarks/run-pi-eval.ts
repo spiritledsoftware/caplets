@@ -33,6 +33,7 @@ import {
   DEFAULT_EXECUTOR_COMMAND,
   detectExecutorCli,
   setupExecutorFixtureSources,
+  setupExecutorMcpSources,
 } from "./lib/pi-eval/executor";
 import { renderPiEvalMarkdownReport, summarizePiEvalResults } from "./lib/pi-eval/report";
 
@@ -153,6 +154,7 @@ export async function runPiEvalBenchmark({
   if (env.CAPLETS_BENCH_LIVE !== "1") {
     throw new Error("Refusing to run live Pi eval unless CAPLETS_BENCH_LIVE=1.");
   }
+  validateSuiteRequiredEnv(suite, env);
 
   const pi = await piDetector({ env });
   if (!pi?.available) {
@@ -218,25 +220,44 @@ export async function runPiEvalBenchmark({
     let runConfig: any;
 
     try {
+      await preparePiEvalWorkspace({
+        suite,
+        candidateWorkspace,
+        processRunner,
+        env,
+        timeoutMs: Math.min(evalOptions.timeoutMs, 60_000),
+      });
       runConfig = await runConfigFactory({
         mode: entry.mode,
         requireBuild: true,
         executorCommand: evalOptions.executorCommand,
         fixtureServerSourcePath: suite.fixtureServerSourcePath,
         fixtureServers: suite.fixtureServers,
+        realMcpServers: suite.realMcpServers,
+        candidateWorkspace,
         directToolsEnv: suite.directToolsEnv,
+        disableBuiltinTools: Boolean(suite.disablePiBuiltinTools),
+        env,
       });
       let executorSetup = null;
       let prewarmResult = null;
       if (entry.mode === EXECUTOR_PI_EVAL_MODE) {
-        executorSetup = await setupExecutorFixtureSources({
+        const setupInput = {
           executorCommand: evalOptions.executorCommand,
-          fixtureServerPath: runConfig.fixtureServerPath,
           supportDir: runConfig.supportDir,
           env: { ...env, ...runConfig.env, CAPLETS_BENCH_LIVE: "1" },
           processRunner,
-          servers: suite.fixtureServers,
-        });
+        };
+        executorSetup = runConfig.executorSourceMcpServers
+          ? await setupExecutorMcpSources({
+              ...setupInput,
+              mcpServers: runConfig.executorSourceMcpServers,
+            })
+          : await setupExecutorFixtureSources({
+              ...setupInput,
+              fixtureServerPath: runConfig.fixtureServerPath,
+              servers: suite.fixtureServers,
+            });
       }
       if (isPiMcpAdapterPiEvalMode(entry.mode)) {
         prewarmResult = await prewarmMcpAdapterDirectTools({
@@ -255,6 +276,7 @@ export async function runPiEvalBenchmark({
         command: pi.command ?? "pi",
         prompt,
         model: evalOptions.model,
+        disableBuiltinTools: Boolean(runConfig.disableBuiltinTools),
         extensionPaths: runConfig.extensionPaths,
         extraArgs: runConfig.extraArgs,
       });
@@ -309,7 +331,9 @@ export async function runPiEvalBenchmark({
             ? {
                 command: evalOptions.executorCommand,
                 version: executorInfo?.version ?? null,
-                setupSources: executorSetup?.payloads?.map((payload: any) => payload.name) ?? [],
+                setupSources:
+                  executorSetup?.payloads?.map((payload: any) => payload.slug ?? payload.name) ??
+                  [],
               }
             : null,
         command,
@@ -322,6 +346,8 @@ export async function runPiEvalBenchmark({
                 exitCode: prewarmResult.exitCode,
                 timedOut: prewarmResult.timedOut,
                 durationMs: prewarmResult.durationMs,
+                success: prewarmResult.prewarmSuccess !== false,
+                failureReason: prewarmResult.prewarmFailureReason ?? null,
                 metricsPath: runConfig.prewarmMetricsPath,
                 sessionDir: runConfig.prewarmSessionsDir,
                 unmeasured: true,
@@ -357,6 +383,9 @@ export async function runPiEvalBenchmark({
       label: suite.label,
       workspaceRequired: suite.workspaceRequired,
       fixtureServers: suite.fixtureServers,
+      realMcpServers: suite.realMcpServers ?? [],
+      requiredEnv: suite.requiredEnv ?? [],
+      disablePiBuiltinTools: Boolean(suite.disablePiBuiltinTools),
     },
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
@@ -392,6 +421,7 @@ export async function prewarmMcpAdapterDirectTools({
     command: piCommand,
     prompt: buildPiEvalPrewarmPrompt(),
     model,
+    disableBuiltinTools: Boolean(runConfig.disableBuiltinTools),
     extensionPaths: runConfig.extensionPaths,
     extraArgs: runConfig.extraArgs,
   });
@@ -409,11 +439,15 @@ export async function prewarmMcpAdapterDirectTools({
     timeoutMs,
   });
   if (result.timedOut || result.signal || (result.exitCode != null && result.exitCode !== 0)) {
-    throw new Error(
-      `MCP adapter direct-tools prewarm failed${result.timedOut ? " (timed out)" : ""}${result.exitCode != null ? ` with exit code ${result.exitCode}` : ""}.`,
-    );
+    return {
+      ...result,
+      command: command.command,
+      args: command.args,
+      prewarmSuccess: false,
+      prewarmFailureReason: `MCP adapter direct-tools prewarm failed${result.timedOut ? " (timed out)" : ""}${result.exitCode != null ? ` with exit code ${result.exitCode}` : ""}.`,
+    };
   }
-  return { ...result, command: command.command, args: command.args };
+  return { ...result, command: command.command, args: command.args, prewarmSuccess: true };
 }
 
 export const prewarmExecutorDirectTools = prewarmMcpAdapterDirectTools;
@@ -423,6 +457,38 @@ async function createPiEvalWorkspace({ suite, fixtureWorkspaceRoot }: any) {
     return await createTempWorkspaceFromFixture(fixtureWorkspaceRoot);
   }
   return await mkdtemp(join(tmpdir(), "caplets-pi-eval-workspace-"));
+}
+
+async function preparePiEvalWorkspace({
+  suite,
+  candidateWorkspace,
+  processRunner,
+  env,
+  timeoutMs,
+}: any) {
+  if (suite.id !== "mcp-real-world-large") return;
+  const commands = [
+    ["git", ["init"]],
+    ["git", ["config", "user.email", "benchmark@example.invalid"]],
+    ["git", ["config", "user.name", "Caplets Benchmark"]],
+    ["git", ["config", "commit.gpgsign", "false"]],
+    ["git", ["add", "."]],
+    ["git", ["commit", "--no-gpg-sign", "-m", "seed benchmark workspace"]],
+  ];
+  for (const [command, args] of commands) {
+    const result = await processRunner({
+      command,
+      args,
+      cwd: candidateWorkspace,
+      env,
+      timeoutMs,
+    });
+    if (result.timedOut || result.signal || (result.exitCode != null && result.exitCode !== 0)) {
+      throw new Error(
+        `Failed to prepare ${suite.id} workspace with ${command} ${(args as string[]).join(" ")}.`,
+      );
+    }
+  }
 }
 
 export async function loadTasks(tasksPath = resolvePiEvalSuite().tasksPath) {
@@ -477,10 +543,20 @@ function selectTasks(tasks: any[], ids?: string[]) {
   return selected;
 }
 
+function validateSuiteRequiredEnv(suite: any, env: Record<string, string | undefined>) {
+  const missing = (suite.requiredEnv ?? []).filter((name: string) => !env[name]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Pi eval suite ${suite.id} requires environment variable${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`,
+    );
+  }
+}
+
 function publicRunConfig(runConfig: any) {
   return {
     mode: runConfig.mode,
     product: runConfig.product,
+    disableBuiltinTools: Boolean(runConfig.disableBuiltinTools),
     adapterExposure: runConfig.adapterExposure,
     configPath: runConfig.configPath,
     adapterConfigPath: runConfig.adapterConfigPath,

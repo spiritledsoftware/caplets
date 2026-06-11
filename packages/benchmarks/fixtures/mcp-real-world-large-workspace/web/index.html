@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Checkout Status</title>
+  </head>
+  <body>
+    <main>
+      <h1>Checkout Status</h1>
+      <section aria-label="Release status">
+        <p data-testid="decision">Current recommendation: hold</p>
+        <p data-testid="reason">Rollback owner and low-rollout enabled flag must be verified.</p>
+        <dl>
+          <dt>Flag</dt>
+          <dd>checkout.retryBudget.v2</dd>
+          <dt>Rollout</dt>
+          <dd>25 percent</dd>
+          <dt>Rollback owner</dt>
+          <dd>payments-platform</dd>
+        </dl>
+      </section>
+      <section aria-label="Release evidence">
+        <p data-testid="source">Release evidence should match docs/runbook.md.</p>
+      </section>
+    </main>
+  </body>
+</html>
