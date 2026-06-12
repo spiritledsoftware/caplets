@@ -1,5 +1,20 @@
 # @caplets/core
 
+## 0.20.0
+
+### Minor Changes
+
+- e4400d8: Make Code Mode the default Caplets exposure mode. Configs that omit `options.exposure` now expose `code_mode` by default; progressive wrapper tools remain available by setting `options.exposure` to `progressive` or `progressive_and_code_mode`.
+
+### Patch Changes
+
+- e4400d8: Update `caplets setup` to prompt for integrations when run interactively, and update Codex and Claude Code setup to configure standard MCP servers through each harness instead of removed plugin marketplace commands.
+- e4400d8: Publish the expanded Core package surface needed by hosted Cloud and native agent
+  integrations, including Code Mode entrypoints, observed output shape utilities,
+  project binding exports, redaction/stable JSON helpers, runtime-plan resource
+  helpers, native `caplets__<capletId>` / `caplets__code_mode` tool naming, and
+  cloud attach URL normalization.
+
 ## 0.19.0
 
 ### Minor Changes

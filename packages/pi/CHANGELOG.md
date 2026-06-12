@@ -1,5 +1,14 @@
 # @caplets/pi
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+  - @caplets/core@0.20.0
+
 ## 0.6.0
 
 ### Minor Changes

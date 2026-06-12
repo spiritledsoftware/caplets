@@ -1,5 +1,15 @@
 # @caplets/opencode
 
+## 0.5.1
+
+### Patch Changes
+
+- e4400d8: Package native Caplets Code Mode assets for OpenCode and cover `caplets__code_mode` registration.
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+  - @caplets/core@0.20.0
+
 ## 0.5.0
 
 ### Minor Changes
