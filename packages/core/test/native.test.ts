@@ -298,6 +298,36 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("returns structured errors for invalid Code Mode payloads", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+    try {
+      await expect(service.execute("code_mode", { timeoutMs: 1_000 })).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "REQUEST_INVALID",
+          message: "Code Mode run input is invalid.",
+        },
+        diagnostics: [],
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("returns structured errors for unknown Caplets", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

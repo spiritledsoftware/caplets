@@ -505,6 +505,38 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("returns structured errors for invalid composite Code Mode payloads", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const localExecute = vi.fn(async () => {
+      throw new Error("local should not receive invalid code mode");
+    });
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await expect(service.execute("code_mode", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+      },
+      diagnostics: [],
+    });
+    expect(localExecute).not.toHaveBeenCalled();
+    expect(fixture.api.callTool).not.toHaveBeenCalled();
+    await service.close();
+  });
+
   it("emits one merged tools-changed event only when the merged set changes", async () => {
     const fixture = client([{ name: "alpha", title: "Alpha" }]);
     const { dir, configPath, projectConfigPath } = tempConfig({

@@ -30,11 +30,7 @@ import {
 } from "../code-mode/declarations";
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
-import {
-  codeModeRunInputJsonSchema,
-  codeModeRunInputSchema,
-  isCodeModeRunRequest,
-} from "../code-mode/tool";
+import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
@@ -176,7 +172,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    if (capletId === nativeCodeModeToolId && isCodeModeRunRequest(request)) {
+    if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this.codeModeDelegate(), request);
     }
     const route = this.directToolRoutes.get(capletId);
@@ -723,7 +719,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
-    if (capletId === nativeCodeModeToolId && isCodeModeRunRequest(request)) {
+    if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request);
     }
     if (this.local.listTools().some((tool) => tool.caplet === capletId)) {
