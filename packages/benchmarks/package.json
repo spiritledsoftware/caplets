@@ -9,11 +9,14 @@
     "benchmark:live:opencode": "tsx run-live.ts --agent opencode",
     "benchmark:live:pi": "tsx run-live.ts --agent pi",
     "typecheck": "tsgo --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "benchmark:live:pi-eval": "tsx run-pi-eval.ts",
+    "benchmark:live:pi-eval:competitors": "tsx run-pi-eval.ts --mode caplets-code-mode,caplets-direct-code-mode,caplets-progressive-code-mode,vanilla-mcp,executor-mcp"
   },
   "dependencies": {
     "@caplets/core": "workspace:*",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "js-tiktoken": "^1.0.20"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

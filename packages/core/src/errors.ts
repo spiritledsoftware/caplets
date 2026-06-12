@@ -1,3 +1,5 @@
+import { isSecretKey, redactSecretText } from "./redaction";
+
 export const CAPLETS_ERROR_CODES = [
   "CONFIG_NOT_FOUND",
   "CONFIG_EXISTS",
@@ -44,15 +46,9 @@ export class CapletsError extends Error {
   }
 }
 
-const SECRET_KEY_PATTERN =
-  /(token|secret|authorization|auth|api[-_]?key|password|credential|clientsecret|client_secret|code|refresh)/i;
-
-const SECRET_VALUE_PATTERN =
-  /(bearer\s+)[a-z0-9._~+/=-]+|([?&](?:access_token|refresh_token|token|code)=)[^&\s]+/gi;
-
 export function redactSecrets(value: unknown): unknown {
   if (typeof value === "string") {
-    return value.replace(SECRET_VALUE_PATTERN, "$1$2[REDACTED]");
+    return redactSecretText(value).text;
   }
 
   if (Array.isArray(value)) {
@@ -62,7 +58,7 @@ export function redactSecrets(value: unknown): unknown {
   if (value && typeof value === "object") {
     const redacted: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(value)) {
-      redacted[key] = SECRET_KEY_PATTERN.test(key) ? "[REDACTED]" : redactSecrets(nested);
+      redacted[key] = isSecretKey(key) ? "[REDACTED]" : redactSecrets(nested);
     }
     return redacted;
   }

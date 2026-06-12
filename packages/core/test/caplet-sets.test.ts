@@ -39,7 +39,7 @@ describe("CapletSetManager", () => {
     });
     const tools = await manager.listTools(caplet);
     expect(tools.map((tool) => tool.name)).toEqual(["echoes"]);
-    expect(manager.search(caplet, tools, "echo", 5)).toMatchObject([{ tool: "echoes" }]);
+    expect(manager.search(caplet, tools, "echo", 5)).toMatchObject([{ name: "echoes" }]);
     await expect(manager.getTool(caplet, "echoes")).resolves.toMatchObject({
       name: "echoes",
       inputSchema: expect.objectContaining({
@@ -47,18 +47,18 @@ describe("CapletSetManager", () => {
       }),
     });
 
-    const listed = await manager.callTool(caplet, "echoes", { operation: "list_tools" });
+    const listed = await manager.callTool(caplet, "echoes", { operation: "tools" });
     expect(listed.structuredContent).toMatchObject({
       result: {
         id: "echoes",
-        tools: [{ tool: "echo_json" }],
+        items: [{ name: "echo_json" }],
       },
     });
 
     const called = await manager.callTool(caplet, "echoes", {
       operation: "call_tool",
-      tool: "echo_json",
-      arguments: { message: "hello" },
+      name: "echo_json",
+      args: { message: "hello" },
     });
     expect(called.isError).toBe(false);
     expect(called.structuredContent).toMatchObject({
@@ -272,7 +272,7 @@ describe("CapletSetManager", () => {
     const caplet = config.capletSets.nested!;
     const manager = new CapletSetManager(new ServerRegistry(config));
 
-    const result = await manager.callTool(caplet, "self", { operation: "check_backend" });
+    const result = await manager.callTool(caplet, "self", { operation: "check" });
 
     expect(result.structuredContent).toMatchObject({
       result: {

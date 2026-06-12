@@ -58,12 +58,12 @@ describe("RemoteNativeCapletsService", () => {
     expect(service.listTools()).toEqual([
       expect.objectContaining({
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "git-hub",
       }),
     ]);
     expect(service.listTools()[0]?.description).toContain("GitHub tools");
-    expect(service.listTools()[0]?.description).toContain("Native tool name: caplets_git_hub");
+    expect(service.listTools()[0]?.description).toContain("Native tool name: caplets__git-hub");
     expect(service.listTools()[0]?.description).toContain("Remote Caplet ID: git-hub");
     expect(service.listTools()[0]?.promptGuidance.join("\n")).toContain("remote Caplets service");
 
@@ -127,7 +127,7 @@ describe("RemoteNativeCapletsService", () => {
     await vi.waitFor(() => expect(listener).toHaveBeenCalled());
 
     expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta", toolName: "caplets_beta" }),
+      expect.objectContaining({ caplet: "beta", toolName: "caplets__beta" }),
     ]);
     await service.close();
   });
@@ -436,7 +436,7 @@ describe("createNativeCapletsService remote mode", () => {
       writeErr,
     });
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["local"]);
     expect(writeErr).toHaveBeenCalledTimes(1);
     expect(writeErr).toHaveBeenCalledWith(
       "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n",
@@ -467,7 +467,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await service.reload();
 
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["remote-only", "Remote Only"],
       ["shared", "Local Shared"],
       ["local-only", "Local Only"],
@@ -505,6 +505,87 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("returns structured errors for invalid composite Code Mode payloads", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const localExecute = vi.fn(async () => {
+      throw new Error("local should not receive invalid code mode");
+    });
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await expect(service.execute("code_mode", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+      },
+      diagnostics: [],
+    });
+    expect(localExecute).not.toHaveBeenCalled();
+    expect(fixture.api.callTool).not.toHaveBeenCalled();
+    await service.close();
+  });
+
+  it("keeps composite Code Mode scoped to code-mode-callable Caplets", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        "local-progressive": {
+          name: "Local Progressive",
+          description: "Visible locally, but not callable from Code Mode.",
+          exposure: "progressive",
+          command: process.execPath,
+        },
+      },
+      httpApis: {
+        "local-code": {
+          name: "Local Code",
+          description: "Callable from Code Mode.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    try {
+      await service.reload();
+
+      await expect(
+        service.execute("code_mode", {
+          code: "return { keys: Object.keys(caplets).sort() };",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: {
+          keys: ["debug", "local-code", "remote-only"],
+        },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("emits one merged tools-changed event only when the merged set changes", async () => {
     const fixture = client([{ name: "alpha", title: "Alpha" }]);
     const { dir, configPath, projectConfigPath } = tempConfig({
@@ -528,10 +609,7 @@ describe("createNativeCapletsService remote mode", () => {
     fixture.emit();
     await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
 
-    expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta" }),
-      expect.objectContaining({ caplet: "local" }),
-    ]);
+    expect(configuredCapletIds(listener.mock.calls[0]?.[0] ?? [])).toEqual(["beta", "local"]);
     await expect(service.reload()).resolves.toBe(true);
     expect(listener).toHaveBeenCalledTimes(1);
     await service.close();
@@ -558,20 +636,26 @@ describe("createNativeCapletsService remote mode", () => {
     fixture.setTools([{ name: "beta", title: "Beta" }]);
     writeFileSync(
       configPath,
-      JSON.stringify({
-        mcpServers: {
-          local: { name: "Local Renamed", description: "Local Caplet.", command: process.execPath },
-        },
-      }),
+      JSON.stringify(
+        progressiveTestConfig({
+          mcpServers: {
+            local: {
+              name: "Local Renamed",
+              description: "Local Caplet.",
+              command: process.execPath,
+            },
+          },
+        }),
+      ),
       "utf8",
     );
 
     await expect(service.reload()).resolves.toBe(true);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta", title: "Beta" }),
-      expect.objectContaining({ caplet: "local", title: "Local Renamed" }),
+    expect(configuredCapletTitles(listener.mock.calls[0]?.[0] ?? [])).toEqual([
+      ["beta", "Beta"],
+      ["local", "Local Renamed"],
     ]);
     await service.close();
   });
@@ -603,10 +687,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(secondListener).toHaveBeenCalledWith([
-      expect.objectContaining({ caplet: "beta" }),
-      expect.objectContaining({ caplet: "local" }),
-    ]);
+    expect(configuredCapletIds(secondListener.mock.calls[0]?.[0] ?? [])).toEqual(["beta", "local"]);
     expect(writeErr).toHaveBeenCalledWith(
       expect.stringContaining("Caplets tools-changed listener failed"),
     );
@@ -641,7 +722,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(false);
 
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["alpha", "Alpha"],
       ["local", "Local"],
     ]);
@@ -674,7 +755,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
     await service.close();
   });
@@ -697,7 +778,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await service.reload();
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("Caplets local overlay warning"));
     await service.close();
   });
@@ -726,7 +807,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(service.listTools().map((tool) => tool.caplet)).toContain("remote");
     expect(factory).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: new URL("https://cloud.caplets.dev/mcp"),
+        url: new URL("https://cloud.caplets.dev/ws/personal/mcp"),
         requestInit: { headers: { Authorization: "Bearer cloud-access" } },
       }),
     );
@@ -760,6 +841,7 @@ describe("createNativeCapletsService remote mode", () => {
         "---",
         "name: Local",
         "description: Local Caplet.",
+        "exposure: progressive_and_code_mode",
         "mcpServer:",
         `  command: ${JSON.stringify(process.execPath)}`,
         "---",
@@ -770,7 +852,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     await expect(service.reload()).resolves.toBe(true);
 
-    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["remote", "local"]);
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining(badCapletPath));
     await service.close();
   });
@@ -933,7 +1015,24 @@ function tempConfig(config: unknown) {
   mkdirSync(projectDir, { recursive: true });
   const configPath = join(userDir, "config.json");
   const projectConfigPath = join(projectDir, "config.json");
-  writeFileSync(configPath, JSON.stringify(config), "utf8");
+  writeFileSync(configPath, JSON.stringify(progressiveTestConfig(config)), "utf8");
   writeFileSync(projectConfigPath, JSON.stringify({}), "utf8");
   return { dir, configPath, projectConfigPath };
+}
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
+}
+
+function configuredCapletIds(tools: Array<{ caplet: string }>): string[] {
+  return tools.map((tool) => tool.caplet).filter((caplet) => caplet !== "code_mode");
+}
+
+function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
+  return tools
+    .filter((tool) => tool.caplet !== "code_mode")
+    .map((tool) => [tool.caplet, tool.title]);
 }

@@ -26,9 +26,11 @@ export type SetupCommandResult = {
 };
 
 export type SetupCommandRunner = (command: string, args: string[]) => Promise<SetupCommandResult>;
+export type SetupPromptReader = (prompt: string) => Promise<string>;
 
 export type SetupOptions = {
   remote?: boolean;
+  remoteUrl?: string;
   serverUrl?: string;
   output?: string;
   dryRun?: boolean;
@@ -37,6 +39,10 @@ export type SetupOptions = {
   runCommand?: SetupCommandRunner;
   yes?: boolean;
   target?: SetupTargetOption;
+};
+
+export type InteractiveSetupOptions = SetupOptions & {
+  readPrompt: SetupPromptReader;
 };
 
 type SetupAction =
@@ -72,16 +78,17 @@ const localMcpConfig = `{
 
 export function formatSetupMenu(): string {
   return [
-    "Usage: caplets setup <integration>",
+    "Usage: caplets setup [integration]",
     "",
     "Supported integrations:",
-    "  codex        Run Codex plugin marketplace and plugin install commands",
-    "  claude-code  Run Claude Code plugin marketplace and plugin install commands",
+    "  codex        Add Caplets to Codex MCP config",
+    "  claude-code  Add Caplets to Claude Code MCP config",
     "  opencode     Run OpenCode native plugin install",
     "  pi           Run Pi extension install",
     "  mcp-client   Write a generic MCP client config with --output",
     "",
     "Examples:",
+    "  caplets setup",
     "  caplets setup codex",
     "  caplets setup opencode --dry-run",
     "  caplets setup mcp-client --output ./caplets.mcp.json",
@@ -89,12 +96,55 @@ export function formatSetupMenu(): string {
   ].join("\n");
 }
 
+export function formatSetupPrompt(): string {
+  return [
+    "Select integrations to set up:",
+    "  1. Codex",
+    "  2. Claude Code",
+    "  3. OpenCode",
+    "  4. Pi",
+    "  5. Any MCP client",
+    "",
+    "Enter numbers, ids, or all, separated by commas (default: codex): ",
+  ].join("\n");
+}
+
+export async function runInteractiveSetup(options: InteractiveSetupOptions): Promise<string> {
+  if (options.format === "json") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "interactive caplets setup only supports plain output; pass an integration with --format json",
+    );
+  }
+
+  const selected = parseInteractiveSetupSelection(await options.readPrompt(formatSetupPrompt()));
+  const chunks: string[] = [];
+
+  for (const integration of selected) {
+    const setupOptions: SetupOptions = { ...options };
+    if (integration === "mcp-client" && !setupOptions.output) {
+      const output = nonEmpty(
+        await options.readPrompt("Path to write generic MCP config (--output): "),
+      );
+      if (!output) {
+        throw new CapletsError("REQUEST_INVALID", "mcp-client setup requires an output path");
+      }
+      setupOptions.output = output;
+    }
+    chunks.push(await runSetup(integration, setupOptions));
+  }
+
+  return chunks.join("\n");
+}
+
 export async function runSetup(integration: string, options: SetupOptions = {}): Promise<string> {
   if (!setupIntegrationIds.includes(integration as SetupIntegrationId)) {
     return await runCapletSetupCli(integration, {
       ...(options.yes === undefined ? {} : { yes: options.yes }),
       target: resolveSetupTargetKind(options),
-      ...(options.remote === undefined ? {} : { remote: options.remote }),
+      ...(options.remote === undefined && !isRemoteSetup(options)
+        ? {}
+        : { remote: isRemoteSetup(options) }),
     });
   }
   const result = await executeSetup(integration, options);
@@ -150,7 +200,7 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
   return {
     integration: id,
     name: definition.name,
-    mode: options.remote ? "remote" : "local",
+    mode: isRemoteSetup(options) ? "remote" : "local",
     targetKind: resolveSetupTargetKind(options),
     dryRun: Boolean(options.dryRun),
     actions,
@@ -162,7 +212,7 @@ function setupDefinition(
   id: SetupIntegrationId,
   options: SetupOptions,
 ): { name: string; actions: SetupAction[]; nextSteps: string[] } {
-  if (options.remote) return remoteSetupDefinition(id, options);
+  if (isRemoteSetup(options)) return remoteSetupDefinition(id, options);
 
   switch (id) {
     case "codex":
@@ -171,18 +221,13 @@ function setupDefinition(
         actions: [
           {
             type: "command",
-            label: "Add Caplets marketplace to Codex",
+            label: "Add Caplets MCP server to Codex",
             command: "codex",
-            args: ["plugin", "marketplace", "add", "spiritledsoftware/caplets"],
-          },
-          {
-            type: "command",
-            label: "Install Caplets Codex plugin",
-            command: "codex",
-            args: ["plugin", "add", "caplets@caplets"],
+            args: codexMcpAddArgs(["serve"]),
           },
         ],
         nextSteps: [
+          "In Codex, run /mcp to confirm the caplets server is connected.",
           "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
           'Ask Codex: codex "try using the github caplet"',
         ],
@@ -193,19 +238,13 @@ function setupDefinition(
         actions: [
           {
             type: "command",
-            label: "Add Caplets marketplace to Claude Code",
+            label: "Add Caplets MCP server to Claude Code",
             command: "claude",
-            args: ["plugin", "marketplace", "add", "spiritledsoftware/caplets"],
-          },
-          {
-            type: "command",
-            label: "Install Caplets Claude Code plugin",
-            command: "claude",
-            args: ["plugin", "install", "caplets@caplets"],
+            args: claudeMcpAddArgs(["serve"]),
           },
         ],
         nextSteps: [
-          "Restart Claude Code if it was already running.",
+          "In Claude Code, run /mcp to confirm the caplets server is connected.",
           "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
         ],
       };
@@ -268,7 +307,9 @@ function remoteSetupDefinition(
   options: SetupOptions,
 ): { name: string; actions: SetupAction[]; nextSteps: string[] } {
   const serverUrl =
+    nonEmpty(options.remoteUrl) ??
     nonEmpty(options.serverUrl) ??
+    nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
     nonEmpty(options.env?.CAPLETS_SERVER_URL) ??
     "https://caplets.example.com/caplets";
 
@@ -308,6 +349,42 @@ function remoteSetupDefinition(
     };
   }
 
+  if (id === "codex") {
+    return {
+      name: "Codex",
+      actions: [
+        {
+          type: "command",
+          label: "Add remote-backed Caplets MCP server to Codex",
+          command: "codex",
+          args: codexMcpAddArgs(["attach", "--remote-url", serverUrl]),
+        },
+      ],
+      nextSteps: [
+        "In Codex, run /mcp to confirm the caplets server is connected.",
+        "Keep remote credentials in your shell or secret manager; do not hardcode them in config.",
+      ],
+    };
+  }
+
+  if (id === "claude-code") {
+    return {
+      name: "Claude Code",
+      actions: [
+        {
+          type: "command",
+          label: "Add remote-backed Caplets MCP server to Claude Code",
+          command: "claude",
+          args: claudeMcpAddArgs(["attach", "--remote-url", serverUrl]),
+        },
+      ],
+      nextSteps: [
+        "In Claude Code, run /mcp to confirm the caplets server is connected.",
+        "Keep remote credentials in your shell or secret manager; do not hardcode them in config.",
+      ],
+    };
+  }
+
   if (!options.output) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -316,7 +393,7 @@ function remoteSetupDefinition(
   }
 
   return {
-    name: id === "codex" ? "Codex" : id === "claude-code" ? "Claude Code" : "Any MCP client",
+    name: "Any MCP client",
     actions: [
       {
         type: "writeFile",
@@ -344,6 +421,55 @@ function parseSetupIntegrationId(value: string): SetupIntegrationId {
     "REQUEST_INVALID",
     `setup integration must be one of: ${setupIntegrationIds.join(", ")}`,
   );
+}
+
+function parseInteractiveSetupSelection(value: string): SetupIntegrationId[] {
+  const rawSelections = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const selections = rawSelections.length > 0 ? rawSelections : ["codex"];
+  const ids = selections.flatMap((selection) =>
+    normalizedInteractiveSetupToken(selection) === "all"
+      ? setupIntegrationIds
+      : [parseInteractiveSetupToken(selection)],
+  );
+  return [...new Set(ids)];
+}
+
+function parseInteractiveSetupToken(value: string): SetupIntegrationId {
+  const normalized = normalizedInteractiveSetupToken(value);
+  if (normalized === "1" || normalized === "codex") return "codex";
+  if (
+    normalized === "2" ||
+    normalized === "claude" ||
+    normalized === "claude-code" ||
+    normalized === "claudecode"
+  ) {
+    return "claude-code";
+  }
+  if (normalized === "3" || normalized === "opencode" || normalized === "open-code") {
+    return "opencode";
+  }
+  if (normalized === "4" || normalized === "pi") return "pi";
+  if (
+    normalized === "5" ||
+    normalized === "mcp" ||
+    normalized === "mcp-client" ||
+    normalized === "any-mcp-client" ||
+    normalized === "generic" ||
+    normalized === "generic-mcp"
+  ) {
+    return "mcp-client";
+  }
+  throw new CapletsError("REQUEST_INVALID", `unknown setup integration selection: ${value}`);
+}
+
+function normalizedInteractiveSetupToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/gu, "-");
 }
 
 async function defaultSetupCommandRunner(
@@ -378,9 +504,32 @@ function formatCommand(command: string, args: string[]): string {
   return [command, ...args].join(" ");
 }
 
+function codexMcpAddArgs(capletsArgs: string[]): string[] {
+  return ["mcp", "add", "caplets", "--", "caplets", ...capletsArgs];
+}
+
+function claudeMcpAddArgs(capletsArgs: string[]): string[] {
+  return [
+    "mcp",
+    "add",
+    "--transport",
+    "stdio",
+    "--scope",
+    "user",
+    "caplets",
+    "--",
+    "caplets",
+    ...capletsArgs,
+  ];
+}
+
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function isRemoteSetup(options: SetupOptions): boolean {
+  return Boolean(options.remote ?? nonEmpty(options.remoteUrl) ?? nonEmpty(options.serverUrl));
 }
 
 function resolveSetupTargetKind(options: SetupOptions): SetupTargetKind {
@@ -394,5 +543,5 @@ function resolveSetupTargetKind(options: SetupOptions): SetupTargetKind {
       "setup target must be one of: local_host, remote_host, hosted_sandbox",
     );
   }
-  return options.remote ? "remote_host" : "local_host";
+  return isRemoteSetup(options) ? "remote_host" : "local_host";
 }

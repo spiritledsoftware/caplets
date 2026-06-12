@@ -54,8 +54,7 @@ export function markdownCallToolResultContent(
   const hasStructured = hasRenderableStructuredContent(structuredContent);
 
   if (context.backend === "mcp" && hasStructured) {
-    const renderedStructured = markdownStructuredContent(structuredContent, context)[0]?.text;
-    if (downstreamText && downstreamText === renderedStructured) {
+    if (downstreamText) {
       return textContent(downstreamText);
     }
     return [
@@ -210,33 +209,50 @@ function renderDiscoveryWrapper(
 ): string {
   const result = asRecord(value.result);
   const lines = [title, ""];
-  if (context.operation === "list_tools" || context.operation === "search_tools") {
-    lines.push("## Tools", "", renderNamedList(arrayValue(result?.tools), "tool"), "");
-  } else if (context.operation === "list_resources" || context.operation === "search_resources") {
+  let renderedKnownWrapper = true;
+  if (context.operation === "tools" || context.operation === "search_tools") {
+    lines.push(
+      "## Tools",
+      "",
+      renderNamedList(arrayValue(result?.items ?? result?.tools), "tool"),
+      "",
+    );
+  } else if (context.operation === "resources" || context.operation === "search_resources") {
     lines.push(
       "## Resources",
       "",
-      renderNamedList(arrayValue(result?.resources ?? result?.matches), "uri"),
+      renderNamedList(arrayValue(result?.items ?? result?.resources ?? result?.matches), "uri"),
       "",
     );
-  } else if (context.operation === "list_resource_templates") {
+  } else if (context.operation === "resource_templates") {
     lines.push(
       "## Resource Templates",
       "",
-      renderNamedList(arrayValue(result?.resourceTemplates), "uriTemplate"),
+      renderNamedList(arrayValue(result?.items ?? result?.resourceTemplates), "uriTemplate"),
       "",
     );
-  } else if (context.operation === "list_prompts" || context.operation === "search_prompts") {
-    lines.push("## Prompts", "", renderNamedList(arrayValue(result?.prompts), "prompt"), "");
-  } else if (context.operation === "get_tool") {
+  } else if (context.operation === "prompts" || context.operation === "search_prompts") {
+    lines.push(
+      "## Prompts",
+      "",
+      renderNamedList(arrayValue(result?.items ?? result?.prompts), "prompt"),
+      "",
+    );
+  } else if (context.operation === "describe_tool") {
     lines.push("## Tool", "", renderToolSummary(asRecord(result?.tool)), "");
-  } else if (context.operation === "check_backend") {
+  } else if (context.operation === "check") {
     lines.push("## Backend Status", "", renderBackendStatus(result), "");
   } else if (context.operation === "inspect") {
     lines.push("## Caplet", "", renderCapletSummary(result), "");
+  } else {
+    renderedKnownWrapper = false;
   }
-  lines.push("## Full Result", "", jsonFence(value.result));
-  if (value.caplets !== undefined)
+  if (renderedKnownWrapper) {
+    lines.push("Structured result is available in `structuredContent.result`.");
+  } else {
+    lines.push("## Full Result", "", jsonFence(value.result));
+  }
+  if (!renderedKnownWrapper && value.caplets !== undefined)
     lines.push("", "## Caplets Metadata", "", jsonFence(value.caplets));
   return lines.join("\n");
 }
@@ -304,17 +320,87 @@ function textBlocksToString(content: CallToolResultLike["content"] | undefined):
 }
 function renderNamedList(items: unknown[], nameKey: string): string {
   if (items.length === 0) return "_No items._";
-  return items
-    .map((item, index) => {
-      const record = asRecord(item);
-      const name =
-        stringValue(record?.[nameKey]) ?? stringValue(record?.name) ?? `Item ${index + 1}`;
-      const description = stringValue(record?.description);
-      return description
-        ? `${index + 1}. \`${name}\` — ${description}`
-        : `${index + 1}. \`${name}\``;
-    })
-    .join("\n");
+  const records = items.map((item) => asRecord(item));
+  const commonDescriptionSuffix = repeatedDescriptionSuffix(
+    records
+      .map((record) => stringValue(record?.description))
+      .filter((description): description is string => Boolean(description)),
+  );
+  const renderedItems = records.map((record, index) => {
+    const name = stringValue(record?.[nameKey]) ?? stringValue(record?.name) ?? `Item ${index + 1}`;
+    const description = trimDescriptionSuffix(
+      stringValue(record?.description),
+      commonDescriptionSuffix,
+    );
+    const hints = compactListHints(record);
+    const suffix = [description, hints].filter(Boolean).join("; ");
+    return suffix ? `${index + 1}. \`${name}\` — ${suffix}` : `${index + 1}. \`${name}\``;
+  });
+  if (commonDescriptionSuffix) {
+    renderedItems.push("", `Common description: ${commonDescriptionSuffix}`);
+  }
+  return renderedItems.join("\n");
+}
+
+function repeatedDescriptionSuffix(descriptions: string[]): string | undefined {
+  if (descriptions.length < 3) return undefined;
+  const sentenceLists = descriptions.map(descriptionSentences);
+  const minLength = Math.min(...sentenceLists.map((sentences) => sentences.length));
+  let suffix: string | undefined;
+  for (let size = 1; size <= minLength; size += 1) {
+    const candidate = sentenceLists[0]?.slice(-size).join(" ");
+    if (!candidate || candidate.length < 60) continue;
+    if (sentenceLists.every((sentences) => sentences.slice(-size).join(" ") === candidate)) {
+      suffix = candidate;
+    } else {
+      break;
+    }
+  }
+  return suffix;
+}
+
+function descriptionSentences(description: string): string[] {
+  return (
+    description
+      .match(/[^.!?]+[.!?](?=\s|$)|[^.!?]+$/gu)
+      ?.map((sentence) => sentence.trim())
+      .filter(Boolean) ?? []
+  );
+}
+
+function trimDescriptionSuffix(
+  description: string | undefined,
+  suffix: string | undefined,
+): string | undefined {
+  if (!description || !suffix || !description.endsWith(suffix)) return description;
+  const trimmed = description.slice(0, -suffix.length).trim();
+  return trimmed || undefined;
+}
+
+function compactListHints(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined;
+  const hints: string[] = [];
+  const requiredArgs = stringArrayValue(record.requiredArgs);
+  const acceptedArgs = stringArrayValue(record.acceptedArgs);
+  if (requiredArgs.length > 0) {
+    hints.push(`required args: ${requiredArgs.join(", ")}`);
+  } else if (acceptedArgs.length > 0) {
+    hints.push(`args: ${acceptedArgs.join(", ")}`);
+  }
+  if (isRecord(record.argsTemplate)) {
+    hints.push(`args template: ${compactJsonText(record.argsTemplate, 160)}`);
+  }
+  if (isRecord(record.callTemplate)) {
+    hints.push(`call: ${compactJsonText(record.callTemplate, 220)}`);
+  }
+  if (record.supportsFields === true) hints.push("supports fields");
+  if (record.readOnlyHint === true) hints.push("read-only");
+  if (record.destructiveHint === true) hints.push("destructive");
+  const useWhen = stringValue(record.useWhen);
+  if (useWhen) hints.push(`use: ${useWhen}`);
+  const avoidWhen = stringValue(record.avoidWhen);
+  if (avoidWhen) hints.push(`avoid: ${avoidWhen}`);
+  return hints.length > 0 ? hints.join("; ") : undefined;
 }
 function renderToolSummary(tool: Record<string, unknown> | undefined): string {
   if (!tool) return "_Tool details unavailable._";
@@ -370,6 +456,11 @@ function arrayValue(value: unknown): unknown[] {
 }
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
 }
 function humanizeKey(key: string): string {
   return key.replace(/([A-Z])/gu, " $1").replace(/^./u, (char) => char.toUpperCase());

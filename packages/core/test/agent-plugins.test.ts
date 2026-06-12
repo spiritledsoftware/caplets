@@ -23,7 +23,12 @@ describe("Codex and Claude manual MCP setup", () => {
     expect(readme).toContain('"command": "caplets"');
     expect(readme).toContain('"args": ["serve"]');
     expect(readme).toContain('"args": ["attach"]');
-    expect(readme).not.toMatch(/plugin marketplace add|plugin install caplets@caplets/u);
+    expect(readme).toContain("[mcp_servers.caplets]");
+    expect(readme).toContain("codex mcp add caplets -- caplets serve");
+    expect(readme).toContain(
+      "claude mcp add --transport stdio --scope user caplets -- caplets serve",
+    );
+    expect(readme).not.toMatch(/plugin marketplace add|plugin (?:add|install) caplets@caplets/u);
   });
 
   it("documents serve for local MCP and attach for remote MCP", async () => {

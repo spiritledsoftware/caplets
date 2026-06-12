@@ -28,7 +28,7 @@
 
 Caplets turns MCP servers, APIs, and commands into focused agent capabilities: one card first, searchable tools next, inspectable schemas before calls, and preserved results after.
 
-Stop dumping every operation into context up front. Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a giant flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `get_tool`, and `call_tool` only when it needs more detail.
+Stop dumping every operation into context up front. Caplets wraps each tool source as a capability an agent can discover, inspect, call, and recover from one step at a time. Instead of exposing a giant flat wall of operations, Caplets shows a compact capability card with source, status, and next actions. The agent chooses a domain first, then uses scoped operations like `search_tools`, `describe_tool`, and `call_tool` only when it needs more detail.
 
 For MCP-backed Caplets, the scoped operation set also includes resource discovery and reading, prompt listing and rendering, resource-template discovery, and completion for prompt or template arguments. Non-MCP backends expose focused tool and action operations.
 
@@ -43,7 +43,7 @@ caplets add mcp context7 --command npx --arg -y --arg @upstash/context7-mcp
 caplets serve
 ```
 
-In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.9% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `get_tool`, and `call_tool` only when needed.
+In the deterministic benchmark, 106 flat tools became 3 top-level capabilities with an 87.9% smaller initial payload. Your agent starts with `context7`, then drills in through `inspect`, `search_tools`, `describe_tool`, and `call_tool` only when needed.
 
 ## Quick Start
 
@@ -139,15 +139,23 @@ Backends that require OAuth or token auth may need `caplets auth login <server>`
 Use Caplets as a normal MCP server everywhere, or install a native agent integration when
 your coding agent supports one.
 
-| Agent          | Install                                                        | What It Provides                                               |
-| -------------- | -------------------------------------------------------------- | -------------------------------------------------------------- |
-| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal progressive-disclosure gateway                       |
-| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
-| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud progressive-disclosure gateway           |
-| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets_<id>` tools and prompt guidance hooks          |
-| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets_<id>` tools with Pi prompt snippets/guidelines |
+| Agent          | Install                                                        | What It Provides                                                |
+| -------------- | -------------------------------------------------------------- | --------------------------------------------------------------- |
+| Any MCP client | Add `caplets serve` or `caplets attach` manually in MCP config | Universal Code Mode gateway; progressive exposure is opt-in     |
+| Claude Code    | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud Code Mode gateway                         |
+| Codex          | Add `caplets serve` or `caplets attach` manually in MCP config | Local or remote/Cloud Code Mode gateway                         |
+| OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets__<id>` tools and prompt guidance hooks          |
+| Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets__<id>` tools with Pi prompt snippets/guidelines |
 
-Manual local MCP config:
+Codex local MCP config (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["serve"]
+```
+
+Claude Code or generic JSON MCP config:
 
 ```json
 {
@@ -160,7 +168,15 @@ Manual local MCP config:
 }
 ```
 
-Manual remote or Cloud MCP config:
+Codex remote or Cloud MCP config (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["attach"]
+```
+
+Claude Code or generic JSON remote or Cloud MCP config:
 
 ```json
 {
@@ -195,7 +211,7 @@ Core Alchemy deploys the public landing page from `apps/landing`. It does not de
 
 ### Remote Caplets service
 
-OpenCode and Pi can use native `caplets_<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
+OpenCode and Pi can use native `caplets__<id>` tools backed by a remote Caplets HTTP service. Codex, Claude Code, and any MCP client can connect to the same remote MCP endpoint directly.
 
 Hosted Caplets Cloud uses browser-mediated Cloud Auth:
 
@@ -312,38 +328,54 @@ Flat tool lists make agents guess before they understand. If every downstream se
 Caplets turns that flat wall into a staged path:
 
 1. **Choose** a capability, such as `GitHub`.
-2. **Inspect** matching operations with `search_tools` or `list_tools`.
-3. **Resolve** the exact schema with `get_tool`.
+2. **Inspect** matching operations with `search_tools` or `tools`.
+3. **Resolve** the exact schema with `describe_tool`.
 4. **Invoke** with `call_tool` while preserving downstream content, structured data, and error state.
 
 A backend enters agent context as a focused card with source, status, and next actions, not a wall of operations.
 
 ## Benchmark
 
-In Caplets' reproducible coding-agent benchmark, the same three mock MCP servers are
+Caplets reduces the tool surface an agent has to carry while preserving access to the
+same downstream operations.
+
+In Caplets' deterministic coding-agent benchmark, the same seven mock MCP servers are
 exposed two ways: direct flat MCP aggregation versus Caplets progressive disclosure.
 
 | Initial Agent Surface     |   Direct Flat MCP |      Caplets |     Reduction |
 | ------------------------- | ----------------: | -----------: | ------------: |
-| Visible tools             |               106 |            3 |   97.2% fewer |
-| Serialized MCP payload    |      32,090 bytes |  8,442 bytes | 73.7% smaller |
-| Approx. context surface   |      8,023 tokens | 2,111 tokens |   5,912 fewer |
+| Visible tools             |               215 |            7 |   96.7% fewer |
+| Serialized MCP payload    |      63,250 bytes | 12,720 bytes | 79.9% smaller |
+| Approx. context surface   |     15,813 tokens | 3,180 tokens |  12,633 fewer |
 | Top-level name collisions | 3 duplicate names |            0 |    eliminated |
 
 Caplets does not remove access to downstream tools. It places them behind scoped
 discovery operations, so the agent sees less up front while retaining access to the same
 capabilities when needed.
 
-A local OpenCode live benchmark also completed the full benchmark matrix successfully:
+In a live Pi eval on a real-world large MCP stack, Caplets Code Mode completed the same
+10/10 tasks as direct MCP and Executor while using far fewer total tokens. The stack used
+GitHub, Context7, DeepWiki, Git, filesystem, Playwright, ast-grep, language-server, and
+web-search MCP servers. The run used `openai-codex/gpt-5.5` as both the main model and
+judge model, with 2 runs per task per mode.
 
-| Agent                          | Mode            | Tasks Passed |
-| ------------------------------ | --------------- | -----------: |
-| OpenCode `openai/gpt-5.5-fast` | Direct flat MCP |          2/2 |
-| OpenCode `openai/gpt-5.5-fast` | Caplets         |          2/2 |
+| Mode                            | Tasks Passed | Avg request + output tokens | Avg provider tokens |
+| ------------------------------- | -----------: | --------------------------: | ------------------: |
+| Caplets Code Mode               |        10/10 |                     236,803 |             126,877 |
+| Caplets progressive + Code Mode |        10/10 |                     422,861 |             264,624 |
+| Caplets progressive             |        10/10 |                     461,171 |             294,217 |
+| Executor MCP                    |        10/10 |                     675,842 |             369,992 |
+| Direct vanilla MCP              |        10/10 |                     846,048 |             544,121 |
 
-Live results are intentionally not committed as product claims because they depend on
-local agent CLIs, credentials, models, providers, and agent behavior. The deterministic
-surface benchmark is the reproducible claim.
+Against the same pass-rate baseline, Caplets Code Mode used 72.0% fewer request+output
+tokens than direct vanilla MCP and 65.0% fewer than Executor MCP. Caplets progressive
+disclosure also beat direct vanilla MCP by 45.5% and Executor MCP by 31.8% on
+request+output tokens.
+
+Live results depend on local agent CLIs, credentials, model/provider behavior, and the
+date of the run. The deterministic surface benchmark remains the reproducible,
+credential-free claim; the live eval demonstrates the same trend in a realistic large
+MCP harness.
 
 See [`docs/benchmarks/coding-agent.md`](docs/benchmarks/coding-agent.md) for methodology,
 limitations, and reproduction commands.
@@ -352,7 +384,7 @@ limitations, and reproduction commands.
 pnpm benchmark
 pnpm benchmark:check
 pnpm build
-CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode -- --model openai/gpt-5.5-fast
+CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval -- --task-suite mcp-real-world-large --mode caplets-code-mode,caplets-progressive,vanilla-mcp,executor-mcp --model openai-codex/gpt-5.5 --runs 2
 ```
 
 ## Design Model
@@ -390,7 +422,7 @@ If a backend fails, Caplets keeps the error scoped to the capability, preserves 
 - Uses the configured `name` and `description` as the capability card shown to agents.
 - Starts downstream MCP servers and loads OpenAPI specs lazily when an operation needs them.
 - Supports stdio, Streamable HTTP, and legacy HTTP+SSE downstream servers.
-- Lets agents `list_tools`, `search_tools`, `get_tool`, and `call_tool` within one selected Caplet namespace.
+- Lets agents `tools`, `search_tools`, `describe_tool`, and `call_tool` within one selected Caplet namespace.
 - Converts OpenAPI operations into MCP-style tool metadata and executes HTTP calls directly.
 - Converts configured GraphQL operations into MCP-style tool metadata, and can auto-generate GraphQL tools from schema root query and mutation fields.
 - Converts explicitly configured HTTP actions into MCP-style tool metadata and executes HTTP calls directly.
@@ -780,7 +812,7 @@ OpenAPI auth is explicit and supports:
 - `{"type": "oauth2", ...}`
 - `{"type": "oidc", ...}`
 
-OpenAPI `call_tool.arguments` uses grouped HTTP inputs:
+OpenAPI `call_tool.args` uses grouped HTTP inputs:
 
 ```json
 {
@@ -824,7 +856,7 @@ endpoint and exactly one schema source: `schemaPath`, `schemaUrl`, or `introspec
 
 When `operations` is omitted or empty, Caplets auto-generates tools from schema root
 fields: `query_<field>` and `mutation_<field>`. Generated tools use bounded scalar
-selection sets and pass `call_tool.arguments` directly as GraphQL variables/root-field
+selection sets and pass `call_tool.args` directly as GraphQL variables/root-field
 arguments.
 
 Every GraphQL endpoint can set:
@@ -878,7 +910,7 @@ must start with `/` and be URL paths that cannot change origin or escape the bas
 Action mappings can set `query`, `headers`, and `jsonBody`. `query` and `headers` must resolve
 to object maps whose values are strings, numbers, or booleans. `jsonBody` may use literals,
 nested arrays/objects, `$input.field` references, or `$input` for the whole argument object.
-Path placeholders such as `{service}` are read directly from `call_tool.arguments` and URL-encoded.
+Path placeholders such as `{service}` are read directly from `call_tool.args` and URL-encoded.
 Configured action headers cannot set managed headers such as `authorization`, `host`,
 `content-length`, `connection`, or `content-type`; JSON bodies set `content-type` automatically.
 
@@ -939,8 +971,8 @@ an existing destination file.
 ### Caplet Sets
 
 Use `capletSets` to expose another Caplets collection as nested Caplets. Each child Caplet appears
-as one downstream tool and supports the full Caplets operation set: `inspect`, `check_backend`,
-`list_tools`, `search_tools`, `get_tool`, and `call_tool`.
+as one downstream tool and supports the full Caplets operation set: `inspect`, `check`,
+`tools`, `search_tools`, `describe_tool`, and `call_tool`.
 
 ```json
 {
@@ -1081,7 +1113,13 @@ their downstream connections keep running.
 
 ## Quick Integration Setup
 
-Use `caplets setup` to install or configure an agent integration:
+Run the interactive setup flow to choose one or more agent integrations:
+
+```bash
+caplets setup
+```
+
+For scripted setup, pass the integration explicitly:
 
 ```bash
 caplets setup codex
@@ -1100,17 +1138,21 @@ caplets setup codex --dry-run
 For native integrations that should connect to a remote Caplets HTTP service:
 
 ```bash
-caplets setup opencode --remote --server-url https://caplets.example.com/caplets
+caplets setup codex --remote-url https://caplets.example.com/caplets
+caplets setup claude-code --remote-url https://caplets.example.com/caplets
+caplets setup opencode --remote-url https://caplets.example.com/caplets
 ```
 
-`caplets setup` runs the supported agent installer commands or writes the explicit config
-path you pass with `--output`. It does not store secrets, edit unknown MCP client config
-locations, or start `caplets serve`.
+For Codex and Claude Code, `caplets setup` uses each harness's MCP configuration command:
+`codex mcp add caplets -- caplets serve` and
+`claude mcp add --transport stdio --scope user caplets -- caplets serve`. Generic MCP
+clients still require an explicit `--output` path because their config locations are not
+standardized. The setup command does not store secrets or start `caplets serve`.
 
 ## Additional Native Integrations
 
 OpenCode and Pi support true native tool registration. Those integrations expose one
-prefixed tool per configured Caplet, such as `caplets_github`, while reusing the same
+prefixed tool per configured Caplet, such as `caplets__github`, while reusing the same
 Caplets config and backend runtime.
 
 - [`@caplets/opencode`](packages/opencode/README.md): OpenCode plugin that injects prompt guidance through plugin hooks instead of editing `opencode.json`.
@@ -1135,7 +1177,7 @@ Each generated Caplet tool accepts an `operation`:
 
 ```json
 {
-  "operation": "list_tools"
+  "operation": "tools"
 }
 ```
 
@@ -1153,7 +1195,7 @@ Inspect one exact downstream tool:
 
 ```json
 {
-  "operation": "get_tool",
+  "operation": "describe_tool",
   "tool": "read_file"
 }
 ```
@@ -1173,23 +1215,23 @@ Call one exact downstream tool:
 Available operations:
 
 - `inspect`: return the configured capability card without starting the downstream server.
-- `check_backend`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
-- `list_tools`: return compact downstream tool metadata.
+- `check`: verify the selected backend, whether MCP, OpenAPI, GraphQL, HTTP, CLI, or nested Caplets.
+- `tools`: return compact downstream tool metadata.
 - `search_tools`: search downstream tool names and descriptions within this Caplet.
-- `get_tool`: return full metadata for one exact downstream tool.
+- `describe_tool`: return full metadata for one exact downstream tool.
 - `call_tool`: invoke one exact downstream tool with JSON object arguments.
 
 Requests are strict: operation-specific extra fields are rejected, and `call_tool` requires
 `arguments` to be a JSON object.
 
-Discovery operations (`inspect`, `check_backend`, `list_tools`, `search_tools`, and
-`get_tool`) return wrapper-generated results whose `structuredContent.caplets` field
+Discovery operations (`inspect`, `check`, `tools`, `search_tools`, and
+`describe_tool`) return wrapper-generated results whose `structuredContent.caplets` field
 identifies the Caplet with `id`, plus backend, operation, status, and elapsed time when
 available. Discovery result objects and compact tool entries also use `id` for the
-configured Caplet identity. Compact `list_tools` and `search_tools` entries may include
+configured Caplet identity. Compact `tools` and `search_tools` entries may include
 input/output schema hashes; treat those
 hashes as reuse hints for a schema you have already inspected, not as a replacement for
-`get_tool` when arguments, output, or semantics are unclear.
+`describe_tool` when arguments, output, or semantics are unclear.
 
 Direct `call_tool` preserves the downstream tool result shape instead of wrapping it in
 `structuredContent.result`. When the result can carry MCP metadata, Caplets adds
@@ -1199,8 +1241,9 @@ or other saved files. Artifact `displayPath` values are either absolute local pa
 relative to the downstream MCP server process, not necessarily relative to the current
 project or Caplets process.
 
-For first use, the explicit progressive-discovery path is still safest: choose a Caplet,
-`search_tools` or `list_tools`, inspect uncertain tools with `get_tool`, then `call_tool`.
+Code Mode is the default exposure because it keeps discovery, filtering, execution, and
+summary work inside one compact tool call. To expose the older progressive wrapper tools,
+set `options.exposure` to `progressive` or `progressive_and_code_mode`.
 
 ## Development
 

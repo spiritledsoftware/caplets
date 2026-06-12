@@ -36,7 +36,9 @@ describe("CapletsRuntime", () => {
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
-    expect(server.registerTool).toHaveBeenCalledTimes(1);
+    expect(server.registerTool).toHaveBeenCalledTimes(2);
+    expect(server.registered.get("code_mode")).toBeDefined();
+    expect(server.registered.get("run")).toBeUndefined();
 
     await runtime.close();
   });
@@ -57,7 +59,7 @@ describe("CapletsRuntime", () => {
 
     try {
       expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
-      expect(nativeCapletToolName("git-hub")).toBe("caplets_git_hub");
+      expect(nativeCapletToolName("git-hub")).toBe("caplets__git-hub");
     } finally {
       await runtime.close();
     }
@@ -336,7 +338,14 @@ describe("CapletsRuntime", () => {
 });
 
 function writeConfig(path: string, config: unknown): void {
-  writeFileSync(path, JSON.stringify(config));
+  writeFileSync(path, JSON.stringify(progressiveTestConfig(config)));
+}
+
+function progressiveTestConfig(config: unknown): unknown {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return config;
+  const record = config as Record<string, unknown>;
+  if (record.options) return config;
+  return { options: { exposure: "progressive_and_code_mode" }, ...record };
 }
 
 function mockServer() {

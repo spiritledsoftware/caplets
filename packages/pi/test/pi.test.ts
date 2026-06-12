@@ -91,10 +91,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     const registered: RegisteredTool[] = [];
@@ -110,17 +110,17 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
     const registered: RegisteredTool[] = [];
@@ -129,14 +129,14 @@ describe("@caplets/pi", () => {
       registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
     });
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_linear"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub", "caplets__linear"]);
     expect(registered.map((tool) => tool.promptGuidelines[0])).toEqual([
-      "Use caplets_git_hub for GitHub.",
-      "Use caplets_linear for Linear.",
+      "Use caplets__git-hub for GitHub.",
+      "Use caplets__linear for Linear.",
     ]);
     const tool = registered[0];
-    expect(tool?.name).toBe("caplets_git_hub");
-    expect(tool?.promptGuidelines[0]).toContain("caplets_git_hub");
+    expect(tool?.name).toBe("caplets__git-hub");
+    expect(tool?.promptGuidelines[0]).toContain("caplets__git-hub");
 
     const result = await tool?.execute("call-1", { operation: "inspect" });
     expect(service.execute).toHaveBeenCalledWith("git-hub", { operation: "inspect" });
@@ -147,10 +147,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     const error = new Error("execution failed");
@@ -171,10 +171,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     service.execute.mockResolvedValueOnce({ count: 1n });
@@ -193,10 +193,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     service.execute.mockResolvedValueOnce(undefined);
@@ -211,14 +211,90 @@ describe("@caplets/pi", () => {
     expect(result?.details).toEqual({ result: undefined });
   });
 
+  it("compacts noisy Code Mode values before returning agent-facing text", async () => {
+    const service = mockService([
+      {
+        caplet: "code-mode",
+        toolName: "caplets__code_mode",
+        title: "Code Mode",
+        description: "Code Mode Caplet",
+        promptGuidance: ["Use caplets__code_mode for Code Mode."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        issue: {
+          ok: true,
+          data: { id: "BENCH-451", title: "Checkout authorization retry double-submit" },
+          meta: { capletId: "issues", tool: "get_issue", durationMs: 12, status: "ok" },
+        },
+        descriptor: {
+          id: "api",
+          tool: {
+            name: "lookup_schema",
+            description: "Lookup an API schema.",
+            inputSchema: { type: "object", properties: { id: { type: "string" } } },
+          },
+          inputSchema: { type: "object", properties: { id: { type: "string" } } },
+          outputSchema: { type: "object", additionalProperties: true },
+          callSignature: 'callTool(name: "lookup_schema", args: LookupSchemaInput)',
+          inputTypeScript: "type LookupSchemaInput = { id: string; };",
+        },
+        many: Array.from({ length: 45 }, (_, index) => ({ index })),
+      },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+      meta: {
+        runId: "run-1",
+        traceId: "trace-1",
+        declarationHash: "hash-1",
+        timeoutMs: 10000,
+        maxTimeoutMs: 10000,
+        durationMs: 25,
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
+
+    const result = await registered[0]?.execute("call-1", { code: "return facts;" });
+    const text = result?.content[0]?.text ?? "{}";
+    const parsed = JSON.parse(text);
+
+    expect(parsed.value.issue).toEqual({
+      id: "BENCH-451",
+      title: "Checkout authorization retry double-submit",
+    });
+    expect(parsed.value.descriptor).toEqual({
+      id: "api",
+      tool: { name: "lookup_schema", description: "Lookup an API schema." },
+      callSignature: 'callTool(name: "lookup_schema", args: LookupSchemaInput)',
+      inputTypeScript: "type LookupSchemaInput = { id: string; };",
+    });
+    expect(parsed.value.many).toHaveLength(41);
+    expect(parsed.value.many.at(-1)).toEqual({ truncatedItems: 5 });
+    expect(text).not.toContain("capletId");
+    expect(text).not.toContain("inputSchema");
+    expect(result?.details.result).toMatchObject({
+      value: {
+        issue: {
+          meta: { capletId: "issues", tool: "get_issue", durationMs: 12, status: "ok" },
+        },
+      },
+    });
+  });
+
   it("renders caplet tool calls and collapsed results compactly", async () => {
     const service = mockService([
       {
         caplet: "context7",
-        toolName: "caplets_context7",
+        toolName: "caplets__context7",
         title: "Context7",
         description: "Context7 Caplet",
-        promptGuidance: ["Use caplets_context7 for Context7."],
+        promptGuidance: ["Use caplets__context7 for Context7."],
       },
     ]);
     service.execute.mockResolvedValueOnce({
@@ -255,10 +331,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "context7",
-        toolName: "caplets_context7",
+        toolName: "caplets__context7",
         title: "Context7",
         description: "Context7 Caplet",
-        promptGuidance: ["Use caplets_context7 for Context7."],
+        promptGuidance: ["Use caplets__context7 for Context7."],
       },
     ]);
     service.execute.mockResolvedValueOnce({
@@ -291,17 +367,17 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "browser",
-        toolName: "caplets_browser",
+        toolName: "caplets__browser",
         title: "Browser",
         description: "Browser Caplet",
-        promptGuidance: ["Use caplets_browser for Browser."],
+        promptGuidance: ["Use caplets__browser for Browser."],
       },
       {
         caplet: "stealth-browser",
-        toolName: "caplets_stealth_browser",
+        toolName: "caplets__stealth-browser",
         title: "Stealth Browser",
         description: "Stealth Browser Caplet",
-        promptGuidance: ["Use caplets_stealth_browser for Stealth Browser."],
+        promptGuidance: ["Use caplets__stealth-browser for Stealth Browser."],
       },
     ]);
     service.execute
@@ -364,10 +440,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "browser",
-        toolName: "caplets_browser",
+        toolName: "caplets__browser",
         title: "Browser",
         description: "Browser Caplet",
-        promptGuidance: ["Use caplets_browser for Browser."],
+        promptGuidance: ["Use caplets__browser for Browser."],
       },
     ]);
     const largeSnapshot = "# Page snapshot\n" + "button[name='Buy now']\n".repeat(500);
@@ -410,10 +486,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "browser",
-        toolName: "caplets_browser",
+        toolName: "caplets__browser",
         title: "Browser",
         description: "Browser Caplet",
-        promptGuidance: ["Use caplets_browser for Browser."],
+        promptGuidance: ["Use caplets__browser for Browser."],
       },
     ]);
     const longToolName = "browser_" + "x".repeat(120);
@@ -454,10 +530,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "browser",
-        toolName: "caplets_browser",
+        toolName: "caplets__browser",
         title: "Browser",
         description: "Browser Caplet",
-        promptGuidance: ["Use caplets_browser for Browser."],
+        promptGuidance: ["Use caplets__browser for Browser."],
       },
     ]);
     const largeSnapshot = "# Page snapshot\n" + "main > section > article\n".repeat(500);
@@ -509,10 +585,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "context7",
-        toolName: "caplets_context7",
+        toolName: "caplets__context7",
         title: "Context7",
         description: "Context7 Caplet",
-        promptGuidance: ["Use caplets_context7 for Context7."],
+        promptGuidance: ["Use caplets__context7 for Context7."],
       },
     ]);
     service.execute.mockResolvedValueOnce({
@@ -520,7 +596,7 @@ describe("@caplets/pi", () => {
       structuredContent: {
         caplets: {
           name: "Context7",
-          operation: "list_tools",
+          operation: "tools",
         },
       },
     });
@@ -531,15 +607,15 @@ describe("@caplets/pi", () => {
     });
 
     const tool = registered[0];
-    const result = await tool?.execute("call-1", { operation: "list_tools" });
+    const result = await tool?.execute("call-1", { operation: "tools" });
     const rendered = renderText(
       tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme),
     );
 
-    expect(rendered).toContain("✓ Context7 list_tools complete (ctrl+o to collapse)");
+    expect(rendered).toContain("✓ Context7 tools complete (ctrl+o to collapse)");
     expect(rendered).toContain("\nvery long docs");
     expect(rendered).not.toContain("Result summary:");
-    expect(rendered.indexOf("✓ Context7 list_tools complete")).toBeLessThan(
+    expect(rendered.indexOf("✓ Context7 tools complete")).toBeLessThan(
       rendered.indexOf("very long docs"),
     );
   });
@@ -548,10 +624,10 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     const api = {
@@ -602,10 +678,10 @@ describe("@caplets/pi", () => {
     const tools = [
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ];
     let reloaded = false;
@@ -622,46 +698,46 @@ describe("@caplets/pi", () => {
 
     expect(service.reload).toHaveBeenCalledOnce();
     expect(service.listTools).toHaveBeenCalledAfter(service.reload);
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub"]);
   });
   it("registers newly added tools when the native service changes", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
-    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+    const { api, registered } = mockPiApi(["read", "caplets__git-hub"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
-    expect(api.setActiveTools).toHaveBeenNthCalledWith(1, ["read", "caplets_git_hub"]);
+    expect(api.setActiveTools).toHaveBeenNthCalledWith(1, ["read", "caplets__git-hub"]);
     service.setTools([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_linear"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub", "caplets__linear"]);
     expect(api.setActiveTools).toHaveBeenLastCalledWith([
       "read",
-      "caplets_git_hub",
-      "caplets_linear",
+      "caplets__git-hub",
+      "caplets__linear",
     ]);
   });
 
@@ -669,76 +745,76 @@ describe("@caplets/pi", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
-    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+    const { api, registered } = mockPiApi(["read", "caplets__git-hub"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub Reloaded",
         description: "Reloaded GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for reloaded GitHub."],
+        promptGuidance: ["Use caplets__git-hub for reloaded GitHub."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub", "caplets__git-hub"]);
     expect(registered[1]).toMatchObject({
       label: "GitHub Reloaded",
       description: "Reloaded GitHub Caplet",
-      promptGuidelines: ["Use caplets_git_hub for reloaded GitHub."],
+      promptGuidelines: ["Use caplets__git-hub for reloaded GitHub."],
     });
-    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets__git-hub"]);
   });
 
   it("refreshes existing tool definitions when backing Caplet changes", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
-    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+    const { api, registered } = mockPiApi(["read", "caplets__git-hub"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
         caplet: "github-v2",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
-    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub", "caplets__git-hub"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets__git-hub"]);
   });
 
   it("re-registers re-added tools after stale signature cleanup", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
-    const { api, registered } = mockPiApi(["read", "caplets_git_hub"]);
+    const { api, registered } = mockPiApi(["read", "caplets__git-hub"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
@@ -747,69 +823,69 @@ describe("@caplets/pi", () => {
     service.setTools([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub", "caplets_git_hub"]);
-    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets_git_hub"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub", "caplets__git-hub"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "caplets__git-hub"]);
   });
 
   it("deactivates stale Caplets while preserving non-Caplets active tools", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
-    const { api } = mockPiApi(["read", "bash", "caplets_git_hub", "caplets_linear"]);
+    const { api } = mockPiApi(["read", "bash", "caplets__git-hub", "caplets__linear"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
     service.setTools([
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "caplets_linear"]);
+    expect(api.setActiveTools).toHaveBeenLastCalledWith(["read", "bash", "caplets__linear"]);
   });
 
   it("deactivates stale Caplets that were active before extension load", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
-    const { api } = mockPiApi(["read", "caplets_stale", "caplets_git_hub"]);
+    const { api } = mockPiApi(["read", "caplets__stale", "caplets__git-hub"]);
 
     createCapletsPiExtension({ service })(api as unknown as PiExtensionApi);
     triggerSessionStart(api);
 
-    expect(api.setActiveTools).toHaveBeenCalledWith(["read", "caplets_git_hub"]);
+    expect(api.setActiveTools).toHaveBeenCalledWith(["read", "caplets__git-hub"]);
   });
 
   it("works when Pi active-tool APIs are unavailable", () => {
@@ -823,25 +899,25 @@ describe("@caplets/pi", () => {
     service.setTools([
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_linear"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__linear"]);
   });
 
   it("detaches the native listener on Pi session shutdown", () => {
     const service = mockService([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
     ]);
     const { api, registered } = mockPiApi();
@@ -853,22 +929,22 @@ describe("@caplets/pi", () => {
     service.setTools([
       {
         caplet: "git-hub",
-        toolName: "caplets_git_hub",
+        toolName: "caplets__git-hub",
         title: "GitHub",
         description: "GitHub Caplet",
-        promptGuidance: ["Use caplets_git_hub for GitHub."],
+        promptGuidance: ["Use caplets__git-hub for GitHub."],
       },
       {
         caplet: "linear",
-        toolName: "caplets_linear",
+        toolName: "caplets__linear",
         title: "Linear",
         description: "Linear Caplet",
-        promptGuidance: ["Use caplets_linear for Linear."],
+        promptGuidance: ["Use caplets__linear for Linear."],
       },
     ]);
     service.emitToolsChanged();
 
-    expect(registered.map((tool) => tool.name)).toEqual(["caplets_git_hub"]);
+    expect(registered.map((tool) => tool.name)).toEqual(["caplets__git-hub"]);
     expect(service.close).not.toHaveBeenCalled();
   });
 

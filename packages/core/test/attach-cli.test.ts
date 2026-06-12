@@ -111,6 +111,41 @@ describe("caplets attach CLI", () => {
     expect(requestedUrl).toBe("http://127.0.0.1:8787/caplets/control/project-bindings/connect");
   });
 
+  it("probes the Cloud control route when given a copied Cloud MCP endpoint", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
+        workspaceSlug: "personal-c9b49d",
+      }),
+    );
+    let requestedUrl: string | undefined;
+
+    await expect(
+      attachProjectOnce(
+        {
+          projectRoot: "/repo",
+          remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp",
+          fetch: async (url) => {
+            requestedUrl = String(url);
+            expect(String(url)).not.toContain("/ws/personal-c9b49d/api/project-bindings");
+            return Response.json({ error: "websocket_upgrade_required" }, { status: 426 });
+          },
+        },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      webSocketUrl: "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+    });
+    expect(requestedUrl).toBe(
+      "https://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+    );
+  });
+
   it("runs once from the CLI and reports WebSocket availability", async () => {
     const out: string[] = [];
     const cwd = process.cwd();
@@ -178,6 +213,7 @@ describe("caplets attach CLI", () => {
       env: {
         CAPLETS_MODE: "cloud",
         CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: tempCloudAuthPath(),
       },
       writeOut: (value) => out.push(value),
       setExitCode: (code) => {

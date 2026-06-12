@@ -17,6 +17,8 @@ describe("caplets doctor", () => {
     expect(report).toContain("Project sync");
     expect(report).toContain("Daemon");
     expect(report).toContain("Cloud Auth");
+    expect(report).toContain("Exposure");
+    expect(report).toContain("Code Mode");
     expect(report).not.toContain("local presence");
   });
 
@@ -50,6 +52,7 @@ describe("caplets doctor", () => {
       env: {
         CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_REMOTE_URL: "https://cloud.caplets.dev/ws/ian",
+        CAPLETS_CLOUD_AUTH_PATH: "/tmp/caplets-doctor-missing-auth.json",
       },
       writeOut: (value) => out.push(value),
     });
@@ -61,6 +64,15 @@ describe("caplets doctor", () => {
       sync: { state: "idle" },
       daemon: { running: false },
       cloudAuth: { authenticated: false },
+      exposure: { ok: true },
+      codeMode: {
+        typesGeneration: { ok: true },
+        diagnostics: { ok: true },
+        sandboxSmoke: { ok: true },
+        logStorage: { ok: true },
+        callableIndex: { ok: true },
+        observedOutputShapes: { ok: true },
+      },
     });
   });
 });

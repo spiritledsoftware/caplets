@@ -2,20 +2,20 @@ import { z } from "zod";
 
 export const operations = [
   "inspect",
-  "check_backend",
-  "list_tools",
+  "check",
+  "tools",
   "search_tools",
-  "get_tool",
+  "describe_tool",
   "call_tool",
 ] as const;
 
 export const mcpOperations = [
   ...operations,
-  "list_resources",
+  "resources",
   "search_resources",
-  "list_resource_templates",
+  "resource_templates",
   "read_resource",
-  "list_prompts",
+  "prompts",
   "search_prompts",
   "get_prompt",
   "complete",
@@ -24,17 +24,21 @@ export const mcpOperations = [
 export type GeneratedOperation = (typeof operations)[number];
 export type GeneratedMcpOperation = (typeof mcpOperations)[number];
 export type CapletSchemaBackend = { backend: string };
+export type GeneratedToolInputSchemaOptions = {
+  includeFields?: boolean;
+};
 
 export const generatedToolInputDescriptions = {
   operation:
-    "Wrapper operation: inspect, check_backend, list_tools, search_tools, get_tool, call_tool. MCP Caplets also expose resources, prompts, and completions.",
+    "Wrapper operation: inspect, check, tools, search_tools, describe_tool, call_tool, resources, search_resources, resource_templates, read_resource, prompts, search_prompts, get_prompt, complete.",
   query: "Required for search operations only.",
   limit: "Optional list/search result limit.",
-  tool: "Exact downstream tool name for get_tool or call_tool.",
-  arguments: "JSON object for call_tool arguments/downstream inputs or get_prompt arguments.",
-  fields: "Optional call_tool structured output paths when outputSchema allows it.",
+  cursor: "Opaque pagination cursor returned by list/search operations.",
+  name: "Exact downstream tool or prompt name from tools/search_tools/prompts/search_prompts; do not guess.",
+  args: "JSON object for call_tool/get_prompt arguments; use tools/search_tools arg hints when enough, otherwise describe_tool inputSchema.",
+  fields:
+    "Optional call_tool structured output paths. Use only after describe_tool returns fieldSelection.supported true.",
   uri: "Exact downstream resource URI for read_resource.",
-  prompt: "Exact downstream prompt name for get_prompt.",
   ref: "Completion target reference for complete.",
   argument: "Completion argument object for complete.",
 } as const;
@@ -51,12 +55,9 @@ export const completionArgumentSchema = z
 const baseShape = {
   query: z.string().optional().describe(generatedToolInputDescriptions.query),
   limit: z.number().int().positive().optional().describe(generatedToolInputDescriptions.limit),
-  tool: z.string().optional().describe(generatedToolInputDescriptions.tool),
-  arguments: z
-    .object({})
-    .catchall(z.any())
-    .optional()
-    .describe(generatedToolInputDescriptions.arguments),
+  cursor: z.string().optional().describe(generatedToolInputDescriptions.cursor),
+  name: z.string().optional().describe(generatedToolInputDescriptions.name),
+  args: z.object({}).catchall(z.any()).optional().describe(generatedToolInputDescriptions.args),
   fields: z
     .array(z.string().min(1))
     .min(1)
@@ -64,17 +65,20 @@ const baseShape = {
     .describe(generatedToolInputDescriptions.fields),
 };
 
-export function generatedToolInputSchemaForCaplet(caplet: CapletSchemaBackend) {
+export function generatedToolInputSchemaForCaplet(
+  caplet: CapletSchemaBackend,
+  options: GeneratedToolInputSchemaOptions = {},
+) {
+  const includeFields = options.includeFields ?? true;
   return z
     .object({
       operation: (caplet.backend === "mcp" ? z.enum(mcpOperations) : z.enum(operations)).describe(
         generatedToolInputDescriptions.operation,
       ),
-      ...baseShape,
+      ...schemaShape(includeFields),
       ...(caplet.backend === "mcp"
         ? {
             uri: z.string().optional().describe(generatedToolInputDescriptions.uri),
-            prompt: z.string().optional().describe(generatedToolInputDescriptions.prompt),
             ref: completionRefSchema.optional().describe(generatedToolInputDescriptions.ref),
             argument: completionArgumentSchema
               .optional()
@@ -92,8 +96,12 @@ export const generatedToolInputSchema = z
   })
   .strict();
 
-export function generatedToolInputJsonSchemaForCaplet(caplet: CapletSchemaBackend) {
+export function generatedToolInputJsonSchemaForCaplet(
+  caplet: CapletSchemaBackend,
+  options: GeneratedToolInputSchemaOptions = {},
+) {
   const mcp = caplet.backend === "mcp";
+  const includeFields = options.includeFields ?? true;
   return {
     type: "object",
     properties: {
@@ -104,18 +112,22 @@ export function generatedToolInputJsonSchemaForCaplet(caplet: CapletSchemaBacken
       },
       query: { type: "string", description: generatedToolInputDescriptions.query },
       limit: { type: "integer", minimum: 1, description: generatedToolInputDescriptions.limit },
-      tool: { type: "string", description: generatedToolInputDescriptions.tool },
-      arguments: { type: "object", description: generatedToolInputDescriptions.arguments },
-      fields: {
-        type: "array",
-        items: { type: "string", minLength: 1 },
-        minItems: 1,
-        description: generatedToolInputDescriptions.fields,
-      },
+      cursor: { type: "string", description: generatedToolInputDescriptions.cursor },
+      name: { type: "string", description: generatedToolInputDescriptions.name },
+      args: { type: "object", description: generatedToolInputDescriptions.args },
+      ...(includeFields
+        ? {
+            fields: {
+              type: "array",
+              items: { type: "string", minLength: 1 },
+              minItems: 1,
+              description: generatedToolInputDescriptions.fields,
+            },
+          }
+        : {}),
       ...(mcp
         ? {
             uri: { type: "string", description: generatedToolInputDescriptions.uri },
-            prompt: { type: "string", description: generatedToolInputDescriptions.prompt },
             ref: {
               oneOf: [
                 {
@@ -149,6 +161,18 @@ export function generatedToolInputJsonSchemaForCaplet(caplet: CapletSchemaBacken
     required: ["operation"],
     additionalProperties: false,
   } as const;
+}
+
+function schemaShape(includeFields: boolean) {
+  return includeFields
+    ? baseShape
+    : {
+        query: baseShape.query,
+        limit: baseShape.limit,
+        cursor: baseShape.cursor,
+        name: baseShape.name,
+        args: baseShape.args,
+      };
 }
 
 export function generatedToolInputJsonSchema() {

@@ -89,11 +89,24 @@ export type RuntimeRequirementsConfig = {
   resources?: { class?: RuntimeResourceClass | undefined } | undefined;
 };
 
-export type CapletServerConfig = {
+export type AgentSelectionHintsConfig = {
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
+};
+
+export type CapletExposure =
+  | "direct"
+  | "progressive"
+  | "code_mode"
+  | "direct_and_code_mode"
+  | "progressive_and_code_mode";
+
+export type CapletServerConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "mcp";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   transport: "stdio" | "http" | "sse";
@@ -118,11 +131,12 @@ export type OpenApiAuthConfig =
   | { type: "headers"; headers: Record<string, string> }
   | Extract<RemoteAuthConfig, { type: "oauth2" | "oidc" }>;
 
-export type OpenApiEndpointConfig = {
+export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "openapi";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   specPath?: string | undefined;
@@ -137,18 +151,19 @@ export type OpenApiEndpointConfig = {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type GraphQlOperationConfig = {
+export type GraphQlOperationConfig = AgentSelectionHintsConfig & {
   document?: string | undefined;
   documentPath?: string | undefined;
   operationName?: string | undefined;
   description?: string | undefined;
 };
 
-export type GraphQlEndpointConfig = {
+export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "graphql";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   endpointUrl: string;
@@ -166,7 +181,7 @@ export type GraphQlEndpointConfig = {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type HttpActionConfig = {
+export type HttpActionConfig = AgentSelectionHintsConfig & {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   description?: string | undefined;
@@ -177,11 +192,12 @@ export type HttpActionConfig = {
   jsonBody?: unknown;
 };
 
-export type HttpApiConfig = {
+export type HttpApiConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "http";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   baseUrl: string;
@@ -199,7 +215,7 @@ export type CliToolOutputConfig = {
   type: "text" | "json";
 };
 
-export type CliToolActionConfig = {
+export type CliToolActionConfig = AgentSelectionHintsConfig & {
   description?: string | undefined;
   inputSchema?: Record<string, unknown> | undefined;
   outputSchema?: Record<string, unknown> | undefined;
@@ -220,11 +236,12 @@ export type CliToolActionConfig = {
     | undefined;
 };
 
-export type CliToolsConfig = {
+export type CliToolsConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "cli";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   actions: Record<string, CliToolActionConfig>;
@@ -238,11 +255,12 @@ export type CliToolsConfig = {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
-export type CapletSetConfig = {
+export type CapletSetConfig = AgentSelectionHintsConfig & {
   server: string;
   backend: "caplets";
   name: string;
   description: string;
+  exposure?: CapletExposure | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   configPath?: string | undefined;
@@ -267,6 +285,9 @@ export type CapletConfig =
 export type CapletsOptions = {
   defaultSearchLimit: number;
   maxSearchLimit: number;
+  exposure: CapletExposure;
+  exposureDiscoveryTimeoutMs: number;
+  exposureDiscoveryConcurrency: number;
   completion: CompletionConfig;
 };
 
@@ -456,6 +477,26 @@ const runtimeRequirementsSchema = z
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
 
+const agentSelectionHintSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe("Optional author-supplied hint for agent tool/caplet selection.");
+
+const agentSelectionHintsSchema = {
+  useWhen: agentSelectionHintSchema
+    .optional()
+    .describe("When agents should prefer this Caplet or configured action."),
+  avoidWhen: agentSelectionHintSchema
+    .optional()
+    .describe("When agents should avoid this Caplet or configured action."),
+};
+
+const exposureSchema = z
+  .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
+  .describe("How this Caplet is exposed to agents.");
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -481,6 +522,8 @@ const publicServerSchema = z
     url: z.string().url().optional().describe("Remote MCP server URL for http or sse transport."),
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -531,6 +574,8 @@ const publicOpenApiEndpointSchema = z
       'Explicit OpenAPI request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -565,6 +610,7 @@ const graphQlOperationSchema = z
     documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
     operationName: z.string().min(1).optional().describe("Operation name to execute."),
     description: z.string().min(1).optional().describe("Operation capability description."),
+    ...agentSelectionHintsSchema,
   })
   .strict()
   .superRefine((operation, ctx) => {
@@ -603,6 +649,8 @@ const publicGraphQlEndpointSchema = z
       'Explicit GraphQL request auth config. Use {"type":"none"} for public APIs.',
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -666,6 +714,7 @@ const httpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
+    ...agentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -719,6 +768,8 @@ const publicHttpApiSchema = z
       )
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -763,6 +814,7 @@ const cliToolAnnotationsSchema = z
 const cliToolActionSchema = z
   .object({
     description: z.string().min(1).optional().describe("Action capability description."),
+    ...agentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -814,6 +866,8 @@ const publicCliToolsSchema = z
       .optional()
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -870,6 +924,8 @@ const publicCapletSetSchema = z
       .default(30_000)
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
     runtime: runtimeRequirementsSchema.optional(),
@@ -956,6 +1012,19 @@ function configSchemaFor(
           negativeCacheTtlMs: 30_000,
         })
         .describe("Shell completion discovery timeout and cache settings."),
+      options: z
+        .object({
+          exposure: exposureSchema.default("code_mode"),
+          exposureDiscoveryTimeoutMs: z.number().int().positive().default(15_000),
+          exposureDiscoveryConcurrency: z.number().int().positive().max(32).default(4),
+        })
+        .strict()
+        .default({
+          exposure: "code_mode",
+          exposureDiscoveryTimeoutMs: 15_000,
+          exposureDiscoveryConcurrency: 4,
+        })
+        .describe("Global Caplets runtime options."),
       mcpServers: z
         .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
         .default({})
@@ -1878,6 +1947,9 @@ export function parseConfig(input: unknown): CapletsConfig {
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,
+      exposure: parsed.data.options.exposure,
+      exposureDiscoveryTimeoutMs: parsed.data.options.exposureDiscoveryTimeoutMs,
+      exposureDiscoveryConcurrency: parsed.data.options.exposureDiscoveryConcurrency,
       completion: parsed.data.completion,
     },
     mcpServers: servers,

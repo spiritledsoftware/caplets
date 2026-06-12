@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, posix, win32 } from "node:path";
 import { defaultConfigBaseDir } from "../config/paths";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "./types";
 import type { RedactedCloudAuthStatus } from "./types";
 
 type CloudAuthPathEnv = Partial<
@@ -69,7 +70,7 @@ export function migrateCredentials(value: unknown): CloudAuthCredentials {
     accessToken: stringValue(record.accessToken) ?? "",
     refreshToken: stringValue(record.refreshToken) ?? "",
     expiresAt: stringValue(record.expiresAt) ?? now,
-    scope: arrayValue(record.scope) ?? ["project_binding:read", "project_binding:write"],
+    scope: arrayValue(record.scope) ?? [...HOSTED_CLOUD_AUTH_SCOPES],
     tokenType: stringValue(record.tokenType) ?? "Bearer",
     credentialFamilyId: stringValue(record.credentialFamilyId) ?? "legacy_family",
     deviceName: stringValue(record.deviceName) ?? "Caplets CLI",

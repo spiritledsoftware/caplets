@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ const credentials: CloudAuthCredentials = {
   accessToken: "access",
   refreshToken: "refresh",
   expiresAt: "2099-06-02T12:00:00.000Z",
-  scope: ["project_binding:read", "project_binding:write"],
+  scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
   tokenType: "Bearer",
   credentialFamilyId: "family_123",
   deviceName: "Test Device",
@@ -75,7 +75,7 @@ describe("caplets cloud auth CLI", () => {
       workspaceId: "ws_123",
       workspaceSlug: "team",
       expiresAt: "2099-06-02T12:00:00.000Z",
-      scope: ["project_binding:read", "project_binding:write"],
+      scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
       tokenType: "Bearer",
       credentialFamilyId: "family_123",
       deviceName: "Test Device",
@@ -109,6 +109,64 @@ describe("caplets cloud auth CLI", () => {
     });
 
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("uploads local caplet-files to the selected Cloud workspace", async () => {
+    const authPath = tempAuthPath();
+    await new CloudAuthStore({ path: authPath }).save(credentials);
+    const root = tempDir("caplets-cloud-add-");
+    mkdirSync(join(root, "search"), { recursive: true });
+    writeFileSync(
+      join(root, "search", "CAPLET.md"),
+      `---
+name: Search
+description: Search API.
+openapiEndpoint:
+  specPath: ./openapi.yaml
+  auth:
+    type: none
+---
+
+# Search
+`,
+    );
+    writeFileSync(join(root, "search", "openapi.yaml"), "openapi: 3.0.3\ninfo:\n  title: Search\n");
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const out: string[] = [];
+
+    await runCli(["cloud", "add", root, "--json"], {
+      env: { CAPLETS_CLOUD_AUTH_PATH: authPath },
+      fetch: (async (url, init) => {
+        requests.push({ url: String(url), ...(init === undefined ? {} : { init }) });
+        return Response.json(
+          {
+            caplet: { id: "search", name: "Search" },
+            caplets: [{ id: "search", name: "Search" }],
+          },
+          { status: 201 },
+        );
+      }) as typeof fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://cloud.caplets.dev/api/workspaces/team/caplets/custom");
+    expect(new Headers(requests[0]?.init?.headers).get("authorization")).toBe("Bearer access");
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({
+      bundle: {
+        files: [
+          expect.objectContaining({
+            path: "search/CAPLET.md",
+            content: expect.stringContaining("Search"),
+          }),
+          { path: "search/openapi.yaml", content: "openapi: 3.0.3\ninfo:\n  title: Search\n" },
+        ],
+      },
+    });
+    expect(JSON.parse(out.join(""))).toEqual({
+      caplets: [{ id: "search", name: "Search" }],
+      workspace: "team",
+    });
   });
 });
 
@@ -164,7 +222,11 @@ describe("CloudAuthStore", () => {
 });
 
 function tempAuthPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "caplets-cloud-auth-"));
+  return join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+}
+
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
   tempDirs.push(dir);
-  return join(dir, "cloud-auth.json");
+  return dir;
 }

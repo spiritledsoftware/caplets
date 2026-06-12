@@ -66,14 +66,14 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     const request =
       isRecord(args) && typeof args.operation === "string"
         ? args
-        : { operation: "call_tool", tool: name, arguments: isRecord(args) ? args : {} };
+        : { operation: "call_tool", name, args: isRecord(args) ? args : {} };
     const result = await this.engine.execute(name, request);
     return annotateExecution(result, this.executionMetadata());
   }
 
   async checkBackend(capletId: string): Promise<unknown> {
     return annotateExecution(
-      await this.engine.execute(capletId, { operation: "check_backend" }),
+      await this.engine.execute(capletId, { operation: "check" }),
       this.executionMetadata(),
     );
   }

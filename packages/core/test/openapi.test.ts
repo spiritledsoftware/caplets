@@ -179,23 +179,27 @@ describe("native OpenAPI Caplets", () => {
     try {
       const list = (await handleServerTool(
         caplet,
-        { operation: "list_tools" },
+        { operation: "tools" },
         registry,
         downstream,
         openapi,
       )) as any;
       expect(
-        list.structuredContent.result.tools.map((tool: { tool: string }) => tool.tool),
+        list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
       ).toEqual(["createUser", "GET /users/{id}"]);
       expect(
-        list.structuredContent.result.tools.find(
-          (candidate: { tool: string }) => candidate.tool === "GET /users/{id}",
+        list.structuredContent.result.items.find(
+          (candidate: { name: string }) => candidate.name === "GET /users/{id}",
         ),
-      ).toMatchObject({ hasOutputSchema: true });
+      ).toMatchObject({
+        hasOutputSchema: true,
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
 
       const tool = (await handleServerTool(
         caplet,
-        { operation: "get_tool", tool: "GET /users/{id}" },
+        { operation: "describe_tool", name: "GET /users/{id}" },
         registry,
         downstream,
         openapi,
@@ -239,8 +243,8 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         {
           operation: "call_tool",
-          tool: "GET /users/{id}",
-          arguments: { path: { id: "42" }, query: { active: true } },
+          name: "GET /users/{id}",
+          args: { path: { id: "42" }, query: { active: true } },
         },
         registry,
         downstream,
@@ -255,8 +259,8 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         {
           operation: "call_tool",
-          tool: "GET /users/{id}",
-          arguments: { path: { id: "42" }, query: { active: true } },
+          name: "GET /users/{id}",
+          args: { path: { id: "42" }, query: { active: true } },
           fields: ["body.name"],
         },
         registry,
@@ -269,8 +273,8 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         {
           operation: "call_tool",
-          tool: "createUser",
-          arguments: { body: { name: "Ada" } },
+          name: "createUser",
+          args: { body: { name: "Ada" } },
         },
         registry,
         downstream,
@@ -285,8 +289,8 @@ describe("native OpenAPI Caplets", () => {
           caplet,
           {
             operation: "call_tool",
-            tool: "createUser",
-            arguments: { body: { name: "Ada" } },
+            name: "createUser",
+            args: { body: { name: "Ada" } },
             fields: ["body.created"],
           },
           registry,
@@ -644,7 +648,7 @@ describe("native OpenAPI Caplets", () => {
     try {
       const tool = (await handleServerTool(
         caplet,
-        { operation: "get_tool", tool: "schemaLess" },
+        { operation: "describe_tool", name: "schemaLess" },
         registry,
         downstream,
         openapi,
@@ -655,7 +659,7 @@ describe("native OpenAPI Caplets", () => {
       await expect(
         handleServerTool(
           caplet,
-          { operation: "call_tool", tool: "schemaLess", arguments: {}, fields: ["body"] },
+          { operation: "call_tool", name: "schemaLess", args: {}, fields: ["body"] },
           registry,
           downstream,
           openapi,
@@ -805,6 +809,9 @@ describe("native OpenAPI Caplets", () => {
         options: {
           defaultSearchLimit: 20,
           maxSearchLimit: 50,
+          exposure: "progressive_and_code_mode",
+          exposureDiscoveryTimeoutMs: 15000,
+          exposureDiscoveryConcurrency: 4,
           completion: {
             discoveryTimeoutMs: 750,
             overallTimeoutMs: 1500,

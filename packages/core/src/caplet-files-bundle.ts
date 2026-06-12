@@ -108,6 +108,26 @@ const capletRuntimeRequirementsSchema = z
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
 
+const capletAgentSelectionHintSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .describe("Optional author-supplied hint for agent tool/caplet selection.");
+
+const capletAgentSelectionHintsSchema = {
+  useWhen: capletAgentSelectionHintSchema
+    .optional()
+    .describe("When agents should prefer this Caplet or configured action."),
+  avoidWhen: capletAgentSelectionHintSchema
+    .optional()
+    .describe("When agents should avoid this Caplet or configured action."),
+};
+
+const capletExposureSchema = z
+  .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
+  .describe("How this Caplet is exposed to agents.");
+
 const capletEndpointAuthSchema = z
   .discriminatedUnion("type", [
     z.object({ type: z.literal("none") }).strict(),
@@ -324,6 +344,7 @@ const capletGraphQlOperationSchema = z
     documentPath: z.string().min(1).optional().describe("Path to a GraphQL operation document."),
     operationName: z.string().min(1).optional().describe("Operation name to execute."),
     description: z.string().min(1).optional().describe("Operation capability description."),
+    ...capletAgentSelectionHintsSchema,
   })
   .strict()
   .superRefine((operation, ctx) => {
@@ -433,6 +454,7 @@ const capletHttpActionSchema = z
       .refine((value) => !value.startsWith("//"), "HTTP action path must not start with //")
       .refine((value) => !isUrl(value), "HTTP action path must be a URL path, not a URL"),
     description: z.string().min(1).optional().describe("Action capability description."),
+    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -524,6 +546,7 @@ const capletCliToolAnnotationsSchema = z
 const capletCliToolActionSchema = z
   .object({
     description: z.string().min(1).optional().describe("Action capability description."),
+    ...capletAgentSelectionHintsSchema,
     inputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -614,6 +637,8 @@ export const capletFileSchema = z
       .array(z.string().trim().min(1).max(80))
       .optional()
       .describe("Optional tags for grouping or searching Caplets."),
+    exposure: capletExposureSchema.optional(),
+    ...capletAgentSelectionHintsSchema,
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
     runtime: capletRuntimeRequirementsSchema.optional(),
@@ -956,6 +981,9 @@ function capletToServerConfig(
 function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, unknown> {
   return {
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
+    ...(frontmatter.exposure ? { exposure: frontmatter.exposure } : {}),
+    ...(frontmatter.useWhen ? { useWhen: frontmatter.useWhen } : {}),
+    ...(frontmatter.avoidWhen ? { avoidWhen: frontmatter.avoidWhen } : {}),
     ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),
     ...(frontmatter.projectBinding ? { projectBinding: frontmatter.projectBinding } : {}),
     ...(frontmatter.runtime ? { runtime: frontmatter.runtime } : {}),

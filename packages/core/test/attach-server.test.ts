@@ -16,7 +16,7 @@ describe("NativeCapletsMcpSession", () => {
       listTools: () => [
         {
           caplet: "remote-alpha",
-          toolName: "caplets_remote_alpha",
+          toolName: "caplets__remote-alpha",
           title: "Remote Alpha",
           description: "Remote alpha tool",
           promptGuidance: [],

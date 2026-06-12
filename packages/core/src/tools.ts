@@ -1,4 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
+import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
 import type { CapletSetManager } from "./caplet-sets";
 import type { CapletConfig } from "./config";
 import type { CliToolsManager } from "./cli-tools";
@@ -7,6 +8,13 @@ import { CapletsError } from "./errors";
 import type { GraphQLManager } from "./graphql";
 import type { HttpActionManager } from "./http-actions";
 import type { OpenApiManager } from "./openapi";
+import {
+  normalizedObservableValue,
+  observeOutputShape,
+  observedOutputShapeKey,
+  usefulOutputSchema,
+  type ObservedOutputShapeStore,
+} from "./observed-output-shapes";
 import type { ServerRegistry } from "./registry";
 import { projectStructuredContent, validateFieldSelection } from "./field-selection";
 import {
@@ -22,9 +30,25 @@ import {
 
 export { generatedToolInputSchema } from "./generated-tool-input-schema";
 
+const ajv = new Ajv({
+  allErrors: true,
+  allowUnionTypes: true,
+  strict: false,
+  validateSchema: false,
+});
+const compiledValidators = new WeakMap<object, ValidateFunction>();
+const MAX_SCHEMA_ERRORS = 8;
+
 export type GeneratedServerToolRequest = RequiredOperationRequest;
 
 type ParsedOperationRequest = RequiredOperationRequest & Record<string, unknown>;
+
+export type HandleServerToolOptions = {
+  observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
+  observedOutputShapeScope?: "local" | "self_hosted" | "cloud" | undefined;
+  workspaceId?: string | undefined;
+  projectFingerprint?: string | undefined;
+};
 
 export async function handleServerTool(
   server: CapletConfig,
@@ -36,6 +60,7 @@ export async function handleServerTool(
   http?: HttpActionManager,
   cli?: CliToolsManager,
   caplets?: CapletSetManager,
+  options: HandleServerToolOptions = {},
 ): Promise<any> {
   const startedAt = Date.now();
   const parsed = validateOperationRequest(
@@ -50,7 +75,7 @@ export async function handleServerTool(
         registry.detail(server),
         metadataFor(server, "inspect", undefined, startedAt),
       );
-    case "check_backend": {
+    case "check": {
       const result = await backendFor(
         server,
         downstream,
@@ -60,50 +85,70 @@ export async function handleServerTool(
         cli,
         caplets,
       ).check(server as never);
-      return jsonResult(result, metadataFor(server, "check_backend", undefined, startedAt));
+      return jsonResult(result, metadataFor(server, "check", undefined, startedAt));
     }
-    case "list_tools": {
+    case "tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
-      const limit = parsed.limit ?? tools.length;
+      const page = pageItems(
+        tools.map((tool) => backend.compact(server as never, tool)),
+        parsed,
+        registry.config.options.maxSearchLimit,
+      );
       return jsonResult(
         {
           id: server.server,
           name: server.name,
-          tools: tools.slice(0, limit).map((tool) => backend.compact(server as never, tool)),
+          ...page,
         },
-        metadataFor(server, "list_tools", undefined, startedAt),
+        metadataFor(server, "tools", undefined, startedAt),
       );
     }
     case "search_tools": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
+      const matches = backend.search(server as never, tools, parsed.query, limit);
+      const page = pageItems(matches, parsed, registry.config.options.maxSearchLimit);
       return jsonResult(
         {
           id: server.server,
           name: server.name,
           query: parsed.query,
-          tools: backend.search(server as never, tools, parsed.query, limit),
+          ...page,
         },
         metadataFor(server, "search_tools", undefined, startedAt),
       );
     }
-    case "get_tool": {
+    case "describe_tool": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
-      const tool = await backend.getTool(server as never, parsed.tool);
+      const tool = await backend.getTool(server as never, parsed.name);
+      const observedOutputShape = await readObservedOutputShape(
+        options,
+        server,
+        parsed.name,
+        tool.outputSchema,
+      );
       return jsonResult(
-        { id: server.server, tool },
-        metadataFor(server, "get_tool", parsed.tool, startedAt),
+        {
+          id: server.server,
+          tool,
+          ...(observedOutputShape ? { observedOutputShape } : {}),
+          fieldSelection: fieldSelectionFor(server, tool),
+        },
+        metadataFor(server, "describe_tool", parsed.name, startedAt),
       );
     }
     case "call_tool": {
       const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const tool = await maybeGetToolForValidation(backend, server, parsed.name);
+      validateToolArgsForAgent(tool, parsed.name, parsed.args);
       if (parsed.fields === undefined) {
-        const result = await backend.callTool(server as never, parsed.tool, parsed.arguments);
+        const result = await backend.callTool(server as never, parsed.name, parsed.args);
+        await writeObservedOutputShape(options, server, parsed.name, result);
         return annotateCallToolResult(
           result,
-          metadataFor(server, "call_tool", parsed.tool, startedAt),
+          metadataFor(server, "call_tool", parsed.name, startedAt),
         );
       }
       if (server.backend === "graphql") {
@@ -113,44 +158,58 @@ export async function handleServerTool(
         );
       }
 
-      const tool = await backend.getTool(server as never, parsed.tool);
-      if (!tool.outputSchema) {
-        throw new CapletsError("REQUEST_INVALID", "Field selection requires an output schema");
+      const fieldSelectionTool = tool ?? (await backend.getTool(server as never, parsed.name));
+      if (!fieldSelectionTool.outputSchema) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Field selection requires an output schema. Retry without fields, or call describe_tool first and only use fields when fieldSelection.supported is true.",
+        );
       }
-      validateFieldSelection(tool.outputSchema, parsed.fields);
+      validateFieldSelection(fieldSelectionTool.outputSchema, parsed.fields);
 
-      const metadata = metadataFor(server, "call_tool", parsed.tool, startedAt);
+      const metadata = metadataFor(server, "call_tool", parsed.name, startedAt);
+      const rawResult = await backend.callTool(server as never, parsed.name, parsed.args);
+      await writeObservedOutputShape(options, server, parsed.name, rawResult);
       const result = projectCallToolResult(
-        await backend.callTool(server as never, parsed.tool, parsed.arguments),
-        tool.outputSchema,
+        rawResult,
+        fieldSelectionTool.outputSchema,
         parsed.fields,
         markdownContextFor(metadata),
       );
       return annotateCallToolResult(result, metadata);
     }
-    case "list_resources": {
-      const backend = mcpBackendFor(server, downstream);
+    case "resources": {
+      const backend = mcpBackendFor(server, downstream, "page");
+      if (!backend) {
+        return jsonResult(
+          { id: server.server, name: server.name, items: [] },
+          metadataFor(server, "resources", undefined, startedAt),
+        );
+      }
       const resources = await backend.listResources(server as never);
-      const templates = await backend.listResourceTemplates(server as never);
-      const limit = parsed.limit ?? resources.length + templates.length;
+      const page = pageItems(
+        resources.map((resource) => backend.compactResource(server as never, resource)),
+        parsed,
+        registry.config.options.maxSearchLimit,
+      );
       return jsonResult(
         {
           id: server.server,
           name: server.name,
-          resources: resources
-            .slice(0, limit)
-            .map((resource) => backend.compactResource(server as never, resource)),
-          resourceTemplates: templates
-            .slice(0, Math.max(0, limit - resources.length))
-            .map((template) => backend.compactResourceTemplate(server as never, template)),
+          ...page,
         },
-        metadataFor(server, "list_resources", undefined, startedAt),
+        metadataFor(server, "resources", undefined, startedAt),
       );
     }
     case "search_resources": {
-      const backend = mcpBackendFor(server, downstream);
+      const backend = mcpBackendFor(server, downstream, "page");
+      if (!backend) {
+        return jsonResult(
+          { id: server.server, name: server.name, query: parsed.query, items: [] },
+          metadataFor(server, "search_resources", undefined, startedAt),
+        );
+      }
       const resources = await backend.listResources(server as never);
-      const templates = await backend.listResourceTemplates(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       const resourceMatches = backend.searchResources(
         server as never,
@@ -158,39 +217,42 @@ export async function handleServerTool(
         parsed.query,
         limit,
       );
-      const templateMatches = backend.searchResourceTemplates(
-        server as never,
-        templates,
-        parsed.query,
-        Math.max(0, limit - resourceMatches.length),
-      );
+      const page = pageItems(resourceMatches, parsed, registry.config.options.maxSearchLimit);
       return jsonResult(
         {
           id: server.server,
           name: server.name,
           query: parsed.query,
-          matches: [...resourceMatches, ...templateMatches],
+          ...page,
         },
         metadataFor(server, "search_resources", undefined, startedAt),
       );
     }
-    case "list_resource_templates": {
-      const backend = mcpBackendFor(server, downstream);
+    case "resource_templates": {
+      const backend = mcpBackendFor(server, downstream, "page");
+      if (!backend) {
+        return jsonResult(
+          { id: server.server, name: server.name, items: [] },
+          metadataFor(server, "resource_templates", undefined, startedAt),
+        );
+      }
       const templates = await backend.listResourceTemplates(server as never);
-      const limit = parsed.limit ?? templates.length;
+      const page = pageItems(
+        templates.map((template) => backend.compactResourceTemplate(server as never, template)),
+        parsed,
+        registry.config.options.maxSearchLimit,
+      );
       return jsonResult(
         {
           id: server.server,
           name: server.name,
-          resourceTemplates: templates
-            .slice(0, limit)
-            .map((template) => backend.compactResourceTemplate(server as never, template)),
+          ...page,
         },
-        metadataFor(server, "list_resource_templates", undefined, startedAt),
+        metadataFor(server, "resource_templates", undefined, startedAt),
       );
     }
     case "read_resource": {
-      const result = await mcpBackendFor(server, downstream).readResource(
+      const result = await mcpBackendFor(server, downstream, "direct")!.readResource(
         server as never,
         parsed.uri,
       );
@@ -199,48 +261,64 @@ export async function handleServerTool(
         metadataFor(server, "read_resource", { uri: parsed.uri }, startedAt),
       );
     }
-    case "list_prompts": {
-      const backend = mcpBackendFor(server, downstream);
+    case "prompts": {
+      const backend = mcpBackendFor(server, downstream, "page");
+      if (!backend) {
+        return jsonResult(
+          { id: server.server, name: server.name, items: [] },
+          metadataFor(server, "prompts", undefined, startedAt),
+        );
+      }
       const prompts = await backend.listPrompts(server as never);
-      const limit = parsed.limit ?? prompts.length;
+      const page = pageItems(
+        prompts.map((prompt) => backend.compactPrompt(server as never, prompt)),
+        parsed,
+        registry.config.options.maxSearchLimit,
+      );
       return jsonResult(
         {
           id: server.server,
           name: server.name,
-          prompts: prompts
-            .slice(0, limit)
-            .map((prompt) => backend.compactPrompt(server as never, prompt)),
+          ...page,
         },
-        metadataFor(server, "list_prompts", undefined, startedAt),
+        metadataFor(server, "prompts", undefined, startedAt),
       );
     }
     case "search_prompts": {
-      const backend = mcpBackendFor(server, downstream);
+      const backend = mcpBackendFor(server, downstream, "page");
+      if (!backend) {
+        return jsonResult(
+          { id: server.server, name: server.name, query: parsed.query, items: [] },
+          metadataFor(server, "search_prompts", undefined, startedAt),
+        );
+      }
       const prompts = await backend.listPrompts(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
+      const matches = backend.searchPrompts(server as never, prompts, parsed.query, limit);
+      const page = pageItems(matches, parsed, registry.config.options.maxSearchLimit);
       return jsonResult(
         {
           id: server.server,
           name: server.name,
           query: parsed.query,
-          prompts: backend.searchPrompts(server as never, prompts, parsed.query, limit),
+          ...page,
         },
         metadataFor(server, "search_prompts", undefined, startedAt),
       );
     }
     case "get_prompt": {
-      const result = await mcpBackendFor(server, downstream).getPrompt(
+      const result = await mcpBackendFor(server, downstream, "direct")!.getPrompt(
         server as never,
-        parsed.prompt,
-        parsed.arguments,
+        parsed.name,
+        parsed.args,
       );
       return annotateMcpResult(
         result,
-        metadataFor(server, "get_prompt", { prompt: parsed.prompt }, startedAt),
+        metadataFor(server, "get_prompt", { prompt: parsed.name }, startedAt),
       );
     }
     case "complete": {
-      const result = await mcpBackendFor(server, downstream).complete(server as never, {
+      const result = await mcpBackendFor(server, downstream, "direct")!.complete(server as never, {
         ref: parsed.ref,
         argument: parsed.argument,
       });
@@ -249,9 +327,418 @@ export async function handleServerTool(
   }
 }
 
+function fieldSelectionFor(
+  server: CapletConfig,
+  tool: { outputSchema?: unknown },
+): { supported: boolean; reason?: string } {
+  if (server.backend === "graphql") {
+    return { supported: false, reason: "graphql_document_selection" };
+  }
+  if (!tool.outputSchema) {
+    return { supported: false, reason: "output_schema_unavailable" };
+  }
+  return { supported: true };
+}
+
+async function maybeGetToolForValidation(
+  backend: unknown,
+  server: CapletConfig,
+  toolName: string,
+): Promise<{ inputSchema?: unknown; outputSchema?: unknown } | undefined> {
+  if (!hasGetTool(backend)) return undefined;
+  try {
+    return await backend.getTool(server as never, toolName);
+  } catch {
+    return undefined;
+  }
+}
+
+function validateToolArgsForAgent(
+  tool: { inputSchema?: unknown; outputSchema?: unknown } | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+): void {
+  const schema = isPlainObject(tool?.inputSchema) ? tool.inputSchema : undefined;
+  if (!schema) return;
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const acceptedArgs = Object.keys(properties).sort();
+  const requiredArgs = Array.isArray(schema.required)
+    ? schema.required.filter((value): value is string => typeof value === "string").sort()
+    : [];
+  const validator = validatorFor(schema);
+  const valid = validator ? validator(args) : manualValidateObjectArgs(schema, args);
+  if (valid) return;
+
+  const errors = validator?.errors ?? manualValidationErrors(schema, args);
+  const schemaErrors = compactSchemaErrors(errors);
+  const missing = missingArgsFromErrors(schemaErrors, requiredArgs, args);
+  const unexpectedArgs = Object.keys(args)
+    .filter((key) => acceptedArgs.length > 0 && !acceptedArgs.includes(key))
+    .sort();
+  const unexpected = unexpectedArgsFromErrors(schemaErrors);
+
+  const inputTypeName = `${toolTypeBaseName(toolName)}Input`;
+  const outputTypeName = `${toolTypeBaseName(toolName)}Output`;
+  const requiredTemplate = minimalArgsTemplate(schema, requiredArgs);
+  const parts = [
+    missing.length > 0 ? `missing required argument(s): ${missing.join(", ")}` : undefined,
+    unexpected.length > 0 ? `unexpected argument(s): ${unexpected.join(", ")}` : undefined,
+    ...schemaErrors
+      .filter((error) => error.rule !== "required" && error.rule !== "additionalProperties")
+      .slice(0, 3)
+      .map(formatSchemaError),
+  ].filter((value): value is string => value !== undefined);
+  const reason = parts.length > 0 ? parts.join("; ") : "schema validation failed";
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    `call_tool args for ${toolName} are invalid: ${reason}. Use describe_tool for the schema and retry with exact argument names.`,
+    {
+      tool: toolName,
+      requiredArgs,
+      acceptedArgs,
+      ...(unexpectedArgs.length > 0 ? { unexpectedArgs } : {}),
+      ...(Object.keys(requiredTemplate).length > 0
+        ? { minimalArgsTemplate: requiredTemplate }
+        : {}),
+      ...(schemaErrors.length > 0 ? { schemaErrors } : {}),
+      callSignature: `callTool(name: ${JSON.stringify(toolName)}, args: ${inputTypeName}): Promise<CapletsResult<${outputTypeName}>>`,
+      inputTypeScript: schemaToTypeScript(schema, inputTypeName),
+      retry:
+        "Call describe_tool for this tool, then call_tool with args matching inputSchema/inputTypeScript exactly.",
+    },
+  );
+}
+
+function validatorFor(schema: Record<string, unknown>): ValidateFunction | undefined {
+  const existing = compiledValidators.get(schema);
+  if (existing) return existing;
+  try {
+    const validator = ajv.compile(schema);
+    compiledValidators.set(schema, validator);
+    return validator;
+  } catch {
+    return undefined;
+  }
+}
+
+function manualValidateObjectArgs(
+  schema: Record<string, unknown>,
+  args: Record<string, unknown>,
+): boolean {
+  return manualValidationErrors(schema, args).length === 0;
+}
+
+function manualValidationErrors(
+  schema: Record<string, unknown>,
+  args: Record<string, unknown>,
+): ErrorObject[] {
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const acceptedArgs = Object.keys(properties).sort();
+  const requiredArgs = Array.isArray(schema.required)
+    ? schema.required.filter((value): value is string => typeof value === "string").sort()
+    : [];
+  const errors: ErrorObject[] = [];
+  for (const key of requiredArgs) {
+    if (args[key] === undefined) {
+      errors.push({
+        instancePath: "",
+        schemaPath: "#/required",
+        keyword: "required",
+        params: { missingProperty: key },
+      });
+    }
+  }
+  if (schema.additionalProperties === false && acceptedArgs.length > 0) {
+    for (const key of Object.keys(args).sort()) {
+      if (!acceptedArgs.includes(key)) {
+        errors.push({
+          instancePath: "",
+          schemaPath: "#/additionalProperties",
+          keyword: "additionalProperties",
+          params: { additionalProperty: key },
+        });
+      }
+    }
+  }
+  return errors;
+}
+
+type CompactSchemaError = {
+  path: string;
+  rule: string;
+  expected?: string;
+  allowed?: unknown[];
+  missing?: string;
+  unexpected?: string;
+  message?: string;
+};
+
+function compactSchemaErrors(errors: ErrorObject[] | null | undefined): CompactSchemaError[] {
+  if (!errors) return [];
+  return errors.slice(0, MAX_SCHEMA_ERRORS).map((error) => {
+    const path = error.instancePath || "/";
+    if (error.keyword === "required") {
+      const missing = stringParam(error, "missingProperty");
+      return {
+        path: appendJsonPointer(path, missing),
+        rule: "required",
+        ...(missing === undefined ? {} : { missing }),
+      };
+    }
+    if (error.keyword === "additionalProperties") {
+      const unexpected = stringParam(error, "additionalProperty");
+      return {
+        path: appendJsonPointer(path, unexpected),
+        rule: "additionalProperties",
+        ...(unexpected === undefined ? {} : { unexpected }),
+      };
+    }
+    if (error.keyword === "type") {
+      const expected = stringParam(error, "type");
+      return {
+        path,
+        rule: "type",
+        ...(expected === undefined ? {} : { expected }),
+      };
+    }
+    if (error.keyword === "enum") {
+      return {
+        path,
+        rule: "enum",
+        ...(Array.isArray(error.params.allowedValues)
+          ? { allowed: error.params.allowedValues as unknown[] }
+          : {}),
+      };
+    }
+    if (error.keyword === "const") {
+      return {
+        path,
+        rule: "const",
+        allowed: [error.params.allowedValue],
+      };
+    }
+    return {
+      path,
+      rule: error.keyword,
+      ...(error.message ? { message: error.message } : {}),
+    };
+  });
+}
+
+function stringParam(error: ErrorObject, key: string): string | undefined {
+  const value = (error.params as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function appendJsonPointer(path: string, key: string | undefined): string {
+  if (!key) return path;
+  const escaped = key.replace(/~/gu, "~0").replace(/\//gu, "~1");
+  return path === "/" ? `/${escaped}` : `${path}/${escaped}`;
+}
+
+function missingArgsFromErrors(
+  errors: CompactSchemaError[],
+  requiredArgs: string[],
+  args: Record<string, unknown>,
+): string[] {
+  const missing = errors
+    .filter((error) => error.rule === "required" && error.path.split("/").length === 2)
+    .map((error) => error.missing)
+    .filter((value): value is string => typeof value === "string");
+  if (missing.length > 0) return [...new Set(missing)].sort();
+  return requiredArgs.filter((key) => args[key] === undefined);
+}
+
+function unexpectedArgsFromErrors(errors: CompactSchemaError[]): string[] {
+  return errors
+    .filter((error) => error.rule === "additionalProperties" && error.unexpected)
+    .map((error) => error.unexpected!)
+    .sort();
+}
+
+function formatSchemaError(error: CompactSchemaError): string {
+  if (error.rule === "type" && error.expected) {
+    return `${error.path} must be ${error.expected}`;
+  }
+  if (error.rule === "enum" && error.allowed) {
+    return `${error.path} must be one of ${error.allowed.map((value) => JSON.stringify(value)).join(", ")}`;
+  }
+  if (error.rule === "const" && error.allowed) {
+    return `${error.path} must be ${JSON.stringify(error.allowed[0])}`;
+  }
+  return error.message ? `${error.path} ${error.message}` : `${error.path} failed ${error.rule}`;
+}
+
+function minimalArgsTemplate(
+  schema: Record<string, unknown>,
+  requiredArgs: string[],
+): Record<string, unknown> {
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const template: Record<string, unknown> = {};
+  for (const key of requiredArgs) {
+    template[key] = placeholderValueForSchema(properties[key], 0);
+  }
+  return template;
+}
+
+function placeholderValueForSchema(schema: unknown, depth: number): unknown {
+  if (depth > 2 || !isPlainObject(schema)) return null;
+  if ("const" in schema) return schema.const;
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
+  const type = Array.isArray(schema.type)
+    ? (schema.type.find((value) => value !== "null") ?? schema.type[0])
+    : schema.type;
+  if (type === "string") return "";
+  if (type === "integer" || type === "number") return 0;
+  if (type === "boolean") return false;
+  if (type === "array") return [];
+  if (type === "object" || isPlainObject(schema.properties)) {
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string").sort()
+      : [];
+    const properties = isPlainObject(schema.properties) ? schema.properties : {};
+    const value: Record<string, unknown> = {};
+    for (const key of required) {
+      value[key] = placeholderValueForSchema(properties[key], depth + 1);
+    }
+    return value;
+  }
+  return null;
+}
+
+function hasGetTool(backend: unknown): backend is {
+  getTool(server: never, name: string): Promise<{ inputSchema?: unknown; outputSchema?: unknown }>;
+} {
+  return Boolean(
+    backend &&
+    typeof backend === "object" &&
+    "getTool" in backend &&
+    typeof (backend as { getTool?: unknown }).getTool === "function",
+  );
+}
+
+function schemaToTypeScript(schema: unknown, fallbackName: string): string {
+  return `type ${fallbackName} = ${schemaType(schema)};`;
+}
+
+function schemaType(schema: unknown): string {
+  if (!isPlainObject(schema)) return "unknown";
+  if ("const" in schema) return JSON.stringify(schema.const);
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.map((value) => JSON.stringify(value)).join(" | ") || "unknown";
+  }
+  const type = schema.type;
+  if (Array.isArray(type)) {
+    const variants = type.map((item) => schemaType({ ...schema, type: item }));
+    return [...new Set(variants)].join(" | ") || "unknown";
+  }
+  if (type === "string") return "string";
+  if (type === "number" || type === "integer") return "number";
+  if (type === "boolean") return "boolean";
+  if (type === "null") return "null";
+  if (type === "array") return `${schemaType(schema.items)}[]`;
+  if (type === "object" || isPlainObject(schema.properties)) return objectSchemaType(schema);
+  if (Array.isArray(schema.oneOf)) return unionSchemaType(schema.oneOf);
+  if (Array.isArray(schema.anyOf)) return unionSchemaType(schema.anyOf);
+  if (Array.isArray(schema.allOf)) {
+    return schema.allOf.map(schemaType).join(" & ") || "Record<string, unknown>";
+  }
+  return "unknown";
+}
+
+function objectSchemaType(schema: Record<string, unknown>): string {
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+  const fields = Object.entries(properties)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => {
+      const optional = required.has(key) ? "" : "?";
+      return `${propertySignature(key)}${optional}: ${schemaType(value)};`;
+    });
+  if (fields.length === 0) {
+    return schema.additionalProperties === false ? "{}" : "Record<string, unknown>";
+  }
+  if (schema.additionalProperties && isPlainObject(schema.additionalProperties)) {
+    fields.push(`[key: string]: ${schemaType(schema.additionalProperties)};`);
+  }
+  return `{ ${fields.join(" ")} }`;
+}
+
+function unionSchemaType(schemas: unknown[]): string {
+  return schemas.map(schemaType).join(" | ") || "unknown";
+}
+
+function propertySignature(key: string): string {
+  return /^[A-Za-z_$][\w$]*$/u.test(key) ? key : JSON.stringify(key);
+}
+
+function toolTypeBaseName(toolName: string): string {
+  const base = toolName
+    .split(/[^a-zA-Z0-9]+/u)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join("");
+  return base || "Tool";
+}
+
+async function readObservedOutputShape(
+  options: HandleServerToolOptions,
+  server: CapletConfig,
+  toolName: string,
+  outputSchema: unknown,
+) {
+  if (!options.observedOutputShapeStore || usefulOutputSchema(outputSchema)) return undefined;
+  try {
+    return await options.observedOutputShapeStore.read(
+      observedOutputShapeKey({
+        scope: options.observedOutputShapeScope ?? "local",
+        workspaceId: options.workspaceId,
+        projectFingerprint: options.projectFingerprint,
+        caplet: server,
+        toolName,
+      }),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeObservedOutputShape(
+  options: HandleServerToolOptions,
+  server: CapletConfig,
+  toolName: string,
+  result: unknown,
+): Promise<void> {
+  if (!options.observedOutputShapeStore || resultIsError(result)) return;
+  const value = normalizedObservableValue(result);
+  if (value === undefined) return;
+  const key = observedOutputShapeKey({
+    scope: options.observedOutputShapeScope ?? "local",
+    workspaceId: options.workspaceId,
+    projectFingerprint: options.projectFingerprint,
+    caplet: server,
+    toolName,
+  });
+  try {
+    const existing = await options.observedOutputShapeStore.read(key);
+    const observed = observeOutputShape({ value, existing });
+    if (observed) await options.observedOutputShapeStore.write(key, observed);
+  } catch {
+    return;
+  }
+}
+
+function resultIsError(result: unknown): boolean {
+  return Boolean(result && typeof result === "object" && (result as { isError?: unknown }).isError);
+}
+
 export function validateOperationRequest(
   request: unknown,
-  maxSearchLimit: number,
+  _maxSearchLimit: number,
   backend: string = "tool",
 ): RequiredOperationRequest {
   const result = generatedToolInputSchemaForCaplet({ backend }).safeParse(request);
@@ -304,91 +791,62 @@ export function validateOperationRequest(
 
   switch (value.operation) {
     case "inspect":
-    case "check_backend":
+    case "check":
       allowed([]);
       return { operation: value.operation };
-    case "list_tools":
-      allowed(["limit"]);
-      if (value.limit !== undefined && value.limit > maxSearchLimit) {
-        throw new CapletsError("REQUEST_INVALID", `list_tools limit must be <= ${maxSearchLimit}`);
-      }
-      return value.limit === undefined
-        ? { operation: "list_tools" }
-        : { operation: "list_tools", limit: value.limit };
+    case "tools":
+      allowed(["limit", "cursor"]);
+      return normalizePageRequest(value);
     case "search_tools":
-      allowed(["query", "limit"]);
+      allowed(["query", "limit", "cursor"]);
       if (!value.query) {
         throw new CapletsError("REQUEST_INVALID", "search_tools requires query");
       }
-      if (value.limit !== undefined && value.limit > maxSearchLimit) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `search_tools limit must be <= ${maxSearchLimit}`,
-        );
+      return normalizePageRequest(value) as RequiredOperationRequest;
+    case "describe_tool":
+      allowed(["name"]);
+      if (!value.name) {
+        throw new CapletsError("REQUEST_INVALID", "describe_tool requires name");
       }
-      return value.limit === undefined
-        ? { operation: "search_tools", query: value.query }
-        : { operation: "search_tools", query: value.query, limit: value.limit };
-    case "get_tool":
-      allowed(["tool"]);
-      if (!value.tool) {
-        throw new CapletsError("REQUEST_INVALID", "get_tool requires tool");
-      }
-      return { operation: "get_tool", tool: value.tool };
+      return { operation: "describe_tool", name: value.name };
     case "call_tool":
-      allowed(["tool", "arguments", "fields"]);
-      if (!value.tool) {
-        throw new CapletsError("REQUEST_INVALID", "call_tool requires tool");
+      allowed(["name", "args", "fields"]);
+      if (!value.name) {
+        throw new CapletsError("REQUEST_INVALID", "call_tool requires name");
       }
-      if (!isPlainObject(value.arguments)) {
-        throw new CapletsError("REQUEST_INVALID", "call_tool.arguments must be a JSON object");
+      if (!isPlainObject(value.args)) {
+        throw new CapletsError("REQUEST_INVALID", "call_tool.args must be a JSON object");
       }
       return value.fields === undefined
-        ? { operation: "call_tool", tool: value.tool, arguments: value.arguments }
+        ? { operation: "call_tool", name: value.name, args: value.args }
         : {
             operation: "call_tool",
-            tool: value.tool,
-            arguments: value.arguments,
+            name: value.name,
+            args: value.args,
             fields: value.fields,
           };
-    case "list_resources":
-    case "list_resource_templates":
-    case "list_prompts":
-      allowed(["limit"]);
-      if (value.limit !== undefined && value.limit > maxSearchLimit) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `${value.operation} limit must be <= ${maxSearchLimit}`,
-        );
-      }
-      return value.limit === undefined
-        ? { operation: value.operation }
-        : { operation: value.operation, limit: value.limit };
+    case "resources":
+    case "resource_templates":
+    case "prompts":
+      allowed(["limit", "cursor"]);
+      return normalizePageRequest(value);
     case "search_resources":
     case "search_prompts":
-      allowed(["query", "limit"]);
+      allowed(["query", "limit", "cursor"]);
       if (!value.query)
         throw new CapletsError("REQUEST_INVALID", `${value.operation} requires query`);
-      if (value.limit !== undefined && value.limit > maxSearchLimit) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `${value.operation} limit must be <= ${maxSearchLimit}`,
-        );
-      }
-      return value.limit === undefined
-        ? { operation: value.operation, query: value.query }
-        : { operation: value.operation, query: value.query, limit: value.limit };
+      return normalizePageRequest(value) as RequiredOperationRequest;
     case "read_resource":
       allowed(["uri"]);
       if (!value.uri) throw new CapletsError("REQUEST_INVALID", "read_resource requires uri");
       return { operation: "read_resource", uri: value.uri };
     case "get_prompt":
-      allowed(["prompt", "arguments"]);
-      if (!value.prompt) throw new CapletsError("REQUEST_INVALID", "get_prompt requires prompt");
-      if (value.arguments !== undefined && !isPlainObject(value.arguments)) {
-        throw new CapletsError("REQUEST_INVALID", "get_prompt.arguments must be a JSON object");
+      allowed(["name", "args"]);
+      if (!value.name) throw new CapletsError("REQUEST_INVALID", "get_prompt requires name");
+      if (value.args !== undefined && !isPlainObject(value.args)) {
+        throw new CapletsError("REQUEST_INVALID", "get_prompt.args must be a JSON object");
       }
-      return { operation: "get_prompt", prompt: value.prompt, arguments: value.arguments ?? {} };
+      return { operation: "get_prompt", name: value.name, args: value.args ?? {} };
     case "complete":
       allowed(["ref", "argument"]);
       if (!value.ref) throw new CapletsError("REQUEST_INVALID", "complete requires ref");
@@ -398,8 +856,37 @@ export function validateOperationRequest(
   throw new CapletsError("INTERNAL_ERROR", "Unhandled operation");
 }
 
-function mcpBackendFor(server: CapletConfig, downstream: DownstreamManager): DownstreamManager {
+function normalizePageRequest<T extends ParsedOperationRequest>(value: T): T {
+  return {
+    ...value,
+    ...(value.limit === undefined ? {} : { limit: value.limit }),
+    ...(typeof value.cursor === "string" ? { cursor: value.cursor } : {}),
+  };
+}
+
+function pageItems<T>(
+  items: T[],
+  input: { limit?: number; cursor?: string },
+  maxLimit: number,
+): { items: T[]; nextCursor?: string; truncated?: boolean } {
+  const cursor = input.cursor === undefined ? 0 : Number.parseInt(input.cursor, 10);
+  const start = Number.isFinite(cursor) && cursor > 0 ? cursor : 0;
+  const requestedLimit = input.limit ?? maxLimit;
+  const limit = Math.max(1, Math.min(requestedLimit, maxLimit));
+  const page = items.slice(start, start + limit);
+  const nextIndex = start + page.length;
+  return nextIndex < items.length
+    ? { items: page, nextCursor: String(nextIndex), truncated: true }
+    : { items: page };
+}
+
+function mcpBackendFor(
+  server: CapletConfig,
+  downstream: DownstreamManager,
+  mode: "page" | "direct",
+): DownstreamManager | undefined {
   if (server.backend !== "mcp") {
+    if (mode === "page") return undefined;
     throw new CapletsError(
       "UNSUPPORTED_OPERATION",
       "MCP resource, prompt, and completion operations require an MCP-backed Caplet",
@@ -409,15 +896,20 @@ function mcpBackendFor(server: CapletConfig, downstream: DownstreamManager): Dow
 }
 
 type RequiredOperationRequest =
-  | { operation: "inspect" | "check_backend" }
-  | { operation: "list_tools"; limit?: number }
-  | { operation: "search_tools"; query: string; limit?: number }
-  | { operation: "get_tool"; tool: string }
-  | { operation: "call_tool"; tool: string; arguments: Record<string, unknown>; fields?: string[] }
-  | { operation: "list_resources" | "list_resource_templates" | "list_prompts"; limit?: number }
-  | { operation: "search_resources" | "search_prompts"; query: string; limit?: number }
+  | { operation: "inspect" | "check" }
+  | { operation: "tools"; limit?: number; cursor?: string }
+  | { operation: "search_tools"; query: string; limit?: number; cursor?: string }
+  | { operation: "describe_tool"; name: string }
+  | { operation: "call_tool"; name: string; args: Record<string, unknown>; fields?: string[] }
+  | { operation: "resources" | "resource_templates" | "prompts"; limit?: number; cursor?: string }
+  | {
+      operation: "search_resources" | "search_prompts";
+      query: string;
+      limit?: number;
+      cursor?: string;
+    }
   | { operation: "read_resource"; uri: string }
-  | { operation: "get_prompt"; prompt: string; arguments: Record<string, unknown> }
+  | { operation: "get_prompt"; name: string; args: Record<string, unknown> }
   | {
       operation: "complete";
       ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };

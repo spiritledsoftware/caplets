@@ -31,7 +31,7 @@ describe("hosted Cloud Auth refresh before attach", () => {
                 accessToken: "new_access",
                 refreshToken: "new_refresh",
                 expiresAt: "2999-01-01T00:00:00.000Z",
-                scope: ["project_binding:read", "project_binding:write"],
+                scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
                 tokenType: "Bearer",
                 credentialFamilyId: "family_123",
               });

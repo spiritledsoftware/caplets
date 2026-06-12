@@ -4,7 +4,7 @@
 
 **Problem Statement**: MCP clients that connect directly to many servers receive a large, flat tool surface up front. This creates context bloat, weak tool selection, name-collision risk, and poor discoverability when an agent only needs to know which capability domain to inspect next.
 
-**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and explicit CLI tool/action definitions from `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows, user-owned Markdown Caplet files from the user Caplets root, project config from `./.caplets/config.json`, and project Markdown Caplet files from `./.caplets`. Project sources load by default and override global/user sources with the same Caplet ID, while inspection commands expose source metadata and shadow warnings. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, HTTP actions, or CLI tools/actions through operations such as `get_caplet`, `search_tools`, `list_tools`, `get_tool`, and `call_tool`.
+**Proposed Solution**: Caplets is a local MCP server that reads downstream MCP server definitions, native OpenAPI endpoint definitions, native GraphQL endpoint definitions, explicit HTTP API action definitions, and explicit CLI tool/action definitions from `${XDG_CONFIG_HOME:-~/.config}/caplets/config.json` on Unix-like platforms or `%APPDATA%\caplets\config.json` on Windows, user-owned Markdown Caplet files from the user Caplets root, project config from `./.caplets/config.json`, and project Markdown Caplet files from `./.caplets`. Project sources load by default and override global/user sources with the same Caplet ID, while inspection commands expose source metadata and shadow warnings. It exposes each enabled Caplet as one top-level, skill-like MCP tool. Each generated Caplet tool uses the Caplet ID as the tool name and the configured `name`/`description` as its compact capability card, then progressively discloses the full Caplet card and the backing MCP tools, OpenAPI operations, GraphQL operations, HTTP actions, or CLI tools/actions through operations such as `inspect`, `search_tools`, `tools`, `describe_tool`, and `call_tool`.
 
 **Success Criteria**:
 
@@ -29,8 +29,8 @@
 3. Each downstream MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tool/action set, or Caplet file uses the supported backend configuration shape plus a required `description`.
 4. Client calls Caplets `tools/list` and sees one top-level tool per enabled downstream server, for example `linear`, `chrome-devtools`, and `context7`.
 5. Agent chooses the relevant Caplet tool based on its skill-like tool name and description.
-6. Agent calls that Caplet tool with an operation such as `get_caplet`, `search_tools`, `list_tools`, or `get_tool`.
-7. Agent calls the same Caplet tool with `operation: "call_tool"`, an exact downstream tool name, and a JSON object of arguments.
+6. Agent calls that Caplet tool with an operation such as `inspect`, `search_tools`, `tools`, or `describe_tool`.
+7. Agent calls the same Caplet tool with `operation: "call_tool"`, an exact downstream `name`, and a JSON object of `args`.
 8. Caplets forwards the request to that server's downstream MCP process or executes the selected OpenAPI, GraphQL, explicit HTTP action, or explicit CLI action and returns the result.
 
 ### User Stories
@@ -62,11 +62,11 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- Each generated Caplet tool supports `operation: "list_tools"` and returns a compact list of that server's MCP tools.
-- Each generated Caplet tool supports `operation: "get_tool"` and returns one downstream tool's full metadata by exact downstream tool name.
-- `get_tool` refreshes stale downstream tool metadata according to `toolCacheTtlMs` before resolving the exact downstream tool name.
+- Each generated Caplet tool supports `operation: "tools"` and returns a compact list of that server's MCP tools.
+- Each generated Caplet tool supports `operation: "describe_tool"` and returns one downstream tool's full metadata by exact downstream tool name.
+- `describe_tool` refreshes stale downstream tool metadata according to `toolCacheTtlMs` before resolving the exact downstream tool name.
 - Tool results preserve downstream `name`, `description`, `inputSchema`, and annotations when available.
-- Caplets forwards downstream tool annotations as-is and does not infer, normalize, or add Caplets-specific risk labels in MVP.
+- `tools` and `search_tools` flatten downstream safety annotations into compact `readOnlyHint` and `destructiveHint` fields when present; `describe_tool` preserves full downstream metadata.
 - `operation: "search_tools"` supports deterministic case-insensitive lexical search across that server's downstream tool names and descriptions.
 - `search_tools` is scoped to the selected generated Caplet tool; MVP does not provide cross-Caplet tool search because `tools/list` is already the server discovery layer.
 - `search_tools` supports an optional `limit`, defaults to 20 results, and rejects values above 50.
@@ -77,11 +77,11 @@ Acceptance Criteria:
 
 Acceptance Criteria:
 
-- `operation: "call_tool"` requires exact downstream `tool` and a JSON object `arguments`.
-- For OpenAPI-backed Caplets, `call_tool.arguments` uses grouped HTTP inputs: `path`, `query`, `header`, and `body`.
-- For GraphQL-backed Caplets, configured operation `call_tool.arguments` is the GraphQL variables object directly; auto-generated operation `call_tool.arguments` is the root field arguments object directly.
-- For HTTP action Caplets, `call_tool.arguments` is the action input object directly; path placeholders read top-level argument fields and configured request mappings can reference `$input.field` or `$input`.
-- For CLI-backed Caplets, `call_tool.arguments` is the configured CLI action input object directly; Caplets maps those fields into configured argv, environment, stdin, or working-directory templates without shell interpolation.
+- `operation: "call_tool"` requires exact downstream `name` and a JSON object `args`.
+- For OpenAPI-backed Caplets, `call_tool.args` uses grouped HTTP inputs: `path`, `query`, `header`, and `body`.
+- For GraphQL-backed Caplets, configured operation `call_tool.args` is the GraphQL variables object directly; auto-generated operation `call_tool.args` is the root field arguments object directly.
+- For HTTP action Caplets, `call_tool.args` is the action input object directly; path placeholders read top-level argument fields and configured request mappings can reference `$input.field` or `$input`.
+- For CLI-backed Caplets, `call_tool.args` is the configured CLI action input object directly; Caplets maps those fields into configured argv, environment, stdin, or working-directory templates without shell interpolation.
 - `call_tool` requires the exact downstream tool name; Caplets does not use fuzzy matching, aliases, or auto-correction for execution.
 - The selected generated Caplet tool is the server namespace, so `call_tool` does not accept a `server` argument in MVP.
 - Caplets preserves downstream tool names exactly and does not support flattened namespaced identifiers such as `server.tool` in MVP.
@@ -89,7 +89,7 @@ Acceptance Criteria:
 - Before `call_tool` resolves the exact downstream tool name, Caplets refreshes stale downstream tool metadata according to `toolCacheTtlMs`.
 - `call_tool` requires the requested downstream tool to appear in fresh-enough cached `tools/list` metadata before forwarding; absent tools return `TOOL_NOT_FOUND` and are not forwarded.
 - Unknown operation, unknown tool, malformed Caplets request shape, startup timeout, call timeout, and downstream protocol failure return structured errors.
-- Malformed generated-server-tool payloads use `REQUEST_INVALID`, including missing required operation fields, invalid field types, invalid `call_tool.arguments`, and operation-specific extra fields.
+- Malformed generated-server-tool payloads use `REQUEST_INVALID`, including missing required operation fields, invalid field types, invalid `call_tool.args`, and operation-specific extra fields.
 - Extra fields that do not belong to the selected operation are malformed Caplets request shapes and must be rejected rather than ignored.
 - Caplets does not perform heavy local validation of downstream tool arguments; once routing fields are valid, the selected downstream MCP server remains the source of truth for argument validation and tool semantics.
 - `TOOL_NOT_FOUND` may include nearby same-server suggestions for debugging, but suggestions are informational only and must never be invoked automatically.
@@ -102,8 +102,8 @@ Acceptance Criteria:
 
 - Caplets validates config with clear errors before serving discovery results.
 - Unsupported transports or unsupported config fields produce actionable validation messages.
-- Each generated Caplet tool supports `operation: "check_backend"`, verifies or starts/connects to that managed downstream server if needed, calls downstream `tools/list`, refreshes cached status and tool metadata, and returns server availability status, tool count when available, safe error details when unavailable, and elapsed timing data.
-- `check_backend` must not invoke any downstream tool.
+- Each generated Caplet tool supports `operation: "check"`, verifies or starts/connects to that managed downstream server if needed, calls downstream `tools/list`, refreshes cached status and tool metadata, and returns server availability status, tool count when available, safe error details when unavailable, and elapsed timing data.
+- `check` must not invoke any downstream tool.
 - Env values, tokens, headers, and secret-looking fields are redacted from errors and logs.
 - Downstream server startup has a default timeout of 10 seconds and can be overridden per server.
 - Tool calls have a default timeout of 60 seconds and can be overridden per server.
@@ -130,34 +130,33 @@ Caplets exposes dynamic MCP tools:
 - The generated MCP tool name is the configured server ID, for example `linear`, `chrome-devtools`, or `context7`.
 - Caplets does not prefix generated tool names in MVP; the server ID is the MCP tool name exactly.
 - The generated MCP tool description is the full server capability card, built from configured `name` and exact configured `description`.
-- Generated tool descriptions append a short standard protocol hint, roughly: `Use this tool to inspect and call tools from the {server} MCP server. Start with search_tools or list_tools; use get_tool for schema; use call_tool to invoke.`
+- Generated tool descriptions append a short standard protocol hint, roughly: `Use this tool to inspect and call tools from the {server} MCP server. Start with search_tools or tools; use describe_tool for schema; use call_tool to invoke.`
 - The standard protocol hint should stay under 35 words.
 - Disabled servers are omitted from Caplets `tools/list`.
 - Caplets does not expose every downstream tool directly in its own `tools/list`.
 
 Each generated Caplet tool supports these operations:
 
-- `get_caplet`: Returns the full configured capability card for the selected server without starting the downstream process.
-- `check_backend`: Validates that the selected backend is available. For MCP it checks the downstream tool list; for OpenAPI it validates the spec and executable base URL without invoking an operation.
-- `check_backend`: Validates that the selected downstream server can start, initialize, and return its tool list without invoking any downstream tool.
-- `list_tools`: Lists compact downstream tool entries for the selected server.
+- `inspect`: Returns the full configured capability card for the selected server without starting the downstream process.
+- `check`: Validates that the selected backend is available. For MCP it checks the downstream tool list; for OpenAPI it validates the spec and executable base URL without invoking an operation.
+- `check`: Validates that the selected downstream server can start, initialize, and return its tool list without invoking any downstream tool.
+- `tools`: Lists compact downstream tool entries for the selected server.
 - `search_tools`: Searches downstream tools for the selected server. Supports optional `limit`, defaults to 20 results, and rejects values above 50.
-- `get_tool`: Returns full metadata for one exact downstream tool.
-- `call_tool`: Invokes one exact downstream tool with a JSON object of arguments.
+- `describe_tool`: Returns full metadata for one exact downstream tool.
+- `call_tool`: Invokes one exact downstream tool with a JSON object of `args`.
 
 Generated Caplet tool input schema:
 
-- `operation` is required and must be one of `get_caplet`, `check_backend`, `list_tools`, `search_tools`, `get_tool`, or `call_tool`.
-- `get_caplet` accepts no extra fields.
-- `get_caplet` returns only configured capability-card data and does not start, initialize, or probe the downstream server.
-- `get_caplet` is intentionally provisional in MVP; it may be pruned later if generated top-level Caplet tool descriptions prove sufficient.
-- `check_backend` accepts no extra fields.
-- `check_backend` accepts no extra fields.
-- `list_tools` accepts no extra fields.
+- `operation` is required and must be one of `inspect`, `check`, `tools`, `search_tools`, `describe_tool`, or `call_tool`.
+- `inspect` accepts no extra fields.
+- `inspect` returns only configured capability-card data and does not start, initialize, or probe the downstream server.
+- `check` accepts no extra fields.
+- `check` accepts no extra fields.
+- `tools` accepts no extra fields.
 - `search_tools` requires `query` and accepts optional `limit`.
-- `get_tool` requires `tool`.
-- `call_tool` requires `tool` and `arguments`; `arguments` must be a JSON object and is not optional.
-- `tool` fields are plain strings, not enums of downstream tool names.
+- `describe_tool` requires `name`.
+- `call_tool` requires `name` and `args`; `args` must be a JSON object and is not optional.
+- `name` fields are plain strings, not enums of downstream tool names.
 - Generated Caplet tool schemas must remain stable even when downstream tool lists change.
 - Unknown operations return `UNKNOWN_OPERATION`.
 - Operation-specific request validation is strict: fields not defined for the selected `operation` are rejected as malformed Caplets request shapes.
@@ -249,7 +248,7 @@ Requirements:
 - For MCP-compliant OAuth servers, Caplets must include the target server resource indicator in authorization and token requests when required by the MCP authorization specification.
 - The default OAuth token store is `${XDG_STATE_HOME:-~/.local/state}/caplets/auth/<server>.json` on Unix-like platforms or `%LOCALAPPDATA%\caplets\auth\<server>.json` on Windows; files must be created with owner-only permissions when the platform supports it.
 - Relative `XDG_CONFIG_HOME` and `XDG_STATE_HOME` values are ignored.
-- Token bundles are runtime auth state, not server description state. They must not be embedded in generated MCP tool descriptions, `get_caplet`, logs, or structured errors.
+- Token bundles are runtime auth state, not server description state. They must not be embedded in generated MCP tool descriptions, `inspect`, logs, or structured errors.
 - The Caplets MCP server reads OAuth tokens from the auth store lazily before remote operations. Updating tokens with `caplets auth login <server>` should not require editing config and should be designed to work without restarting Caplets when practical.
 - `caplets auth list` reports configured OAuth remote servers as missing, authenticated, or expired and must not enumerate arbitrary orphan token files outside the configured server set.
 - `caplets auth logout <server>` removes the local token bundle for a configured OAuth remote server and is allowed even when the server is currently disabled.
@@ -259,7 +258,7 @@ Requirements:
 - Remote auth error payloads use safe fields only: `server`, `status`, `message`, `authType`, optional redacted `challenge`, and optional `nextAction: "run_caplets_auth_login"`.
 - Streamable HTTP clients must preserve MCP protocol-version and session semantics, including `MCP-Protocol-Version` and `Mcp-Session-Id` behavior, through the official SDK transport where possible.
 - `toolCacheTtlMs` defaults to 30000. `0` means refresh downstream `tools/list` on every metadata operation.
-- `get_tool` and `call_tool` must ensure cached downstream tool metadata is fresh enough according to `toolCacheTtlMs` before exact downstream tool-name resolution.
+- `describe_tool` and `call_tool` must ensure cached downstream tool metadata is fresh enough according to `toolCacheTtlMs` before exact downstream tool-name resolution.
 - `call_tool` must resolve against fresh-enough downstream `tools/list` metadata and must not forward a call for a tool absent from that metadata in MVP.
 - `disabled` defaults to false. Disabled servers are omitted from normal discovery, never appear in search results, are never started, and cannot be inspected or invoked until re-enabled and Caplets is restarted.
 - Disabled servers are omitted from generated `tools/list` to preserve the token-saving purpose of Caplets.
@@ -304,7 +303,7 @@ Downstream interactions required for MVP:
 - Call downstream `tools/list` for selected servers.
 - Call downstream `tools/call` for `operation: "call_tool"` inside a generated Caplet tool.
 - Execute selected OpenAPI operations, GraphQL operations, HTTP actions, and CLI actions for `operation: "call_tool"` inside a generated Caplet tool.
-- Refresh stale downstream tool metadata before `get_tool` and `call_tool` exact-name resolution according to `toolCacheTtlMs`.
+- Refresh stale downstream tool metadata before `describe_tool` and `call_tool` exact-name resolution according to `toolCacheTtlMs`.
 - Require downstream tools to be present in fresh-enough `tools/list` metadata before forwarding `call_tool`.
 - Preserve downstream schemas and result content.
 - Normalize Caplets-owned errors while keeping downstream results protocol-compatible.
@@ -315,8 +314,8 @@ Caplets must optimize the first cognitive layer for the agent:
 
 - Level 0: Caplets `tools/list` exposes only generated server/caplet tools, one per enabled downstream server.
 - Level 1: The agent selects a generated Caplet tool by server ID, display name, and description.
-- Level 2: The selected Caplet tool discloses its full capability card and downstream tool metadata through `get_caplet`, `list_tools`, `search_tools`, and `get_tool`.
-- Level 3: The selected Caplet tool invokes one downstream tool through `operation: "call_tool"` with exact downstream `tool` and a JSON object `arguments`.
+- Level 2: The selected Caplet tool discloses its full capability card and downstream tool metadata through `inspect`, `tools`, `search_tools`, and `describe_tool`.
+- Level 3: The selected Caplet tool invokes one downstream tool through `operation: "call_tool"` with exact downstream `name` and a JSON object `args`.
 
 Progressive disclosure is not a security boundary. The PRD treats it as a context-management and tool-selection strategy.
 
@@ -486,25 +485,25 @@ Core modules:
 
 `GeneratedServerToolRequest`:
 
-- `operation: "get_caplet" | "check_backend" | "check_backend" | "list_tools" | "search_tools" | "get_tool" | "call_tool"`
+- `operation: "inspect" | "check" | "tools" | "search_tools" | "describe_tool" | "call_tool"`
 - `query?: string`
 - `limit?: number`
-- `tool?: string`
-- `arguments: Record<string, unknown>`
+- `name?: string`
+- `args: Record<string, unknown>`
 
 Requirements:
 
-- `tool` is the exact downstream MCP tool name.
-- `call_tool.arguments` must be a JSON object. Missing arguments, arrays, strings, numbers, booleans, and null are malformed Caplets request shapes in MVP.
-- Operation-specific fields are exclusive to their operations. For example, `tool` is invalid on `list_tools`, `query` is invalid on `get_tool`, and `arguments` is invalid outside `call_tool`.
+- `name` is the exact downstream MCP tool name.
+- `call_tool.args` must be a JSON object. Missing arguments, arrays, strings, numbers, booleans, and null are malformed Caplets request shapes in MVP.
+- Operation-specific fields are exclusive to their operations. For example, `name` is invalid on `tools`, `query` is invalid on `describe_tool`, and `args` is invalid outside `call_tool`.
 - `server` is the exact configured Caplets server key and the generated top-level MCP tool name.
 - Caplets does not invent escaped, flattened, or globally unique tool names in MVP.
 - Caplets does not expose downstream tool names as enum values in generated Caplet tool input schemas.
-- `list_tools` returns compact downstream tool entries: `tool`, `description`, annotations when available, and `hasInputSchema`.
-- `get_tool` returns full downstream metadata for one exact downstream tool in the selected server.
-- `get_tool` and `call_tool` both use fresh-enough cached metadata for exact downstream tool-name resolution.
+- `tools` returns compact downstream tool entries: `name`, `description`, `hasInputSchema`, `hasOutputSchema`, `supportsFields`, and flattened safety hints when available.
+- `describe_tool` returns full downstream metadata for one exact downstream tool in the selected server.
+- `describe_tool` and `call_tool` both use fresh-enough cached metadata for exact downstream tool-name resolution.
 - `call_tool` returns `TOOL_NOT_FOUND` without forwarding when the exact downstream tool name is absent from fresh-enough metadata.
-- `search_tools` returns compact matches by default: `tool`, `description`, annotations when available, and `hasInputSchema`, but not full `inputSchema`.
+- `search_tools` returns compact matches by default: `name`, `description`, schema booleans, field-selection support, and flattened safety hints, but not full `inputSchema`.
 - `search_tools` results are scoped to the generated Caplet tool that was called.
 
 ### Integration Points
@@ -552,13 +551,13 @@ Caplets errors should be structured and stable:
 - Caplets must not pass through credentials received from the upstream MCP client to downstream remote MCP servers; downstream remote auth uses only the configured/stored credentials for that specific downstream server.
 - Caplets must treat downstream tool metadata and results as untrusted content.
 - Caplets must not claim that progressive disclosure prevents tool execution risk.
-- Caplets must not infer safety properties from downstream metadata or transform downstream annotations into Caplets-owned risk labels in MVP.
+- Caplets must not infer safety properties without backend evidence; compact summaries may only flatten explicit downstream/backend safety hints into `readOnlyHint` and `destructiveHint`.
 - Destructive downstream tools remain subject to the MCP client's own confirmation and trust model.
 - Downstream MCP servers remain authoritative for tool argument validation and execution semantics.
 - Caplets should avoid unnecessary restarts or repeated process churn once a downstream stdio server is successfully managed.
 - Caplets should terminate managed downstream stdio server processes when Caplets exits.
 - Caplets should cache each managed server's `tools/list` metadata for `toolCacheTtlMs` and refresh stale metadata on tool metadata operations.
-- `check_backend` should always refresh downstream `tools/list` for the selected server and update cached metadata/status.
+- `check` should always refresh downstream `tools/list` for the selected server and update cached metadata/status.
 
 ### Testing Requirements
 
@@ -591,14 +590,14 @@ Add automated tests for:
 - Remote auth error payload shape includes only `server`, `status`, `message`, `authType`, redacted `challenge`, and `nextAction` when relevant.
 - Streamable HTTP protocol-version and session-header behavior is covered by transport tests.
 - Generated `tools/list` exposes one safe capability card per enabled server and omits disabled servers.
-- `get_caplet` returns exact full server descriptions without starting, initializing, or probing downstream processes.
-- `list_tools` returns compact downstream tool metadata and `get_tool` preserves full downstream tool metadata including `inputSchema`.
+- `inspect` returns exact full server descriptions without starting, initializing, or probing downstream processes.
+- `tools` returns compact downstream tool metadata and `describe_tool` preserves full downstream tool metadata including `inputSchema`.
 - Server-scoped `search_tools` deterministic lexical matching.
 - Capped search result behavior: default `limit` 20, max `limit` 50, no pagination in MVP.
 - Server-scoped `search_tools` startup and failure behavior.
-- `check_backend` success, unavailable server, timeout, and secret redaction behavior.
+- `check` success, unavailable server, timeout, and secret redaction behavior.
 - `toolCacheTtlMs` behavior, including default TTL, stale refresh, and `0` refresh-every-time mode.
-- `get_tool` and `call_tool` refresh stale metadata before exact downstream tool-name resolution.
+- `describe_tool` and `call_tool` refresh stale metadata before exact downstream tool-name resolution.
 - Disabled server behavior: omitted from generated `tools/list`, not callable, never returned by search, and never started.
 - Duplicate tool names across servers.
 - Successful `operation: "call_tool"` forwarding.

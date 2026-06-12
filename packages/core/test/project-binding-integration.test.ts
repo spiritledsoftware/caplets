@@ -74,6 +74,7 @@ describe("Project Binding integration", () => {
     writeFileSync(
       configPath,
       JSON.stringify({
+        options: { exposure: "progressive_and_code_mode" },
         mcpServers: {
           build: { name: "Local Build", description: "Local build.", command: process.execPath },
         },
@@ -94,7 +95,7 @@ describe("Project Binding integration", () => {
     });
 
     await service.reload();
-    expect(service.listTools().map((tool) => [tool.caplet, tool.title])).toEqual([
+    expect(configuredCapletTitles(service.listTools())).toEqual([
       ["deploy", "Remote Deploy"],
       ["build", "Local Build"],
     ]);
@@ -120,4 +121,10 @@ function remoteClientFixture(
     onToolsChanged: vi.fn(() => () => undefined),
     close: vi.fn(async () => undefined),
   };
+}
+
+function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>): string[][] {
+  return tools
+    .filter((tool) => tool.caplet !== "code_mode")
+    .map((tool) => [tool.caplet, tool.title]);
 }

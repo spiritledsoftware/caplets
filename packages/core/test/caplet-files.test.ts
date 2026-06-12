@@ -33,6 +33,32 @@ openapiEndpoint:
     );
   });
 
+  it("loads top-level exposure from CAPLET.md frontmatter", () => {
+    const result = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "github/CAPLET.md",
+          content: `---
+name: GitHub
+description: Manage GitHub repositories.
+exposure: direct_and_code_mode
+mcpServer:
+  command: github-mcp
+---
+
+# GitHub
+`,
+        },
+      ],
+    });
+
+    expect(result?.config.mcpServers?.github).toEqual(
+      expect.objectContaining({
+        exposure: "direct_and_code_mode",
+      }),
+    );
+  });
+
   it("rejects duplicate in-memory caplet ids", () => {
     expect(() =>
       loadCapletFilesFromMap({

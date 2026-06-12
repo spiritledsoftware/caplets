@@ -1,6 +1,10 @@
 import { tool, type Hooks } from "@opencode-ai/plugin";
 import { nativeCapletsSystemGuidance, type NativeCapletsService } from "@caplets/core/native";
-import { capletsOpenCodeArgs } from "./schema";
+import {
+  capletsOpenCodeArgs,
+  capletsOpenCodeJsonSchemaArgs,
+  capletsOpenCodeRunArgs,
+} from "./schema";
 
 export async function createCapletsOpenCodeHooks(service: NativeCapletsService): Promise<Hooks> {
   const capletTools = service.listTools();
@@ -12,7 +16,11 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
         caplet.toolName,
         tool({
           description: caplet.description,
-          args: capletsOpenCodeArgs(caplet.operationNames ?? undefined),
+          args: caplet.codeModeRun
+            ? capletsOpenCodeRunArgs()
+            : caplet.operationNames
+              ? capletsOpenCodeArgs(caplet.operationNames)
+              : capletsOpenCodeJsonSchemaArgs(caplet.inputSchema),
           async execute(args) {
             const result = await service.execute(caplet.caplet, args);
             return compactOpenCodeResult(result);

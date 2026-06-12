@@ -7,6 +7,15 @@ import {
   renderMarkdownReport,
   validateSurfaceBenchmark,
 } from "./lib/surface";
+import {
+  computeCodeModeBenchmark,
+  computeCodeModeComplexWorkflowEval,
+  computeCodeModeLiveRegressionEval,
+  renderCodeModeMarkdownReport,
+  validateCodeModeBenchmark,
+  validateCodeModeComplexWorkflowEval,
+  validateCodeModeLiveRegressionEval,
+} from "./lib/code-mode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const reportPath = resolve(__dirname, "../../docs/benchmarks/coding-agent.md");
@@ -14,7 +23,15 @@ const reportPath = resolve(__dirname, "../../docs/benchmarks/coding-agent.md");
 const checkMode = process.argv.includes("--check");
 
 const result = await computeSurfaceBenchmark();
-const failures = validateSurfaceBenchmark(result);
+const codeModeResult = computeCodeModeBenchmark();
+const complexWorkflowResult = computeCodeModeComplexWorkflowEval();
+const liveRegressionResult = computeCodeModeLiveRegressionEval();
+const failures = [
+  ...validateSurfaceBenchmark(result),
+  ...validateCodeModeBenchmark(codeModeResult),
+  ...validateCodeModeComplexWorkflowEval(complexWorkflowResult),
+  ...validateCodeModeLiveRegressionEval(liveRegressionResult),
+];
 if (failures.length > 0) {
   for (const failure of failures) {
     console.error(failure);
@@ -22,7 +39,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-const markdown = renderMarkdownReport(result);
+const markdown = renderMarkdownReport(result, renderCodeModeMarkdownReport());
 
 if (checkMode) {
   let current;

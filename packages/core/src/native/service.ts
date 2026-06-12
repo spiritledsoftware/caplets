@@ -19,7 +19,19 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
+  nativeCodeModeToolId,
+  nativeCodeModeToolName,
 } from "./tools";
+import { nativeDirectToolName } from "../exposure/direct-names";
+import { resolveExposure } from "../exposure/policy";
+import {
+  generateCodeModeDeclarations,
+  generateCodeModeRunToolDescription,
+} from "../code-mode/declarations";
+import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
+import { runCodeMode } from "../code-mode/runner";
+import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
+import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
@@ -50,9 +62,14 @@ export type NativeCapletTool = {
   toolName: string;
   title: string;
   description: string;
+  codeModeRun?: boolean;
+  useWhen?: string;
+  avoidWhen?: string;
   promptGuidance: string[];
   inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
   operationNames?: string[];
+  codeModeCaplets?: CodeModeCallableCaplet[];
 };
 
 export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => void;
@@ -103,45 +120,450 @@ type LocalNativeCapletsServiceOptions = NativeCapletsServiceOptions & {
 
 class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly engine: CapletsEngine;
+  private readonly writeErr: (value: string) => void;
+  private readonly unsubscribeEngineReload: () => void;
+  private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
+  private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
+  private exposureSnapshot: ExposureSnapshot | undefined;
+  private postReloadRefresh: Promise<void> | undefined;
+  private exposureRefreshGeneration = 0;
 
   constructor(options: LocalNativeCapletsServiceOptions) {
+    this.writeErr = options.writeErr ?? (() => undefined);
     this.engine = new CapletsEngine({
       ...options,
-      writeErr: options.writeErr ?? (() => undefined),
+      writeErr: this.writeErr,
+    });
+    this.postReloadRefresh = this.refreshExposureSnapshot({
+      emitToolsChanged: this.hasDirectMcpExposure(),
+    });
+    this.unsubscribeEngineReload = this.engine.onReload(() => {
+      this.postReloadRefresh = this.refreshExposureSnapshot({ emitToolsChanged: true });
     });
   }
 
   listTools(): NativeCapletTool[] {
-    return this.engine.enabledServers().map((caplet) => {
-      const toolName = nativeCapletToolName(caplet.server);
-      const inputSchema = generatedToolInputJsonSchemaForCaplet(caplet);
-      return {
-        caplet: caplet.server,
-        toolName,
-        title: caplet.name,
-        description: nativeCapletToolDescription(toolName, caplet),
-        promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
-        inputSchema,
-        operationNames: [...inputSchema.properties.operation.enum],
-      };
-    });
+    this.directToolRoutes = new Map();
+    const progressiveTools: NativeCapletTool[] = [];
+    const codeModeCaplets: NativeCapletTool[] = [];
+    const directTools: NativeCapletTool[] = [];
+    for (const caplet of this.engine.enabledServers()) {
+      if (caplet.setup || caplet.projectBinding?.required) continue;
+      const exposure = resolveExposure(
+        caplet.exposure,
+        this.engine.currentConfig().options.exposure,
+      );
+      if (exposure.progressive) {
+        const tool = progressiveNativeTool(caplet);
+        progressiveTools.push(tool);
+        if (exposure.codeMode) codeModeCaplets.push(codeModeCapletDescriptor(caplet));
+        continue;
+      }
+      if (exposure.direct) {
+        directTools.push(...this.directNativeTools(caplet, this.exposureSnapshot));
+      }
+      if (exposure.codeMode) {
+        codeModeCaplets.push(codeModeCapletDescriptor(caplet));
+      }
+    }
+    return [
+      ...progressiveTools,
+      ...directTools,
+      ...(codeModeCaplets.length > 0 ? [codeModeRunNativeTool(codeModeCaplets)] : []),
+    ];
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (capletId === nativeCodeModeToolId) {
+      return await executeCodeModeRunNative(this.codeModeDelegate(), request);
+    }
+    const route = this.directToolRoutes.get(capletId);
+    if (route) {
+      if (isMcpPrimitiveRoute(route.operationName)) {
+        return await this.engine.execute(
+          route.capletId,
+          nativeMcpPrimitiveRequest(route.operationName, request),
+        );
+      }
+      return await this.engine.executeDirectTool(
+        route.capletId,
+        route.operationName,
+        isRecord(request) ? request : {},
+      );
+    }
     return await this.engine.execute(capletId, request);
   }
 
   async reload(): Promise<boolean> {
-    return await this.engine.reload();
+    const reloaded = await this.engine.reload();
+    await this.postReloadRefresh;
+    return reloaded;
   }
 
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void {
-    return this.engine.onReload(() => listener(this.listTools()));
+    this.toolListeners.add(listener);
+    return () => {
+      this.toolListeners.delete(listener);
+    };
   }
 
   async close(): Promise<void> {
+    this.unsubscribeEngineReload();
+    this.toolListeners.clear();
     await this.engine.close();
   }
+
+  private directNativeTools(
+    caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+    snapshot: ExposureSnapshot | undefined,
+  ): NativeCapletTool[] {
+    if (caplet.backend === "http") {
+      return Object.entries(caplet.actions)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([operationName, action]) =>
+          this.directNativeTool(caplet, operationName, {
+            ...(action.description ? { description: action.description } : {}),
+            ...(action.inputSchema ? { inputSchema: action.inputSchema } : {}),
+            ...(action.outputSchema ? { outputSchema: action.outputSchema } : {}),
+            annotations: {
+              readOnlyHint: action.method === "GET",
+              destructiveHint: action.method === "DELETE",
+            },
+          }),
+        );
+    }
+    if (caplet.backend === "cli") {
+      return Object.entries(caplet.actions)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([operationName, action]) =>
+          this.directNativeTool(caplet, operationName, {
+            ...(action.description ? { description: action.description } : {}),
+            ...(action.inputSchema ? { inputSchema: action.inputSchema } : {}),
+            ...(action.outputSchema ? { outputSchema: action.outputSchema } : {}),
+            ...(action.annotations ? { annotations: action.annotations } : {}),
+          }),
+        );
+    }
+    if (caplet.backend === "mcp") {
+      const directTools =
+        snapshot?.directTools
+          .filter((entry) => entry.caplet.server === caplet.server)
+          .map((entry) => this.directMcpTool(caplet, entry)) ?? [];
+      return [
+        ...directTools,
+        ...mcpPrimitiveNativeTools(caplet, snapshot).map((operationName) =>
+          this.directNativeTool(caplet, operationName, {
+            description: `MCP ${operationName.replace(/_/g, " ")}.`,
+            inputSchema: nativeMcpPrimitiveInputSchema(operationName),
+          }),
+        ),
+      ];
+    }
+    return [];
+  }
+
+  private directMcpTool(
+    caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+    entry: DirectToolRegistration,
+  ): NativeCapletTool {
+    return this.directNativeTool(caplet, entry.downstreamName, {
+      ...(entry.tool.description ? { description: entry.tool.description } : {}),
+      ...(entry.tool.inputSchema
+        ? { inputSchema: entry.tool.inputSchema as Record<string, unknown> }
+        : {}),
+      ...(entry.tool.outputSchema
+        ? { outputSchema: entry.tool.outputSchema as Record<string, unknown> }
+        : {}),
+      ...(entry.tool.annotations ? { annotations: entry.tool.annotations } : {}),
+    });
+  }
+
+  private directNativeTool(
+    caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+    operationName: string,
+    options: {
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+      outputSchema?: Record<string, unknown>;
+      annotations?: Record<string, unknown>;
+    },
+  ): NativeCapletTool {
+    const routeId = `${caplet.server}__${operationName}`;
+    const toolName = nativeDirectToolName(caplet.server, operationName);
+    this.directToolRoutes.set(routeId, { capletId: caplet.server, operationName });
+    return {
+      caplet: routeId,
+      toolName,
+      title: operationName,
+      description: options.description ?? "",
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+      promptGuidance: [`Use ${toolName} for ${caplet.name} ${operationName}.`],
+      ...(options.inputSchema ? { inputSchema: options.inputSchema } : {}),
+      ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+    };
+  }
+
+  private async refreshExposureSnapshot(options: { emitToolsChanged: boolean }): Promise<void> {
+    const generation = ++this.exposureRefreshGeneration;
+    try {
+      const snapshot = await this.engine.exposureSnapshot({
+        discoverNonDirectMcpSurfaces: false,
+      });
+      if (generation !== this.exposureRefreshGeneration) return;
+      this.exposureSnapshot = snapshot;
+      if (options.emitToolsChanged) this.emitToolsChanged();
+    } catch (error) {
+      if (generation !== this.exposureRefreshGeneration) return;
+      this.writeErr(`Caplets native tool reload failed.\n`);
+      this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+
+  private hasDirectMcpExposure(): boolean {
+    return this.engine.enabledServers().some((caplet) => {
+      if (caplet.backend !== "mcp" || caplet.setup || caplet.projectBinding?.required) return false;
+      return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure).direct;
+    });
+  }
+
+  private emitToolsChanged(): void {
+    const tools = this.listTools();
+    for (const listener of this.toolListeners) {
+      try {
+        listener(tools);
+      } catch (error) {
+        this.writeErr(`Caplets native tool listener failed.\n`);
+        this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
+  }
+
+  private codeModeDelegate(): NativeCapletsService {
+    return {
+      listTools: () => this.codeModeNativeTools(),
+      execute: async (capletId, request) => await this.engine.execute(capletId, request),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
+  }
+
+  private codeModeNativeTools(): NativeCapletTool[] {
+    const snapshotCaplets = this.exposureSnapshot?.codeModeCaplets.map((entry) => entry.caplet);
+    const caplets =
+      snapshotCaplets ??
+      this.engine.enabledServers().filter((caplet) => {
+        if (caplet.setup || caplet.projectBinding?.required) return false;
+        return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure)
+          .codeMode;
+      });
+    return caplets.map(codeModeCapletDescriptor);
+  }
+}
+
+function progressiveNativeTool(
+  caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+): NativeCapletTool {
+  const toolName = nativeCapletToolName(caplet.server);
+  const inputSchema = generatedToolInputJsonSchemaForCaplet(caplet);
+  return {
+    caplet: caplet.server,
+    toolName,
+    title: caplet.name,
+    description: nativeCapletToolDescription(toolName, caplet),
+    ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+    ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+    promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
+    inputSchema,
+    operationNames: [...inputSchema.properties.operation.enum],
+  };
+}
+
+function codeModeCapletDescriptor(
+  caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+): NativeCapletTool {
+  const toolName = nativeCapletToolName(caplet.server);
+  return {
+    caplet: caplet.server,
+    toolName,
+    title: caplet.name,
+    description: nativeCapletToolDescription(toolName, caplet),
+    ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+    ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+    promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
+  };
+}
+
+function mcpPrimitiveNativeTools(
+  caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
+  snapshot: ExposureSnapshot | undefined,
+): string[] {
+  const operations = [];
+  if (snapshot?.directResources.some((entry) => entry.caplet.server === caplet.server)) {
+    operations.push("list_resources", "read_resource");
+  }
+  if (snapshot?.directResourceTemplates.some((entry) => entry.caplet.server === caplet.server)) {
+    operations.push("list_resource_templates", "read_resource");
+  }
+  if (snapshot?.directPrompts.some((entry) => entry.caplet.server === caplet.server)) {
+    operations.push("list_prompts", "get_prompt", "complete");
+  }
+  return [...new Set(operations)];
+}
+
+function nativeMcpPrimitiveInputSchema(operationName: string): Record<string, unknown> {
+  if (operationName === "read_resource") {
+    return {
+      type: "object",
+      properties: { uri: { type: "string" } },
+      required: ["uri"],
+      additionalProperties: false,
+    };
+  }
+  if (operationName === "get_prompt") {
+    return {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        args: { type: "object", additionalProperties: true },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    };
+  }
+  if (operationName === "complete") {
+    return {
+      type: "object",
+      properties: {
+        ref: { type: "object", additionalProperties: true },
+        argument: { type: "object", additionalProperties: true },
+      },
+      required: ["ref", "argument"],
+      additionalProperties: false,
+    };
+  }
+  return { type: "object", additionalProperties: false };
+}
+
+function isMcpPrimitiveRoute(operationName: string): boolean {
+  return [
+    "list_resources",
+    "list_resource_templates",
+    "read_resource",
+    "list_prompts",
+    "get_prompt",
+    "complete",
+  ].includes(operationName);
+}
+
+function nativeMcpPrimitiveRequest(
+  operationName: string,
+  request: unknown,
+): Record<string, unknown> {
+  const args = isRecord(request) ? request : {};
+  if (operationName === "list_resources") return { operation: "resources" };
+  if (operationName === "list_resource_templates") return { operation: "resource_templates" };
+  if (operationName === "list_prompts") return { operation: "prompts" };
+  if (operationName === "read_resource") return { operation: "read_resource", uri: args.uri };
+  if (operationName === "get_prompt") {
+    return { operation: "get_prompt", name: args.name, args: args.args ?? {} };
+  }
+  if (operationName === "complete") {
+    return { operation: "complete", ref: args.ref, argument: args.argument };
+  }
+  return { operation: operationName };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {
+  const codeModeCaplets = capletTools.map((tool) => ({
+    id: tool.caplet,
+    name: tool.title,
+    description: tool.description,
+    ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
+    ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
+  }));
+  const declaration = generateCodeModeDeclarations({
+    caplets: codeModeCaplets,
+  });
+  return {
+    caplet: nativeCodeModeToolId,
+    toolName: nativeCodeModeToolName,
+    title: "Code Mode",
+    description: [
+      generateCodeModeRunToolDescription(declaration),
+      "",
+      `Native tool name: ${nativeCodeModeToolName}`,
+    ].join("\n"),
+    codeModeRun: true,
+    codeModeCaplets,
+    promptGuidance: [
+      `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
+      "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
+      "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
+    ],
+    inputSchema: codeModeRunInputJsonSchema(),
+  };
+}
+
+function codeModeCallableNativeTools(
+  tools: NativeCapletTool[],
+  options: { fallbackToVisible: boolean },
+): NativeCapletTool[] {
+  const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  if (codeModeCaplets.length === 0) {
+    return options.fallbackToVisible ? tools.filter((tool) => tool.codeModeRun !== true) : [];
+  }
+  const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
+  return codeModeCaplets.map((caplet) => {
+    const tool = byId.get(caplet.id);
+    return {
+      caplet: caplet.id,
+      toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
+      title: caplet.name,
+      description: caplet.description,
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+      promptGuidance: tool?.promptGuidance ?? [],
+    };
+  });
+}
+
+async function executeCodeModeRunNative(
+  service: NativeCapletsService,
+  request: unknown,
+): Promise<unknown> {
+  const parsed = codeModeRunInputSchema.safeParse(request);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+        details: parsed.error.issues,
+      },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+      meta: {
+        runId: "",
+        traceId: "",
+        declarationHash: "",
+        durationMs: 0,
+        timeoutMs: 0,
+        maxTimeoutMs: 0,
+      },
+    };
+  }
+  return await runCodeMode({
+    code: parsed.data.code,
+    service,
+    ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+  });
 }
 
 function createDefaultNativeCapletsService(
@@ -324,6 +746,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (capletId === nativeCodeModeToolId) {
+      return await executeCodeModeRunNative(this, request);
+    }
     if (this.local.listTools().some((tool) => tool.caplet === capletId)) {
       return await this.local.execute(capletId, request);
     }
@@ -386,9 +811,25 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   private mergeTools(): NativeCapletTool[] {
-    const localTools = this.local.listTools();
+    const allLocalTools = this.local.listTools();
+    const allRemoteTools = this.remote.listTools();
+    const localTools = allLocalTools.filter((tool) => tool.codeModeRun !== true);
     const localIds = new Set(localTools.map((tool) => tool.caplet));
-    return [...this.remote.listTools().filter((tool) => !localIds.has(tool.caplet)), ...localTools];
+    const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
+      fallbackToVisible: false,
+    });
+    const remoteTools = allRemoteTools.filter(
+      (tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet),
+    );
+    const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
+      fallbackToVisible: true,
+    }).filter((tool) => !localIds.has(tool.caplet));
+    const mergedTools = [...remoteTools, ...localTools];
+    const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
+    return [
+      ...mergedTools,
+      ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
+    ];
   }
 
   private async reloadChild(

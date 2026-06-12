@@ -1,0 +1,9 @@
+{
+  "lsp": {
+    "servers": {
+      "typescript": {
+        "registry": "typescript",
+      },
+    },
+  },
+}

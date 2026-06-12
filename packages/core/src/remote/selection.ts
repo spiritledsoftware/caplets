@@ -1,8 +1,15 @@
 import { CloudAuthClient } from "../cloud-auth/client";
 import { CloudAuthStore, type CloudAuthCredentials } from "../cloud-auth/store";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
 import { CapletsError } from "../errors";
 import { projectBindingError } from "../project-binding/errors";
-import { resolveCapletsRemote, resolveRemoteMode, type ResolvedCapletsRemote } from "./options";
+import {
+  hostedCloudWorkspaceFromRemoteUrl,
+  resolveCapletsRemote,
+  resolveHostedCloudRemote,
+  resolveRemoteMode,
+  type ResolvedCapletsRemote,
+} from "./options";
 
 export type RemoteSelectionInput = {
   mode?: string;
@@ -104,8 +111,34 @@ export async function resolveRemoteSelection(
     );
   }
 
-  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL ?? credentials.cloudUrl;
-  const remote = resolveCapletsRemote(
+  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
+  if (!remoteUrl) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL or remoteUrl.",
+    );
+  }
+  const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
+  if (
+    workspaceFromRemoteUrl &&
+    workspaceFromRemoteUrl !== credentials.workspaceSlug &&
+    workspaceFromRemoteUrl !== credentials.workspaceId
+  ) {
+    throw projectBindingError(
+      "workspace_switch_required",
+      `Requested workspace ${workspaceFromRemoteUrl} differs from saved Selected Workspace ${selectedWorkspace}.`,
+    );
+  }
+  const missingScope = requiredHostedCloudAttachScopes().find(
+    (scope) => !credentials.scope?.includes(scope),
+  );
+  if (missingScope) {
+    throw projectBindingError(
+      "cloud_auth_required",
+      `Hosted Cloud attach requires Cloud Auth scope ${missingScope}. Run caplets cloud auth login again.`,
+    );
+  }
+  const remote = resolveHostedCloudRemote(
     {
       url: remoteUrl,
       token: credentials.accessToken,
@@ -121,7 +154,7 @@ export async function resolveRemoteSelection(
     selectedWorkspace,
     credentials,
     cloudPresence: {
-      url: new URL(remoteUrl),
+      url: remote.baseUrl,
       accessToken: credentials.accessToken,
       workspaceId: credentials.workspaceId,
     },
@@ -131,4 +164,8 @@ export async function resolveRemoteSelection(
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {
   const expiresAt = Date.parse(credentials.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000;
+}
+
+function requiredHostedCloudAttachScopes(): string[] {
+  return HOSTED_CLOUD_AUTH_SCOPES.filter((scope) => scope !== "mcp:tools");
 }

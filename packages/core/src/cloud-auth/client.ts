@@ -6,6 +6,7 @@ import type {
   CloudAuthTokenResponse,
   CloudAuthWorkspace,
 } from "./types";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "./types";
 
 export type CloudAuthClientOptions = {
   cloudUrl: string;
@@ -25,6 +26,17 @@ export type ExchangeTokenInput = {
 
 export type RefreshTokenInput = {
   refreshToken: string;
+};
+
+export type CloudAddCapletsInput = {
+  accessToken: string;
+  workspace: string;
+  bundle: { files: Array<{ path: string; content: string }> };
+};
+
+export type CloudAddCapletsResult = {
+  caplet?: unknown;
+  caplets: unknown[];
 };
 
 export type CloudAuthClientCredentials = Required<
@@ -54,7 +66,7 @@ export class CloudAuthClient {
       body: JSON.stringify({
         ...(input.requestedWorkspace ? { requestedWorkspace: input.requestedWorkspace } : {}),
         ...(input.deviceName ? { deviceName: input.deviceName } : {}),
-        ...(input.scope ? { scope: input.scope } : {}),
+        scope: input.scope ?? [...HOSTED_CLOUD_AUTH_SCOPES],
       }),
     });
   }
@@ -113,6 +125,21 @@ export class CloudAuthClient {
     return normalizeCredentials(response, this.cloudUrl.origin);
   }
 
+  async addCaplets(input: CloudAddCapletsInput): Promise<CloudAddCapletsResult> {
+    const response = await this.requestJson<CloudAddCapletsResult>(
+      `/api/workspaces/${encodeURIComponent(input.workspace)}/caplets/custom`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${input.accessToken}` },
+        body: JSON.stringify({ bundle: input.bundle }),
+      },
+    );
+    return {
+      ...response,
+      caplets: Array.isArray(response.caplets) ? response.caplets : [],
+    };
+  }
+
   private async requestJson<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     if (init.body !== undefined && !headers.has("content-type")) {
@@ -150,7 +177,7 @@ function normalizeCredentials(
     ? response.scope.map(String)
     : typeof response.scope === "string"
       ? response.scope.split(/\s+/u).filter(Boolean)
-      : ["project_binding:read", "project_binding:write"];
+      : [...HOSTED_CLOUD_AUTH_SCOPES];
   const credentialFamilyId = response.credentialFamilyId ?? "cloud_client_credential_family";
   const tokenType = response.tokenType ?? "Bearer";
   const credentials: CloudAuthClientCredentials = {

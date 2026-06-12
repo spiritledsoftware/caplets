@@ -6,6 +6,7 @@ import { benchmarkServerDefinitions } from "./surface";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CAPLETS_CLI_PATH = resolve(REPO_ROOT, "../cli/dist/index.js");
+const DEFAULT_BENCHMARK_SERVERS = ["policy", "tickets", "api"];
 
 export function getBenchmarkPaths({ repoRoot = REPO_ROOT }: any = {}) {
   const absoluteRepoRoot = resolve(repoRoot);
@@ -21,19 +22,62 @@ export function createBenchmarkFixtureMcpServers({
   fixtureServerPath,
   cwd,
   extra = {},
+  servers,
+  command = "tsx",
   ...inlineExtra
 }: any = {}) {
   const paths = getBenchmarkPaths({ repoRoot });
+  const selectedServers = servers ?? DEFAULT_BENCHMARK_SERVERS;
+  const definitions = benchmarkServerDefinitions();
+  const unknownServers = selectedServers.filter((server: string) => !definitions[server]);
+  if (unknownServers.length > 0) {
+    return createNamedFixtureMcpServers({
+      fixtureServerPath: fixtureServerPath ?? paths.fixtureServerPath,
+      cwd: cwd ?? paths.repoRoot,
+      servers: selectedServers,
+      command,
+      extra: { ...inlineExtra, ...extra },
+    });
+  }
   const serverPath = resolve(fixtureServerPath ?? paths.fixtureServerPath);
   const serverCwd = resolve(cwd ?? paths.repoRoot);
   const serverExtra = { ...inlineExtra, ...extra };
   return Object.fromEntries(
-    Object.entries(benchmarkServerDefinitions()).map(([server, definition]) => [
+    Object.entries(definitions)
+      .filter(([server]) => selectedServers.includes(server))
+      .map(([server, definition]) => [
+        server,
+        {
+          ...definition,
+          ...serverExtra,
+          command,
+          args: [serverPath, "--server", server],
+          cwd: serverCwd,
+        },
+      ]),
+  );
+}
+
+export function createNamedFixtureMcpServers({
+  fixtureServerPath,
+  cwd,
+  servers,
+  command = "tsx",
+  extra = {},
+}: any = {}) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    throw new TypeError("createNamedFixtureMcpServers requires at least one server.");
+  }
+  const serverPath = resolve(fixtureServerPath);
+  const serverCwd = resolve(cwd);
+  return Object.fromEntries(
+    servers.map((server: string) => [
       server,
       {
-        ...definition,
-        ...serverExtra,
-        command: "tsx",
+        name: server.replaceAll("_", " "),
+        description: `Deterministic ${server.replaceAll("_", " ")} fixture server.`,
+        ...extra,
+        command,
         args: [serverPath, "--server", server],
         cwd: serverCwd,
       },
@@ -90,6 +134,7 @@ export async function createBenchmarkCapletsConfig({
       repoRoot: paths.repoRoot,
       fixtureServerPath: support.fixtureServerPath,
       cwd: support.supportDir,
+      servers: ["policy", "tickets", "api"],
     }),
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);

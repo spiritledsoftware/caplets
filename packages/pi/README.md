@@ -2,7 +2,7 @@
 
 Native Pi extension for Caplets.
 
-This package exposes configured Caplets as native Pi tools named `caplets_<id>`. It does not start the Caplets MCP server. Pi prompt guidance is provided through `promptSnippet` and `promptGuidelines`.
+This package exposes configured Caplets as native Pi tools named `caplets__<id>`. It does not start the Caplets MCP server. Pi prompt guidance is provided through `promptSnippet` and `promptGuidelines`.
 
 MCP-backed Caplets advertise resource, prompt, template, and completion operations in their generated schema; OpenAPI, GraphQL, HTTP, CLI, and Caplet-set backends remain tool/action-only.
 

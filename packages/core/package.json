@@ -1,7 +1,7 @@
 {
   "name": "@caplets/core",
   "version": "0.19.0",
-  "description": "Core runtime library for Caplets progressive disclosure gateways.",
+  "description": "Core runtime library for Caplets Code Mode and progressive disclosure gateways.",
   "keywords": [
     "caplets",
     "gateway",
@@ -47,9 +47,33 @@
       "types": "./dist/caplet-source/filesystem.d.ts",
       "default": "./dist/caplet-source/filesystem.js"
     },
+    "./code-mode": {
+      "types": "./dist/code-mode/index.d.ts",
+      "default": "./dist/code-mode.js"
+    },
+    "./observed-output-shapes": {
+      "types": "./dist/observed-output-shapes/index.d.ts",
+      "default": "./dist/observed-output-shapes.js"
+    },
+    "./observed-output-shapes/pure": {
+      "types": "./dist/observed-output-shapes/pure.d.ts",
+      "default": "./dist/observed-output-shapes/pure.js"
+    },
+    "./project-binding": {
+      "types": "./dist/project-binding/index.d.ts",
+      "default": "./dist/project-binding.js"
+    },
+    "./redaction": {
+      "types": "./dist/redaction.d.ts",
+      "default": "./dist/redaction.js"
+    },
     "./runtime-plan": {
       "types": "./dist/runtime-plan/index.d.ts",
       "default": "./dist/runtime-plan.js"
+    },
+    "./stable-json": {
+      "types": "./dist/stable-json.d.ts",
+      "default": "./dist/stable-json.js"
     },
     "./config-runtime": {
       "types": "./dist/config-runtime.d.ts",
@@ -72,9 +96,12 @@
     "@hono/mcp": "^0.3.0",
     "@hono/node-server": "^2.0.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
     "commander": "^15.0.0",
     "graphql": "^16.14.1",
     "hono": "^4.12.23",
+    "quickjs-emscripten": "^0.32.0",
+    "typescript": "^6.0.3",
     "vfile": "^6.0.3",
     "vfile-matter": "^5.0.1",
     "yaml": "^2.9.0",
@@ -84,7 +111,6 @@
     "@types/node": "^25.9.1",
     "@typescript/native-preview": "7.0.0-dev.20260603.1",
     "rolldown": "^1.0.3",
-    "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
   "engines": {

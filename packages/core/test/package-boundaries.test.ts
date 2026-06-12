@@ -96,7 +96,14 @@ describe("package boundaries", () => {
   });
 
   it("keeps Worker-safe core exports on dedicated bundles", () => {
-    const dedicatedExports = ["./caplet-source", "./runtime-plan"] as const;
+    const dedicatedExports = [
+      "./caplet-source",
+      "./observed-output-shapes/pure",
+      "./project-binding",
+      "./redaction",
+      "./runtime-plan",
+      "./stable-json",
+    ] as const;
     const rootDefault = (corePackage.exports["."] as { default: string }).default;
 
     for (const specifier of dedicatedExports) {

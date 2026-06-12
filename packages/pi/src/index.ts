@@ -605,6 +605,11 @@ function serializeResult(result: unknown): { text: string; serializationError?: 
 }
 
 function agentContent(result: unknown): Array<{ type: "text"; text: string }> {
+  const codeModeContent = codeModeAgentContent(result);
+  if (codeModeContent) {
+    return codeModeContent;
+  }
+
   const content = arrayProperty(result, "content")
     .filter((item) => stringProperty(item, "type") === "text")
     .map((item) => ({ type: "text" as const, text: stringProperty(item, "text") }))
@@ -613,6 +618,151 @@ function agentContent(result: unknown): Array<{ type: "text"; text: string }> {
     return content;
   }
   return [{ type: "text", text: JSON.stringify(result, null, 2) ?? "null" }];
+}
+
+function codeModeAgentContent(result: unknown): Array<{ type: "text"; text: string }> | undefined {
+  if (!isCodeModeRunEnvelope(result)) return undefined;
+  const ok = Boolean(result.ok);
+  const diagnostics = arrayProperty(result, "diagnostics");
+  const logs = objectProperty(result, "logs");
+  const meta = objectProperty(result, "meta");
+  const value = (result as Record<string, unknown>).value;
+  const compact: Record<string, unknown> = {
+    ok,
+    ...(ok ? { value: compactCodeModeAgentValue(value) } : { error: result.error }),
+  };
+  if (diagnostics.length > 0) compact.diagnostics = diagnostics;
+  const logSummary = codeModeLogSummary(logs);
+  if (logSummary) compact.logs = logSummary;
+  const durationMs = meta?.durationMs;
+  if (typeof durationMs === "number") compact.durationMs = durationMs;
+  return [{ type: "text", text: JSON.stringify(compact) ?? "null" }];
+}
+
+function compactCodeModeAgentValue(value: unknown, depth = 0): unknown {
+  if (depth > 16) return "[Max depth reached]";
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 40).map((item) => compactCodeModeAgentValue(item, depth + 1));
+    return value.length > items.length
+      ? [...items, { truncatedItems: value.length - items.length }]
+      : items;
+  }
+  if (!value || typeof value !== "object") return compactCodeModeScalar(value);
+  const record = value as Record<string, unknown>;
+  if (isSuccessfulToolCallResultEnvelope(record)) {
+    return compactCodeModeAgentValue(record.data, depth + 1);
+  }
+  if (isFailedToolCallResultEnvelope(record)) {
+    return { ok: false, error: compactCodeModeAgentValue(record.error, depth + 1) };
+  }
+  const descriptor = compactCodeModeDescriptor(record, depth);
+  if (descriptor) return descriptor;
+  const entries = Object.entries(record).flatMap(([key, nested]) => {
+    if (isCodeModeAgentNoiseKey(key, nested)) return [];
+    return [[key, compactCodeModeAgentValue(nested, depth + 1)] as const];
+  });
+  return Object.fromEntries(entries);
+}
+
+function compactCodeModeScalar(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const collapsed = value.replace(/\s+/gu, " ").trim();
+  return collapsed.length > 1200 ? `${collapsed.slice(0, 1197).trimEnd()}...` : value;
+}
+
+function isSuccessfulToolCallResultEnvelope(record: Record<string, unknown>): boolean {
+  return (
+    record.ok === true &&
+    "data" in record &&
+    Object.keys(record).every((key) => ["ok", "data", "meta"].includes(key)) &&
+    isCapletsToolMeta(record.meta)
+  );
+}
+
+function isFailedToolCallResultEnvelope(record: Record<string, unknown>): boolean {
+  return (
+    record.ok === false &&
+    "error" in record &&
+    Object.keys(record).every((key) => ["ok", "error", "meta"].includes(key)) &&
+    (record.meta === undefined || isCapletsToolMeta(record.meta))
+  );
+}
+
+function isCapletsToolMeta(value: unknown): boolean {
+  const meta = value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+  if (!meta) return false;
+  const record = meta as Record<string, unknown>;
+  return Boolean(
+    typeof record.capletId === "string" ||
+    typeof record.tool === "string" ||
+    typeof record.status === "string" ||
+    typeof record.durationMs === "number" ||
+    typeof record.elapsedMs === "number",
+  );
+}
+
+function compactCodeModeDescriptor(
+  record: Record<string, unknown>,
+  depth: number,
+): Record<string, unknown> | undefined {
+  if (!("callSignature" in record || "inputTypeScript" in record || "inputSchema" in record)) {
+    return undefined;
+  }
+  const compact: Record<string, unknown> = {};
+  for (const key of ["id", "name", "title", "description", "callSignature", "inputTypeScript"])
+    if (record[key] !== undefined) compact[key] = compactCodeModeAgentValue(record[key], depth + 1);
+  const tool = objectProperty(record, "tool");
+  if (tool) {
+    compact.tool = compactCodeModeAgentValue(
+      Object.fromEntries(
+        Object.entries(tool).filter(
+          ([key]) => !["inputSchema", "outputSchema", "annotations"].includes(key),
+        ),
+      ),
+      depth + 1,
+    );
+  }
+  return compact;
+}
+
+function isCodeModeAgentNoiseKey(key: string, value: unknown): boolean {
+  if (["inputSchema", "outputSchema", "outputTypeScript", "observedOutputShape"].includes(key)) {
+    return true;
+  }
+  if (key === "examples" && Array.isArray(value)) return value.length > 0;
+  if (key === "fieldSelection") return true;
+  if (key === "meta" && isCapletsToolMeta(value)) return true;
+  return false;
+}
+
+function isCodeModeRunEnvelope(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.ok === "boolean" &&
+    Array.isArray(record.diagnostics) &&
+    Boolean(record.logs) &&
+    typeof record.logs === "object" &&
+    !Array.isArray(record.logs) &&
+    Boolean(record.meta) &&
+    typeof record.meta === "object" &&
+    !Array.isArray(record.meta) &&
+    ("value" in record || "error" in record)
+  );
+}
+
+function codeModeLogSummary(
+  logs: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!logs) return undefined;
+  const entries = arrayProperty(logs, "entries");
+  const truncated = logs.truncated === true;
+  const logRef = stringProperty(logs, "logRef");
+  const summary: Record<string, unknown> = {};
+  if (entries.length > 0) summary.entries = entries;
+  if (truncated) summary.truncated = true;
+  if (logRef) summary.logRef = logRef;
+  return Object.keys(summary).length > 0 ? summary : undefined;
 }
 
 function compactResultText(result: unknown, maxLength = 600): string {

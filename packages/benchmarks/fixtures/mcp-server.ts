@@ -1,7 +1,8 @@
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const SERVER_NAMES = ["policy", "tickets", "api"];
+export const SERVER_NAMES = ["policy", "tickets", "api", "issues", "ci", "docs", "code-map"];
 
 const DISCOUNT_POLICY = {
   id: "discount-policy",
@@ -65,6 +66,112 @@ const API_SCHEMAS = [
     path: "/internal/tickets/events",
     fields: ["ticketId", "eventType", "actor"],
   },
+];
+
+const CHECKOUT_ISSUES = [
+  {
+    id: "BENCH-451",
+    title: "Checkout authorization retry double-submit",
+    status: "active",
+    service: "checkout",
+    ciRun: "CI-9182",
+    summary:
+      "Card authorization attempts retry provider conflicts and generate fresh idempotency keys.",
+    targetFiles: ["src/checkout-authorization.js", "test/checkout-authorization.node-test.js"],
+  },
+  {
+    id: "BENCH-430",
+    title: "Checkout receipt typo",
+    status: "backlog",
+    service: "checkout",
+    summary: "Distractor issue.",
+  },
+  {
+    id: "BENCH-452",
+    title: "Retry telemetry dashboard",
+    status: "duplicate",
+    service: "observability",
+    summary: "Stale duplicate unrelated to authorization behavior.",
+  },
+];
+
+const CHECKOUT_CI_RUNS = [
+  {
+    id: "CI-9182",
+    status: "failed",
+    branch: "main",
+    linkedIssue: "BENCH-451",
+    failingTests: [
+      "checkout retries preserve idempotency",
+      "checkout does not retry provider conflict",
+    ],
+    logExcerpt:
+      "Expected a single provider call for 409; expected the same Idempotency-Key across retries.",
+  },
+  {
+    id: "CI-9100",
+    status: "passed",
+    branch: "release",
+    linkedIssue: "BENCH-430",
+    failingTests: [],
+  },
+];
+
+const CHECKOUT_DOCS = [
+  {
+    id: "checkout-retry-runbook",
+    title: "Checkout authorization retry runbook",
+    kind: "runbook",
+    retryableStatuses: [408, 429, 500, 502, 503, 504],
+    delaysMs: [100, 250, 500],
+    guidance:
+      "Retry only transient provider responses. Reuse the original Idempotency-Key for every retry attempt.",
+  },
+  {
+    id: "generic-retry-guide",
+    title: "Generic retry guide",
+    kind: "distractor",
+    retryableStatuses: [500, 503],
+    delaysMs: [50, 150, 300],
+  },
+  {
+    id: "idempotency-guidance",
+    title: "Checkout idempotency guidance",
+    kind: "reference",
+    header: "Idempotency-Key",
+    guidance: "Generate once per logical authorization request and preserve through retries.",
+  },
+];
+
+const CHECKOUT_API_SCHEMAS = [
+  ...API_SCHEMAS,
+  {
+    id: "checkout-authorize",
+    method: "POST",
+    path: "/checkout/authorize",
+    fields: ["cardToken", "amount", "currency"],
+    idempotencyHeader: "Idempotency-Key",
+    retryableStatuses: [408, 429, 500, 502, 503, 504],
+    doNotRetry: [400, 401, 403, 404, 409],
+  },
+  {
+    id: "checkout-capture",
+    method: "POST",
+    path: "/checkout/capture",
+    fields: ["authorizationId"],
+    doNotRetry: [400, 404, 409],
+  },
+];
+
+const CODE_MAP_RECORDS = [
+  {
+    id: "checkout",
+    service: "checkout",
+    package: "coding-agent-benchmark-fixture",
+    targetFiles: ["src/checkout-authorization.js", "test/checkout-authorization.node-test.js"],
+    validationCommand: "node --test test/checkout-authorization.node-test.js",
+  },
+  { id: "pricing", service: "pricing", targetFiles: ["src/discount.js"] },
 ];
 
 const emptyJsonSchema = { type: "object", properties: {}, additionalProperties: false };
@@ -448,10 +555,206 @@ const apiTools = [
   })),
 ];
 
+const makeSearchTools = (domain, records) => [
+  {
+    name: "search",
+    title: `Search ${domain}`,
+    description: `Search ${domain} records by keyword.`,
+    inputSchema: querySchema,
+    metadataInputSchema: queryJsonSchema,
+    handler: ({ query = "" }) =>
+      asResult(`${domain} search results`, {
+        query,
+        results: records.filter((record) => matchText(JSON.stringify(record), query)),
+      }),
+  },
+  {
+    name: "get",
+    title: `Get ${domain} record`,
+    description: `Fetch a ${domain} record by id.`,
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        `${domain} record`,
+        records.find((record) => record.id === id) ?? { id, error: `${domain} record not found` },
+      ),
+  },
+];
+
+const issueTools = [
+  ...makeSearchTools("issues", CHECKOUT_ISSUES),
+  {
+    name: "get_issue",
+    title: "Get Issue",
+    description: "Fetch issue details with linked CI and target files.",
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        "Issue",
+        CHECKOUT_ISSUES.find((issue) => issue.id === id) ?? { id, error: "issue not found" },
+      ),
+  },
+  {
+    name: "active_incidents",
+    title: "Active Incidents",
+    description: "List active production incidents.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () =>
+      asResult("Active incidents", {
+        results: CHECKOUT_ISSUES.filter((issue) => issue.status === "active"),
+      }),
+  },
+  ...Array.from({ length: 24 }, (_, index) => ({
+    name: `issue_distractor_${index + 1}`,
+    title: `Issue distractor ${index + 1}`,
+    description: "Distractor issue-tracker tool.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () => asResult("Issue distractor", { relevantToBenchmark: false, index }),
+  })),
+];
+
+const ciTools = [
+  ...makeSearchTools("ci", CHECKOUT_CI_RUNS),
+  {
+    name: "get_run",
+    title: "Get CI Run",
+    description: "Fetch CI run summary and failing tests.",
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        "CI run",
+        CHECKOUT_CI_RUNS.find((run) => run.id === id) ?? { id, error: "CI run not found" },
+      ),
+  },
+  {
+    name: "logs",
+    title: "CI Logs",
+    description: "Fetch compact CI log excerpt by run id.",
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        "CI logs",
+        CHECKOUT_CI_RUNS.find((run) => run.id === id) ?? { id, error: "CI logs not found" },
+      ),
+  },
+  ...Array.from({ length: 24 }, (_, index) => ({
+    name: `ci_distractor_${index + 1}`,
+    title: `CI distractor ${index + 1}`,
+    description: "Distractor CI tool.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () => asResult("CI distractor", { relevantToBenchmark: false, index }),
+  })),
+];
+
+const docTools = [
+  ...makeSearchTools("docs", CHECKOUT_DOCS),
+  {
+    name: "read_runbook",
+    title: "Read Runbook",
+    description: "Read an operational runbook by id.",
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        "Runbook",
+        CHECKOUT_DOCS.find((doc) => doc.id === id) ?? { id, error: "document not found" },
+      ),
+  },
+  {
+    name: "idempotency_guidance",
+    title: "Idempotency Guidance",
+    description: "Return checkout idempotency guidance.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () =>
+      asResult(
+        "Idempotency guidance",
+        CHECKOUT_DOCS.find((doc) => doc.id === "idempotency-guidance"),
+      ),
+  },
+  ...Array.from({ length: 24 }, (_, index) => ({
+    name: `docs_distractor_${index + 1}`,
+    title: `Docs distractor ${index + 1}`,
+    description: "Distractor docs tool.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () => asResult("Docs distractor", { relevantToBenchmark: false, index }),
+  })),
+];
+
+const codeMapTools = [
+  ...makeSearchTools("code-map", CODE_MAP_RECORDS),
+  {
+    name: "target_files",
+    title: "Target Files",
+    description: "Return likely files for a service.",
+    inputSchema: idSchema,
+    metadataInputSchema: idJsonSchema,
+    handler: ({ id }) =>
+      asResult(
+        "Target files",
+        CODE_MAP_RECORDS.find((record) => record.id === id || record.service === id) ?? {
+          id,
+          error: "service not found",
+        },
+      ),
+  },
+  ...Array.from({ length: 20 }, (_, index) => ({
+    name: `code_map_distractor_${index + 1}`,
+    title: `Code map distractor ${index + 1}`,
+    description: "Distractor repository map tool.",
+    inputSchema: emptySchema,
+    metadataInputSchema: emptyJsonSchema,
+    handler: () => asResult("Code map distractor", { relevantToBenchmark: false, index }),
+  })),
+];
+
 export const TOOLSETS = {
   policy: policyTools,
   tickets: ticketTools,
-  api: apiTools,
+  api: [
+    ...apiTools,
+    {
+      name: "search_endpoints",
+      title: "Search API Endpoints",
+      description: "Search checkout API endpoint contracts by keyword.",
+      inputSchema: querySchema,
+      metadataInputSchema: queryJsonSchema,
+      handler: ({ query = "" }) =>
+        asResult("API endpoint search results", {
+          query,
+          results: CHECKOUT_API_SCHEMAS.filter((record) =>
+            matchText(JSON.stringify(record), query),
+          ),
+        }),
+    },
+    {
+      name: "get_endpoint",
+      title: "Get Endpoint",
+      description: "Fetch endpoint contract by id.",
+      inputSchema: idSchema,
+      metadataInputSchema: idJsonSchema,
+      handler: ({ id }) =>
+        asResult(
+          "API endpoint",
+          CHECKOUT_API_SCHEMAS.find((schema) => schema.id === id || schema.path === id) ?? {
+            id,
+            error: "endpoint not found",
+          },
+        ),
+    },
+  ],
+  issues: issueTools,
+  ci: ciTools,
+  docs: docTools,
+  "code-map": codeMapTools,
 };
 
 export const listToolMetadata = (serverName) => {
@@ -482,53 +785,94 @@ function startStdioMcpServer(serverName) {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
     buffer += chunk;
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.trim()) {
+
+    while (buffer.length > 0) {
+      const trimmed = buffer.trimStart();
+      const leadingWhitespaceLength = buffer.length - trimmed.length;
+      if (leadingWhitespaceLength > 0) buffer = trimmed;
+
+      if (/^Content-Length:/iu.test(buffer)) {
+        const headerEnd = buffer.indexOf("\r\n\r\n");
+        const fallbackHeaderEnd = headerEnd === -1 ? buffer.indexOf("\n\n") : -1;
+        const effectiveHeaderEnd = headerEnd === -1 ? fallbackHeaderEnd : headerEnd;
+        if (effectiveHeaderEnd === -1) return;
+
+        const headerText = buffer.slice(0, effectiveHeaderEnd);
+        const lengthMatch = /^Content-Length:\s*(\d+)\s*$/imu.exec(headerText);
+        if (!lengthMatch) {
+          writeMcpMessage(
+            { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+            "framed",
+          );
+          buffer = "";
+          return;
+        }
+
+        const bodyStart = effectiveHeaderEnd + (headerEnd === -1 ? 2 : 4);
+        const contentLength = Number(lengthMatch[1]);
+        if (buffer.length < bodyStart + contentLength) return;
+
+        const body = buffer.slice(bodyStart, bodyStart + contentLength);
+        buffer = buffer.slice(bodyStart + contentLength);
+        dispatchMcpMessage(serverName, tools, body, "framed");
         continue;
       }
-      let message;
-      try {
-        message = JSON.parse(line);
-      } catch {
-        writeMcpMessage({
-          jsonrpc: "2.0",
-          id: null,
-          error: { code: -32700, message: "Parse error" },
-        });
-        continue;
-      }
-      handleMcpMessage(serverName, tools, message);
+
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) return;
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line.trim()) continue;
+      dispatchMcpMessage(serverName, tools, line, "line");
     }
   });
 }
 
-function handleMcpMessage(serverName, tools, message) {
+function dispatchMcpMessage(serverName, tools, payload, protocol) {
+  let message;
+  try {
+    message = JSON.parse(payload);
+  } catch {
+    writeMcpMessage(
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } },
+      protocol,
+    );
+    return;
+  }
+  handleMcpMessage(serverName, tools, message, protocol);
+}
+
+function handleMcpMessage(serverName, tools, message, protocol = "line") {
   if (message.id === undefined || String(message.method).startsWith("notifications/")) {
     return;
   }
 
   try {
     if (message.method === "initialize") {
-      writeMcpMessage({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: {
-          protocolVersion: message.params?.protocolVersion ?? "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: { name: `benchmark-${serverName}`, version: "1.0.0" },
+      writeMcpMessage(
+        {
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params?.protocolVersion ?? "2024-11-05",
+            capabilities: { tools: {} },
+            serverInfo: { name: `benchmark-${serverName}`, version: "1.0.0" },
+          },
         },
-      });
+        protocol,
+      );
       return;
     }
 
     if (message.method === "tools/list") {
-      writeMcpMessage({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: { tools: listToolMetadata(serverName) },
-      });
+      writeMcpMessage(
+        {
+          jsonrpc: "2.0",
+          id: message.id,
+          result: { tools: listToolMetadata(serverName) },
+        },
+        protocol,
+      );
       return;
     }
 
@@ -537,29 +881,40 @@ function handleMcpMessage(serverName, tools, message) {
       if (!tool) {
         throw new Error(`Unknown tool ${message.params?.name}`);
       }
-      writeMcpMessage({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: tool.handler(message.params?.arguments ?? {}),
-      });
+      writeMcpMessage(
+        {
+          jsonrpc: "2.0",
+          id: message.id,
+          result: tool.handler(message.params?.arguments ?? {}),
+        },
+        protocol,
+      );
       return;
     }
 
     throw new Error(`Unsupported MCP method ${message.method}`);
   } catch (error) {
-    writeMcpMessage({
-      jsonrpc: "2.0",
-      id: message.id,
-      error: {
-        code: -32603,
-        message: error instanceof Error ? error.message : String(error),
+    writeMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32603,
+          message: error instanceof Error ? error.message : String(error),
+        },
       },
-    });
+      protocol,
+    );
   }
 }
 
-function writeMcpMessage(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+function writeMcpMessage(message, protocol = "line") {
+  const payload = JSON.stringify(message);
+  if (protocol === "framed") {
+    process.stdout.write(`Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n${payload}`);
+    return;
+  }
+  process.stdout.write(`${payload}\n`);
 }
 
 function parseArgs(argv) {
@@ -586,7 +941,15 @@ async function main() {
 
 const isMainModule =
   typeof process.argv[1] === "string" &&
-  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  realpathOrResolved(fileURLToPath(import.meta.url)) === realpathOrResolved(process.argv[1]);
+
+function realpathOrResolved(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
 
 if (isMainModule) {
   main().catch((error) => {

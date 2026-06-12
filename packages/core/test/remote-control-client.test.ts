@@ -51,7 +51,7 @@ describe("RemoteControlClient", () => {
         }),
     });
 
-    await expect(client.request("get_tool", { tool: "missing" })).rejects.toMatchObject({
+    await expect(client.request("describe_tool", { name: "missing" })).rejects.toMatchObject({
       code: "TOOL_NOT_FOUND",
       message: "Tool missing",
       details: { nextAction: "run_caplets_list_tools" },

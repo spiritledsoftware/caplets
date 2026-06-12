@@ -23,7 +23,7 @@ export function hostedCredentials(
     accessToken: "cap_access_secret",
     refreshToken: "cap_refresh_secret",
     expiresAt: fixedLater,
-    scope: ["project_binding:read", "project_binding:write"],
+    scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
     tokenType: "Bearer",
     credentialFamilyId: "family_123",
     deviceName: "Test Device",

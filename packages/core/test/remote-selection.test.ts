@@ -57,6 +57,144 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("derives Cloud MCP and Project Binding URLs from the selected workspace", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
+        workspaceSlug: "personal-c9b49d",
+      }),
+    );
+
+    const resolved = await resolveRemoteSelection(
+      {},
+      {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.pr-2.preview.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "hosted_cloud",
+      selectedWorkspace: "personal-c9b49d",
+      remote: {
+        baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
+        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp"),
+        controlUrl: new URL("https://cloud.pr-2.preview.caplets.dev/control"),
+        healthUrl: new URL("https://cloud.pr-2.preview.caplets.dev/healthz"),
+        projectBindingWebSocketUrl: new URL(
+          "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+        ),
+      },
+    });
+  });
+
+  it("normalizes copied Cloud MCP endpoints for attach", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
+        workspaceSlug: "personal-c9b49d",
+      }),
+    );
+
+    const resolved = await resolveRemoteSelection(
+      {
+        remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp",
+      },
+      {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "hosted_cloud",
+      selectedWorkspace: "personal-c9b49d",
+      remote: {
+        baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
+        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp"),
+        projectBindingWebSocketUrl: new URL(
+          "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+        ),
+      },
+      cloudPresence: {
+        url: new URL("https://cloud.pr-2.preview.caplets.dev/"),
+      },
+    });
+  });
+
+  it("accepts legacy Cloud Auth credentials that predate hosted MCP tool scope", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        scope: ["project_binding:read", "project_binding:write"],
+      }),
+    );
+
+    const resolved = await resolveRemoteSelection(
+      {},
+      {
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_CLOUD_AUTH_PATH: path,
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "hosted_cloud",
+      selectedWorkspace: "personal",
+    });
+  });
+
+  it("requires Cloud Auth credentials to include project binding scopes", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        scope: ["project_binding:read"],
+      }),
+    );
+
+    await expect(
+      resolveRemoteSelection(
+        {},
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "cloud_auth_required",
+      recoveryCommand: "caplets cloud auth login",
+    });
+  });
+
+  it("rejects copied Cloud MCP endpoints for a different selected workspace", async () => {
+    const path = tempCloudAuthPath();
+    await new CloudAuthStore({ path }).save(
+      hostedCredentials({
+        cloudUrl: "https://cloud.pr-2.preview.caplets.dev",
+        workspaceSlug: "personal-c9b49d",
+      }),
+    );
+
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "https://cloud.pr-2.preview.caplets.dev/ws/team/mcp",
+        },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_CLOUD_AUTH_PATH: path,
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "workspace_switch_required",
+    });
+  });
+
   it("refreshes expired Cloud credentials before returning the upstream", async () => {
     const path = tempCloudAuthPath();
     await new CloudAuthStore({ path }).save(
@@ -80,7 +218,7 @@ describe("resolveRemoteSelection", () => {
             accessToken: "new-access",
             refreshToken: "new-refresh",
             expiresAt: "2999-01-01T00:00:00.000Z",
-            scope: ["project_binding:read", "project_binding:write"],
+            scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
             tokenType: "Bearer",
             credentialFamilyId: "family_123",
           });
@@ -103,6 +241,7 @@ describe("resolveRemoteSelection", () => {
         {
           CAPLETS_MODE: "cloud",
           CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_CLOUD_AUTH_PATH: tempCloudAuthPath(),
         },
       ),
     ).rejects.toMatchObject({

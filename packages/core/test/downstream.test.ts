@@ -25,6 +25,7 @@ describe("compact schema fingerprints", () => {
     const schema = {
       type: "object",
       properties: { value: { type: "string" }, count: { type: "number" } },
+      required: ["value"],
     };
 
     const first = manager.compact(server, { name: "first", inputSchema: schema } as Tool);
@@ -34,13 +35,20 @@ describe("compact schema fingerprints", () => {
       outputSchema: schema,
     } as Tool);
 
-    expect(first).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(first).toMatchObject({
+      hasInputSchema: true,
+      hasOutputSchema: false,
+      requiredArgs: ["value"],
+      acceptedArgs: ["count", "value"],
+      argsTemplate: { value: "" },
+      callTemplate: { operation: "call_tool", name: "first", args: { value: "" } },
+    });
     expect(second).toMatchObject({ hasInputSchema: true, hasOutputSchema: true });
     expect(first).not.toHaveProperty("inputSchemaHash");
     expect(second).not.toHaveProperty("outputSchemaHash");
   });
 
-  it("does not include schema hashes in compact metadata", () => {
+  it("includes compact optional argument templates without schema hashes", () => {
     const config = parseConfig({
       mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
     });
@@ -53,8 +61,40 @@ describe("compact schema fingerprints", () => {
     } as Tool);
 
     expect(compact).toMatchObject({ hasInputSchema: true, hasOutputSchema: false });
+    expect(compact).toMatchObject({ acceptedArgs: ["a", "b"] });
+    expect(compact).toMatchObject({
+      argsTemplate: { a: "", b: 0 },
+      callTemplate: { operation: "call_tool", name: "first", args: { a: "", b: 0 } },
+    });
     expect(compact).not.toHaveProperty("inputSchemaHash");
     expect(compact).not.toHaveProperty("outputSchemaHash");
+  });
+
+  it("omits optional argument templates when they would be too large", () => {
+    const config = parseConfig({
+      mcpServers: { alpha: { name: "Alpha", description: "Alpha server", command: "node" } },
+    });
+    const server = config.mcpServers.alpha!;
+    const manager = new DownstreamManager(new ServerRegistry(config));
+
+    const compact = manager.compact(server, {
+      name: "first",
+      inputSchema: {
+        type: "object",
+        properties: {
+          a: { type: "string" },
+          b: { type: "number" },
+          c: { type: "boolean" },
+          d: { type: "array" },
+        },
+      },
+    } as Tool);
+
+    expect(compact).toMatchObject({ acceptedArgs: ["a", "b", "c", "d"] });
+    expect(compact).not.toHaveProperty("argsTemplate");
+    expect(compact).toMatchObject({
+      callTemplate: { operation: "call_tool", name: "first", args: {} },
+    });
   });
 });
 
@@ -117,8 +157,8 @@ describe("downstream stdio lifecycle", () => {
         config.mcpServers.fixture!,
         {
           operation: "call_tool",
-          tool: "echo",
-          arguments: { message: "hello" },
+          name: "echo",
+          args: { message: "hello" },
           fields: ["message"],
         },
         registry,
@@ -282,7 +322,7 @@ describe("downstream stdio lifecycle", () => {
               JSON.stringify({
                 jsonrpc: "2.0",
                 id: message.id,
-                result: { tools: [{ name: "remote_echo", inputSchema: {} }] },
+                result: { tools: [{ name: "remote_echo", inputSchema: { type: "object" } }] },
               }),
             );
             return;
@@ -327,6 +367,187 @@ describe("downstream stdio lifecycle", () => {
       await manager.close();
     } finally {
       releaseFirstInitialize.resolve();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("shares one in-flight remote connection across concurrent operations", async () => {
+    const releaseInitialize = deferred<void>();
+    let initializeCount = 0;
+    let toolsListCount = 0;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { id?: number; method?: string };
+          response.setHeader("content-type", "application/json");
+          if (message.method === "initialize") {
+            initializeCount += 1;
+            await releaseInitialize.promise;
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "fixture-remote", version: "1.0.0" },
+                },
+              }),
+            );
+            return;
+          }
+          if (message.method === "tools/list") {
+            toolsListCount += 1;
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: { tools: [{ name: "remote_echo", inputSchema: { type: "object" } }] },
+              }),
+            );
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const check = manager.checkServer(config.mcpServers.remote!);
+      const list = manager.listTools(config.mcpServers.remote!);
+
+      await waitUntil(() => initializeCount === 1);
+      releaseInitialize.resolve();
+
+      const [checkResult, tools] = await Promise.all([check, list]);
+
+      expect(checkResult).toMatchObject({ id: "remote", status: "available", toolCount: 1 });
+      expect(tools.map((tool) => tool.name)).toEqual(["remote_echo"]);
+      expect(initializeCount).toBe(1);
+      expect(toolsListCount).toBeGreaterThanOrEqual(1);
+      expect(registry.getStatus("remote")).toBe("available");
+
+      await manager.close();
+    } finally {
+      releaseInitialize.resolve();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("wraps shared pending connection failures for concurrent callers", async () => {
+    const releaseInitialize = deferred<void>();
+    let initializeCount = 0;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { method?: string };
+          if (message.method === "initialize") {
+            initializeCount += 1;
+            await releaseInitialize.promise;
+            response.statusCode = 500;
+            response.end("initialize failed");
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A failing remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const first = manager.listTools(config.mcpServers.remote!);
+
+      await waitUntil(() => initializeCount === 1);
+      const second = manager.listTools(config.mcpServers.remote!);
+      releaseInitialize.resolve();
+
+      const results = await Promise.allSettled([first, second]);
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SERVER_UNAVAILABLE" }),
+        }),
+        expect.objectContaining({
+          status: "rejected",
+          reason: expect.objectContaining({ code: "SERVER_UNAVAILABLE" }),
+        }),
+      ]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") {
+          expect(result.reason).toBeInstanceOf(Error);
+          expect(result.reason).toMatchObject({
+            code: "SERVER_UNAVAILABLE",
+            message: "Could not start remote",
+          } satisfies Partial<CapletsError>);
+        }
+      }
+      expect(registry.getStatus("remote")).toBe("unavailable");
+
+      await manager.close();
+    } finally {
+      releaseInitialize.resolve();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -559,4 +780,14 @@ function deferred<T>(): {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > 1_000) {
+      throw new Error("Timed out waiting for predicate");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }

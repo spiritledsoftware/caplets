@@ -32,6 +32,7 @@ describe("CloudAuthClient", () => {
     await expect(requests[0]?.json()).resolves.toMatchObject({
       requestedWorkspace: "team",
       deviceName: "MacBook",
+      scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
     });
     expect(result).toMatchObject({
       loginId: "login_123",
@@ -52,7 +53,7 @@ describe("CloudAuthClient", () => {
           accessToken: "cap_access_secret",
           refreshToken: "cap_refresh_secret",
           expiresAt: "2026-06-03T13:00:00.000Z",
-          scope: ["project_binding:read", "project_binding:write"],
+          scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
           tokenType: "Bearer",
           credentialFamilyId: "family_123",
           deviceName: "MacBook",
@@ -66,7 +67,11 @@ describe("CloudAuthClient", () => {
     });
 
     expect(credentials.workspaceId).toBe("workspace_team");
-    expect(credentials.scope).toEqual(["project_binding:read", "project_binding:write"]);
+    expect(credentials.scope).toEqual([
+      "project_binding:read",
+      "project_binding:write",
+      "mcp:tools",
+    ]);
     expect(JSON.stringify(credentials.redacted)).not.toContain("cap_access_secret");
     expect(JSON.stringify(credentials.redacted)).not.toContain("cap_refresh_secret");
   });
