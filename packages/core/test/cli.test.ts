@@ -2174,16 +2174,78 @@ describe("cli setup", () => {
     await runCli(["setup"], { writeOut: (value) => out.push(value) });
 
     const text = out.join("");
-    expect(text).toContain("Usage: caplets setup <integration>");
+    expect(text).toContain("Usage: caplets setup [integration]");
     expect(text).toContain("codex");
     expect(text).toContain("claude-code");
     expect(text).toContain("opencode");
     expect(text).toContain("pi");
     expect(text).toContain("mcp-client");
     expect(text).toContain("--dry-run");
+    expect(text).not.toContain("plugin marketplace");
+    expect(text).not.toContain("caplets@caplets");
   });
 
-  it("runs Codex setup commands", async () => {
+  it("prompts for integrations when stdin is available", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup"], {
+      writeOut: (value) => out.push(value),
+      readStdin: async () => "1, Claude Code\n",
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([
+      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
+      {
+        command: "claude",
+        args: [
+          "mcp",
+          "add",
+          "--transport",
+          "stdio",
+          "--scope",
+          "user",
+          "caplets",
+          "--",
+          "caplets",
+          "serve",
+        ],
+      },
+    ]);
+    const text = out.join("");
+    expect(text).toContain("Select integrations to set up:");
+    expect(text).toContain("Completed Codex setup");
+    expect(text).toContain("Completed Claude Code setup");
+  });
+
+  it("prompts for a generic MCP client output path during interactive setup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-interactive-"));
+    const output = join(dir, "caplets.mcp.json");
+    const out: string[] = [];
+
+    try {
+      await runCli(["setup"], {
+        writeOut: (value) => out.push(value),
+        readStdin: async () => `Any MCP client\n${output}\n`,
+      });
+
+      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
+        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
+      });
+      const text = out.join("");
+      expect(text).toContain("Select integrations to set up:");
+      expect(text).toContain("Path to write generic MCP config");
+      expect(text).toContain(`completed: wrote ${output}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds Caplets to Codex MCP config", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
 
@@ -2196,10 +2258,41 @@ describe("cli setup", () => {
     });
 
     expect(commands).toEqual([
-      { command: "codex", args: ["plugin", "marketplace", "add", "spiritledsoftware/caplets"] },
-      { command: "codex", args: ["plugin", "add", "caplets@caplets"] },
+      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
     ]);
     expect(out.join("")).toContain("Completed Codex setup");
+  });
+
+  it("adds Caplets to Claude Code MCP config", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup", "claude-code"], {
+      writeOut: (value) => out.push(value),
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([
+      {
+        command: "claude",
+        args: [
+          "mcp",
+          "add",
+          "--transport",
+          "stdio",
+          "--scope",
+          "user",
+          "caplets",
+          "--",
+          "caplets",
+          "serve",
+        ],
+      },
+    ]);
+    expect(out.join("")).toContain("Completed Claude Code setup");
   });
 
   it("does not execute commands during dry-run", async () => {
@@ -2216,8 +2309,9 @@ describe("cli setup", () => {
 
     expect(commands).toEqual([]);
     expect(out.join("")).toContain("Dry run");
-    expect(out.join("")).toContain("codex plugin marketplace add spiritledsoftware/caplets");
-    expect(out.join("")).toContain("codex plugin add caplets@caplets");
+    expect(out.join("")).toContain("codex mcp add caplets -- caplets serve");
+    expect(out.join("")).not.toContain("plugin marketplace");
+    expect(out.join("")).not.toContain("caplets@caplets");
   });
 
   it("writes a generic MCP client config when output is provided", async () => {
@@ -2292,6 +2386,124 @@ describe("cli setup", () => {
     });
   });
 
+  it("adds remote-backed Caplets to Codex MCP config", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(
+      [
+        "setup",
+        "codex",
+        "--remote-url",
+        "https://caplets.example.test/caplets",
+        "--format",
+        "json",
+      ],
+      {
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(commands).toEqual([
+      {
+        command: "codex",
+        args: [
+          "mcp",
+          "add",
+          "caplets",
+          "--",
+          "caplets",
+          "attach",
+          "--remote-url",
+          "https://caplets.example.test/caplets",
+        ],
+      },
+    ]);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      integration: "codex",
+      name: "Codex",
+      mode: "remote",
+      dryRun: false,
+      actions: [
+        {
+          command:
+            "codex mcp add caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+          status: "completed",
+        },
+      ],
+    });
+  });
+
+  it("adds remote-backed Caplets to Claude Code MCP config", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup", "claude-code", "--remote-url", "https://caplets.example.test/caplets"], {
+      writeOut: (value) => out.push(value),
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([
+      {
+        command: "claude",
+        args: [
+          "mcp",
+          "add",
+          "--transport",
+          "stdio",
+          "--scope",
+          "user",
+          "caplets",
+          "--",
+          "caplets",
+          "attach",
+          "--remote-url",
+          "https://caplets.example.test/caplets",
+        ],
+      },
+    ]);
+    expect(out.join("")).toContain(
+      "claude mcp add --transport stdio --scope user caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+    );
+  });
+
+  it("keeps --server-url as a remote setup alias", async () => {
+    const out: string[] = [];
+    const commands: Array<{ command: string; args: string[] }> = [];
+
+    await runCli(["setup", "codex", "--server-url", "https://legacy.example.test/caplets"], {
+      writeOut: (value) => out.push(value),
+      runSetupCommand: async (command, args) => {
+        commands.push({ command, args });
+        return { stdout: "", stderr: "" };
+      },
+    });
+
+    expect(commands).toEqual([
+      {
+        command: "codex",
+        args: [
+          "mcp",
+          "add",
+          "caplets",
+          "--",
+          "caplets",
+          "attach",
+          "--remote-url",
+          "https://legacy.example.test/caplets",
+        ],
+      },
+    ]);
+    expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");
+  });
+
   it("wraps setup command failures with the failed command", async () => {
     await expect(
       runCli(["setup", "codex"], {
@@ -2303,7 +2515,7 @@ describe("cli setup", () => {
     ).rejects.toThrow(
       expect.objectContaining({
         code: "SERVER_UNAVAILABLE",
-        message: expect.stringContaining("codex plugin marketplace add spiritledsoftware/caplets"),
+        message: expect.stringContaining("codex mcp add caplets -- caplets serve"),
       }) as CapletsError,
     );
   });

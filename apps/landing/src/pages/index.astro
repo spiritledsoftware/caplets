@@ -3,34 +3,41 @@ import "../styles/global.css";
 import { Cancel01Icon, CheckIcon, Copy01Icon, Menu01Icon } from "@hugeicons/core-free-icons";
 import HugeIcon from "../components/HugeIcon.astro";
 
-const heroTrace = {
-  capability: "github",
-  source: ".caplets/config.json",
-  status: "ready",
-  auth: "token present, redacted",
-  steps: [
-    {
-      label: "inspect",
-      detail: "Show one capability card before any downstream tool list enters context.",
-      result: "search_tools · describe_tool · call_tool",
-    },
-    {
-      label: 'search_tools("pull request")',
-      detail: "Find matching operations inside the selected capability only.",
-      result: "create_pull_request · list_pull_requests · request_review",
-    },
-    {
-      label: 'describe_tool("create_pull_request")',
-      detail: "Inspect the exact schema before an agent can invoke the operation.",
-      result: "title · body · base · head · reviewers?",
-    },
-    {
-      label: "call_tool(arguments)",
-      detail: "Forward the call and keep content, structured data, and errors intact.",
-      result: "structuredContent + content",
-    },
-  ],
-};
+const mapModes = [
+  {
+    value: "vanilla",
+    label: "Vanilla MCP",
+    shortLabel: "Vanilla",
+    exposed: "215 tools",
+    hidden: "0 grouped",
+    copy: "Every street, alley, and label is pushed into the agent's field of view.",
+  },
+  {
+    value: "progressive",
+    label: "Progressive",
+    shortLabel: "Progressive",
+    exposed: "7 districts",
+    hidden: "full city below zoom",
+    copy: "The city becomes districts first, then reveals operations only when the agent asks.",
+  },
+  {
+    value: "code_mode",
+    label: "Code Mode",
+    shortLabel: "Code Mode",
+    exposed: "1 route",
+    hidden: "same capability city",
+    copy: "The agent follows one typed route while the full tool city stays available behind it.",
+    default: true,
+  },
+];
+
+const mapStackAccessibleLabel = "GitHub / Context7 / DeepWiki / Playwright / Git / LSP";
+const exposureSurfaces = [
+  "direct: caplets__{capletId}__{operationName}",
+  "progressive: caplets__{capletId} / caplets__github / operation: search_tools",
+  "code_mode: caplets__code_mode / caplets.github.searchTools() / caplets.github.callTool()",
+  "mixed: direct_and_code_mode / progressive_and_code_mode",
+];
 
 const heroCommands = [
   {
@@ -39,31 +46,65 @@ const heroCommands = [
   },
   {
     label: "Setup",
-    command: "caplets setup codex",
+    command: "caplets setup",
   },
 ];
 
 const proofStats = [
   {
-    value: "106",
-    label: "flat tools",
-    detail: "Direct MCP aggregation exposes every downstream operation up front.",
+    value: "10/10",
+    label: "tasks passed",
+    detail: "Caplets Code Mode and progressive modes matched direct MCP and Executor.sh on the pass-rate baseline.",
   },
   {
-    value: "3",
-    label: "capability cards",
-    detail: "Caplets starts with one focused card per tool source.",
+    value: "236,803",
+    label: "avg total tokens",
+    detail: "Average request + output token estimate across the live Pi eval runs.",
   },
   {
-    value: "87.9%",
-    label: "smaller initial payload",
-    detail: "The deterministic benchmark cuts serialized tool metadata before discovery.",
+    value: "72.0% fewer",
+    label: "vs vanilla MCP",
+    detail: "Request + output token reduction with the same pass rate.",
   },
 ];
 
-const proofComparison = [
-  { label: "Direct MCP", value: "106", detail: "flat tools up front" },
-  { label: "Caplets", value: "3", detail: "capability cards first" },
+const benchmarkRows = [
+  {
+    mode: "Caplets Code Mode",
+    passed: "10/10",
+    tokens: "236,803",
+    surfaceTokens: "31,166",
+  },
+  {
+    mode: "Caplets progressive + Code Mode",
+    passed: "10/10",
+    tokens: "422,861",
+    surfaceTokens: "124,772",
+  },
+  {
+    mode: "Caplets progressive",
+    passed: "10/10",
+    tokens: "461,171",
+    surfaceTokens: "103,776",
+  },
+  {
+    mode: "Executor.sh",
+    passed: "10/10",
+    tokens: "675,842",
+    surfaceTokens: "24,570",
+  },
+  {
+    mode: "Direct vanilla MCP",
+    passed: "10/10",
+    tokens: "846,048",
+    surfaceTokens: "457,818",
+  },
+];
+
+const deterministicSurface = [
+  { label: "direct flat tools", value: "215" },
+  { label: "Caplets cards", value: "7" },
+  { label: "payload reduction", value: "79.9%" },
 ];
 
 const remoteCommands = {
@@ -95,67 +136,6 @@ const remoteComparison = [
   },
 ];
 
-const agentSetups = [
-  {
-    id: "claude-code",
-    name: "Claude Code",
-    installCommand: `claude plugin marketplace add spiritledsoftware/caplets
-claude plugin install caplets@caplets`,
-    configSnippet: `{
-  "mcpServers": {
-    "caplets": {
-      "command": "caplets",
-      "args": ["serve"]
-    }
-  }
-}`,
-    note: "Install the Claude Code plugin from the Caplets marketplace entry; the bundled MCP config runs caplets serve.",
-  },
-  {
-    id: "codex",
-    name: "Codex",
-    installCommand: "codex plugin marketplace add spiritledsoftware/caplets",
-    configSnippet: `{
-  "mcpServers": {
-    "caplets": {
-      "command": "caplets",
-      "args": ["serve"]
-    }
-  }
-}`,
-    note: "After adding the marketplace, install caplets from Codex plugins; the bundled MCP config runs caplets serve.",
-  },
-  {
-    id: "opencode",
-    name: "OpenCode",
-    installCommand: "npm install -g caplets",
-    configSnippet: `{
-  "plugin": ["@caplets/opencode"]
-}`,
-    note: "Use the native @caplets/opencode plugin; it reads Caplets config and does not start the MCP server.",
-  },
-  {
-    id: "pi",
-    name: "Pi",
-    installCommand: `npm install -g caplets
-pi install npm:@caplets/pi`,
-    configSnippet: `{
-  "packages": ["npm:@caplets/pi"]
-}`,
-    note: "The extension reads existing Caplets config; this Pi settings snippet registers the package.",
-  },
-  {
-    id: "mcp-client",
-    name: "Any MCP client",
-    installCommand: "npm install -g caplets",
-    configSnippet: `{
-  "command": "caplets",
-  "args": ["serve"]
-}`,
-    note: "Any MCP-compatible client can launch Caplets over stdio.",
-  },
-];
-
 const lightThemeColor = "oklch(97% 0.012 85)";
 const darkThemeColor = "oklch(18% 0.014 100)";
 
@@ -165,7 +145,7 @@ const exampleCaplets = [
     name: "GitHub",
     summary: "A huge hosted MCP surface for repositories, issues, pull requests, branches, commits, and reviews.",
     why: "Use it when the value is avoiding a giant GitHub tool wall.",
-    path: ["github", "inspect", "search_tools", "describe_tool", "call_tool"],
+    path: ["github", "inspect", "search_tools", "get_tool", "call_tool"],
     steps: [
       { command: "export GH_TOKEN=github_pat_...", label: "GitHub token export" },
       {
@@ -174,14 +154,14 @@ const exampleCaplets = [
       },
       { command: 'codex "try using the github caplet"', label: "Codex trial command" },
     ],
-    help: ["If setup fails, check Node 22+, plugin installation, and ", "GH_TOKEN", "."],
+    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and ", "GH_TOKEN", "."],
   },
   {
     id: "sourcegraph",
     name: "Sourcegraph",
     summary: "Hosted code search for finding examples, references, and implementation patterns across repositories.",
     why: "Use it when the agent should search code first, then inspect only the matching operations.",
-    path: ["sourcegraph", "inspect", "search_tools", "describe_tool", "call_tool"],
+    path: ["sourcegraph", "inspect", "search_tools", "get_tool", "call_tool"],
     steps: [
       {
         command: "caplets install spiritledsoftware/caplets sourcegraph",
@@ -190,14 +170,14 @@ const exampleCaplets = [
       { command: "caplets auth login sourcegraph", label: "Sourcegraph auth command" },
       { command: 'codex "try using the sourcegraph caplet"', label: "Codex trial command" },
     ],
-    help: ["If setup fails, check Node 22+, plugin installation, and Sourcegraph OAuth login."],
+    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and Sourcegraph OAuth login."],
   },
   {
     id: "osv",
     name: "OSV",
     summary: "A small explicit HTTP API for vulnerability lookups by package, purl, commit, or batch query.",
     why: "Use it when Caplets should bound a sharp task without exposing arbitrary HTTP calls.",
-    path: ["osv", "inspect", "search_tools", "describe_tool", "call_tool"],
+    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
     steps: [
       {
         command: "caplets install spiritledsoftware/caplets osv",
@@ -205,7 +185,7 @@ const exampleCaplets = [
       },
       { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
     ],
-    help: ["OSV is public and does not need auth; check Node 22+ and plugin installation."],
+    help: ["OSV is public and does not need auth; check Node 22+ and ", "caplets setup", "."],
   },
 ];
 ---
@@ -219,7 +199,7 @@ const exampleCaplets = [
     <meta name="generator" content={Astro.generator} />
     <meta
       name="description"
-      content="Caplets gives coding agents focused capabilities instead of giant MCP tool walls."
+      content="Caplets gives coding agents focused capability modes instead of giant MCP tool walls."
     />
     <meta name="theme-color" media="(prefers-color-scheme: light)" content={lightThemeColor} />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content={darkThemeColor} />
@@ -324,11 +304,9 @@ const exampleCaplets = [
     <main id="main">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="kicker">Agent tools without the wall</p>
-          <h1 id="hero-title">Give your agent capabilities, not tools</h1>
+          <h1 id="hero-title">Give your agent Capabilities, not a tool wall</h1>
           <p class="hero-lede">
-            Caplets wraps MCP servers, APIs, and commands as focused capabilities. Your agent picks a source,
-            searches inside it, inspects the schema, then calls the tool.
+            Caplets wraps MCP servers, APIs, and commands as focused capabilities. Choose direct tools, progressive discovery, Code Mode, or mixed exposure so each agent sees the smallest useful surface for the job.
           </p>
           <div class="hero-actions" aria-label="Primary actions">
             <a class="button primary" href="#install">Add Caplets to your agent</a>
@@ -365,67 +343,65 @@ const exampleCaplets = [
           </div>
         </div>
 
-        <aside class="trace-reactor" id="trace" aria-label="GitHub capability trace example">
-          <div class="reactor-shell">
-            <div class="trace-header">
-              <span class="trace-status" aria-label={`Capability status: ${heroTrace.status}`}>{heroTrace.status}</span>
-              <span>{heroTrace.capability}</span>
+        <aside class="city-zoom" id="trace" aria-label="Caplets city map zoom" data-city-zoom>
+          <div class="city-stage" data-city-stage>
+            <canvas class="city-canvas" data-city-canvas aria-hidden="true"></canvas>
+            <div class="city-fallback" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+              <b></b>
             </div>
-            <dl class="trace-metadata" aria-label="Capability metadata">
-              <div>
-                <dt>source</dt>
-                <dd>{heroTrace.source}</dd>
-              </div>
-              <div>
-                <dt>auth</dt>
-                <dd>{heroTrace.auth}</dd>
-              </div>
-            </dl>
-            <ol class="trace-steps" aria-label="Progressive disclosure trace" data-reactor-steps>
-              {heroTrace.steps.map((step, index) => (
-                <li
-                  data-reactor-step={index}
-                  class={index === 0 ? "is-active" : undefined}
-                  role="button"
-                  tabindex="0"
-                  aria-label={`Show trace step ${index + 1}: ${step.label}`}
-                >
-                  <div>
-                    <span class="trace-label">{step.label}</span>
-                    <p>{step.detail}</p>
-                  </div>
-                  <code>{step.result}</code>
-                </li>
+          </div>
+
+          <div class="city-controls" role="tablist" aria-label="Map zoom modes">
+            {mapModes.map((mode) => (
+              <button
+                class={mode.default ? "city-tab is-active" : "city-tab"}
+                type="button"
+                role="tab"
+                aria-selected={mode.default ? "true" : "false"}
+                data-city-mode={mode.value}
+                data-city-label={mode.label}
+                data-city-copy={mode.copy}
+                data-city-exposed={mode.exposed}
+                data-city-hidden={mode.hidden}
+              >
+                <span>{mode.shortLabel}</span>
+                <strong>{mode.exposed}</strong>
+              </button>
+            ))}
+          </div>
+
+          <div class="city-caption" aria-live="polite">
+            <div>
+              <span>map zoom</span>
+              <strong data-city-caption-title>Code Mode</strong>
+            </div>
+            <p data-city-caption-copy>
+              The agent follows one typed route while the full tool city stays available behind it.
+            </p>
+            <small data-city-caption-meta>1 route visible · same capability city below zoom</small>
+          </div>
+
+          <div class="city-hidden-contract sr-only">
+            <p>Exposure modes include direct, progressive, code_mode, direct_and_code_mode, and progressive_and_code_mode.</p>
+            <ul>
+              <li>{mapStackAccessibleLabel}</li>
+              {exposureSurfaces.map((item) => (
+                <li>{item}</li>
               ))}
-            </ol>
-            <div class="trace-mobile-output" aria-live="polite" data-reactor-mobile-output>
-              <span>{heroTrace.steps[0].label}</span>
-              <code>{heroTrace.steps[0].result}</code>
-              <p>{heroTrace.steps[0].detail}</p>
-            </div>
-            <div class="reactor-rail" aria-hidden="true">
-              <div class="reactor-rail-track">
-                <span class="is-active" data-reactor-dot="0"></span>
-                <span data-reactor-dot="1"></span>
-                <span data-reactor-dot="2"></span>
-                <span data-reactor-dot="3"></span>
-                <i data-reactor-beam></i>
-              </div>
-              <div class="reactor-rail-labels">
-                <span>caplet</span>
-                <span>search</span>
-                <span>schema</span>
-                <span>call</span>
-              </div>
-            </div>
+            </ul>
           </div>
         </aside>
       </section>
 
-      <section class="proof-strip" id="proof" aria-label="Deterministic benchmark proof">
+      <section class="proof-strip" id="proof" aria-label="Code Mode benchmark proof">
         <div class="proof-strip-copy">
-          <span>Deterministic benchmark</span>
-          <p>Direct MCP aggregation exposed 106 flat tools. Caplets started with 3 capability cards and an 87.9% smaller initial payload.</p>
+          <span>Live Pi eval</span>
+          <p>
+            Real-world large MCP stack: GitHub, Context7, DeepWiki, Git, filesystem, Playwright, ast-grep, language-server, and web-search MCP servers.
+          </p>
         </div>
         <dl class="proof-strip-stats">
           {proofStats.map((stat) => (
@@ -435,18 +411,39 @@ const exampleCaplets = [
             </div>
           ))}
         </dl>
-        <div class="proof-flow" aria-label="Benchmark payload reduction">
-          {proofComparison.map((item, index) => (
-            <>
-              {index > 0 && <span class="proof-arrow" aria-hidden="true">to</span>}
-              <div>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.detail}</small>
-              </div>
-            </>
+        <div class="benchmark-table" role="region" aria-label="Live benchmark token results">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Mode</th>
+                <th scope="col">Passed</th>
+                <th scope="col">Total Tokens</th>
+                <th scope="col">Tool Surface Tokens</th>
+              </tr>
+            </thead>
+            <tbody>
+              {benchmarkRows.map((row) => (
+                <tr>
+                  <th scope="row">{row.mode}</th>
+                  <td>{row.passed}</td>
+                  <td>{row.tokens}</td>
+                  <td>{row.surfaceTokens}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div class="proof-flow" aria-label="Deterministic surface benchmark">
+          {deterministicSurface.map((item) => (
+            <div>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </div>
           ))}
         </div>
+        <p class="benchmark-footnote">
+          Caplets Code Mode used 72.0% fewer request + output tokens than Direct vanilla MCP and 65.0% fewer than Executor.sh. Caplets progressive also used 45.5% fewer than Direct vanilla MCP and 31.8% fewer than Executor.sh, while all listed modes passed 10/10 tasks.
+        </p>
         <a href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md">Read benchmark method</a>
       </section>
 
@@ -537,83 +534,14 @@ const exampleCaplets = [
         </dl>
       </section>
 
-      <section class="integrations" aria-labelledby="integrations-title">
-        <div>
-          <p class="section-note">Step 1</p>
-          <h2 id="integrations-title">Connect your agent to Caplets.</h2>
-        </div>
-        <div class="agent-setup-card" data-agent-tabs>
-          <div class="integration-strip" aria-label="Supported integrations" data-agent-tablist>
-            {agentSetups.map((agent) => (
-              <button
-                class="integration-pill"
-                id={`agent-tab-${agent.id}`}
-                type="button"
-                data-agent-tab={agent.id}
-              >
-                {agent.name}
-              </button>
-            ))}
-          </div>
-          <div class="agent-setup-panels">
-            {agentSetups.map((agent) => (
-              <article
-                class="agent-setup-panel"
-                id={`agent-panel-${agent.id}`}
-                data-agent-panel={agent.id}
-              >
-                <p class="agent-setup-note">{agent.note}</p>
-                <div class="agent-setup-grid">
-                  <div class="snippet-block">
-                    <div class="snippet-heading">
-                      <span class="agent-setup-label">Install</span>
-                      <button
-                        class="copy-button"
-                        type="button"
-                        aria-label={`Copy ${agent.name} install command`}
-                        aria-controls={`agent-install-snippet-${agent.id}`}
-                        data-copy-target={`agent-install-snippet-${agent.id}`}
-                        data-copy-value={agent.installCommand}
-                        data-copy-label={`${agent.name} install command`}
-                      >
-                        <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
-                        <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
-                      </button>
-                    </div>
-                    <pre id={`agent-install-snippet-${agent.id}`} tabindex="-1"><code>{agent.installCommand}</code></pre>
-                  </div>
-                  <div class="snippet-block">
-                    <div class="snippet-heading">
-                      <span class="agent-setup-label">Configuration</span>
-                      <button
-                        class="copy-button"
-                        type="button"
-                        aria-label={`Copy ${agent.name} configuration`}
-                        aria-controls={`agent-config-snippet-${agent.id}`}
-                        data-copy-target={`agent-config-snippet-${agent.id}`}
-                        data-copy-value={agent.configSnippet}
-                        data-copy-label={`${agent.name} configuration`}
-                      >
-                        <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
-                        <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
-                      </button>
-                    </div>
-                    <pre id={`agent-config-snippet-${agent.id}`} tabindex="-1"><code>{agent.configSnippet}</code></pre>
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
       <section class="activation" id="install" aria-labelledby="activation-title">
         <div class="activation-copy">
-          <p class="section-note">Step 2</p>
-          <h2 id="activation-title">Add one caplet and try the capability.</h2>
+          <p class="section-note">Setup</p>
+          <h2 id="activation-title">Run setup, then add a Caplet.</h2>
           <p>
-            Pick the integration above, then try one premade Caplet. Your agent sees one focused
-            capability before it can search or call downstream tools.
+            <code>caplets setup</code> lets you choose which agent integrations to wire up. After that,
+            add one premade Caplet and your agent sees one focused capability before it can search or
+            call downstream tools.
           </p>
         </div>
 
@@ -642,7 +570,7 @@ const exampleCaplets = [
                     {example.path.map((step, index) => index === 0 ? <code>{step}</code> : <span><code>{step}</code></span>)}
                   </div>
                   <p class="setup-help">
-                    {example.help.map((part) => part === "GH_TOKEN" ? <code>{part}</code> : part)}
+                    {example.help.map((part) => part === "GH_TOKEN" || part === "caplets setup" ? <code>{part}</code> : part)}
                   </p>
                 </div>
                 <div class="terminal" role="region" aria-label={`${example.name} capability commands`}>
@@ -682,6 +610,8 @@ const exampleCaplets = [
       <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
     </footer>
     <script>
+      import * as THREE from "three";
+
       document.documentElement.classList.add("js-enabled");
 
       const canAnimate = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -705,10 +635,6 @@ const exampleCaplets = [
         }
       });
 
-      const agentTabsRoot = document.querySelector<HTMLElement>("[data-agent-tabs]");
-      const agentTablist = document.querySelector<HTMLElement>("[data-agent-tablist]");
-      const agentTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-agent-tab]"));
-      const agentPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-agent-panel]"));
       const exampleTabsRoot = document.querySelector<HTMLElement>("[data-caplet-examples]");
       const exampleTablist = document.querySelector<HTMLElement>("[data-example-tablist]");
       const exampleTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-example-tab]"));
@@ -809,60 +735,6 @@ const exampleCaplets = [
         link.addEventListener("click", () => {
           if (mobileMenu?.open) mobileMenu.close();
         });
-      }
-
-      function selectAgentTab(selectedId: string) {
-        for (const tab of agentTabs) {
-          const tabId = tab.dataset.agentTab;
-          const isSelected = tabId === selectedId;
-          tab.setAttribute("role", "tab");
-          tab.setAttribute("aria-selected", String(isSelected));
-          if (tabId) tab.setAttribute("aria-controls", `agent-panel-${tabId}`);
-          tab.tabIndex = isSelected ? 0 : -1;
-        }
-
-        for (const panel of agentPanels) {
-          const panelId = panel.dataset.agentPanel;
-          panel.setAttribute("role", "tabpanel");
-          if (panelId) panel.setAttribute("aria-labelledby", `agent-tab-${panelId}`);
-          panel.hidden = panelId !== selectedId;
-        }
-      }
-
-      if (agentTabsRoot && agentTabs.length > 0 && agentPanels.length > 0) {
-        agentTablist?.setAttribute("role", "tablist");
-        selectAgentTab(agentTabs[0].dataset.agentTab ?? "");
-
-        for (const tab of agentTabs) {
-          tab.addEventListener("click", () => {
-            const selectedId = tab.dataset.agentTab;
-            if (selectedId) selectAgentTab(selectedId);
-          });
-
-          tab.addEventListener("keydown", (event: KeyboardEvent) => {
-            const currentIndex = agentTabs.indexOf(tab);
-            const lastIndex = agentTabs.length - 1;
-            const nextIndex =
-              event.key === "ArrowRight"
-                ? currentIndex + 1
-                : event.key === "ArrowLeft"
-                  ? currentIndex - 1
-                  : event.key === "Home"
-                    ? 0
-                    : event.key === "End"
-                      ? lastIndex
-                      : currentIndex;
-            const wrappedIndex = nextIndex < 0 ? lastIndex : nextIndex > lastIndex ? 0 : nextIndex;
-
-            if (wrappedIndex !== currentIndex) {
-              event.preventDefault();
-              const nextTab = agentTabs[wrappedIndex];
-              const selectedId = nextTab.dataset.agentTab;
-              nextTab.focus();
-              if (selectedId) selectAgentTab(selectedId);
-            }
-          });
-        }
       }
 
       function selectExampleTab(selectedId: string) {
@@ -972,109 +844,511 @@ const exampleCaplets = [
         button.addEventListener("click", () => void copyValue(button));
       }
 
-      const reactorRoot = document.querySelector<HTMLElement>(".trace-reactor");
-      const reactorSteps = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-step]"));
-      const reactorDots = Array.from(document.querySelectorAll<HTMLElement>("[data-reactor-dot]"));
-      const reactorBeam = document.querySelector<HTMLElement>("[data-reactor-beam]");
-      const reactorMobileOutput = document.querySelector<HTMLElement>("[data-reactor-mobile-output]");
-      let reactorStepIndex = 0;
-      let reactorTimer = 0;
-      let reactorUserPaused = false;
+      const cityRoot = document.querySelector<HTMLElement>("[data-city-zoom]");
+      const cityStage = document.querySelector<HTMLElement>("[data-city-stage]");
+      const cityCanvas = document.querySelector<HTMLCanvasElement>("[data-city-canvas]");
+      const cityTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-city-mode]"));
+      const cityCaptionTitle = document.querySelector<HTMLElement>("[data-city-caption-title]");
+      const cityCaptionCopy = document.querySelector<HTMLElement>("[data-city-caption-copy]");
+      const cityCaptionMeta = document.querySelector<HTMLElement>("[data-city-caption-meta]");
+      let setCitySceneMode: ((mode: string) => void) | undefined;
+      let requestCityRender: (() => void) | undefined;
+      let cityIndex = Math.max(
+        0,
+        cityTabs.findIndex((tab) => tab.dataset.cityMode === "code_mode")
+      );
+      let cityTimer = 0;
+      let cityUserPaused = false;
 
-      function setReactorStep(index: number) {
-        reactorStepIndex = index;
-        reactorRoot?.style.setProperty("--reactor-position", String(index));
-        reactorRoot?.style.setProperty(
-          "--reactor-progress",
-          String(reactorSteps.length > 1 ? index / (reactorSteps.length - 1) : 0)
-        );
-        reactorBeam?.style.setProperty("--reactor-beam-scale", String(index / 3));
+      function selectCityTab(index: number) {
+        cityIndex = index;
+        const selected = cityTabs[index];
+        if (!selected || !cityRoot) return;
 
-        for (const step of reactorSteps) {
-          step.classList.toggle("is-active", step.dataset.reactorStep === String(index));
+        cityRoot.dataset.cityMode = selected.dataset.cityMode ?? "";
+        setCitySceneMode?.(selected.dataset.cityMode ?? "");
+        requestCityRender?.();
+        for (const tab of cityTabs) {
+          const isSelected = tab === selected;
+          tab.classList.toggle("is-active", isSelected);
+          tab.setAttribute("aria-selected", String(isSelected));
+          tab.tabIndex = isSelected ? 0 : -1;
         }
 
-        for (const dot of reactorDots) {
-          dot.classList.toggle("is-active", dot.dataset.reactorDot === String(index));
-        }
-
-        const activeStep = reactorSteps[index];
-        if (reactorMobileOutput && activeStep) {
-          const label = activeStep.querySelector<HTMLElement>(".trace-label")?.textContent ?? "";
-          const result = activeStep.querySelector<HTMLElement>("code")?.textContent ?? "";
-          const detail = activeStep.querySelector<HTMLElement>("p")?.textContent ?? "";
-          reactorMobileOutput.replaceChildren();
-          const labelElement = document.createElement("span");
-          labelElement.textContent = label;
-          const resultElement = document.createElement("code");
-          resultElement.textContent = result;
-          const detailElement = document.createElement("p");
-          detailElement.textContent = detail;
-          reactorMobileOutput.append(labelElement, resultElement, detailElement);
+        if (cityCaptionTitle) cityCaptionTitle.textContent = selected.dataset.cityLabel ?? "";
+        if (cityCaptionCopy) cityCaptionCopy.textContent = selected.dataset.cityCopy ?? "";
+        if (cityCaptionMeta) {
+          cityCaptionMeta.textContent = `${selected.dataset.cityExposed ?? ""} visible · ${selected.dataset.cityHidden ?? ""}`;
         }
       }
 
-      const stopReactorAutoplay = () => {
-        window.clearInterval(reactorTimer);
-        reactorTimer = 0;
-      };
-      const startReactorAutoplay = () => {
-        if (!canAnimate || reactorTimer || reactorUserPaused || document.hidden) return;
-        reactorTimer = window.setInterval(() => setReactorStep((reactorStepIndex + 1) % reactorSteps.length), 2100);
-      };
-      const setUserReactorStep = (index: number) => {
-        reactorUserPaused = true;
-        stopReactorAutoplay();
-        setReactorStep(index);
+      const stopCityAutoplay = () => {
+        window.clearInterval(cityTimer);
+        cityTimer = 0;
       };
 
-      if (reactorRoot && reactorSteps.length > 0) {
-        setReactorStep(0);
-        startReactorAutoplay();
+      const startCityAutoplay = () => {
+        if (!canAnimate || cityTimer || cityUserPaused || document.hidden) return;
+        cityTimer = window.setInterval(() => selectCityTab((cityIndex + 1) % cityTabs.length), 3400);
+      };
 
-        for (const step of reactorSteps) {
-          step.addEventListener("pointerenter", () => {
-            const index = Number(step.dataset.reactorStep);
-            if (Number.isInteger(index)) setUserReactorStep(index);
-          });
-          step.addEventListener("click", () => {
-            const index = Number(step.dataset.reactorStep);
-            if (Number.isInteger(index)) setUserReactorStep(index);
-          });
-          step.addEventListener("focus", () => {
-            const index = Number(step.dataset.reactorStep);
-            if (Number.isInteger(index)) setUserReactorStep(index);
-          });
-          step.addEventListener("keydown", (event: KeyboardEvent) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            const index = Number(step.dataset.reactorStep);
-            if (Number.isInteger(index)) setUserReactorStep(index);
-          });
-        }
+      function initCityScene() {
+        if (!cityRoot || !cityStage || !cityCanvas || cityTabs.length === 0) return;
 
-        for (const dot of reactorDots) {
-          dot.addEventListener("pointerenter", () => {
-            const index = Number(dot.dataset.reactorDot);
-            if (Number.isInteger(index)) setUserReactorStep(index);
-          });
-        }
+        const renderer = new THREE.WebGLRenderer({
+          alpha: true,
+          antialias: true,
+          canvas: cityCanvas,
+          powerPreference: "high-performance",
+        });
+        renderer.setClearColor(0x000000, 0);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-        reactorRoot.addEventListener("pointerleave", () => {
-          reactorUserPaused = false;
-          startReactorAutoplay();
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 80);
+        const lookAt = new THREE.Vector3(0, 0, 0);
+        const targetLookAt = new THREE.Vector3(0, 0, 0);
+
+        const city = new THREE.Group();
+        city.rotation.y = -0.18;
+        scene.add(city);
+
+        const ambient = new THREE.AmbientLight(0xfff8ea, 1.45);
+        const key = new THREE.DirectionalLight(0xf6e8c8, 2.6);
+        key.position.set(-5, 8, 8);
+        const ember = new THREE.PointLight(0xe0582f, 4.4, 16);
+        ember.position.set(2.8, 2.4, 0.6);
+        scene.add(ambient, key, ember);
+
+        const baseMaterial = new THREE.MeshStandardMaterial({
+          color: 0x686b4e,
+          metalness: 0.08,
+          roughness: 0.72,
+          transparent: true,
+          opacity: 0.5,
+        });
+        const routeMaterial = new THREE.MeshStandardMaterial({
+          color: 0xe0582f,
+          emissive: 0xe0582f,
+          emissiveIntensity: 0.8,
+          metalness: 0,
+          roughness: 0.42,
+          transparent: true,
+          opacity: 0.9,
+        });
+        const roadMaterial = new THREE.LineBasicMaterial({
+          color: 0xe3d8c0,
+          transparent: true,
+          opacity: 0.32,
         });
 
+        const ground = new THREE.Mesh(
+          new THREE.PlaneGeometry(18, 14, 1, 1),
+          new THREE.MeshStandardMaterial({
+            color: 0x1f2018,
+            metalness: 0,
+            roughness: 0.92,
+            transparent: true,
+            opacity: 0.16,
+          })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -0.045;
+        city.add(ground);
+
+        const roadPoints: number[] = [];
+        for (let x = -8; x <= 8; x += 1.6) {
+          roadPoints.push(x, 0.01, -5.8, x, 0.01, 5.8);
+        }
+        for (let z = -5.6; z <= 5.6; z += 1.4) {
+          roadPoints.push(-8.2, 0.012, z, 8.2, 0.012, z);
+        }
+        const roads = new THREE.LineSegments(new THREE.BufferGeometry(), roadMaterial);
+        roads.geometry.setAttribute("position", new THREE.Float32BufferAttribute(roadPoints, 3));
+        city.add(roads);
+
+        const routeControlPoints = [
+          new THREE.Vector3(-5.8, 0.42, 3.6),
+          new THREE.Vector3(-3.2, 0.46, 2.2),
+          new THREE.Vector3(-1.2, 0.48, 1.4),
+          new THREE.Vector3(1.2, 0.5, 0.6),
+          new THREE.Vector3(3.2, 0.52, -0.2),
+          new THREE.Vector3(5.2, 0.56, -1.8),
+        ];
+        const routeCurve = new THREE.CatmullRomCurve3(routeControlPoints);
+        const route = new THREE.Mesh(new THREE.TubeGeometry(routeCurve, 96, 0.035, 8, false), routeMaterial);
+        city.add(route);
+
+        const routeSignalSegments = routeControlPoints.slice(0, -1).map((point, index) => {
+          const nextPoint = routeControlPoints[index + 1];
+          return {
+            start: point,
+            end: nextPoint,
+            length: point.distanceTo(nextPoint),
+          };
+        });
+        const routeSignalLength = routeSignalSegments.reduce((sum, segment) => sum + segment.length, 0);
+        const routeSignalPosition = new THREE.Vector3();
+
+        function setRouteSignalPosition(progress: number) {
+          const targetDistance = progress * routeSignalLength;
+          let traveled = 0;
+
+          for (const segment of routeSignalSegments) {
+            if (targetDistance <= traveled + segment.length) {
+              const segmentProgress = segment.length > 0 ? (targetDistance - traveled) / segment.length : 0;
+              routeSignalPosition.copy(segment.start).lerp(segment.end, segmentProgress);
+              return routeSignalPosition;
+            }
+
+            traveled += segment.length;
+          }
+
+          return routeSignalPosition.copy(routeControlPoints[routeControlPoints.length - 1]);
+        }
+
+        const signalTextureCanvas = document.createElement("canvas");
+        signalTextureCanvas.width = 96;
+        signalTextureCanvas.height = 96;
+        const signalTextureContext = signalTextureCanvas.getContext("2d");
+        if (signalTextureContext) {
+          const signalGradient = signalTextureContext.createRadialGradient(48, 48, 0, 48, 48, 44);
+          signalGradient.addColorStop(0, "rgba(255, 246, 218, 1)");
+          signalGradient.addColorStop(0.24, "rgba(255, 214, 163, 0.92)");
+          signalGradient.addColorStop(0.54, "rgba(224, 88, 47, 0.36)");
+          signalGradient.addColorStop(1, "rgba(224, 88, 47, 0)");
+          signalTextureContext.fillStyle = signalGradient;
+          signalTextureContext.fillRect(0, 0, 96, 96);
+        }
+        const signalTexture = new THREE.CanvasTexture(signalTextureCanvas);
+        signalTexture.colorSpace = THREE.SRGBColorSpace;
+        const signalMaterial = new THREE.SpriteMaterial({
+          map: signalTexture,
+          color: 0xffd7a8,
+          transparent: true,
+          depthTest: false,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          opacity: 0.92,
+        });
+        const signalNode = new THREE.Sprite(signalMaterial);
+        signalNode.renderOrder = 2;
+        signalNode.scale.set(0.54, 0.54, 1);
+        city.add(signalNode);
+        const signalLight = new THREE.PointLight(0xffd7a8, 0, 2.4);
+        city.add(signalLight);
+
+        type Building = {
+          mesh: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+          baseHeight: number;
+          district: number;
+          routeDistance: number;
+          currentHeight: number;
+        };
+
+        const buildings: Building[] = [];
+        const boxGeometry = new THREE.BoxGeometry(0.56, 1, 0.56);
+        const districtCenters = [
+          new THREE.Vector2(-5, -3.6),
+          new THREE.Vector2(-2.2, 2.8),
+          new THREE.Vector2(1.4, -2.8),
+          new THREE.Vector2(4.4, 2.4),
+          new THREE.Vector2(5.4, -1.6),
+          new THREE.Vector2(-5.4, 2.4),
+          new THREE.Vector2(0.3, 1.4),
+        ];
+
+        function wave(seed: number) {
+          return Math.sin(seed * 12.9898) * 43758.5453 % 1;
+        }
+
+        function routeDistance(x: number, z: number) {
+          let distance = Number.POSITIVE_INFINITY;
+          for (const point of routeCurve.getPoints(42)) {
+            distance = Math.min(distance, Math.hypot(point.x - x, point.z - z));
+          }
+          return distance;
+        }
+
+        const routeClearanceDistance = 1.08;
+        const routeHighlightDistance = 1.68;
+
+        for (let ix = 0; ix < 11; ix += 1) {
+          for (let iz = 0; iz < 8; iz += 1) {
+            const x = -7.2 + ix * 1.42 + (iz % 2) * 0.18;
+            const z = -4.9 + iz * 1.36 + (ix % 3) * 0.08;
+            if (Math.abs(x) < 0.65 && Math.abs(z) < 0.65) continue;
+            const distanceFromRoute = routeDistance(x, z);
+            if (distanceFromRoute < routeClearanceDistance) continue;
+
+            const material = baseMaterial.clone();
+            const mesh = new THREE.Mesh(boxGeometry, material);
+            mesh.position.set(x, 0.15, z);
+            mesh.castShadow = false;
+            mesh.receiveShadow = false;
+
+            let district = 0;
+            let districtDistance = Number.POSITIVE_INFINITY;
+            for (const [index, center] of districtCenters.entries()) {
+              const distance = center.distanceTo(new THREE.Vector2(x, z));
+              if (distance < districtDistance) {
+                district = index;
+                districtDistance = distance;
+              }
+            }
+
+            const baseHeight = 0.35 + Math.abs(wave(ix * 19 + iz * 7)) * 2.7;
+            const building = {
+              baseHeight,
+              currentHeight: 0.2,
+              district,
+              mesh,
+              routeDistance: distanceFromRoute,
+            };
+            buildings.push(building);
+            city.add(mesh);
+          }
+        }
+
+        const cameraTargets = {
+          vanilla: {
+            position: new THREE.Vector3(0, 10.8, 12.8),
+            lookAt: new THREE.Vector3(0, 0, 0.2),
+            routeOpacity: 0.18,
+            roadOpacity: 0.55,
+          },
+          progressive: {
+            position: new THREE.Vector3(0.7, 8.9, 10.2),
+            lookAt: new THREE.Vector3(0.3, 0, 0.1),
+            routeOpacity: 0.38,
+            roadOpacity: 0.4,
+          },
+          code_mode: {
+            position: new THREE.Vector3(2.8, 6.8, 7.1),
+            lookAt: new THREE.Vector3(1.2, 0, 0.1),
+            routeOpacity: 0.94,
+            roadOpacity: 0.24,
+          },
+        };
+
+        type CityMode = keyof typeof cameraTargets;
+        let activeMode = (cityTabs[cityIndex].dataset.cityMode ?? "code_mode") as CityMode;
+        let targetMode = activeMode;
+        let signalTravel = 0.02;
+        const signalSpeedByMode: Record<CityMode, number> = {
+          vanilla: 0.00004,
+          progressive: 0.00018,
+          code_mode: 0.00062,
+        };
+        const signalOpacityByMode: Record<CityMode, number> = {
+          vanilla: 0.36,
+          progressive: 0.62,
+          code_mode: 1,
+        };
+
+        function targetBuildingHeight(building: Building, mode: CityMode) {
+          if (mode === "vanilla") return building.baseHeight + 0.35;
+          if (mode === "progressive") {
+            return building.routeDistance < routeHighlightDistance || building.baseHeight > 2.35
+              ? 1.35 + building.district * 0.045
+              : 0.2;
+          }
+          return building.routeDistance < routeHighlightDistance ? 1.42 : 0.12;
+        }
+
+        function targetBuildingOpacity(building: Building, mode: CityMode) {
+          if (mode === "vanilla") return 0.68;
+          if (mode === "progressive") return building.routeDistance < routeHighlightDistance || building.baseHeight > 2.35 ? 0.72 : 0.16;
+          return building.routeDistance < routeHighlightDistance ? 0.86 : 0.08;
+        }
+
+        function colorForBuilding(building: Building, mode: CityMode) {
+          if (mode === "code_mode" && building.routeDistance < routeHighlightDistance) return 0xe0582f;
+          if (mode === "progressive" && building.baseHeight > 2.35) return 0xf6e8c8;
+          return mode === "vanilla" ? 0x686b4e : 0xe3d8c0;
+        }
+
+        const resizeCity = () => {
+          const rect = cityStage.getBoundingClientRect();
+          const width = Math.max(1, Math.floor(rect.width));
+          const height = Math.max(1, Math.floor(rect.height));
+          renderer.setSize(width, height, false);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+        };
+
+        const resizeObserver = new ResizeObserver(resizeCity);
+        resizeObserver.observe(cityStage);
+        resizeCity();
+
+        function setSceneMode(mode: string) {
+          if (mode === "vanilla" || mode === "progressive" || mode === "code_mode") {
+            targetMode = mode;
+          }
+        }
+
+        function paintScene(delta = 1) {
+          activeMode = targetMode;
+          const target = cameraTargets[targetMode];
+          const easing = canAnimate ? Math.min(0.11 + delta * 0.002, 0.24) : 1;
+
+          camera.position.lerp(target.position, easing);
+          targetLookAt.lerp(target.lookAt, easing);
+          lookAt.copy(targetLookAt);
+          camera.lookAt(lookAt);
+
+          roadMaterial.opacity += (target.roadOpacity - roadMaterial.opacity) * easing;
+          routeMaterial.opacity += (target.routeOpacity - routeMaterial.opacity) * easing;
+          routeMaterial.emissiveIntensity += ((targetMode === "code_mode" ? 1.25 : 0.42) - routeMaterial.emissiveIntensity) * easing;
+
+          for (const building of buildings) {
+            const nextHeight = targetBuildingHeight(building, targetMode);
+            building.currentHeight += (nextHeight - building.currentHeight) * easing;
+            building.mesh.scale.y = Math.max(0.04, building.currentHeight);
+            building.mesh.position.y = building.currentHeight / 2;
+            building.mesh.material.opacity += (targetBuildingOpacity(building, targetMode) - building.mesh.material.opacity) * easing;
+            building.mesh.material.color.lerp(new THREE.Color(colorForBuilding(building, targetMode)), easing);
+            building.mesh.material.emissive.setHex(
+              targetMode === "code_mode" && building.routeDistance < routeHighlightDistance ? 0x3a1208 : 0x000000
+            );
+          }
+
+          if (canAnimate) {
+            signalTravel = (signalTravel + delta * signalSpeedByMode[targetMode]) % 1;
+          }
+          const signalOpacity = signalOpacityByMode[targetMode];
+          const signalProgress = canAnimate ? 0.004 + signalTravel * 0.992 : 0.62;
+          const signalPoint = setRouteSignalPosition(signalProgress);
+          signalNode.position.copy(signalPoint);
+          signalNode.position.y += 0.06;
+          signalNode.visible = signalOpacity > 0.12 || targetMode === "code_mode";
+          signalNode.material.opacity += (signalOpacity - signalNode.material.opacity) * easing;
+          signalNode.scale.setScalar(0.34 + signalOpacity * 0.12);
+          signalLight.position.copy(signalNode.position);
+          signalLight.intensity += (signalOpacity * 2.3 - signalLight.intensity) * easing;
+
+          city.rotation.z = Math.sin(Date.now() * 0.00025) * 0.015;
+          renderer.render(scene, camera);
+        }
+
+        let lastFrame = performance.now();
+        let animationFrame = 0;
+        let inView = true;
+
+        const animateCity = (now: number) => {
+          const delta = now - lastFrame;
+          lastFrame = now;
+          paintScene(delta);
+          if (canAnimate && inView && !document.hidden) {
+            animationFrame = window.requestAnimationFrame(animateCity);
+          }
+        };
+
+        const startCityRender = () => {
+          window.cancelAnimationFrame(animationFrame);
+          lastFrame = performance.now();
+          animationFrame = window.requestAnimationFrame(animateCity);
+        };
+
+        const stopCityRender = () => window.cancelAnimationFrame(animationFrame);
+        setCitySceneMode = setSceneMode;
+        requestCityRender = startCityRender;
+
+        const visibilityObserver = new IntersectionObserver(
+          ([entry]) => {
+            inView = Boolean(entry?.isIntersecting);
+            if (inView) {
+              startCityRender();
+            } else {
+              stopCityRender();
+            }
+          },
+          { threshold: 0.05 }
+        );
+        visibilityObserver.observe(cityRoot);
+
+        for (const tab of cityTabs) {
+          tab.addEventListener("click", () => {
+            setSceneMode(tab.dataset.cityMode ?? "");
+            startCityRender();
+          });
+          tab.addEventListener("pointerenter", () => {
+            setSceneMode(tab.dataset.cityMode ?? "");
+            startCityRender();
+          });
+          tab.addEventListener("focus", () => {
+            setSceneMode(tab.dataset.cityMode ?? "");
+            startCityRender();
+          });
+        }
+
         document.addEventListener("visibilitychange", () => {
-          stopReactorAutoplay();
-          startReactorAutoplay();
+          if (document.hidden) {
+            stopCityRender();
+          } else {
+            startCityRender();
+          }
+        });
+
+        cityRoot.classList.add("is-canvas-ready");
+        setSceneMode(activeMode);
+        paintScene(1);
+        startCityRender();
+      }
+
+      const setUserCityMode = (index: number) => {
+        cityUserPaused = true;
+        stopCityAutoplay();
+        selectCityTab(index);
+      };
+
+      if (cityRoot && cityTabs.length > 0) {
+        selectCityTab(cityIndex);
+        try {
+          initCityScene();
+        } catch {
+          cityRoot.classList.add("is-canvas-fallback");
+        }
+        startCityAutoplay();
+
+        for (const [index, tab] of cityTabs.entries()) {
+          tab.addEventListener("pointerenter", () => setUserCityMode(index));
+          tab.addEventListener("click", () => setUserCityMode(index));
+          tab.addEventListener("focus", () => setUserCityMode(index));
+          tab.addEventListener("keydown", (event: KeyboardEvent) => {
+            const lastIndex = cityTabs.length - 1;
+            const currentIndex = cityTabs.indexOf(tab);
+            const nextIndex =
+              event.key === "ArrowRight"
+                ? currentIndex + 1
+                : event.key === "ArrowLeft"
+                  ? currentIndex - 1
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? lastIndex
+                      : currentIndex;
+            const wrappedIndex = nextIndex < 0 ? lastIndex : nextIndex > lastIndex ? 0 : nextIndex;
+
+            if (wrappedIndex !== currentIndex) {
+              event.preventDefault();
+              cityTabs[wrappedIndex].focus();
+              setUserCityMode(wrappedIndex);
+            }
+          });
+        }
+
+        cityRoot.addEventListener("pointerleave", () => {
+          cityUserPaused = false;
+          startCityAutoplay();
         });
       }
 
       if (canAnimate && "IntersectionObserver" in window) {
         const revealTargets = Array.from(
           document.querySelectorAll<HTMLElement>(
-            ".proof-strip, .remote-story, .activation, .integrations, .agent-setup-panel, .terminal li"
+            ".proof-strip, .remote-story, .activation, .terminal li"
           )
         );
 
@@ -1110,5 +1384,5 @@ const exampleCaplets = [
         }
       }
     </script>
-  </body>
+</body>
 </html>

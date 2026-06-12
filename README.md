@@ -147,7 +147,15 @@ your coding agent supports one.
 | OpenCode       | Install [`@caplets/opencode`](packages/opencode/README.md)     | Native `caplets__<id>` tools and prompt guidance hooks          |
 | Pi             | Install [`@caplets/pi`](packages/pi/README.md)                 | Native `caplets__<id>` tools with Pi prompt snippets/guidelines |
 
-Manual local MCP config:
+Codex local MCP config (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["serve"]
+```
+
+Claude Code or generic JSON MCP config:
 
 ```json
 {
@@ -160,7 +168,15 @@ Manual local MCP config:
 }
 ```
 
-Manual remote or Cloud MCP config:
+Codex remote or Cloud MCP config (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["attach"]
+```
+
+Claude Code or generic JSON remote or Cloud MCP config:
 
 ```json
 {
@@ -1097,7 +1113,13 @@ their downstream connections keep running.
 
 ## Quick Integration Setup
 
-Use `caplets setup` to install or configure an agent integration:
+Run the interactive setup flow to choose one or more agent integrations:
+
+```bash
+caplets setup
+```
+
+For scripted setup, pass the integration explicitly:
 
 ```bash
 caplets setup codex
@@ -1116,12 +1138,16 @@ caplets setup codex --dry-run
 For native integrations that should connect to a remote Caplets HTTP service:
 
 ```bash
-caplets setup opencode --remote --server-url https://caplets.example.com/caplets
+caplets setup codex --remote-url https://caplets.example.com/caplets
+caplets setup claude-code --remote-url https://caplets.example.com/caplets
+caplets setup opencode --remote-url https://caplets.example.com/caplets
 ```
 
-`caplets setup` runs the supported agent installer commands or writes the explicit config
-path you pass with `--output`. It does not store secrets, edit unknown MCP client config
-locations, or start `caplets serve`.
+For Codex and Claude Code, `caplets setup` uses each harness's MCP configuration command:
+`codex mcp add caplets -- caplets serve` and
+`claude mcp add --transport stdio --scope user caplets -- caplets serve`. Generic MCP
+clients still require an explicit `--output` path because their config locations are not
+standardized. The setup command does not store secrets or start `caplets serve`.
 
 ## Additional Native Integrations
 

@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
@@ -46,10 +47,12 @@ import {
 import { installCaplets } from "./cli/install";
 import {
   formatSetupMenu,
+  runInteractiveSetup,
   runSetup,
   type SetupCommandRunner,
   type SetupFormat,
   type SetupOptions,
+  type SetupPromptReader,
 } from "./cli/setup";
 import {
   type CapletsConfig,
@@ -247,6 +250,42 @@ function numberEnv(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+type SetupPromptHandle = {
+  readPrompt: SetupPromptReader;
+  close: () => void;
+};
+
+function createSetupPromptHandle(
+  io: CliIO,
+  writeOut: (value: string) => void,
+): SetupPromptHandle | undefined {
+  if (io.readStdin) {
+    const readStdin = io.readStdin;
+    let input: Promise<string> | undefined;
+    let lines: string[] | undefined;
+    let lineIndex = 0;
+    return {
+      readPrompt: async (prompt) => {
+        writeOut(prompt);
+        input ??= readStdin();
+        lines ??= (await input).split(/\r?\n/u);
+        return lines[lineIndex++] ?? "";
+      },
+      close: () => {},
+    };
+  }
+
+  if (io.writeOut || io.writeErr || !process.stdin.isTTY || !process.stdout.isTTY) {
+    return undefined;
+  }
+
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  return {
+    readPrompt: (prompt) => readline.question(prompt),
+    close: () => readline.close(),
+  };
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -882,6 +921,7 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Install or configure an agent integration for Caplets.")
     .argument("[integration]", "integration: codex, claude-code, opencode, pi, or mcp-client")
     .option("--remote", "configure for a remote Caplets server")
+    .option("--remote-url <url>", "remote Caplets service base URL")
     .option("--server-url <url>", "remote Caplets service base URL")
     .option("--output <path>", "config path to write for generic MCP setup")
     .option("--dry-run", "print actions without running commands or writing files")
@@ -893,6 +933,7 @@ export function createProgram(io: CliIO = {}): Command {
         integration: string | undefined,
         options: {
           remote?: boolean;
+          remoteUrl?: string;
           serverUrl?: string;
           output?: string;
           dryRun?: boolean;
@@ -901,12 +942,26 @@ export function createProgram(io: CliIO = {}): Command {
           format?: SetupFormat;
         },
       ) => {
-        if (!integration) {
-          writeOut(formatSetupMenu());
-          return;
-        }
         const setupOptions: SetupOptions = { ...options, env };
         if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
+        if (!integration) {
+          const promptHandle = createSetupPromptHandle(io, writeOut);
+          if (!promptHandle) {
+            writeOut(formatSetupMenu());
+            return;
+          }
+          try {
+            writeOut(
+              await runInteractiveSetup({
+                ...setupOptions,
+                readPrompt: promptHandle.readPrompt,
+              }),
+            );
+          } finally {
+            promptHandle.close();
+          }
+          return;
+        }
         writeOut(await runSetup(integration, setupOptions));
       },
     );
