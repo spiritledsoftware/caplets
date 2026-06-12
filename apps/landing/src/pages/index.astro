@@ -41,32 +41,37 @@ const exposureSurfaces = [
 
 const heroCommands = [
   {
-    label: "Install",
+    label: "Install Caplets",
     command: "npm install -g caplets",
   },
   {
-    label: "Setup",
+    label: "Wire up your agent",
     command: "caplets setup",
   },
 ];
 
+const quickstartCommand = heroCommands.map((item) => item.command).join("\n");
+
 const proofStats = [
   {
     value: "10/10",
-    label: "tasks passed",
+    label: "passed",
     detail: "Caplets Code Mode and progressive modes matched direct MCP and Executor.sh on the pass-rate baseline.",
   },
   {
     value: "236,803",
-    label: "avg total tokens",
+    label: "avg tokens",
     detail: "Average request + output token estimate across the live Pi eval runs.",
   },
   {
     value: "72.0% fewer",
-    label: "vs vanilla MCP",
+    label: "vs vanilla",
     detail: "Request + output token reduction with the same pass rate.",
   },
 ];
+
+const benchmarkProvenance =
+  "Run June 2026 with the real-world large MCP suite, openai-codex/gpt-5.5, 10 tasks, 2 runs per task, and a large no-fixture MCP stack.";
 
 const benchmarkRows = [
   {
@@ -141,6 +146,22 @@ const darkThemeColor = "oklch(18% 0.014 100)";
 
 const exampleCaplets = [
   {
+    id: "osv",
+    name: "OSV",
+    summary: "A small explicit HTTP API for vulnerability lookups by package, purl, commit, or batch query.",
+    why: "Start here: OSV is public, no-auth, and shows the capability surface without OAuth friction.",
+    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
+    steps: [
+      { command: "caplets setup", label: "Caplets setup command" },
+      {
+        command: "caplets install spiritledsoftware/caplets osv",
+        label: "OSV caplet install command",
+      },
+      { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
+    ],
+    help: ["OSV is public and does not need auth; check Node 24+ and ", "caplets setup", "."],
+  },
+  {
     id: "github",
     name: "GitHub",
     summary: "A huge hosted MCP surface for repositories, issues, pull requests, branches, commits, and reviews.",
@@ -148,13 +169,14 @@ const exampleCaplets = [
     path: ["github", "inspect", "search_tools", "get_tool", "call_tool"],
     steps: [
       { command: "export GH_TOKEN=github_pat_...", label: "GitHub token export" },
+      { command: "caplets setup", label: "Caplets setup command" },
       {
         command: "caplets install spiritledsoftware/caplets github",
         label: "GitHub caplet install command",
       },
       { command: 'codex "try using the github caplet"', label: "Codex trial command" },
     ],
-    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and ", "GH_TOKEN", "."],
+    help: ["If setup fails, check Node 24+, ", "caplets setup", ", and ", "GH_TOKEN", "."],
   },
   {
     id: "sourcegraph",
@@ -163,6 +185,7 @@ const exampleCaplets = [
     why: "Use it when the agent should search code first, then inspect only the matching operations.",
     path: ["sourcegraph", "inspect", "search_tools", "get_tool", "call_tool"],
     steps: [
+      { command: "caplets setup", label: "Caplets setup command" },
       {
         command: "caplets install spiritledsoftware/caplets sourcegraph",
         label: "Sourcegraph caplet install command",
@@ -170,22 +193,7 @@ const exampleCaplets = [
       { command: "caplets auth login sourcegraph", label: "Sourcegraph auth command" },
       { command: 'codex "try using the sourcegraph caplet"', label: "Codex trial command" },
     ],
-    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and Sourcegraph OAuth login."],
-  },
-  {
-    id: "osv",
-    name: "OSV",
-    summary: "A small explicit HTTP API for vulnerability lookups by package, purl, commit, or batch query.",
-    why: "Use it when Caplets should bound a sharp task without exposing arbitrary HTTP calls.",
-    path: ["osv", "inspect", "search_tools", "get_tool", "call_tool"],
-    steps: [
-      {
-        command: "caplets install spiritledsoftware/caplets osv",
-        label: "OSV caplet install command",
-      },
-      { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
-    ],
-    help: ["OSV is public and does not need auth; check Node 22+ and ", "caplets setup", "."],
+    help: ["If setup fails, check Node 24+, ", "caplets setup", ", and Sourcegraph OAuth login."],
   },
 ];
 ---
@@ -230,9 +238,9 @@ const exampleCaplets = [
       </a>
       <nav class="top-nav" aria-label="Landing page sections">
         <a href="#trace">How</a>
+        <a href="#install">Setup</a>
         <a href="#proof">Benchmark</a>
         <a href="#remote">Remote</a>
-        <a href="#install">Setup</a>
       </nav>
       <div class="header-actions" aria-label="Project links">
         <button
@@ -267,13 +275,13 @@ const exampleCaplets = [
         >
           <HugeIcon icon={Menu01Icon} class="header-action-icon" />
         </button>
-        <a class="header-action icon-link npm-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
-        </a>
         <a class="header-action icon-link" href="https://github.com/spiritledsoftware/caplets" aria-label="Caplets on GitHub">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"></path>
           </svg>
+        </a>
+        <a class="header-action icon-link npm-link" href="https://www.npmjs.com/package/caplets" aria-label="Caplets on npm">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>
         </a>
       </div>
     </header>
@@ -290,13 +298,13 @@ const exampleCaplets = [
         </div>
         <nav class="mobile-nav-links" aria-label="Landing page sections">
           <a href="#trace" data-mobile-menu-link>How it works</a>
+          <a href="#install" data-mobile-menu-link>Setup</a>
           <a href="#proof" data-mobile-menu-link>Benchmark</a>
           <a href="#remote" data-mobile-menu-link>Remote server</a>
-          <a href="#install" data-mobile-menu-link>Setup</a>
         </nav>
         <div class="mobile-nav-project" aria-label="Project links">
-          <a href="https://www.npmjs.com/package/caplets" data-mobile-menu-link>npm package</a>
           <a href="https://github.com/spiritledsoftware/caplets" data-mobile-menu-link>GitHub repo</a>
+          <a href="https://www.npmjs.com/package/caplets" data-mobile-menu-link>npm package</a>
         </div>
       </div>
     </dialog>
@@ -306,15 +314,39 @@ const exampleCaplets = [
         <div class="hero-copy">
           <h1 id="hero-title">Give your agent Capabilities, not a tool wall</h1>
           <p class="hero-lede">
-            Caplets wraps MCP servers, APIs, and commands as focused capabilities. Choose direct tools, progressive discovery, Code Mode, or mixed exposure so each agent sees the smallest useful surface for the job.
+            Turn sprawling MCP servers into focused capability cards. Your agent can start with one typed route, zoom into tools only when needed, and keep huge schemas out of the prompt until they matter.
           </p>
+          <dl class="hero-proof" aria-label="Caplets headline benchmark">
+            <div>
+              <dt>Tool wall</dt>
+              <dd>215 tools</dd>
+            </div>
+            <div>
+              <dt>Caplets</dt>
+              <dd>7 cards</dd>
+            </div>
+            <div>
+              <dt>Code Mode</dt>
+              <dd>72% fewer tokens</dd>
+            </div>
+          </dl>
           <div class="hero-actions" aria-label="Primary actions">
-            <a class="button primary" href="#install">Add Caplets to your agent</a>
-            <a class="button secondary" href="#proof">See the benchmark</a>
+            <a class="button primary" href="#quickstart">Install & run setup</a>
+            <a class="button secondary" href="https://github.com/spiritledsoftware/caplets">GitHub repo</a>
+            <a class="button tertiary" href="https://www.npmjs.com/package/caplets">npm package</a>
           </div>
-          <div class="hero-quickstart" aria-label="Quick install commands">
+          <div class="hero-quickstart" id="quickstart" aria-label="Quick install commands">
             <div class="hero-quickstart-heading">
               <span>Quick start</span>
+              <button
+                class="copy-all-button"
+                type="button"
+                aria-label="Copy install and setup commands"
+                data-copy-value={quickstartCommand}
+                data-copy-label="install and setup commands"
+              >
+                Copy both
+              </button>
               <a href="#install">More setup options</a>
             </div>
             <ol>
@@ -354,14 +386,14 @@ const exampleCaplets = [
             </div>
           </div>
 
-          <div class="city-controls" role="tablist" aria-label="Map zoom modes">
+          <div class="city-controls" aria-label="Map zoom modes">
             {mapModes.map((mode) => (
               <button
                 class={mode.default ? "city-tab is-active" : "city-tab"}
                 type="button"
-                role="tab"
-                aria-selected={mode.default ? "true" : "false"}
+                aria-pressed={mode.default ? "true" : "false"}
                 data-city-mode={mode.value}
+                data-city-mode-button
                 data-city-label={mode.label}
                 data-city-copy={mode.copy}
                 data-city-exposed={mode.exposed}
@@ -396,12 +428,81 @@ const exampleCaplets = [
         </aside>
       </section>
 
+      <section class="activation" id="install" aria-labelledby="activation-title">
+        <div class="activation-copy">
+          <p class="section-note">Setup</p>
+          <h2 id="activation-title">Run setup, then add one Caplet.</h2>
+          <p>
+            <code>caplets setup</code> lets you choose which agent integrations to wire up. Start with
+            the no-auth OSV Caplet, then add larger surfaces like GitHub once the flow is working.
+          </p>
+        </div>
+
+        <div class="caplet-examples" data-caplet-examples>
+          <div class="example-bar">
+            <div class="example-tabs" aria-label="Premade Caplet examples" data-example-tablist>
+              {exampleCaplets.map((example) => (
+                <button class="example-tab" id={`example-tab-${example.id}`} type="button" data-example-tab={example.id}>
+                  {example.name}
+                </button>
+              ))}
+            </div>
+            <a class="example-more" href="https://github.com/spiritledsoftware/caplets/tree/main/caplets">
+              Explore more Caplets
+            </a>
+          </div>
+
+          <div class="example-panels">
+            {exampleCaplets.map((example) => (
+              <article class="example-panel" id={`example-panel-${example.id}`} data-example-panel={example.id}>
+                <div>
+                  <h3>Add {example.name}</h3>
+                  <p>{example.summary}</p>
+                  <p>{example.why}</p>
+                  <div class="discovery-path" aria-label={`${example.name} expected discovery path`}>
+                    {example.path.map((step, index) => index === 0 ? <code>{step}</code> : <span><code>{step}</code></span>)}
+                  </div>
+                  <p class="setup-help">
+                    {example.help.map((part) => part === "GH_TOKEN" || part === "caplets setup" ? <code>{part}</code> : part)}
+                  </p>
+                </div>
+                <div class="terminal" role="region" aria-label={`${example.name} capability commands`}>
+                  <div class="terminal-bar" aria-hidden="true">
+                    <span></span><span></span><span></span>
+                  </div>
+                  <ol>
+                    {example.steps.map((step, index) => (
+                      <li>
+                        <code id={`${example.id}-step-${index + 1}`} tabindex="-1">{step.command}</code>
+                        <button
+                          class="copy-button terminal-copy"
+                          type="button"
+                          aria-label={`Copy ${step.label}`}
+                          aria-controls={`${example.id}-step-${index + 1}`}
+                          data-copy-target={`${example.id}-step-${index + 1}`}
+                          data-copy-value={step.command}
+                          data-copy-label={step.label}
+                        >
+                          <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
+                          <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
       <section class="proof-strip" id="proof" aria-label="Code Mode benchmark proof">
         <div class="proof-strip-copy">
-          <span>Live Pi eval</span>
+          <span>Benchmark proof</span>
           <p>
             Real-world large MCP stack: GitHub, Context7, DeepWiki, Git, filesystem, Playwright, ast-grep, language-server, and web-search MCP servers.
           </p>
+          <small>{benchmarkProvenance}</small>
         </div>
         <dl class="proof-strip-stats">
           {proofStats.map((stat) => (
@@ -425,9 +526,9 @@ const exampleCaplets = [
               {benchmarkRows.map((row) => (
                 <tr>
                   <th scope="row">{row.mode}</th>
-                  <td>{row.passed}</td>
-                  <td>{row.tokens}</td>
-                  <td>{row.surfaceTokens}</td>
+                  <td data-label="Passed">{row.passed}</td>
+                  <td data-label="Total Tokens">{row.tokens}</td>
+                  <td data-label="Tool Surface Tokens">{row.surfaceTokens}</td>
                 </tr>
               ))}
             </tbody>
@@ -534,80 +635,13 @@ const exampleCaplets = [
         </dl>
       </section>
 
-      <section class="activation" id="install" aria-labelledby="activation-title">
-        <div class="activation-copy">
-          <p class="section-note">Setup</p>
-          <h2 id="activation-title">Run setup, then add a Caplet.</h2>
-          <p>
-            <code>caplets setup</code> lets you choose which agent integrations to wire up. After that,
-            add one premade Caplet and your agent sees one focused capability before it can search or
-            call downstream tools.
-          </p>
-        </div>
-
-        <div class="caplet-examples" data-caplet-examples>
-          <div class="example-bar">
-            <div class="example-tabs" aria-label="Premade Caplet examples" data-example-tablist>
-              {exampleCaplets.map((example) => (
-                <button class="example-tab" id={`example-tab-${example.id}`} type="button" data-example-tab={example.id}>
-                  {example.name}
-                </button>
-              ))}
-            </div>
-            <a class="example-more" href="https://github.com/spiritledsoftware/caplets/tree/main/caplets">
-              Explore more Caplets
-            </a>
-          </div>
-
-          <div class="example-panels">
-            {exampleCaplets.map((example) => (
-              <article class="example-panel" id={`example-panel-${example.id}`} data-example-panel={example.id}>
-                <div>
-                  <h3>Add {example.name}</h3>
-                  <p>{example.summary}</p>
-                  <p>{example.why}</p>
-                  <div class="discovery-path" aria-label={`${example.name} expected discovery path`}>
-                    {example.path.map((step, index) => index === 0 ? <code>{step}</code> : <span><code>{step}</code></span>)}
-                  </div>
-                  <p class="setup-help">
-                    {example.help.map((part) => part === "GH_TOKEN" || part === "caplets setup" ? <code>{part}</code> : part)}
-                  </p>
-                </div>
-                <div class="terminal" role="region" aria-label={`${example.name} capability commands`}>
-                  <div class="terminal-bar" aria-hidden="true">
-                    <span></span><span></span><span></span>
-                  </div>
-                  <ol>
-                    {example.steps.map((step, index) => (
-                      <li>
-                        <code id={`${example.id}-step-${index + 1}`} tabindex="-1">{step.command}</code>
-                        <button
-                          class="copy-button terminal-copy"
-                          type="button"
-                          aria-label={`Copy ${step.label}`}
-                          aria-controls={`${example.id}-step-${index + 1}`}
-                          data-copy-target={`${example.id}-step-${index + 1}`}
-                          data-copy-value={step.command}
-                          data-copy-label={step.label}
-                        >
-                          <HugeIcon icon={Copy01Icon} class="copy-button-icon copy-button-icon-copy" />
-                          <HugeIcon icon={CheckIcon} class="copy-button-icon copy-button-icon-check" />
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
     </main>
 
     <footer class="site-footer">
       <p>Caplets gives agents capabilities, not giant tool walls.</p>
-      <a href="https://www.npmjs.com/package/caplets">npm package</a>
       <a href="https://github.com/spiritledsoftware/caplets#configure">Config docs</a>
+      <a href="https://github.com/spiritledsoftware/caplets">GitHub repo</a>
+      <a href="https://www.npmjs.com/package/caplets">npm package</a>
     </footer>
     <script>
       import * as THREE from "three";
@@ -648,6 +682,22 @@ const exampleCaplets = [
       const mobileMenuLinks = Array.from(document.querySelectorAll<HTMLAnchorElement>("[data-mobile-menu-link]"));
       const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
       const themeStorageKey = "caplets-theme";
+
+      function settleHashAnchor() {
+        if (!window.location.hash) return;
+        const targetId = window.location.hash.slice(1);
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (target instanceof HTMLElement) {
+          target.scrollIntoView({ block: "start", behavior: "instant" });
+        }
+      }
+
+      window.addEventListener("load", () => {
+        window.requestAnimationFrame(() => {
+          settleHashAnchor();
+          window.setTimeout(settleHashAnchor, 320);
+        });
+      });
 
       function getStoredTheme() {
         try {
@@ -810,7 +860,11 @@ const exampleCaplets = [
           range.selectNodeContents(target);
           selection?.removeAllRanges();
           selection?.addRange(range);
-          return;
+          try {
+            return document.execCommand("copy");
+          } catch {
+            return false;
+          }
         }
 
         const fallback = document.createElement("textarea");
@@ -822,7 +876,14 @@ const exampleCaplets = [
         document.body.append(fallback);
         fallback.focus();
         fallback.select();
+        let didCopy = false;
+        try {
+          didCopy = document.execCommand("copy");
+        } catch {
+          didCopy = false;
+        }
         window.setTimeout(() => fallback.remove(), 0);
+        return didCopy;
       }
 
       async function copyValue(button: HTMLButtonElement) {
@@ -835,8 +896,8 @@ const exampleCaplets = [
         } catch {
           const targetId = button.dataset.copyTarget;
           const target = targetId ? document.getElementById(targetId) : null;
-          selectTextTarget(target, value);
-          setCopyFeedback(button, "Text selected", 2200);
+          const didCopy = selectTextTarget(target, value);
+          setCopyFeedback(button, didCopy ? "Copied" : "Text selected", didCopy ? 1600 : 2200);
         }
       }
 
@@ -847,7 +908,7 @@ const exampleCaplets = [
       const cityRoot = document.querySelector<HTMLElement>("[data-city-zoom]");
       const cityStage = document.querySelector<HTMLElement>("[data-city-stage]");
       const cityCanvas = document.querySelector<HTMLCanvasElement>("[data-city-canvas]");
-      const cityTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-city-mode]"));
+      const cityTabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-city-mode-button]"));
       const cityCaptionTitle = document.querySelector<HTMLElement>("[data-city-caption-title]");
       const cityCaptionCopy = document.querySelector<HTMLElement>("[data-city-caption-copy]");
       const cityCaptionMeta = document.querySelector<HTMLElement>("[data-city-caption-meta]");
@@ -871,8 +932,8 @@ const exampleCaplets = [
         for (const tab of cityTabs) {
           const isSelected = tab === selected;
           tab.classList.toggle("is-active", isSelected);
-          tab.setAttribute("aria-selected", String(isSelected));
-          tab.tabIndex = isSelected ? 0 : -1;
+          tab.setAttribute("aria-pressed", String(isSelected));
+          tab.tabIndex = 0;
         }
 
         if (cityCaptionTitle) cityCaptionTitle.textContent = selected.dataset.cityLabel ?? "";
@@ -909,28 +970,43 @@ const exampleCaplets = [
         const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 80);
         const lookAt = new THREE.Vector3(0, 0, 0);
         const targetLookAt = new THREE.Vector3(0, 0, 0);
+        const cityStyles = window.getComputedStyle(cityRoot);
+        const sceneHex = (name: string, fallback: number) => {
+          const value = cityStyles.getPropertyValue(name).trim();
+          return value.startsWith("#") ? Number.parseInt(value.slice(1), 16) : fallback;
+        };
+        const sceneColors = {
+          ash: sceneHex("--city-scene-ash", 0xe3d8c0),
+          ember: sceneHex("--city-scene-ember", 0xe0582f),
+          emberShadow: sceneHex("--city-scene-ember-shadow", 0x3a1208),
+          ink: sceneHex("--city-scene-ink", 0x1f2018),
+          olive: sceneHex("--city-scene-olive", 0x686b4e),
+          paper: sceneHex("--city-scene-paper", 0xfff8ea),
+          parchment: sceneHex("--city-scene-parchment", 0xf6e8c8),
+          signal: sceneHex("--city-scene-signal", 0xffd7a8),
+        };
 
         const city = new THREE.Group();
         city.rotation.y = -0.18;
         scene.add(city);
 
-        const ambient = new THREE.AmbientLight(0xfff8ea, 1.45);
-        const key = new THREE.DirectionalLight(0xf6e8c8, 2.6);
+        const ambient = new THREE.AmbientLight(sceneColors.paper, 1.45);
+        const key = new THREE.DirectionalLight(sceneColors.parchment, 2.6);
         key.position.set(-5, 8, 8);
-        const ember = new THREE.PointLight(0xe0582f, 4.4, 16);
+        const ember = new THREE.PointLight(sceneColors.ember, 4.4, 16);
         ember.position.set(2.8, 2.4, 0.6);
         scene.add(ambient, key, ember);
 
         const baseMaterial = new THREE.MeshStandardMaterial({
-          color: 0x686b4e,
+          color: sceneColors.olive,
           metalness: 0.08,
           roughness: 0.72,
           transparent: true,
           opacity: 0.5,
         });
         const routeMaterial = new THREE.MeshStandardMaterial({
-          color: 0xe0582f,
-          emissive: 0xe0582f,
+          color: sceneColors.ember,
+          emissive: sceneColors.ember,
           emissiveIntensity: 0.8,
           metalness: 0,
           roughness: 0.42,
@@ -938,15 +1014,15 @@ const exampleCaplets = [
           opacity: 0.9,
         });
         const roadMaterial = new THREE.LineBasicMaterial({
-          color: 0xe3d8c0,
+          color: sceneColors.ash,
           transparent: true,
           opacity: 0.32,
         });
 
         const ground = new THREE.Mesh(
-          new THREE.PlaneGeometry(18, 14, 1, 1),
+          new THREE.PlaneGeometry(22, 14, 1, 1),
           new THREE.MeshStandardMaterial({
-            color: 0x1f2018,
+            color: sceneColors.ink,
             metalness: 0,
             roughness: 0.92,
             transparent: true,
@@ -958,27 +1034,39 @@ const exampleCaplets = [
         city.add(ground);
 
         const roadPoints: number[] = [];
-        for (let x = -8; x <= 8; x += 1.6) {
+        for (let x = -10; x <= 10; x += 1.6) {
           roadPoints.push(x, 0.01, -5.8, x, 0.01, 5.8);
         }
         for (let z = -5.6; z <= 5.6; z += 1.4) {
-          roadPoints.push(-8.2, 0.012, z, 8.2, 0.012, z);
+          roadPoints.push(-10.2, 0.012, z, 10.2, 0.012, z);
         }
         const roads = new THREE.LineSegments(new THREE.BufferGeometry(), roadMaterial);
         roads.geometry.setAttribute("position", new THREE.Float32BufferAttribute(roadPoints, 3));
         city.add(roads);
 
         const routeControlPoints = [
-          new THREE.Vector3(-5.8, 0.42, 3.6),
+          new THREE.Vector3(-9.4, 0.42, 3.8),
+          new THREE.Vector3(-6.3, 0.44, 3.1),
           new THREE.Vector3(-3.2, 0.46, 2.2),
           new THREE.Vector3(-1.2, 0.48, 1.4),
           new THREE.Vector3(1.2, 0.5, 0.6),
-          new THREE.Vector3(3.2, 0.52, -0.2),
-          new THREE.Vector3(5.2, 0.56, -1.8),
+          new THREE.Vector3(3.4, 0.52, -0.2),
+          new THREE.Vector3(5.9, 0.54, -1.2),
+          new THREE.Vector3(9.4, 0.56, -2.4),
         ];
         const routeCurve = new THREE.CatmullRomCurve3(routeControlPoints);
         const route = new THREE.Mesh(new THREE.TubeGeometry(routeCurve, 96, 0.035, 8, false), routeMaterial);
         city.add(route);
+        const routeGlowMaterial = new THREE.MeshBasicMaterial({
+          color: sceneColors.ember,
+          transparent: true,
+          opacity: 0.22,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const routeGlow = new THREE.Mesh(new THREE.TubeGeometry(routeCurve, 96, 0.115, 12, false), routeGlowMaterial);
+        routeGlow.renderOrder = 1;
+        city.add(routeGlow);
 
         const routeSignalSegments = routeControlPoints.slice(0, -1).map((point, index) => {
           const nextPoint = routeControlPoints[index + 1];
@@ -1025,7 +1113,7 @@ const exampleCaplets = [
         signalTexture.colorSpace = THREE.SRGBColorSpace;
         const signalMaterial = new THREE.SpriteMaterial({
           map: signalTexture,
-          color: 0xffd7a8,
+          color: sceneColors.signal,
           transparent: true,
           depthTest: false,
           depthWrite: false,
@@ -1036,7 +1124,16 @@ const exampleCaplets = [
         signalNode.renderOrder = 2;
         signalNode.scale.set(0.54, 0.54, 1);
         city.add(signalNode);
-        const signalLight = new THREE.PointLight(0xffd7a8, 0, 2.4);
+        const trailNodes = [0.05, 0.1, 0.16].map((offset, index) => {
+          const material = signalMaterial.clone();
+          material.opacity = 0.2;
+          const sprite = new THREE.Sprite(material);
+          sprite.renderOrder = 2;
+          sprite.scale.setScalar(0.24 - index * 0.03);
+          city.add(sprite);
+          return { offset, sprite };
+        });
+        const signalLight = new THREE.PointLight(sceneColors.signal, 0, 2.4);
         city.add(signalLight);
 
         type Building = {
@@ -1058,6 +1155,37 @@ const exampleCaplets = [
           new THREE.Vector2(-5.4, 2.4),
           new THREE.Vector2(0.3, 1.4),
         ];
+        const districtRings = districtCenters.map((center, index) => {
+          const points = [];
+          const radius = 1.05 + (index % 3) * 0.18;
+          for (let step = 0; step <= 64; step += 1) {
+            const angle = (step / 64) * Math.PI * 2;
+            points.push(new THREE.Vector3(center.x + Math.cos(angle) * radius, 0.08, center.y + Math.sin(angle) * radius));
+          }
+          const material = new THREE.LineBasicMaterial({
+            color: index % 2 === 0 ? sceneColors.parchment : sceneColors.ember,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+          });
+          const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), material);
+          line.renderOrder = 1;
+          city.add(line);
+          return { center, index, line, material };
+        });
+
+        const scannerMaterial = new THREE.MeshBasicMaterial({
+          color: sceneColors.ember,
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const scanner = new THREE.Mesh(new THREE.PlaneGeometry(18, 0.18), scannerMaterial);
+        scanner.rotation.x = -Math.PI / 2;
+        scanner.position.y = 0.09;
+        scanner.renderOrder = 1;
+        city.add(scanner);
 
         function wave(seed: number) {
           return Math.sin(seed * 12.9898) * 43758.5453 % 1;
@@ -1110,25 +1238,61 @@ const exampleCaplets = [
             city.add(mesh);
           }
         }
+        const densityGeometry = new THREE.BufferGeometry();
+        densityGeometry.setAttribute(
+          "position",
+          new THREE.Float32BufferAttribute(
+            buildings.flatMap((building) => [
+              building.mesh.position.x,
+              building.baseHeight + 0.42,
+              building.mesh.position.z,
+            ]),
+            3
+          )
+        );
+        const densityMaterial = new THREE.PointsMaterial({
+          color: sceneColors.parchment,
+          transparent: true,
+          opacity: 0,
+          size: 0.055,
+          sizeAttenuation: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        });
+        const densityPoints = new THREE.Points(densityGeometry, densityMaterial);
+        densityPoints.renderOrder = 2;
+        city.add(densityPoints);
 
         const cameraTargets = {
           vanilla: {
             position: new THREE.Vector3(0, 10.8, 12.8),
             lookAt: new THREE.Vector3(0, 0, 0.2),
-            routeOpacity: 0.18,
+            routeOpacity: 0.12,
+            routeGlowOpacity: 0.05,
             roadOpacity: 0.55,
+            densityOpacity: 0.58,
+            ringOpacity: 0.08,
+            scannerOpacity: 0.2,
           },
           progressive: {
             position: new THREE.Vector3(0.7, 8.9, 10.2),
             lookAt: new THREE.Vector3(0.3, 0, 0.1),
-            routeOpacity: 0.38,
+            routeOpacity: 0.32,
+            routeGlowOpacity: 0.12,
             roadOpacity: 0.4,
+            densityOpacity: 0.24,
+            ringOpacity: 0.5,
+            scannerOpacity: 0.12,
           },
           code_mode: {
             position: new THREE.Vector3(2.8, 6.8, 7.1),
             lookAt: new THREE.Vector3(1.2, 0, 0.1),
-            routeOpacity: 0.94,
+            routeOpacity: 0.74,
+            routeGlowOpacity: 0.22,
             roadOpacity: 0.24,
+            densityOpacity: 0.08,
+            ringOpacity: 0.06,
+            scannerOpacity: 0,
           },
         };
 
@@ -1164,9 +1328,9 @@ const exampleCaplets = [
         }
 
         function colorForBuilding(building: Building, mode: CityMode) {
-          if (mode === "code_mode" && building.routeDistance < routeHighlightDistance) return 0xe0582f;
-          if (mode === "progressive" && building.baseHeight > 2.35) return 0xf6e8c8;
-          return mode === "vanilla" ? 0x686b4e : 0xe3d8c0;
+          if (mode === "code_mode" && building.routeDistance < routeHighlightDistance) return sceneColors.ember;
+          if (mode === "progressive" && building.baseHeight > 2.35) return sceneColors.parchment;
+          return mode === "vanilla" ? sceneColors.olive : sceneColors.ash;
         }
 
         const resizeCity = () => {
@@ -1201,6 +1365,9 @@ const exampleCaplets = [
           roadMaterial.opacity += (target.roadOpacity - roadMaterial.opacity) * easing;
           routeMaterial.opacity += (target.routeOpacity - routeMaterial.opacity) * easing;
           routeMaterial.emissiveIntensity += ((targetMode === "code_mode" ? 1.25 : 0.42) - routeMaterial.emissiveIntensity) * easing;
+          routeGlowMaterial.opacity += (target.routeGlowOpacity - routeGlowMaterial.opacity) * easing;
+          densityMaterial.opacity += (target.densityOpacity - densityMaterial.opacity) * easing;
+          scannerMaterial.opacity += (target.scannerOpacity - scannerMaterial.opacity) * easing;
 
           for (const building of buildings) {
             const nextHeight = targetBuildingHeight(building, targetMode);
@@ -1210,9 +1377,18 @@ const exampleCaplets = [
             building.mesh.material.opacity += (targetBuildingOpacity(building, targetMode) - building.mesh.material.opacity) * easing;
             building.mesh.material.color.lerp(new THREE.Color(colorForBuilding(building, targetMode)), easing);
             building.mesh.material.emissive.setHex(
-              targetMode === "code_mode" && building.routeDistance < routeHighlightDistance ? 0x3a1208 : 0x000000
+              targetMode === "code_mode" && building.routeDistance < routeHighlightDistance ? sceneColors.emberShadow : 0x000000
             );
           }
+          for (const ring of districtRings) {
+            const ringPulse = canAnimate ? 0.72 + Math.sin(Date.now() * 0.0016 + ring.index * 0.88) * 0.28 : 0.88;
+            ring.material.opacity += (target.ringOpacity * ringPulse - ring.material.opacity) * easing;
+            const ringScale = 1 + (targetMode === "progressive" ? (1 - ringPulse) * 0.08 : 0);
+            ring.line.scale.setScalar(ringScale);
+          }
+          scanner.position.z = canAnimate ? -5.8 + ((Date.now() * 0.00072) % 11.6) : -1.4;
+          scanner.visible = scannerMaterial.opacity > 0.01;
+          densityPoints.rotation.y += canAnimate ? delta * 0.000015 : 0;
 
           if (canAnimate) {
             signalTravel = (signalTravel + delta * signalSpeedByMode[targetMode]) % 1;
@@ -1227,6 +1403,15 @@ const exampleCaplets = [
           signalNode.scale.setScalar(0.34 + signalOpacity * 0.12);
           signalLight.position.copy(signalNode.position);
           signalLight.intensity += (signalOpacity * 2.3 - signalLight.intensity) * easing;
+          for (const [index, trail] of trailNodes.entries()) {
+            const trailProgress = (signalProgress - trail.offset + 1) % 1;
+            const trailPoint = setRouteSignalPosition(trailProgress);
+            trail.sprite.position.copy(trailPoint);
+            trail.sprite.position.y += 0.05;
+            trail.sprite.visible = signalOpacity > 0.2;
+            trail.sprite.material.opacity += (signalOpacity * (0.42 - index * 0.1) - trail.sprite.material.opacity) * easing;
+            trail.sprite.scale.setScalar(0.28 + signalOpacity * (0.09 - index * 0.02));
+          }
 
           city.rotation.z = Math.sin(Date.now() * 0.00025) * 0.015;
           renderer.render(scene, camera);
@@ -1369,8 +1554,7 @@ const exampleCaplets = [
             { rootMargin: "0px 0px -10%", threshold: 0.12 }
           );
 
-          for (const [index, target] of revealTargets.entries()) {
-            target.style.setProperty("--reveal-index", String(index % 3));
+          for (const target of revealTargets) {
             revealObserver.observe(target);
           }
 

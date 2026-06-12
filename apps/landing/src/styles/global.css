@@ -377,10 +377,19 @@ main {
   gap: clamp(56px, 5vw, 80px);
 }
 
+#quickstart,
+#trace,
+#proof,
+#install,
+#remote {
+  scroll-margin-top: 78px;
+}
+
 .hero {
   position: relative;
-  width: var(--content);
-  margin: clamp(18px, 3.5vw, 44px) auto 0;
+  width: 100%;
+  margin: clamp(12px, 2.4vw, 28px) auto 0;
+  padding-inline: max(16px, calc((100vw - 1180px) / 2));
   display: grid;
   grid-template-columns: minmax(488px, 0.78fr) minmax(0, 1.22fr);
   align-items: center;
@@ -432,8 +441,8 @@ p {
 
 h1 {
   max-width: 11.2ch;
-  margin-bottom: 24px;
-  font-size: clamp(3.8rem, 6.1vw, 5.7rem);
+  margin-bottom: 18px;
+  font-size: clamp(3.5rem, 5.25vw, 5rem);
   line-height: 0.94;
   letter-spacing: -0.038em;
   text-wrap: balance;
@@ -441,18 +450,49 @@ h1 {
 
 .hero-lede {
   max-width: 63ch;
-  margin-bottom: 28px;
+  margin-bottom: 14px;
   color: var(--olive);
   font-size: clamp(1.05rem, 1.4vw, 1.24rem);
   line-height: 1.56;
   text-wrap: pretty;
 }
 
+.hero-proof {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  max-width: 590px;
+  margin: 0 0 14px;
+  border: 1px solid var(--ash);
+  border-radius: var(--radius-panel);
+  background: var(--ash);
+  overflow: hidden;
+}
+
+.hero-proof div {
+  min-width: 0;
+  background: color-mix(in oklch, var(--paper) 88%, transparent);
+  padding: 11px 12px;
+}
+
+.hero-proof dt {
+  color: var(--olive);
+  text-transform: none;
+}
+
+.hero-proof dd {
+  color: var(--charred-ink);
+  font-family: var(--font-mono);
+  font-size: clamp(0.86rem, 1vw, 1rem);
+  font-weight: 820;
+  line-height: 1.2;
+}
+
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .hero-quickstart {
@@ -465,9 +505,9 @@ h1 {
 
 .hero-quickstart-heading {
   min-height: 44px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 0 12px;
   border-bottom: 1px solid var(--ash);
@@ -488,6 +528,32 @@ h1 {
   display: inline-flex;
   align-items: center;
   text-decoration: none;
+}
+
+.copy-all-button {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  border: 1px solid var(--ash);
+  border-radius: var(--radius-control);
+  background: color-mix(in oklch, var(--paper) 88%, transparent);
+  color: var(--charred-ink);
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.js-enabled .copy-all-button {
+  display: inline-flex;
+}
+
+.copy-all-button:hover,
+.copy-all-button[data-copied="true"] {
+  border-color: var(--ember);
+  background: var(--parchment);
 }
 
 .hero-quickstart-heading a:hover {
@@ -585,6 +651,12 @@ h1 {
   color: var(--charred-ink);
 }
 
+.button.tertiary {
+  border: 1px solid var(--ash);
+  background: color-mix(in oklch, var(--paper) 76%, transparent);
+  color: var(--olive);
+}
+
 .button:hover {
   transform: translateY(-2px);
 }
@@ -599,6 +671,12 @@ h1 {
 .button.secondary:hover {
   background: var(--parchment);
   border-color: var(--charred-ink);
+}
+
+.button.tertiary:hover {
+  background: var(--paper);
+  border-color: var(--ember);
+  color: var(--charred-ink);
 }
 
 dt {
@@ -618,8 +696,16 @@ dd {
   --city-line: oklch(72% 0.026 82);
   --city-muted: oklch(83% 0.03 82);
   --city-accent: oklch(70% 0.12 35);
-  position: relative;
-  z-index: 1;
+  --city-scene-ember: #e0582f;
+  --city-scene-ember-shadow: #3a1208;
+  --city-scene-paper: #fff8ea;
+  --city-scene-parchment: #f6e8c8;
+  --city-scene-ash: #e3d8c0;
+  --city-scene-olive: #686b4e;
+  --city-scene-ink: #1f2018;
+  --city-scene-signal: #ffd7a8;
+
+  position: static;
   align-self: stretch;
   min-width: 0;
   min-height: min(690px, calc(100vh - 94px));
@@ -632,15 +718,16 @@ dd {
 
 .city-stage {
   --city-edge-mask: radial-gradient(
-    ellipse 62% 68% at 52% 52%,
-    #000 0 50%,
-    rgb(0 0 0 / 0.82) 62%,
-    rgb(0 0 0 / 0.24) 78%,
+    ellipse 88% 76% at 62% 52%,
+    #000 0 56%,
+    rgb(0 0 0 / 0.78) 68%,
+    rgb(0 0 0 / 0.22) 84%,
     transparent 100%
   );
+
   position: absolute;
   z-index: 0;
-  inset: -12% -16% -3% -70%;
+  inset: -8% 0 -2%;
   overflow: hidden;
   pointer-events: none;
 }
@@ -661,9 +748,16 @@ dd {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(90deg, var(--linen), transparent 24%, transparent 78%, var(--linen)),
+    linear-gradient(
+      90deg,
+      var(--linen),
+      color-mix(in oklch, var(--linen) 72%, transparent) 21%,
+      transparent 44%,
+      transparent 78%,
+      var(--linen)
+    ),
     linear-gradient(180deg, var(--linen), transparent 22%, transparent 82%, var(--linen));
-  opacity: 0.74;
+  opacity: 0.7;
 }
 
 .city-canvas,
@@ -872,8 +966,8 @@ dd {
 .motion-ready .remote-story,
 .motion-ready .activation,
 .motion-ready .terminal li {
-  opacity: 0;
-  transform: translateY(22px);
+  opacity: 1;
+  transform: none;
 }
 
 .motion-ready .proof-strip.is-visible,
@@ -882,10 +976,6 @@ dd {
 .motion-ready .terminal li.is-visible {
   opacity: 1;
   transform: translateY(0);
-  transition:
-    opacity 560ms var(--ease-expo),
-    transform 560ms var(--ease-expo);
-  transition-delay: calc(var(--reveal-index, 0) * 45ms);
 }
 
 .site-footer p {
@@ -922,8 +1012,16 @@ dd {
 
 .proof-strip-copy p {
   max-width: 68ch;
-  margin: 0;
+  margin: 0 0 8px;
   color: var(--charred-ink);
+}
+
+.proof-strip-copy small {
+  display: block;
+  max-width: 72ch;
+  color: var(--olive);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .proof-strip-stats {
@@ -938,6 +1036,7 @@ dd {
 }
 
 .proof-strip-stats div {
+  flex: 1 1 112px;
   min-width: 112px;
   padding: 12px 14px;
   background: var(--paper);
@@ -1076,12 +1175,12 @@ dd {
 
 .remote-story {
   display: grid;
-  gap: clamp(20px, 3vw, 34px);
+  gap: clamp(16px, 2.4vw, 28px);
   border: 1px solid var(--night-line);
   border-radius: var(--radius-shell);
   background: var(--night-ink);
   color: var(--night-text);
-  padding: clamp(22px, 3.4vw, 42px);
+  padding: clamp(18px, 2.8vw, 34px);
 }
 
 .remote-story-copy {
@@ -1628,6 +1727,7 @@ dd {
 
   .hero {
     margin-top: 42px;
+    padding-inline: max(16px, calc((100vw - 1180px) / 2));
     min-height: 0;
     align-items: start;
   }
@@ -1641,7 +1741,7 @@ dd {
   }
 
   .city-stage {
-    inset: -12% -10% 12% -16%;
+    inset: -8% 0 10%;
   }
 
   .city-controls,
@@ -1832,6 +1932,7 @@ dd {
 
   .hero {
     margin-top: 28px;
+    padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
     gap: 20px;
   }
 
@@ -1844,23 +1945,89 @@ dd {
     margin-bottom: 18px;
   }
 
+  .hero-proof {
+    grid-template-columns: 1fr;
+  }
+
   .hero-actions {
     margin-bottom: 14px;
+  }
+
+  .hero-actions .button {
+    flex: 1 1 100%;
   }
 
   .hero-quickstart {
     max-width: 100%;
   }
 
+  .benchmark-table {
+    overflow-x: visible;
+  }
+
+  .benchmark-table table,
+  .benchmark-table tbody,
+  .benchmark-table tr,
+  .benchmark-table th,
+  .benchmark-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .benchmark-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .benchmark-table tbody tr {
+    padding: 12px;
+  }
+
+  .benchmark-table tbody tr + tr {
+    border-top: 1px solid var(--ash);
+  }
+
+  .benchmark-table tbody th {
+    border: 0;
+    padding: 0 0 8px;
+    white-space: normal;
+  }
+
+  .benchmark-table tbody td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    border: 0;
+    padding: 6px 0;
+    text-align: right;
+    white-space: normal;
+  }
+
+  .benchmark-table tbody td::before {
+    content: attr(data-label);
+    color: var(--olive);
+    font-size: 0.68rem;
+    font-weight: 820;
+    text-align: left;
+    text-transform: uppercase;
+    letter-spacing: 0.055em;
+  }
+
   .city-zoom {
-    min-height: 430px;
-    grid-template-rows: minmax(245px, 1fr) auto auto;
+    min-height: 368px;
+    grid-template-rows: minmax(205px, 1fr) auto auto;
   }
 
   .city-stage {
     position: relative;
     inset: auto;
-    min-height: 260px;
+    min-height: 220px;
     grid-row: 1;
     border-radius: var(--radius-shell);
     overflow: hidden;
@@ -1876,7 +2043,7 @@ dd {
   }
 
   .city-tab {
-    min-height: 58px;
+    min-height: 54px;
     padding: 8px;
   }
 
