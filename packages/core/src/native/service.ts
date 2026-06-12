@@ -31,6 +31,7 @@ import {
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
 import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
+import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
@@ -68,6 +69,7 @@ export type NativeCapletTool = {
   inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   operationNames?: string[];
+  codeModeCaplets?: CodeModeCallableCaplet[];
 };
 
 export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => void;
@@ -154,7 +156,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       if (exposure.progressive) {
         const tool = progressiveNativeTool(caplet);
         progressiveTools.push(tool);
-        if (exposure.codeMode) codeModeCaplets.push(tool);
+        if (exposure.codeMode) codeModeCaplets.push(codeModeCapletDescriptor(caplet));
         continue;
       }
       if (exposure.direct) {
@@ -478,14 +480,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {
+  const codeModeCaplets = capletTools.map((tool) => ({
+    id: tool.caplet,
+    name: tool.title,
+    description: tool.description,
+    ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
+    ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
+  }));
   const declaration = generateCodeModeDeclarations({
-    caplets: capletTools.map((tool) => ({
-      id: tool.caplet,
-      name: tool.title,
-      description: tool.description,
-      ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
-      ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
-    })),
+    caplets: codeModeCaplets,
   });
   return {
     caplet: nativeCodeModeToolId,
@@ -497,6 +500,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
       `Native tool name: ${nativeCodeModeToolName}`,
     ].join("\n"),
     codeModeRun: true,
+    codeModeCaplets,
     promptGuidance: [
       `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
       "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
@@ -504,6 +508,29 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     ],
     inputSchema: codeModeRunInputJsonSchema(),
   };
+}
+
+function codeModeCallableNativeTools(
+  tools: NativeCapletTool[],
+  options: { fallbackToVisible: boolean },
+): NativeCapletTool[] {
+  const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  if (codeModeCaplets.length === 0) {
+    return options.fallbackToVisible ? tools.filter((tool) => tool.codeModeRun !== true) : [];
+  }
+  const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
+  return codeModeCaplets.map((caplet) => {
+    const tool = byId.get(caplet.id);
+    return {
+      caplet: caplet.id,
+      toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
+      title: caplet.name,
+      description: caplet.description,
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+      promptGuidance: tool?.promptGuidance ?? [],
+    };
+  });
 }
 
 async function executeCodeModeRunNative(
@@ -784,13 +811,25 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 
   private mergeTools(): NativeCapletTool[] {
-    const localTools = this.local.listTools().filter((tool) => tool.codeModeRun !== true);
+    const allLocalTools = this.local.listTools();
+    const allRemoteTools = this.remote.listTools();
+    const localTools = allLocalTools.filter((tool) => tool.codeModeRun !== true);
     const localIds = new Set(localTools.map((tool) => tool.caplet));
-    const remoteTools = this.remote
-      .listTools()
-      .filter((tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet));
+    const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
+      fallbackToVisible: false,
+    });
+    const remoteTools = allRemoteTools.filter(
+      (tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet),
+    );
+    const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
+      fallbackToVisible: true,
+    }).filter((tool) => !localIds.has(tool.caplet));
     const mergedTools = [...remoteTools, ...localTools];
-    return [...mergedTools, codeModeRunNativeTool(mergedTools)];
+    const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
+    return [
+      ...mergedTools,
+      ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
+    ];
   }
 
   private async reloadChild(

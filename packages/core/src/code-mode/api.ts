@@ -52,8 +52,12 @@ export type CreateCodeModeCapletsApiInput = {
 export function listCodeModeCallableCaplets(
   service: NativeCapletsService,
 ): CodeModeCallableCaplet[] {
-  return service
-    .listTools()
+  const tools = service.listTools();
+  const explicitCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  if (explicitCaplets.length > 0) {
+    return dedupeCallableCaplets(explicitCaplets);
+  }
+  return tools
     .filter((tool) => tool.codeModeRun !== true)
     .map((tool) => ({
       id: tool.caplet,
@@ -63,6 +67,14 @@ export function listCodeModeCallableCaplets(
       ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function dedupeCallableCaplets(caplets: CodeModeCallableCaplet[]): CodeModeCallableCaplet[] {
+  const byId = new Map<string, CodeModeCallableCaplet>();
+  for (const caplet of caplets) {
+    byId.set(caplet.id, caplet);
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function createCodeModeCapletsApi(input: CreateCodeModeCapletsApiInput): CodeModeCapletsApi {

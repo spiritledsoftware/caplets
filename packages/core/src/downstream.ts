@@ -527,6 +527,7 @@ export class DownstreamManager {
       if (pending.connection.configFingerprint !== expectedFingerprint) {
         this.connecting.delete(server.server);
         pending.connection.closing = true;
+        void pending.promise.catch(() => undefined);
         await pending.connection.transport.close();
       } else {
         try {

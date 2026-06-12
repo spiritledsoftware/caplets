@@ -537,6 +537,55 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("keeps composite Code Mode scoped to code-mode-callable Caplets", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        "local-progressive": {
+          name: "Local Progressive",
+          description: "Visible locally, but not callable from Code Mode.",
+          exposure: "progressive",
+          command: process.execPath,
+        },
+      },
+      httpApis: {
+        "local-code": {
+          name: "Local Code",
+          description: "Callable from Code Mode.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    try {
+      await service.reload();
+
+      await expect(
+        service.execute("code_mode", {
+          code: "return { keys: Object.keys(caplets).sort() };",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: {
+          keys: ["debug", "local-code", "remote-only"],
+        },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("emits one merged tools-changed event only when the merged set changes", async () => {
     const fixture = client([{ name: "alpha", title: "Alpha" }]);
     const { dir, configPath, projectConfigPath } = tempConfig({
