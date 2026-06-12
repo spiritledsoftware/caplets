@@ -1,3 +1,7 @@
+import ts from "typescript";
+
+const CODE_MODE_STATIC_ANALYSIS_FILE = "/caplets-code-mode/static-analysis-input.ts";
+
 export function hasDirectFetchCall(code: string): boolean {
   const executableSource = maskLiteralsAndComments(code);
   return (
@@ -9,13 +13,34 @@ export function hasDirectFetchCall(code: string): boolean {
 }
 
 export function hasExecutableImport(code: string): boolean {
-  const executableSource = maskLiteralsAndComments(code);
-  return (
-    /(^|[^\w$.])import\s*(?:\(|[\w$*{]|(?=\s*;))/u.test(executableSource) ||
-    /(^|[^\w$.])export\s+(?:\*|\{[^}]*\}|type\s+\{[^}]*\}|interface\s+\w+[^;]*?)\s+from\b/u.test(
-      executableSource,
-    )
+  const source = ts.createSourceFile(
+    CODE_MODE_STATIC_ANALYSIS_FILE,
+    code,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
   );
+  let found = false;
+
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isImportDeclaration(node) ||
+      ts.isImportEqualsDeclaration(node) ||
+      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined)
+    ) {
+      found = true;
+      return;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(source);
+  return found;
 }
 
 function maskLiteralsAndComments(code: string): string {

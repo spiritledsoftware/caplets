@@ -128,6 +128,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
   private exposureSnapshot: ExposureSnapshot | undefined;
   private postReloadRefresh: Promise<void> | undefined;
+  private exposureRefreshGeneration = 0;
 
   constructor(options: LocalNativeCapletsServiceOptions) {
     this.writeErr = options.writeErr ?? (() => undefined);
@@ -135,12 +136,11 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       ...options,
       writeErr: this.writeErr,
     });
+    this.postReloadRefresh = this.refreshExposureSnapshot({
+      emitToolsChanged: this.hasDirectMcpExposure(),
+    });
     this.unsubscribeEngineReload = this.engine.onReload(() => {
-      this.postReloadRefresh = this.refreshExposureSnapshot().then(() => this.emitToolsChanged());
-      void this.postReloadRefresh.catch((error: unknown) => {
-        this.writeErr(`Caplets native tool reload failed.\n`);
-        this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
-      });
+      this.postReloadRefresh = this.refreshExposureSnapshot({ emitToolsChanged: true });
     });
   }
 
@@ -306,9 +306,26 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     };
   }
 
-  private async refreshExposureSnapshot(): Promise<void> {
-    this.exposureSnapshot = await this.engine.exposureSnapshot({
-      discoverNonDirectMcpSurfaces: false,
+  private async refreshExposureSnapshot(options: { emitToolsChanged: boolean }): Promise<void> {
+    const generation = ++this.exposureRefreshGeneration;
+    try {
+      const snapshot = await this.engine.exposureSnapshot({
+        discoverNonDirectMcpSurfaces: false,
+      });
+      if (generation !== this.exposureRefreshGeneration) return;
+      this.exposureSnapshot = snapshot;
+      if (options.emitToolsChanged) this.emitToolsChanged();
+    } catch (error) {
+      if (generation !== this.exposureRefreshGeneration) return;
+      this.writeErr(`Caplets native tool reload failed.\n`);
+      this.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+
+  private hasDirectMcpExposure(): boolean {
+    return this.engine.enabledServers().some((caplet) => {
+      if (caplet.backend !== "mcp" || caplet.setup || caplet.projectBinding?.required) return false;
+      return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure).direct;
     });
   }
 

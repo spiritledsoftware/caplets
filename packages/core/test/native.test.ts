@@ -199,6 +199,49 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("discovers direct MCP tools for native integrations on cold start", async () => {
+    const fixture = join(fixturesDir, "stdio-server.ts");
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture MCP",
+          description: "Expose fixture MCP directly.",
+          exposure: "direct",
+          command: process.execPath,
+          args: ["--import", tsxImport, fixture],
+          toolCacheTtlMs: 30_000,
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+
+    try {
+      await expect
+        .poll(() => configuredCapletIds(service.listTools()), { timeout: 5_000 })
+        .toEqual(
+          expect.arrayContaining([
+            "fixture__echo",
+            "fixture__list_resources",
+            "fixture__get_prompt",
+          ]),
+        );
+
+      await expect(service.execute("fixture__echo", { message: "cold" })).resolves.toMatchObject({
+        structuredContent: { message: "cold" },
+        _meta: {
+          caplets: expect.objectContaining({
+            capletId: "fixture",
+            operation: "echo",
+            exposure: "direct",
+          }),
+        },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("lists Code Mode only when exposure includes Code Mode", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       httpApis: {

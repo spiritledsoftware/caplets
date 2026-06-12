@@ -54,10 +54,6 @@ export function markdownCallToolResultContent(
   const hasStructured = hasRenderableStructuredContent(structuredContent);
 
   if (context.backend === "mcp" && hasStructured) {
-    const renderedStructured = markdownStructuredContent(structuredContent, context)[0]?.text;
-    if (downstreamText && downstreamText === renderedStructured) {
-      return textContent(downstreamText);
-    }
     if (downstreamText) {
       return textContent(downstreamText);
     }

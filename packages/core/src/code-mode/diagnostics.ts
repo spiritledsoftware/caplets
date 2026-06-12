@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { hasDirectFetchCall } from "./static-analysis";
+import { hasDirectFetchCall, hasExecutableImport } from "./static-analysis";
 import type { CodeModeDiagnostic } from "./types";
 
 export type DiagnoseCodeModeTypeScriptInput = {
@@ -111,37 +111,6 @@ function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
     });
   }
   return diagnostics;
-}
-
-function hasExecutableImport(code: string): boolean {
-  const source = ts.createSourceFile(
-    CODE_FILE,
-    code,
-    ts.ScriptTarget.ES2022,
-    true,
-    ts.ScriptKind.TS,
-  );
-  let found = false;
-
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (
-      ts.isImportDeclaration(node) ||
-      ts.isImportEqualsDeclaration(node) ||
-      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined)
-    ) {
-      found = true;
-      return;
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-
-  visit(source);
-  return found;
 }
 
 function createVirtualCompilerHost(
