@@ -688,7 +688,7 @@ const exampleCaplets = [
         const targetId = window.location.hash.slice(1);
         const target = targetId ? document.getElementById(targetId) : null;
         if (target instanceof HTMLElement) {
-          target.scrollIntoView({ block: "start" });
+          target.scrollIntoView({ block: "start", behavior: "instant" });
         }
       }
 
@@ -1554,8 +1554,7 @@ const exampleCaplets = [
             { rootMargin: "0px 0px -10%", threshold: 0.12 }
           );
 
-          for (const [index, target] of revealTargets.entries()) {
-            target.style.setProperty("--reveal-index", String(index % 3));
+          for (const target of revealTargets) {
             revealObserver.observe(target);
           }
 

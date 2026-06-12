@@ -531,6 +531,9 @@ h1 {
 }
 
 .copy-all-button {
+  display: none;
+  align-items: center;
+  justify-content: center;
   min-height: 44px;
   border: 1px solid var(--ash);
   border-radius: var(--radius-control);
@@ -541,6 +544,10 @@ h1 {
   font-size: 0.68rem;
   font-weight: 800;
   cursor: pointer;
+}
+
+.js-enabled .copy-all-button {
+  display: inline-flex;
 }
 
 .copy-all-button:hover,
@@ -697,8 +704,8 @@ dd {
   --city-scene-olive: #686b4e;
   --city-scene-ink: #1f2018;
   --city-scene-signal: #ffd7a8;
+
   position: static;
-  z-index: 1;
   align-self: stretch;
   min-width: 0;
   min-height: min(690px, calc(100vh - 94px));
@@ -717,6 +724,7 @@ dd {
     rgb(0 0 0 / 0.22) 84%,
     transparent 100%
   );
+
   position: absolute;
   z-index: 0;
   inset: -8% 0 -2%;
