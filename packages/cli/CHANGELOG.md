@@ -1,5 +1,15 @@
 # caplets
 
+## 0.18.1
+
+### Patch Changes
+
+- e4400d8: Update `caplets setup` to prompt for integrations when run interactively, and update Codex and Claude Code setup to configure standard MCP servers through each harness instead of removed plugin marketplace commands.
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+- Updated dependencies [e4400d8]
+  - @caplets/core@0.20.0
+
 ## 0.18.0
 
 ### Minor Changes
