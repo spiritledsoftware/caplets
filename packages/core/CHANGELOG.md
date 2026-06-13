@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.20.1
+
+### Patch Changes
+
+- 8833a75: Refresh expired downstream OAuth/OIDC tokens before calling MCP, OpenAPI, GraphQL, and HTTP backends, persisting rotated credentials when providers return them.
+
 ## 0.20.0
 
 ### Minor Changes
