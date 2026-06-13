@@ -1,7 +1,7 @@
-[mcp_servers.caplets]
+[mcp_servers.caplets-local]
 command = "node"
 args = ["./packages/cli/dist/index.js", "serve", "--transport", "stdio"]
 env_vars = ["GH_TOKEN"]
 
-[mcp_servers.caplets.env]
+[mcp_servers.caplets-local.env]
 CAPLETS_MODE = "local"

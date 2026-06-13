@@ -65,19 +65,46 @@ export function staticRemoteHeaders(server: CapletServerConfig): Record<string, 
   return {};
 }
 
-export function oauthHeaders(server: CapletServerConfig, authDir?: string): Record<string, string> {
+export async function oauthHeaders(
+  server: CapletServerConfig,
+  authDir?: string,
+): Promise<Record<string, string>> {
   if (server.auth?.type !== "oauth2" && server.auth?.type !== "oidc") {
     return {};
   }
-  const bundle = readTokenBundle(server.server, authDir);
-  if (!bundle?.accessToken) {
+  let bundle = readTokenBundle(server.server, authDir);
+  if (!bundle?.accessToken && !bundle?.refreshToken) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${server.server}`, {
       server: server.server,
       authType: server.auth.type,
       nextAction: "run_caplets_auth_login",
     });
   }
-  if (bundle.expiresAt && Date.parse(bundle.expiresAt) <= Date.now()) {
+  if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
+    if (!server.url) {
+      throw new CapletsError("CONFIG_INVALID", `${server.server} is missing url`);
+    }
+    bundle = await refreshGenericOAuthBundle(
+      {
+        server: server.server,
+        backend: "http",
+        url: server.url,
+        auth: server.auth,
+      },
+      server.auth,
+      {
+        ...bundle,
+        server: server.server,
+        authType: bundle.authType ?? server.auth.type,
+        clientId: bundle.clientId ?? server.auth.clientId ?? server.auth.clientMetadataUrl,
+        clientSecret: bundle.clientSecret ?? server.auth.clientSecret,
+        protectedResourceOrigin:
+          bundle.protectedResourceOrigin ?? (server.url ? new URL(server.url).origin : undefined),
+      },
+      authDir,
+    );
+  }
+  if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${server.server} is expired`, {
       server: server.server,
       authType: server.auth.type,
@@ -87,16 +114,16 @@ export function oauthHeaders(server: CapletServerConfig, authDir?: string): Reco
   return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
 }
 
-export function genericOAuthHeaders(
+export async function genericOAuthHeaders(
   target: GenericAuthTarget,
   authDir?: string,
-): Record<string, string> {
+): Promise<Record<string, string>> {
   if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
     return {};
   }
   const authConfig = target.auth as OAuthLikeAuthConfig;
-  const bundle = readTokenBundle(target.server, authDir);
-  if (!bundle?.accessToken) {
+  let bundle = readTokenBundle(target.server, authDir);
+  if (!bundle?.accessToken && !bundle?.refreshToken) {
     throw new CapletsError("AUTH_REQUIRED", `OAuth credentials required for ${target.server}`, {
       server: target.server,
       backend: target.backend,
@@ -104,7 +131,11 @@ export function genericOAuthHeaders(
       nextAction: "run_caplets_auth_login",
     });
   }
-  if (isTokenBundleExpired(bundle)) {
+  assertTokenBundleMatchesTarget(bundle, target, authConfig);
+  if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
+    bundle = await refreshGenericOAuthBundle(target, authConfig, bundle, authDir);
+  }
+  if (!bundle.accessToken) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
       server: target.server,
       backend: target.backend,
@@ -112,7 +143,6 @@ export function genericOAuthHeaders(
       nextAction: "run_caplets_auth_login",
     });
   }
-  assertTokenBundleMatchesTarget(bundle, target, authConfig);
   return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
 }
 
@@ -865,6 +895,109 @@ async function resolveGenericClient(
     ...(clientSecret ? { clientSecret } : {}),
     dynamic: true,
   };
+}
+
+async function refreshGenericOAuthBundle(
+  target: GenericAuthTarget,
+  authConfig: OAuthLikeAuthConfig,
+  bundle: StoredOAuthTokenBundle,
+  authDir?: string,
+): Promise<StoredOAuthTokenBundle> {
+  if (!bundle.refreshToken) {
+    throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
+      server: target.server,
+      backend: target.backend,
+      authType: authConfig.type,
+      nextAction: "run_caplets_auth_login",
+    });
+  }
+  const allowLoopbackHttp = isLoopbackDevelopmentTarget(target, authConfig);
+  let metadata: AuthorizationServerMetadata = {};
+  let tokenEndpoint = authConfig.tokenUrl;
+  if (!tokenEndpoint) {
+    metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
+    tokenEndpoint = metadata.token_endpoint;
+  }
+  if (!tokenEndpoint) {
+    throw new CapletsError("AUTH_REFRESH_FAILED", "OAuth metadata is missing token endpoint", {
+      server: target.server,
+      backend: target.backend,
+      authType: authConfig.type,
+      nextAction: "run_caplets_auth_login",
+    });
+  }
+  assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
+  const clientId = authConfig.clientId ?? authConfig.clientMetadataUrl ?? bundle.clientId;
+  if (!clientId) {
+    throw new CapletsError("AUTH_REFRESH_FAILED", "OAuth clientId is required to refresh tokens", {
+      server: target.server,
+      backend: target.backend,
+      authType: authConfig.type,
+      nextAction: "run_caplets_auth_login",
+    });
+  }
+  const clientSecret = authConfig.clientSecret ?? bundle.clientSecret;
+  const params = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: bundle.refreshToken,
+    client_id: clientId,
+  });
+  if (clientSecret) {
+    params.set("client_secret", clientSecret);
+  }
+  let tokenResponse: Record<string, unknown>;
+  try {
+    tokenResponse = await fetchJson(
+      tokenEndpoint,
+      target.requestTimeoutMs,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      },
+      allowLoopbackHttp,
+    );
+  } catch (error) {
+    if (error instanceof CapletsError) {
+      throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token refresh failed`, {
+        server: target.server,
+        backend: target.backend,
+        authType: authConfig.type,
+        nextAction: "run_caplets_auth_login",
+        cause: error.details,
+      });
+    }
+    throw error;
+  }
+  const idToken = asString(tokenResponse.id_token);
+  const idClaims = parseJwtPayload(idToken);
+  if (idToken) {
+    if (!metadata.issuer && !authConfig.issuer) {
+      metadata = await discoverAuthorizationServer(target, authConfig, allowLoopbackHttp);
+    }
+    validateOidcToken(authConfig, metadata, idToken, idClaims, clientId);
+  }
+  const refreshed = stripUndefined({
+    ...bundle,
+    server: target.server,
+    authType: authConfig.type,
+    accessToken: requireString(tokenResponse.access_token, "access_token"),
+    refreshToken: asString(tokenResponse.refresh_token) ?? bundle.refreshToken,
+    tokenType: asString(tokenResponse.token_type) ?? bundle.tokenType,
+    expiresAt:
+      typeof tokenResponse.expires_in === "number"
+        ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+        : undefined,
+    scope: asString(tokenResponse.scope) ?? bundle.scope ?? scopesFor(authConfig),
+    idToken: idToken ?? bundle.idToken,
+    issuer: asString(idClaims?.iss) ?? bundle.issuer ?? metadata.issuer ?? authConfig.issuer,
+    subject: asString(idClaims?.sub) ?? bundle.subject,
+    clientId,
+    clientSecret,
+    protectedResourceOrigin: protectedResourceOrigin(target, authConfig),
+  });
+  writeTokenBundle(refreshed, authDir);
+  return refreshed;
 }
 
 async function fetchOptionalJson(

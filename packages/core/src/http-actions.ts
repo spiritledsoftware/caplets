@@ -40,7 +40,7 @@ export class HttpActionManager {
     try {
       const operations = operationsFor(api);
       validateBaseUrl(api);
-      authHeaders(api, this.options.authDir);
+      await authHeaders(api, this.options.authDir);
       for (const operation of operations) {
         validateAction(api, operation);
       }
@@ -78,7 +78,7 @@ export class HttpActionManager {
   ): Promise<CompatibilityCallToolResult> {
     const operation = getOperation(api, toolName);
     const startedAt = Date.now();
-    const request = buildRequest(api, operation, args, this.options.authDir);
+    const request = await buildRequest(api, operation, args, this.options.authDir);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
     try {
@@ -188,12 +188,12 @@ function getOperation(api: HttpApiConfig, toolName: string): HttpActionOperation
   return operation;
 }
 
-function buildRequest(
+async function buildRequest(
   api: HttpApiConfig,
   operation: HttpActionOperation,
   args: Record<string, unknown>,
   authDir?: string,
-): { url: URL; headers: Headers; body?: string } {
+): Promise<{ url: URL; headers: Headers; body?: string }> {
   validateBaseUrl(api);
   validateAction(api, operation);
   const url = buildActionUrl(api.baseUrl, substitutePath(operation.path, args, operation), {
@@ -206,7 +206,7 @@ function buildRequest(
     }
   }
   const headers = new Headers();
-  applyAuth(headers, api, authDir);
+  await applyAuth(headers, api, authDir);
   const resolvedHeaders = resolveMappingToRecord(operation.headers, args, "headers");
   for (const [key, value] of Object.entries(resolvedHeaders)) {
     if (value !== undefined && value !== null) {
@@ -342,13 +342,13 @@ function serializeHttpValue(
   }
 }
 
-function applyAuth(headers: Headers, api: HttpApiConfig, authDir?: string): void {
-  for (const [key, value] of Object.entries(authHeaders(api, authDir))) {
+async function applyAuth(headers: Headers, api: HttpApiConfig, authDir?: string): Promise<void> {
+  for (const [key, value] of Object.entries(await authHeaders(api, authDir))) {
     headers.set(key, value);
   }
 }
 
-function authHeaders(api: HttpApiConfig, authDir?: string): Record<string, string> {
+async function authHeaders(api: HttpApiConfig, authDir?: string): Promise<Record<string, string>> {
   switch (api.auth.type) {
     case "none":
       return {};
@@ -358,7 +358,7 @@ function authHeaders(api: HttpApiConfig, authDir?: string): Record<string, strin
       return api.auth.headers;
     case "oauth2":
     case "oidc":
-      return genericOAuthHeaders(
+      return await genericOAuthHeaders(
         {
           server: api.server,
           backend: "http",
