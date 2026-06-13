@@ -64,7 +64,7 @@ describe("auth helpers", () => {
     });
   });
 
-  it("requires stored OAuth tokens before remote operations", () => {
+  it("requires stored OAuth tokens before remote operations", async () => {
     const server = parseConfig({
       mcpServers: {
         remote: {
@@ -77,12 +77,12 @@ describe("auth helpers", () => {
       },
     }).mcpServers.remote!;
 
-    expect(() => oauthHeaders(server, "/tmp/does-not-exist")).toThrow(
-      expect.objectContaining({ code: "AUTH_REQUIRED" }),
-    );
+    await expect(oauthHeaders(server, "/tmp/does-not-exist")).rejects.toMatchObject({
+      code: "AUTH_REQUIRED",
+    });
   });
 
-  it("uses stored OIDC tokens for remote MCP headers", () => {
+  it("uses stored OIDC tokens for remote MCP headers", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     try {
       const server = parseConfig({
@@ -98,8 +98,86 @@ describe("auth helpers", () => {
       }).mcpServers.remote!;
       writeTokenBundle({ server: "remote", accessToken: "secret-token" }, dir);
 
-      expect(oauthHeaders(server, dir)).toEqual({ authorization: "Bearer secret-token" });
+      await expect(oauthHeaders(server, dir)).resolves.toEqual({
+        authorization: "Bearer secret-token",
+      });
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes expired remote MCP OAuth tokens before building headers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-mcp-refresh-"));
+    const requests: Array<{ url?: string; body: string }> = [];
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requests.push({ ...(request.url ? { url: request.url } : {}), body });
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            access_token: "new-mcp-access-token",
+            refresh_token: "new-mcp-refresh-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+        );
+      });
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote OAuth server.",
+            transport: "http",
+            url: `${baseUrl}/mcp`,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: `${baseUrl}/token`,
+            },
+          },
+        },
+      });
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "old-mcp-access-token",
+          refreshToken: "old-mcp-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+        dir,
+      );
+
+      const headers = await oauthHeaders(config.mcpServers.remote!, dir);
+
+      expect(headers).toEqual({ authorization: "Bearer new-mcp-access-token" });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe("/token");
+      expect(new URLSearchParams(requests[0]?.body).get("grant_type")).toBe("refresh_token");
+      expect(new URLSearchParams(requests[0]?.body).get("refresh_token")).toBe(
+        "old-mcp-refresh-token",
+      );
+      expect(readTokenBundle("remote", dir)).toMatchObject({
+        accessToken: "new-mcp-access-token",
+        refreshToken: "new-mcp-refresh-token",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -145,7 +223,7 @@ describe("auth helpers", () => {
     expect(authStorePath("remote", root)).toBe(join(root, "remote.json"));
   });
 
-  it("builds generic OAuth headers for OpenAPI and GraphQL auth targets", () => {
+  it("builds generic OAuth headers for OpenAPI and GraphQL auth targets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     try {
       writeTokenBundle(
@@ -163,7 +241,7 @@ describe("auth helpers", () => {
       );
 
       expect(
-        genericOAuthHeaders(
+        await genericOAuthHeaders(
           {
             server: "users",
             backend: "openapi",
@@ -173,6 +251,196 @@ describe("auth helpers", () => {
         ),
       ).toEqual({ authorization: "Bearer secret-access-token" });
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes expired generic OAuth tokens before building headers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-"));
+    const requests: Array<{ url?: string; body: string }> = [];
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        requests.push({ ...(request.url ? { url: request.url } : {}), body });
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            access_token: "new-access-token",
+            refresh_token: "rotated-refresh-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+            scope: "api:read",
+          }),
+        );
+      });
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+          scope: "api:read",
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        dir,
+      );
+
+      const headers = await genericOAuthHeaders(
+        {
+          server: "users",
+          backend: "http",
+          baseUrl,
+          auth: {
+            type: "oauth2",
+            clientId: "client",
+            tokenUrl: `${baseUrl}/token`,
+          },
+        },
+        dir,
+      );
+
+      expect(headers).toEqual({ authorization: "Bearer new-access-token" });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe("/token");
+      expect(new URLSearchParams(requests[0]?.body).get("grant_type")).toBe("refresh_token");
+      expect(new URLSearchParams(requests[0]?.body).get("refresh_token")).toBe("old-refresh-token");
+      expect(new URLSearchParams(requests[0]?.body).get("client_id")).toBe("client");
+      expect(readTokenBundle("users", dir)).toMatchObject({
+        accessToken: "new-access-token",
+        refreshToken: "rotated-refresh-token",
+        tokenType: "Bearer",
+        scope: "api:read",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects generic OAuth headers when refresh returns an expired token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expired-"));
+    const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          access_token: "already-expired-token",
+          token_type: "Bearer",
+          expires_in: -1,
+        }),
+      );
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "http",
+            baseUrl,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: `${baseUrl}/token`,
+            },
+          },
+          dir,
+        ),
+      ).rejects.toMatchObject({ code: "AUTH_REFRESH_FAILED" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves usable generic OAuth expiry metadata when refresh omits expires_in", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expiry-"));
+    const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          access_token: "new-access-token",
+          token_type: "Bearer",
+        }),
+      );
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const expiresAt = "2999-01-01T00:00:00.000Z";
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "",
+          refreshToken: "old-refresh-token",
+          expiresAt,
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "http",
+            baseUrl,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: `${baseUrl}/token`,
+            },
+          },
+          dir,
+        ),
+      ).resolves.toEqual({ authorization: "Bearer new-access-token" });
+
+      expect(readTokenBundle("users", dir)).toMatchObject({
+        accessToken: "new-access-token",
+        expiresAt,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -657,7 +925,7 @@ describe("auth helpers", () => {
       expect(requests.find((request) => request.url === "/token")?.body).toContain(
         "client_id=dynamic-client",
       );
-      const bundle = genericOAuthHeaders(
+      const bundle = await genericOAuthHeaders(
         { server: "users", backend: "openapi", auth: { type: "oidc" } },
         dir,
       );
@@ -759,7 +1027,7 @@ describe("auth helpers", () => {
     }
   });
 
-  it("matches generic OAuth token bundles against configured client metadata URLs", () => {
+  it("matches generic OAuth token bundles against configured client metadata URLs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     try {
       writeTokenBundle(
@@ -774,7 +1042,7 @@ describe("auth helpers", () => {
       );
 
       expect(
-        genericOAuthHeaders(
+        await genericOAuthHeaders(
           {
             server: "users",
             backend: "openapi",
@@ -788,7 +1056,7 @@ describe("auth helpers", () => {
         ),
       ).toEqual({ authorization: "Bearer metadata-url-token" });
 
-      expect(() =>
+      await expect(
         genericOAuthHeaders(
           {
             server: "users",
@@ -801,7 +1069,7 @@ describe("auth helpers", () => {
           },
           dir,
         ),
-      ).toThrow(expect.objectContaining({ code: "AUTH_REQUIRED" }));
+      ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

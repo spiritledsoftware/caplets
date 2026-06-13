@@ -2,7 +2,7 @@
 
 Native OpenCode plugin for Caplets.
 
-This package exposes configured Caplets as native OpenCode tools named `caplets__<id>` plus `caplets__code_mode` for Caplets Code Mode. It does not start the Caplets MCP server and does not edit `opencode.json`; prompt guidance is injected through OpenCode plugin hooks.
+This package exposes `caplets__code_mode` for Caplets Code Mode. Progressive exposure adds native OpenCode tools named `caplets__<id>`, and direct exposure adds operation-level tools named `caplets__<id>__<operation>`. It does not start the Caplets MCP server and does not edit `opencode.json`; prompt guidance is injected through OpenCode plugin hooks.
 
 MCP-backed Caplets advertise resource, prompt, template, and completion operations in their generated schema; OpenAPI, GraphQL, HTTP, CLI, and Caplet-set backends remain tool/action-only.
 

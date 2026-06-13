@@ -13,13 +13,13 @@
 ## Package Map
 
 - `packages/core` is the runtime/library source: config parsing, schema generation, MCP/OpenAPI/GraphQL/HTTP/CLI backends, native service exports.
-- `packages/cli` publishes the `caplets` binary and delegates almost all behavior to `@caplets/core`; `serve`/no arg starts the stdio MCP server.
+- `packages/cli` publishes the `caplets` binary and delegates almost all behavior to `@caplets/core`; `caplets serve` starts the MCP server, while no args print help.
 - `packages/opencode` and `packages/pi` are native agent integrations that wrap `@caplets/core/native`; keep integration-specific schema/adapter code there.
 - `packages/benchmarks` owns deterministic and opt-in live coding-agent benchmarks; deterministic benchmark docs are generated from `pnpm benchmark`.
 
 ## Generated And Checked Files
 
-- Put design specs in `docs/specs/`, implementation plans in `docs/plans/`, and product requirements documents in `docs/product/`; do not use `docs/superpowers/` in this repo.
+- Source code is the source of truth. Keep long-lived product docs in `docs/product/`, architecture docs in `docs/`, and ADRs in `docs/adr/`. Avoid committing short-lived implementation plans or design specs unless explicitly requested; if they are needed, put them in `docs/plans/` or `docs/specs/` and delete or repurpose them once they are superseded. Do not use `docs/superpowers/` in this repo.
 - Config schema source of truth is Zod in `packages/core/src/config.ts`; update `schemas/caplets-config.schema.json` with `pnpm schema:generate` and verify with `pnpm schema:check`.
 - Code Mode runtime API declaration source of truth is `packages/core/src/code-mode/runtime-api.d.ts`; update `packages/core/src/code-mode/runtime-api.generated.ts` with `pnpm code-mode:generate-api` and verify with `pnpm code-mode:check-api`.
 - `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` fails if the committed report is stale.
@@ -28,7 +28,7 @@
 ## Config And Runtime Gotchas
 
 - Default user config path is resolved by core; tests commonly override with `CAPLETS_CONFIG`.
-- Project config lives at `.caplets/config.json` and executable project config is intentionally restricted unless `CAPLETS_TRUST_PROJECT_CAPLETS` is enabled.
+- Project config lives at `.caplets/config.json`; project Markdown Caplet files load by default, while executable backend maps in project config are intentionally rejected.
 - Runtime config reload keeps the last known-good config on parse/validation errors; do not change this behavior without updating reload tests.
 - Caplet tool names come from configured server IDs and expose progressive discovery operations (`get_caplet`, `list_tools`/`search_tools`, `get_tool`, `call_tool`) rather than flattening downstream tools.
 

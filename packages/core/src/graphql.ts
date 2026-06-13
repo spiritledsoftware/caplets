@@ -138,7 +138,7 @@ export class GraphQLManager {
       const headers = new Headers({
         "content-type": "application/json",
         ...staticHeaders(endpoint),
-        ...genericOAuthHeaders(
+        ...(await genericOAuthHeaders(
           {
             server: endpoint.server,
             backend: "graphql",
@@ -147,7 +147,7 @@ export class GraphQLManager {
             requestTimeoutMs: endpoint.requestTimeoutMs,
           },
           this.options.authDir,
-        ),
+        )),
       });
       const response = await fetch(endpoint.endpointUrl, {
         method: GRAPHQL_METHOD,
@@ -623,7 +623,7 @@ async function postGraphQl(
       headers: {
         "content-type": "application/json",
         ...staticHeaders(endpoint),
-        ...genericOAuthHeaders(
+        ...(await genericOAuthHeaders(
           {
             server: endpoint.server,
             backend: "graphql",
@@ -632,7 +632,7 @@ async function postGraphQl(
             requestTimeoutMs: endpoint.requestTimeoutMs,
           },
           authDir,
-        ),
+        )),
       },
       body: JSON.stringify(payload),
     });
@@ -660,7 +660,7 @@ async function fetchGraphQlText(
       redirect: "manual",
       signal: controller.signal,
       headers: {
-        ...(sendAuth ? schemaAuthHeaders(endpoint, authDir) : {}),
+        ...(sendAuth ? await schemaAuthHeaders(endpoint, authDir) : {}),
       },
     });
   } catch (error) {
@@ -685,13 +685,13 @@ async function fetchGraphQlText(
   return readGraphQlText(response);
 }
 
-function schemaAuthHeaders(
+async function schemaAuthHeaders(
   endpoint: GraphQlEndpointConfig,
   authDir?: string,
-): Record<string, string> {
+): Promise<Record<string, string>> {
   return {
     ...staticHeaders(endpoint),
-    ...genericOAuthHeaders(
+    ...(await genericOAuthHeaders(
       {
         server: endpoint.server,
         backend: "graphql",
@@ -700,7 +700,7 @@ function schemaAuthHeaders(
         requestTimeoutMs: endpoint.requestTimeoutMs,
       },
       authDir,
-    ),
+    )),
   };
 }
 

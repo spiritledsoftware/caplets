@@ -116,7 +116,7 @@ export class OpenApiManager {
     args: Record<string, unknown>,
   ): Promise<CompatibilityCallToolResult> {
     const operation = await this.getOperation(endpoint, toolName);
-    const request = buildRequest(endpoint, operation, args, this.options.authDir);
+    const request = await buildRequest(endpoint, operation, args, this.options.authDir);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), endpoint.requestTimeoutMs);
     try {
@@ -313,7 +313,7 @@ async function loadOpenApiSource(
   const response = await fetchWithLimit(
     endpoint.specUrl,
     endpoint.requestTimeoutMs,
-    shouldSendSpecAuth(endpoint) ? authHeaders(endpoint, authDir) : {},
+    shouldSendSpecAuth(endpoint) ? await authHeaders(endpoint, authDir) : {},
   );
   return parseOpenApiSourceText(response);
 }
@@ -580,12 +580,12 @@ function rejectExternalRefs(value: unknown): void {
   }
 }
 
-function buildRequest(
+async function buildRequest(
   endpoint: OpenApiEndpointConfig,
   operation: OpenApiOperation,
   args: Record<string, unknown>,
   authDir?: string,
-): { url: URL; headers: Headers; body?: string } {
+): Promise<{ url: URL; headers: Headers; body?: string }> {
   const base = endpoint.baseUrl ?? operation.baseUrl;
   validateOperationBaseUrl(endpoint, base);
   const url = buildOperationUrl(
@@ -598,7 +598,7 @@ function buildRequest(
     }
   }
   const headers = new Headers();
-  applyAuth(headers, endpoint, authDir);
+  await applyAuth(headers, endpoint, authDir);
   const configuredHeaderNames = configuredAuthHeaderNames(endpoint);
   for (const [key, value] of Object.entries(operation.staticHeaders ?? {})) {
     if (!headers.has(key) && !configuredHeaderNames.has(key.toLowerCase())) {
@@ -676,8 +676,12 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function applyAuth(headers: Headers, endpoint: OpenApiEndpointConfig, authDir?: string): void {
-  for (const [key, value] of Object.entries(authHeaders(endpoint, authDir))) {
+async function applyAuth(
+  headers: Headers,
+  endpoint: OpenApiEndpointConfig,
+  authDir?: string,
+): Promise<void> {
+  for (const [key, value] of Object.entries(await authHeaders(endpoint, authDir))) {
     headers.set(key, value);
   }
 }
@@ -688,7 +692,10 @@ function configuredAuthHeaderNames(endpoint: OpenApiEndpointConfig): Set<string>
     : new Set<string>();
 }
 
-function authHeaders(endpoint: OpenApiEndpointConfig, authDir?: string): Record<string, string> {
+async function authHeaders(
+  endpoint: OpenApiEndpointConfig,
+  authDir?: string,
+): Promise<Record<string, string>> {
   switch (endpoint.auth.type) {
     case "none":
       return {};
@@ -698,7 +705,7 @@ function authHeaders(endpoint: OpenApiEndpointConfig, authDir?: string): Record<
       return endpoint.auth.headers;
     case "oauth2":
     case "oidc":
-      return genericOAuthHeaders(endpoint, authDir);
+      return await genericOAuthHeaders(endpoint, authDir);
   }
 }
 
