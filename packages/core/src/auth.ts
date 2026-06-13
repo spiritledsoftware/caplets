@@ -135,7 +135,7 @@ export async function genericOAuthHeaders(
   if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     bundle = await refreshGenericOAuthBundle(target, authConfig, bundle, authDir);
   }
-  if (!bundle.accessToken) {
+  if (!bundle.accessToken || isTokenBundleExpired(bundle)) {
     throw new CapletsError("AUTH_REFRESH_FAILED", `OAuth token for ${target.server} is expired`, {
       server: target.server,
       backend: target.backend,
@@ -984,10 +984,7 @@ async function refreshGenericOAuthBundle(
     accessToken: requireString(tokenResponse.access_token, "access_token"),
     refreshToken: asString(tokenResponse.refresh_token) ?? bundle.refreshToken,
     tokenType: asString(tokenResponse.token_type) ?? bundle.tokenType,
-    expiresAt:
-      typeof tokenResponse.expires_in === "number"
-        ? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
-        : undefined,
+    expiresAt: refreshedExpiresAt(tokenResponse.expires_in, bundle.expiresAt),
     scope: asString(tokenResponse.scope) ?? bundle.scope ?? scopesFor(authConfig),
     idToken: idToken ?? bundle.idToken,
     issuer: asString(idClaims?.iss) ?? bundle.issuer ?? metadata.issuer ?? authConfig.issuer,
@@ -998,6 +995,16 @@ async function refreshGenericOAuthBundle(
   });
   writeTokenBundle(refreshed, authDir);
   return refreshed;
+}
+
+function refreshedExpiresAt(expiresIn: unknown, fallback?: string): string | undefined {
+  if (typeof expiresIn === "number") {
+    return new Date(Date.now() + expiresIn * 1000).toISOString();
+  }
+  if (fallback && Date.parse(fallback) > Date.now()) {
+    return fallback;
+  }
+  return undefined;
 }
 
 async function fetchOptionalJson(

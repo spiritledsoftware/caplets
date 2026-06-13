@@ -334,6 +334,117 @@ describe("auth helpers", () => {
     }
   });
 
+  it("rejects generic OAuth headers when refresh returns an expired token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expired-"));
+    const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          access_token: "already-expired-token",
+          token_type: "Bearer",
+          expires_in: -1,
+        }),
+      );
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "http",
+            baseUrl,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: `${baseUrl}/token`,
+            },
+          },
+          dir,
+        ),
+      ).rejects.toMatchObject({ code: "AUTH_REFRESH_FAILED" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves usable generic OAuth expiry metadata when refresh omits expires_in", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expiry-"));
+    const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          access_token: "new-access-token",
+          token_type: "Bearer",
+        }),
+      );
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+      const expiresAt = "2999-01-01T00:00:00.000Z";
+      writeTokenBundle(
+        {
+          server: "users",
+          authType: "oauth2",
+          accessToken: "",
+          refreshToken: "old-refresh-token",
+          expiresAt,
+          clientId: "client",
+          protectedResourceOrigin: baseUrl,
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "users",
+            backend: "http",
+            baseUrl,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: `${baseUrl}/token`,
+            },
+          },
+          dir,
+        ),
+      ).resolves.toEqual({ authorization: "Bearer new-access-token" });
+
+      expect(readTokenBundle("users", dir)).toMatchObject({
+        accessToken: "new-access-token",
+        expiresAt,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("includes HTTP APIs in OAuth auth target listing", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-config-"));
     try {
