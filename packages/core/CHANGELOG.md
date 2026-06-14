@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.20.2
+
+### Patch Changes
+
+- aa0bbf8: Fix oauth and oidc state handling. Fix remote server allowed hosts.
+
 ## 0.20.1
 
 ### Patch Changes
