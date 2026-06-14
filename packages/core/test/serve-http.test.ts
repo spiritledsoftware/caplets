@@ -663,6 +663,64 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("recomputes attach projections before invokes so stale downstream surfaces are rejected", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+    };
+    let downstreamToolName = "read";
+    const engine = {
+      onReload: () => () => undefined,
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [
+          {
+            caplet,
+            downstreamName: downstreamToolName,
+            name: `docs__${downstreamToolName}`,
+            tool: { name: downstreamToolName, inputSchema: { type: "object" } },
+          },
+        ],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [],
+      }),
+      execute: async () => ({ called: true }),
+    } as unknown as CapletsEngine;
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const manifest = (await (
+      await app.request("http://127.0.0.1:5387/v1/attach/manifest")
+    ).json()) as {
+      revision: string;
+      tools: Array<{ exportId: string; kind: string }>;
+    };
+    downstreamToolName = "search";
+
+    const stale = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: manifest.revision,
+        kind: "tool",
+        exportId: manifest.tools[0]!.exportId,
+        input: {},
+      }),
+    });
+
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "ATTACH_MANIFEST_STALE" },
+    });
+  });
+
   it("serves attach events as an unbuffered keep-alive SSE stream", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });

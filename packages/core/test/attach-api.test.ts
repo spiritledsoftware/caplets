@@ -110,6 +110,62 @@ describe("Attach API dispatch", () => {
     expect(engine.readDirectResource).toHaveBeenCalledWith("docs", "file:///README.md");
   });
 
+  it("rejects resource template reads outside the advertised template", async () => {
+    const engine = {
+      execute: vi.fn(async () => ({ ok: true })),
+      readDirectResource: vi.fn(async () => ({ contents: [{ uri: "secrets:///README.md" }] })),
+    } as unknown as CapletsEngine;
+    const projection = {
+      manifest: {
+        version: 1,
+        revision: "rev-1",
+        generatedAt: new Date(0).toISOString(),
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [
+          {
+            stableId: "resourceTemplate:docs:file:///{path}",
+            exportId: "export-resource-template",
+            kind: "resourceTemplate",
+            uriTemplate:
+              "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+            downstreamUriTemplate: "file:///{path}",
+            schemaHash: null,
+            capletId: "docs",
+            shadowing: "forbid",
+          },
+        ],
+        prompts: [],
+        completions: [],
+        codeModeCaplets: [],
+        diagnostics: [],
+      },
+      routes: new Map([
+        [
+          "export-resource-template",
+          {
+            kind: "resourceTemplate",
+            capletId: "docs",
+            downstreamUriTemplate: "file:///{path}",
+          },
+        ],
+      ]),
+    } satisfies AttachProjection;
+
+    await expect(
+      invokeAttachExport(engine, projection, {
+        revision: "rev-1",
+        kind: "resourceTemplate",
+        exportId: "export-resource-template",
+        input: { uri: "secrets:///README.md" },
+      }),
+    ).rejects.toMatchObject({
+      code: "ATTACH_EXPORT_NOT_FOUND",
+    });
+    expect(engine.readDirectResource).not.toHaveBeenCalled();
+  });
+
   it("normalizes prompt completion refs to downstream prompt names", async () => {
     const engine = {
       execute: vi.fn(async () => ({ completion: "ok" })),

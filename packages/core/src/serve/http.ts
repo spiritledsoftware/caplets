@@ -12,7 +12,6 @@ import {
   buildAttachProjection,
   invokeAttachExport,
   type AttachInvokeRequest,
-  type AttachProjection,
 } from "../attach/api";
 import {
   dispatchRemoteCliRequest,
@@ -58,10 +57,6 @@ export function createHttpServeApp(
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
-  let attachProjection: AttachProjection | undefined;
-  engine.onReload(() => {
-    attachProjection = undefined;
-  });
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -136,7 +131,7 @@ export function createHttpServeApp(
 
   if (exposeAttach) {
     app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
-      attachProjection ??= await buildAttachProjection(engine);
+      const attachProjection = await buildAttachProjection(engine);
       return c.json(attachProjection.manifest);
     });
 
@@ -147,7 +142,7 @@ export function createHttpServeApp(
     app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
-        attachProjection ??= await buildAttachProjection(engine);
+        const attachProjection = await buildAttachProjection(engine);
         const result = await invokeAttachExport(engine, attachProjection, request);
         return c.json({ ok: true, data: result });
       } catch (error) {

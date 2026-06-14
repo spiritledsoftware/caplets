@@ -829,7 +829,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       ].filter((caplet) => caplet !== nativeCodeModeToolId),
     );
     const localTools = allLocalTools.filter(
-      (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.caplet),
+      (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.sourceCaplet ?? tool.caplet),
     );
     this.warnShadowedLocalCaplets(allLocalTools, remoteIds);
     const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
@@ -846,7 +846,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   private warnShadowedLocalCaplets(localTools: NativeCapletTool[], remoteIds: Set<string>): void {
     const localIds = new Set([
-      ...localTools.filter((tool) => tool.codeModeRun !== true).map((tool) => tool.caplet),
+      ...localTools
+        .filter((tool) => tool.codeModeRun !== true)
+        .map((tool) => tool.sourceCaplet ?? tool.caplet),
       ...codeModeCallableNativeTools(localTools, { fallbackToVisible: false }).map(
         (tool) => tool.caplet,
       ),

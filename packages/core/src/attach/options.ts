@@ -20,10 +20,24 @@ export async function resolveAttachServeOptions(
   env: Record<string, string | undefined> = process.env,
 ): Promise<AttachServeOptions> {
   const selection = await resolveRemoteSelection(raw, env);
-  const serve = resolveServeOptions(raw, env);
+  const serve = resolveServeOptions(attachLocalServeOptions(raw), env);
   return {
     ...serve,
     projectRoot: raw.projectRoot ?? process.cwd(),
     selection,
   };
+}
+
+function attachLocalServeOptions(raw: RawAttachServeOptions): RawServeOptions {
+  const {
+    user: _user,
+    password: _password,
+    token: _token,
+    remoteUrl: _remoteUrl,
+    workspace: _workspace,
+    fetch: _fetch,
+    projectRoot: _projectRoot,
+    ...serve
+  } = raw;
+  return serve;
 }

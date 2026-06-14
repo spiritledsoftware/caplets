@@ -47,6 +47,37 @@ describe("caplets attach CLI", () => {
     });
   });
 
+  it("treats attach --user and --password as remote Basic Auth for stdio serving", async () => {
+    const served: unknown[] = [];
+    await runCli(
+      [
+        "attach",
+        "--remote-url",
+        "https://caplets.example.com/caplets",
+        "--user",
+        "alice",
+        "--password",
+        "secret",
+      ],
+      {
+        env: { CAPLETS_MODE: "remote" },
+        attachServe: async (options: unknown) => {
+          served.push(options);
+        },
+      } as never,
+    );
+
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      transport: "stdio",
+      selection: {
+        remote: {
+          auth: { type: "basic", user: "alice", password: "secret" },
+        },
+      },
+    });
+  });
+
   it("rejects attach server in local mode", async () => {
     await expect(
       runCli(["attach"], {

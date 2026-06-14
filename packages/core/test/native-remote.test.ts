@@ -846,6 +846,30 @@ describe("RemoteNativeCapletsService", () => {
     await service.close();
   });
 
+  it("does not reconnect and retry application errors that mention invalid inputs", async () => {
+    const first = client();
+    const second = client();
+    first.api.callTool = vi.fn(async () => {
+      throw new Error("REQUEST_INVALID: invalid argument");
+    });
+    const factory = vi.fn(() => second.api);
+    const service = new RemoteNativeCapletsService({
+      client: first.api,
+      clientFactory: factory,
+      pollIntervalMs: 60_000,
+    });
+
+    await expect(service.execute("alpha", { input: true })).rejects.toThrow(
+      /REQUEST_INVALID: invalid argument/u,
+    );
+
+    expect(first.api.callTool).toHaveBeenCalledTimes(1);
+    expect(factory).not.toHaveBeenCalled();
+    expect(second.api.callTool).not.toHaveBeenCalled();
+
+    await service.close();
+  });
+
   it("notifies listeners when remote tool list changes", async () => {
     const fixture = client([{ name: "alpha", description: "Alpha" }]);
     const service = new RemoteNativeCapletsService({ client: fixture.api, pollIntervalMs: 60_000 });
@@ -1205,6 +1229,43 @@ describe("createNativeCapletsService remote mode", () => {
       ["remote-only", "Remote Only"],
       ["local-only", "Local Only"],
     ]);
+    expect(writeErr).toHaveBeenCalledWith(
+      "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
+    await service.close();
+  });
+
+  it("suppresses local direct tools by source Caplet ID when remote forbids shadowing", async () => {
+    const fixture = client([{ name: "shared", title: "Remote Shared" }]);
+    const writeErr = vi.fn();
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "shared__ping",
+          sourceCaplet: "shared",
+          toolName: "caplets__shared__ping",
+          title: "Ping",
+          description: "Local direct tool.",
+          promptGuidance: [],
+        },
+      ]),
+      execute: vi.fn(async () => ({ local: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+      writeErr,
+    });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["shared"]);
+    expect(service.listTools().map((tool) => tool.caplet)).not.toContain("shared__ping");
     expect(writeErr).toHaveBeenCalledWith(
       "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
     );

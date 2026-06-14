@@ -195,10 +195,14 @@ export async function invokeAttachExport(
         "Attach resource template invoke requires input.uri.",
       );
     }
-    return await engine.readDirectResource(
-      route.capletId,
-      downstreamResourceUri(route.capletId, uri),
-    );
+    const downstreamUri = downstreamResourceUri(route.capletId, uri);
+    if (!uriMatchesTemplate(downstreamUri, route.downstreamUriTemplate)) {
+      throw new CapletsError(
+        "ATTACH_EXPORT_NOT_FOUND",
+        "Attach resource URI does not match the exported resource template.",
+      );
+    }
+    return await engine.readDirectResource(route.capletId, downstreamUri);
   }
   if (route.kind === "prompt") {
     return await engine.getDirectPrompt(
@@ -470,4 +474,11 @@ function downstreamResourceUri(capletId: string, uri: string): string {
     );
   }
   return decoded.downstreamUri;
+}
+
+function uriMatchesTemplate(uri: string, uriTemplate: string): boolean {
+  const pattern = uriTemplate
+    .replace(/([.*+?^${}()|[\]\\])/g, "\\$1")
+    .replace(/\\\{[^}]+\\\}/g, ".+");
+  return new RegExp(`^${pattern}$`, "u").test(uri);
 }

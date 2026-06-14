@@ -828,8 +828,20 @@ function remoteAuthError(kind: "self_hosted_remote" | "hosted_cloud"): CapletsEr
 }
 
 function isSessionFailure(error: unknown): boolean {
+  const candidate = error as { code?: unknown; status?: unknown; statusCode?: unknown };
+  if (candidate.status === 408 || candidate.statusCode === 408) return true;
+  if (
+    typeof candidate.code === "string" &&
+    /^(ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|SESSION_EXPIRED|SESSION_CLOSED|TRANSPORT_CLOSED)$/u.test(
+      candidate.code,
+    )
+  ) {
+    return true;
+  }
   const message = errorMessage(error).toLowerCase();
-  return /session|transport|connection|connect|closed|invalid/u.test(message);
+  return /\b(invalid session|session (closed|expired|not found)|transport (connection )?closed|connection closed|closed connection|server unavailable|connection reset|econnreset|econnrefused)\b/u.test(
+    message,
+  );
 }
 
 function isAuthFailure(error: unknown): boolean {
