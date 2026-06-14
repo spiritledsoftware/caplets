@@ -96,6 +96,37 @@ describe("NativeCapletsMcpSession", () => {
     await session.close();
   });
 
+  it("passes through native tool results that are already MCP call results", async () => {
+    const registered = new Map<string, unknown>();
+    const server = {
+      registerTool: vi.fn((name: string, definition: unknown, callback: unknown) => {
+        registered.set(name, { definition, callback });
+        return { remove: vi.fn(), update: vi.fn() };
+      }),
+      connect: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const callResult = {
+      content: [{ type: "text", text: "hello" }],
+      structuredContent: { message: "hello" },
+    };
+    const service = {
+      listTools: () => [{ caplet: "alpha", title: "Alpha", description: "Alpha" }],
+      execute: vi.fn(async () => callResult),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+
+    const session = new NativeCapletsMcpSession(service as never, { server: server as never });
+
+    const tool = registered.get("alpha") as {
+      callback: (request: unknown) => Promise<unknown>;
+    };
+    await expect(tool.callback({})).resolves.toBe(callResult);
+    await session.close();
+  });
+
   it("updates registered tools when the native service changes", () => {
     let listener: ((tools: unknown[]) => void) | undefined;
     const removed = vi.fn();

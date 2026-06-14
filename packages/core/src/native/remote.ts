@@ -1,6 +1,8 @@
 import { CapletsError } from "../errors";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
+import { runCodeMode } from "../code-mode/runner";
+import { codeModeRunInputSchema } from "../code-mode/tool";
 import type { ResolvedNativeCapletsServiceOptions } from "./options";
 import type {
   NativeCapletsService,
@@ -12,6 +14,7 @@ import { nativeCapletToolName, nativeCodeModeToolId, nativeCodeModeToolName } fr
 export type RemoteCapletsTool = {
   name: string;
   capletId?: string | undefined;
+  sourceCapletId?: string | undefined;
   title?: string | undefined;
   description?: string | undefined;
   inputSchema?: unknown;
@@ -46,6 +49,7 @@ export function createSdkRemoteCapletsClient(
   const listeners = new Set<() => void>();
   let manifest: AttachManifest | undefined;
   let exportByName = new Map<string, AttachManifestExport>();
+  let eventsAbort: AbortController | undefined;
 
   return {
     async listTools() {
@@ -58,6 +62,15 @@ export function createSdkRemoteCapletsClient(
         manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
         exportByName = exportMapFor(manifest);
       }
+      const primitive = await callPrimitiveExport(
+        options.url,
+        options.requestInit,
+        fetchImpl,
+        manifest,
+        name,
+        args,
+      );
+      if (primitive.handled) return primitive.result;
       const entry = exportByName.get(name);
       if (!entry) {
         throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", `Attach export ${name} was not found.`);
@@ -75,7 +88,12 @@ export function createSdkRemoteCapletsClient(
         const nextEntry = compatibleExport(nextManifest, entry);
         manifest = nextManifest;
         exportByName = exportMapFor(nextManifest);
-        if (!nextEntry) throw error;
+        if (!nextEntry) {
+          throw new CapletsError(
+            "ATTACH_EXPORT_NOT_FOUND",
+            "Attach export changed after manifest refresh; refetch the manifest before retrying.",
+          );
+        }
         return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
           revision: nextManifest.revision,
           kind: nextEntry.kind,
@@ -86,9 +104,12 @@ export function createSdkRemoteCapletsClient(
     },
     onToolsChanged(listener) {
       listeners.add(listener);
+      eventsAbort ??= startAttachEvents(options.url, options.requestInit, fetchImpl, listeners);
       return () => listeners.delete(listener);
     },
     async close() {
+      eventsAbort?.abort();
+      eventsAbort = undefined;
       listeners.clear();
     },
   };
@@ -96,6 +117,7 @@ export function createSdkRemoteCapletsClient(
 
 export class RemoteNativeCapletsService implements NativeCapletsService {
   private tools: NativeCapletTool[] = [];
+  private toolRoutes = new Map<string, string>();
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
   private readonly clientFactory: () => RemoteCapletsClient;
   private client: RemoteCapletsClient;
@@ -119,8 +141,12 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (capletId === nativeCodeModeToolId) {
+      return await executeCodeModeRunRemote(this, request);
+    }
+    const remoteToolId = this.toolRoutes.get(capletId) ?? capletId;
     try {
-      return await this.client.callTool(capletId, request);
+      return await this.client.callTool(remoteToolId, request);
     } catch (error) {
       if (isAuthFailure(error)) {
         throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
@@ -130,7 +156,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
           throw error;
         }
         try {
-          return await this.client.callTool(capletId, request);
+          return await this.client.callTool(remoteToolId, request);
         } catch (retryError) {
           if (isAuthFailure(retryError)) {
             throw remoteAuthError(this.options.authKind ?? "self_hosted_remote");
@@ -184,9 +210,11 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   }
 
   private async reloadFromClient(): Promise<void> {
-    const tools = (await this.client.listTools()).map(remoteToolToNativeTool);
+    const remoteTools = await this.client.listTools();
+    const tools = remoteTools.map(remoteToolToNativeTool);
     const changed = JSON.stringify(tools) !== JSON.stringify(this.tools);
     this.tools = tools;
+    this.toolRoutes = new Map(remoteTools.map((tool) => [nativeToolRouteId(tool), tool.name]));
     if (changed) {
       this.emitToolsChanged();
     }
@@ -242,13 +270,15 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
 }
 
 function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
-  const capletId = tool.capletId ?? tool.name;
+  const capletId = nativeToolRouteId(tool);
+  const sourceCaplet = tool.sourceCapletId ?? tool.capletId;
   const toolName = tool.codeModeRun ? nativeCodeModeToolName : nativeCapletToolName(capletId);
   const inputSchema = isPlainObject(tool.inputSchema)
     ? tool.inputSchema
     : generatedToolInputJsonSchemaForCaplet({ backend: "tool" });
   return {
     caplet: capletId,
+    ...(sourceCaplet && sourceCaplet !== capletId ? { sourceCaplet } : {}),
     toolName,
     title: tool.title ?? capletId,
     description: [
@@ -272,6 +302,10 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     ...(isPlainObject(tool.outputSchema) ? { outputSchema: tool.outputSchema } : {}),
     operationNames: operationNamesFromSchema(inputSchema),
   };
+}
+
+function nativeToolRouteId(tool: RemoteCapletsTool): string {
+  return tool.codeModeRun ? nativeCodeModeToolId : tool.name;
 }
 
 async function fetchAttachManifest(
@@ -316,6 +350,124 @@ async function invokeAttachExport(
   return payload;
 }
 
+async function callPrimitiveExport(
+  attachUrl: URL,
+  requestInit: RequestInit | undefined,
+  fetchImpl: typeof fetch,
+  manifest: AttachManifest,
+  name: string,
+  args: unknown,
+): Promise<{ handled: false } | { handled: true; result: unknown }> {
+  const primitive = primitiveRoute(name);
+  if (!primitive) return { handled: false };
+  const input = isPlainObject(args) ? args : {};
+  const { capletId, operation } = primitive;
+  if (operation === "list_resources") {
+    return {
+      handled: true,
+      result: {
+        items: manifest.resources
+          .filter((entry) => entry.capletId === capletId)
+          .map((entry) => ({
+            uri: entry.uri,
+            name: entry.title,
+            description: entry.description,
+          })),
+      },
+    };
+  }
+  if (operation === "list_resource_templates") {
+    return {
+      handled: true,
+      result: {
+        items: manifest.resourceTemplates
+          .filter((entry) => entry.capletId === capletId)
+          .map((entry) => ({
+            uriTemplate: entry.uriTemplate,
+            name: entry.title,
+            description: entry.description,
+          })),
+      },
+    };
+  }
+  if (operation === "list_prompts") {
+    return {
+      handled: true,
+      result: {
+        items: manifest.prompts
+          .filter((entry) => entry.capletId === capletId)
+          .map((entry) => ({
+            name: entry.name,
+            title: entry.title,
+            description: entry.description,
+          })),
+      },
+    };
+  }
+
+  const entry = primitiveExport(manifest, capletId, operation, input);
+  if (!entry) {
+    throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", `Attach export ${name} was not found.`);
+  }
+  return {
+    handled: true,
+    result: await invokeAttachExport(attachUrl, requestInit, fetchImpl, {
+      revision: manifest.revision,
+      kind: entry.kind,
+      exportId: entry.exportId,
+      input: primitiveInvokeInput(operation, input),
+    }),
+  };
+}
+
+function primitiveRoute(name: string): { capletId: string; operation: string } | undefined {
+  for (const operation of [
+    "list_resource_templates",
+    "list_resources",
+    "read_resource",
+    "list_prompts",
+    "get_prompt",
+    "complete",
+  ]) {
+    const suffix = `__${operation}`;
+    if (name.endsWith(suffix)) return { capletId: name.slice(0, -suffix.length), operation };
+  }
+  return undefined;
+}
+
+function primitiveExport(
+  manifest: AttachManifest,
+  capletId: string,
+  operation: string,
+  input: Record<string, unknown>,
+): AttachManifestExport | undefined {
+  if (operation === "read_resource") {
+    const uri = typeof input.uri === "string" ? input.uri : "";
+    return (
+      manifest.resources.find(
+        (entry) =>
+          entry.capletId === capletId && (entry.uri === uri || entry.downstreamUri === uri),
+      ) ?? manifest.resourceTemplates.find((entry) => entry.capletId === capletId)
+    );
+  }
+  if (operation === "get_prompt") {
+    const name = typeof input.name === "string" ? input.name : "";
+    return manifest.prompts.find(
+      (entry) =>
+        entry.capletId === capletId && (entry.name === name || entry.downstreamName === name),
+    );
+  }
+  if (operation === "complete") {
+    return manifest.completions.find((entry) => entry.capletId === capletId);
+  }
+  return undefined;
+}
+
+function primitiveInvokeInput(operation: string, input: Record<string, unknown>): unknown {
+  if (operation === "get_prompt") return input.args ?? {};
+  return input;
+}
+
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
   return [
     ...manifest.caplets.map((entry) => ({
@@ -327,12 +479,14 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
     })),
     ...manifest.tools.map((entry) => ({
       name: entry.name,
-      capletId: entry.name,
+      capletId: entry.capletId,
+      sourceCapletId: entry.capletId,
       title: entry.title ?? entry.name,
       description: entry.description,
       inputSchema: entry.inputSchema,
       outputSchema: entry.outputSchema,
     })),
+    ...primitiveToolsFromManifest(manifest),
     ...(manifest.codeModeCaplets.length > 0
       ? [
           {
@@ -346,6 +500,102 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
         ]
       : []),
   ];
+}
+
+function primitiveToolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
+  const byCaplet = new Map<
+    string,
+    {
+      resources: boolean;
+      resourceTemplates: boolean;
+      prompts: boolean;
+      completions: boolean;
+    }
+  >();
+  const entryFor = (capletId: string) => {
+    const existing = byCaplet.get(capletId);
+    if (existing) return existing;
+    const next = {
+      resources: false,
+      resourceTemplates: false,
+      prompts: false,
+      completions: false,
+    };
+    byCaplet.set(capletId, next);
+    return next;
+  };
+  for (const entry of manifest.resources) entryFor(entry.capletId).resources = true;
+  for (const entry of manifest.resourceTemplates) entryFor(entry.capletId).resourceTemplates = true;
+  for (const entry of manifest.prompts) entryFor(entry.capletId).prompts = true;
+  for (const entry of manifest.completions) entryFor(entry.capletId).completions = true;
+
+  const tools: RemoteCapletsTool[] = [];
+  for (const [capletId, flags] of byCaplet) {
+    if (flags.resources) {
+      tools.push(
+        primitiveTool(capletId, "list_resources"),
+        primitiveTool(capletId, "read_resource"),
+      );
+    }
+    if (flags.resourceTemplates) {
+      tools.push(
+        primitiveTool(capletId, "list_resource_templates"),
+        primitiveTool(capletId, "read_resource"),
+      );
+    }
+    if (flags.prompts) {
+      tools.push(primitiveTool(capletId, "list_prompts"), primitiveTool(capletId, "get_prompt"));
+    }
+    if (flags.completions) {
+      tools.push(primitiveTool(capletId, "complete"));
+    }
+  }
+  return [...new Map(tools.map((tool) => [tool.name, tool])).values()];
+}
+
+function primitiveTool(capletId: string, operation: string): RemoteCapletsTool {
+  return {
+    name: `${capletId}__${operation}`,
+    capletId,
+    sourceCapletId: capletId,
+    title: operation,
+    description: `MCP ${operation.replace(/_/g, " ")}.`,
+    inputSchema: primitiveInputSchema(operation),
+  };
+}
+
+function primitiveInputSchema(operation: string): Record<string, unknown> {
+  if (operation === "read_resource") {
+    return {
+      type: "object",
+      properties: { uri: { type: "string" } },
+      required: ["uri"],
+      additionalProperties: false,
+    };
+  }
+  if (operation === "get_prompt") {
+    return {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        args: { type: "object", additionalProperties: true },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    };
+  }
+  if (operation === "complete") {
+    return {
+      type: "object",
+      properties: {
+        ref: { type: "object", additionalProperties: true },
+        argument: { type: "object", additionalProperties: true },
+      },
+      required: ["ref", "argument"],
+      additionalProperties: false,
+    };
+  }
+  return { type: "object", additionalProperties: false };
 }
 
 function exportMapFor(manifest: AttachManifest): Map<string, AttachManifestExport> {
@@ -386,11 +636,76 @@ function attachPayloadError(payload: unknown, status: number): Error {
 }
 
 function isAttachManifestStale(error: unknown): boolean {
-  return (
-    isPlainObject(error) &&
-    (error.code === "ATTACH_MANIFEST_STALE" ||
-      (typeof error.message === "string" && error.message.includes("stale")))
-  );
+  return isPlainObject(error) && error.code === "ATTACH_MANIFEST_STALE";
+}
+
+function startAttachEvents(
+  attachUrl: URL,
+  requestInit: RequestInit | undefined,
+  fetchImpl: typeof fetch,
+  listeners: Set<() => void>,
+): AbortController {
+  const abort = new AbortController();
+  void (async () => {
+    try {
+      const response = await fetchImpl(new URL("events", slashUrl(attachUrl)), {
+        ...requestInit,
+        method: "GET",
+        signal: abort.signal,
+      });
+      if (!response.body) return;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!abort.signal.aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          if (!event.includes("event: manifest_changed")) continue;
+          for (const listener of listeners) listener();
+        }
+      }
+    } catch {
+      // Polling remains the fallback when the event stream is unavailable.
+    }
+  })();
+  return abort;
+}
+
+async function executeCodeModeRunRemote(
+  service: NativeCapletsService,
+  request: unknown,
+): Promise<unknown> {
+  const parsed = codeModeRunInputSchema.safeParse(request);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+        details: parsed.error.issues,
+      },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+      meta: {
+        runId: "",
+        traceId: "",
+        declarationHash: "",
+        durationMs: 0,
+        timeoutMs: 0,
+        maxTimeoutMs: 0,
+      },
+    };
+  }
+  return await runCodeMode({
+    code: parsed.data.code,
+    service,
+    ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    runtimeScope: process.env.CAPLETS_MODE?.trim() || "remote",
+  });
 }
 
 function compatibleExport(

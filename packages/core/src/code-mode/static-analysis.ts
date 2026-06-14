@@ -9,6 +9,7 @@ type AstNode = {
 const PARSER_OPTIONS: ParserOptions = {
   sourceType: "module",
   errorRecovery: true,
+  allowReturnOutsideFunction: true,
   plugins: ["typescript", "topLevelAwait", "importAttributes"],
 };
 
@@ -67,13 +68,9 @@ function isFetchCallee(value: unknown): boolean {
 }
 
 function isGlobalFetchMember(node: AstNode): boolean {
-  return (
-    isIdentifierNamed(node.object, "globalThis", "window", "self") && isFetchProperty(node.property)
-  );
-}
-
-function isFetchProperty(value: unknown): boolean {
-  return isIdentifierNamed(value, "fetch") || isStringLiteralNamed(value, "fetch");
+  if (!isIdentifierNamed(node.object, "globalThis", "window", "self")) return false;
+  if (node.computed === true) return isStringLiteralNamed(node.property, "fetch");
+  return isIdentifierNamed(node.property, "fetch");
 }
 
 function isExportDeclaration(node: AstNode): boolean {

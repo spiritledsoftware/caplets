@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
@@ -105,7 +105,7 @@ function valueSpecifiers(source: string): string[] {
 function resolveModule(baseDir: string, specifier: string): string | undefined {
   const exact = resolve(baseDir, specifier);
   const candidates = [exact, `${exact}.ts`, resolve(exact, "index.ts")];
-  return candidates.find((candidate) => existsSync(candidate));
+  return candidates.find((candidate) => existsSync(candidate) && statSync(candidate).isFile());
 }
 
 function formatCodeModePath(filePath: string): string {

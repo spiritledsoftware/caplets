@@ -161,4 +161,17 @@ describe("resolveHostedCloudRemote", () => {
 
     expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-one/attach"));
   });
+
+  it("uses CAPLETS_REMOTE_WORKSPACE when a Cloud URL has no workspace path", () => {
+    const resolved = resolveHostedCloudRemote(
+      {},
+      {
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_REMOTE_WORKSPACE: "team-env",
+      },
+    );
+
+    expect(resolved.workspace).toBe("team-env");
+    expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-env/attach"));
+  });
 });

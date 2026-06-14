@@ -130,14 +130,18 @@ export function createHttpServeApp(
     return session.transport.handleRequest(c);
   });
 
-  app.get(paths.attachManifest, basicAuth(options.auth), async (c) => {
+  const attachHostProtection = dnsRebindingProtection(options);
+
+  app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
     attachProjection ??= await buildAttachProjection(engine);
     return c.json(attachProjection.manifest);
   });
 
-  app.get(paths.attachEvents, basicAuth(options.auth), () => attachEventsResponse(engine));
+  app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
+    attachEventsResponse(engine),
+  );
 
-  app.post(paths.attachInvoke, basicAuth(options.auth), async (c) => {
+  app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
     try {
       const request = await parseAttachInvokeRequest(c.req.json());
       attachProjection ??= await buildAttachProjection(engine);
@@ -322,7 +326,16 @@ function versionDiscovery(paths: ReturnType<typeof servicePaths>) {
 }
 
 async function parseAttachInvokeRequest(input: Promise<unknown>): Promise<AttachInvokeRequest> {
-  const parsed = await input;
+  let parsed: unknown;
+  try {
+    parsed = await input;
+  } catch (error) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Attach invoke request body must be valid JSON.",
+      error,
+    );
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new CapletsError("REQUEST_INVALID", "Attach invoke request JSON must be an object.");
   }
@@ -385,6 +398,8 @@ function attachEventsResponse(engine: CapletsEngine): Response {
     headers: {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
     },
   });
 }
@@ -520,6 +535,22 @@ function basicAuth(auth: HttpBasicAuthOptions): MiddlewareHandler {
     ) {
       c.header("www-authenticate", 'Basic realm="caplets"');
       return c.text("Unauthorized", 401);
+    }
+    await next();
+  };
+}
+
+function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
+  if (!options.loopback) {
+    return async (_c, next) => {
+      await next();
+    };
+  }
+  const allowedHosts = new Set(dnsRebindingOptions(options).allowedHosts);
+  return async (c, next) => {
+    const host = c.req.header("host");
+    if (host && !allowedHosts.has(host)) {
+      return c.text("Forbidden", 403);
     }
     await next();
   };

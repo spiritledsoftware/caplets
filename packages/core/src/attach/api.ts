@@ -183,6 +183,19 @@ export async function invokeAttachExport(
   if (route.kind === "resource") {
     return await engine.readDirectResource(route.capletId, route.downstreamUri);
   }
+  if (route.kind === "resourceTemplate") {
+    const uri =
+      isRecord(request.input) && typeof request.input.uri === "string"
+        ? request.input.uri
+        : undefined;
+    if (!uri) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Attach resource template invoke requires input.uri.",
+      );
+    }
+    return await engine.readDirectResource(route.capletId, uri);
+  }
   if (route.kind === "prompt") {
     return await engine.getDirectPrompt(
       route.capletId,
@@ -190,10 +203,16 @@ export async function invokeAttachExport(
       isRecord(request.input) ? stringifyRecord(request.input) : {},
     );
   }
-  return await engine.execute(route.capletId, {
-    operation: "complete",
-    ...(isRecord(request.input) ? request.input : {}),
-  });
+  if (route.kind === "completion") {
+    return await engine.execute(route.capletId, {
+      operation: "complete",
+      ...(isRecord(request.input) ? request.input : {}),
+    });
+  }
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    "Attach export kind is not invokable via /v1/attach/invoke.",
+  );
 }
 
 export function attachErrorResponse(error: unknown): {

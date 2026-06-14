@@ -164,7 +164,10 @@ export function resolveHostedCloudRemote(
   }
 
   const cloud = parseHostedCloudRemoteUrl(rawUrl);
-  const workspace = cloud.workspace ?? nonEmpty(input.workspace, "workspace");
+  const workspace =
+    cloud.workspace ??
+    nonEmpty(input.workspace, "workspace") ??
+    nonEmpty(env.CAPLETS_REMOTE_WORKSPACE, "CAPLETS_REMOTE_WORKSPACE");
   if (!workspace) {
     throw new CapletsError(
       "REQUEST_INVALID",

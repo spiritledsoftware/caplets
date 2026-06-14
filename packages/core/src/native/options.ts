@@ -77,13 +77,10 @@ export function resolveNativeCapletsServiceOptions(
   };
   const server =
     mode.mode === "cloud"
-      ? resolveHostedCloudRemote(
-          {
-            url: input.server?.url ?? env.CAPLETS_REMOTE_URL ?? "",
-            ...optionalWorkspace(input, env),
-            ...(serverFetch ? { fetch: serverFetch } : {}),
-          },
-          {},
+      ? resolveNativeHostedCloudRemote(
+          input.server?.url ?? env.CAPLETS_REMOTE_URL ?? "",
+          optionalWorkspace(input, env).workspace,
+          serverFetch,
         )
       : resolveCapletsRemote(serverInput, env);
 
@@ -101,6 +98,27 @@ export function resolveNativeCapletsServiceOptions(
       ...(cloud ? { cloud } : {}),
       ...(server.fetch ? { fetch: server.fetch } : {}),
     },
+  };
+}
+
+function resolveNativeHostedCloudRemote(
+  url: string,
+  workspace: string | undefined,
+  fetch: typeof globalThis.fetch | undefined,
+): ReturnType<typeof resolveHostedCloudRemote> {
+  if (workspace) {
+    return resolveHostedCloudRemote({ url, workspace, ...(fetch ? { fetch } : {}) }, {});
+  }
+  return {
+    baseUrl: new URL(url),
+    mcpUrl: new URL(url),
+    attachUrl: new URL(url),
+    controlUrl: new URL(url),
+    healthUrl: new URL(url),
+    projectBindingWebSocketUrl: new URL(url.replace(/^http/u, "ws")),
+    auth: { type: "none", user: "caplets" },
+    requestInit: {},
+    ...(fetch ? { fetch } : {}),
   };
 }
 

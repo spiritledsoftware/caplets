@@ -59,6 +59,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
 
 export type NativeCapletTool = {
   caplet: string;
+  sourceCaplet?: string;
   toolName: string;
   title: string;
   description: string;
@@ -821,7 +822,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     });
     const remoteIds = new Set(
       [
-        ...allRemoteTools.filter((tool) => tool.codeModeRun !== true).map((tool) => tool.caplet),
+        ...allRemoteTools
+          .filter((tool) => tool.codeModeRun !== true)
+          .map((tool) => tool.sourceCaplet ?? tool.caplet),
         ...remoteCodeModeTools.map((tool) => tool.caplet),
       ].filter((caplet) => caplet !== nativeCodeModeToolId),
     );

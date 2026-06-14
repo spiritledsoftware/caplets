@@ -625,6 +625,71 @@ describe("createHttpServeApp", () => {
       error: { code: "ATTACH_MANIFEST_STALE" },
     });
 
+    const malformed = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"revision":',
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID" },
+    });
+
+    await engine.close();
+  });
+
+  it("serves attach events as an unbuffered keep-alive SSE stream", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("connection")).toBe("keep-alive");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+    await response.body?.cancel();
+    await engine.close();
+  });
+
+  it("rejects unauthenticated attach requests through public origin host by default", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({ publicOrigin: "https://caplets.tail7ff085.ts.net" }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { host: "caplets.tail7ff085.ts.net" },
+    });
+
+    expect(response.status).toBe(403);
+    await engine.close();
+  });
+
+  it("allows authenticated attach requests through the configured public origin host", async () => {
+    const { engine } = testEngine();
+    const password = "test-password";
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.tail7ff085.ts.net",
+        auth: { enabled: true, user: "caplets", password },
+      }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: {
+        host: "caplets.tail7ff085.ts.net",
+        authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
+      },
+    });
+
+    expect(response.status).toBe(200);
     await engine.close();
   });
 

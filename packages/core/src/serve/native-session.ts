@@ -119,10 +119,21 @@ function nativeToolResult(result: unknown): {
   structuredContent: unknown;
   isError?: true;
 } {
+  if (isCallToolResult(result)) {
+    return result;
+  }
   const isError = isRecord(result) && (result.isError === true || result.ok === false);
   return {
     content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     structuredContent: result,
     ...(isError ? { isError: true } : {}),
   };
+}
+
+function isCallToolResult(value: unknown): value is {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: unknown;
+  isError?: true;
+} {
+  return isRecord(value) && Array.isArray(value.content);
 }

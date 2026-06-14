@@ -41,6 +41,22 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
+  it("defers bare Cloud workspace resolution to the selected workspace lookup", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toMatchObject({
+      mode: "cloud",
+      remote: {
+        url: new URL("https://cloud.caplets.dev/"),
+      },
+    });
+  });
+
   it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
     expect(
       resolveNativeCapletsServiceOptions(

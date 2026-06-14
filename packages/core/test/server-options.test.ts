@@ -61,6 +61,7 @@ describe("resolveCapletsServer", () => {
     expect(resolved).toMatchObject({
       baseUrl: new URL("https://example.com/caplets"),
       mcpUrl: new URL("https://example.com/caplets/v1/mcp"),
+      attachUrl: new URL("https://example.com/caplets/v1/attach"),
       controlUrl: new URL("https://example.com/caplets/v1/admin"),
       healthUrl: new URL("https://example.com/caplets/v1/healthz"),
       auth: { enabled: true, user: "caplets", password },
@@ -76,6 +77,7 @@ describe("resolveCapletsServer", () => {
     expect(resolveCapletsServer({ url: "https://example.com" }, {})).toMatchObject({
       baseUrl: new URL("https://example.com/"),
       mcpUrl: new URL("https://example.com/v1/mcp"),
+      attachUrl: new URL("https://example.com/v1/attach"),
       controlUrl: new URL("https://example.com/v1/admin"),
       healthUrl: new URL("https://example.com/v1/healthz"),
     });
@@ -85,6 +87,7 @@ describe("resolveCapletsServer", () => {
     expect(resolveCapletsServer({ url: "http://[::1]:5387" }, {})).toMatchObject({
       baseUrl: new URL("http://[::1]:5387/"),
       mcpUrl: new URL("http://[::1]:5387/v1/mcp"),
+      attachUrl: new URL("http://[::1]:5387/v1/attach"),
       controlUrl: new URL("http://[::1]:5387/v1/admin"),
       healthUrl: new URL("http://[::1]:5387/v1/healthz"),
     });
