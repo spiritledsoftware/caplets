@@ -38,6 +38,13 @@ describe("auth helpers", () => {
     expect(extractCompletion("manual-code")).toEqual({ code: "manual-code" });
   });
 
+  it("extracts callback code and state from wrapped pasted URLs", () => {
+    expect(extractCompletion("http://127.0.0.1:58326/callback?code=a bc\n&state=x%0Ay z")).toEqual({
+      code: "abc",
+      state: "xyz",
+    });
+  });
+
   it("reports OAuth error callbacks before extracting an authorization code", async () => {
     const flow = await startGenericOAuthFlow(
       {
