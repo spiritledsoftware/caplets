@@ -408,6 +408,10 @@ type DnsRebindingOptions = {
 function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
   const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
+  const publicHosts =
+    publicUrl && (options.auth.enabled || options.allowUnauthenticatedHttp)
+      ? [publicUrl.hostname, publicUrl.host]
+      : [];
   return {
     enableDnsRebindingProtection: true,
     allowedHosts: [
@@ -415,7 +419,7 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
       hostForHeader,
       `${hostForHeader}:${options.port}`,
       `localhost:${options.port}`,
-      ...(publicUrl ? [publicUrl.hostname, publicUrl.host] : []),
+      ...publicHosts,
     ],
   };
 }

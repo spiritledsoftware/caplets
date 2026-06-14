@@ -25,6 +25,7 @@ export type HttpServeOptions = {
   path: string;
   publicOrigin?: string | undefined;
   auth: HttpBasicAuthOptions;
+  allowUnauthenticatedHttp: boolean;
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
   trustProxy: boolean;
@@ -106,6 +107,7 @@ export function resolveServeOptions(
     path,
     ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
     auth,
+    allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp === true,
     warnUnauthenticatedNetwork: !loopback && !auth.enabled,
     loopback,
     trustProxy: raw.trustProxy === true,

@@ -691,21 +691,38 @@ export async function runGenericOAuthFlow(
 
 export function extractCompletion(input: string): { code: string; state?: string } {
   try {
-    const url = new URL(input);
-    const code = normalizeOAuthCallbackValue(url.searchParams.get("code"));
-    const state = normalizeOAuthCallbackValue(url.searchParams.get("state")) ?? undefined;
+    const url = new URL(stripOAuthCallbackUrlWrapping(input));
+    const code = extractOAuthCallbackParam(url, "code");
+    const state = extractOAuthCallbackParam(url, "state");
     if (!code) {
       throw new Error("missing code");
     }
     return state ? { code, state } : { code };
   } catch {
-    return { code: normalizeOAuthCallbackValue(input) ?? "" };
+    return { code: input.trim() };
   }
 }
 
-function normalizeOAuthCallbackValue(value: string | null): string | undefined {
-  const normalized = value?.replace(/\s+/g, "");
-  return normalized || undefined;
+function stripOAuthCallbackUrlWrapping(input: string): string {
+  return input.replace(/\s+/g, "");
+}
+
+function extractOAuthCallbackParam(url: URL, name: "code" | "state"): string | undefined {
+  const query = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  for (const part of query.split("&")) {
+    const separator = part.indexOf("=");
+    const rawName = separator < 0 ? part : part.slice(0, separator);
+    const rawValue = separator < 0 ? "" : part.slice(separator + 1);
+    if (decodeOAuthCallbackQueryValue(rawName) === name) {
+      const value = decodeOAuthCallbackQueryValue(rawValue);
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
+function decodeOAuthCallbackQueryValue(value: string): string {
+  return decodeURIComponent(value);
 }
 
 function oauthStateMismatchError(server: string): CapletsError {

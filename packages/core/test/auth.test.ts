@@ -39,9 +39,22 @@ describe("auth helpers", () => {
   });
 
   it("extracts callback code and state from wrapped pasted URLs", () => {
-    expect(extractCompletion("http://127.0.0.1:58326/callback?code=a bc\n&state=x%0Ay z")).toEqual({
+    expect(extractCompletion("http://127.0.0.1:58326/callback?code=a bc\n&state=xy z")).toEqual({
       code: "abc",
       state: "xyz",
+    });
+  });
+
+  it("preserves decoded OAuth callback parameter values exactly", () => {
+    expect(extractCompletion("http://127.0.0.1:58326/callback?code=a+b%3Dc&state=x%20y")).toEqual({
+      code: "a+b=c",
+      state: "x y",
+    });
+  });
+
+  it("trims raw manual callback codes without removing internal whitespace", () => {
+    expect(extractCompletion("  manual code  ")).toEqual({
+      code: "manual code",
     });
   });
 
