@@ -619,22 +619,15 @@ function primitiveInputSchema(operation: string): Record<string, unknown> {
 }
 
 function exportMapFor(manifest: AttachManifest): Map<string, AttachManifestExport> {
-  const entries: AttachManifestExport[] = [
-    ...manifest.caplets,
-    ...manifest.tools,
-    ...manifest.resources,
-    ...manifest.resourceTemplates,
-    ...manifest.prompts,
-    ...manifest.completions,
-    ...manifest.codeModeCaplets,
-  ];
-  return new Map(
-    entries.flatMap((entry) => {
-      const names = [entry.capletId];
-      if ("name" in entry && typeof entry.name === "string") names.push(entry.name);
-      return names.map((name) => [name, entry] as const);
-    }),
-  );
+  const mapped = new Map<string, AttachManifestExport>();
+  for (const entry of manifest.caplets) {
+    mapped.set(entry.capletId, entry);
+    mapped.set(entry.name, entry);
+  }
+  for (const entry of manifest.tools) {
+    mapped.set(entry.name, entry);
+  }
+  return mapped;
 }
 
 function slashUrl(url: URL): URL {

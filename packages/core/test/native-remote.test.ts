@@ -254,6 +254,58 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("keeps progressive caplet lookups from being overwritten by same-caplet direct exports", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (url.endsWith("/manifest")) {
+        return Response.json({
+          ...attachManifest("rev-1", "export-caplet"),
+          tools: [
+            {
+              stableId: "tool:remote:ping",
+              exportId: "export-tool",
+              kind: "tool",
+              name: "remote__ping",
+              downstreamName: "ping",
+              title: "Ping",
+              description: "Ping direct tool.",
+              inputSchema: { type: "object" },
+              outputSchema: { type: "object" },
+              schemaHash: "sha256:tool",
+              capletId: "remote",
+              shadowing: "forbid",
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true, data: { invoked: true } });
+    });
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(remote.callTool("remote", { operation: "inspect" })).resolves.toEqual({
+      invoked: true,
+    });
+
+    expect(requests.at(-1)?.body).toMatchObject({
+      kind: "caplet",
+      exportId: "export-caplet",
+      input: { operation: "inspect" },
+    });
+    await remote.close();
+  });
+
   it("notifies listeners when the attach events stream reports a manifest change", async () => {
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();
