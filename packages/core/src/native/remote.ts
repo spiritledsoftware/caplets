@@ -51,6 +51,33 @@ export function createSdkRemoteCapletsClient(
   let manifest: AttachManifest | undefined;
   let exportByName = new Map<string, AttachManifestExport>();
   let eventsAbort: AbortController | undefined;
+  let eventsReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const clearEventsReconnectTimer = () => {
+    if (eventsReconnectTimer) {
+      clearTimeout(eventsReconnectTimer);
+      eventsReconnectTimer = undefined;
+    }
+  };
+  const startEvents = () => {
+    if (eventsAbort || listeners.size === 0) return;
+    eventsAbort = startAttachEvents(
+      options.url,
+      options.requestInit,
+      fetchImpl,
+      listeners,
+      (closedAbort) => {
+        if (eventsAbort !== closedAbort) return;
+        eventsAbort = undefined;
+        if (closedAbort.signal.aborted || listeners.size === 0) return;
+        clearEventsReconnectTimer();
+        eventsReconnectTimer = setTimeout(() => {
+          eventsReconnectTimer = undefined;
+          startEvents();
+        }, 1_000);
+      },
+    );
+  };
 
   return {
     async listTools() {
@@ -110,10 +137,18 @@ export function createSdkRemoteCapletsClient(
     },
     onToolsChanged(listener) {
       listeners.add(listener);
-      eventsAbort ??= startAttachEvents(options.url, options.requestInit, fetchImpl, listeners);
-      return () => listeners.delete(listener);
+      startEvents();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          clearEventsReconnectTimer();
+          eventsAbort?.abort();
+          eventsAbort = undefined;
+        }
+      };
     },
     async close() {
+      clearEventsReconnectTimer();
       eventsAbort?.abort();
       eventsAbort = undefined;
       listeners.clear();
@@ -620,12 +655,19 @@ function primitiveInputSchema(operation: string): Record<string, unknown> {
 
 function exportMapFor(manifest: AttachManifest): Map<string, AttachManifestExport> {
   const mapped = new Map<string, AttachManifestExport>();
+  const setIfAbsent = (key: string, entry: AttachManifestExport) => {
+    if (!mapped.has(key)) mapped.set(key, entry);
+  };
   for (const entry of manifest.caplets) {
     mapped.set(entry.capletId, entry);
     mapped.set(entry.name, entry);
   }
   for (const entry of manifest.tools) {
     mapped.set(entry.name, entry);
+  }
+  for (const entry of manifest.codeModeCaplets) {
+    setIfAbsent(entry.capletId, entry);
+    setIfAbsent(entry.name, entry);
   }
   return mapped;
 }
@@ -657,6 +699,7 @@ function startAttachEvents(
   requestInit: RequestInit | undefined,
   fetchImpl: typeof fetch,
   listeners: Set<() => void>,
+  onClose: (abort: AbortController) => void,
 ): AbortController {
   const abort = new AbortController();
   void (async () => {
@@ -683,6 +726,8 @@ function startAttachEvents(
       }
     } catch {
       // Polling remains the fallback when the event stream is unavailable.
+    } finally {
+      onClose(abort);
     }
   })();
   return abort;

@@ -109,4 +109,144 @@ describe("Attach API dispatch", () => {
 
     expect(engine.readDirectResource).toHaveBeenCalledWith("docs", "file:///README.md");
   });
+
+  it("normalizes prompt completion refs to downstream prompt names", async () => {
+    const engine = {
+      execute: vi.fn(async () => ({ completion: "ok" })),
+    } as unknown as CapletsEngine;
+    const projection = {
+      manifest: {
+        version: 1,
+        revision: "rev-1",
+        generatedAt: new Date(0).toISOString(),
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [],
+        prompts: [
+          {
+            stableId: "prompt:docs:review",
+            exportId: "export-prompt",
+            kind: "prompt",
+            name: "docs__review",
+            downstreamName: "review",
+            title: "Review",
+            description: "Review prompt.",
+            schemaHash: null,
+            capletId: "docs",
+            shadowing: "forbid",
+          },
+        ],
+        completions: [
+          {
+            stableId: "completion:docs",
+            exportId: "export-completion",
+            kind: "completion",
+            name: "docs__complete",
+            capletId: "docs",
+            schemaHash: null,
+            shadowing: "forbid",
+          },
+        ],
+        codeModeCaplets: [],
+        diagnostics: [],
+      },
+      routes: new Map([
+        [
+          "export-completion",
+          {
+            kind: "completion",
+            capletId: "docs",
+          },
+        ],
+      ]),
+    } satisfies AttachProjection;
+
+    await invokeAttachExport(engine, projection, {
+      revision: "rev-1",
+      kind: "completion",
+      exportId: "export-completion",
+      input: {
+        ref: { type: "prompt", name: "docs__review" },
+        argument: { name: "topic", value: "attach" },
+      },
+    });
+
+    expect(engine.execute).toHaveBeenCalledWith("docs", {
+      operation: "complete",
+      ref: { type: "prompt", name: "review" },
+      argument: { name: "topic", value: "attach" },
+    });
+  });
+
+  it("normalizes resource template completion refs to downstream templates", async () => {
+    const engine = {
+      execute: vi.fn(async () => ({ completion: "ok" })),
+    } as unknown as CapletsEngine;
+    const projection = {
+      manifest: {
+        version: 1,
+        revision: "rev-1",
+        generatedAt: new Date(0).toISOString(),
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [
+          {
+            stableId: "resourceTemplate:docs:file:///{path}",
+            exportId: "export-resource-template",
+            kind: "resourceTemplate",
+            uriTemplate:
+              "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+            downstreamUriTemplate: "file:///{path}",
+            schemaHash: null,
+            capletId: "docs",
+            shadowing: "forbid",
+          },
+        ],
+        prompts: [],
+        completions: [
+          {
+            stableId: "completion:docs",
+            exportId: "export-completion",
+            kind: "completion",
+            name: "docs__complete",
+            capletId: "docs",
+            schemaHash: null,
+            shadowing: "forbid",
+          },
+        ],
+        codeModeCaplets: [],
+        diagnostics: [],
+      },
+      routes: new Map([
+        [
+          "export-completion",
+          {
+            kind: "completion",
+            capletId: "docs",
+          },
+        ],
+      ]),
+    } satisfies AttachProjection;
+
+    await invokeAttachExport(engine, projection, {
+      revision: "rev-1",
+      kind: "completion",
+      exportId: "export-completion",
+      input: {
+        ref: {
+          type: "resourceTemplate",
+          uri: "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+        },
+        argument: { name: "path", value: "README.md" },
+      },
+    });
+
+    expect(engine.execute).toHaveBeenCalledWith("docs", {
+      operation: "complete",
+      ref: { type: "resourceTemplate", uri: "file:///{path}" },
+      argument: { name: "path", value: "README.md" },
+    });
+  });
 });

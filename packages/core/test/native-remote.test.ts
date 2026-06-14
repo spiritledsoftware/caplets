@@ -306,6 +306,58 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("invokes code-mode-only caplets through exported attach IDs", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (url.endsWith("/manifest")) {
+        return Response.json({
+          ...attachManifest("rev-1", "export-caplet"),
+          caplets: [],
+          tools: [],
+          codeModeCaplets: [
+            {
+              stableId: "code_mode:remote",
+              exportId: "export-code-mode",
+              kind: "caplet",
+              name: "Remote",
+              title: "Remote",
+              description: "Remote Code Mode handle.",
+              inputSchema: { type: "object", additionalProperties: true },
+              schemaHash: "hash-code-mode",
+              capletId: "remote",
+              shadowing: "forbid",
+            },
+          ],
+        });
+      }
+      return Response.json({ ok: true, data: { invoked: true } });
+    });
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(remote.callTool("remote", { operation: "inspect" })).resolves.toEqual({
+      invoked: true,
+    });
+
+    expect(requests.at(-1)?.body).toMatchObject({
+      kind: "caplet",
+      exportId: "export-code-mode",
+      input: { operation: "inspect" },
+    });
+    await remote.close();
+  });
+
   it("notifies listeners when the attach events stream reports a manifest change", async () => {
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();
@@ -341,6 +393,45 @@ describe("RemoteNativeCapletsService", () => {
 
     await vi.waitFor(() => expect(listener).toHaveBeenCalledOnce());
     await remote.close();
+  });
+
+  it("reconnects the attach events stream after a server-side close", async () => {
+    vi.useFakeTimers();
+    try {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const fetchStub: typeof fetch = vi.fn(async (input) => {
+        const url = String(input);
+        if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
+        if (url.endsWith("/events")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return Response.json({ ok: true });
+      });
+      const remote = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+      });
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(controllers).toHaveLength(1));
+      controllers[0]!.close();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await vi.waitFor(() => expect(controllers).toHaveLength(2));
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry non-attach errors that merely mention stale data", async () => {
@@ -1166,6 +1257,38 @@ describe("createNativeCapletsService remote mode", () => {
 
     expect(writeErr).toHaveBeenCalledWith(
       "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
+    await service.close();
+  });
+
+  it("keeps visible local Code Mode handles in composite Code Mode declarations", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    await service.reload();
+
+    const tools = service.listTools();
+    expect(configuredCapletIds(tools)).toEqual(["remote-only", "local"]);
+    expect(tools.find((tool) => tool.caplet === "code_mode")).toEqual(
+      expect.objectContaining({
+        codeModeRun: true,
+        codeModeCaplets: expect.arrayContaining([
+          expect.objectContaining({ id: "remote-only" }),
+          expect.objectContaining({ id: "local" }),
+        ]),
+      }),
     );
     await service.close();
   });

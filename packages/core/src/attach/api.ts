@@ -210,7 +210,7 @@ export async function invokeAttachExport(
   if (route.kind === "completion") {
     return await engine.execute(route.capletId, {
       operation: "complete",
-      ...(isRecord(request.input) ? request.input : {}),
+      ...normalizeCompletionInput(projection.manifest, route.capletId, request.input),
     });
   }
   throw new CapletsError(
@@ -413,6 +413,38 @@ function routesFor(manifest: AttachManifest): Map<string, AttachRoute> {
     routes.set(entry.exportId, { kind: "caplet", capletId: entry.capletId });
   }
   return routes;
+}
+
+function normalizeCompletionInput(
+  manifest: AttachManifest,
+  capletId: string,
+  input: unknown,
+): Record<string, unknown> {
+  if (!isRecord(input)) return {};
+  const ref = input.ref;
+  if (!isRecord(ref)) return input;
+
+  if (ref.type === "prompt" && typeof ref.name === "string") {
+    const prompt = manifest.prompts.find(
+      (entry) =>
+        entry.capletId === capletId &&
+        (entry.name === ref.name || entry.downstreamName === ref.name),
+    );
+    if (!prompt) return input;
+    return { ...input, ref: { ...ref, name: prompt.downstreamName } };
+  }
+
+  if (ref.type === "resourceTemplate" && typeof ref.uri === "string") {
+    const resourceTemplate = manifest.resourceTemplates.find(
+      (entry) =>
+        entry.capletId === capletId &&
+        (entry.uriTemplate === ref.uri || entry.downstreamUriTemplate === ref.uri),
+    );
+    if (!resourceTemplate) return input;
+    return { ...input, ref: { ...ref, uri: resourceTemplate.downstreamUriTemplate } };
+  }
+
+  return input;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -832,10 +832,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.caplet),
     );
     this.warnShadowedLocalCaplets(allLocalTools, remoteIds);
-    const localIds = new Set(localTools.map((tool) => tool.caplet));
     const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
       fallbackToVisible: false,
-    }).filter((tool) => !localIds.has(tool.caplet) && !remoteIds.has(tool.caplet));
+    }).filter((tool) => !remoteIds.has(tool.caplet));
     const remoteTools = allRemoteTools.filter((tool) => tool.codeModeRun !== true);
     const mergedTools = [...remoteTools, ...localTools];
     const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
