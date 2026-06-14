@@ -3,7 +3,10 @@ import { schemaHash } from "../schema-hash";
 import { stableJsonStringify } from "../stable-json";
 import type { CapletsEngine } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
-import { decodeDirectResourceUri } from "../exposure/direct-names";
+import {
+  decodeDirectResourceUri,
+  directResourceUriMatchesTemplate,
+} from "../exposure/direct-names";
 import type {
   CallableCaplet,
   DirectPromptRegistration,
@@ -196,7 +199,7 @@ export async function invokeAttachExport(
       );
     }
     const downstreamUri = downstreamResourceUri(route.capletId, uri);
-    if (!uriMatchesTemplate(downstreamUri, route.downstreamUriTemplate)) {
+    if (!directResourceUriMatchesTemplate(downstreamUri, route.downstreamUriTemplate)) {
       throw new CapletsError(
         "ATTACH_EXPORT_NOT_FOUND",
         "Attach resource URI does not match the exported resource template.",
@@ -474,11 +477,4 @@ function downstreamResourceUri(capletId: string, uri: string): string {
     );
   }
   return decoded.downstreamUri;
-}
-
-function uriMatchesTemplate(uri: string, uriTemplate: string): boolean {
-  const pattern = uriTemplate
-    .replace(/([.*+?^${}()|[\]\\])/g, "\\$1")
-    .replace(/\\\{[^}]+\\\}/g, ".+");
-  return new RegExp(`^${pattern}$`, "u").test(uri);
 }

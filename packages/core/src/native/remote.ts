@@ -1,5 +1,8 @@
 import { CapletsError } from "../errors";
-import { decodeDirectResourceUri } from "../exposure/direct-names";
+import {
+  decodeDirectResourceUri,
+  directResourceUriMatchesTemplate,
+} from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
 import { runCodeMode } from "../code-mode/runner";
@@ -489,11 +492,16 @@ function primitiveExport(
 ): AttachManifestExport | undefined {
   if (operation === "read_resource") {
     const uri = typeof input.uri === "string" ? input.uri : "";
-    return (
-      manifest.resources.find(
-        (entry) =>
-          entry.capletId === capletId && (entry.uri === uri || entry.downstreamUri === uri),
-      ) ?? manifest.resourceTemplates.find((entry) => entry.capletId === capletId)
+    const resource = manifest.resources.find(
+      (entry) => entry.capletId === capletId && (entry.uri === uri || entry.downstreamUri === uri),
+    );
+    if (resource) return resource;
+
+    const downstreamUri = downstreamResourceUri(capletId, uri);
+    return manifest.resourceTemplates.find(
+      (entry) =>
+        entry.capletId === capletId &&
+        directResourceUriMatchesTemplate(downstreamUri, entry.downstreamUriTemplate),
     );
   }
   if (operation === "get_prompt") {

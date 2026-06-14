@@ -606,6 +606,70 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("invokes the direct resource template matching the requested resource URI", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input, init) => {
+        const url = String(input);
+        requests.push({
+          url,
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
+        if (url.endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifestWithDirectMcpPrimitives("rev-1"),
+            resources: [],
+            resourceTemplates: [
+              {
+                stableId: "resourceTemplate:docs:file:///docs/{path}",
+                exportId: "export-doc-resource-template",
+                kind: "resourceTemplate",
+                uriTemplate:
+                  "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Fdocs%2F%7Bpath%7D",
+                downstreamUriTemplate: "file:///docs/{path}",
+                title: "Docs",
+                description: "Docs resource.",
+                schemaHash: null,
+                capletId: "docs",
+                shadowing: "forbid",
+              },
+              {
+                stableId: "resourceTemplate:docs:db:///{id}",
+                exportId: "export-db-resource-template",
+                kind: "resourceTemplate",
+                uriTemplate:
+                  "caplets://docs/resources/{encodedUri}?template=db%3A%2F%2F%2F%7Bid%7D",
+                downstreamUriTemplate: "db:///{id}",
+                title: "Database",
+                description: "Database resource.",
+                schemaHash: null,
+                capletId: "docs",
+                shadowing: "forbid",
+              },
+            ],
+          });
+        }
+        return Response.json({ ok: true, data: { template: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(remote.callTool("docs__read_resource", { uri: "db:///123" })).resolves.toEqual({
+      template: true,
+    });
+
+    expect(requests.at(-1)?.body).toMatchObject({
+      kind: "resourceTemplate",
+      exportId: "export-db-resource-template",
+      input: { uri: "db:///123" },
+    });
+    await remote.close();
+  });
+
   it("retries stale manifests for primitive attached invokes", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {

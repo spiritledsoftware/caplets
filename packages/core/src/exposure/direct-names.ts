@@ -42,3 +42,10 @@ export function decodeDirectResourceUri(uri: string): {
     downstreamUri: decodeURIComponent(parsed.pathname.slice(prefix.length)),
   };
 }
+
+export function directResourceUriMatchesTemplate(uri: string, uriTemplate: string): boolean {
+  const pattern = uriTemplate
+    .replace(/([.*+?^${}()|[\]\\])/g, "\\$1")
+    .replace(/\\\{[^}]+\\\}/g, ".+");
+  return new RegExp(`^${pattern}$`, "u").test(uri);
+}

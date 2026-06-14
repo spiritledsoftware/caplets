@@ -45,7 +45,7 @@ function isExecutableImportNode(node: AstNode): boolean {
   if (
     node.type === "ImportDeclaration" ||
     node.type === "TSImportEqualsDeclaration" ||
-    (isExportDeclaration(node) && node.source !== undefined)
+    (isExportDeclaration(node) && node.source != null)
   ) {
     return true;
   }

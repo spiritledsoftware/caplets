@@ -24,6 +24,7 @@ describe("Code Mode static analysis", () => {
     expect(hasExecutableImport('return await import("node:fs");')).toBe(true);
     expect(hasExecutableImport('export { readFile } from "node:fs";')).toBe(true);
     expect(hasExecutableImport('const note = "import fs from node:fs";')).toBe(false);
+    expect(hasExecutableImport("const value = 1; export { value };")).toBe(false);
     expect(hasExecutableImport("const result = client.import('value');")).toBe(false);
   });
 });
