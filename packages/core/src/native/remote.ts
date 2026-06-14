@@ -1,8 +1,9 @@
 import { CapletsError } from "../errors";
+import { decodeDirectResourceUri } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputSchema } from "../code-mode/tool";
+import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
 import type { ResolvedNativeCapletsServiceOptions } from "./options";
 import type {
   NativeCapletsService,
@@ -62,45 +63,50 @@ export function createSdkRemoteCapletsClient(
         manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
         exportByName = exportMapFor(manifest);
       }
-      const primitive = await callPrimitiveExport(
-        options.url,
-        options.requestInit,
-        fetchImpl,
-        manifest,
-        name,
-        args,
-      );
+      const invokeWithStaleRetry = async (
+        entry: AttachManifestExport,
+        input: unknown,
+      ): Promise<unknown> => {
+        try {
+          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+            revision: manifest!.revision,
+            kind: entry.kind,
+            exportId: entry.exportId,
+            input,
+          });
+        } catch (error) {
+          if (!isAttachManifestStale(error)) throw error;
+          const nextManifest = await fetchAttachManifest(
+            options.url,
+            options.requestInit,
+            fetchImpl,
+          );
+          const nextEntry = compatibleExport(nextManifest, entry);
+          manifest = nextManifest;
+          exportByName = exportMapFor(nextManifest);
+          if (!nextEntry) {
+            throw new CapletsError(
+              "ATTACH_EXPORT_NOT_FOUND",
+              "Attach export changed after manifest refresh; refetch the manifest before retrying.",
+            );
+          }
+          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+            revision: nextManifest.revision,
+            kind: nextEntry.kind,
+            exportId: nextEntry.exportId,
+            input,
+          });
+        }
+      };
+      const directTool = manifest.tools.find((entry) => entry.name === name);
+      if (directTool) return await invokeWithStaleRetry(directTool, args ?? {});
+      const primitive = await callPrimitiveExport(manifest, name, args, invokeWithStaleRetry);
       if (primitive.handled) return primitive.result;
       const entry = exportByName.get(name);
       if (!entry) {
         throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", `Attach export ${name} was not found.`);
       }
-      try {
-        return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
-          revision: manifest.revision,
-          kind: entry.kind,
-          exportId: entry.exportId,
-          input: args ?? {},
-        });
-      } catch (error) {
-        if (!isAttachManifestStale(error)) throw error;
-        const nextManifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
-        const nextEntry = compatibleExport(nextManifest, entry);
-        manifest = nextManifest;
-        exportByName = exportMapFor(nextManifest);
-        if (!nextEntry) {
-          throw new CapletsError(
-            "ATTACH_EXPORT_NOT_FOUND",
-            "Attach export changed after manifest refresh; refetch the manifest before retrying.",
-          );
-        }
-        return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
-          revision: nextManifest.revision,
-          kind: nextEntry.kind,
-          exportId: nextEntry.exportId,
-          input: args ?? {},
-        });
-      }
+      return await invokeWithStaleRetry(entry, args ?? {});
     },
     onToolsChanged(listener) {
       listeners.add(listener);
@@ -340,7 +346,18 @@ async function invokeAttachExport(
     headers,
     body: JSON.stringify(body),
   });
-  const payload = (await response.json()) as unknown;
+  let payload: unknown;
+  try {
+    payload = (await response.json()) as unknown;
+  } catch (error) {
+    if (!response.ok) {
+      throw attachPayloadError(
+        { error: { message: `Caplets attach invoke returned HTTP ${response.status}.` } },
+        response.status,
+      );
+    }
+    throw error;
+  }
   if (!response.ok) {
     throw attachPayloadError(payload, response.status);
   }
@@ -351,72 +368,66 @@ async function invokeAttachExport(
 }
 
 async function callPrimitiveExport(
-  attachUrl: URL,
-  requestInit: RequestInit | undefined,
-  fetchImpl: typeof fetch,
   manifest: AttachManifest,
   name: string,
   args: unknown,
+  invoke: (entry: AttachManifestExport, input: unknown) => Promise<unknown>,
 ): Promise<{ handled: false } | { handled: true; result: unknown }> {
   const primitive = primitiveRoute(name);
   if (!primitive) return { handled: false };
   const input = isPlainObject(args) ? args : {};
   const { capletId, operation } = primitive;
   if (operation === "list_resources") {
+    const resources = manifest.resources.filter((entry) => entry.capletId === capletId);
+    if (resources.length === 0) return { handled: false };
     return {
       handled: true,
       result: {
-        items: manifest.resources
-          .filter((entry) => entry.capletId === capletId)
-          .map((entry) => ({
-            uri: entry.uri,
-            name: entry.title,
-            description: entry.description,
-          })),
+        items: resources.map((entry) => ({
+          uri: entry.uri,
+          name: entry.title,
+          description: entry.description,
+        })),
       },
     };
   }
   if (operation === "list_resource_templates") {
+    const resourceTemplates = manifest.resourceTemplates.filter(
+      (entry) => entry.capletId === capletId,
+    );
+    if (resourceTemplates.length === 0) return { handled: false };
     return {
       handled: true,
       result: {
-        items: manifest.resourceTemplates
-          .filter((entry) => entry.capletId === capletId)
-          .map((entry) => ({
-            uriTemplate: entry.uriTemplate,
-            name: entry.title,
-            description: entry.description,
-          })),
+        items: resourceTemplates.map((entry) => ({
+          uriTemplate: entry.uriTemplate,
+          name: entry.title,
+          description: entry.description,
+        })),
       },
     };
   }
   if (operation === "list_prompts") {
+    const prompts = manifest.prompts.filter((entry) => entry.capletId === capletId);
+    if (prompts.length === 0) return { handled: false };
     return {
       handled: true,
       result: {
-        items: manifest.prompts
-          .filter((entry) => entry.capletId === capletId)
-          .map((entry) => ({
-            name: entry.name,
-            title: entry.title,
-            description: entry.description,
-          })),
+        items: prompts.map((entry) => ({
+          name: entry.name,
+          title: entry.title,
+          description: entry.description,
+          ...promptArguments(entry.inputSchema),
+        })),
       },
     };
   }
 
   const entry = primitiveExport(manifest, capletId, operation, input);
-  if (!entry) {
-    throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", `Attach export ${name} was not found.`);
-  }
+  if (!entry) return { handled: false };
   return {
     handled: true,
-    result: await invokeAttachExport(attachUrl, requestInit, fetchImpl, {
-      revision: manifest.revision,
-      kind: entry.kind,
-      exportId: entry.exportId,
-      input: primitiveInvokeInput(operation, input),
-    }),
+    result: await invoke(entry, primitiveInvokeInput(capletId, operation, input)),
   };
 }
 
@@ -463,7 +474,15 @@ function primitiveExport(
   return undefined;
 }
 
-function primitiveInvokeInput(operation: string, input: Record<string, unknown>): unknown {
+function primitiveInvokeInput(
+  capletId: string,
+  operation: string,
+  input: Record<string, unknown>,
+): unknown {
+  if (operation === "read_resource") {
+    const uri = typeof input.uri === "string" ? input.uri : "";
+    return { ...input, uri: downstreamResourceUri(capletId, uri) };
+  }
   if (operation === "get_prompt") return input.args ?? {};
   return input;
 }
@@ -496,6 +515,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
             description: "Remote Caplets available to locally-run attached Code Mode.",
             codeModeRun: true,
             codeModeCaplets: manifest.codeModeCaplets,
+            inputSchema: codeModeRunInputJsonSchema(),
           },
         ]
       : []),
@@ -725,6 +745,23 @@ function compatibleExport(
   if (next.kind !== previous.kind) return undefined;
   if (next.schemaHash !== previous.schemaHash) return undefined;
   return next;
+}
+
+function promptArguments(inputSchema: unknown): { arguments: unknown[] } | Record<string, never> {
+  if (!isPlainObject(inputSchema) || !Array.isArray(inputSchema.arguments)) return {};
+  return { arguments: inputSchema.arguments };
+}
+
+function downstreamResourceUri(capletId: string, uri: string): string {
+  if (!uri.startsWith("caplets://")) return uri;
+  const decoded = decodeDirectResourceUri(uri);
+  if (decoded.capletId !== capletId) {
+    throw new CapletsError(
+      "ATTACH_EXPORT_NOT_FOUND",
+      "Attach resource URI belongs to a different Caplet.",
+    );
+  }
+  return decoded.downstreamUri;
 }
 
 function operationNamesFromSchema(schema: Record<string, unknown>): string[] {

@@ -137,7 +137,9 @@ function attachManifestWithDirectMcpPrimitives(revision: string) {
         downstreamName: "explain",
         title: "Explain",
         description: "Explain prompt.",
-        inputSchema: { arguments: [] },
+        inputSchema: {
+          arguments: [{ name: "topic", description: "Topic to explain.", required: true }],
+        },
         schemaHash: "sha256:prompt",
         capletId: "docs",
         shadowing: "forbid",
@@ -378,6 +380,224 @@ describe("RemoteNativeCapletsService", () => {
     await expect(
       service.execute("docs__read_resource", { uri: "file:///README.md" }),
     ).resolves.toEqual({ invoked: true });
+    await service.close();
+  });
+
+  it("passes prompt argument metadata through attached prompt lists", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json(attachManifestWithDirectMcpPrimitives("rev-1"));
+        }
+        return Response.json({ ok: true, data: {} });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(remote.callTool("docs__list_prompts", {})).resolves.toEqual({
+      items: [
+        {
+          name: "docs__explain",
+          title: "Explain",
+          description: "Explain prompt.",
+          arguments: [{ name: "topic", description: "Topic to explain.", required: true }],
+        },
+      ],
+    });
+    await remote.close();
+  });
+
+  it("falls back to exact direct tool exports when names end with primitive suffixes", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input, init) => {
+        const url = String(input);
+        requests.push({
+          url,
+          ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+        });
+        if (url.endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifest("rev-1", "unused"),
+            caplets: [],
+            tools: [
+              {
+                stableId: "tool:docs:read_resource",
+                exportId: "export-tool",
+                kind: "tool",
+                name: "docs__read_resource",
+                downstreamName: "read_resource",
+                title: "Read Resource Tool",
+                description: "A real downstream tool.",
+                inputSchema: { type: "object" },
+                outputSchema: { type: "object" },
+                schemaHash: "sha256:tool",
+                capletId: "docs",
+                shadowing: "forbid",
+              },
+            ],
+          });
+        }
+        return Response.json({ ok: true, data: { directTool: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(
+      remote.callTool("docs__read_resource", { uri: "file:///README.md" }),
+    ).resolves.toEqual({ directTool: true });
+
+    expect(requests.at(-1)?.body).toMatchObject({
+      kind: "tool",
+      exportId: "export-tool",
+      input: { uri: "file:///README.md" },
+    });
+    await remote.close();
+  });
+
+  it("retries stale manifests for primitive attached invokes", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (url.endsWith("/manifest")) {
+        const manifestFetches = requests.filter((request) =>
+          request.url.endsWith("/manifest"),
+        ).length;
+        return Response.json(
+          manifestFetches === 1
+            ? attachManifestWithDirectMcpPrimitives("rev-1")
+            : {
+                ...attachManifestWithDirectMcpPrimitives("rev-2"),
+                resources: [
+                  {
+                    ...attachManifestWithDirectMcpPrimitives("rev-2").resources[0]!,
+                    exportId: "export-resource-2",
+                  },
+                ],
+              },
+        );
+      }
+      if (
+        url.endsWith("/invoke") &&
+        requests.filter((request) => request.url.endsWith("/invoke")).length === 1
+      ) {
+        return Response.json(
+          { ok: false, error: { code: "ATTACH_MANIFEST_STALE", message: "stale" } },
+          { status: 409 },
+        );
+      }
+      return Response.json({ ok: true, data: { retried: true } });
+    });
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(
+      remote.callTool("docs__read_resource", { uri: "file:///README.md" }),
+    ).resolves.toEqual({
+      retried: true,
+    });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://caplets.example.com/v1/attach/manifest",
+      "https://caplets.example.com/v1/attach/invoke",
+      "https://caplets.example.com/v1/attach/manifest",
+      "https://caplets.example.com/v1/attach/invoke",
+    ]);
+    expect(requests.at(-1)?.body).toMatchObject({
+      revision: "rev-2",
+      exportId: "export-resource-2",
+    });
+    await remote.close();
+  });
+
+  it("advertises the Code Mode run input schema for attached Code Mode", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifest("rev-1", "unused"),
+            caplets: [],
+            codeModeCaplets: [
+              {
+                stableId: "code_mode:remote-only",
+                exportId: "export-remote-only",
+                kind: "caplet",
+                name: "Remote Only",
+                description: "Remote-only handle.",
+                schemaHash: null,
+                capletId: "remote-only",
+                shadowing: "forbid",
+              },
+            ],
+          });
+        }
+        return Response.json({ ok: true, data: {} });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 60_000 });
+
+    await service.reload();
+
+    expect(service.listTools()).toContainEqual(
+      expect.objectContaining({
+        caplet: "code_mode",
+        codeModeRun: true,
+        inputSchema: expect.objectContaining({
+          required: ["code"],
+          properties: expect.objectContaining({ code: expect.any(Object) }),
+        }),
+      }),
+    );
+    await service.close();
+  });
+
+  it("preserves non-JSON attach invoke HTTP status for auth classification", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return new Response("gateway error", { status: 401 });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({
+      client: remote,
+      pollIntervalMs: 60_000,
+      authKind: "hosted_cloud",
+    });
+
+    await service.reload();
+
+    await expect(service.execute("remote", {})).rejects.toMatchObject({
+      code: "AUTH_FAILED",
+      message: "Caplets Cloud authentication failed; run caplets cloud auth login.",
+    });
     await service.close();
   });
 

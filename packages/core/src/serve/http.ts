@@ -28,6 +28,7 @@ type HttpServeIo = {
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
+  exposeAttach?: boolean;
 };
 
 type HttpMcpSession = {
@@ -56,6 +57,7 @@ export function createHttpServeApp(
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
+  const exposeAttach = io.exposeAttach ?? true;
   let attachProjection: AttachProjection | undefined;
   engine.onReload(() => {
     attachProjection = undefined;
@@ -72,12 +74,12 @@ export function createHttpServeApp(
       name: "caplets",
       transport: "http",
       base: paths.base,
-      versions: [versionDiscovery(paths)],
+      versions: [versionDiscovery(paths, exposeAttach)],
       auth: { type: "basic", enabled: options.auth.enabled },
     }),
   );
 
-  app.get(paths.version, (c) => c.json(versionDiscovery(paths)));
+  app.get(paths.version, (c) => c.json(versionDiscovery(paths, exposeAttach)));
 
   app.get(paths.health, (c) =>
     c.json({
@@ -132,26 +134,28 @@ export function createHttpServeApp(
 
   const attachHostProtection = dnsRebindingProtection(options);
 
-  app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
-    attachProjection ??= await buildAttachProjection(engine);
-    return c.json(attachProjection.manifest);
-  });
-
-  app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
-    attachEventsResponse(engine),
-  );
-
-  app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
-    try {
-      const request = await parseAttachInvokeRequest(c.req.json());
+  if (exposeAttach) {
+    app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
       attachProjection ??= await buildAttachProjection(engine);
-      const result = await invokeAttachExport(engine, attachProjection, request);
-      return c.json({ ok: true, data: result });
-    } catch (error) {
-      const response = attachErrorResponse(error);
-      return c.json(response.body, response.status);
-    }
-  });
+      return c.json(attachProjection.manifest);
+    });
+
+    app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
+      attachEventsResponse(engine),
+    );
+
+    app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
+      try {
+        const request = await parseAttachInvokeRequest(c.req.json());
+        attachProjection ??= await buildAttachProjection(engine);
+        const result = await invokeAttachExport(engine, attachProjection, request);
+        return c.json({ ok: true, data: result });
+      } catch (error) {
+        const response = attachErrorResponse(error);
+        return c.json(response.body, response.status);
+      }
+    });
+  }
 
   app.post(paths.control, basicAuth(options.auth), async (c) => {
     let request: RemoteCliRequest;
@@ -310,16 +314,20 @@ function firstForwardedValue(value: string | undefined): string | undefined {
   return value?.split(",", 1)[0]?.trim() || undefined;
 }
 
-function versionDiscovery(paths: ReturnType<typeof servicePaths>) {
+function versionDiscovery(paths: ReturnType<typeof servicePaths>, exposeAttach = true) {
   return {
     version: 1,
     path: paths.version,
     links: {
       mcp: paths.mcp,
       admin: paths.control,
-      attachManifest: paths.attachManifest,
-      attachEvents: paths.attachEvents,
-      attachInvoke: paths.attachInvoke,
+      ...(exposeAttach
+        ? {
+            attachManifest: paths.attachManifest,
+            attachEvents: paths.attachEvents,
+            attachInvoke: paths.attachInvoke,
+          }
+        : {}),
       health: paths.health,
     },
   };
@@ -442,6 +450,7 @@ export async function serveHttpWithSessionFactory(
   const engine = new CapletsEngine({});
   const app = createHttpServeApp(options, engine, {
     writeErr,
+    exposeAttach: false,
     sessionFactory: createSession,
     control: {
       projectCapletsRoot: resolveProjectCapletsRoot(),
@@ -453,7 +462,6 @@ export async function serveHttpWithSessionFactory(
   const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
     writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
     writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
-    writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
     writeErr(

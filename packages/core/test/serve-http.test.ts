@@ -574,6 +574,30 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("does not advertise attach routes when an HTTP app bridges an attached session", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      exposeAttach: false,
+      sessionFactory: () => ({
+        connect: async () => undefined,
+        close: async () => undefined,
+      }),
+    });
+
+    const discovery = (await (await app.request("http://127.0.0.1:5387/v1")).json()) as {
+      links: Record<string, string>;
+    };
+    expect(discovery.links).not.toHaveProperty("attachManifest");
+    expect(await app.request("http://127.0.0.1:5387/v1/attach/manifest")).toHaveProperty(
+      "status",
+      404,
+    );
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
   it("invokes exported attach entries by revision-scoped export ID", async () => {
     const { engine } = testEngine({
       options: { exposure: "progressive" },

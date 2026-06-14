@@ -3,6 +3,7 @@ import { schemaHash } from "../schema-hash";
 import { stableJsonStringify } from "../stable-json";
 import type { CapletsEngine } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
+import { decodeDirectResourceUri } from "../exposure/direct-names";
 import type {
   CallableCaplet,
   DirectPromptRegistration,
@@ -194,7 +195,10 @@ export async function invokeAttachExport(
         "Attach resource template invoke requires input.uri.",
       );
     }
-    return await engine.readDirectResource(route.capletId, uri);
+    return await engine.readDirectResource(
+      route.capletId,
+      downstreamResourceUri(route.capletId, uri),
+    );
   }
   if (route.kind === "prompt") {
     return await engine.getDirectPrompt(
@@ -422,4 +426,16 @@ function stringifyRecord(record: Record<string, unknown>): Record<string, string
       typeof value === "string" ? value : JSON.stringify(value),
     ]),
   );
+}
+
+function downstreamResourceUri(capletId: string, uri: string): string {
+  if (!uri.startsWith("caplets://")) return uri;
+  const decoded = decodeDirectResourceUri(uri);
+  if (decoded.capletId !== capletId) {
+    throw new CapletsError(
+      "ATTACH_EXPORT_NOT_FOUND",
+      "Attach resource template URI belongs to a different Caplet.",
+    );
+  }
+  return decoded.downstreamUri;
 }
