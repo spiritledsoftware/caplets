@@ -434,6 +434,38 @@ describe("RemoteNativeCapletsService", () => {
     }
   });
 
+  it("does not reconnect the attach events stream after an HTTP error response", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchStub = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+        const url = String(input);
+        if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
+        if (url.endsWith("/events")) {
+          return Response.json({ ok: false, error: { code: "UNAUTHORIZED" } }, { status: 401 });
+        }
+        return Response.json({ ok: true });
+      });
+      const remote = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: fetchStub as typeof fetch,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+      });
+      const eventRequestCount = () =>
+        fetchStub.mock.calls.filter(([input]) => String(input).endsWith("/events")).length;
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(eventRequestCount()).toBe(1));
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(eventRequestCount()).toBe(1);
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not retry non-attach errors that merely mention stale data", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {

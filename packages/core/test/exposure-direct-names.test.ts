@@ -42,4 +42,15 @@ describe("direct exposure names", () => {
       ),
     ).toBe(true);
   });
+
+  it("does not expand oversized URI template variable lists", () => {
+    const variables = Array.from({ length: 13 }, (_value, index) => `v${index}`);
+
+    expect(
+      directResourceUriMatchesTemplate(
+        `https://api.example.com/search?${variables.map((name) => `${name}=1`).join("&")}`,
+        `https://api.example.com/search{?${variables.join(",")}}`,
+      ),
+    ).toBe(false);
+  });
 });

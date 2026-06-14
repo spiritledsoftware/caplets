@@ -69,10 +69,10 @@ export function createSdkRemoteCapletsClient(
       options.requestInit,
       fetchImpl,
       listeners,
-      (closedAbort) => {
+      (closedAbort, retry) => {
         if (eventsAbort !== closedAbort) return;
         eventsAbort = undefined;
-        if (closedAbort.signal.aborted || listeners.size === 0) return;
+        if (!retry || closedAbort.signal.aborted || listeners.size === 0) return;
         clearEventsReconnectTimer();
         eventsReconnectTimer = setTimeout(() => {
           eventsReconnectTimer = undefined;
@@ -707,9 +707,10 @@ function startAttachEvents(
   requestInit: RequestInit | undefined,
   fetchImpl: typeof fetch,
   listeners: Set<() => void>,
-  onClose: (abort: AbortController) => void,
+  onClose: (abort: AbortController, retry: boolean) => void,
 ): AbortController {
   const abort = new AbortController();
+  let retry = true;
   void (async () => {
     try {
       const response = await fetchImpl(new URL("events", slashUrl(attachUrl)), {
@@ -717,6 +718,10 @@ function startAttachEvents(
         method: "GET",
         signal: abort.signal,
       });
+      if (!response.ok) {
+        retry = false;
+        return;
+      }
       if (!response.body) return;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -735,7 +740,7 @@ function startAttachEvents(
     } catch {
       // Polling remains the fallback when the event stream is unavailable.
     } finally {
-      onClose(abort);
+      onClose(abort, retry);
     }
   })();
   return abort;

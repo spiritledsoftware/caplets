@@ -1,5 +1,7 @@
 import { CapletsError } from "../errors";
 
+const MAX_URI_TEMPLATE_VARIABLES = 12;
+
 export function directToolName(capletId: string, operationName: string): string {
   return `${capletId}__${operationName}`;
 }
@@ -92,6 +94,7 @@ function optionalSequencePattern(
 }
 
 function orderedNonEmptySubsets(values: string[]): string[][] {
+  if (values.length > MAX_URI_TEMPLATE_VARIABLES) return [];
   const subsets: string[][] = [];
   for (let mask = 1; mask < 1 << values.length; mask += 1) {
     subsets.push(values.filter((_value, index) => (mask & (1 << index)) !== 0));
