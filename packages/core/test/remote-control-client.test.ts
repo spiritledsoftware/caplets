@@ -25,7 +25,7 @@ describe("RemoteControlClient", () => {
     });
 
     expect(requests).toHaveLength(1);
-    expect(String(requests[0]?.input)).toBe("https://example.com/caplets/control");
+    expect(String(requests[0]?.input)).toBe("https://example.com/caplets/v1/admin");
     expect(requests[0]?.init).toMatchObject({
       method: "POST",
       body: JSON.stringify({ command: "list", arguments: { verbose: true } }),

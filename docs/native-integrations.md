@@ -17,6 +17,8 @@ OpenCode and Pi use the same resolver as `caplets attach`.
 
 Cloud mode starts Project Binding automatically for the current project and overlays local/project Caplets over the remote workspace.
 
+`caplets attach` and native remote integrations connect to the remote `/v1/attach` API for the Caplets runtime surface. Ordinary MCP clients continue to use `/v1/mcp`, which remains governed by configured exposure policy.
+
 Native metadata should expose:
 
 - auth mode: `hosted_cloud`, `self_hosted_remote`, or `unconfigured`

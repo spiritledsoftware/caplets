@@ -1,117 +1,111 @@
-import ts from "typescript";
+import { parse } from "@babel/parser";
+import type { ParserOptions } from "@babel/parser";
 
-const CODE_MODE_STATIC_ANALYSIS_FILE = "/caplets-code-mode/static-analysis-input.ts";
+type AstNode = {
+  type: string;
+  [key: string]: unknown;
+};
+
+const PARSER_OPTIONS: ParserOptions = {
+  sourceType: "module",
+  errorRecovery: true,
+  plugins: ["typescript", "topLevelAwait", "importAttributes"],
+};
 
 export function hasDirectFetchCall(code: string): boolean {
-  const executableSource = maskLiteralsAndComments(code);
-  return (
-    /(^|[^\w$.\]])fetch\s*(?:\?\.)?\s*\(/u.test(executableSource) ||
-    /\b(?:globalThis|window|self)\s*(?:\.\s*fetch|\[\s*["']fetch["']\s*\])\s*(?:\?\.)?\s*\(/u.test(
-      executableSource,
-    )
-  );
+  return hasMatchingAstNode(code, (node) => isCallExpression(node) && isFetchCallee(node.callee));
 }
 
 export function hasExecutableImport(code: string): boolean {
-  const source = ts.createSourceFile(
-    CODE_MODE_STATIC_ANALYSIS_FILE,
-    code,
-    ts.ScriptTarget.ES2022,
-    true,
-    ts.ScriptKind.TS,
-  );
+  return hasMatchingAstNode(code, isExecutableImportNode);
+}
+
+function hasMatchingAstNode(code: string, predicate: (node: AstNode) => boolean): boolean {
+  const ast = parseCode(code);
+  if (!ast) return false;
+
   let found = false;
-
-  const visit = (node: ts.Node): void => {
+  visitAst(ast, (node) => {
     if (found) return;
-    if (
-      ts.isImportDeclaration(node) ||
-      ts.isImportEqualsDeclaration(node) ||
-      (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined)
-    ) {
-      found = true;
-      return;
-    }
-    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-
-  visit(source);
+    found = predicate(node);
+  });
   return found;
 }
 
-function maskLiteralsAndComments(code: string): string {
-  let output = "";
-  let index = 0;
-  while (index < code.length) {
-    const char = code[index]!;
-    const next = code[index + 1];
-    if (char === '"' || char === "'" || char === "`") {
-      const masked = maskQuoted(code, index, char);
-      output += masked.text;
-      index = masked.nextIndex;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      const masked = maskLineComment(code, index);
-      output += masked.text;
-      index = masked.nextIndex;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      const masked = maskBlockComment(code, index);
-      output += masked.text;
-      index = masked.nextIndex;
-      continue;
-    }
-    output += char;
-    index += 1;
+function parseCode(code: string): AstNode | undefined {
+  try {
+    return parse(code, PARSER_OPTIONS) as unknown as AstNode;
+  } catch {
+    return undefined;
   }
-  return output;
 }
 
-function maskQuoted(
-  code: string,
-  start: number,
-  quote: '"' | "'" | "`",
-): { text: string; nextIndex: number } {
-  let text = " ";
-  let index = start + 1;
-  while (index < code.length) {
-    const char = code[index]!;
-    text += char === "\n" ? "\n" : " ";
-    index += char === "\\" ? 2 : 1;
-    if (char === quote) break;
+function isExecutableImportNode(node: AstNode): boolean {
+  if (
+    node.type === "ImportDeclaration" ||
+    node.type === "TSImportEqualsDeclaration" ||
+    (isExportDeclaration(node) && node.source !== undefined)
+  ) {
+    return true;
   }
-  return { text, nextIndex: index };
+  return isCallExpression(node) && isNode(node.callee) && node.callee.type === "Import";
 }
 
-function maskLineComment(code: string, start: number): { text: string; nextIndex: number } {
-  let text = "  ";
-  let index = start + 2;
-  while (index < code.length && code[index] !== "\n") {
-    text += " ";
-    index += 1;
-  }
-  return { text, nextIndex: index };
+function isCallExpression(node: AstNode): node is AstNode & { callee: unknown } {
+  return (
+    (node.type === "CallExpression" || node.type === "OptionalCallExpression") && "callee" in node
+  );
 }
 
-function maskBlockComment(code: string, start: number): { text: string; nextIndex: number } {
-  let text = "  ";
-  let index = start + 2;
-  while (index < code.length) {
-    const char = code[index]!;
-    const next = code[index + 1];
-    text += char === "\n" ? "\n" : " ";
-    index += 1;
-    if (char === "*" && next === "/") {
-      text += " ";
-      index += 1;
-      break;
+function isFetchCallee(value: unknown): boolean {
+  if (!isNode(value)) return false;
+  if (value.type === "Identifier") return value.name === "fetch";
+  if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
+    return isGlobalFetchMember(value);
+  }
+  return false;
+}
+
+function isGlobalFetchMember(node: AstNode): boolean {
+  return (
+    isIdentifierNamed(node.object, "globalThis", "window", "self") && isFetchProperty(node.property)
+  );
+}
+
+function isFetchProperty(value: unknown): boolean {
+  return isIdentifierNamed(value, "fetch") || isStringLiteralNamed(value, "fetch");
+}
+
+function isExportDeclaration(node: AstNode): boolean {
+  return (
+    node.type === "ExportAllDeclaration" ||
+    node.type === "ExportDefaultDeclaration" ||
+    node.type === "ExportNamedDeclaration"
+  );
+}
+
+function visitAst(value: unknown, visit: (node: AstNode) => void): void {
+  if (!isNode(value)) return;
+  visit(value);
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "loc" || key === "start" || key === "end" || key === "extra") continue;
+    if (Array.isArray(child)) {
+      for (const item of child) visitAst(item, visit);
+      continue;
     }
+    visitAst(child, visit);
   }
-  return { text, nextIndex: index };
+}
+
+function isNode(value: unknown): value is AstNode {
+  return typeof value === "object" && value !== null && typeof (value as AstNode).type === "string";
+}
+
+function isIdentifierNamed(value: unknown, ...names: string[]): boolean {
+  return isNode(value) && value.type === "Identifier" && names.includes(String(value.name));
+}
+
+function isStringLiteralNamed(value: unknown, name: string): boolean {
+  return isNode(value) && value.type === "StringLiteral" && value.value === name;
 }

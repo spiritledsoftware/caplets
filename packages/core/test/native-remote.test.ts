@@ -5,17 +5,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
-import { RemoteNativeCapletsService, type RemoteCapletsClient } from "../src/native/remote";
+import { CapletsEngine } from "../src/engine";
+import {
+  createSdkRemoteCapletsClient,
+  RemoteNativeCapletsService,
+  type RemoteCapletsClient,
+  type RemoteCapletsTool,
+} from "../src/native/remote";
 import {
   createNativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
+import { createHttpServeApp } from "../src/serve/http";
+import type { HttpServeOptions } from "../src/serve/options";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 function client(
-  tools: Array<{ name: string; title?: string | undefined; description?: string | undefined }> = [
-    { name: "alpha", title: "Alpha", description: "Remote alpha" },
-  ],
+  tools: RemoteCapletsTool[] = [{ name: "alpha", title: "Alpha", description: "Remote alpha" }],
 ) {
   const listeners = new Set<() => void>();
   return {
@@ -32,9 +38,38 @@ function client(
       for (const listener of listeners) listener();
     },
     listenerCount: () => listeners.size,
-    setTools: (next: typeof tools) => {
+    setTools: (next: RemoteCapletsTool[]) => {
       tools = next;
     },
+  };
+}
+
+function attachManifest(revision: string, exportId: string) {
+  return {
+    version: 1,
+    revision,
+    generatedAt: new Date(0).toISOString(),
+    caplets: [
+      {
+        stableId: "progressive:remote",
+        exportId,
+        kind: "caplet",
+        name: "remote",
+        title: "Remote",
+        description: "Remote Caplet.",
+        inputSchema: { type: "object" },
+        schemaHash: "sha256:same",
+        capletId: "remote",
+        shadowing: "forbid",
+      },
+    ],
+    tools: [],
+    resources: [],
+    resourceTemplates: [],
+    prompts: [],
+    completions: [],
+    codeModeCaplets: [],
+    diagnostics: [],
   };
 }
 
@@ -49,6 +84,52 @@ function deferred<T = void>() {
 }
 
 describe("RemoteNativeCapletsService", () => {
+  it("refetches and retries once when attach invoke reports a stale manifest", async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      if (url.endsWith("/manifest")) {
+        const revision = requests.filter((request) => request.url.endsWith("/manifest")).length;
+        return Response.json(attachManifest(`rev-${revision}`, `export-${revision}`));
+      }
+      if (
+        url.endsWith("/invoke") &&
+        requests.filter((request) => request.url.endsWith("/invoke")).length === 1
+      ) {
+        return Response.json(
+          { ok: false, error: { code: "ATTACH_MANIFEST_STALE", message: "stale" } },
+          { status: 409 },
+        );
+      }
+      return Response.json({ ok: true, data: { retried: true } });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await client.listTools();
+    await expect(client.callTool("remote", { ok: true })).resolves.toEqual({ retried: true });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://caplets.example.com/v1/attach/manifest",
+      "https://caplets.example.com/v1/attach/invoke",
+      "https://caplets.example.com/v1/attach/manifest",
+      "https://caplets.example.com/v1/attach/invoke",
+    ]);
+    expect(requests[1]?.body).toMatchObject({ revision: "rev-1", exportId: "export-1" });
+    expect(requests[3]?.body).toMatchObject({ revision: "rev-2", exportId: "export-2" });
+
+    await client.close();
+  });
+
   it("maps remote MCP tools to native Caplet tools", async () => {
     const fixture = client([{ name: "git-hub", title: undefined, description: "GitHub tools" }]);
     const service = new RemoteNativeCapletsService({ client: fixture.api, pollIntervalMs: 60_000 });
@@ -445,7 +526,7 @@ describe("createNativeCapletsService remote mode", () => {
     await secondService.close();
   });
 
-  it("lists local overlay Caplets after remote tools and shadows matching remote Caplets", async () => {
+  it("keeps remote Caplets and suppresses matching local overlays by default", async () => {
     const fixture = client([
       { name: "shared", title: "Remote Shared" },
       { name: "remote-only", title: "Remote Only" },
@@ -457,21 +538,76 @@ describe("createNativeCapletsService remote mode", () => {
       },
     });
     dirs.push(dir);
+    const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
       server: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
+      writeErr,
     });
 
     await service.reload();
 
     expect(configuredCapletTitles(service.listTools())).toEqual([
+      ["shared", "Remote Shared"],
       ["remote-only", "Remote Only"],
-      ["shared", "Local Shared"],
       ["local-only", "Local Only"],
     ]);
+    expect(writeErr).toHaveBeenCalledWith(
+      "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
+    await service.close();
+  });
+
+  it("warns when a local Code Mode-only Caplet is suppressed by remote Code Mode", async () => {
+    const fixture = client([
+      {
+        name: "code_mode",
+        capletId: "code_mode",
+        title: "Code Mode",
+        codeModeRun: true,
+        codeModeCaplets: [
+          {
+            stableId: "code_mode:shared",
+            exportId: "export-shared",
+            kind: "caplet",
+            name: "Remote Shared",
+            description: "Remote shared handle.",
+            schemaHash: null,
+            capletId: "shared",
+            shadowing: "forbid",
+          },
+        ],
+      },
+    ]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      options: { exposure: "code_mode" },
+      mcpServers: {
+        shared: {
+          name: "Local Shared",
+          description: "Local shared handle.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+
+    await service.reload();
+
+    expect(writeErr).toHaveBeenCalledWith(
+      "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
     await service.close();
   });
 
@@ -583,6 +719,60 @@ describe("createNativeCapletsService remote mode", () => {
       });
     } finally {
       await service.close();
+    }
+  });
+
+  it("loads code-mode-default remote Caplets from the attach endpoint", async () => {
+    const remoteConfig = tempConfig({
+      options: { exposure: "code_mode" },
+      httpApis: {
+        "stealth-browser-use": {
+          name: "Stealth Browser Use",
+          description: "Remote browser tools.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    const localConfig = tempConfig({ options: { exposure: "code_mode" } });
+    dirs.push(remoteConfig.dir, localConfig.dir);
+    const remoteEngine = new CapletsEngine({
+      configPath: remoteConfig.configPath,
+      projectConfigPath: remoteConfig.projectConfigPath,
+      watch: false,
+    });
+    const app = createHttpServeApp(httpOptions(), remoteEngine, { writeErr: () => {} });
+    const fetchFromApp: typeof fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const headers = new Headers(request.headers);
+      headers.set("host", new URL(request.url).host);
+      return app.fetch(new Request(request, { headers }));
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
+      configPath: localConfig.configPath,
+      projectConfigPath: localConfig.projectConfigPath,
+    });
+
+    try {
+      await service.reload();
+
+      expect(configuredCapletIds(service.listTools())).toEqual([]);
+      await expect(
+        service.execute("code_mode", {
+          code: "return { keys: Object.keys(caplets).sort() };",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: {
+          keys: ["debug", "stealth-browser-use"],
+        },
+      });
+    } finally {
+      await service.close();
+      await remoteEngine.close();
     }
   });
 
@@ -797,7 +987,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "cloud",
-      server: { url: "https://cloud.caplets.dev" },
+      server: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
       remoteClientFactory: factory,
       configPath,
       projectConfigPath,
@@ -807,7 +997,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(service.listTools().map((tool) => tool.caplet)).toContain("remote");
     expect(factory).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: new URL("https://cloud.caplets.dev/ws/personal/mcp"),
+        url: new URL("https://cloud.caplets.dev/v1/ws/personal/attach"),
         requestInit: { headers: { Authorization: "Bearer cloud-access" } },
       }),
     );
@@ -1035,4 +1225,20 @@ function configuredCapletTitles(tools: Array<{ caplet: string; title: string }>)
   return tools
     .filter((tool) => tool.caplet !== "code_mode")
     .map((tool) => [tool.caplet, tool.title]);
+}
+
+function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOptions {
+  return {
+    transport: "http",
+    host: "127.0.0.1",
+    port: 5387,
+    path: "/",
+    publicOrigin: undefined,
+    auth: { enabled: false, user: "caplets" },
+    allowUnauthenticatedHttp: false,
+    warnUnauthenticatedNetwork: false,
+    loopback: true,
+    trustProxy: false,
+    ...overrides,
+  };
 }

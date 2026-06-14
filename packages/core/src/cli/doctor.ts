@@ -5,7 +5,11 @@ import { createNativeCapletsService } from "../native/service";
 import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
 import { CloudAuthStore, redactedCloudAuthStatus } from "../cloud-auth/store";
 import { projectBindingWorkspacePaths } from "../project-binding/workspaces";
-import { resolveCapletsRemote } from "../remote/options";
+import {
+  resolveCapletsRemote,
+  resolveHostedCloudRemote,
+  resolveRemoteMode,
+} from "../remote/options";
 import { resolveCapletsServer } from "../server/options";
 import type { MutagenProjectSyncDoctorData } from "../project-binding/mutagen";
 import { generateCodeModeDeclarations } from "../code-mode/declarations";
@@ -226,7 +230,9 @@ function resolveServerSection(env: NodeJS.ProcessEnv | Record<string, string | u
 
 function resolveRemoteSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
   try {
-    const remote = resolveCapletsRemote({}, env);
+    const mode = resolveRemoteMode({}, env);
+    const remote =
+      mode.mode === "cloud" ? resolveHostedCloudRemote({}, env) : resolveCapletsRemote({}, env);
     return {
       configured: true,
       baseUrl: remote.baseUrl.href,

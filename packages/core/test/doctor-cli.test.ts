@@ -35,11 +35,11 @@ describe("caplets doctor", () => {
     });
 
     const report = out.join("");
-    expect(report).toContain("MCP URL: https://cloud.caplets.dev/ws/ian/mcp");
-    expect(report).toContain("Control URL: https://cloud.caplets.dev/ws/ian/control");
-    expect(report).toContain("Health URL: https://cloud.caplets.dev/ws/ian/healthz");
+    expect(report).toContain("MCP URL: https://cloud.caplets.dev/v1/ws/ian/mcp");
+    expect(report).toContain("Control URL: https://cloud.caplets.dev/v1/admin");
+    expect(report).toContain("Health URL: https://cloud.caplets.dev/v1/healthz");
     expect(report).toContain(
-      "WebSocket URL: wss://cloud.caplets.dev/ws/ian/control/project-bindings/connect",
+      "WebSocket URL: wss://cloud.caplets.dev/v1/ws/ian/attach/project-bindings/connect",
     );
     expect(report).toContain("Auth: bearer");
     expect(report).not.toContain("secret");

@@ -106,9 +106,9 @@ describe("caplets attach CLI", () => {
       }),
     ).resolves.toMatchObject({
       ok: true,
-      webSocketUrl: "ws://127.0.0.1:8787/caplets/control/project-bindings/connect",
+      webSocketUrl: "ws://127.0.0.1:8787/caplets/v1/attach/project-bindings/connect",
     });
-    expect(requestedUrl).toBe("http://127.0.0.1:8787/caplets/control/project-bindings/connect");
+    expect(requestedUrl).toBe("http://127.0.0.1:8787/caplets/v1/attach/project-bindings/connect");
   });
 
   it("probes the Cloud control route when given a copied Cloud MCP endpoint", async () => {
@@ -139,10 +139,11 @@ describe("caplets attach CLI", () => {
       ),
     ).resolves.toMatchObject({
       ok: true,
-      webSocketUrl: "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+      webSocketUrl:
+        "wss://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
     });
     expect(requestedUrl).toBe(
-      "https://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+      "https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
     );
   });
 
@@ -163,7 +164,7 @@ describe("caplets attach CLI", () => {
     }
 
     expect(out.join("")).toContain(
-      "Project Binding available at wss://caplets.example.com/caplets/control/project-bindings/connect.",
+      "Project Binding available at wss://caplets.example.com/caplets/v1/attach/project-bindings/connect.",
     );
   });
 

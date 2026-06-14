@@ -27,7 +27,12 @@ describe("NativeCapletsMcpSession", () => {
           operationNames: ["inspect"],
         },
       ],
-      execute: vi.fn(async () => ({ ok: true })),
+      execute: vi.fn(async () => ({
+        ok: true,
+        value: { smoke: true },
+        diagnostics: [],
+        logs: { entries: [], truncated: false, stored: false },
+      })),
       reload: vi.fn(async () => true),
       onToolsChanged: vi.fn(() => () => undefined),
       close: vi.fn(async () => undefined),
@@ -39,10 +44,56 @@ describe("NativeCapletsMcpSession", () => {
     const tool = registered.get("remote-alpha") as {
       callback: (request: unknown) => Promise<unknown>;
     };
-    await expect(tool.callback({ operation: "inspect" })).resolves.toEqual({ ok: true });
+    const result = await tool.callback({ operation: "inspect" });
+    const envelope = {
+      ok: true,
+      value: { smoke: true },
+      diagnostics: [],
+      logs: { entries: [], truncated: false, stored: false },
+    };
+    expect(result).toEqual({
+      content: [{ type: "text", text: JSON.stringify(envelope, null, 2) }],
+      structuredContent: envelope,
+    });
     expect(service.execute).toHaveBeenCalledWith("remote-alpha", { operation: "inspect" });
     await session.close();
     expect(service.close).toHaveBeenCalledOnce();
+  });
+
+  it("marks native tool envelopes with ok false as MCP errors", async () => {
+    const registered = new Map<string, unknown>();
+    const server = {
+      registerTool: vi.fn((name: string, definition: unknown, callback: unknown) => {
+        registered.set(name, { definition, callback });
+        return { remove: vi.fn(), update: vi.fn() };
+      }),
+      connect: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const envelope = {
+      ok: false,
+      error: { code: "REQUEST_INVALID", message: "Bad request" },
+      diagnostics: [],
+    };
+    const service = {
+      listTools: () => [{ caplet: "code_mode", title: "Code Mode", description: "Code Mode" }],
+      execute: vi.fn(async () => envelope),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+
+    const session = new NativeCapletsMcpSession(service as never, { server: server as never });
+
+    const tool = registered.get("code_mode") as {
+      callback: (request: unknown) => Promise<unknown>;
+    };
+    await expect(tool.callback({})).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify(envelope, null, 2) }],
+      structuredContent: envelope,
+      isError: true,
+    });
+    await session.close();
   });
 
   it("updates registered tools when the native service changes", () => {

@@ -663,7 +663,7 @@ class CloudNativeCapletsService implements NativeCapletsService {
         } satisfies ResolvedNativeCloudPresenceOptions;
         const remoteOptions = {
           ...this.baseRemote,
-          url: selection.remote.mcpUrl,
+          url: selection.remote.attachUrl,
           auth: nativeAuthFromRemoteAuth(selection.remote.auth),
           requestInit: selection.remote.requestInit,
           ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
@@ -718,6 +718,7 @@ function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOpti
 class CompositeNativeCapletsService implements NativeCapletsService {
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
   private readonly unsubscribers: Array<() => void>;
+  private readonly warnedShadowedLocalCaplets = new Set<string>();
   private tools: NativeCapletTool[] = [];
   private closed = false;
   private batchingReload = false;
@@ -749,7 +750,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request);
     }
-    if (this.local.listTools().some((tool) => tool.caplet === capletId)) {
+    const localHasCaplet = this.local.listTools().some((tool) => tool.caplet === capletId);
+    const remoteHasCaplet = serviceHasCaplet(this.remote, capletId);
+    if (localHasCaplet && !remoteHasCaplet) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
@@ -813,23 +816,48 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private mergeTools(): NativeCapletTool[] {
     const allLocalTools = this.local.listTools();
     const allRemoteTools = this.remote.listTools();
-    const localTools = allLocalTools.filter((tool) => tool.codeModeRun !== true);
+    const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
+      fallbackToVisible: true,
+    });
+    const remoteIds = new Set(
+      [
+        ...allRemoteTools.filter((tool) => tool.codeModeRun !== true).map((tool) => tool.caplet),
+        ...remoteCodeModeTools.map((tool) => tool.caplet),
+      ].filter((caplet) => caplet !== nativeCodeModeToolId),
+    );
+    const localTools = allLocalTools.filter(
+      (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.caplet),
+    );
+    this.warnShadowedLocalCaplets(allLocalTools, remoteIds);
     const localIds = new Set(localTools.map((tool) => tool.caplet));
     const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
       fallbackToVisible: false,
-    });
-    const remoteTools = allRemoteTools.filter(
-      (tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet),
-    );
-    const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
-      fallbackToVisible: true,
-    }).filter((tool) => !localIds.has(tool.caplet));
+    }).filter((tool) => !localIds.has(tool.caplet) && !remoteIds.has(tool.caplet));
+    const remoteTools = allRemoteTools.filter((tool) => tool.codeModeRun !== true);
     const mergedTools = [...remoteTools, ...localTools];
     const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
     return [
       ...mergedTools,
       ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
     ];
+  }
+
+  private warnShadowedLocalCaplets(localTools: NativeCapletTool[], remoteIds: Set<string>): void {
+    const localIds = new Set([
+      ...localTools.filter((tool) => tool.codeModeRun !== true).map((tool) => tool.caplet),
+      ...codeModeCallableNativeTools(localTools, { fallbackToVisible: false }).map(
+        (tool) => tool.caplet,
+      ),
+    ]);
+    for (const capletId of localIds) {
+      if (!remoteIds.has(capletId)) continue;
+      if (this.warnedShadowedLocalCaplets.has(capletId)) continue;
+      this.warnedShadowedLocalCaplets.add(capletId);
+      writeErr(
+        this.options,
+        `Local Caplet '${capletId}' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n`,
+      );
+    }
   }
 
   private async reloadChild(
@@ -846,6 +874,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       return undefined;
     }
   }
+}
+
+function serviceHasCaplet(service: NativeCapletsService, capletId: string): boolean {
+  return service.listTools().some((tool) => {
+    if (tool.codeModeRun) {
+      return tool.codeModeCaplets?.some((caplet) => caplet.id === capletId) ?? false;
+    }
+    return tool.caplet === capletId;
+  });
 }
 
 function createProjectBindingSessionManager(

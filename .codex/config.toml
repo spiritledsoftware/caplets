@@ -1,3 +1,12 @@
+#:schema https://raw.githubusercontent.com/openai/codex/refs/heads/main/codex-rs/core/config.schema.json
+
+[mcp_servers.caplets-remote]
+command = "node"
+args = ["./packages/cli/dist/index.js", "attach", "--remote-url", "http://localhost:5387"]
+
+[mcp_servers.caplets-remote.env]
+CAPLETS_MODE = "remote"
+
 [mcp_servers.caplets-local]
 command = "node"
 args = ["./packages/cli/dist/index.js", "serve", "--transport", "stdio"]

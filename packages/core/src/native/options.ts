@@ -1,7 +1,8 @@
 import { CapletsError } from "../errors";
-import { mcpUrlForBase, type CapletsServerEnv, type CapletsServerInput } from "../server/options";
+import type { CapletsServerEnv, CapletsServerInput } from "../server/options";
 import {
   resolveCapletsRemote,
+  resolveHostedCloudRemote,
   resolveRemoteMode,
   type CapletsRemoteAuth,
   type CapletsRemoteEnv,
@@ -76,9 +77,10 @@ export function resolveNativeCapletsServiceOptions(
   };
   const server =
     mode.mode === "cloud"
-      ? resolveCapletsRemote(
+      ? resolveHostedCloudRemote(
           {
             url: input.server?.url ?? env.CAPLETS_REMOTE_URL ?? "",
+            ...optionalWorkspace(input, env),
             ...(serverFetch ? { fetch: serverFetch } : {}),
           },
           {},
@@ -89,7 +91,7 @@ export function resolveNativeCapletsServiceOptions(
   return {
     mode: mode.mode,
     remote: {
-      url: mcpUrlForBase(server.baseUrl),
+      url: server.attachUrl,
       auth: nativeAuthFromRemoteAuth(server.auth),
       pollIntervalMs: parsePollInterval(input.remote?.pollIntervalMs),
       requestInit:
@@ -100,6 +102,17 @@ export function resolveNativeCapletsServiceOptions(
       ...(server.fetch ? { fetch: server.fetch } : {}),
     },
   };
+}
+
+function optionalWorkspace(
+  input: NativeCapletsServiceResolutionInput,
+  env: NativeCapletsEnv,
+): { workspace?: string } {
+  const workspace =
+    input.remote?.cloud?.workspaceId ??
+    env.CAPLETS_REMOTE_WORKSPACE ??
+    env.CAPLETS_CLOUD_WORKSPACE_ID;
+  return workspace ? { workspace } : {};
 }
 
 function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOptions {

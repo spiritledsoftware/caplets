@@ -37,6 +37,7 @@ export type CapletsServerAuth =
 export type ResolvedCapletsServer = {
   baseUrl: URL;
   mcpUrl: URL;
+  attachUrl: URL;
   controlUrl: URL;
   healthUrl: URL;
   auth: CapletsServerAuth;
@@ -107,6 +108,7 @@ export function resolveCapletsServer(
   return {
     baseUrl,
     mcpUrl: mcpUrlForBase(baseUrl),
+    attachUrl: attachUrlForBase(baseUrl),
     controlUrl: controlUrlForBase(baseUrl),
     healthUrl: healthUrlForBase(baseUrl),
     auth,
@@ -116,15 +118,19 @@ export function resolveCapletsServer(
 }
 
 export function mcpUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "mcp");
+  return appendBasePath(baseUrl, "v1/mcp");
+}
+
+export function attachUrlForBase(baseUrl: URL): URL {
+  return appendBasePath(baseUrl, "v1/attach");
 }
 
 export function controlUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "control");
+  return appendBasePath(baseUrl, "v1/admin");
 }
 
 export function healthUrlForBase(baseUrl: URL): URL {
-  return appendBasePath(baseUrl, "healthz");
+  return appendBasePath(baseUrl, "v1/healthz");
 }
 
 export function appendBasePath(baseUrl: URL, path: string): URL {

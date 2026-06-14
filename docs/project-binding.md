@@ -10,6 +10,8 @@ Project Binding connects one local project root to a remote Caplets runtime so p
 
 Hosted Cloud uses `caplets cloud auth login` and a Selected Workspace. Self-hosted remotes use `CAPLETS_REMOTE_URL` plus `CAPLETS_REMOTE_TOKEN` or Basic Auth credentials. Passing `--workspace` must match the saved Selected Workspace; use `caplets cloud auth switch <workspace>` for an explicit switch.
 
+The attach client connects to the remote `/v1/attach` API for runtime Caplet discovery and calls. `/v1/mcp` remains the ordinary agent-facing MCP endpoint and continues to honor configured exposure policy.
+
 ## Binding Session Loop
 
 Foreground attach creates a server-side Binding Session through the Project Binding control API, opens the control WebSocket, emits normalized JSON events, sends periodic heartbeats, and sends a remote session-end request when interrupted. A single reconnectable WebSocket close emits a `reconnecting` event before retrying the same Binding Session.
