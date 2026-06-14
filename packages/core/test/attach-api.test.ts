@@ -305,4 +305,61 @@ describe("Attach API dispatch", () => {
       argument: { name: "path", value: "README.md" },
     });
   });
+
+  it("keeps completion invokes on the completion operation", async () => {
+    const engine = {
+      execute: vi.fn(async () => ({ completion: "ok" })),
+    } as unknown as CapletsEngine;
+    const projection = {
+      manifest: {
+        version: 1,
+        revision: "rev-1",
+        generatedAt: new Date(0).toISOString(),
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [],
+        prompts: [],
+        completions: [
+          {
+            stableId: "completion:docs",
+            exportId: "export-completion",
+            kind: "completion",
+            name: "docs__complete",
+            capletId: "docs",
+            schemaHash: null,
+            shadowing: "forbid",
+          },
+        ],
+        codeModeCaplets: [],
+        diagnostics: [],
+      },
+      routes: new Map([
+        [
+          "export-completion",
+          {
+            kind: "completion",
+            capletId: "docs",
+          },
+        ],
+      ]),
+    } satisfies AttachProjection;
+
+    await invokeAttachExport(engine, projection, {
+      revision: "rev-1",
+      kind: "completion",
+      exportId: "export-completion",
+      input: {
+        operation: "read_resource",
+        ref: { type: "prompt", name: "review" },
+        argument: { name: "topic", value: "attach" },
+      },
+    });
+
+    expect(engine.execute).toHaveBeenCalledWith("docs", {
+      operation: "complete",
+      ref: { type: "prompt", name: "review" },
+      argument: { name: "topic", value: "attach" },
+    });
+  });
 });

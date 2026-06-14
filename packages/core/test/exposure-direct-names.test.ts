@@ -3,6 +3,7 @@ import {
   decodeDirectResourceUri,
   directPromptName,
   directResourceTemplateUri,
+  directResourceUriMatchesTemplate,
   directResourceUri,
   directToolName,
   nativeDirectToolName,
@@ -25,5 +26,20 @@ describe("direct exposure names", () => {
     expect(directResourceTemplateUri("docs", "file:///src/{path}")).toBe(
       "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Fsrc%2F%7Bpath%7D",
     );
+  });
+
+  it("matches optional URI template query expansions", () => {
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/search",
+        "https://api.example.com/search{?q}",
+      ),
+    ).toBe(true);
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/search?q=caplets",
+        "https://api.example.com/search{?q}",
+      ),
+    ).toBe(true);
   });
 });

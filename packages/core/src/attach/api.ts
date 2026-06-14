@@ -216,8 +216,8 @@ export async function invokeAttachExport(
   }
   if (route.kind === "completion") {
     return await engine.execute(route.capletId, {
-      operation: "complete",
       ...normalizeCompletionInput(projection.manifest, route.capletId, request.input),
+      operation: "complete",
     });
   }
   throw new CapletsError(
