@@ -532,6 +532,112 @@ describe("createHttpServeApp", () => {
 
     await engine.close();
   });
+
+  it("rejects unauthenticated MCP requests through public origin host by default", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({ publicOrigin: "https://caplets.tail7ff085.ts.net" }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "caplets.tail7ff085.ts.net",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1.0.0" },
+        },
+      }),
+    });
+
+    expect(init.status).toBe(403);
+
+    await engine.close();
+  });
+
+  it("allows authenticated MCP requests through the configured public origin host", async () => {
+    const { engine } = testEngine();
+    const password = "test-password";
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.tail7ff085.ts.net",
+        auth: { enabled: true, user: "caplets", password },
+      }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "caplets.tail7ff085.ts.net",
+        authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1.0.0" },
+        },
+      }),
+    });
+
+    expect(init.status).toBe(200);
+    expect(init.headers.get("mcp-session-id")).toBeTruthy();
+
+    await engine.close();
+  });
+
+  it("allows explicitly unauthenticated MCP requests through the configured public origin host", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.tail7ff085.ts.net",
+        allowUnauthenticatedHttp: true,
+      }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const init = await app.request("http://127.0.0.1:5387/mcp", {
+      method: "POST",
+      headers: {
+        host: "caplets.tail7ff085.ts.net",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "test", version: "1.0.0" },
+        },
+      }),
+    });
+
+    expect(init.status).toBe(200);
+    expect(init.headers.get("mcp-session-id")).toBeTruthy();
+
+    await engine.close();
+  });
 });
 
 function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOptions {
@@ -542,6 +648,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     path: "/",
     publicOrigin: undefined,
     auth: { enabled: false, user: "caplets" },
+    allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,
     trustProxy: false,

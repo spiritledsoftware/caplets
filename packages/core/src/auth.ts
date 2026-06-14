@@ -321,7 +321,7 @@ export async function startOAuthFlow(
       assertNoOAuthCallbackError(server, callbackUrl);
       const completion = extractCompletion(callbackUrl);
       if (completion.state !== provider.state()) {
-        throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+        throw oauthStateMismatchError(server.server);
       }
       try {
         await auth(provider, {
@@ -499,7 +499,7 @@ export async function startGenericOAuthFlow(
       assertNoOAuthCallbackError(target, callbackUrl);
       const completion = extractCompletion(callbackUrl);
       if (completion.state !== state) {
-        throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+        throw oauthStateMismatchError(target.server);
       }
       const params = new URLSearchParams({
         grant_type: "authorization_code",
@@ -634,7 +634,7 @@ export async function runGenericOAuthFlow(
             : undefined,
         );
     if (completion.state !== state) {
-      throw new CapletsError("AUTH_FAILED", "OAuth callback state did not match");
+      throw oauthStateMismatchError(target.server);
     }
     const params = new URLSearchParams({
       grant_type: "authorization_code",
@@ -691,9 +691,9 @@ export async function runGenericOAuthFlow(
 
 export function extractCompletion(input: string): { code: string; state?: string } {
   try {
-    const url = new URL(input);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state") ?? undefined;
+    const url = new URL(stripOAuthCallbackUrlWrapping(input));
+    const code = extractOAuthCallbackParam(url, "code");
+    const state = extractOAuthCallbackParam(url, "state");
     if (!code) {
       throw new Error("missing code");
     }
@@ -701,6 +701,39 @@ export function extractCompletion(input: string): { code: string; state?: string
   } catch {
     return { code: input.trim() };
   }
+}
+
+function stripOAuthCallbackUrlWrapping(input: string): string {
+  return input.replace(/\s+/g, "");
+}
+
+function extractOAuthCallbackParam(url: URL, name: "code" | "state"): string | undefined {
+  const query = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  for (const part of query.split("&")) {
+    const separator = part.indexOf("=");
+    const rawName = separator < 0 ? part : part.slice(0, separator);
+    const rawValue = separator < 0 ? "" : part.slice(separator + 1);
+    if (decodeOAuthCallbackQueryValue(rawName) === name) {
+      const value = decodeOAuthCallbackQueryValue(rawValue);
+      return value || undefined;
+    }
+  }
+  return undefined;
+}
+
+function decodeOAuthCallbackQueryValue(value: string): string {
+  return decodeURIComponent(value);
+}
+
+function oauthStateMismatchError(server: string): CapletsError {
+  return new CapletsError(
+    "AUTH_FAILED",
+    "OAuth callback state did not match. Re-run auth login and use the authorization URL and callback URL from the same attempt.",
+    {
+      server,
+      nextAction: "rerun_caplets_auth_login",
+    },
+  );
 }
 
 export function classifyRemoteAuthError(
