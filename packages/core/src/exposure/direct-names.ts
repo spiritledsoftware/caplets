@@ -39,9 +39,15 @@ export function decodeDirectResourceUri(uri: string): {
   if (!parsed.pathname.startsWith(prefix)) {
     throw new CapletsError("REQUEST_INVALID", `Invalid Caplets resource URI ${uri}`);
   }
+  let downstreamUri: string;
+  try {
+    downstreamUri = decodeURIComponent(parsed.pathname.slice(prefix.length));
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", `Invalid Caplets resource URI ${uri}`, error);
+  }
   return {
     capletId: parsed.hostname,
-    downstreamUri: decodeURIComponent(parsed.pathname.slice(prefix.length)),
+    downstreamUri,
   };
 }
 

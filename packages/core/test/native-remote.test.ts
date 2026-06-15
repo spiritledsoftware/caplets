@@ -109,6 +109,8 @@ function attachManifestWithDirectMcpPrimitives(revision: string) {
         downstreamUri: "file:///README.md",
         title: "README",
         description: "README resource.",
+        mimeType: "text/markdown",
+        size: 42,
         schemaHash: null,
         capletId: "docs",
         shadowing: "forbid",
@@ -123,6 +125,7 @@ function attachManifestWithDirectMcpPrimitives(revision: string) {
         downstreamUriTemplate: "file:///{path}",
         title: "File",
         description: "File resource.",
+        mimeType: "text/plain",
         schemaHash: null,
         capletId: "docs",
         shadowing: "forbid",
@@ -580,6 +583,45 @@ describe("RemoteNativeCapletsService", () => {
           title: "Explain",
           description: "Explain prompt.",
           arguments: [{ name: "topic", description: "Topic to explain.", required: true }],
+        },
+      ],
+    });
+    await remote.close();
+  });
+
+  it("passes resource metadata through attached primitive lists", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json(attachManifestWithDirectMcpPrimitives("rev-1"));
+        }
+        return Response.json({ ok: true, data: {} });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await remote.listTools();
+    await expect(remote.callTool("docs__list_resources", {})).resolves.toEqual({
+      items: [
+        {
+          uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
+          name: "README",
+          description: "README resource.",
+          mimeType: "text/markdown",
+          size: 42,
+        },
+      ],
+    });
+    await expect(remote.callTool("docs__list_resource_templates", {})).resolves.toEqual({
+      items: [
+        {
+          uriTemplate: "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+          name: "File",
+          description: "File resource.",
+          mimeType: "text/plain",
         },
       ],
     });
@@ -1447,6 +1489,27 @@ describe("createNativeCapletsService remote mode", () => {
         ]),
       }),
     );
+    await service.close();
+  });
+
+  it("does not make attach-visible remote tools callable from Code Mode when the manifest is explicit empty", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only", codeModeCaplets: [] }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      options: { exposure: "code_mode" },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote-only"]);
+    expect(service.listTools().some((tool) => tool.caplet === "code_mode")).toBe(false);
     await service.close();
   });
 

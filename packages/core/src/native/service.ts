@@ -516,8 +516,11 @@ function codeModeCallableNativeTools(
   options: { fallbackToVisible: boolean },
 ): NativeCapletTool[] {
   const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  const hasExplicitCodeModeManifest = tools.some((tool) => tool.codeModeCaplets !== undefined);
   if (codeModeCaplets.length === 0) {
-    return options.fallbackToVisible ? tools.filter((tool) => tool.codeModeRun !== true) : [];
+    return options.fallbackToVisible && !hasExplicitCodeModeManifest
+      ? tools.filter((tool) => tool.codeModeRun !== true)
+      : [];
   }
   const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
   return codeModeCaplets.map((caplet) => {

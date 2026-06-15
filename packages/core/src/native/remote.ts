@@ -425,6 +425,8 @@ async function callPrimitiveExport(
           uri: entry.uri,
           name: entry.title,
           description: entry.description,
+          ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+          ...(typeof entry.size === "number" ? { size: entry.size } : {}),
         })),
       },
     };
@@ -441,6 +443,7 @@ async function callPrimitiveExport(
           uriTemplate: entry.uriTemplate,
           name: entry.title,
           description: entry.description,
+          ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
         })),
       },
     };
@@ -531,6 +534,7 @@ function primitiveInvokeInput(
 }
 
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
+  const codeModeMarker = attachCodeModeMarker(manifest);
   return [
     ...manifest.caplets.map((entry) => ({
       name: entry.capletId,
@@ -538,6 +542,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
       title: entry.title ?? entry.name,
       description: entry.description,
       inputSchema: entry.inputSchema,
+      ...codeModeMarker,
     })),
     ...manifest.tools.map((entry) => ({
       name: entry.name,
@@ -547,8 +552,9 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
       description: entry.description,
       inputSchema: entry.inputSchema,
       outputSchema: entry.outputSchema,
+      ...codeModeMarker,
     })),
-    ...primitiveToolsFromManifest(manifest),
+    ...primitiveToolsFromManifest(manifest, codeModeMarker),
     ...(manifest.codeModeCaplets.length > 0
       ? [
           {
@@ -565,7 +571,16 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
   ];
 }
 
-function primitiveToolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
+function attachCodeModeMarker(
+  manifest: AttachManifest,
+): Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never> {
+  return manifest.codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
+}
+
+function primitiveToolsFromManifest(
+  manifest: AttachManifest,
+  codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
+): RemoteCapletsTool[] {
   const byCaplet = new Map<
     string,
     {
@@ -596,27 +611,34 @@ function primitiveToolsFromManifest(manifest: AttachManifest): RemoteCapletsTool
   for (const [capletId, flags] of byCaplet) {
     if (flags.resources) {
       tools.push(
-        primitiveTool(capletId, "list_resources"),
-        primitiveTool(capletId, "read_resource"),
+        primitiveTool(capletId, "list_resources", codeModeMarker),
+        primitiveTool(capletId, "read_resource", codeModeMarker),
       );
     }
     if (flags.resourceTemplates) {
       tools.push(
-        primitiveTool(capletId, "list_resource_templates"),
-        primitiveTool(capletId, "read_resource"),
+        primitiveTool(capletId, "list_resource_templates", codeModeMarker),
+        primitiveTool(capletId, "read_resource", codeModeMarker),
       );
     }
     if (flags.prompts) {
-      tools.push(primitiveTool(capletId, "list_prompts"), primitiveTool(capletId, "get_prompt"));
+      tools.push(
+        primitiveTool(capletId, "list_prompts", codeModeMarker),
+        primitiveTool(capletId, "get_prompt", codeModeMarker),
+      );
     }
     if (flags.completions) {
-      tools.push(primitiveTool(capletId, "complete"));
+      tools.push(primitiveTool(capletId, "complete", codeModeMarker));
     }
   }
   return [...new Map(tools.map((tool) => [tool.name, tool])).values()];
 }
 
-function primitiveTool(capletId: string, operation: string): RemoteCapletsTool {
+function primitiveTool(
+  capletId: string,
+  operation: string,
+  codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
+): RemoteCapletsTool {
   return {
     name: `${capletId}__${operation}`,
     capletId,
@@ -624,6 +646,7 @@ function primitiveTool(capletId: string, operation: string): RemoteCapletsTool {
     title: operation,
     description: `MCP ${operation.replace(/_/g, " ")}.`,
     inputSchema: primitiveInputSchema(operation),
+    ...codeModeMarker,
   };
 }
 

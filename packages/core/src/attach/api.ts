@@ -70,12 +70,15 @@ export type AttachResourceExport = AttachManifestExport & {
   kind: "resource";
   uri: string;
   downstreamUri: string;
+  mimeType?: string | undefined;
+  size?: number | undefined;
 };
 
 export type AttachResourceTemplateExport = AttachManifestExport & {
   kind: "resourceTemplate";
   uriTemplate: string;
   downstreamUriTemplate: string;
+  mimeType?: string | undefined;
 };
 
 export type AttachPromptExport = AttachManifestExport & {
@@ -296,6 +299,8 @@ function resourceExport(entry: DirectResourceRegistration): Omit<AttachResourceE
     downstreamUri: entry.downstreamUri,
     title: entry.resource.name,
     description: entry.resource.description,
+    ...(entry.resource.mimeType ? { mimeType: entry.resource.mimeType } : {}),
+    ...(typeof entry.resource.size === "number" ? { size: entry.resource.size } : {}),
     schemaHash: null,
     capletId: entry.caplet.server,
     shadowing: "forbid",
@@ -312,6 +317,7 @@ function resourceTemplateExport(
     downstreamUriTemplate: entry.downstreamUriTemplate,
     title: entry.resourceTemplate.name,
     description: entry.resourceTemplate.description,
+    ...(entry.resourceTemplate.mimeType ? { mimeType: entry.resourceTemplate.mimeType } : {}),
     schemaHash: null,
     capletId: entry.caplet.server,
     shadowing: "forbid",

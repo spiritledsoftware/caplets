@@ -1,8 +1,74 @@
 import { describe, expect, it, vi } from "vitest";
-import { invokeAttachExport, type AttachProjection } from "../src/attach/api";
+import {
+  buildAttachProjection,
+  invokeAttachExport,
+  type AttachProjection,
+} from "../src/attach/api";
 import type { CapletsEngine } from "../src/engine";
 
 describe("Attach API dispatch", () => {
+  it("preserves direct resource metadata in attach manifests", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+    };
+    const engine = {
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [],
+        directResources: [
+          {
+            caplet,
+            downstreamUri: "file:///README.md",
+            uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
+            resource: {
+              uri: "file:///README.md",
+              name: "README",
+              description: "README resource.",
+              mimeType: "text/markdown",
+              size: 42,
+            },
+          },
+        ],
+        directResourceTemplates: [
+          {
+            caplet,
+            downstreamUriTemplate: "file:///{path}",
+            uriTemplate:
+              "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+            resourceTemplate: {
+              uriTemplate: "file:///{path}",
+              name: "File",
+              description: "File resource.",
+              mimeType: "text/plain",
+            },
+          },
+        ],
+        directPrompts: [],
+        hiddenCaplets: [],
+      }),
+    } as unknown as CapletsEngine;
+
+    const projection = await buildAttachProjection(engine);
+
+    expect(projection.manifest.resources).toEqual([
+      expect.objectContaining({
+        mimeType: "text/markdown",
+        size: 42,
+      }),
+    ]);
+    expect(projection.manifest.resourceTemplates).toEqual([
+      expect.objectContaining({
+        mimeType: "text/plain",
+      }),
+    ]);
+  });
+
   it("reads resource template exports from an explicit expanded URI", async () => {
     const engine = {
       execute: vi.fn(async () => ({ ok: true })),
@@ -162,6 +228,62 @@ describe("Attach API dispatch", () => {
       }),
     ).rejects.toMatchObject({
       code: "ATTACH_EXPORT_NOT_FOUND",
+    });
+    expect(engine.readDirectResource).not.toHaveBeenCalled();
+  });
+
+  it("returns request errors for malformed wrapped resource template URIs", async () => {
+    const engine = {
+      execute: vi.fn(async () => ({ ok: true })),
+      readDirectResource: vi.fn(async () => ({ contents: [] })),
+    } as unknown as CapletsEngine;
+    const projection = {
+      manifest: {
+        version: 1,
+        revision: "rev-1",
+        generatedAt: new Date(0).toISOString(),
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [
+          {
+            stableId: "resourceTemplate:docs:file:///{path}",
+            exportId: "export-resource-template",
+            kind: "resourceTemplate",
+            uriTemplate:
+              "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
+            downstreamUriTemplate: "file:///{path}",
+            schemaHash: null,
+            capletId: "docs",
+            shadowing: "forbid",
+          },
+        ],
+        prompts: [],
+        completions: [],
+        codeModeCaplets: [],
+        diagnostics: [],
+      },
+      routes: new Map([
+        [
+          "export-resource-template",
+          {
+            kind: "resourceTemplate",
+            capletId: "docs",
+            downstreamUriTemplate: "file:///{path}",
+          },
+        ],
+      ]),
+    } satisfies AttachProjection;
+
+    await expect(
+      invokeAttachExport(engine, projection, {
+        revision: "rev-1",
+        kind: "resourceTemplate",
+        exportId: "export-resource-template",
+        input: { uri: "caplets://docs/resources/%E0%A4%A" },
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
     });
     expect(engine.readDirectResource).not.toHaveBeenCalled();
   });

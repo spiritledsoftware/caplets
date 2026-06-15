@@ -28,6 +28,12 @@ describe("direct exposure names", () => {
     );
   });
 
+  it("wraps malformed direct resource URI escapes as request errors", () => {
+    expect(() => decodeDirectResourceUri("caplets://docs/resources/%E0%A4%A")).toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }),
+    );
+  });
+
   it("matches optional URI template query expansions", () => {
     expect(
       directResourceUriMatchesTemplate(
