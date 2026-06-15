@@ -106,20 +106,11 @@ function resolveNativeHostedCloudRemote(
   workspace: string | undefined,
   fetch: typeof globalThis.fetch | undefined,
 ): ReturnType<typeof resolveHostedCloudRemote> {
-  if (workspace) {
-    return resolveHostedCloudRemote({ url, workspace, ...(fetch ? { fetch } : {}) }, {});
-  }
-  return {
-    baseUrl: new URL(url),
-    mcpUrl: new URL(url),
-    attachUrl: new URL(url),
-    controlUrl: new URL(url),
-    healthUrl: new URL(url),
-    projectBindingWebSocketUrl: new URL(url.replace(/^http/u, "ws")),
-    auth: { type: "none", user: "caplets" },
-    requestInit: {},
+  return resolveHostedCloudRemote({
+    url,
+    ...(workspace ? { workspace } : {}),
     ...(fetch ? { fetch } : {}),
-  };
+  });
 }
 
 function optionalWorkspace(

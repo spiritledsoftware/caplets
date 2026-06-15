@@ -588,6 +588,7 @@ function primitiveToolsFromManifest(
   manifest: AttachManifest,
   codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
 ): RemoteCapletsTool[] {
+  const directToolNames = new Set(manifest.tools.map((entry) => entry.name));
   const byCaplet = new Map<
     string,
     {
@@ -615,27 +616,26 @@ function primitiveToolsFromManifest(
   for (const entry of manifest.completions) entryFor(entry.capletId).completions = true;
 
   const tools: RemoteCapletsTool[] = [];
+  const addPrimitiveTool = (capletId: string, operation: string) => {
+    const name = `${capletId}__${operation}`;
+    if (directToolNames.has(name)) return;
+    tools.push(primitiveTool(capletId, operation, codeModeMarker));
+  };
   for (const [capletId, flags] of byCaplet) {
     if (flags.resources) {
-      tools.push(
-        primitiveTool(capletId, "list_resources", codeModeMarker),
-        primitiveTool(capletId, "read_resource", codeModeMarker),
-      );
+      addPrimitiveTool(capletId, "list_resources");
+      addPrimitiveTool(capletId, "read_resource");
     }
     if (flags.resourceTemplates) {
-      tools.push(
-        primitiveTool(capletId, "list_resource_templates", codeModeMarker),
-        primitiveTool(capletId, "read_resource", codeModeMarker),
-      );
+      addPrimitiveTool(capletId, "list_resource_templates");
+      addPrimitiveTool(capletId, "read_resource");
     }
     if (flags.prompts) {
-      tools.push(
-        primitiveTool(capletId, "list_prompts", codeModeMarker),
-        primitiveTool(capletId, "get_prompt", codeModeMarker),
-      );
+      addPrimitiveTool(capletId, "list_prompts");
+      addPrimitiveTool(capletId, "get_prompt");
     }
     if (flags.completions) {
-      tools.push(primitiveTool(capletId, "complete", codeModeMarker));
+      addPrimitiveTool(capletId, "complete");
     }
   }
   return [...new Map(tools.map((tool) => [tool.name, tool])).values()];

@@ -717,6 +717,60 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("does not overwrite real direct tools with generated primitive tools", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifestWithDirectMcpPrimitives("rev-1"),
+            tools: [
+              {
+                stableId: "tool:docs:read_resource",
+                exportId: "export-tool",
+                kind: "tool",
+                name: "docs__read_resource",
+                downstreamName: "read_resource",
+                title: "Read Resource Tool",
+                description: "A real downstream tool.",
+                inputSchema: {
+                  type: "object",
+                  properties: { query: { type: "string" } },
+                  required: ["query"],
+                },
+                outputSchema: { type: "object" },
+                schemaHash: "sha256:tool",
+                capletId: "docs",
+                shadowing: "forbid",
+              },
+            ],
+          });
+        }
+        return Response.json({ ok: true, data: { directTool: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 60_000 });
+
+    await service.reload();
+
+    const readResourceTools = service
+      .listTools()
+      .filter((tool) => tool.caplet === "docs__read_resource");
+    expect(readResourceTools).toEqual([
+      expect.objectContaining({
+        inputSchema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      }),
+    ]);
+    await service.close();
+  });
+
   it("invokes the direct resource template matching the requested resource URI", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const remote = createSdkRemoteCapletsClient({
