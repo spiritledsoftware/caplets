@@ -49,14 +49,14 @@ describe("direct exposure names", () => {
     ).toBe(true);
   });
 
-  it("does not expand oversized URI template variable lists", () => {
-    const variables = Array.from({ length: 13 }, (_value, index) => `v${index}`);
+  it("matches many optional URI template query variables without a variable cap", () => {
+    const variables = Array.from({ length: 32 }, (_value, index) => `v${index}`);
 
     expect(
       directResourceUriMatchesTemplate(
-        `https://api.example.com/search?${variables.map((name) => `${name}=1`).join("&")}`,
+        "https://api.example.com/search?v0=first&v31=last",
         `https://api.example.com/search{?${variables.join(",")}}`,
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 });

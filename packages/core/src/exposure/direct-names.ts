@@ -1,7 +1,5 @@
 import { CapletsError } from "../errors";
 
-const MAX_URI_TEMPLATE_VARIABLES = 12;
-
 export function directToolName(capletId: string, operationName: string): string {
   return `${capletId}__${operationName}`;
 }
@@ -79,12 +77,17 @@ function uriTemplateExpressionPattern(expression: string): string {
 }
 
 function namedExpansionPattern(prefix: string, separator: string, variables: string[]): string {
-  const alternatives = orderedNonEmptySubsets(variables).map((subset) =>
-    subset.map((name) => `${escapePattern(name)}=[^&#]*`).join(escapePattern(separator)),
-  );
-  return alternatives.length === 0
-    ? ""
-    : `(?:${escapePattern(prefix)}(?:${alternatives.join("|")}))?`;
+  if (variables.length === 0) return "";
+  const escapedSeparator = escapePattern(separator);
+  const alternatives = variables.map((name, index) => {
+    const head = `${escapePattern(name)}=[^&#]*`;
+    const tail = variables
+      .slice(index + 1)
+      .map((nextName) => `(?:${escapedSeparator}${escapePattern(nextName)}=[^&#]*)?`)
+      .join("");
+    return `${head}${tail}`;
+  });
+  return `(?:${escapePattern(prefix)}(?:${alternatives.join("|")}))?`;
 }
 
 function optionalSequencePattern(
@@ -93,19 +96,7 @@ function optionalSequencePattern(
   variables: string[],
 ): string {
   if (variables.length === 0) return "";
-  const alternatives = orderedNonEmptySubsets(variables).map((subset) =>
-    subset.map(() => `${escapePattern(prefix)}${valuePattern}`).join(""),
-  );
-  return `(?:${alternatives.join("|")})?`;
-}
-
-function orderedNonEmptySubsets(values: string[]): string[][] {
-  if (values.length > MAX_URI_TEMPLATE_VARIABLES) return [];
-  const subsets: string[][] = [];
-  for (let mask = 1; mask < 1 << values.length; mask += 1) {
-    subsets.push(values.filter((_value, index) => (mask & (1 << index)) !== 0));
-  }
-  return subsets;
+  return `(?:${escapePattern(prefix)}${valuePattern}){0,${variables.length}}`;
 }
 
 function variableNames(expression: string): string[] {
