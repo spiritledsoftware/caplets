@@ -15,7 +15,7 @@ import { version as packageJsonVersion } from "../package.json";
 import { initConfig, installCaplets, normalizeGitRepo, runCli } from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
-import { writeTokenBundle } from "../src/auth";
+import { readTokenBundle, writeTokenBundle } from "../src/auth";
 
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
@@ -2128,6 +2128,76 @@ describe("cli init", () => {
       });
 
       expect(out.join("")).toBe("No OAuth credentials found for `remote`.\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes configured OAuth credentials on demand", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-cli-"));
+    const authDir = join(dir, "auth");
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    );
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            remote: {
+              name: "Remote",
+              description: "A useful remote OAuth server.",
+              transport: "http",
+              url: "https://example.com/mcp",
+              auth: {
+                type: "oauth2",
+                clientId: "client",
+                tokenUrl: "https://auth.example.com/token",
+              },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      writeTokenBundle(
+        {
+          server: "remote",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+        authDir,
+      );
+
+      await runCli(["auth", "refresh", "remote"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe("Refreshed OAuth credentials for `remote`.\n");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://auth.example.com/token",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining("grant_type=refresh_token"),
+        }),
+      );
+      expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain(
+        "refresh_token=old-refresh-token",
+      );
+      expect(readTokenBundle("remote", authDir)).toMatchObject({
+        accessToken: "new-access-token",
+        refreshToken: "new-refresh-token",
+        tokenType: "Bearer",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

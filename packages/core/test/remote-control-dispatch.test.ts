@@ -10,13 +10,14 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
   auth: mockMcpAuth,
 }));
 
-import { writeTokenBundle } from "../src/auth";
+import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
 
 const dirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   mockMcpAuth.mockReset();
   for (const dir of dirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
@@ -368,12 +369,21 @@ describe("dispatchRemoteCliRequest", () => {
     expect(response.ok && response.result).toEqual(["server_status.check"]);
   });
 
-  it("lists and logs out server-side auth credentials", async () => {
+  it("lists, refreshes, and logs out server-side auth credentials", async () => {
     const fixture = remoteFixtureWithOAuth();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    );
     writeTokenBundle(
       {
         server: "remote",
         accessToken: "secret-access-token",
+        refreshToken: "old-refresh-token",
         expiresAt: "2999-01-01T00:00:00.000Z",
       },
       fixture.context.authDir,
@@ -386,6 +396,26 @@ describe("dispatchRemoteCliRequest", () => {
     expect(listed).toEqual({
       ok: true,
       result: [expect.objectContaining({ server: "remote", status: "authenticated" })],
+    });
+
+    const refreshed = await dispatchRemoteCliRequest(
+      { command: "auth_refresh", arguments: { server: "remote" } },
+      fixture.context,
+    );
+    expect(refreshed).toEqual({
+      ok: true,
+      result: { server: "remote" },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://auth.example.com/token",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("refresh_token=old-refresh-token"),
+      }),
+    );
+    expect(readTokenBundle("remote", fixture.context.authDir)).toMatchObject({
+      accessToken: "new-access-token",
+      refreshToken: "new-refresh-token",
     });
 
     const loggedOut = await dispatchRemoteCliRequest(
@@ -515,7 +545,11 @@ function remoteFixtureWithOAuth() {
           description: "Remote OAuth server.",
           transport: "http",
           url: "https://example.com/mcp",
-          auth: { type: "oauth2", clientId: "client" },
+          auth: {
+            type: "oauth2",
+            clientId: "client",
+            tokenUrl: "https://auth.example.com/token",
+          },
         },
       },
     }),

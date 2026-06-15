@@ -69,6 +69,12 @@ describe("CLI completion resolver", () => {
       "graphql",
       "http",
     ]);
+    await expect(completeCliWords(["auth", ""])).resolves.toEqual([
+      "login",
+      "logout",
+      "list",
+      "refresh",
+    ]);
     await expect(completeCliWords(["completion", ""])).resolves.toEqual([
       "bash",
       "zsh",

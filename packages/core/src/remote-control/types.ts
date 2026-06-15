@@ -23,6 +23,7 @@ export type RemoteCliCommand =
   | "auth_login_start"
   | "auth_login_complete"
   | "auth_logout"
+  | "auth_refresh"
   | "auth_list";
 
 export type RemoteCliRequest = {

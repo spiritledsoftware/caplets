@@ -146,6 +146,56 @@ export async function genericOAuthHeaders(
   return { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` };
 }
 
+export async function refreshOAuthTokenBundle(
+  target: CapletServerConfig | GenericAuthTarget,
+  authDir?: string,
+): Promise<StoredOAuthTokenBundle> {
+  if (target.auth?.type !== "oauth2" && target.auth?.type !== "oidc") {
+    throw new CapletsError("AUTH_REFRESH_FAILED", `${target.server} is not configured for OAuth`, {
+      server: target.server,
+    });
+  }
+  const genericTarget = authRefreshTarget(target);
+  const authConfig = target.auth as OAuthLikeAuthConfig;
+  const bundle = readTokenBundle(target.server, authDir);
+  if (!bundle?.refreshToken) {
+    throw new CapletsError(
+      "AUTH_REFRESH_FAILED",
+      `OAuth refresh token required for ${target.server}`,
+      {
+        server: target.server,
+        backend: genericTarget.backend,
+        authType: authConfig.type,
+        nextAction: "run_caplets_auth_login",
+      },
+    );
+  }
+  const normalized = stripUndefined({
+    ...bundle,
+    server: target.server,
+    authType: bundle.authType ?? authConfig.type,
+    clientId: bundle.clientId ?? authConfig.clientId ?? authConfig.clientMetadataUrl,
+    clientSecret: bundle.clientSecret ?? authConfig.clientSecret,
+    protectedResourceOrigin:
+      bundle.protectedResourceOrigin ?? protectedResourceOrigin(genericTarget, authConfig),
+  }) as StoredOAuthTokenBundle;
+  assertTokenBundleMatchesTarget(normalized, genericTarget, authConfig);
+  return refreshGenericOAuthBundle(genericTarget, authConfig, normalized, authDir);
+}
+
+function authRefreshTarget(target: CapletServerConfig | GenericAuthTarget): GenericAuthTarget {
+  if (target.backend !== "mcp") {
+    return target;
+  }
+  return {
+    server: target.server,
+    backend: "http",
+    ...(target.url ? { url: target.url } : {}),
+    ...(target.auth ? { auth: target.auth } : {}),
+    requestTimeoutMs: target.callTimeoutMs,
+  };
+}
+
 export class FileOAuthProvider implements OAuthClientProvider {
   private verifier = base64url(randomBytes(32));
   private readonly stateValue = base64url(randomBytes(24));
@@ -157,6 +207,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     readonly redirectUrl: string,
     private readonly onRedirect: (url: URL) => void,
     private readonly authDir?: string,
+    private readonly options: { ignoreLegacyDynamicTokens?: boolean } = {},
   ) {
     if (
       (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
@@ -202,6 +253,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
         ...(this.server.auth.clientSecret ? { client_secret: this.server.auth.clientSecret } : {}),
       };
     }
+    const bundle = readTokenBundle(this.server.server, this.authDir);
+    if (bundle?.clientId) {
+      return {
+        ...this.clientMetadata,
+        client_id: bundle.clientId,
+        ...(bundle.clientSecret ? { client_secret: bundle.clientSecret } : {}),
+      };
+    }
     return undefined;
   }
 
@@ -212,6 +271,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
   tokens(): OAuthTokens | undefined {
     const bundle = readTokenBundle(this.server.server, this.authDir);
     if (!bundle) {
+      return undefined;
+    }
+    if (this.options.ignoreLegacyDynamicTokens && this.isLegacyDynamicTokenBundle(bundle)) {
       return undefined;
     }
     return stripUndefined({
@@ -225,7 +287,18 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }) as OAuthTokens;
   }
 
+  private isLegacyDynamicTokenBundle(bundle: StoredOAuthTokenBundle): boolean {
+    return Boolean(
+      (this.server.auth?.type === "oauth2" || this.server.auth?.type === "oidc") &&
+      !this.server.auth.clientId &&
+      !this.server.auth.clientMetadataUrl &&
+      !bundle.clientId &&
+      (bundle.accessToken || bundle.refreshToken),
+    );
+  }
+
   saveTokens(tokens: OAuthTokens): void {
+    const clientInformation = this.clientInformation();
     writeTokenBundle(
       stripUndefined({
         server: this.server.server,
@@ -236,6 +309,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
           ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
           : undefined,
         scope: tokens.scope,
+        clientId: clientInformation?.client_id,
+        clientSecret: clientInformation?.client_secret,
       }),
       this.authDir,
     );
@@ -299,6 +374,7 @@ export async function startOAuthFlow(
       options.print?.(`Open this URL to authorize ${server.server}:\n${url.toString()}`);
     },
     options.authDir,
+    { ignoreLegacyDynamicTokens: true },
   );
   const scope = scopesFor(server.auth);
   try {
@@ -962,12 +1038,16 @@ async function refreshGenericOAuthBundle(
   assertAllowedAuthUrl(tokenEndpoint, "token endpoint", allowLoopbackHttp);
   const clientId = authConfig.clientId ?? authConfig.clientMetadataUrl ?? bundle.clientId;
   if (!clientId) {
-    throw new CapletsError("AUTH_REFRESH_FAILED", "OAuth clientId is required to refresh tokens", {
-      server: target.server,
-      backend: target.backend,
-      authType: authConfig.type,
-      nextAction: "run_caplets_auth_login",
-    });
+    throw new CapletsError(
+      "AUTH_REFRESH_FAILED",
+      `OAuth client information is missing for ${target.server}. Re-run caplets auth login ${target.server}.`,
+      {
+        server: target.server,
+        backend: target.backend,
+        authType: authConfig.type,
+        nextAction: "run_caplets_auth_login",
+      },
+    );
   }
   const clientSecret = authConfig.clientSecret ?? bundle.clientSecret;
   const params = new URLSearchParams({

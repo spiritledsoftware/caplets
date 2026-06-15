@@ -1231,13 +1231,14 @@ describe("remote CLI routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("uses explicit --remote for auth login and logout remote requests", async () => {
+  it("uses explicit --remote for auth login, refresh, and logout remote requests", async () => {
     const out: string[] = [];
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         Response.json({ ok: true, result: { server: "remote", authenticated: true } }),
       )
+      .mockResolvedValueOnce(Response.json({ ok: true, result: { server: "remote" } }))
       .mockResolvedValueOnce(
         Response.json({ ok: true, result: { server: "remote", deleted: true } }),
       );
@@ -1252,6 +1253,7 @@ describe("remote CLI routing", () => {
     };
 
     await runCli(["auth", "login", "remote", "--remote", "--no-open"], io);
+    await runCli(["auth", "refresh", "remote", "--remote"], io);
     await runCli(["auth", "logout", "remote", "--remote"], io);
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -1265,9 +1267,17 @@ describe("remote CLI routing", () => {
       2,
       new URL("http://127.0.0.1:5387/v1/admin"),
       expect.objectContaining({
+        body: JSON.stringify({ command: "auth_refresh", arguments: { server: "remote" } }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      new URL("http://127.0.0.1:5387/v1/admin"),
+      expect.objectContaining({
         body: JSON.stringify({ command: "auth_logout", arguments: { server: "remote" } }),
       }),
     );
+    expect(out).toContain("Refreshed remote OAuth credentials for `remote`.\n");
   });
 
   it("does not print or open an auth URL when remote auth is already complete", async () => {

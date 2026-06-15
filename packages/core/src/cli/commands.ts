@@ -64,7 +64,7 @@ export const topLevelCommandNames = [
 
 export const cliSubcommands = {
   [cliCommands.add]: ["cli", "mcp", "openapi", "graphql", "http"],
-  [cliCommands.auth]: ["login", "logout", "list"],
+  [cliCommands.auth]: ["login", "logout", "list", "refresh"],
   [cliCommands.cloud]: ["auth"],
   [cliCommands.codeMode]: ["types"],
   [cliCommands.completion]: [...completionShells],
