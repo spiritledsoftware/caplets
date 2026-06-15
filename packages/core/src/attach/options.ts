@@ -3,6 +3,7 @@ import {
   type RemoteSelectionInput,
   type ResolvedRemoteSelection,
 } from "../remote/selection";
+import { resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { resolveServeOptions, type RawServeOptions, type ServeOptions } from "../serve/options";
 
 export type RawAttachServeOptions = RemoteSelectionInput &
@@ -11,7 +12,9 @@ export type RawAttachServeOptions = RemoteSelectionInput &
   };
 
 export type AttachServeOptions = ServeOptions & {
+  configPath: string;
   projectRoot: string;
+  projectConfigPath: string;
   selection: ResolvedRemoteSelection;
 };
 
@@ -21,9 +24,12 @@ export async function resolveAttachServeOptions(
 ): Promise<AttachServeOptions> {
   const selection = await resolveRemoteSelection(raw, env);
   const serve = resolveServeOptions(attachLocalServeOptions(raw), env);
+  const projectRoot = raw.projectRoot ?? process.cwd();
   return {
     ...serve,
-    projectRoot: raw.projectRoot ?? process.cwd(),
+    configPath: resolveConfigPath(env.CAPLETS_CONFIG?.trim() || undefined),
+    projectRoot,
+    projectConfigPath: env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath(projectRoot),
     selection,
   };
 }

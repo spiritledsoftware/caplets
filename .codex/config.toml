@@ -6,6 +6,7 @@ args = ["./packages/cli/dist/index.js", "attach", "--remote-url", "http://localh
 
 [mcp_servers.caplets-remote.env]
 CAPLETS_MODE = "remote"
+CAPLETS_CONFIG = "./.caplets/local.config.json"
 
 [mcp_servers.caplets-local]
 command = "node"
@@ -13,4 +14,4 @@ args = ["./packages/cli/dist/index.js", "serve", "--transport", "stdio"]
 
 [mcp_servers.caplets-local.env]
 CAPLETS_MODE = "local"
-CAPLETS_CONFIG = "./.caplets/config.json"
+CAPLETS_CONFIG = "./.caplets/local.config.json"
