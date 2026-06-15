@@ -1,0 +1,38 @@
+---
+import "../styles/starwind.css";
+import "../styles/global.css";
+import { themeColor } from "../data/landing";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "Caplets, capabilities instead of giant tool walls",
+  description = "Caplets gives coding agents focused capability modes instead of giant MCP tool walls.",
+} = Astro.props;
+---
+
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content={themeColor} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="copy-status" role="status" aria-live="polite" aria-atomic="true" data-copy-status></div>
+    <slot name="background" />
+    <slot name="header" />
+    <main id="main">
+      <slot />
+    </main>
+    <slot name="footer" />
+  </body>
+</html>

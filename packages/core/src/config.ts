@@ -94,6 +94,8 @@ export type AgentSelectionHintsConfig = {
   avoidWhen?: string | undefined;
 };
 
+export type CapletShadowingPolicy = "forbid" | "allow";
+
 export type CapletExposure =
   | "direct"
   | "progressive"
@@ -107,6 +109,7 @@ export type CapletServerConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   transport: "stdio" | "http" | "sse";
@@ -137,6 +140,7 @@ export type OpenApiEndpointConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   specPath?: string | undefined;
@@ -164,6 +168,7 @@ export type GraphQlEndpointConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   endpointUrl: string;
@@ -198,6 +203,7 @@ export type HttpApiConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   baseUrl: string;
@@ -242,6 +248,7 @@ export type CliToolsConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   actions: Record<string, CliToolActionConfig>;
@@ -261,6 +268,7 @@ export type CapletSetConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   configPath?: string | undefined;
@@ -497,6 +505,11 @@ const exposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
   .describe("How this Caplet is exposed to agents.");
 
+const shadowingSchema = z
+  .enum(["forbid", "allow"])
+  .default("forbid")
+  .describe("Whether attached local Caplets may shadow this remote Caplet ID.");
+
 const publicServerSchema = z
   .object({
     name: z.string().trim().min(1).max(80).describe("Human-readable server display name."),
@@ -523,6 +536,7 @@ const publicServerSchema = z
     auth: remoteAuthSchema.optional(),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -575,6 +589,7 @@ const publicOpenApiEndpointSchema = z
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -650,6 +665,7 @@ const publicGraphQlEndpointSchema = z
     ),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -769,6 +785,7 @@ const publicHttpApiSchema = z
       .describe("Configured HTTP actions keyed by stable tool name."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -867,6 +884,7 @@ const publicCliToolsSchema = z
       .describe("Default environment variables for CLI actions."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),
@@ -925,6 +943,7 @@ const publicCapletSetSchema = z
       .describe("Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time."),
     tags: z.array(z.string().trim().min(1).max(80)).optional(),
     exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
     ...agentSelectionHintsSchema,
     setup: setupSchema.optional(),
     projectBinding: projectBindingSchema.optional(),

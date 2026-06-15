@@ -1,0 +1,83 @@
+---
+import Route from "@tabler/icons/outline/route.svg";
+import Server from "@tabler/icons/outline/server.svg";
+
+import { Card, CardContent } from "@/components/starwind/card";
+import { Separator } from "@/components/starwind/separator";
+
+import { remoteCommands, remoteComparison, remoteEndpoints } from "../../data/landing";
+import CommandBlock from "./CommandBlock.astro";
+---
+
+<section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="remote" aria-labelledby="remote-story-title" data-reveal>
+  <div class="grid gap-8 lg:grid-cols-[0.78fr_1.22fr] [&>*]:min-w-0">
+    <div class="min-w-0">
+      <p class="text-sm font-medium text-muted-foreground">Remote Caplets server</p>
+      <h2 id="remote-story-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
+        One auth home. Every agent gets the same tools.
+      </h2>
+      <p class="mt-5 max-w-xl text-lg leading-8 text-pretty text-muted-foreground">
+        Run Caplets as a small HTTP service. Provider tokens and OAuth state stay server-side; Codex, OpenCode, Pi, Claude Code, and any MCP client attach to the same capability surface.
+      </p>
+      <dl class="mt-8 flex min-w-0 flex-wrap gap-3" aria-label="Remote service endpoints">
+        {remoteEndpoints.map((endpoint) => (
+          <div class="min-w-[13.5rem] flex-1 rounded-lg border border-border bg-card p-4">
+            <dt class="text-sm text-muted-foreground">{endpoint.label}</dt>
+            <dd class="mt-1 overflow-x-auto font-mono text-sm font-semibold whitespace-nowrap text-foreground">{endpoint.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+
+    <div class="grid min-w-0 gap-4">
+      <div class="grid min-w-0 gap-4 md:grid-cols-2 [&>*]:min-w-0" aria-label="Remote Caplets before and after">
+        {remoteComparison.map((item) => (
+          <Card>
+            <CardContent class="p-5">
+              <h3 class="text-lg font-semibold">{item.label}</h3>
+              <p class="mt-3 text-sm leading-6 text-muted-foreground">{item.detail}</p>
+              <ul class="mt-4 grid gap-2 text-sm text-muted-foreground">
+                {item.points.map((point) => <li class="flex gap-2"><span class="mt-2 size-1.5 shrink-0 rounded-full bg-primary-accent"></span>{point}</li>)}
+              </ul>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card class="remote-flow-card">
+        <CardContent class="p-5">
+          <div class="grid gap-4 text-sm md:grid-cols-3" aria-label="Remote Caplets flow">
+            <div class="flex items-start gap-3">
+              <Server class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
+              <div>
+                <span class="text-muted-foreground">Server owns auth</span>
+                <strong class="block">GitHub, Sourcegraph, OSV</strong>
+              </div>
+            </div>
+            <Separator class="md:hidden" />
+            <div class="flex items-start gap-3">
+              <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
+              <div>
+                <span class="text-muted-foreground">Caplets exposes</span>
+                <strong class="block">inspect · search · schema · call</strong>
+              </div>
+            </div>
+            <Separator class="md:hidden" />
+            <div class="flex items-start gap-3">
+              <Route class="mt-1 size-5 shrink-0 text-primary-accent" aria-hidden="true" />
+              <div>
+                <span class="text-muted-foreground">Agents reuse it</span>
+                <strong class="block">Codex · OpenCode · Pi · Claude</strong>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  </div>
+
+  <div class="mt-4 grid min-w-0 gap-4 md:grid-cols-2 [&>*]:min-w-0">
+    <CommandBlock id="remote-server-snippet" label="Serve once" command={remoteCommands.server} copyLabel="remote server command" />
+    <CommandBlock id="remote-client-snippet" label="Use remotely" command={remoteCommands.client} copyLabel="remote client command" />
+  </div>
+</section>

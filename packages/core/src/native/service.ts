@@ -60,6 +60,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
 export type NativeCapletTool = {
   caplet: string;
   sourceCaplet?: string;
+  shadowing?: "forbid" | "allow";
   toolName: string;
   title: string;
   description: string;
@@ -487,6 +488,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     id: tool.caplet,
     name: tool.title,
     description: tool.description,
+    ...(tool.shadowing ? { shadowing: tool.shadowing } : {}),
     ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
     ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
   }));
@@ -532,6 +534,7 @@ function codeModeCallableNativeTools(
       toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
       title: caplet.name,
       description: caplet.description,
+      ...(caplet.shadowing ? { shadowing: caplet.shadowing } : {}),
       ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
       ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
       promptGuidance: tool?.promptGuidance ?? [],
@@ -828,9 +831,11 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     const remoteIds = new Set(
       [
         ...allRemoteTools
-          .filter((tool) => tool.codeModeRun !== true)
+          .filter((tool) => tool.codeModeRun !== true && tool.shadowing !== "allow")
           .map((tool) => tool.sourceCaplet ?? tool.caplet),
-        ...remoteCodeModeTools.map((tool) => tool.caplet),
+        ...remoteCodeModeTools
+          .filter((tool) => tool.shadowing !== "allow")
+          .map((tool) => tool.caplet),
       ].filter((caplet) => caplet !== nativeCodeModeToolId),
     );
     const localTools = allLocalTools.filter(

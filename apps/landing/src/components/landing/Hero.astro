@@ -1,0 +1,71 @@
+---
+import Check from "@tabler/icons/outline/check.svg";
+import Copy from "@tabler/icons/outline/copy.svg";
+
+import { Button } from "@/components/starwind/button";
+
+import { heroCommands, quickstartCommand } from "../../data/landing";
+---
+
+<section class="relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-8 lg:py-10" id="trace" aria-labelledby="hero-title">
+  <div class="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_72%_28%,transparent_0,oklch(15%_0.014_100_/_0.1)_34rem),linear-gradient(90deg,oklch(12%_0.014_100_/_0.96)_0%,oklch(12%_0.014_100_/_0.86)_36%,oklch(12%_0.014_100_/_0.3)_68%,oklch(12%_0.014_100_/_0.18)_100%)]"></div>
+
+  <div class="relative mx-auto w-[min(1180px,calc(100vw_-_32px))]">
+    <div class="max-w-3xl">
+      <h1 id="hero-title" class="max-w-[12ch] text-5xl leading-[0.95] font-semibold tracking-[-0.03em] text-balance text-[oklch(96%_0.02_82)] md:text-6xl">
+        Give your agent Capabilities, not a tool wall
+      </h1>
+      <p class="mt-5 max-w-2xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
+        Turn sprawling MCP servers into focused capability cards. Your agent can start with one typed route, zoom into tools only when needed, and keep huge schemas out of the prompt until they matter.
+      </p>
+      <dl class="mt-8 grid max-w-2xl grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border text-sm" aria-label="Caplets headline benchmark">
+        <div class="bg-card p-4">
+          <dt class="text-muted-foreground">Tool wall</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold text-foreground">215 tools</dd>
+        </div>
+        <div class="bg-card p-4">
+          <dt class="text-muted-foreground">Caplets</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold text-foreground">7 cards</dd>
+        </div>
+        <div class="bg-card p-4">
+          <dt class="text-muted-foreground">Code Mode</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold text-foreground">72% fewer tokens</dd>
+        </div>
+      </dl>
+      <div class="mt-8 flex flex-wrap gap-3" aria-label="Primary actions">
+        <Button href="#quickstart" variant="primary">Install & run setup</Button>
+        <Button href="https://docs.caplets.dev" variant="outline">Read the docs</Button>
+      </div>
+      <div class="mt-8 max-w-2xl rounded-lg border border-border bg-card text-card-foreground" id="quickstart" aria-label="Quick install commands">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <span class="text-sm font-medium text-muted-foreground">Quick start</span>
+          <div class="flex items-center gap-3">
+            <button
+              class="group inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+              type="button"
+              aria-label="Copy install and setup commands"
+              data-copy-value={quickstartCommand}
+              data-copy-label="install and setup commands"
+            >
+              <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
+              <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
+              Copy both
+            </button>
+            <a class="text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" href="#install">More setup options</a>
+          </div>
+        </div>
+        <ol class="divide-y divide-border">
+          {heroCommands.map((item, index) => (
+            <li class="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-3 px-4 py-4">
+              <span class="font-mono text-sm text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+              <div>
+                <strong class="text-sm font-medium text-foreground">{item.label}</strong>
+                <code class="mt-1 block overflow-x-auto font-mono text-sm text-muted-foreground">{item.command}</code>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>

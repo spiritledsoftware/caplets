@@ -1,0 +1,41 @@
+---
+title: Caplets
+description: Give coding agents Code Mode capabilities without a giant tool wall.
+---
+
+Caplets wraps MCP servers, APIs, and commands into focused capabilities for coding agents.
+Code Mode is the default surface: each configured backend becomes a typed `caplets.<id>`
+handle that an agent can inspect, search, call, filter, and summarize in one workflow.
+
+Use Caplets with Codex, Claude, OpenCode, Pi, or any MCP client that can launch a local
+stdio server.
+
+## Start here
+
+Run Caplets without a global install:
+
+```sh
+npx caplets setup
+npx caplets install spiritledsoftware/caplets osv
+```
+
+Or install it globally:
+
+```sh
+npm install -g caplets
+caplets setup
+caplets install spiritledsoftware/caplets osv
+```
+
+OSV is the first recommended Caplet because it is public and does not need auth.
+After setup, ask your agent to use the OSV capability to check a package version.
+
+## What to read next
+
+- [Install](/install/) - set up the CLI and agent connection.
+- [Code Mode](/code-mode/) - learn the default agent workflow.
+- [Configuration](/configuration/) - configure user and project Caplets.
+- [Capabilities](/capabilities/) - add MCP, OpenAPI, GraphQL, HTTP, CLI, and shared Caplets.
+- [Agent integrations](/agent-integrations/) - use Codex, Claude, OpenCode, and Pi.
+- [Remote attach](/remote-attach/) - connect agents to a remote Caplets runtime.
+- [Troubleshooting](/troubleshooting/) - check config, auth, and runtime issues.

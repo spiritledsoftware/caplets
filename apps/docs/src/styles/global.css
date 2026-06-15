@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --caplets-ember: oklch(62% 0.155 35);
+  --caplets-ember-deep: oklch(51% 0.145 35);
+  --caplets-ink: oklch(24% 0.018 100);
+  --caplets-linen: oklch(97% 0.012 85);
+  --caplets-paper: oklch(98% 0.014 82);
+  --caplets-parchment: oklch(91% 0.035 82);
+  --caplets-ash: oklch(86% 0.018 78);
+  --caplets-olive: oklch(48% 0.045 110);
+
+  --sl-color-accent-low: var(--caplets-parchment);
+  --sl-color-accent: var(--caplets-ember);
+  --sl-color-accent-high: var(--caplets-ember-deep);
+  --sl-color-white: var(--caplets-paper);
+  --sl-color-gray-1: var(--caplets-ink);
+  --sl-color-gray-2: oklch(35% 0.02 100);
+  --sl-color-gray-3: var(--caplets-olive);
+  --sl-color-gray-4: oklch(68% 0.02 86);
+  --sl-color-gray-5: var(--caplets-ash);
+  --sl-color-gray-6: var(--caplets-parchment);
+  --sl-color-black: var(--caplets-linen);
+  --sl-font:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sl-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+:root[data-theme="dark"] {
+  --sl-color-accent-low: oklch(31% 0.04 35);
+  --sl-color-accent: oklch(72% 0.12 35);
+  --sl-color-accent-high: oklch(84% 0.08 35);
+  --sl-color-white: oklch(94% 0.018 82);
+  --sl-color-gray-1: oklch(93% 0.018 82);
+  --sl-color-gray-2: oklch(84% 0.018 82);
+  --sl-color-gray-3: oklch(74% 0.02 82);
+  --sl-color-gray-4: oklch(54% 0.022 82);
+  --sl-color-gray-5: oklch(34% 0.018 100);
+  --sl-color-gray-6: oklch(25% 0.016 100);
+  --sl-color-black: oklch(18% 0.014 100);
+}
+
+h1,
+h2,
+h3 {
+  color: var(--sl-color-gray-1);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+p,
+li {
+  text-wrap: pretty;
+}
+
+.hero {
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+
+.hero .tagline {
+  max-width: 60ch;
+}
+
+.sl-markdown-content code:not(:where(pre code)) {
+  border: 1px solid color-mix(in oklch, var(--sl-color-gray-5), transparent 45%);
+  border-radius: 0.35rem;
+  background: color-mix(in oklch, var(--sl-color-accent-low), transparent 55%);
+}
+
+.sl-markdown-content table {
+  font-size: 0.9rem;
+}
+
+.sl-markdown-content th {
+  color: var(--sl-color-gray-1);
+}

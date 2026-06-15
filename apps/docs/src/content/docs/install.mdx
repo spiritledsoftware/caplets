@@ -1,0 +1,74 @@
+---
+title: Install
+description: Install Caplets and wire it into your agent.
+---
+
+Caplets is pre-1.0. Use the latest CLI and latest docs together.
+
+## Requirements
+
+- Node.js 22 or newer for published packages.
+- An agent that can use MCP, such as Codex or Claude, or a native integration such as
+  OpenCode or Pi.
+
+## One-off setup
+
+Use `npx` if you do not want a global install:
+
+```sh
+npx caplets setup
+npx caplets install spiritledsoftware/caplets osv
+```
+
+Use the global CLI if you want `caplets` on your PATH:
+
+```sh
+npm install -g caplets
+caplets setup
+caplets install spiritledsoftware/caplets osv
+```
+
+`caplets setup` configures supported agent harnesses. The OSV Caplet is the recommended
+first install because it is public and does not require credentials.
+
+## Manual MCP setup
+
+If your client does not support `caplets setup`, add Caplets as a stdio MCP server:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Use `npx` in the command if you did not install globally:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "npx",
+      "args": ["--yes", "caplets", "serve"]
+    }
+  }
+}
+```
+
+## Check the install
+
+Run:
+
+```sh
+caplets doctor
+```
+
+If you use `npx`, run:
+
+```sh
+npx caplets doctor
+```

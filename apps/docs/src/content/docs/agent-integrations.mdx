@@ -1,0 +1,76 @@
+---
+title: Agent Integrations
+description: Use Caplets with Codex, Claude, OpenCode, and Pi.
+---
+
+Caplets works with Codex, Claude, OpenCode, Pi, and other MCP clients. Code Mode is the
+default surface for configured capabilities.
+
+## Codex
+
+Run setup:
+
+```sh
+caplets setup
+```
+
+Manual local MCP config:
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["serve"]
+```
+
+## Claude
+
+Run setup:
+
+```sh
+caplets setup
+```
+
+Manual setup uses Claude's MCP command:
+
+```sh
+claude mcp add --transport stdio --scope user caplets -- caplets serve
+```
+
+## OpenCode
+
+OpenCode can use Caplets through MCP or the native OpenCode integration. Native mode exposes
+`caplets__code_mode` for Code Mode, plus progressive or direct tools only when configured.
+
+Remote native usage:
+
+```sh
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
+```
+
+## Pi
+
+Pi can use Caplets through MCP or the native Pi integration. Native mode uses the same local
+and remote selection rules as OpenCode.
+
+Remote native usage:
+
+```sh
+CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
+```
+
+## Other MCP clients
+
+Use:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+For remote-backed MCP, use `caplets attach` instead of `caplets serve`.

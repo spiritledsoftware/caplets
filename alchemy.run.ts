@@ -10,7 +10,10 @@ const app = await alchemy("caplets", {
   password: process.env.ALCHEMY_PASSWORD!,
 });
 
-const { landingPageDomain, landingPageUrl } = buildAlchemyDomains(app.stage, { local: app.local });
+const { docsPageDomain, docsPageUrl, landingPageDomain, landingPageUrl } = buildAlchemyDomains(
+  app.stage,
+  { local: app.local },
+);
 export const landingPage = await Astro("landing-page", {
   cwd: "apps/landing",
   dev: {
@@ -18,9 +21,17 @@ export const landingPage = await Astro("landing-page", {
   },
   domains: [landingPageDomain, `www.${landingPageDomain}`],
 });
+export const docsPage = await Astro("docs-page", {
+  cwd: "apps/docs",
+  dev: {
+    command: "pnpm run dev -- --port 4322" + (process.env.SSH_CONNECTION ? " --host 0.0.0.0" : ""),
+  },
+  domains: [docsPageDomain],
+});
 
 console.log({
   "Landing Page URL": landingPageUrl,
+  "Docs Page URL": docsPageUrl,
 });
 
 const [repositoryOwnerFromSlug, repositoryNameFromSlug] =
@@ -35,20 +46,17 @@ if (pullRequestNumber) {
     throw new Error("Missing GitHub repository metadata for preview comment.");
   }
 
+  const shortSha = process.env.GITHUB_SHA?.slice(0, 7) ?? "unknown";
   await GitHubComment("preview-comment", {
     owner: repositoryOwner,
     repository: repositoryName,
     issueNumber: pullRequestNumber,
-    body: `## 🚀 Preview Deployed
+    body: `## Preview Deployed
 
-Your changes have been deployed to a preview environment:
+Landing: ${landingPageUrl}
+Docs: ${docsPageUrl}
 
-**🌐 Landing Page:** ${landingPageUrl}
-
-Built from commit ${process.env.GITHUB_SHA?.slice(0, 7) ?? "unknown"}
-
----
-<sub>🤖 This comment updates automatically with each push.</sub>`,
+Built from commit ${shortSha}`,
   });
 }
 

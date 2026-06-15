@@ -1,0 +1,80 @@
+---
+title: Remote Attach
+description: Connect an agent to a remote Caplets runtime.
+---
+
+Use `caplets attach` when the agent should connect to a remote or Cloud-backed Caplets
+runtime instead of starting local backends.
+
+## Modes
+
+Caplets native integrations use the same mode resolver as `caplets attach`:
+
+| Mode     | Use it when                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `local`  | The agent should start Caplets against local user and project config.                                                     |
+| `remote` | The agent should connect to a self-hosted Caplets service.                                                                |
+| `cloud`  | The agent should connect to Caplets Cloud with saved Cloud auth.                                                          |
+| `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, and local mode when no remote URL is set. |
+
+## MCP client config
+
+Codex:
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["attach"]
+```
+
+Generic MCP JSON:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["attach"]
+    }
+  }
+}
+```
+
+## Environment
+
+For a self-hosted remote:
+
+```sh
+export CAPLETS_MODE=remote
+export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
+export CAPLETS_REMOTE_TOKEN=...
+
+caplets attach
+```
+
+Use `CAPLETS_REMOTE_USER` and `CAPLETS_REMOTE_PASSWORD` instead of
+`CAPLETS_REMOTE_TOKEN` when the remote uses Basic Auth.
+
+Run a finite preflight before wiring an agent:
+
+```sh
+caplets attach --once
+```
+
+`caplets attach --once` validates credentials, checks the attach endpoint, and exits.
+
+## Project binding
+
+`caplets attach` can keep a local project bound to a remote runtime. Use this when the
+remote capability needs project-local context while the agent still talks to one Caplets
+MCP server.
+
+Attach connects to the runtime attach API at `/v1/attach`. Ordinary MCP clients that are
+not using attach continue to connect to `/v1/mcp`, which still honors the configured
+exposure mode for each Caplet.
+
+Check remote health and binding diagnostics with:
+
+```sh
+caplets doctor
+```

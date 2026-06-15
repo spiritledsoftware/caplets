@@ -3,6 +3,7 @@ import { schemaHash } from "../schema-hash";
 import { stableJsonStringify } from "../stable-json";
 import type { CapletsEngine } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
+import type { CapletShadowingPolicy } from "../config";
 import {
   decodeDirectResourceUri,
   directResourceUriMatchesTemplate,
@@ -119,6 +120,10 @@ type AttachRoute =
   | { kind: "resourceTemplate"; capletId: string; downstreamUriTemplate: string }
   | { kind: "prompt"; capletId: string; downstreamName: string }
   | { kind: "completion"; capletId: string };
+
+type AttachCapletWithShadowing = {
+  shadowing?: CapletShadowingPolicy | undefined;
+};
 
 export type AttachProjection = {
   manifest: AttachManifest;
@@ -259,7 +264,7 @@ function progressiveCapletExport(
     inputSchema,
     schemaHash: schemaHash(inputSchema),
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
@@ -272,7 +277,7 @@ function codeModeCapletExport(entry: CallableCaplet): Omit<AttachCodeModeCaplet,
     description: entry.caplet.description,
     schemaHash: null,
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
@@ -289,7 +294,7 @@ function toolExport(entry: DirectToolRegistration): Omit<AttachToolExport, "expo
     annotations: entry.tool.annotations,
     schemaHash: schemaHash({ input: entry.tool.inputSchema, output: entry.tool.outputSchema }),
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
@@ -305,7 +310,7 @@ function resourceExport(entry: DirectResourceRegistration): Omit<AttachResourceE
     ...(typeof entry.resource.size === "number" ? { size: entry.resource.size } : {}),
     schemaHash: null,
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
@@ -322,7 +327,7 @@ function resourceTemplateExport(
     ...(entry.resourceTemplate.mimeType ? { mimeType: entry.resourceTemplate.mimeType } : {}),
     schemaHash: null,
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
@@ -338,27 +343,35 @@ function promptExport(entry: DirectPromptRegistration): Omit<AttachPromptExport,
     inputSchema,
     schemaHash: schemaHash(inputSchema),
     capletId: entry.caplet.server,
-    shadowing: "forbid",
+    shadowing: shadowingPolicy(entry.caplet),
   };
 }
 
 function completionExports(
   snapshot: ExposureSnapshot,
 ): Array<Omit<AttachCompletionExport, "exportId">> {
-  const capletIds = new Set([
-    ...snapshot.directPrompts.map((entry) => entry.caplet.server),
-    ...snapshot.directResourceTemplates.map((entry) => entry.caplet.server),
-  ]);
-  return [...capletIds].sort().map((capletId) => ({
-    stableId: `completion:${capletId}`,
-    kind: "completion",
-    name: `${capletId}:complete`,
-    title: "Complete",
-    description: `MCP completion for ${capletId}.`,
-    schemaHash: null,
-    capletId,
-    shadowing: "forbid",
-  }));
+  const caplets = new Map(
+    [...snapshot.directPrompts, ...snapshot.directResourceTemplates].map((entry) => [
+      entry.caplet.server,
+      entry.caplet,
+    ]),
+  );
+  return [...caplets.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([capletId, caplet]) => ({
+      stableId: `completion:${capletId}`,
+      kind: "completion",
+      name: `${capletId}:complete`,
+      title: "Complete",
+      description: `MCP completion for ${capletId}.`,
+      schemaHash: null,
+      capletId,
+      shadowing: shadowingPolicy(caplet),
+    }));
+}
+
+function shadowingPolicy(caplet: AttachCapletWithShadowing): CapletShadowingPolicy {
+  return caplet.shadowing ?? "forbid";
 }
 
 function sortAttachProjectionInput(

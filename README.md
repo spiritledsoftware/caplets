@@ -16,6 +16,8 @@
 
   <p>
     <a href="https://caplets.dev"><strong>caplets.dev</strong></a>
+    ·
+    <a href="https://docs.caplets.dev"><strong>docs.caplets.dev</strong></a>
   </p>
 </div>
 
@@ -37,6 +39,8 @@ Caplets can wrap:
 - Shared Caplet files from this repo's `caplets/` catalog
 
 ## Quick Start
+
+Full setup and configuration docs are available at [docs.caplets.dev](https://docs.caplets.dev/).
 
 Install the CLI and wire it into your agent:
 
@@ -170,6 +174,7 @@ tokens than direct vanilla MCP. Live runs are model- and environment-dependent; 
 deterministic benchmark is the reproducible claim.
 
 See [docs/benchmarks/coding-agent.md](https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md) for methodology and reproduction commands.
+See [docs.caplets.dev/changelog](https://docs.caplets.dev/changelog/) for public release notes.
 
 ## Repository
 
@@ -200,6 +205,7 @@ Package map:
 - `packages/pi` - native Pi extension
 - `packages/benchmarks` - deterministic and opt-in live benchmarks
 - `apps/landing` - public site at `caplets.dev`
+- `apps/docs` - public docs site at `docs.caplets.dev`
 
 Long-lived docs:
 

@@ -97,6 +97,44 @@ describe("Attach API dispatch", () => {
     ]);
   });
 
+  it("uses configured Caplet shadowing policy in attach manifests", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+      shadowing: "allow",
+    };
+    const engine = {
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [{ caplet }],
+        codeModeCaplets: [{ caplet }],
+        directTools: [
+          {
+            caplet,
+            downstreamName: "read",
+            name: "docs__read",
+            tool: { name: "read", inputSchema: { type: "object" } },
+          },
+        ],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [],
+      }),
+    } as unknown as CapletsEngine;
+
+    const projection = await buildAttachProjection(engine);
+
+    expect(projection.manifest.caplets).toEqual([expect.objectContaining({ shadowing: "allow" })]);
+    expect(projection.manifest.codeModeCaplets).toEqual([
+      expect.objectContaining({ shadowing: "allow" }),
+    ]);
+    expect(projection.manifest.tools).toEqual([expect.objectContaining({ shadowing: "allow" })]);
+  });
+
   it("preserves direct resource metadata in attach manifests", async () => {
     const caplet = {
       server: "docs",

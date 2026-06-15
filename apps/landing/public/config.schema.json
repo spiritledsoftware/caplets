@@ -348,6 +348,12 @@
             ],
             "description": "How this Caplet is exposed to agents."
           },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
+          },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
             "type": "string",
@@ -763,6 +769,12 @@
               "progressive_and_code_mode"
             ],
             "description": "How this Caplet is exposed to agents."
+          },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -1223,6 +1235,12 @@
               "progressive_and_code_mode"
             ],
             "description": "How this Caplet is exposed to agents."
+          },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -1734,6 +1752,12 @@
             ],
             "description": "How this Caplet is exposed to agents."
           },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
+          },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
             "type": "string",
@@ -2093,6 +2117,12 @@
             ],
             "description": "How this Caplet is exposed to agents."
           },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
+          },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
             "type": "string",
@@ -2349,6 +2379,12 @@
               "progressive_and_code_mode"
             ],
             "description": "How this Caplet is exposed to agents."
+          },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",

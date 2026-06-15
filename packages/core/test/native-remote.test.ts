@@ -1497,6 +1497,40 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("keeps local overlays visible when remote attach manifest allows shadowing", async () => {
+    const fixture = client([
+      { name: "shared", title: "Remote Shared", shadowing: "allow" },
+      { name: "remote-only", title: "Remote Only" },
+    ]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        shared: { name: "Local Shared", description: "Local wins.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+
+    await service.reload();
+
+    expect(configuredCapletTitles(service.listTools())).toEqual([
+      ["shared", "Remote Shared"],
+      ["remote-only", "Remote Only"],
+      ["shared", "Local Shared"],
+    ]);
+    expect(writeErr).not.toHaveBeenCalledWith(
+      "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
+    await service.close();
+  });
+
   it("suppresses local direct tools by source Caplet ID when remote forbids shadowing", async () => {
     const fixture = client([{ name: "shared", title: "Remote Shared" }]);
     const writeErr = vi.fn();

@@ -1,0 +1,64 @@
+---
+title: Code Mode
+description: Use Caplets through the default typed agent surface.
+---
+
+Code Mode is the default Caplets surface. Instead of showing an agent every downstream tool
+up front, Caplets gives the agent typed `caplets.<id>` handles inside one TypeScript run.
+
+Agents should use Code Mode to discover, call, filter, join, and summarize capability data
+without filling the visible tool list.
+
+## What agents see
+
+A configured OSV Caplet appears as a handle such as:
+
+```ts
+const h = caplets.osv;
+```
+
+The handle supports discovery and execution:
+
+```ts
+const tools = await caplets.osv.searchTools("package version");
+const details = await h.describeTool("query_package_version");
+const result = await caplets.osv.callTool("query_package_version", {
+  ecosystem: "npm",
+  name: "react",
+  version: "18.2.0",
+});
+
+return { tools: tools.items.map((tool) => tool.name), result };
+```
+
+In MCP clients the visible tool is `caplets__code_mode`; the TypeScript inside that tool
+uses handles such as `caplets.osv.searchTools(...)` and `caplets.osv.callTool(...)`.
+
+For most tasks, keep bulky raw payloads inside the Code Mode script and return compact
+JSON with the evidence the user needs.
+
+## Use it from the CLI
+
+Run inline TypeScript:
+
+```sh
+caplets code-mode 'return Object.keys(caplets)'
+```
+
+Print the generated declarations:
+
+```sh
+caplets code-mode types
+```
+
+If a run behaves unexpectedly, check config and runtime state:
+
+```sh
+caplets doctor
+```
+
+## When not to use Code Mode
+
+Use progressive or direct exposure only when a client cannot run Code Mode or a workflow
+needs a small visible tool surface. Code Mode is a context-management surface, not a
+security boundary.

@@ -1,0 +1,78 @@
+---
+title: Troubleshooting
+description: Diagnose Caplets config, agent setup, and remote attach issues.
+---
+
+Start with:
+
+```sh
+caplets doctor
+```
+
+If you installed with `npx`, use:
+
+```sh
+npx caplets doctor
+```
+
+## Agent cannot see Caplets
+
+Run setup again:
+
+```sh
+caplets setup
+```
+
+Then restart the agent. Codex, Claude, OpenCode, and Pi usually read MCP or native plugin
+configuration at startup.
+
+## Wrong config is loading
+
+Print the active user config path:
+
+```sh
+caplets config path
+```
+
+Override it for one command:
+
+```sh
+CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
+```
+
+Project config should be in `.caplets/config.json`.
+
+## Remote attach fails
+
+Confirm the remote environment:
+
+```sh
+export CAPLETS_MODE=remote
+export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
+caplets doctor
+caplets attach
+```
+
+If the remote requires auth, set either `CAPLETS_REMOTE_TOKEN` or
+`CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`.
+
+## Code Mode errors
+
+Check generated declarations:
+
+```sh
+caplets code-mode types
+```
+
+Then rerun the smallest Code Mode script that reproduces the issue. Return compact JSON
+from Code Mode so the agent can see the actual error envelope and repair the call.
+
+## OSV first check
+
+If you need a no-auth smoke test, install OSV:
+
+```sh
+caplets install spiritledsoftware/caplets osv
+```
+
+Then ask your agent to query OSV from Code Mode.
