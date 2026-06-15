@@ -49,6 +49,21 @@ describe("direct exposure names", () => {
     ).toBe(true);
   });
 
+  it("does not let simple URI template variables cross path segments", () => {
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/users/a/b",
+        "https://api.example.com/users/{id}",
+      ),
+    ).toBe(false);
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/users/a/b",
+        "https://api.example.com/users/{+id}",
+      ),
+    ).toBe(true);
+  });
+
   it("matches many optional URI template query variables without a variable cap", () => {
     const variables = Array.from({ length: 32 }, (_value, index) => `v${index}`);
 

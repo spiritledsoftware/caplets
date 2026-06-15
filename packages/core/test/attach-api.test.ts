@@ -7,6 +7,96 @@ import {
 import type { CapletsEngine } from "../src/engine";
 
 describe("Attach API dispatch", () => {
+  it("sorts attach exports before hashing revisions", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+    };
+    let reversed = false;
+    const tools = [
+      {
+        caplet,
+        downstreamName: "beta",
+        name: "docs__beta",
+        tool: { name: "beta", inputSchema: { type: "object" } },
+      },
+      {
+        caplet,
+        downstreamName: "alpha",
+        name: "docs__alpha",
+        tool: { name: "alpha", inputSchema: { type: "object" } },
+      },
+    ];
+    const engine = {
+      exposureSnapshot: async () => {
+        reversed = !reversed;
+        return {
+          callableCaplets: [],
+          progressiveCaplets: [],
+          codeModeCaplets: [],
+          directTools: reversed ? tools : [...tools].reverse(),
+          directResources: [],
+          directResourceTemplates: [],
+          directPrompts: [],
+          hiddenCaplets: [],
+        };
+      },
+    } as unknown as CapletsEngine;
+
+    const first = await buildAttachProjection(engine);
+    const second = await buildAttachProjection(engine);
+
+    expect(first.manifest.revision).toBe(second.manifest.revision);
+    expect(first.manifest.tools.map((tool) => tool.stableId)).toEqual([
+      "tool:docs:alpha",
+      "tool:docs:beta",
+    ]);
+  });
+
+  it("preserves direct tool annotations in attach manifests", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+    };
+    const engine = {
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [
+          {
+            caplet,
+            downstreamName: "delete",
+            name: "docs__delete",
+            tool: {
+              name: "delete",
+              inputSchema: { type: "object" },
+              annotations: { destructiveHint: true },
+            },
+          },
+        ],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [],
+      }),
+    } as unknown as CapletsEngine;
+
+    const projection = await buildAttachProjection(engine);
+
+    expect(projection.manifest.tools).toEqual([
+      expect.objectContaining({
+        annotations: { destructiveHint: true },
+      }),
+    ]);
+  });
+
   it("preserves direct resource metadata in attach manifests", async () => {
     const caplet = {
       server: "docs",

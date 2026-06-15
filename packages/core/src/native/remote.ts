@@ -23,6 +23,7 @@ export type RemoteCapletsTool = {
   description?: string | undefined;
   inputSchema?: unknown;
   outputSchema?: unknown;
+  annotations?: unknown;
   codeModeRun?: boolean | undefined;
   codeModeCaplets?: AttachCodeModeCaplet[] | undefined;
 };
@@ -320,6 +321,10 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
   const inputSchema = isPlainObject(tool.inputSchema)
     ? tool.inputSchema
     : generatedToolInputJsonSchemaForCaplet({ backend: "tool" });
+  const operationNames =
+    tool.sourceCapletId === undefined && !tool.codeModeRun
+      ? operationNamesFromSchema(inputSchema)
+      : undefined;
   return {
     caplet: capletId,
     ...(sourceCaplet && sourceCaplet !== capletId ? { sourceCaplet } : {}),
@@ -344,7 +349,8 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
       : {}),
     inputSchema,
     ...(isPlainObject(tool.outputSchema) ? { outputSchema: tool.outputSchema } : {}),
-    operationNames: operationNamesFromSchema(inputSchema),
+    ...(isPlainObject(tool.annotations) ? { annotations: tool.annotations } : {}),
+    ...(operationNames ? { operationNames } : {}),
   };
 }
 
@@ -552,6 +558,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
       description: entry.description,
       inputSchema: entry.inputSchema,
       outputSchema: entry.outputSchema,
+      annotations: entry.annotations,
       ...codeModeMarker,
     })),
     ...primitiveToolsFromManifest(manifest, codeModeMarker),

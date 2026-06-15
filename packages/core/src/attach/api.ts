@@ -50,6 +50,7 @@ export type AttachManifestExport = {
   description?: string | undefined;
   inputSchema?: unknown;
   outputSchema?: unknown;
+  annotations?: unknown;
   schemaHash: string | null;
   capletId: string;
   shadowing: "forbid" | "allow";
@@ -137,7 +138,7 @@ type AttachManifestProjectionInput = {
 
 export async function buildAttachProjection(engine: CapletsEngine): Promise<AttachProjection> {
   const snapshot = await engine.exposureSnapshot();
-  const partial: AttachManifestProjectionInput = {
+  const partial = sortAttachProjectionInput({
     caplets: snapshot.progressiveCaplets.map(progressiveCapletExport),
     tools: snapshot.directTools.map(toolExport),
     resources: snapshot.directResources.map(resourceExport),
@@ -151,7 +152,7 @@ export async function buildAttachProjection(engine: CapletsEngine): Promise<Atta
       capletId: hidden.capletId,
       ...(hidden.error ? { details: hidden.error } : {}),
     })),
-  };
+  });
   const revision = revisionFor(partial);
   const manifest: AttachManifest = {
     version: 1,
@@ -285,6 +286,7 @@ function toolExport(entry: DirectToolRegistration): Omit<AttachToolExport, "expo
     description: entry.tool.description,
     inputSchema: entry.tool.inputSchema,
     outputSchema: entry.tool.outputSchema,
+    annotations: entry.tool.annotations,
     schemaHash: schemaHash({ input: entry.tool.inputSchema, output: entry.tool.outputSchema }),
     capletId: entry.caplet.server,
     shadowing: "forbid",
@@ -357,6 +359,35 @@ function completionExports(
     capletId,
     shadowing: "forbid",
   }));
+}
+
+function sortAttachProjectionInput(
+  partial: AttachManifestProjectionInput,
+): AttachManifestProjectionInput {
+  return {
+    caplets: sortByStableId(partial.caplets),
+    tools: sortByStableId(partial.tools),
+    resources: sortByStableId(partial.resources),
+    resourceTemplates: sortByStableId(partial.resourceTemplates),
+    prompts: sortByStableId(partial.prompts),
+    completions: sortByStableId(partial.completions),
+    codeModeCaplets: sortByStableId(partial.codeModeCaplets),
+    diagnostics: [...partial.diagnostics].sort((left, right) =>
+      diagnosticSortKey(left).localeCompare(diagnosticSortKey(right)),
+    ),
+  };
+}
+
+function sortByStableId<T extends { stableId: string }>(entries: T[]): T[] {
+  return [...entries].sort((left, right) => left.stableId.localeCompare(right.stableId));
+}
+
+function diagnosticSortKey(diagnostic: AttachDiagnostic): string {
+  return stableJsonStringify({
+    code: diagnostic.code,
+    capletId: diagnostic.capletId ?? "",
+    message: diagnostic.message,
+  });
 }
 
 function revisionFor(value: unknown): string {

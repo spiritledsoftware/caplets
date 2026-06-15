@@ -74,6 +74,7 @@ export class NativeCapletsMcpSession {
       title: tool.title,
       description: tool.description,
       inputSchema: isRecord(tool.inputSchema) ? jsonSchemaToZodShape(tool.inputSchema) : undefined,
+      ...(isRecord(tool.annotations) ? { annotations: tool.annotations } : {}),
     };
   }
 }

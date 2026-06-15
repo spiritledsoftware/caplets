@@ -127,6 +127,42 @@ describe("NativeCapletsMcpSession", () => {
     await session.close();
   });
 
+  it("registers native tool annotations with MCP clients", async () => {
+    const registered = new Map<string, unknown>();
+    const server = {
+      registerTool: vi.fn((name: string, definition: unknown, callback: unknown) => {
+        registered.set(name, { definition, callback });
+        return { remove: vi.fn(), update: vi.fn() };
+      }),
+      connect: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = {
+      listTools: () => [
+        {
+          caplet: "alpha",
+          title: "Alpha",
+          description: "Alpha",
+          annotations: { readOnlyHint: true },
+        },
+      ],
+      execute: vi.fn(async () => ({})),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+
+    const session = new NativeCapletsMcpSession(service as never, { server: server as never });
+
+    expect(registered.get("alpha")).toEqual({
+      definition: expect.objectContaining({
+        annotations: { readOnlyHint: true },
+      }),
+      callback: expect.any(Function),
+    });
+    await session.close();
+  });
+
   it("updates registered tools when the native service changes", () => {
     let listener: ((tools: unknown[]) => void) | undefined;
     const removed = vi.fn();

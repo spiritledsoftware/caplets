@@ -72,8 +72,9 @@ function uriTemplateExpressionPattern(expression: string): string {
   if (operator === ";") return namedExpansionPattern(";", ";", variables);
   if (operator === "/") return optionalSequencePattern("/", "[^?#/]*", variables);
   if (operator === ".") return optionalSequencePattern(".", "[^/?#.]*", variables);
+  if (operator === "+") return "[^?#]*";
   if (operator === "#") return "(?:#[^?]*)?";
-  return "[^?#]*";
+  return "[^/?#]*";
 }
 
 function namedExpansionPattern(prefix: string, separator: string, variables: string[]): string {

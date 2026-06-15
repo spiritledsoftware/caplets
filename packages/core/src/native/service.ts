@@ -69,6 +69,7 @@ export type NativeCapletTool = {
   promptGuidance: string[];
   inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
   operationNames?: string[];
   codeModeCaplets?: CodeModeCallableCaplet[];
 };
@@ -302,6 +303,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       promptGuidance: [`Use ${toolName} for ${caplet.name} ${operationName}.`],
       ...(options.inputSchema ? { inputSchema: options.inputSchema } : {}),
       ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+      ...(options.annotations ? { annotations: options.annotations } : {}),
     };
   }
 

@@ -86,8 +86,13 @@ function attachManifestWithDirectTool(revision: string, exportId: string) {
         downstreamName: "ping",
         title: "Ping",
         description: "Ping direct tool.",
-        inputSchema: { type: "object" },
+        inputSchema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+        },
         outputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
         schemaHash: "sha256:tool",
         capletId: "shared",
         shadowing: "forbid",
@@ -526,6 +531,38 @@ describe("RemoteNativeCapletsService", () => {
       }),
     ]);
     await remote.close();
+  });
+
+  it("uses attached direct tool schemas instead of progressive operation args", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json(attachManifestWithDirectTool("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true, data: { pong: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 60_000 });
+
+    await service.reload();
+
+    expect(service.listTools()).toEqual([
+      expect.objectContaining({
+        caplet: "shared__ping",
+        inputSchema: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+        },
+        annotations: { readOnlyHint: true },
+      }),
+    ]);
+    expect(service.listTools()[0]).not.toHaveProperty("operationNames");
+    await service.close();
   });
 
   it("surfaces direct MCP resources and prompts as native primitive tools", async () => {
