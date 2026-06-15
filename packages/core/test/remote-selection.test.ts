@@ -80,11 +80,12 @@ describe("resolveRemoteSelection", () => {
       selectedWorkspace: "personal-c9b49d",
       remote: {
         baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
-        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp"),
-        controlUrl: new URL("https://cloud.pr-2.preview.caplets.dev/control"),
-        healthUrl: new URL("https://cloud.pr-2.preview.caplets.dev/healthz"),
+        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/mcp"),
+        attachUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach"),
+        controlUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/admin"),
+        healthUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/healthz"),
         projectBindingWebSocketUrl: new URL(
-          "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+          "wss://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
         ),
       },
     });
@@ -114,9 +115,10 @@ describe("resolveRemoteSelection", () => {
       selectedWorkspace: "personal-c9b49d",
       remote: {
         baseUrl: new URL("https://cloud.pr-2.preview.caplets.dev/"),
-        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/ws/personal-c9b49d/mcp"),
+        mcpUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/mcp"),
+        attachUrl: new URL("https://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach"),
         projectBindingWebSocketUrl: new URL(
-          "wss://cloud.pr-2.preview.caplets.dev/control/project-bindings/connect",
+          "wss://cloud.pr-2.preview.caplets.dev/v1/ws/personal-c9b49d/attach/project-bindings/connect",
         ),
       },
       cloudPresence: {

@@ -820,6 +820,152 @@ describe("auth helpers", () => {
     },
   );
 
+  it("persists dynamically registered MCP OAuth client information with saved tokens", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-dynamic-client-"));
+    try {
+      const server = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: "https://example.com/mcp",
+            auth: { type: "oauth2" },
+          },
+        },
+      }).mcpServers.remote!;
+      const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {}, dir);
+      provider.saveClientInformation({
+        client_id: "dynamic-client",
+        client_secret: "dynamic-secret",
+      });
+
+      provider.saveTokens({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      });
+
+      expect(readTokenBundle("remote", dir)).toMatchObject({
+        clientId: "dynamic-client",
+        clientSecret: "dynamic-secret",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses stored MCP OAuth client information from a fresh provider", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-stored-client-"));
+    try {
+      const server = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: "https://example.com/mcp",
+            auth: { type: "oauth2" },
+          },
+        },
+      }).mcpServers.remote!;
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          clientId: "stored-client",
+          clientSecret: "stored-secret",
+        },
+        dir,
+      );
+      const provider = new FileOAuthProvider(server, "http://127.0.0.1/callback", () => {}, dir);
+      const headers = new Headers();
+      const params = new URLSearchParams();
+
+      await provider.addClientAuthentication(headers, params);
+
+      expect(params.get("client_id")).toBe("stored-client");
+      expect(params.get("client_secret")).toBe("stored-secret");
+      expect(headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("explains that older dynamic MCP OAuth credentials need a fresh login", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-missing-client-"));
+    try {
+      const server = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: "https://example.com/mcp",
+            auth: {
+              type: "oauth2",
+              tokenUrl: "https://auth.example.com/token",
+            },
+          },
+        },
+      }).mcpServers.remote!;
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+        dir,
+      );
+
+      await expect(oauthHeaders(server, dir)).rejects.toThrow(
+        "OAuth client information is missing for remote. Re-run caplets auth login remote.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores legacy dynamic MCP OAuth tokens without client information during login", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-legacy-login-"));
+    try {
+      const server = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: "https://example.com/mcp",
+            auth: { type: "oauth2" },
+          },
+        },
+      }).mcpServers.remote!;
+      writeTokenBundle(
+        {
+          server: "remote",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+        dir,
+      );
+      mockMcpAuth.mockClear();
+      mockMcpAuth.mockImplementationOnce(async (provider: FileOAuthProvider) => {
+        expect(await provider.tokens()).toBeUndefined();
+        return "AUTHORIZED";
+      });
+
+      await runOAuthFlow(server, { noOpen: true, authDir: dir });
+
+      expect(mockMcpAuth).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not mix dynamic public client ID with configured client secret", async () => {
     const server = parseConfig({
       mcpServers: {

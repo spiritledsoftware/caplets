@@ -684,7 +684,7 @@ type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 export function capletJsonSchema(): unknown {
   return patchCapletJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json",
+    $id: "https://caplets.dev/caplet-frontmatter.schema.json",
     title: "Caplet file frontmatter",
     description: "YAML frontmatter schema for a Markdown Caplet file.",
     ...z.toJSONSchema(capletFileSchema, { io: "input" }),

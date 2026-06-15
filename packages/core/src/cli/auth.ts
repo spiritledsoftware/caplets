@@ -4,6 +4,7 @@ import {
   deleteTokenBundle,
   isTokenBundleExpired,
   readTokenBundle,
+  refreshOAuthTokenBundle,
   runGenericOAuthFlow,
   runOAuthFlow,
   type GenericAuthTarget,
@@ -88,6 +89,29 @@ export function logoutAuthResult(
   const target = findAuthTarget(serverId, options.config ?? loadConfig(options.configPath));
   assertLoginTarget(target, serverId);
   return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
+}
+
+export async function refreshAuth(
+  serverId: string,
+  options: {
+    authDir?: string;
+    configPath?: string;
+    config?: CapletsConfig;
+    writeOut: (value: string) => void;
+  },
+): Promise<void> {
+  await refreshAuthResult(serverId, options);
+  options.writeOut(`Refreshed OAuth credentials for \`${serverId}\`.\n`);
+}
+
+export async function refreshAuthResult(
+  serverId: string,
+  options: { authDir?: string; configPath?: string; config?: CapletsConfig },
+): Promise<{ server: string }> {
+  const target = findAuthTarget(serverId, options.config ?? loadConfig(options.configPath));
+  assertLoginTarget(target, serverId);
+  await refreshOAuthTokenBundle(target, options.authDir);
+  return { server: serverId };
 }
 
 export function listAuth(options: {

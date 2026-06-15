@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
 name: Playwright
 description: Drive a browser through Playwright MCP for frontend testing, inspection, and automation workflows.
 tags:

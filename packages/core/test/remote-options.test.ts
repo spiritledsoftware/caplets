@@ -4,6 +4,7 @@ import type { CapletsError } from "../src/errors";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
   resolveCapletsRemote,
+  resolveHostedCloudRemote,
   resolveRemoteMode,
 } from "../src/remote/options";
 
@@ -93,11 +94,12 @@ describe("resolveCapletsRemote", () => {
 
     expect(resolved).toMatchObject({
       baseUrl: new URL("https://example.com/caplets"),
-      mcpUrl: new URL("https://example.com/caplets/mcp"),
-      controlUrl: new URL("https://example.com/caplets/control"),
-      healthUrl: new URL("https://example.com/caplets/healthz"),
+      mcpUrl: new URL("https://example.com/caplets/v1/mcp"),
+      attachUrl: new URL("https://example.com/caplets/v1/attach"),
+      controlUrl: new URL("https://example.com/caplets/v1/admin"),
+      healthUrl: new URL("https://example.com/caplets/v1/healthz"),
       projectBindingWebSocketUrl: new URL(
-        "wss://example.com/caplets/control/project-bindings/connect",
+        "wss://example.com/caplets/v1/attach/project-bindings/connect",
       ),
       auth: { type: "basic", user: "env-user", password },
     });
@@ -105,6 +107,12 @@ describe("resolveCapletsRemote", () => {
     expect(new Headers(resolved.requestInit.headers).get("authorization")).toBe(
       `Basic ${Buffer.from(`env-user:${password}`).toString("base64")}`,
     );
+  });
+
+  it("derives attach URL from self-hosted remote base paths", () => {
+    expect(
+      resolveCapletsRemote({}, { CAPLETS_REMOTE_URL: "https://host.example/base" }).attachUrl,
+    ).toEqual(new URL("https://host.example/base/v1/attach"));
   });
 
   it("supports bearer token and workspace settings", () => {
@@ -133,7 +141,7 @@ describe("resolveCapletsRemote", () => {
 describe("hostedCloudWorkspaceFromRemoteUrl", () => {
   it("extracts workspace slugs from copied Cloud MCP endpoints", () => {
     expect(
-      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/ws/personal-c9b49d/mcp"),
+      hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/v1/ws/personal-c9b49d/mcp"),
     ).toBe("personal-c9b49d");
   });
 
@@ -141,5 +149,29 @@ describe("hostedCloudWorkspaceFromRemoteUrl", () => {
     expect(
       hostedCloudWorkspaceFromRemoteUrl("https://cloud.caplets.dev/api/v1/foo"),
     ).toBeUndefined();
+  });
+});
+
+describe("resolveHostedCloudRemote", () => {
+  it("derives attach URL under the selected Cloud workspace path", () => {
+    const resolved = resolveHostedCloudRemote(
+      { workspace: "team-one" },
+      { CAPLETS_REMOTE_URL: "https://cloud.caplets.dev" },
+    );
+
+    expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-one/attach"));
+  });
+
+  it("uses CAPLETS_REMOTE_WORKSPACE when a Cloud URL has no workspace path", () => {
+    const resolved = resolveHostedCloudRemote(
+      {},
+      {
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        CAPLETS_REMOTE_WORKSPACE: "team-env",
+      },
+    );
+
+    expect(resolved.workspace).toBe("team-env");
+    expect(resolved.attachUrl).toEqual(new URL("https://cloud.caplets.dev/v1/ws/team-env/attach"));
   });
 });

@@ -59,7 +59,7 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
         ...resolved,
         requestInit: options.selection.remote.requestInit,
         auth: nativeAuthFromRemoteAuth(options.selection.remote.auth),
-        url: options.selection.remote.mcpUrl,
+        url: options.selection.remote.attachUrl,
         ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
       }),
     ...(io.writeErr ? { writeErr: io.writeErr } : {}),

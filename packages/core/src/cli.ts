@@ -17,6 +17,7 @@ import {
   listLocalAuthRows,
   localAuthConfigForTarget,
   localAuthTargets,
+  refreshAuth,
   type AuthSource,
   type AuthStatusRow,
 } from "./cli/auth";
@@ -1746,6 +1747,36 @@ export function createProgram(io: CliIO = {}): Command {
       const configPath = currentConfigPath();
       const projectConfigPath = envProjectConfigPath(env);
       logoutAuth(serverId, {
+        writeOut,
+        ...(configPath ? { configPath } : {}),
+        config: localAuthConfigForTarget({
+          serverId,
+          ...(configPath ? { configPath } : {}),
+          ...(projectConfigPath ? { projectConfigPath } : {}),
+          source: target,
+        }),
+        ...(io.authDir ? { authDir: io.authDir } : {}),
+      });
+    });
+
+  auth
+    .command("refresh")
+    .description("Refresh stored OAuth credentials for a server.")
+    .argument("<capletId>", "configured OAuth Caplet ID")
+    .option("--project", "refresh credentials for the project Caplets config target")
+    .option("-g, --global", "refresh credentials for the user Caplets config target")
+    .option("--remote", "refresh credentials in the remote server auth store")
+    .action(async (serverId: string, options: AuthTargetOptions) => {
+      const target = await resolveAuthTarget(serverId, options, io);
+      if (target === "remote") {
+        const remote = requireRemoteClientForTarget(io);
+        await remote.request("auth_refresh", { server: serverId });
+        writeOut(`Refreshed remote OAuth credentials for \`${serverId}\`.\n`);
+        return;
+      }
+      const configPath = currentConfigPath();
+      const projectConfigPath = envProjectConfigPath(env);
+      await refreshAuth(serverId, {
         writeOut,
         ...(configPath ? { configPath } : {}),
         config: localAuthConfigForTarget({

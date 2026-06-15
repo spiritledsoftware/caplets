@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
 name: Coding Agent Toolkit
 description: self-contained nested toolkit of high-value Caplets for coding agents.
 tags:

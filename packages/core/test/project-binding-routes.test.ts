@@ -9,13 +9,13 @@ import {
 describe("project binding routes", () => {
   it("derives the connect URL from a hosted base URL", () => {
     expect(projectBindingConnectUrl("https://example.com/caplets")).toBe(
-      "https://example.com/caplets/control/project-bindings/connect",
+      "https://example.com/caplets/v1/attach/project-bindings/connect",
     );
   });
 
   it("derives a binding status URL from a hosted base URL", () => {
     expect(projectBindingStatusUrl("https://example.com/caplets", "bind_123")).toBe(
-      "https://example.com/caplets/control/project-bindings/bind_123/status",
+      "https://example.com/caplets/v1/attach/project-bindings/bind_123/status",
     );
   });
 

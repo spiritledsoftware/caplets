@@ -62,7 +62,7 @@ describe("Project Binding integration", () => {
     expect(readFileSync(join(workspace.project, "build.js"), "utf8")).toContain("process.cwd()");
   });
 
-  it("preserves local overlay shadowing while remote-only Caplets execute remotely", async () => {
+  it("suppresses local overlay duplicates while remote-only Caplets execute remotely", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-binding-native-"));
     dirs.push(dir);
     const userDir = join(dir, "user");
@@ -96,18 +96,19 @@ describe("Project Binding integration", () => {
 
     await service.reload();
     expect(configuredCapletTitles(service.listTools())).toEqual([
+      ["build", "Remote Build"],
       ["deploy", "Remote Deploy"],
-      ["build", "Local Build"],
     ]);
 
-    await expect(service.execute("build", { operation: "inspect" })).resolves.toMatchObject({
-      content: expect.any(Array),
+    await expect(service.execute("build", { input: true })).resolves.toEqual({
+      name: "build",
+      args: { input: true },
     });
     await expect(service.execute("deploy", { input: true })).resolves.toEqual({
       name: "deploy",
       args: { input: true },
     });
-    expect(remoteClient.callTool).toHaveBeenCalledTimes(1);
+    expect(remoteClient.callTool).toHaveBeenCalledTimes(2);
     await service.close();
   });
 });

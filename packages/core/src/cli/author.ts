@@ -211,7 +211,7 @@ function renderCaplet(input: {
 }): string {
   const lines = [
     "---",
-    "$schema: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json",
+    "$schema: https://caplets.dev/caplet-frontmatter.schema.json",
     `name: ${yamlString(input.name)}`,
     `description: ${yamlString(input.description)}`,
     "tags:",

@@ -17,7 +17,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     ).toMatchObject({
       mode: "remote",
       remote: {
-        url: new URL("http://127.0.0.1:5387/mcp"),
+        url: new URL("http://127.0.0.1:5387/v1/attach"),
         auth: { enabled: false, user: "caplets" },
         pollIntervalMs: 30_000,
       },
@@ -30,14 +30,26 @@ describe("resolveNativeCapletsServiceOptions", () => {
         {},
         {
           CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_REMOTE_WORKSPACE: "personal",
         },
       ),
     ).toMatchObject({
       mode: "cloud",
       remote: {
-        url: new URL("https://cloud.caplets.dev/mcp"),
+        url: new URL("https://cloud.caplets.dev/v1/ws/personal/attach"),
       },
     });
+  });
+
+  it("rejects cloud mode without a workspace", () => {
+    expect(() =>
+      resolveNativeCapletsServiceOptions(
+        {},
+        {
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).toThrow(/workspace/u);
   });
 
   it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
@@ -47,6 +59,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
         {
           CAPLETS_MODE: "cloud",
           CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+          CAPLETS_REMOTE_WORKSPACE: "personal",
         },
       ),
     ).toMatchObject({ mode: "cloud" });
@@ -130,7 +143,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     ).toMatchObject({
       mode: "remote",
       remote: {
-        url: new URL("https://configured.example.com/caplets/mcp"),
+        url: new URL("https://configured.example.com/caplets/v1/attach"),
         auth: { enabled: true, user: "configured", password: configPassword },
       },
     });
@@ -174,7 +187,7 @@ describe("resolveNativeCapletsServiceOptions", () => {
     );
     expect(resolved.mode).toBe("remote");
     expect(resolved.mode === "remote" ? resolved.remote.url : undefined).toEqual(
-      new URL("https://caplets.example.com/caplets/mcp"),
+      new URL("https://caplets.example.com/caplets/v1/attach"),
     );
     expect(resolved.mode === "remote" ? resolved.remote.pollIntervalMs : undefined).toBe(5_000);
     expect(resolved.mode === "remote" ? resolved.remote.requestInit.headers : undefined).toEqual({

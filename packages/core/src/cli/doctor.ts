@@ -3,9 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNativeCapletsService } from "../native/service";
 import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
-import { CloudAuthStore, redactedCloudAuthStatus } from "../cloud-auth/store";
+import {
+  CloudAuthStore,
+  redactedCloudAuthStatus,
+  type CloudAuthCredentials,
+} from "../cloud-auth/store";
 import { projectBindingWorkspacePaths } from "../project-binding/workspaces";
-import { resolveCapletsRemote } from "../remote/options";
+import {
+  resolveCapletsRemote,
+  resolveHostedCloudRemote,
+  resolveRemoteMode,
+} from "../remote/options";
 import { resolveCapletsServer } from "../server/options";
 import type { MutagenProjectSyncDoctorData } from "../project-binding/mutagen";
 import { generateCodeModeDeclarations } from "../code-mode/declarations";
@@ -46,9 +54,9 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
   const root = findProjectRoot(options.cwd ?? process.cwd());
   const projectFingerprint = fingerprintProjectRoot(root);
   const paths = projectBindingWorkspacePaths(projectFingerprint, { env });
-  const server = resolveServerSection(env);
-  const remote = resolveRemoteSection(env);
   const credentials = await (options.cloudAuthStore ?? new CloudAuthStore({ env })).load();
+  const server = resolveServerSection(env);
+  const remote = resolveRemoteSection(env, credentials);
 
   return {
     server,
@@ -224,9 +232,16 @@ function resolveServerSection(env: NodeJS.ProcessEnv | Record<string, string | u
   }
 }
 
-function resolveRemoteSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+function resolveRemoteSection(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  credentials?: CloudAuthCredentials | null,
+) {
   try {
-    const remote = resolveCapletsRemote({}, env);
+    const mode = resolveRemoteMode({}, env);
+    const remote =
+      mode.mode === "cloud"
+        ? resolveHostedCloudRemote(hostedCloudDoctorInput(credentials), env)
+        : resolveCapletsRemote({}, env);
     return {
       configured: true,
       baseUrl: remote.baseUrl.href,
@@ -241,6 +256,15 @@ function resolveRemoteSection(env: NodeJS.ProcessEnv | Record<string, string | u
   } catch {
     return { configured: false };
   }
+}
+
+function hostedCloudDoctorInput(credentials?: CloudAuthCredentials | null) {
+  if (!credentials?.accessToken) return {};
+  const workspace = credentials.workspaceSlug ?? credentials.workspaceId;
+  return {
+    token: credentials.accessToken,
+    ...(workspace ? { workspace } : {}),
+  };
 }
 
 function yesNo(value: boolean): string {

@@ -59,6 +59,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
 
 export type NativeCapletTool = {
   caplet: string;
+  sourceCaplet?: string;
   toolName: string;
   title: string;
   description: string;
@@ -68,6 +69,7 @@ export type NativeCapletTool = {
   promptGuidance: string[];
   inputSchema?: ReturnType<typeof generatedToolInputJsonSchemaForCaplet> | Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
   operationNames?: string[];
   codeModeCaplets?: CodeModeCallableCaplet[];
 };
@@ -301,6 +303,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       promptGuidance: [`Use ${toolName} for ${caplet.name} ${operationName}.`],
       ...(options.inputSchema ? { inputSchema: options.inputSchema } : {}),
       ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+      ...(options.annotations ? { annotations: options.annotations } : {}),
     };
   }
 
@@ -515,8 +518,11 @@ function codeModeCallableNativeTools(
   options: { fallbackToVisible: boolean },
 ): NativeCapletTool[] {
   const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  const hasExplicitCodeModeManifest = tools.some((tool) => tool.codeModeCaplets !== undefined);
   if (codeModeCaplets.length === 0) {
-    return options.fallbackToVisible ? tools.filter((tool) => tool.codeModeRun !== true) : [];
+    return options.fallbackToVisible && !hasExplicitCodeModeManifest
+      ? tools.filter((tool) => tool.codeModeRun !== true)
+      : [];
   }
   const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
   return codeModeCaplets.map((caplet) => {
@@ -663,7 +669,7 @@ class CloudNativeCapletsService implements NativeCapletsService {
         } satisfies ResolvedNativeCloudPresenceOptions;
         const remoteOptions = {
           ...this.baseRemote,
-          url: selection.remote.mcpUrl,
+          url: selection.remote.attachUrl,
           auth: nativeAuthFromRemoteAuth(selection.remote.auth),
           requestInit: selection.remote.requestInit,
           ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
@@ -718,6 +724,7 @@ function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOpti
 class CompositeNativeCapletsService implements NativeCapletsService {
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
   private readonly unsubscribers: Array<() => void>;
+  private readonly warnedShadowedLocalCaplets = new Set<string>();
   private tools: NativeCapletTool[] = [];
   private closed = false;
   private batchingReload = false;
@@ -749,7 +756,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request);
     }
-    if (this.local.listTools().some((tool) => tool.caplet === capletId)) {
+    const localHasCaplet = this.local.listTools().some((tool) => tool.caplet === capletId);
+    const remoteHasCaplet = serviceHasCaplet(this.remote, capletId);
+    if (localHasCaplet && !remoteHasCaplet) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
@@ -813,23 +822,51 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private mergeTools(): NativeCapletTool[] {
     const allLocalTools = this.local.listTools();
     const allRemoteTools = this.remote.listTools();
-    const localTools = allLocalTools.filter((tool) => tool.codeModeRun !== true);
-    const localIds = new Set(localTools.map((tool) => tool.caplet));
-    const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
-      fallbackToVisible: false,
-    });
-    const remoteTools = allRemoteTools.filter(
-      (tool) => tool.codeModeRun !== true && !localIds.has(tool.caplet),
-    );
     const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
       fallbackToVisible: true,
-    }).filter((tool) => !localIds.has(tool.caplet));
+    });
+    const remoteIds = new Set(
+      [
+        ...allRemoteTools
+          .filter((tool) => tool.codeModeRun !== true)
+          .map((tool) => tool.sourceCaplet ?? tool.caplet),
+        ...remoteCodeModeTools.map((tool) => tool.caplet),
+      ].filter((caplet) => caplet !== nativeCodeModeToolId),
+    );
+    const localTools = allLocalTools.filter(
+      (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.sourceCaplet ?? tool.caplet),
+    );
+    this.warnShadowedLocalCaplets(allLocalTools, remoteIds);
+    const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
+      fallbackToVisible: false,
+    }).filter((tool) => !remoteIds.has(tool.caplet));
+    const remoteTools = allRemoteTools.filter((tool) => tool.codeModeRun !== true);
     const mergedTools = [...remoteTools, ...localTools];
     const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
     return [
       ...mergedTools,
       ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
     ];
+  }
+
+  private warnShadowedLocalCaplets(localTools: NativeCapletTool[], remoteIds: Set<string>): void {
+    const localIds = new Set([
+      ...localTools
+        .filter((tool) => tool.codeModeRun !== true)
+        .map((tool) => tool.sourceCaplet ?? tool.caplet),
+      ...codeModeCallableNativeTools(localTools, { fallbackToVisible: false }).map(
+        (tool) => tool.caplet,
+      ),
+    ]);
+    for (const capletId of localIds) {
+      if (!remoteIds.has(capletId)) continue;
+      if (this.warnedShadowedLocalCaplets.has(capletId)) continue;
+      this.warnedShadowedLocalCaplets.add(capletId);
+      writeErr(
+        this.options,
+        `Local Caplet '${capletId}' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n`,
+      );
+    }
   }
 
   private async reloadChild(
@@ -846,6 +883,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       return undefined;
     }
   }
+}
+
+function serviceHasCaplet(service: NativeCapletsService, capletId: string): boolean {
+  return service.listTools().some((tool) => {
+    if (tool.codeModeRun) {
+      return tool.codeModeCaplets?.some((caplet) => caplet.id === capletId) ?? false;
+    }
+    return tool.caplet === capletId;
+  });
 }
 
 function createProjectBindingSessionManager(

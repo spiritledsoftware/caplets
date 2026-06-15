@@ -6,7 +6,13 @@ import {
   addMcpCaplet,
   addOpenApiCaplet,
 } from "./../cli/add";
-import { assertLoginTarget, findAuthTarget, listAuthRows, logoutAuthResult } from "./../cli/auth";
+import {
+  assertLoginTarget,
+  findAuthTarget,
+  listAuthRows,
+  logoutAuthResult,
+  refreshAuthResult,
+} from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
@@ -131,6 +137,13 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
 
   if (request.command === "auth_logout") {
     return logoutAuthResult(requiredString(request.arguments, "server"), {
+      ...optionalProp("configPath", context.configPath),
+      ...optionalProp("authDir", context.authDir),
+    });
+  }
+
+  if (request.command === "auth_refresh") {
+    return refreshAuthResult(requiredString(request.arguments, "server"), {
       ...optionalProp("configPath", context.configPath),
       ...optionalProp("authDir", context.authDir),
     });

@@ -3,6 +3,7 @@ import {
   decodeDirectResourceUri,
   directPromptName,
   directResourceTemplateUri,
+  directResourceUriMatchesTemplate,
   directResourceUri,
   directToolName,
   nativeDirectToolName,
@@ -25,5 +26,52 @@ describe("direct exposure names", () => {
     expect(directResourceTemplateUri("docs", "file:///src/{path}")).toBe(
       "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Fsrc%2F%7Bpath%7D",
     );
+  });
+
+  it("wraps malformed direct resource URI escapes as request errors", () => {
+    expect(() => decodeDirectResourceUri("caplets://docs/resources/%E0%A4%A")).toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }),
+    );
+  });
+
+  it("matches optional URI template query expansions", () => {
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/search",
+        "https://api.example.com/search{?q}",
+      ),
+    ).toBe(true);
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/search?q=caplets",
+        "https://api.example.com/search{?q}",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not let simple URI template variables cross path segments", () => {
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/users/a/b",
+        "https://api.example.com/users/{id}",
+      ),
+    ).toBe(false);
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/users/a/b",
+        "https://api.example.com/users/{+id}",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches many optional URI template query variables without a variable cap", () => {
+    const variables = Array.from({ length: 32 }, (_value, index) => `v${index}`);
+
+    expect(
+      directResourceUriMatchesTemplate(
+        "https://api.example.com/search?v0=first&v31=last",
+        `https://api.example.com/search{?${variables.join(",")}}`,
+      ),
+    ).toBe(true);
   });
 });
