@@ -752,7 +752,10 @@ function startAttachEvents(
         retry = false;
         return;
       }
-      if (!response.body) return;
+      if (!response.body) {
+        retry = false;
+        return;
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
