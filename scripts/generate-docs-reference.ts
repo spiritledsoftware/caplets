@@ -291,7 +291,7 @@ function formatMdx(value: string): string {
   const path = join(dir, "page.mdx");
   try {
     writeFileSync(path, value);
-    execFileSync("pnpm", ["exec", "oxfmt", path], { stdio: "ignore" });
+    execFileSync("pnpm", ["exec", "oxfmt", path], { stdio: "inherit" });
     return readFileSync(path, "utf8");
   } finally {
     rmSync(dir, { recursive: true, force: true });

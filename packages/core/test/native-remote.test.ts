@@ -1525,6 +1525,10 @@ describe("createNativeCapletsService remote mode", () => {
       ["remote-only", "Remote Only"],
       ["shared", "Local Shared"],
     ]);
+    await expect(service.execute("shared", { operation: "inspect" })).resolves.toEqual(
+      expect.objectContaining({ content: expect.any(Array) }),
+    );
+    expect(fixture.api.callTool).not.toHaveBeenCalled();
     expect(writeErr).not.toHaveBeenCalledWith(
       "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
     );

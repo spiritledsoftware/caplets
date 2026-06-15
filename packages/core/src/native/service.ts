@@ -761,7 +761,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     }
     const localHasCaplet = serviceHasCaplet(this.local, capletId);
     const remoteHasCaplet = serviceHasCaplet(this.remote, capletId);
-    if (localHasCaplet && !remoteHasCaplet) {
+    if (localHasCaplet && (!remoteHasCaplet || this.remoteAllowsShadowing(capletId))) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
@@ -872,6 +872,19 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         `Local Caplet '${capletId}' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n`,
       );
     }
+  }
+
+  private remoteAllowsShadowing(capletId: string): boolean {
+    return this.remote.listTools().some((tool) => {
+      if (tool.codeModeRun) {
+        return (
+          tool.codeModeCaplets?.some(
+            (caplet) => caplet.id === capletId && caplet.shadowing === "allow",
+          ) ?? false
+        );
+      }
+      return (tool.sourceCaplet ?? tool.caplet) === capletId && tool.shadowing === "allow";
+    });
   }
 
   private async reloadChild(

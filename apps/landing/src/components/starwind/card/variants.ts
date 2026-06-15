@@ -3,7 +3,7 @@ import { tv } from "tailwind-variants";
 export const card = tv({
   base: [
     "bg-card text-card-foreground group/card ring-border flex flex-col rounded-xl ring-1",
-    "has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0",
+    "has-[[data-slot=card-footer]]:pb-0 has-[>img:first-child]:pt-0",
     "*:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
   ],
   variants: {
@@ -36,7 +36,7 @@ export const cardFooter = tv({
 export const cardHeader = tv({
   base: [
     "@container/card-header grid auto-rows-min items-start gap-1 px-6 group-data-[size=sm]/card:px-4",
-    "has-data-[slot=card-action]:grid-cols-[1fr_auto] has-data-[slot=card-description]:grid-rows-[auto_auto]",
+    "has-[[data-slot=card-action]]:grid-cols-[1fr_auto] has-[[data-slot=card-description]]:grid-rows-[auto_auto]",
   ],
 });
 

@@ -42,11 +42,9 @@ const { defaultValue, syncKey, class: className, ...rest } = Astro.props;
     private storageKey: string;
     private valueToTriggerMap: Map<string, HTMLButtonElement>;
     private valueToContentMap: Map<string, HTMLElement>;
-    private parentHandler: TabsHandler | null = null;
 
-    constructor(tabs: HTMLElement, idx: number, parentHandler: TabsHandler | null = null) {
+    constructor(tabs: HTMLElement, idx: number) {
       this.tabs = tabs;
-      this.parentHandler = parentHandler;
       this.triggers = Array.from(
         tabs.querySelectorAll(":scope > [data-tabs-list] > [data-tabs-trigger]"),
       );
@@ -79,13 +77,18 @@ const { defaultValue, syncKey, class: className, ...rest } = Astro.props;
         ? (localStorage.getItem(this.storageKey) ?? this.tabs.dataset.defaultValue)
         : this.tabs.dataset.defaultValue;
 
-      if (value) {
-        this.showTab(value);
-        this.currentTabIndex = this.triggers.findIndex(
-          (trigger) => trigger.getAttribute("data-value") === value,
-        );
-        this.setTabIndex();
-      }
+      const resolvedValue =
+        value && this.valueToTriggerMap.has(value)
+          ? value
+          : this.triggers.find((trigger) => !trigger.disabled)?.getAttribute("data-value");
+
+      if (!resolvedValue) return;
+
+      this.showTab(resolvedValue);
+      this.currentTabIndex = this.triggers.findIndex(
+        (trigger) => trigger.getAttribute("data-value") === resolvedValue,
+      );
+      this.setTabIndex();
     }
 
     private setupSyncListener(): void {
@@ -237,11 +240,10 @@ const { defaultValue, syncKey, class: className, ...rest } = Astro.props;
       if (content.hasAttribute("data-state") && content.getAttribute("data-state") === "active") {
         const nestedTabs = content.querySelectorAll<HTMLElement>(".starwind-tabs");
 
-        nestedTabs.forEach((nestedTab, nestedIdx) => {
+        nestedTabs.forEach((nestedTab) => {
           // Skip tabs that already have instances
           if (!tabInstances.has(nestedTab)) {
-            const uniqueIdx = 1000 + nestedIdx;
-            const handler = new TabsHandler(nestedTab, uniqueIdx, this);
+            const handler = new TabsHandler(nestedTab, tabCounter++);
             tabInstances.set(nestedTab, handler);
           }
         });

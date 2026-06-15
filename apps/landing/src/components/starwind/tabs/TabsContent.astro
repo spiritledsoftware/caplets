@@ -3,11 +3,12 @@ import type { HTMLAttributes } from "astro/types";
 
 import { tabsContent } from "./variants";
 
-interface Props extends Omit<HTMLAttributes<"div">, "id" | "role" | "tabindex" | "hidden"> {
+interface Props extends Omit<HTMLAttributes<"div">, "role" | "tabindex" | "hidden"> {
   value: string;
+  labelledBy?: string;
 }
 
-const { value, class: className, ...rest } = Astro.props;
+const { value, labelledBy, class: className, ...rest } = Astro.props;
 ---
 
 <div
@@ -16,6 +17,7 @@ const { value, class: className, ...rest } = Astro.props;
   data-value={value}
   data-state="inactive"
   role="tabpanel"
+  aria-labelledby={labelledBy}
   tabindex="0"
   hidden
   {...rest}
