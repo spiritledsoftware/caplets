@@ -29,7 +29,7 @@ describe("runProjectBindingSession", () => {
       fetch: async (url, init) => {
         const body = init?.body ? JSON.parse(String(init.body)) : undefined;
         requests.push({ method: init?.method ?? "GET", url: String(url), body });
-        if (String(url).endsWith("/control/project-bindings/sessions")) {
+        if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
           return Response.json(
             {
               binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },

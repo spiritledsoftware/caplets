@@ -60,9 +60,10 @@ describe("resolveCapletsServer", () => {
 
     expect(resolved).toMatchObject({
       baseUrl: new URL("https://example.com/caplets"),
-      mcpUrl: new URL("https://example.com/caplets/mcp"),
-      controlUrl: new URL("https://example.com/caplets/control"),
-      healthUrl: new URL("https://example.com/caplets/healthz"),
+      mcpUrl: new URL("https://example.com/caplets/v1/mcp"),
+      attachUrl: new URL("https://example.com/caplets/v1/attach"),
+      controlUrl: new URL("https://example.com/caplets/v1/admin"),
+      healthUrl: new URL("https://example.com/caplets/v1/healthz"),
       auth: { enabled: true, user: "caplets", password },
       requestInit: {
         headers: {
@@ -75,18 +76,20 @@ describe("resolveCapletsServer", () => {
   it("derives service URLs from a root URL", () => {
     expect(resolveCapletsServer({ url: "https://example.com" }, {})).toMatchObject({
       baseUrl: new URL("https://example.com/"),
-      mcpUrl: new URL("https://example.com/mcp"),
-      controlUrl: new URL("https://example.com/control"),
-      healthUrl: new URL("https://example.com/healthz"),
+      mcpUrl: new URL("https://example.com/v1/mcp"),
+      attachUrl: new URL("https://example.com/v1/attach"),
+      controlUrl: new URL("https://example.com/v1/admin"),
+      healthUrl: new URL("https://example.com/v1/healthz"),
     });
   });
 
   it("accepts loopback http IPv6 bracket URLs", () => {
     expect(resolveCapletsServer({ url: "http://[::1]:5387" }, {})).toMatchObject({
       baseUrl: new URL("http://[::1]:5387/"),
-      mcpUrl: new URL("http://[::1]:5387/mcp"),
-      controlUrl: new URL("http://[::1]:5387/control"),
-      healthUrl: new URL("http://[::1]:5387/healthz"),
+      mcpUrl: new URL("http://[::1]:5387/v1/mcp"),
+      attachUrl: new URL("http://[::1]:5387/v1/attach"),
+      controlUrl: new URL("http://[::1]:5387/v1/admin"),
+      healthUrl: new URL("http://[::1]:5387/v1/healthz"),
     });
   });
 

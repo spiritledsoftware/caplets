@@ -2342,6 +2342,33 @@ describe("cli setup", () => {
     );
   });
 
+  it("writes the versioned URL for remote generic MCP client setup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-"));
+    const output = join(dir, "caplets.remote.json");
+
+    try {
+      await runCli(
+        [
+          "setup",
+          "mcp-client",
+          "--remote-url",
+          "https://caplets.example.test/caplets",
+          "--output",
+          output,
+        ],
+        { writeOut: () => {} },
+      );
+
+      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
+        mcpServers: {
+          caplets: { url: "https://caplets.example.test/caplets/v1/mcp" },
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs remote OpenCode setup and reports JSON output", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];

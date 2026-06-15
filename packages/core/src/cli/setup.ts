@@ -400,7 +400,7 @@ function remoteSetupDefinition(
         label: "Write remote MCP config",
         path: options.output,
         content: `${JSON.stringify(
-          { mcpServers: { caplets: { url: `${serverUrl.replace(/\/$/, "")}/mcp` } } },
+          { mcpServers: { caplets: { url: `${serverUrl.replace(/\/$/, "")}/v1/mcp` } } },
           null,
           2,
         )}\n`,

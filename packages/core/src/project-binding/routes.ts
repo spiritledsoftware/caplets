@@ -3,7 +3,7 @@ import { PROJECT_BINDING_STATES, type ProjectBindingState } from "./types";
 export { PROJECT_BINDING_STATES };
 export type { ProjectBindingState };
 
-export const PROJECT_BINDINGS_CONTROL_PATH = "/control/project-bindings";
+export const PROJECT_BINDINGS_CONTROL_PATH = "/v1/attach/project-bindings";
 export const PROJECT_BINDING_CONNECT_PATH = `${PROJECT_BINDINGS_CONTROL_PATH}/connect`;
 
 export function projectBindingConnectPath(): string {

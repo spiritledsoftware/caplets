@@ -39,6 +39,7 @@ export type CapletsRemoteAuth =
 export type ResolvedCapletsRemote = {
   baseUrl: URL;
   mcpUrl: URL;
+  attachUrl: URL;
   controlUrl: URL;
   healthUrl: URL;
   projectBindingWebSocketUrl: URL;
@@ -140,9 +141,10 @@ export function resolveCapletsRemote(
 
   return {
     baseUrl,
-    mcpUrl: appendBasePath(baseUrl, "mcp"),
-    controlUrl: appendBasePath(baseUrl, "control"),
-    healthUrl: appendBasePath(baseUrl, "healthz"),
+    mcpUrl: appendBasePath(baseUrl, "v1/mcp"),
+    attachUrl: appendBasePath(baseUrl, "v1/attach"),
+    controlUrl: appendBasePath(baseUrl, "v1/admin"),
+    healthUrl: appendBasePath(baseUrl, "v1/healthz"),
     projectBindingWebSocketUrl: projectBindingWebSocketUrlForBase(baseUrl),
     auth,
     requestInit,
@@ -162,7 +164,10 @@ export function resolveHostedCloudRemote(
   }
 
   const cloud = parseHostedCloudRemoteUrl(rawUrl);
-  const workspace = cloud.workspace ?? nonEmpty(input.workspace, "workspace");
+  const workspace =
+    cloud.workspace ??
+    nonEmpty(input.workspace, "workspace") ??
+    nonEmpty(env.CAPLETS_REMOTE_WORKSPACE, "CAPLETS_REMOTE_WORKSPACE");
   if (!workspace) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -177,14 +182,17 @@ export function resolveHostedCloudRemote(
     : { type: "none", user: DEFAULT_REMOTE_USER };
   const requestInit: RequestInit =
     auth.type === "bearer" ? { headers: { Authorization: `Bearer ${auth.token}` } } : {};
-  const workspaceBaseUrl = appendBasePath(cloud.baseUrl, `ws/${encodeURIComponent(workspace)}`);
+  const workspaceBaseUrl = appendBasePath(cloud.baseUrl, `v1/ws/${encodeURIComponent(workspace)}`);
 
   return {
     baseUrl: cloud.baseUrl,
     mcpUrl: appendBasePath(workspaceBaseUrl, "mcp"),
-    controlUrl: appendBasePath(cloud.baseUrl, "control"),
-    healthUrl: appendBasePath(cloud.baseUrl, "healthz"),
-    projectBindingWebSocketUrl: projectBindingWebSocketUrlForBase(cloud.baseUrl),
+    attachUrl: appendBasePath(workspaceBaseUrl, "attach"),
+    controlUrl: appendBasePath(cloud.baseUrl, "v1/admin"),
+    healthUrl: appendBasePath(cloud.baseUrl, "v1/healthz"),
+    projectBindingWebSocketUrl: webSocketUrl(
+      appendBasePath(workspaceBaseUrl, "attach/project-bindings/connect"),
+    ),
     auth,
     requestInit,
     workspace,
@@ -201,7 +209,11 @@ export function hostedCloudWorkspaceFromRemoteUrl(value: string): string | undef
 }
 
 export function projectBindingWebSocketUrlForBase(baseUrl: URL): URL {
-  const url = appendBasePath(baseUrl, "control/project-bindings/connect");
+  return webSocketUrl(appendBasePath(baseUrl, "v1/attach/project-bindings/connect"));
+}
+
+function webSocketUrl(input: URL): URL {
+  const url = new URL(input);
   if (url.protocol === "https:") url.protocol = "wss:";
   if (url.protocol === "http:") url.protocol = "ws:";
   return url;
@@ -231,7 +243,7 @@ function parseHostedCloudRemoteUrl(value: string): { baseUrl: URL; workspace?: s
   baseUrl.pathname = "/";
   const pathname = url.pathname.replace(/\/+$/u, "");
   if (pathname === "") return { baseUrl };
-  const match = pathname.match(/^\/ws\/([^/]+)(?:\/mcp)?$/u);
+  const match = pathname.match(/^(?:\/v1)?\/ws\/([^/]+)(?:\/(?:mcp|attach))?$/u);
   if (!match) {
     throw new CapletsError(
       "REQUEST_INVALID",

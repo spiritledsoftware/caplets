@@ -45,7 +45,11 @@ The global default is `code_mode`. Per-Caplet config may choose `direct`, `progr
 - Progressive exposure registers one wrapper tool per Caplet.
 - Direct exposure registers discovered downstream MCP tools, resources, resource templates, and prompts.
 
-The HTTP server in `packages/core/src/serve/http.ts` exposes MCP, control, and health endpoints for self-hosting and remote clients. Stdio remains the local MCP transport for ordinary client config.
+The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, attach, admin, and health endpoints for self-hosting and remote clients. Stdio remains the local MCP transport for ordinary client config.
+
+`/v1/mcp` is the configured agent-facing MCP surface. It honors exposure policy, so a default `code_mode` server can expose only the `code_mode` tool to ordinary MCP clients.
+
+`/v1/attach` is the Caplets runtime attach API. Attached clients read `/v1/attach/manifest`, subscribe to `/v1/attach/events`, and invoke revision-scoped exports through `/v1/attach/invoke` before merging remote projections with local/project overlays.
 
 ### Code Mode
 

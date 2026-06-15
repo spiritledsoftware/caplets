@@ -26,21 +26,41 @@ describe("createHttpServeApp", () => {
       name: "caplets",
       transport: "http",
       base: "/",
-      mcp: "/mcp",
-      control: "/control",
-      health: "/healthz",
+      versions: [
+        {
+          version: 1,
+          path: "/v1",
+          links: {
+            mcp: "/v1/mcp",
+            admin: "/v1/admin",
+            attachManifest: "/v1/attach/manifest",
+            attachEvents: "/v1/attach/events",
+            attachInvoke: "/v1/attach/invoke",
+            health: "/v1/healthz",
+          },
+        },
+      ],
       auth: { type: "basic", enabled: false },
     });
 
-    const health = await app.request("http://127.0.0.1:5387/healthz");
+    const v1 = await app.request("http://127.0.0.1:5387/v1");
+    expect(v1.status).toBe(200);
+    await expect(v1.json()).resolves.toMatchObject({
+      version: 1,
+      links: {
+        mcp: "/v1/mcp",
+        admin: "/v1/admin",
+        attachManifest: "/v1/attach/manifest",
+        attachEvents: "/v1/attach/events",
+        attachInvoke: "/v1/attach/invoke",
+        health: "/v1/healthz",
+      },
+    });
+
+    const health = await app.request("http://127.0.0.1:5387/v1/healthz");
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toEqual({
       status: "ok",
-      transport: "http",
-      base: "/",
-      mcpPath: "/mcp",
-      controlPath: "/control",
-      healthPath: "/healthz",
     });
 
     await engine.close();
@@ -53,12 +73,12 @@ describe("createHttpServeApp", () => {
       writeErr: (value) => logs.push(value),
     });
 
-    const response = await app.request("http://127.0.0.1:5387/healthz");
+    const response = await app.request("http://127.0.0.1:5387/v1/healthz");
 
     expect(response.status).toBe(200);
-    expect(logs.join("")).toContain("<-- GET /healthz");
+    expect(logs.join("")).toContain("<-- GET /v1/healthz");
     const plainLogs = logs.join("").replaceAll(String.fromCharCode(27), "");
-    expect(plainLogs).toContain("--> GET /healthz");
+    expect(plainLogs).toContain("--> GET /v1/healthz");
     expect(plainLogs).toContain("200");
 
     await engine.close();
@@ -73,17 +93,33 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const missing = await app.request("http://127.0.0.1:5387/mcp", { method: "POST" });
+    const missing = await app.request("http://127.0.0.1:5387/v1/mcp", { method: "POST" });
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toContain("Basic");
 
-    const wrong = await app.request("http://127.0.0.1:5387/mcp", {
+    const wrong = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
         authorization: `Basic ${Buffer.from(`caplets:not-the-${testPassword}`).toString("base64")}`,
       },
     });
     expect(wrong.status).toBe(401);
+
+    await engine.close();
+  });
+
+  it("requires Basic Auth on attach manifest when password is configured", async () => {
+    const { engine } = testEngine();
+    const testPassword = ["test", "password"].join("-");
+    const app = createHttpServeApp(
+      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const missing = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    expect(missing.status).toBe(401);
+    expect(missing.headers.get("www-authenticate")).toContain("Basic");
 
     await engine.close();
   });
@@ -102,11 +138,11 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {}, control: context },
     );
 
-    const missing = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
+    const missing = await app.request("http://127.0.0.1:5387/v1/admin", { method: "POST" });
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toContain("Basic");
 
-    const listed = await app.request("http://127.0.0.1:5387/control", {
+    const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
       headers: {
         authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
@@ -120,7 +156,7 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("exposes authenticated Project Binding status under the control namespace", async () => {
+  it("exposes authenticated Project Binding status under the attach namespace", async () => {
     const { engine } = testEngine();
     const testPassword = ["test", "password"].join("-");
     const app = createHttpServeApp(
@@ -130,12 +166,12 @@ describe("createHttpServeApp", () => {
     );
 
     const missing = await app.request(
-      "http://127.0.0.1:5387/control/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
     );
     expect(missing.status).toBe(401);
 
     const response = await app.request(
-      "http://127.0.0.1:5387/control/project-bindings/bind_123/status",
+      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
       {
         headers: {
           authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
@@ -158,13 +194,47 @@ describe("createHttpServeApp", () => {
     });
 
     const response = await app.request(
-      "http://127.0.0.1:5387/caplets/control/project-bindings/connect",
+      "http://127.0.0.1:5387/caplets/v1/attach/project-bindings/connect",
     );
 
     expect(response.status).toBe(426);
     await expect(response.json()).resolves.toMatchObject({
       error: "websocket_upgrade_required",
     });
+
+    await engine.close();
+  });
+
+  it("mounts Project Binding session routes under the attach namespace", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: "/repo" }),
+    });
+    expect(session.status).toBe(201);
+    const created = (await session.json()) as {
+      binding: { bindingId: string };
+      sessionId: string;
+    };
+    expect(created.binding.bindingId).toEqual(expect.any(String));
+    expect(created.sessionId).toEqual(expect.any(String));
+
+    const heartbeat = await app.request(
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    expect(heartbeat.status).toBe(200);
+    await expect(heartbeat.json()).resolves.toMatchObject({ ok: true });
+
+    const ended = await app.request(
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+      { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    expect(ended.status).toBe(200);
+    await expect(ended.json()).resolves.toMatchObject({ ok: true });
 
     await engine.close();
   });
@@ -178,14 +248,9 @@ describe("createHttpServeApp", () => {
     const rootHealth = await app.request("http://127.0.0.1:5387/healthz");
     expect(rootHealth.status).toBe(404);
 
-    const health = await app.request("http://127.0.0.1:5387/caplets/healthz");
+    const health = await app.request("http://127.0.0.1:5387/caplets/v1/healthz");
     expect(health.status).toBe(200);
-    await expect(health.json()).resolves.toMatchObject({
-      base: "/caplets",
-      mcpPath: "/caplets/mcp",
-      controlPath: "/caplets/control",
-      healthPath: "/caplets/healthz",
-    });
+    await expect(health.json()).resolves.toEqual({ status: "ok" });
 
     await engine.close();
   });
@@ -210,12 +275,12 @@ describe("createHttpServeApp", () => {
     const rootControl = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
     expect(rootControl.status).toBe(404);
 
-    const missing = await app.request("http://127.0.0.1:5387/caplets/control", {
+    const missing = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
       method: "POST",
     });
     expect(missing.status).toBe(401);
 
-    const listed = await app.request("http://127.0.0.1:5387/caplets/control", {
+    const listed = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
         authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
@@ -238,7 +303,7 @@ describe("createHttpServeApp", () => {
     });
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {}, control: context });
 
-    const response = await app.request("http://127.0.0.1:5387/control", {
+    const response = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "not-json",
@@ -276,7 +341,7 @@ describe("createHttpServeApp", () => {
     });
 
     const response = await app.request(
-      "http://127.0.0.1:5387/caplets/control/auth/callback/flow-1?code=abc&state=xyz",
+      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
     );
 
     expect(response.status).toBe(200);
@@ -311,7 +376,7 @@ describe("createHttpServeApp", () => {
     });
 
     const response = await app.request(
-      "http://127.0.0.1:5387/caplets/control/auth/callback/flow-1?code=abc&state=xyz",
+      "http://127.0.0.1:5387/caplets/v1/admin/auth/callback/flow-1?code=abc&state=xyz",
     );
 
     expect(response.status).toBe(400);
@@ -335,7 +400,7 @@ describe("createHttpServeApp", () => {
       control: context,
     });
 
-    const response = await app.request("http://127.0.0.1:5387/control-api/control", {
+    const response = await app.request("http://127.0.0.1:5387/control-api/v1/admin", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
@@ -347,7 +412,7 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^http:\/\/127\.0\.0\.1:5387\/control-api\/control\/auth\/callback\//u,
+      /^http:\/\/127\.0\.0\.1:5387\/control-api\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
@@ -369,7 +434,7 @@ describe("createHttpServeApp", () => {
       },
     );
 
-    const response = await app.request("http://127.0.0.1:5387/caplets/control", {
+    const response = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
@@ -381,7 +446,7 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/caplets\.example\.com\/caplets\/control\/auth\/callback\//u,
+      /^https:\/\/caplets\.example\.com\/caplets\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
@@ -399,7 +464,7 @@ describe("createHttpServeApp", () => {
       control: context,
     });
 
-    const response = await app.request("http://10.0.0.5:5387/caplets/control", {
+    const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -415,7 +480,7 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^http:\/\/10\.0\.0\.5:5387\/caplets\/control\/auth\/callback\//u,
+      /^http:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
@@ -433,7 +498,7 @@ describe("createHttpServeApp", () => {
       control: context,
     });
 
-    const response = await app.request("http://10.0.0.5:5387/caplets/control", {
+    const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -449,7 +514,7 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^https:\/\/caplets\.example\.com\/caplets\/control\/auth\/callback\//u,
+      /^https:\/\/caplets\.example\.com\/caplets\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
@@ -459,7 +524,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const response = await app.request("http://127.0.0.1:5387/mcp/extra");
+    const response = await app.request("http://127.0.0.1:5387/v1/mcp/extra");
     expect(response.status).toBe(404);
 
     await engine.close();
@@ -469,66 +534,269 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
 
-    const init = await app.request("http://127.0.0.1:5387/mcp", {
-      method: "POST",
-      headers: {
-        host: "127.0.0.1:5387",
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2025-03-26",
-          capabilities: {},
-          clientInfo: { name: "test", version: "1.0.0" },
-        },
+    const tools = await listMcpTools(app, "/v1/mcp");
+
+    expect(tools.map((tool) => tool.name)).toEqual(["code_mode"]);
+
+    await engine.close();
+  });
+
+  it("returns an attach manifest instead of serving MCP on attach", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    expect(manifestResponse.status).toBe(200);
+    const manifest = await manifestResponse.json();
+
+    expect(manifest).toMatchObject({
+      version: 1,
+      revision: expect.any(String),
+      generatedAt: expect.any(String),
+      caplets: [],
+      tools: [],
+      resources: [],
+      resourceTemplates: [],
+      prompts: [],
+      completions: [],
+      codeModeCaplets: [
+        expect.objectContaining({
+          stableId: "code_mode:status",
+          kind: "caplet",
+          capletId: "status",
+          name: "Status",
+          shadowing: "forbid",
+        }),
+      ],
+      diagnostics: [],
+    });
+
+    await engine.close();
+  });
+
+  it("does not advertise attach routes when an HTTP app bridges an attached session", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      exposeAttach: false,
+      sessionFactory: () => ({
+        connect: async () => undefined,
+        close: async () => undefined,
       }),
     });
 
-    expect(init.status).toBe(200);
-    const sessionId = init.headers.get("mcp-session-id");
-    expect(sessionId).toBeTruthy();
+    const discovery = (await (await app.request("http://127.0.0.1:5387/v1")).json()) as {
+      links: Record<string, string>;
+    };
+    expect(discovery.links).not.toHaveProperty("attachManifest");
+    expect(await app.request("http://127.0.0.1:5387/v1/attach/manifest")).toHaveProperty(
+      "status",
+      404,
+    );
 
-    await app.request("http://127.0.0.1:5387/mcp", {
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("invokes exported attach entries by revision-scoped export ID", async () => {
+    const { engine } = testEngine({
+      options: { exposure: "progressive" },
+    });
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const manifest = (await (
+      await app.request("http://127.0.0.1:5387/v1/attach/manifest")
+    ).json()) as {
+      revision: string;
+      caplets: Array<{ exportId: string; kind: string; stableId: string; schemaHash: string }>;
+    };
+    expect(manifest.caplets).toHaveLength(1);
+
+    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
       method: "POST",
-      headers: {
-        host: "127.0.0.1:5387",
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-        "mcp-session-id": sessionId!,
-        "mcp-protocol-version": "2025-03-26",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: manifest.revision,
+        kind: "caplet",
+        exportId: manifest.caplets[0]!.exportId,
+        input: { operation: "inspect" },
+      }),
     });
 
-    const tools = await app.request("http://127.0.0.1:5387/mcp", {
+    expect(invoked.status).toBe(200);
+    await expect(invoked.json()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        structuredContent: {
+          result: expect.objectContaining({ id: "status" }),
+        },
+      },
+    });
+
+    const stale = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
       method: "POST",
-      headers: {
-        host: "127.0.0.1:5387",
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-        "mcp-session-id": sessionId!,
-        "mcp-protocol-version": "2025-03-26",
-      },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: "old",
+        kind: "caplet",
+        exportId: manifest.caplets[0]!.exportId,
+        input: { operation: "inspect" },
+      }),
+    });
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "ATTACH_MANIFEST_STALE" },
     });
 
-    expect(tools.status).toBe(200);
-    const body = await tools.text();
-    expect(body).toContain("status");
+    const malformed = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"revision":',
+    });
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID" },
+    });
 
-    const deleted = await app.request("http://127.0.0.1:5387/mcp", {
-      method: "DELETE",
+    await engine.close();
+  });
+
+  it("recomputes attach projections before invokes so stale downstream surfaces are rejected", async () => {
+    const caplet = {
+      server: "docs",
+      name: "Docs",
+      description: "Docs.",
+      backend: "mcp",
+      command: process.execPath,
+    };
+    let downstreamToolName = "read";
+    const engine = {
+      onReload: () => () => undefined,
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [
+          {
+            caplet,
+            downstreamName: downstreamToolName,
+            name: `docs__${downstreamToolName}`,
+            tool: { name: downstreamToolName, inputSchema: { type: "object" } },
+          },
+        ],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [],
+      }),
+      execute: async () => ({ called: true }),
+    } as unknown as CapletsEngine;
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const manifest = (await (
+      await app.request("http://127.0.0.1:5387/v1/attach/manifest")
+    ).json()) as {
+      revision: string;
+      tools: Array<{ exportId: string; kind: string }>;
+    };
+    downstreamToolName = "search";
+
+    const stale = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: manifest.revision,
+        kind: "tool",
+        exportId: manifest.tools[0]!.exportId,
+        input: {},
+      }),
+    });
+
+    expect(stale.status).toBe(409);
+    await expect(stale.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "ATTACH_MANIFEST_STALE" },
+    });
+  });
+
+  it("serves attach events as an unbuffered keep-alive SSE stream", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    expect(response.headers.get("connection")).toBe("keep-alive");
+    expect(response.headers.get("x-accel-buffering")).toBe("no");
+    await response.body?.cancel();
+    await engine.close();
+  });
+
+  it("closes active attach event streams during app shutdown", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+
+    await app.closeCapletsSessions();
+
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    await engine.close();
+  });
+
+  it("rejects unauthenticated attach requests through public origin host by default", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({ publicOrigin: "https://caplets.tail7ff085.ts.net" }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { host: "caplets.tail7ff085.ts.net" },
+    });
+
+    expect(response.status).toBe(403);
+    await engine.close();
+  });
+
+  it("allows authenticated attach requests through the configured public origin host", async () => {
+    const { engine } = testEngine();
+    const password = "test-password";
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.tail7ff085.ts.net",
+        auth: { enabled: true, user: "caplets", password },
+      }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
       headers: {
-        "mcp-session-id": sessionId!,
-        "mcp-protocol-version": "2025-03-26",
-        host: "127.0.0.1:5387",
+        host: "caplets.tail7ff085.ts.net",
+        authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
       },
     });
-    expect(deleted.status).toBe(200);
+
+    expect(response.status).toBe(200);
+    await engine.close();
+  });
+
+  it("does not expose unversioned service routes", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    for (const path of ["/mcp", "/control", "/attach", "/healthz"]) {
+      const response = await app.request(`http://127.0.0.1:5387${path}`, { method: "POST" });
+      expect(response.status).toBe(404);
+    }
 
     await engine.close();
   });
@@ -541,7 +809,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -577,7 +845,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -614,7 +882,7 @@ describe("createHttpServeApp", () => {
       { writeErr: () => {} },
     );
 
-    const init = await app.request("http://127.0.0.1:5387/mcp", {
+    const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
@@ -640,6 +908,90 @@ describe("createHttpServeApp", () => {
   });
 });
 
+async function listMcpTools(
+  app: ReturnType<typeof createHttpServeApp>,
+  path: "/v1/mcp",
+): Promise<Array<{ name: string; inputSchema?: unknown }>> {
+  const init = await app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: {
+      host: "127.0.0.1:5387",
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test", version: "1.0.0" },
+      },
+    }),
+  });
+
+  expect(init.status).toBe(200);
+  const sessionId = init.headers.get("mcp-session-id");
+  expect(sessionId).toBeTruthy();
+
+  await app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: {
+      host: "127.0.0.1:5387",
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-session-id": sessionId!,
+      "mcp-protocol-version": "2025-03-26",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  });
+
+  const response = await app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: {
+      host: "127.0.0.1:5387",
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-session-id": sessionId!,
+      "mcp-protocol-version": "2025-03-26",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  });
+
+  expect(response.status).toBe(200);
+  const payload = parseMcpResponse(await response.text());
+
+  const deleted = await app.request(`http://127.0.0.1:5387${path}`, {
+    method: "DELETE",
+    headers: {
+      "mcp-session-id": sessionId!,
+      "mcp-protocol-version": "2025-03-26",
+      host: "127.0.0.1:5387",
+    },
+  });
+  expect(deleted.status).toBe(200);
+
+  return payload.result.tools;
+}
+
+function parseMcpResponse(text: string): {
+  result: { tools: Array<{ name: string; inputSchema?: unknown }> };
+} {
+  if (text.trimStart().startsWith("{")) {
+    return JSON.parse(text) as {
+      result: { tools: Array<{ name: string; inputSchema?: unknown }> };
+    };
+  }
+  const dataLine = text.split("\n").find((line) => line.startsWith("data:"));
+  if (!dataLine) {
+    throw new Error(`Could not parse MCP response: ${text}`);
+  }
+  return JSON.parse(dataLine.slice("data:".length).trim()) as {
+    result: { tools: Array<{ name: string; inputSchema?: unknown }> };
+  };
+}
+
 function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOptions {
   return {
     transport: "http",
@@ -656,8 +1008,8 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
   };
 }
 
-function testEngine(): { engine: CapletsEngine } {
-  const context = testContext();
+function testEngine(config: Record<string, unknown> = {}): { engine: CapletsEngine } {
+  const context = testContext(config);
   return {
     engine: new CapletsEngine({
       configPath: context.configPath,
@@ -667,7 +1019,7 @@ function testEngine(): { engine: CapletsEngine } {
   };
 }
 
-function testContext(options: { oauth?: boolean } = {}): {
+function testContext(options: { oauth?: boolean } & Record<string, unknown> = {}): {
   configPath: string;
   projectConfigPath: string;
   projectCapletsRoot: string;
@@ -685,6 +1037,7 @@ function testContext(options: { oauth?: boolean } = {}): {
     JSON.stringify(
       options.oauth
         ? {
+            ...(options.options ? { options: options.options } : {}),
             httpApis: {
               remote: {
                 name: "Remote",
@@ -701,6 +1054,7 @@ function testContext(options: { oauth?: boolean } = {}): {
             },
           }
         : {
+            ...(options.options ? { options: options.options } : {}),
             httpApis: {
               status: {
                 name: "Status",

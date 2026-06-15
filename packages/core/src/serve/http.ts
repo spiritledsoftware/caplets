@@ -8,6 +8,12 @@ import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import {
+  attachErrorResponse,
+  buildAttachProjection,
+  invokeAttachExport,
+  type AttachInvokeRequest,
+} from "../attach/api";
+import {
   dispatchRemoteCliRequest,
   type RemoteControlDispatchContext,
 } from "../remote-control/dispatch";
@@ -21,6 +27,7 @@ type HttpServeIo = {
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
+  exposeAttach?: boolean;
 };
 
 type HttpMcpSession = {
@@ -39,6 +46,10 @@ export type CapletsHttpApp = Hono & {
   closeCapletsSessions: () => Promise<void>;
 };
 
+type AttachEventStream = {
+  close: () => void;
+};
+
 export function createHttpServeApp(
   options: HttpServeOptions,
   engine: CapletsEngine,
@@ -46,9 +57,11 @@ export function createHttpServeApp(
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
+  const attachEventStreams = new Set<AttachEventStream>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
+  const exposeAttach = io.exposeAttach ?? true;
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -61,21 +74,16 @@ export function createHttpServeApp(
       name: "caplets",
       transport: "http",
       base: paths.base,
-      mcp: paths.mcp,
-      control: paths.control,
-      health: paths.health,
+      versions: [versionDiscovery(paths, exposeAttach)],
       auth: { type: "basic", enabled: options.auth.enabled },
     }),
   );
 
+  app.get(paths.version, (c) => c.json(versionDiscovery(paths, exposeAttach)));
+
   app.get(paths.health, (c) =>
     c.json({
       status: "ok",
-      transport: "http",
-      base: paths.base,
-      mcpPath: paths.mcp,
-      controlPath: paths.control,
-      healthPath: paths.health,
     }),
   );
 
@@ -124,6 +132,31 @@ export function createHttpServeApp(
     return session.transport.handleRequest(c);
   });
 
+  const attachHostProtection = dnsRebindingProtection(options);
+
+  if (exposeAttach) {
+    app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
+      const attachProjection = await buildAttachProjection(engine);
+      return c.json(attachProjection.manifest);
+    });
+
+    app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
+      attachEventsResponse(engine, attachEventStreams),
+    );
+
+    app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
+      try {
+        const request = await parseAttachInvokeRequest(c.req.json());
+        const attachProjection = await buildAttachProjection(engine);
+        const result = await invokeAttachExport(engine, attachProjection, request);
+        return c.json({ ok: true, data: result });
+      } catch (error) {
+        const response = attachErrorResponse(error);
+        return c.json(response.body, response.status);
+      }
+    });
+  }
+
   app.post(paths.control, basicAuth(options.auth), async (c) => {
     let request: RemoteCliRequest;
     try {
@@ -157,18 +190,40 @@ export function createHttpServeApp(
     );
   });
 
-  app.get(routePath(paths.control, "project-bindings/connect"), basicAuth(options.auth), (c) =>
+  app.get(routePath(paths.projectBindings, "connect"), basicAuth(options.auth), (c) =>
     c.json({ error: "websocket_upgrade_required" }, 426),
   );
 
-  app.get(
-    routePath(paths.control, "project-bindings/:bindingId/status"),
-    basicAuth(options.auth),
-    (c) =>
-      c.json({
-        bindingId: c.req.param("bindingId"),
-        state: "not_attached",
-      }),
+  app.get(routePath(paths.projectBindings, ":bindingId/status"), basicAuth(options.auth), (c) =>
+    c.json({
+      bindingId: c.req.param("bindingId"),
+      state: "not_attached",
+    }),
+  );
+
+  app.post(routePath(paths.projectBindings, "sessions"), basicAuth(options.auth), (c) => {
+    const bindingId = randomUUID();
+    return c.json(
+      {
+        binding: { bindingId, state: "attaching", syncState: "pending" },
+        sessionId: randomUUID(),
+      },
+      201,
+    );
+  });
+
+  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), basicAuth(options.auth), (c) =>
+    c.json({
+      ok: true,
+      binding: { bindingId: c.req.param("bindingId"), state: "ready" },
+    }),
+  );
+
+  app.delete(routePath(paths.projectBindings, ":bindingId/session"), basicAuth(options.auth), (c) =>
+    c.json({
+      ok: true,
+      binding: { bindingId: c.req.param("bindingId"), state: "ended" },
+    }),
   );
 
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
@@ -197,6 +252,9 @@ export function createHttpServeApp(
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.closeCapletsSessions = async () => {
+    for (const stream of attachEventStreams) {
+      stream.close();
+    }
     await Promise.allSettled(
       [...sessions.values()].map(async (session) => {
         await session.server.close();
@@ -259,6 +317,124 @@ function firstForwardedValue(value: string | undefined): string | undefined {
   return value?.split(",", 1)[0]?.trim() || undefined;
 }
 
+function versionDiscovery(paths: ReturnType<typeof servicePaths>, exposeAttach = true) {
+  return {
+    version: 1,
+    path: paths.version,
+    links: {
+      mcp: paths.mcp,
+      admin: paths.control,
+      ...(exposeAttach
+        ? {
+            attachManifest: paths.attachManifest,
+            attachEvents: paths.attachEvents,
+            attachInvoke: paths.attachInvoke,
+          }
+        : {}),
+      health: paths.health,
+    },
+  };
+}
+
+async function parseAttachInvokeRequest(input: Promise<unknown>): Promise<AttachInvokeRequest> {
+  let parsed: unknown;
+  try {
+    parsed = await input;
+  } catch (error) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Attach invoke request body must be valid JSON.",
+      error,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", "Attach invoke request JSON must be an object.");
+  }
+  const request = parsed as Record<string, unknown>;
+  if (
+    typeof request.revision !== "string" ||
+    typeof request.kind !== "string" ||
+    typeof request.exportId !== "string"
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Attach invoke request requires revision, kind, and exportId.",
+    );
+  }
+  if (!isAttachExportKind(request.kind)) {
+    throw new CapletsError("REQUEST_INVALID", "Attach invoke kind is invalid.");
+  }
+  return {
+    revision: request.revision,
+    kind: request.kind,
+    exportId: request.exportId,
+    input: request.input,
+  };
+}
+
+function isAttachExportKind(value: string): value is AttachInvokeRequest["kind"] {
+  return (
+    value === "caplet" ||
+    value === "tool" ||
+    value === "resource" ||
+    value === "resourceTemplate" ||
+    value === "prompt" ||
+    value === "completion"
+  );
+}
+
+function attachEventsResponse(
+  engine: CapletsEngine,
+  activeStreams: Set<AttachEventStream>,
+): Response {
+  const encoder = new TextEncoder();
+  let unsubscribe: () => void = () => undefined;
+  let activeStream: AttachEventStream | undefined;
+  let closed = false;
+  const readable = new ReadableStream<Uint8Array>({
+    start(controller) {
+      activeStream = {
+        close: () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe();
+          if (activeStream) activeStreams.delete(activeStream);
+          try {
+            controller.close();
+          } catch {
+            // The stream may already have been cancelled by the client.
+          }
+        },
+      };
+      activeStreams.add(activeStream);
+      controller.enqueue(encoder.encode(": connected\n\n"));
+      unsubscribe = engine.onReload(() => {
+        void buildAttachProjection(engine)
+          .then((projection) => {
+            if (closed) return;
+            controller.enqueue(
+              encoder.encode(
+                `event: manifest_changed\ndata: ${JSON.stringify({ revision: projection.manifest.revision })}\n\n`,
+              ),
+            );
+          })
+          .catch(() => undefined);
+      });
+    },
+    cancel() {
+      activeStream?.close();
+    },
+  });
+  return new Response(readable, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    },
+  });
+}
+
 export async function serveHttp(
   options: HttpServeOptions,
   engineOptions: CapletsEngineOptions = {},
@@ -278,6 +454,7 @@ export async function serveHttp(
   const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
     writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
     writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+    writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
     writeErr(
@@ -296,6 +473,7 @@ export async function serveHttpWithSessionFactory(
   const engine = new CapletsEngine({});
   const app = createHttpServeApp(options, engine, {
     writeErr,
+    exposeAttach: false,
     sessionFactory: createSession,
     control: {
       projectCapletsRoot: resolveProjectCapletsRoot(),
@@ -333,15 +511,27 @@ export function routePath(base: string, path: string): string {
 
 export function servicePaths(base: string): {
   base: string;
+  version: string;
   mcp: string;
   control: string;
+  attachManifest: string;
+  attachEvents: string;
+  attachInvoke: string;
+  projectBindings: string;
   health: string;
 } {
+  const version = routePath(base, "v1");
+  const attach = routePath(version, "attach");
   return {
     base,
-    mcp: routePath(base, "mcp"),
-    control: routePath(base, "control"),
-    health: routePath(base, "healthz"),
+    version,
+    mcp: routePath(version, "mcp"),
+    control: routePath(version, "admin"),
+    attachManifest: routePath(attach, "manifest"),
+    attachEvents: routePath(attach, "events"),
+    attachInvoke: routePath(attach, "invoke"),
+    projectBindings: routePath(attach, "project-bindings"),
+    health: routePath(version, "healthz"),
   };
 }
 
@@ -376,6 +566,22 @@ function basicAuth(auth: HttpBasicAuthOptions): MiddlewareHandler {
     ) {
       c.header("www-authenticate", 'Basic realm="caplets"');
       return c.text("Unauthorized", 401);
+    }
+    await next();
+  };
+}
+
+function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
+  if (!options.loopback) {
+    return async (_c, next) => {
+      await next();
+    };
+  }
+  const allowedHosts = new Set(dnsRebindingOptions(options).allowedHosts);
+  return async (c, next) => {
+    const host = c.req.header("host");
+    if (host && !allowedHosts.has(host)) {
+      return c.text("Forbidden", 403);
     }
     await next();
   };
@@ -433,8 +639,9 @@ function installHttpSignalHandlers(
   let closing: Promise<void> | undefined;
   const close = async () => {
     closing ??= (async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
       await app.closeCapletsSessions();
+      closeAllServerConnections(server);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await engine.close();
     })();
     return closing;
@@ -453,6 +660,11 @@ function installHttpSignalHandlers(
         .catch((error) => writeErr(`${String(error)}\n`))
         .finally(() => process.exit(143)),
   );
+}
+
+function closeAllServerConnections(server: ServerType): void {
+  const closeAllConnections = (server as { closeAllConnections?: () => void }).closeAllConnections;
+  closeAllConnections?.call(server);
 }
 
 function formatHost(host: string): string {
