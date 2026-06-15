@@ -756,7 +756,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request);
     }
-    const localHasCaplet = this.local.listTools().some((tool) => tool.caplet === capletId);
+    const localHasCaplet = serviceHasCaplet(this.local, capletId);
     const remoteHasCaplet = serviceHasCaplet(this.remote, capletId);
     if (localHasCaplet && !remoteHasCaplet) {
       return await this.local.execute(capletId, request);

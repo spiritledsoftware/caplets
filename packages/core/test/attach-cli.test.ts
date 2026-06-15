@@ -78,6 +78,31 @@ describe("caplets attach CLI", () => {
     });
   });
 
+  it("passes local overlay config paths into attach serving", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-attach-config-"));
+    tempDirs.push(dir);
+    const configPath = join(dir, "local.json");
+    const projectConfigPath = join(dir, "project.json");
+    const served: unknown[] = [];
+
+    await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_CONFIG: configPath,
+        CAPLETS_PROJECT_CONFIG: projectConfigPath,
+      },
+      attachServe: async (options: unknown) => {
+        served.push(options);
+      },
+    } as never);
+
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      configPath,
+      projectConfigPath,
+    });
+  });
+
   it("rejects attach server in local mode", async () => {
     await expect(
       runCli(["attach"], {

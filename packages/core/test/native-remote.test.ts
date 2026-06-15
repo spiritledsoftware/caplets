@@ -14,6 +14,7 @@ import {
 } from "../src/native/remote";
 import {
   createNativeCapletsService,
+  type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
 import { createHttpServeApp } from "../src/serve/http";
@@ -1612,6 +1613,67 @@ describe("createNativeCapletsService remote mode", () => {
         ]),
       }),
     );
+    await service.close();
+  });
+
+  it("executes local overlay Code Mode handles locally", async () => {
+    const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
+    const localExecute = vi.fn(async (capletId: string, request: unknown) => ({
+      capletId,
+      request,
+      status: "available",
+    }));
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "code_mode",
+          toolName: "caplets__code_mode",
+          title: "Local Code",
+          description: "Local Code Mode handle.",
+          codeModeRun: true,
+          codeModeCaplets: [
+            {
+              id: "local-code",
+              name: "Local Code",
+              description: "Local Code Mode handle.",
+            },
+          ],
+          promptGuidance: [],
+        },
+      ]),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await service.reload();
+
+    await expect(
+      service.execute("code_mode", {
+        code: 'return await caplets["local-code"].check();',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        ok: true,
+        data: {
+          capletId: "local-code",
+          request: { operation: "check" },
+          status: "available",
+        },
+      },
+    });
+    expect(localExecute).toHaveBeenCalledWith("local-code", { operation: "check" });
+    expect(fixture.api.callTool).not.toHaveBeenCalledWith("local-code", {
+      operation: "check",
+    });
     await service.close();
   });
 
