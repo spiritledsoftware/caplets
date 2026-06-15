@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
 name: DeepWiki
 description: Query repository-focused documentation and codebase explanations through DeepWiki's MCP service.
 tags:

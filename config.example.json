@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+  "$schema": "https://caplets.dev/config.schema.json",
   "defaultSearchLimit": 20,
   "maxSearchLimit": 50,
   "mcpServers": {

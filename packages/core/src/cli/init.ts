@@ -28,8 +28,7 @@ export function initConfig(options: { path?: string; force?: boolean } = {}): st
 export function starterConfig(): string {
   return JSON.stringify(
     {
-      $schema:
-        "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+      $schema: "https://caplets.dev/config.schema.json",
       version: 1,
       defaultSearchLimit: 20,
       maxSearchLimit: 50,

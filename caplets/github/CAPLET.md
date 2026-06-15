@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
 name: GitHub
 description: Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.
 tags:

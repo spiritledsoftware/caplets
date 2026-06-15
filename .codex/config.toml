@@ -10,7 +10,7 @@ CAPLETS_MODE = "remote"
 [mcp_servers.caplets-local]
 command = "node"
 args = ["./packages/cli/dist/index.js", "serve", "--transport", "stdio"]
-env_vars = ["GH_TOKEN"]
 
 [mcp_servers.caplets-local.env]
 CAPLETS_MODE = "local"
+CAPLETS_CONFIG = "./.caplets/config.json"

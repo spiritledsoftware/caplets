@@ -1359,7 +1359,7 @@ const normalizedConfigFileSchema = configSchemaFor(
 export function configJsonSchema(): unknown {
   return patchConfigJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+    $id: "https://caplets.dev/config.schema.json",
     title: "Caplets config",
     description: "Configuration file for the Caplets progressive MCP disclosure gateway.",
     ...z.toJSONSchema(configFileSchema, { io: "input" }),

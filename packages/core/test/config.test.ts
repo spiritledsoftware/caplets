@@ -1850,8 +1850,7 @@ describe("config", () => {
 
   it("loads top-level Caplets options", () => {
     const config = parseConfig({
-      $schema:
-        "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplets-config.schema.json",
+      $schema: "https://caplets.dev/config.schema.json",
       defaultSearchLimit: 5,
       maxSearchLimit: 10,
       mcpServers: {},

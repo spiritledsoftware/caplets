@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/spiritledsoftware/caplets/main/schemas/caplet.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
 name: Repository CLI
 description: Inspect and run common local repository workflows through curated CLI tools.
 tags:
