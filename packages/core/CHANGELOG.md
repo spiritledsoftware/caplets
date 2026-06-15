@@ -1,5 +1,16 @@
 # @caplets/core
 
+## 0.21.0
+
+### Minor Changes
+
+- 8f45f5c: Bump dependencies
+- 8f45f5c: Replace unversioned self-hosted HTTP routes with the `/v1` service surface and add the Caplets attach manifest/invoke API for native and attach clients.
+
+### Patch Changes
+
+- 8f45f5c: Publish the generated config and Caplet frontmatter schemas from caplets.dev and use those URLs in generated starter files.
+
 ## 0.20.2
 
 ### Patch Changes

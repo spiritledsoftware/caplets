@@ -1,5 +1,16 @@
 # caplets
 
+## 0.18.4
+
+### Patch Changes
+
+- 8f45f5c: Bump dependencies
+- 8f45f5c: Publish the generated config and Caplet frontmatter schemas from caplets.dev and use those URLs in generated starter files.
+- Updated dependencies [8f45f5c]
+- Updated dependencies [8f45f5c]
+- Updated dependencies [8f45f5c]
+  - @caplets/core@0.21.0
+
 ## 0.18.3
 
 ### Patch Changes
