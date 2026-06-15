@@ -103,6 +103,40 @@ describe("caplets attach CLI", () => {
     });
   });
 
+  it("uses attach --project-root for the default local overlay project config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-attach-project-root-"));
+    tempDirs.push(dir);
+    const projectRoot = join(dir, "checkout");
+    const configPath = join(dir, "local.json");
+    const served: unknown[] = [];
+
+    await runCli(
+      [
+        "attach",
+        "--remote-url",
+        "https://caplets.example.com/caplets",
+        "--project-root",
+        projectRoot,
+      ],
+      {
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_CONFIG: configPath,
+        },
+        attachServe: async (options: unknown) => {
+          served.push(options);
+        },
+      } as never,
+    );
+
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      configPath,
+      projectRoot,
+      projectConfigPath: join(projectRoot, ".caplets", "config.json"),
+    });
+  });
+
   it("rejects attach server in local mode", async () => {
     await expect(
       runCli(["attach"], {

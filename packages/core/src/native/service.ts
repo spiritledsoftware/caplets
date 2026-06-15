@@ -890,7 +890,7 @@ function serviceHasCaplet(service: NativeCapletsService, capletId: string): bool
     if (tool.codeModeRun) {
       return tool.codeModeCaplets?.some((caplet) => caplet.id === capletId) ?? false;
     }
-    return tool.caplet === capletId;
+    return tool.caplet === capletId || tool.sourceCaplet === capletId;
   });
 }
 

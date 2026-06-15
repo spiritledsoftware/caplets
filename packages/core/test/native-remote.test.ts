@@ -1584,6 +1584,56 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("does not execute local Code Mode handles shadowed by remote direct tools", async () => {
+    const fixture = client([
+      {
+        name: "shared__ping",
+        sourceCapletId: "shared",
+        title: "Ping",
+        description: "Remote direct tool.",
+      },
+    ]);
+    const localExecute = vi.fn(async () => ({ local: true }));
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "code_mode",
+          toolName: "caplets__code_mode",
+          title: "Local Code",
+          description: "Local Code Mode handle.",
+          codeModeRun: true,
+          codeModeCaplets: [
+            {
+              id: "shared",
+              name: "Shared",
+              description: "Local shared Code Mode handle.",
+            },
+          ],
+          promptGuidance: [],
+        },
+      ]),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["shared__ping"]);
+    await service.execute("shared", { operation: "check" });
+
+    expect(localExecute).not.toHaveBeenCalled();
+    expect(fixture.api.callTool).toHaveBeenCalledWith("shared", { operation: "check" });
+    await service.close();
+  });
+
   it("keeps visible local Code Mode handles in composite Code Mode declarations", async () => {
     const fixture = client([{ name: "remote-only", title: "Remote Only" }]);
     const { dir, configPath, projectConfigPath } = tempConfig({

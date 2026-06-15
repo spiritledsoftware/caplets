@@ -24,11 +24,12 @@ export async function resolveAttachServeOptions(
 ): Promise<AttachServeOptions> {
   const selection = await resolveRemoteSelection(raw, env);
   const serve = resolveServeOptions(attachLocalServeOptions(raw), env);
+  const projectRoot = raw.projectRoot ?? process.cwd();
   return {
     ...serve,
     configPath: resolveConfigPath(env.CAPLETS_CONFIG?.trim() || undefined),
-    projectRoot: raw.projectRoot ?? process.cwd(),
-    projectConfigPath: env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath(),
+    projectRoot,
+    projectConfigPath: env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath(projectRoot),
     selection,
   };
 }
