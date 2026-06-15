@@ -736,6 +736,20 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("closes active attach event streams during app shutdown", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/events");
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+
+    await app.closeCapletsSessions();
+
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    await engine.close();
+  });
+
   it("rejects unauthenticated attach requests through public origin host by default", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(

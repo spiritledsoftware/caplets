@@ -46,6 +46,10 @@ export type CapletsHttpApp = Hono & {
   closeCapletsSessions: () => Promise<void>;
 };
 
+type AttachEventStream = {
+  close: () => void;
+};
+
 export function createHttpServeApp(
   options: HttpServeOptions,
   engine: CapletsEngine,
@@ -53,6 +57,7 @@ export function createHttpServeApp(
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
+  const attachEventStreams = new Set<AttachEventStream>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
@@ -136,7 +141,7 @@ export function createHttpServeApp(
     });
 
     app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
-      attachEventsResponse(engine),
+      attachEventsResponse(engine, attachEventStreams),
     );
 
     app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
@@ -247,6 +252,9 @@ export function createHttpServeApp(
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.closeCapletsSessions = async () => {
+    for (const stream of attachEventStreams) {
+      stream.close();
+    }
     await Promise.allSettled(
       [...sessions.values()].map(async (session) => {
         await session.server.close();
@@ -375,15 +383,35 @@ function isAttachExportKind(value: string): value is AttachInvokeRequest["kind"]
   );
 }
 
-function attachEventsResponse(engine: CapletsEngine): Response {
+function attachEventsResponse(
+  engine: CapletsEngine,
+  activeStreams: Set<AttachEventStream>,
+): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
-  const stream = new ReadableStream<Uint8Array>({
+  let activeStream: AttachEventStream | undefined;
+  let closed = false;
+  const readable = new ReadableStream<Uint8Array>({
     start(controller) {
+      activeStream = {
+        close: () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe();
+          if (activeStream) activeStreams.delete(activeStream);
+          try {
+            controller.close();
+          } catch {
+            // The stream may already have been cancelled by the client.
+          }
+        },
+      };
+      activeStreams.add(activeStream);
       controller.enqueue(encoder.encode(": connected\n\n"));
       unsubscribe = engine.onReload(() => {
         void buildAttachProjection(engine)
           .then((projection) => {
+            if (closed) return;
             controller.enqueue(
               encoder.encode(
                 `event: manifest_changed\ndata: ${JSON.stringify({ revision: projection.manifest.revision })}\n\n`,
@@ -394,10 +422,10 @@ function attachEventsResponse(engine: CapletsEngine): Response {
       });
     },
     cancel() {
-      unsubscribe();
+      activeStream?.close();
     },
   });
-  return new Response(stream, {
+  return new Response(readable, {
     headers: {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -611,8 +639,9 @@ function installHttpSignalHandlers(
   let closing: Promise<void> | undefined;
   const close = async () => {
     closing ??= (async () => {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
       await app.closeCapletsSessions();
+      closeAllServerConnections(server);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await engine.close();
     })();
     return closing;
@@ -631,6 +660,11 @@ function installHttpSignalHandlers(
         .catch((error) => writeErr(`${String(error)}\n`))
         .finally(() => process.exit(143)),
   );
+}
+
+function closeAllServerConnections(server: ServerType): void {
+  const closeAllConnections = (server as { closeAllConnections?: () => void }).closeAllConnections;
+  closeAllConnections?.call(server);
 }
 
 function formatHost(host: string): string {
