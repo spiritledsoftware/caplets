@@ -1566,6 +1566,9 @@ describe("createNativeCapletsService remote mode", () => {
 
     expect(configuredCapletIds(service.listTools())).toEqual(["shared"]);
     expect(service.listTools().map((tool) => tool.caplet)).not.toContain("shared__ping");
+    await service.execute("shared__ping", { message: "hi" });
+    expect(localService.execute).not.toHaveBeenCalled();
+    expect(fixture.api.callTool).toHaveBeenCalledWith("shared__ping", { message: "hi" });
     expect(writeErr).toHaveBeenCalledWith(
       "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
     );

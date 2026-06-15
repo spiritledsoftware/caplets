@@ -759,9 +759,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request);
     }
-    const localHasCaplet = serviceHasCaplet(this.local, capletId);
-    const remoteHasCaplet = serviceHasCaplet(this.remote, capletId);
-    if (localHasCaplet && (!remoteHasCaplet || this.remoteAllowsShadowing(capletId))) {
+    if (this.localCanExecute(capletId)) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
@@ -825,19 +823,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private mergeTools(): NativeCapletTool[] {
     const allLocalTools = this.local.listTools();
     const allRemoteTools = this.remote.listTools();
-    const remoteCodeModeTools = codeModeCallableNativeTools(allRemoteTools, {
-      fallbackToVisible: true,
-    });
-    const remoteIds = new Set(
-      [
-        ...allRemoteTools
-          .filter((tool) => tool.codeModeRun !== true && tool.shadowing !== "allow")
-          .map((tool) => tool.sourceCaplet ?? tool.caplet),
-        ...remoteCodeModeTools
-          .filter((tool) => tool.shadowing !== "allow")
-          .map((tool) => tool.caplet),
-      ].filter((caplet) => caplet !== nativeCodeModeToolId),
-    );
+    const remoteCodeModeTools = remoteCodeModeCallableNativeTools(allRemoteTools);
+    const remoteIds = remoteSuppressedCapletIds(allRemoteTools, remoteCodeModeTools);
     const localTools = allLocalTools.filter(
       (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.sourceCaplet ?? tool.caplet),
     );
@@ -852,6 +839,12 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       ...mergedTools,
       ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
     ];
+  }
+
+  private localCanExecute(capletId: string): boolean {
+    const allRemoteTools = this.remote.listTools();
+    const remoteIds = remoteSuppressedCapletIds(allRemoteTools);
+    return localExecutionKeys(this.local.listTools(), capletId).some((key) => !remoteIds.has(key));
   }
 
   private warnShadowedLocalCaplets(localTools: NativeCapletTool[], remoteIds: Set<string>): void {
@@ -874,21 +867,6 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     }
   }
 
-  private remoteAllowsShadowing(capletId: string): boolean {
-    return this.remote.listTools().some((tool) => {
-      if (tool.codeModeRun) {
-        return (
-          tool.codeModeCaplets?.some(
-            (caplet) => caplet.id === capletId && caplet.shadowing === "allow",
-          ) ?? false
-        );
-      }
-      return (
-        tool.shadowing === "allow" && (tool.caplet === capletId || tool.sourceCaplet === capletId)
-      );
-    });
-  }
-
   private async reloadChild(
     service: NativeCapletsService,
     label: string,
@@ -905,13 +883,40 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 }
 
-function serviceHasCaplet(service: NativeCapletsService, capletId: string): boolean {
-  return service.listTools().some((tool) => {
+function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCapletTool[] {
+  return codeModeCallableNativeTools(tools, { fallbackToVisible: true });
+}
+
+function remoteSuppressedCapletIds(
+  allRemoteTools: NativeCapletTool[],
+  remoteCodeModeTools = remoteCodeModeCallableNativeTools(allRemoteTools),
+): Set<string> {
+  return new Set(
+    [
+      ...allRemoteTools
+        .filter((tool) => tool.codeModeRun !== true && tool.shadowing !== "allow")
+        .map((tool) => tool.sourceCaplet ?? tool.caplet),
+      ...remoteCodeModeTools
+        .filter((tool) => tool.shadowing !== "allow")
+        .map((tool) => tool.caplet),
+    ].filter((caplet) => caplet !== nativeCodeModeToolId),
+  );
+}
+
+function localExecutionKeys(tools: NativeCapletTool[], capletId: string): string[] {
+  const keys: string[] = [];
+  for (const tool of tools) {
     if (tool.codeModeRun) {
-      return tool.codeModeCaplets?.some((caplet) => caplet.id === capletId) ?? false;
+      for (const caplet of tool.codeModeCaplets ?? []) {
+        if (caplet.id === capletId) keys.push(caplet.id);
+      }
+      continue;
     }
-    return tool.caplet === capletId || tool.sourceCaplet === capletId;
-  });
+    if (tool.caplet === capletId || tool.sourceCaplet === capletId) {
+      keys.push(tool.sourceCaplet ?? tool.caplet);
+    }
+  }
+  return keys;
 }
 
 function createProjectBindingSessionManager(
