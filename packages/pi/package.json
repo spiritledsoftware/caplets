@@ -39,10 +39,10 @@
   "devDependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
     "@types/node": "^25.9.3",
-    "@typescript/native-preview": "7.0.0-dev.20260613.1",
+    "@typescript/native-preview": "7.0.0-dev.20260615.1",
     "rolldown": "^1.1.1",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.9"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
