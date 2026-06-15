@@ -883,7 +883,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
           ) ?? false
         );
       }
-      return (tool.sourceCaplet ?? tool.caplet) === capletId && tool.shadowing === "allow";
+      return (
+        tool.shadowing === "allow" && (tool.caplet === capletId || tool.sourceCaplet === capletId)
+      );
     });
   }
 

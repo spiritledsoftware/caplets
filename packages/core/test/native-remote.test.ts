@@ -1572,6 +1572,51 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("executes local direct tool overlays when remote direct exports allow shadowing", async () => {
+    const fixture = client([
+      {
+        name: "shared__ping",
+        sourceCapletId: "shared",
+        title: "Remote Ping",
+        description: "Remote direct tool.",
+        shadowing: "allow",
+      },
+    ]);
+    const localExecute = vi.fn(async () => ({ local: true }));
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "shared__ping",
+          sourceCaplet: "shared",
+          toolName: "caplets__shared__ping",
+          title: "Ping",
+          description: "Local direct tool.",
+          promptGuidance: [],
+        },
+      ]),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const service = createNativeCapletsService({
+      mode: "remote",
+      server: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["shared__ping", "shared__ping"]);
+    await expect(service.execute("shared__ping", { message: "hi" })).resolves.toEqual({
+      local: true,
+    });
+    expect(localExecute).toHaveBeenCalledWith("shared__ping", { message: "hi" });
+    expect(fixture.api.callTool).not.toHaveBeenCalled();
+    await service.close();
+  });
+
   it("warns when a local Code Mode-only Caplet is suppressed by remote Code Mode", async () => {
     const fixture = client([
       {
