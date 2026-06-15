@@ -1,5 +1,15 @@
 # @caplets/opencode
 
+## 0.5.4
+
+### Patch Changes
+
+- 8f45f5c: Bump dependencies
+- Updated dependencies [8f45f5c]
+- Updated dependencies [8f45f5c]
+- Updated dependencies [8f45f5c]
+  - @caplets/core@0.21.0
+
 ## 0.5.3
 
 ### Patch Changes
