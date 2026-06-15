@@ -108,10 +108,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "@typescript/native-preview": "7.0.0-dev.20260603.1",
-    "rolldown": "^1.0.3",
-    "vitest": "^4.1.8"
+    "@types/node": "^25.9.3",
+    "@typescript/native-preview": "7.0.0-dev.20260615.1",
+    "rolldown": "^1.1.1",
+    "vitest": "^4.1.9"
   },
   "engines": {
     "node": ">=22"
