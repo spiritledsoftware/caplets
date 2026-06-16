@@ -1620,6 +1620,37 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("marks generated local direct tools with their source Caplet ID", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      options: { exposure: "direct" },
+      httpApis: {
+        shared: {
+          name: "Local Shared",
+          description: "Local direct HTTP tools.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+    });
+
+    try {
+      expect(service.listTools()).toContainEqual(
+        expect.objectContaining({
+          caplet: "shared__ping",
+          sourceCaplet: "shared",
+        }),
+      );
+    } finally {
+      await service.close();
+    }
+  });
+
   it("warns when a local Code Mode-only Caplet is suppressed by remote Code Mode", async () => {
     const fixture = client([
       {

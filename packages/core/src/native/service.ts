@@ -296,6 +296,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.directToolRoutes.set(routeId, { capletId: caplet.server, operationName });
     return {
       caplet: routeId,
+      sourceCaplet: caplet.server,
       toolName,
       title: operationName,
       description: options.description ?? "",
