@@ -440,12 +440,16 @@ export async function serveHttp(
   engineOptions: CapletsEngineOptions = {},
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
-  const engine = new CapletsEngine(engineOptions);
+  const resolvedEngineOptions = {
+    exposeLocalArtifactPaths: false,
+    ...engineOptions,
+  };
+  const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
     control: {
-      ...engineOptions,
-      projectCapletsRoot: projectCapletsRootForEngineOptions(engineOptions),
+      ...resolvedEngineOptions,
+      projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
     },
   });
   const paths = servicePaths(options.path);

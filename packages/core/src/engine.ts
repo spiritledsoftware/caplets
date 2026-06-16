@@ -34,6 +34,7 @@ export type CapletsEngineOptions = {
   projectConfigPath?: string;
   authDir?: string;
   artifactDir?: string;
+  exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
@@ -103,7 +104,7 @@ export class CapletsEngine {
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
     this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
     this.cli = new CliToolsManager(this.registry);
-    this.capletSets = new CapletSetManager(this.registry, selectAuthOptions(options.authDir));
+    this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -570,10 +571,12 @@ function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
 function selectHttpLikeOptions(options: CapletsEngineOptions): {
   authDir?: string;
   artifactDir?: string;
+  exposeLocalArtifactPaths?: boolean;
 } {
   return {
     ...selectAuthOptions(options.authDir),
     ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
+    ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
   };
 }
 

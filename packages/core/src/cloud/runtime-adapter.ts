@@ -45,6 +45,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
         ? {}
         : { projectConfigPath: options.projectConfigPath }),
       ...(options.authDir === undefined ? {} : { authDir: options.authDir }),
+      exposeLocalArtifactPaths: false,
       watch: false,
     });
     this.setupStore = options.setupStore ?? new LocalSetupStore();

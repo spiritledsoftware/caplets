@@ -39,7 +39,12 @@ export class CapletSetManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string; ancestry?: Set<string> } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
+      ancestry?: Set<string>;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -215,18 +220,24 @@ export class CapletSetManager {
         maxSearchLimit: config.maxSearchLimit,
       });
       const registry = new ServerRegistry(childConfig);
-      const authOptions = this.options.authDir ? { authDir: this.options.authDir } : {};
+      const sharedOptions = {
+        ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
+        ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false
+          ? { exposeLocalArtifactPaths: false }
+          : {}),
+      };
       const childAncestry = new Set([...ancestry, cacheKey]);
       child = {
         registry,
-        downstream: new DownstreamManager(registry, authOptions),
-        openapi: new OpenApiManager(registry, authOptions),
-        graphql: new GraphQLManager(registry, authOptions),
-        http: new HttpActionManager(registry, authOptions),
+        downstream: new DownstreamManager(registry, sharedOptions),
+        openapi: new OpenApiManager(registry, sharedOptions),
+        graphql: new GraphQLManager(registry, sharedOptions),
+        http: new HttpActionManager(registry, sharedOptions),
         cli: new CliToolsManager(registry),
-        googleDiscovery: new GoogleDiscoveryManager(registry, authOptions),
+        googleDiscovery: new GoogleDiscoveryManager(registry, sharedOptions),
         capletSets: new CapletSetManager(registry, {
-          ...authOptions,
+          ...sharedOptions,
           ancestry: childAncestry,
         }),
         cacheKey,

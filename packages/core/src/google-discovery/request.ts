@@ -14,11 +14,25 @@ export function buildGoogleDiscoveryUrl(
     base,
     substitutePath(operation.path, asRecord(args.path), operation),
   );
-  for (const [key, value] of Object.entries(asRecord(args.query))) {
-    if (value !== undefined && value !== null) {
-      url.searchParams.append(key, serializeGoogleDiscoveryValue("query", key, value));
-    }
-  }
+  appendQueryArgs(url, args);
+  return url;
+}
+
+export function buildGoogleDiscoveryUploadUrl(
+  api: GoogleDiscoveryApiConfig,
+  operation: GoogleDiscoveryOperation,
+  uploadPath: string,
+  uploadType: "media" | "multipart" | "resumable",
+  args: Record<string, unknown>,
+): URL {
+  const base = api.baseUrl;
+  validateBaseUrl(api, base);
+  const url = buildUploadOperationUrl(
+    base,
+    substitutePath(uploadPath, asRecord(args.path), operation),
+  );
+  appendQueryArgs(url, args);
+  url.searchParams.set("uploadType", uploadType);
   return url;
 }
 
@@ -84,6 +98,31 @@ function buildOperationUrl(base: string, operationPath: string): URL {
   baseUrl.pathname = [basePath, relativePath].filter(Boolean).join("/");
   assertInsideBasePath(baseUrl, basePath);
   return baseUrl;
+}
+
+function buildUploadOperationUrl(base: string, uploadPath: string): URL {
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(uploadPath) || uploadPath.startsWith("//")) {
+    throw new CapletsError("CONFIG_INVALID", "Google Discovery upload path cannot change origin");
+  }
+  const baseUrl = new URL(base);
+  const relativePath = uploadPath.replace(/^\/+/u, "");
+  assertSafeRelativePath(relativePath);
+  return uploadPath.startsWith("/")
+    ? new URL(`/${relativePath}`, baseUrl.origin)
+    : buildOperationUrl(base, uploadPath);
+}
+
+function appendQueryArgs(url: URL, args: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(asRecord(args.query))) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        url.searchParams.append(key, serializeGoogleDiscoveryValue("query", key, entry));
+      }
+      continue;
+    }
+    url.searchParams.append(key, serializeGoogleDiscoveryValue("query", key, value));
+  }
 }
 
 function substitutePath(

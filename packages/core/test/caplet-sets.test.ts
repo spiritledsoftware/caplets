@@ -108,7 +108,8 @@ describe("CapletSetManager", () => {
       },
     });
     const caplet = config.capletSets.nested!;
-    const manager = new CapletSetManager(new ServerRegistry(config));
+    const artifactDir = join(dir, "artifacts");
+    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
 
     await expect(manager.listTools(caplet)).resolves.toMatchObject([
       { name: "configured" },
@@ -145,7 +146,8 @@ describe("CapletSetManager", () => {
       },
     });
     const caplet = config.capletSets.nested!;
-    const manager = new CapletSetManager(new ServerRegistry(config));
+    const artifactDir = join(dir, "artifacts");
+    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
 
     const result = await manager.callTool(caplet, "drive", { operation: "tools" });
 
@@ -156,6 +158,12 @@ describe("CapletSetManager", () => {
         items: [{ name: "drive.files.list" }],
       },
     });
+    const child = (
+      manager as unknown as {
+        children: Map<string, { googleDiscovery: { options: { artifactDir?: string } } }>;
+      }
+    ).children.get("nested");
+    expect(child?.googleDiscovery.options.artifactDir).toBe(artifactDir);
   });
 
   it("serializes concurrent refreshes for one parent Caplet set", async () => {

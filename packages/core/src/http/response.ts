@@ -10,6 +10,8 @@ export type ReadHttpLikeResponseOptions = {
   filename?: string;
   maxInlineBytes?: number;
   maxBytes?: number;
+  forceArtifact?: boolean;
+  exposeLocalPath?: boolean;
 };
 
 export async function readHttpLikeResponse(
@@ -22,7 +24,7 @@ export async function readHttpLikeResponse(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   rejectOversizedContentLength(response, maxBytes);
 
-  if (shouldInline(response, mimeType)) {
+  if (!options.forceArtifact && shouldInline(response, mimeType)) {
     const inline = await readInlineCandidate(response, { maxInlineBytes, maxBytes });
     if (!inline.exceeded) {
       const body = parseHttpBody(contentType, new TextDecoder().decode(inline.bytes));
@@ -112,6 +114,7 @@ async function writeResponseArtifact(
     capletId: options.capletId,
     ...(options.artifactDir ? { rootDir: options.artifactDir } : {}),
     ...(options.outputPath ? { outputPath: options.outputPath } : {}),
+    ...(options.exposeLocalPath === false ? { exposeLocalPath: false } : {}),
     suggestedFilename:
       options.filename ?? filenameFromContentDisposition(response) ?? "response.bin",
     ...(mimeType ? { mimeType } : {}),

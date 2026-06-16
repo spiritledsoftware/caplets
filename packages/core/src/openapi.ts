@@ -61,7 +61,11 @@ export class OpenApiManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string; artifactDir?: string } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -155,6 +159,7 @@ export class OpenApiManager {
       const parsed = await readHttpLikeResponse(response, {
         capletId: endpoint.server,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
       });
       return {
         content: markdownStructuredContent(parsed, {

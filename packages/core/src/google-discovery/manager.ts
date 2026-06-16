@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { genericOAuthHeaders } from "../auth";
 import type { GoogleDiscoveryApiConfig } from "../config";
@@ -21,7 +21,11 @@ import {
   googleDiscoveryScopesForOperations,
   type GoogleDiscoveryOperation,
 } from "./operations";
-import { buildGoogleDiscoveryUrl, buildJsonRequestInit } from "./request";
+import {
+  buildGoogleDiscoveryUploadUrl,
+  buildGoogleDiscoveryUrl,
+  buildJsonRequestInit,
+} from "./request";
 import type { GoogleDiscoveryDocument } from "./types";
 
 const DEFAULT_RESUMABLE_THRESHOLD_BYTES = 8 * 1024 * 1024;
@@ -39,7 +43,11 @@ export class GoogleDiscoveryManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string; artifactDir?: string } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -121,9 +129,14 @@ export class GoogleDiscoveryManager {
       const parsed = await readHttpLikeResponse(response, {
         capletId: requestApi.server,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
         ...(typeof args.filename === "string" ? { filename: args.filename } : {}),
         ...(typeof args.outputPath === "string" ? { outputPath: args.outputPath } : {}),
         ...(operation.supportsMediaDownload ? { maxBytes: DEFAULT_MEDIA_RESPONSE_MAX_BYTES } : {}),
+        ...(operation.supportsMediaDownload &&
+        (typeof args.filename === "string" || typeof args.outputPath === "string")
+          ? { forceArtifact: true }
+          : {}),
       });
       return {
         content: markdownStructuredContent(parsed, {
@@ -171,6 +184,7 @@ export class GoogleDiscoveryManager {
     const parsed = await readHttpLikeResponse(response, {
       capletId: api.server,
       ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+      ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
     });
     return {
       content: markdownStructuredContent(parsed, {
@@ -199,7 +213,13 @@ export class GoogleDiscoveryManager {
         `Google Discovery ${protocol} upload path is missing`,
       );
     }
-    const url = uploadUrl(api, upload.path, protocol === "simple" ? "media" : "multipart");
+    const url = buildGoogleDiscoveryUploadUrl(
+      api,
+      operation,
+      upload.path,
+      protocol === "simple" ? "media" : "multipart",
+      args,
+    );
     const init =
       protocol === "simple"
         ? simpleUploadInit(operation, media, headers)
@@ -218,7 +238,7 @@ export class GoogleDiscoveryManager {
     if (!upload?.path) {
       throw new CapletsError("CONFIG_INVALID", "Google Discovery resumable upload path is missing");
     }
-    const startUrl = uploadUrl(api, upload.path, "resumable");
+    const startUrl = buildGoogleDiscoveryUploadUrl(api, operation, upload.path, "resumable", args);
     headers.set("content-type", "application/json; charset=UTF-8");
     headers.set("x-upload-content-type", media.mimeType ?? "application/octet-stream");
     headers.set("x-upload-content-length", String(media.bytes.byteLength));
@@ -355,12 +375,16 @@ export class GoogleDiscoveryManager {
     };
   }
 
+  async resolveBaseUrl(api: GoogleDiscoveryApiConfig): Promise<string | undefined> {
+    await this.refreshOperations(api, false);
+    return this.cache.get(api.server)?.baseUrl;
+  }
+
   private async resolveRequestApi(
     api: GoogleDiscoveryApiConfig,
   ): Promise<GoogleDiscoveryApiConfig> {
     if (api.baseUrl) return api;
-    await this.refreshOperations(api, false);
-    const baseUrl = this.cache.get(api.server)?.baseUrl;
+    const baseUrl = await this.resolveBaseUrl(api);
     if (!baseUrl) {
       throw new CapletsError("CONFIG_INVALID", `${api.server} is missing Google Discovery baseUrl`);
     }
@@ -429,18 +453,6 @@ function multipartUploadInit(
     body: payload,
     redirect: "manual",
   };
-}
-
-function uploadUrl(api: GoogleDiscoveryApiConfig, uploadPath: string, uploadType: string): URL {
-  if (!api.baseUrl) {
-    throw new CapletsError("CONFIG_INVALID", `${api.server} is missing Google Discovery baseUrl`);
-  }
-  const base = new URL(api.baseUrl);
-  const url = uploadPath.startsWith("/")
-    ? new URL(uploadPath, base.origin)
-    : new URL(uploadPath, api.baseUrl);
-  url.searchParams.set("uploadType", uploadType);
-  return url;
 }
 
 function googleDiscoveryBaseUrl(
@@ -518,7 +530,7 @@ async function loadGoogleDiscoverySource(
   authDir?: string,
 ): Promise<string> {
   if (api.discoveryPath) {
-    return readFileSync(api.discoveryPath, "utf8");
+    return readFile(api.discoveryPath, "utf8");
   }
   if (!api.discoveryUrl) {
     throw new CapletsError(

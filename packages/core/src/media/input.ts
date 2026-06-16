@@ -52,6 +52,9 @@ export async function readMediaInput(
     if (options.artifactRoot !== undefined) artifactOptions.artifactRoot = options.artifactRoot;
     artifactOptions.maxBytes = options.maxBytes ?? DEFAULT_MAX_MEDIA_BYTES;
     const artifact = resolveMediaArtifact(media.artifact, artifactOptions);
+    if (!artifact.path) {
+      throw new CapletsError("REQUEST_INVALID", "Media artifact cannot be read from this runtime");
+    }
     const resolvedMimeType = mimeType ?? artifact.mimeType;
     return {
       bytes: readMediaFile(artifact.path),

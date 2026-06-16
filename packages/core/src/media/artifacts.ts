@@ -15,7 +15,7 @@ import { CapletsError } from "../errors";
 
 export type MediaArtifact = {
   uri: string;
-  path: string;
+  path?: string;
   filename: string;
   mimeType?: string;
   byteLength: number;
@@ -30,6 +30,7 @@ export type WriteMediaArtifactInput = {
   outputPath?: string;
   mimeType?: string;
   bytes: Uint8Array | Buffer;
+  exposeLocalPath?: boolean;
 };
 
 type StoredMediaArtifactMetadata = {
@@ -72,7 +73,7 @@ export async function writeMediaArtifact(input: WriteMediaArtifactInput): Promis
   writeArtifactMetadata(target, input.mimeType ? { mimeType: input.mimeType } : {});
   return {
     uri: artifactUri(uriParts.capletId, uriParts.callId, artifactFilename),
-    path: target,
+    ...(input.exposeLocalPath === false ? {} : { path: target }),
     filename: artifactFilename,
     ...(input.mimeType ? { mimeType: input.mimeType } : {}),
     byteLength: bytes.byteLength,

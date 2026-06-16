@@ -280,7 +280,11 @@ async function resolveAuthTarget(
     new ServerRegistry(config),
     authDir ? { authDir } : {},
   );
-  const baseUrl = api.baseUrl ?? api.discoveryUrl;
+  const baseUrl =
+    api.baseUrl ??
+    (api.discoveryPath || !api.auth.scopes?.length
+      ? await manager.resolveBaseUrl(api).catch(() => api.discoveryUrl)
+      : api.discoveryUrl);
   return {
     ...target,
     ...(baseUrl ? { baseUrl } : {}),

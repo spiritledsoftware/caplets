@@ -47,7 +47,27 @@ describe("media artifacts", () => {
     });
     expect(artifact.path).toContain(join(root, "google-drive"));
     expect(artifact.sha256).toHaveLength(64);
-    expect(readFileSync(artifact.path, "utf8")).toBe("pdf-bytes");
+    expect(readFileSync(artifact.path!, "utf8")).toBe("pdf-bytes");
+  });
+
+  it("can omit local artifact paths from returned metadata", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const artifact = await writeMediaArtifact({
+      rootDir: root,
+      capletId: "google-drive",
+      suggestedFilename: "report.pdf",
+      mimeType: "application/pdf",
+      bytes: Buffer.from("pdf-bytes"),
+      exposeLocalPath: false,
+    });
+
+    expect(artifact).toMatchObject({
+      uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+      filename: "report.pdf",
+      byteLength: 9,
+      sha256: expect.any(String),
+    });
+    expect(artifact).not.toHaveProperty("path");
   });
 
   it("rejects output paths outside an allowed root", async () => {

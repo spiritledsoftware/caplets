@@ -1,8 +1,10 @@
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildGoogleDiscoveryUploadUrl,
   buildGoogleDiscoveryUrl,
   discoveryOperations,
   GoogleDiscoveryManager,
@@ -87,6 +89,48 @@ beforeEach(async () => {
         );
         return;
       }
+      if (url === "/upload-path.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            schemas: {
+              File: {
+                id: "File",
+                type: "object",
+                properties: { id: { type: "string" } },
+              },
+            },
+            resources: {
+              files: {
+                methods: {
+                  update: {
+                    id: "drive.files.update",
+                    path: "files/{fileId}",
+                    httpMethod: "PATCH",
+                    supportsMediaUpload: true,
+                    parameters: {
+                      fileId: { type: "string", location: "path", required: true },
+                      fields: { type: "string", location: "query" },
+                    },
+                    mediaUpload: {
+                      protocols: {
+                        simple: {
+                          path: "/upload/drive/v3/files/{fileId}",
+                          multipart: false,
+                        },
+                      },
+                    },
+                    response: { $ref: "File" },
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
       if (url === "/redirect.discovery.json") {
         response.statusCode = 302;
         response.setHeader("location", "/drive.discovery.json");
@@ -107,6 +151,11 @@ beforeEach(async () => {
         response.end("%PDF bytes");
         return;
       }
+      if (url === "/drive/v3/files/text/download") {
+        response.setHeader("content-type", "text/plain");
+        response.end("plain text export");
+        return;
+      }
       if (url === "/drive/v3/files/large/download") {
         const bytes = Buffer.alloc(1024 * 1024 + 1, "x");
         response.setHeader("content-type", "application/pdf");
@@ -120,6 +169,15 @@ beforeEach(async () => {
       }
       if (url === "/upload/drive/v3/files?uploadType=media" && request.method === "POST") {
         response.end(JSON.stringify({ id: "uploaded-media" }));
+        return;
+      }
+      if (
+        url.startsWith("/upload/drive/v3/files/1?") &&
+        url.includes("uploadType=media") &&
+        url.includes("fields=id") &&
+        request.method === "PATCH"
+      ) {
+        response.end(JSON.stringify({ id: "1" }));
         return;
       }
       if (url === "/upload/drive/v3/files?uploadType=multipart" && request.method === "POST") {
@@ -479,6 +537,81 @@ describe("GoogleDiscoveryManager", () => {
     ).toThrow(/cannot escape baseUrl/u);
   });
 
+  it("serializes repeated query parameters from arrays", () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: `${baseUrl}/drive/v3/`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const caplet = config.googleDiscoveryApis.drive!;
+    const operation = {
+      name: "drive.files.list",
+      method: "get" as const,
+      path: "files",
+      inputSchema: {},
+      readOnlyHint: true,
+      destructiveHint: false,
+      scopes: [],
+      supportsMediaUpload: false,
+      supportsMediaDownload: false,
+      mediaUploadProtocols: {},
+      parameterOrder: [],
+    };
+
+    const url = buildGoogleDiscoveryUrl(caplet, operation, {
+      query: { label: ["starred", "ownedByMe"] },
+    });
+
+    expect(url.searchParams.getAll("label")).toEqual(["starred", "ownedByMe"]);
+  });
+
+  it("builds safe media upload URLs with path and query arguments", () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: `${baseUrl}/drive/v3/`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const caplet = config.googleDiscoveryApis.drive!;
+    const operation = {
+      name: "drive.files.update",
+      method: "patch" as const,
+      path: "files/{fileId}",
+      inputSchema: {},
+      readOnlyHint: false,
+      destructiveHint: false,
+      scopes: [],
+      supportsMediaUpload: true,
+      supportsMediaDownload: false,
+      mediaUploadProtocols: {},
+      parameterOrder: [],
+    };
+
+    const url = buildGoogleDiscoveryUploadUrl(
+      caplet,
+      operation,
+      "/upload/drive/v3/files/{fileId}",
+      "media",
+      { path: { fileId: "1" }, query: { fields: "id" } },
+    );
+
+    expect(url.toString()).toBe(`${baseUrl}/upload/drive/v3/files/1?fields=id&uploadType=media`);
+    expect(() =>
+      buildGoogleDiscoveryUploadUrl(caplet, operation, "https://evil.example/upload", "media", {}),
+    ).toThrow(/cannot change origin/u);
+  });
+
   it("rejects redirected discovery documents", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -564,6 +697,41 @@ describe("GoogleDiscoveryManager", () => {
     });
   });
 
+  it("honors outputPath for inlineable Google media downloads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-download-"));
+    try {
+      const outputPath = join(dir, "drive", "call", "export.txt");
+      const config = parseConfig({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Google Drive",
+            description: "Access Google Drive files.",
+            discoveryUrl: `${baseUrl}/drive.discovery.json`,
+            baseUrl: `${baseUrl}/drive/v3/`,
+            auth: { type: "none" },
+          },
+        },
+      });
+      const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { artifactDir: dir });
+      const result = await manager.callTool(
+        config.googleDiscoveryApis.drive!,
+        "drive.files.download",
+        {
+          path: { fileId: "text" },
+          outputPath,
+        },
+      );
+
+      expect(existsSync(outputPath)).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        status: 200,
+        body: { artifact: { path: outputPath, filename: "export.txt", mimeType: "text/plain" } },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("writes large Google media downloads as artifacts", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -620,5 +788,29 @@ describe("GoogleDiscoveryManager", () => {
     const upload = requests.find((request) => request.url.includes("uploadType=multipart"));
     expect(upload?.headers["content-type"]).toContain("multipart/related");
     expect(upload?.body).not.toContain("cGRm");
+  });
+
+  it("substitutes path and query args into media upload URLs", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-path.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+    const result = await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.update", {
+      path: { fileId: "1" },
+      query: { fields: "id" },
+      media: { dataUrl: "data:text/plain;base64,aGVsbG8=", filename: "hello.txt" },
+    });
+
+    expect(result.structuredContent).toMatchObject({ status: 200, body: { id: "1" } });
+    expect(
+      requests.find((request) => request.url.startsWith("/upload/drive/v3/files/1?"))?.url,
+    ).toContain("fields=id");
   });
 });

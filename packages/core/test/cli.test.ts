@@ -2329,6 +2329,88 @@ describe("cli init", () => {
     }
   });
 
+  it("uses Discovery-derived base URL for Google Discovery OAuth refresh", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-base-url-cli-"));
+    const authDir = join(dir, "auth");
+    const configPath = join(dir, "config.json");
+    const discoveryPath = join(dir, "drive.discovery.json");
+    const out: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    );
+    try {
+      writeFileSync(
+        discoveryPath,
+        JSON.stringify({
+          kind: "discovery#restDescription",
+          baseUrl: "https://api.example.com/drive/v3/",
+          resources: {
+            files: {
+              methods: {
+                list: {
+                  id: "drive.files.list",
+                  path: "files",
+                  httpMethod: "GET",
+                  scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+                },
+              },
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          googleDiscoveryApis: {
+            drive: {
+              name: "Google Drive",
+              description: "Access Google Drive files.",
+              discoveryPath,
+              auth: {
+                type: "oauth2",
+                clientId: "client",
+                tokenUrl: "https://auth.example.com/token",
+              },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          protectedResourceOrigin: "https://api.example.com",
+          metadata: {
+            requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
+          },
+        },
+        authDir,
+      );
+
+      await runCli(["auth", "refresh", "drive"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://auth.example.com/token",
+        expect.objectContaining({ method: "POST" }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("logs out configured OpenAPI OAuth endpoints", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const authDir = join(dir, "auth");

@@ -8,6 +8,7 @@ type CapletsRuntimeOptions = {
   projectConfigPath?: string;
   authDir?: string;
   artifactDir?: string;
+  exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   server?: ToolServer;
   writeErr?: (value: string) => void;
@@ -74,6 +75,9 @@ function engineOptions(options: CapletsRuntimeOptions): CapletsEngineOptions {
   }
   if (options.artifactDir !== undefined) {
     engineOptions.artifactDir = options.artifactDir;
+  }
+  if (options.exposeLocalArtifactPaths !== undefined) {
+    engineOptions.exposeLocalArtifactPaths = options.exposeLocalArtifactPaths;
   }
   if (options.watchDebounceMs !== undefined) {
     engineOptions.watchDebounceMs = options.watchDebounceMs;

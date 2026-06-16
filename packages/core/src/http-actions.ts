@@ -24,6 +24,7 @@ export class HttpActionManager {
     private readonly options: {
       authDir?: string;
       artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
       maxInlineBytes?: number;
     } = {},
   ) {}
@@ -109,6 +110,7 @@ export class HttpActionManager {
         ...(await readHttpLikeResponse(response, {
           capletId: api.server,
           ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+          ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
           maxInlineBytes: this.options.maxInlineBytes ?? api.maxResponseBytes,
           maxBytes: api.maxResponseBytes,
         })),
