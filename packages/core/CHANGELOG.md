@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.22.0
+
+### Minor Changes
+
+- 522ffe0: Add remote attach URL configuration and update the native remote attach flow.
+
 ## 0.21.1
 
 ### Patch Changes
