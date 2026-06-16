@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import { CapletsError } from "../errors";
 import { resolveMediaArtifact } from "./artifacts";
 
@@ -43,10 +43,12 @@ export async function readMediaInput(
     }
     const stat = statMediaFile(media.path);
     enforceSize(stat.size, options.maxBytes);
+    const resolvedFilename = filename ?? basename(media.path);
+    const resolvedMimeType = mimeType ?? mimeTypeFromFilename(resolvedFilename);
     return {
       bytes: readMediaFile(media.path),
-      filename: filename ?? basename(media.path),
-      ...(mimeType ? { mimeType } : {}),
+      filename: resolvedFilename,
+      ...(resolvedMimeType ? { mimeType: resolvedMimeType } : {}),
     };
   }
 
@@ -71,6 +73,35 @@ export async function readMediaInput(
   if (mimeType !== undefined) dataUrlOptions.mimeType = mimeType;
   if (options.maxBytes !== undefined) dataUrlOptions.maxBytes = options.maxBytes;
   return readDataUrl(media.dataUrl as string, dataUrlOptions);
+}
+
+function mimeTypeFromFilename(filename: string): string | undefined {
+  switch (extname(filename).toLowerCase()) {
+    case ".csv":
+      return "text/csv";
+    case ".gif":
+      return "image/gif";
+    case ".htm":
+    case ".html":
+      return "text/html";
+    case ".jpeg":
+    case ".jpg":
+      return "image/jpeg";
+    case ".json":
+      return "application/json";
+    case ".pdf":
+      return "application/pdf";
+    case ".png":
+      return "image/png";
+    case ".txt":
+      return "text/plain";
+    case ".webp":
+      return "image/webp";
+    case ".xml":
+      return "application/xml";
+    default:
+      return undefined;
+  }
 }
 
 function readDataUrl(

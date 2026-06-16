@@ -30,6 +30,7 @@ import type { GoogleDiscoveryDocument } from "./types";
 
 const DEFAULT_RESUMABLE_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MEDIA_RESPONSE_MAX_BYTES = 100 * 1024 * 1024;
+const DEFAULT_DISCOVERY_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 type ManagedGoogleDiscovery = {
   operations?: GoogleDiscoveryOperation[];
@@ -106,7 +107,10 @@ export class GoogleDiscoveryManager {
     if (operation.supportsMediaUpload && "media" in args) {
       return this.callMediaUpload(requestApi, operation, args);
     }
-    const url = buildGoogleDiscoveryUrl(requestApi, operation, args);
+    const requestArgs = shouldRequestMediaDownload(operation, args)
+      ? withMediaDownloadQuery(args)
+      : args;
+    const url = buildGoogleDiscoveryUrl(requestApi, operation, requestArgs);
     const headers = new Headers(
       await authHeaders(requestApi, this.options.authDir, operation.scopes),
     );
@@ -136,7 +140,7 @@ export class GoogleDiscoveryManager {
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
         ...(typeof args.filename === "string" ? { filename: args.filename } : {}),
         ...(typeof args.outputPath === "string" ? { outputPath: args.outputPath } : {}),
-        ...(operation.supportsMediaDownload ? { maxBytes: DEFAULT_MEDIA_RESPONSE_MAX_BYTES } : {}),
+        maxBytes: DEFAULT_MEDIA_RESPONSE_MAX_BYTES,
         ...(operation.supportsMediaDownload &&
         (typeof args.filename === "string" || typeof args.outputPath === "string")
           ? { forceArtifact: true }
@@ -588,6 +592,7 @@ async function fetchDiscoverySource(
       );
     }
     return readLimitedText(response, {
+      maxBytes: DEFAULT_DISCOVERY_DOCUMENT_MAX_BYTES,
       errorMessage: "Google Discovery document exceeded byte limit",
     });
   } catch (error) {
@@ -616,6 +621,30 @@ async function authHeaders(
     case "oidc":
       return genericOAuthHeaders({ ...api, resolvedScopes }, authDir);
   }
+}
+
+function shouldRequestMediaDownload(
+  operation: GoogleDiscoveryOperation,
+  args: Record<string, unknown>,
+): boolean {
+  return (
+    operation.supportsMediaDownload &&
+    (typeof args.filename === "string" || typeof args.outputPath === "string")
+  );
+}
+
+function withMediaDownloadQuery(args: Record<string, unknown>): Record<string, unknown> {
+  const query =
+    args.query && typeof args.query === "object" && !Array.isArray(args.query)
+      ? (args.query as Record<string, unknown>)
+      : {};
+  return {
+    ...args,
+    query: {
+      ...query,
+      alt: "media",
+    },
+  };
 }
 
 function googleAuthError(api: GoogleDiscoveryApiConfig, response: Response): CapletsError {

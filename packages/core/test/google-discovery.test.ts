@@ -191,6 +191,74 @@ beforeEach(async () => {
         );
         return;
       }
+      if (url === "/download-alt.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            resources: {
+              files: {
+                methods: {
+                  export: {
+                    id: "drive.files.export",
+                    path: "files/{fileId}",
+                    httpMethod: "GET",
+                    supportsMediaDownload: true,
+                    parameters: {
+                      fileId: { type: "string", location: "path", required: true },
+                    },
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (url === "/large-response.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            resources: {
+              files: {
+                methods: {
+                  largeList: {
+                    id: "drive.files.largeList",
+                    path: "files/large-list",
+                    httpMethod: "GET",
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (url === "/large-document.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            description: "x".repeat(1024 * 1024 + 1),
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            resources: {
+              files: {
+                methods: {
+                  list: {
+                    id: "drive.files.list",
+                    path: "files",
+                    httpMethod: "GET",
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
       if (url === "/redirect.discovery.json") {
         response.statusCode = 302;
         response.setHeader("location", "/drive.discovery.json");
@@ -206,17 +274,17 @@ beforeEach(async () => {
         response.end(JSON.stringify({ id: "2", name: "Created" }));
         return;
       }
-      if (url === "/drive/v3/files/1/download") {
+      if (url === "/drive/v3/files/1/download?alt=media") {
         response.setHeader("content-type", "application/pdf");
         response.end("%PDF bytes");
         return;
       }
-      if (url === "/drive/v3/files/text/download") {
+      if (url === "/drive/v3/files/text/download?alt=media") {
         response.setHeader("content-type", "text/plain");
         response.end("plain text export");
         return;
       }
-      if (url === "/drive/v3/files/large/download") {
+      if (url === "/drive/v3/files/large/download?alt=media") {
         const bytes = Buffer.alloc(1024 * 1024 + 1, "x");
         response.setHeader("content-type", "application/pdf");
         response.setHeader("content-length", String(bytes.byteLength));
@@ -225,6 +293,25 @@ beforeEach(async () => {
       }
       if (url === "/drive/v3/files/folders/1") {
         response.end(JSON.stringify({ id: "folders/1" }));
+        return;
+      }
+      if (url === "/drive/v3/files/1?alt=media") {
+        response.setHeader("content-type", "application/pdf");
+        response.end("%PDF alt media");
+        return;
+      }
+      if (url === "/drive/v3/files/1") {
+        response.end(JSON.stringify({ id: "1", name: "Metadata only" }));
+        return;
+      }
+      if (url === "/drive/v3/files/large-list") {
+        const body = JSON.stringify({
+          files: [{ id: "1", name: "Report" }],
+          padding: "x".repeat(1024 * 1024 + 1),
+        });
+        response.setHeader("content-type", "application/json");
+        response.setHeader("content-length", String(Buffer.byteLength(body)));
+        response.end(body);
         return;
       }
       if (url === "/drive/v3/protected") {
@@ -321,14 +408,21 @@ describe("Google Discovery parser", () => {
       },
       outputSchema: {
         properties: {
-          files: {
-            items: {
-              properties: {
-                id: { type: "string" },
-                name: { type: "string" },
+          body: {
+            properties: {
+              files: {
+                items: {
+                  properties: {
+                    id: { type: "string" },
+                    name: { type: "string" },
+                  },
+                },
               },
             },
           },
+          headers: { type: "object" },
+          status: { type: "number" },
+          statusText: { type: "string" },
         },
       },
     });
@@ -513,6 +607,24 @@ describe("GoogleDiscoveryManager", () => {
     expect(requests.find((request) => request.url.startsWith("/drive/v3/files?"))?.url).toContain(
       "pageSize=2",
     );
+  });
+
+  it("loads Discovery documents larger than the default HTTP text cap", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/large-document.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual([
+      expect.objectContaining({ name: "drive.files.list" }),
+    ]);
   });
 
   it("infers the request base URL from Discovery rootUrl and servicePath", async () => {
@@ -736,6 +848,27 @@ describe("GoogleDiscoveryManager", () => {
       list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
     ).toContain("drive.files.list");
 
+    const call = await handleServerTool(
+      caplet,
+      {
+        operation: "call_tool",
+        name: "drive.files.list",
+        args: { query: { pageSize: 2 } },
+        fields: ["body.files"],
+      },
+      registry,
+      downstream,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {},
+      manager,
+    );
+
+    expect(call.structuredContent).toEqual({ body: { files: [{ id: "1", name: "Report" }] } });
+
     await downstream.close();
   });
 
@@ -802,6 +935,30 @@ describe("GoogleDiscoveryManager", () => {
     }
   });
 
+  it("adds alt=media when writing Google media downloads as artifacts", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/download-alt.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+    const result = await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.export", {
+      path: { fileId: "1" },
+      filename: "export.pdf",
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      status: 200,
+      body: { artifact: { filename: "export.pdf", mimeType: "application/pdf" } },
+    });
+    expect(requests.find((request) => request.url === "/drive/v3/files/1?alt=media")).toBeDefined();
+  });
+
   it("writes large Google media downloads as artifacts", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -834,6 +991,39 @@ describe("GoogleDiscoveryManager", () => {
         },
       },
     });
+  });
+
+  it("writes large non-media Google responses as artifacts", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/large-response.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+    const result = await manager.callTool(
+      config.googleDiscoveryApis.drive!,
+      "drive.files.largeList",
+      {},
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      status: 200,
+      body: {
+        artifact: {
+          mimeType: "application/json",
+          byteLength: expect.any(Number),
+        },
+      },
+    });
+    expect(
+      (result.structuredContent as { body: { artifact: { byteLength: number } } }).body.artifact
+        .byteLength,
+    ).toBeGreaterThan(1024 * 1024);
   });
 
   it("uploads media from dataUrl using multipart when metadata body is present", async () => {

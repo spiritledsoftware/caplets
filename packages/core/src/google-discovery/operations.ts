@@ -122,9 +122,10 @@ function operationFromMethod(
   const name = entry.method.id ?? [server, ...entry.resourcePath, entry.methodKey].join(".");
   const scopes = [...new Set(entry.method.scopes ?? [])].sort();
   const inputSchema = buildInputSchema(document.parameters ?? {}, entry.method, schemas);
-  const outputSchema = entry.method.response?.$ref
+  const bodyOutputSchema = entry.method.response?.$ref
     ? googleDiscoverySchemaToJsonSchema(entry.method.response, schemas)
     : undefined;
+  const outputSchema = bodyOutputSchema ? structuredOutputSchema(bodyOutputSchema) : undefined;
   const mediaUpload =
     entry.method.mediaUpload?.accept || entry.method.mediaUpload?.maxSize
       ? {
@@ -152,6 +153,27 @@ function operationFromMethod(
     ...(mediaUpload ? { mediaUpload } : {}),
     mediaUploadProtocols: entry.method.mediaUpload?.protocols ?? {},
     parameterOrder: entry.method.parameterOrder ?? [],
+  };
+}
+
+function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "statusText", "headers"],
+    properties: {
+      status: { type: "number" },
+      statusText: { type: "string" },
+      headers: {
+        type: "object",
+        additionalProperties: false,
+        required: ["content-type"],
+        properties: {
+          "content-type": { type: "string" },
+        },
+      },
+      body: bodySchema,
+    },
   };
 }
 

@@ -227,6 +227,7 @@ describe("media artifacts", () => {
     await expect(readMediaInput({ path: file }, { artifactRoot: root })).resolves.toMatchObject({
       bytes: Buffer.from("png"),
       filename: "image.png",
+      mimeType: "image/png",
     });
     await expect(
       readMediaInput({ artifact: artifact.uri }, { artifactRoot: root }),
