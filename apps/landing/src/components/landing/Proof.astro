@@ -1,0 +1,109 @@
+---
+import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
+
+import { Button } from "@/components/starwind/button";
+import { Card, CardContent } from "@/components/starwind/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/starwind/table";
+
+import { benchmarkProvenance, benchmarkRows, deterministicSurface, proofStats } from "../../data/landing";
+---
+
+<section class="evidence-stage scroll-mt-20 py-20" id="proof" aria-label="Code Mode benchmark proof" data-reveal>
+  <div class="mx-auto grid w-[min(1180px,calc(100vw_-_32px))] gap-8 lg:grid-cols-[0.78fr_1.22fr] [&>*]:min-w-0">
+    <div class="min-w-0 lg:sticky lg:top-24 lg:self-start">
+      <span class="text-sm font-medium text-primary-accent">Benchmark proof</span>
+      <h2 class="mt-3 max-w-xl text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance text-[oklch(96%_0.02_82)] md:text-5xl">
+        The result survived the surface cut.
+      </h2>
+      <p class="mt-5 max-w-xl text-lg leading-8 text-pretty text-[oklch(86%_0.026_82)]">
+        Same task set, same 10/10 completion. Code Mode kept the agent focused by cutting the prompt surface instead of flattening every tool into view.
+      </p>
+      <small class="mt-5 block max-w-xl text-sm leading-6 text-[oklch(78%_0.026_82)]">{benchmarkProvenance}</small>
+      <p class="mt-3 max-w-xl text-sm leading-6 text-[oklch(78%_0.026_82)]">
+        The live run rows are listed here; the linked benchmark document covers the harness, deterministic surface check, and reproduction path.
+      </p>
+      <Button class="mt-8" href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md" variant="outline">
+        Read method & reproduce
+        <ArrowUpRight class="size-4" aria-hidden="true" />
+      </Button>
+    </div>
+
+    <div class="grid gap-4">
+      <dl class="grid gap-3 sm:grid-cols-[1.15fr_0.9fr_1.15fr]">
+        {proofStats.map((stat) => (
+          <div class="evidence-stat rounded-lg border border-border bg-card p-5">
+            <dt class="text-sm font-medium text-muted-foreground">{stat.label}</dt>
+            <dd class="mt-2 font-mono text-3xl font-semibold tracking-[-0.02em] text-foreground md:text-4xl">{stat.value}</dd>
+            <p class="mt-4 text-sm leading-6 text-muted-foreground">{stat.detail}</p>
+          </div>
+        ))}
+      </dl>
+
+      <div class="grid gap-3 md:hidden" aria-label="Live benchmark token results">
+        {
+          benchmarkRows.map((row) => (
+            <Card>
+              <CardContent class="grid gap-3 p-4">
+                <div>
+                  <span class="text-xs font-medium text-muted-foreground">Mode</span>
+                  <strong class="block text-sm font-semibold">{row.mode}</strong>
+                </div>
+                <div class="grid grid-cols-3 gap-3 text-sm">
+                  <div>
+                    <span class="text-xs text-muted-foreground">Passed</span>
+                    <strong class="block font-mono">{row.passed}</strong>
+                  </div>
+                  <div>
+                    <span class="text-xs text-muted-foreground">Total Tokens</span>
+                    <strong class="block font-mono">{row.tokens}</strong>
+                  </div>
+                  <div>
+                    <span class="text-xs text-muted-foreground">Tool Surface Tokens</span>
+                    <strong class="block font-mono">{row.surfaceTokens}</strong>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        }
+      </div>
+
+      <Card class="hidden overflow-hidden md:flex">
+        <CardContent class="p-0">
+          <Table aria-label="Live benchmark token results">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Mode</TableHead>
+                <TableHead>Passed</TableHead>
+                <TableHead>Total Tokens</TableHead>
+                <TableHead>Tool Surface Tokens</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {benchmarkRows.map((row) => (
+                <TableRow>
+                  <TableCell class="font-medium">{row.mode}</TableCell>
+                  <TableCell>{row.passed}</TableCell>
+                  <TableCell>{row.tokens}</TableCell>
+                  <TableCell>{row.surfaceTokens}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <div class="grid gap-3 sm:grid-cols-3" aria-label="Deterministic surface benchmark">
+        {deterministicSurface.map((item) => (
+          <div class="rounded-lg border border-border bg-card/80 p-4">
+            <span class="text-sm text-muted-foreground">{item.label}</span>
+            <strong class="mt-1 block font-mono text-2xl tracking-[-0.02em] text-foreground">{item.value}</strong>
+          </div>
+        ))}
+      </div>
+      <p class="evidence-note rounded-lg border border-border/80 bg-card/70 p-4 text-sm leading-6 text-muted-foreground">
+        Code Mode used 72.0% fewer request + output tokens than Direct vanilla MCP and 65.0% fewer than Executor.sh. Progressive disclosure also reduced tokens while every listed mode completed 10/10 tasks.
+      </p>
+    </div>
+  </div>
+</section>

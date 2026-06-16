@@ -1,0 +1,65 @@
+---
+title: Configuration
+description: Configure user and project Caplets.
+---
+
+Caplets loads user config plus project config. User config is for your personal agent setup.
+Project config is for capabilities that belong with a repository.
+
+## User config
+
+The CLI manages your user config. To inspect or override the active path, use:
+
+```sh
+caplets config path
+CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
+```
+
+`CAPLETS_CONFIG` is useful in CI, tests, or temporary sessions where you want a different
+user config file.
+
+## Project config
+
+Project config lives at:
+
+```text
+.caplets/config.json
+```
+
+Commit project config when the capability should travel with the repository. Project Markdown
+Caplet files load by default from the project, while executable backend maps belong in user
+config.
+
+## Schema
+
+Use the canonical public schema URL:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "mcpServers": {}
+}
+```
+
+Editors can use `https://caplets.dev/config.schema.json` for validation and completion.
+
+## Exposure
+
+Code Mode is the default exposure. Keep it unless you specifically need visible wrapper
+tools or direct operation tools for a client that cannot use Code Mode.
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "options": {
+    "exposure": "code_mode"
+  },
+  "mcpServers": {}
+}
+```
+
+After changing config, run:
+
+```sh
+caplets doctor
+```

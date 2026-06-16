@@ -1,0 +1,32 @@
+---
+const traceSteps = [
+  { href: "#trace", label: "How" },
+  { href: "#why", label: "Why" },
+  { href: "#install", label: "Setup" },
+  { href: "#proof", label: "Benchmark" },
+  { href: "#remote", label: "Remote" },
+] as const;
+---
+
+<aside class="agent-trace" aria-label="Agent capability trace" data-agent-trace>
+  <div class="agent-trace__rail" aria-hidden="true">
+    <span class="agent-trace__fill" data-agent-trace-fill></span>
+    <span class="agent-trace__signal" data-agent-trace-signal></span>
+  </div>
+  <nav class="agent-trace__nav">
+    {traceSteps.map((step, index) => (
+      <a
+        class="agent-trace__step"
+        href={step.href}
+        aria-label={step.label}
+        title={step.label}
+        data-agent-trace-label={step.label}
+        data-agent-trace-step
+        data-agent-trace-index={index}
+      >
+        <span class="agent-trace__node" aria-hidden="true"></span>
+        <span class="sr-only">{step.label}</span>
+      </a>
+    ))}
+  </nav>
+</aside>

@@ -1,0 +1,135 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@plugin "@tailwindcss/forms";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--starwind-accordion-content-height);
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--starwind-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-accent: var(--primary-accent);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary-accent: var(--secondary-accent);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-error: var(--error);
+  --color-error-foreground: var(--error-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-outline: var(--outline);
+  --radius-xs: calc(var(--radius) - 0.375rem);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  --radius-md: calc(var(--radius) - 0.125rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.25rem);
+  --radius-2xl: calc(var(--radius) + 0.5rem);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+:root {
+  color-scheme: dark;
+  --ember: oklch(72% 0.12 35);
+  --ember-deep: oklch(82% 0.08 35);
+  --parchment: oklch(31% 0.025 82);
+  --charred-ink: oklch(93% 0.026 82);
+  --linen: oklch(18% 0.014 100);
+  --paper: oklch(22% 0.016 100);
+  --ash: oklch(38% 0.024 82);
+  --olive: oklch(82% 0.03 82);
+  --danger: oklch(66% 0.14 30);
+  --success-tone: oklch(72% 0.12 145);
+  --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --radius: 0.625rem;
+
+  --background: var(--linen);
+  --foreground: var(--charred-ink);
+  --card: var(--paper);
+  --card-foreground: var(--charred-ink);
+  --popover: color-mix(in oklch, var(--paper) 88%, black);
+  --popover-foreground: var(--charred-ink);
+  --primary: var(--charred-ink);
+  --primary-foreground: var(--linen);
+  --primary-accent: var(--ember);
+  --secondary: var(--parchment);
+  --secondary-foreground: var(--charred-ink);
+  --secondary-accent: var(--ember-deep);
+  --muted: color-mix(in oklch, var(--paper) 76%, var(--ash));
+  --muted-foreground: var(--olive);
+  --accent: var(--parchment);
+  --accent-foreground: var(--charred-ink);
+  --info: color-mix(in oklch, var(--paper) 80%, var(--ember));
+  --info-foreground: var(--charred-ink);
+  --success: var(--success-tone);
+  --success-foreground: var(--linen);
+  --warning: oklch(78% 0.09 75);
+  --warning-foreground: var(--linen);
+  --error: var(--danger);
+  --error-foreground: var(--linen);
+  --border: var(--ash);
+  --input: var(--ash);
+  --outline: oklch(76% 0.13 35 / 0.78);
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-outline/50;
+  }
+
+  html {
+    @apply scroll-smooth bg-background text-foreground;
+  }
+
+  body {
+    @apply min-h-screen min-w-80 bg-background font-sans text-base leading-relaxed text-foreground antialiased scheme-dark;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+}

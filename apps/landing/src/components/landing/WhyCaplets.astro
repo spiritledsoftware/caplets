@@ -1,0 +1,48 @@
+---
+import Route from "@tabler/icons/outline/route.svg";
+
+import { whyCapletsProblems } from "../../data/landing";
+---
+
+<section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="why" aria-labelledby="why-caplets-title" data-reveal>
+  <div class="grid gap-8 lg:grid-cols-[0.72fr_1.28fr] lg:items-start [&>*]:min-w-0">
+    <div class="min-w-0 max-w-xl">
+      <p class="text-sm font-medium text-muted-foreground">Why Caplets</p>
+      <h2 id="why-caplets-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
+        Agents do not need every tool at once.
+      </h2>
+      <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
+        Direct MCP flattens provider APIs into the prompt. The agent spends context reading tool names, giant schemas, and setup assumptions before it can do the work.
+      </p>
+      <p class="mt-4 text-lg leading-8 text-pretty text-muted-foreground">
+        Caplets keeps the first surface small, then opens the exact operation path when the agent asks.
+      </p>
+    </div>
+
+    <div class="min-w-0 rounded-lg border border-border bg-card/82">
+      <div class="hidden grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-border px-4 py-3 text-sm font-medium text-muted-foreground md:grid">
+        <span>Direct MCP</span>
+        <Route class="size-4 text-primary-accent" aria-hidden="true" />
+        <span class="text-right">With Caplets</span>
+      </div>
+      <div class="divide-y divide-border">
+        {
+          whyCapletsProblems.map((item) => (
+            <div class="grid gap-4 px-4 py-5 md:grid-cols-[minmax(0,0.88fr)_auto_minmax(0,1fr)] md:items-start">
+              <div class="min-w-0">
+                <p class="mb-2 text-xs font-medium text-muted-foreground md:hidden">Direct MCP</p>
+                <h3 class="font-semibold text-foreground">{item.label}</h3>
+                <p class="mt-2 text-sm leading-6 text-muted-foreground">{item.before}</p>
+              </div>
+              <div class="hidden h-full w-px bg-border md:block" aria-hidden="true"></div>
+              <div class="min-w-0">
+                <p class="mb-2 text-xs font-medium text-muted-foreground md:hidden">With Caplets</p>
+                <p class="text-sm leading-6 text-foreground md:pt-8">{item.after}</p>
+              </div>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+</section>

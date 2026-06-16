@@ -1,0 +1,98 @@
+---
+import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
+import Terminal from "@tabler/icons/outline/terminal-2.svg";
+
+import { Badge } from "@/components/starwind/badge";
+import { Button } from "@/components/starwind/button";
+import { Card, CardContent } from "@/components/starwind/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/starwind/tabs";
+
+import { exampleCaplets } from "../../data/landing";
+---
+
+<section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="install" aria-labelledby="activation-title" data-reveal>
+  <div class="grid gap-8 lg:grid-cols-[0.68fr_1.32fr] lg:items-start [&>*]:min-w-0">
+    <div class="min-w-0 max-w-xl">
+      <p class="text-sm font-medium text-muted-foreground">Setup</p>
+      <h2 id="activation-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
+        Start with the smallest useful Caplet.
+      </h2>
+      <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
+        <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-sm text-foreground">caplets setup</code> wires the agent integrations you choose. Add OSV first because it needs no auth; bring in GitHub or Sourcegraph after the discovery path feels right.
+      </p>
+      <Button class="mt-8" href="https://github.com/spiritledsoftware/caplets/tree/main/caplets" variant="outline">
+        Explore more Caplets
+        <ArrowUpRight class="size-4" aria-hidden="true" />
+      </Button>
+      <div class="mt-8 grid max-w-md grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border text-sm">
+        <div class="bg-card p-3">
+          <span class="text-muted-foreground">discover</span>
+          <strong class="mt-1 block font-mono text-foreground">cards</strong>
+        </div>
+        <div class="bg-card p-3">
+          <span class="text-muted-foreground">inspect</span>
+          <strong class="mt-1 block font-mono text-foreground">tools</strong>
+        </div>
+        <div class="bg-card p-3">
+          <span class="text-muted-foreground">call</span>
+          <strong class="mt-1 block font-mono text-foreground">typed</strong>
+        </div>
+      </div>
+    </div>
+
+    <Tabs defaultValue="osv" class="min-w-0">
+      <TabsList class="w-full justify-start overflow-x-auto">
+        {exampleCaplets.map((example) => <TabsTrigger value={example.id}>{example.name}</TabsTrigger>)}
+      </TabsList>
+      {
+        exampleCaplets.map((example) => (
+          <TabsContent value={example.id} class="mt-4">
+            <Card class="activation-card overflow-hidden">
+              <CardContent class="grid gap-6 p-5 lg:grid-cols-[0.78fr_1.22fr]">
+                <div>
+                  <Badge variant="outline" class="mb-4">{example.name}</Badge>
+                  <h3 class="text-2xl font-semibold tracking-[-0.02em]">Add {example.name}</h3>
+                  <p class="mt-3 text-muted-foreground">{example.summary}</p>
+                  <p class="mt-4 text-sm leading-6 text-muted-foreground">{example.why}</p>
+                  <div class="mt-5 flex flex-wrap items-center gap-2" aria-label={`${example.name} expected discovery path`}>
+                    {example.path.map((step, index) => (
+                      <>
+                        {index > 0 && <span class="text-muted-foreground">/</span>}
+                        <code class="rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">{step}</code>
+                      </>
+                    ))}
+                  </div>
+                  <p class="mt-5 text-sm text-muted-foreground">
+                    {example.help.map((part) =>
+                      part === "GH_TOKEN" || part === "caplets setup" ? (
+                        <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">{part}</code>
+                      ) : (
+                        part
+                      ),
+                    )}
+                  </p>
+                </div>
+                <div class="rounded-lg bg-foreground p-4 text-background">
+                  <div class="mb-4 flex items-center gap-2 text-background/70">
+                    <Terminal class="size-4" aria-hidden="true" />
+                    <span class="text-sm font-medium">{example.name} capability commands</span>
+                  </div>
+                  <ol class="grid gap-3">
+                    {example.steps.map((step, index) => (
+                      <li class="grid grid-cols-[2rem_minmax(0,1fr)] gap-3">
+                        <span class="select-none font-mono text-xs text-background/70" aria-hidden="true">
+                          {String(index + 1).padStart(2, "0")}
+                        </span>
+                        <code class="overflow-x-auto whitespace-pre-wrap font-mono text-sm leading-6 text-background">{step.command}</code>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        ))
+      }
+    </Tabs>
+  </div>
+</section>

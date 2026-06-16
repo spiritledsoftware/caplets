@@ -8,6 +8,7 @@ on:
       - .github/workflows/pr-preview-deploy.yml
       - alchemy.run.ts
       - apps/**
+      - infra/**
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml

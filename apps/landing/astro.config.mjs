@@ -9,6 +9,10 @@ export default defineConfig({
     enabled: false,
   },
   vite: {
+    build: {
+      // The landing aperture scene is idle-loaded as a separate Three.js chunk.
+      chunkSizeWarningLimit: 650,
+    },
     plugins: [tailwindcss()],
   },
 });

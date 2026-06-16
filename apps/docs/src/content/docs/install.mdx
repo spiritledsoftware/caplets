@@ -1,0 +1,94 @@
+---
+title: Install
+description: Install Caplets and wire it into your agent.
+---
+
+Caplets is pre-1.0. Use the latest CLI and latest docs together.
+
+## Requirements
+
+- Node.js 24 or newer for published packages.
+- An agent that can use MCP, such as Codex or Claude, or a native integration such as
+  OpenCode or Pi.
+
+## Install
+
+Use `npx` if you only want to try a command without installing globally:
+
+```sh
+npx caplets install spiritledsoftware/caplets osv
+```
+
+Use the global CLI before running setup. Setup writes agent configuration that launches
+`caplets serve`, so the binary needs to stay on your PATH:
+
+```sh
+npm install -g caplets
+caplets setup
+caplets install spiritledsoftware/caplets osv
+```
+
+`caplets setup` configures supported agent harnesses. The OSV Caplet is the recommended
+first install because it is public and does not require credentials.
+
+## Manual MCP setup
+
+If your client does not support `caplets setup`, or if you are avoiding a global install,
+add Caplets as a stdio MCP server:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Use `npx` in the command if you did not install globally:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "npx",
+      "args": ["--yes", "caplets", "serve"]
+    }
+  }
+}
+```
+
+## Check the install
+
+Run the doctor check after setup:
+
+```sh
+caplets doctor
+```
+
+If you use `npx`, run:
+
+```sh
+npx caplets doctor
+```
+
+The output should show the active Caplets paths and any integration checks Caplets can
+run in this environment. Treat failed rows as setup work, not as agent bugs.
+
+## First agent check
+
+After `doctor` is clean enough for your integration, ask the agent:
+
+```text
+Use Caplets Code Mode to query OSV for npm react 18.2.0. Return package,
+version, vulnerability count, and advisory IDs as compact JSON.
+```
+
+The agent should call the visible <code className="caplets-token">{"caplets\_\_code_mode"}</code> tool. Inside Code Mode it should
+use an OSV handle such as `caplets.osv`, discover the package-version query tool, and
+return a compact result instead of a full raw payload.
+
+If the agent cannot see <code className="caplets-token">{"caplets\_\_code_mode"}</code>, restart the agent after `caplets setup`,
+then use [Troubleshooting](/troubleshooting/#agent-cannot-see-caplets).

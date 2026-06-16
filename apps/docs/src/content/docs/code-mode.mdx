@@ -1,0 +1,115 @@
+---
+title: Code Mode
+description: Use Caplets through the default typed agent surface.
+---
+
+Code Mode is the default Caplets surface. Instead of showing an agent every downstream tool
+up front, Caplets gives the agent typed <code className="caplets-token">caplets.&lt;id&gt;</code> handles inside one TypeScript run.
+
+Agents should use Code Mode to discover, call, filter, join, and summarize capability data
+without filling the visible tool list.
+
+{/* docs:check token: caplets__code_mode */}
+
+## Ask for Code Mode
+
+Ask the agent for the outcome you need and name the Caplet when it matters:
+
+```text
+Use Caplets Code Mode to query OSV for npm react 18.2.0. Return package,
+version, vulnerability count, and advisory IDs as compact JSON.
+```
+
+The visible MCP tool should be <code className="caplets-token">{"caplets\_\_code_mode"}</code>. Inside that tool, the agent runs
+TypeScript against generated handles such as `caplets.osv`.
+
+## What agents see
+
+A configured OSV Caplet appears as a handle such as:
+
+```ts
+const h = caplets.osv;
+```
+
+The handle supports discovery and execution:
+
+```ts
+const h = caplets.osv;
+const tools = await h.searchTools("package version");
+const details = await h.describeTool("query_package_version");
+const result = await h.callTool("query_package_version", {
+  ecosystem: "npm",
+  name: "react",
+  version: "18.2.0",
+});
+
+return { tools: tools.items.map((tool) => tool.name), result };
+```
+
+In MCP clients the visible tool is <code className="caplets-token">{"caplets\_\_code_mode"}</code>; the TypeScript inside that tool
+uses handles such as `caplets.osv.searchTools(...)` and `caplets.osv.callTool(...)`.
+
+For most tasks, keep bulky raw payloads inside the Code Mode script and return compact
+JSON with the evidence the user needs.
+
+## Return shape
+
+Prefer compact decision-ready data:
+
+```json
+{
+  "package": "react",
+  "version": "18.2.0",
+  "vulnerabilityCount": 0,
+  "advisoryIds": []
+}
+```
+
+If a call fails, return the Caplets result envelope so the next repair step has the exact
+error:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "DOWNSTREAM_TOOL_NOT_FOUND",
+    "message": "Tool query_package_version was not found."
+  }
+}
+```
+
+## Do and avoid
+
+- Do search or list first when you do not know the exact downstream tool name.
+- Do call `describeTool(...)` before constructing non-trivial arguments.
+- Do keep joins, filters, and bulky raw payloads inside the Code Mode script.
+- Avoid returning full tool lists, full schemas, or raw API responses unless the user asks
+  for them.
+- Avoid inventing Caplet IDs, tool names, resource URIs, prompt names, or argument shapes.
+- Avoid using Code Mode as a security boundary; it is a context-management surface.
+
+## Use it from the CLI
+
+Run inline TypeScript:
+
+```sh
+caplets code-mode 'return Object.keys(caplets)'
+```
+
+Print the generated declarations:
+
+```sh
+caplets code-mode types
+```
+
+If a run behaves unexpectedly, check config and runtime state:
+
+```sh
+caplets doctor
+```
+
+## When not to use Code Mode
+
+Use progressive or direct exposure only when a client cannot run Code Mode or a workflow
+needs a small visible tool surface. Code Mode is a context-management surface, not a
+security boundary.

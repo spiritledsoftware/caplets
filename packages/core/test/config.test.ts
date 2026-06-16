@@ -72,6 +72,32 @@ describe("config", () => {
     expect(config.mcpServers.github?.exposure).toBe("direct_and_code_mode");
   });
 
+  it("accepts per-Caplet shadowing policy and exposes it in the generated schema", () => {
+    const config = parseConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "Manage GitHub repositories.",
+          shadowing: "allow",
+          command: "github-mcp",
+        },
+      },
+      openapiEndpoints: {
+        npm: {
+          name: "npm",
+          description: "Query npm package metadata.",
+          shadowing: "forbid",
+          specUrl: "https://example.com/openapi.json",
+          auth: { type: "none" },
+        },
+      },
+    });
+
+    expect(config.mcpServers.github?.shadowing).toBe("allow");
+    expect(config.openapiEndpoints.npm?.shadowing).toBe("forbid");
+    expect(JSON.stringify(configJsonSchema())).toContain('"shadowing"');
+  });
+
   it("loads user config from a path with defaults and interpolation", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
     const path = join(dir, "config.json");

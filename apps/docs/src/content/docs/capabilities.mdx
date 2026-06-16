@@ -1,0 +1,54 @@
+---
+title: Capabilities
+description: Add capability sources for agents.
+---
+
+Caplets can wrap MCP servers, OpenAPI specs, GraphQL endpoints, simple HTTP APIs, curated
+CLI commands, and shared Markdown Caplet files such as `CAPLET.md`.
+
+## Start with OSV
+
+OSV is public and does not need auth:
+
+```sh
+npx caplets install spiritledsoftware/caplets osv
+```
+
+With a global install:
+
+```sh
+caplets install spiritledsoftware/caplets osv
+```
+
+After installation, Code Mode exposes OSV as a typed capability handle instead of a flat
+set of visible tools.
+
+## Add local sources
+
+Examples:
+
+```sh
+caplets add mcp docs --command npx --arg -y --arg @upstash/context7-mcp
+caplets add openapi users --spec ./openapi.json --base-url https://api.example.com
+caplets add graphql catalog --endpoint-url https://api.example.com/graphql --schema ./schema.graphql
+caplets add http status-api --base-url https://api.example.com --action get_status:GET:/status/{service}
+caplets add cli repo-tools --repo . --include git,gh,package
+```
+
+Inspect from the CLI:
+
+```sh
+caplets list
+caplets inspect osv
+caplets search-tools osv vulnerability
+caplets get-tool osv query_package_version
+caplets call-tool osv query_package_version --args '{"ecosystem":"npm","name":"react","version":"18.2.0"}'
+```
+
+## Capability shape
+
+Good Caplets are narrow and named by the job they help an agent do. Prefer a few focused
+capabilities over one broad catch-all backend.
+
+Use [Configuration](/configuration/) when a capability should be shared through
+`.caplets/config.json`.

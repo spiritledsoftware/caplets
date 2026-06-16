@@ -7,5 +7,5 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@caplets/landing"]
+  "ignore": ["@caplets/landing", "@caplets/docs"]
 }

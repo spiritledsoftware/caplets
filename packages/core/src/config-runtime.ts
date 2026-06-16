@@ -64,6 +64,7 @@ export type CapletExposure =
   | "code_mode"
   | "direct_and_code_mode"
   | "progressive_and_code_mode";
+export type CapletShadowingPolicy = "forbid" | "allow";
 
 export type CapletServerConfig = CommonCapletConfig & {
   backend: "mcp";
@@ -206,6 +207,7 @@ type CommonCapletConfig = AgentSelectionHintsConfig & {
   name: string;
   description: string;
   exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   tags?: string[] | undefined;
   body?: string | undefined;
   setup?: CapletSetupConfig | undefined;
@@ -273,6 +275,7 @@ const exposureSchema = z.enum([
   "direct_and_code_mode",
   "progressive_and_code_mode",
 ]);
+const shadowingSchema = z.enum(["forbid", "allow"]).default("forbid");
 const commonSchema = {
   name: z.string().trim().min(1).max(80),
   description: z
@@ -284,6 +287,7 @@ const commonSchema = {
     .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
   tags: z.array(z.string().trim().min(1).max(80)).optional(),
   exposure: exposureSchema.optional(),
+  shadowing: shadowingSchema,
   ...agentSelectionHintsSchema,
   body: z.string().optional(),
   setup: setupSchema.optional(),

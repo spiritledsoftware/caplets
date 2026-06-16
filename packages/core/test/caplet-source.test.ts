@@ -12,6 +12,7 @@ const fixtureFiles = [
     content: `---
 name: Weather
 description: Query weather forecast metadata.
+shadowing: allow
 openapiEndpoint:
   specPath: ./openapi.yaml
   auth:
@@ -115,6 +116,7 @@ describe("CapletSource adapters", () => {
       {
         id: "weather",
         backend: "openapi",
+        shadowing: "allow",
         setupRequired: false,
         authRequired: true,
         projectBindingRequired: false,
@@ -129,6 +131,7 @@ describe("CapletSource adapters", () => {
       {
         id: "tools",
         backend: "cli",
+        shadowing: "forbid",
         setupRequired: true,
         authRequired: false,
         projectBindingRequired: true,
@@ -160,6 +163,7 @@ function summary(result: Awaited<ReturnType<typeof parseCapletSource>>) {
   return result.resolvedCaplets.map((caplet) => ({
     id: caplet.id,
     backend: caplet.backend,
+    shadowing: caplet.config.shadowing,
     setupRequired: caplet.setupRequired,
     authRequired: caplet.authRequired,
     projectBindingRequired: caplet.projectBindingRequired,

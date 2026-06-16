@@ -1,0 +1,71 @@
+---
+title: Caplets
+description: Give coding agents Code Mode capabilities without a giant tool wall.
+---
+
+Caplets wraps MCP servers, APIs, and commands into focused capabilities for coding agents.
+Code Mode is the default surface: each configured backend becomes a typed <code className="caplets-token">caplets.&lt;id&gt;</code>
+handle that an agent can inspect, search, call, filter, and summarize in one workflow.
+
+Use Caplets with Codex, Claude, OpenCode, Pi, or any MCP client that can launch a local
+stdio server.
+
+## Start here
+
+Run a known-good no-auth setup first. OSV is public, so it is the fastest way to prove
+your agent can see and call a Caplet.
+
+```sh
+npx caplets setup
+npx caplets install spiritledsoftware/caplets osv
+npx caplets doctor
+```
+
+Or install it globally:
+
+```sh
+npm install -g caplets
+caplets setup
+caplets install spiritledsoftware/caplets osv
+caplets doctor
+```
+
+`doctor` should identify the active Caplets config path and report the checks it can run
+for your configured integrations. Fix any failed check before testing through an agent.
+
+Then ask your agent:
+
+```text
+Use Caplets Code Mode to query OSV for npm react 18.2.0. Return the package,
+version, vulnerability count, and advisory IDs as compact JSON.
+```
+
+A successful agent run should use the visible <code className="caplets-token">{"caplets\_\_code_mode"}</code> tool and inspect an
+OSV handle such as `caplets.osv`. If the agent cannot see that tool, go to
+[Troubleshooting](/troubleshooting/#agent-cannot-see-caplets).
+
+## First success shape
+
+The exact OSV data can change over time, but the result should have this shape:
+
+```json
+{
+  "package": "react",
+  "version": "18.2.0",
+  "vulnerabilityCount": 0,
+  "advisoryIds": []
+}
+```
+
+If the package has advisories, `vulnerabilityCount` should increase and `advisoryIds`
+should contain the OSV identifiers the agent found.
+
+## What to read next
+
+- [Install](/install/) - set up the CLI and agent connection.
+- [Code Mode](/code-mode/) - learn the default agent workflow.
+- [Configuration](/configuration/) - configure user and project Caplets.
+- [Capabilities](/capabilities/) - add MCP, OpenAPI, GraphQL, HTTP, CLI, and shared Caplets.
+- [Agent integrations](/agent-integrations/) - use Codex, Claude, OpenCode, and Pi.
+- [Remote attach](/remote-attach/) - connect agents to a remote Caplets runtime.
+- [Troubleshooting](/troubleshooting/) - check config, auth, and runtime issues.

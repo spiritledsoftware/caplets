@@ -1,0 +1,74 @@
+---
+import Check from "@tabler/icons/outline/check.svg";
+import Copy from "@tabler/icons/outline/copy.svg";
+
+import { Button } from "@/components/starwind/button";
+
+import { heroCommands } from "../../data/landing";
+
+const primaryHeroCommand = heroCommands[0];
+---
+
+<section class="landing-hero relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-6 md:py-8 lg:py-10" id="trace" aria-labelledby="hero-title">
+  <div class="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_72%_28%,transparent_0,oklch(15%_0.014_100_/_0.1)_34rem),linear-gradient(90deg,oklch(12%_0.014_100_/_0.96)_0%,oklch(12%_0.014_100_/_0.86)_36%,oklch(12%_0.014_100_/_0.3)_68%,oklch(12%_0.014_100_/_0.18)_100%)]"></div>
+
+  <div class="relative mx-auto w-[min(1180px,calc(100vw_-_32px))]">
+    <div class="max-w-3xl">
+      <h1 id="hero-title" class="landing-hero__title max-w-[12ch] text-4xl leading-[0.98] font-semibold tracking-[-0.03em] text-balance text-[oklch(96%_0.02_82)] sm:text-5xl sm:leading-[0.95] md:text-6xl">
+        Give your agent Capabilities, not a tool wall
+      </h1>
+      <p class="landing-hero__summary mt-5 max-w-2xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
+        Turn sprawling MCP servers into focused capability cards. Your agent can start with one typed route, zoom into tools only when needed, and keep huge schemas out of the prompt until they matter.
+      </p>
+      <div class="landing-hero__route mt-5 max-w-2xl rounded-lg border border-border bg-card/92 p-4 text-sm leading-6 text-foreground md:mt-6" aria-label="Caplets capability route example">
+        <p class="text-muted-foreground">First route the agent sees</p>
+        <p class="landing-hero__route-copy mt-2 text-foreground">One card opens into inspect, search, schema, and call only when needed.</p>
+        <div class="landing-hero__route-path mt-3 flex flex-wrap items-center gap-2 font-mono text-xs text-foreground">
+          <code class="rounded bg-muted px-2 py-1">osv</code>
+          <span class="text-muted-foreground">/</span>
+          <code class="rounded bg-muted px-2 py-1">inspect</code>
+          <span class="text-muted-foreground">/</span>
+          <code class="rounded bg-muted px-2 py-1">search_tools</code>
+          <span class="text-muted-foreground">/</span>
+          <code class="rounded bg-muted px-2 py-1">get_tool</code>
+          <span class="text-muted-foreground">/</span>
+          <code class="rounded bg-muted px-2 py-1">call_tool</code>
+        </div>
+      </div>
+      <div class="landing-hero__actions mt-6 flex flex-wrap gap-3 md:mt-8" aria-label="Primary actions">
+        <Button href="#install" variant="primary">Install & run setup</Button>
+        <Button href="https://docs.caplets.dev" variant="outline">Read the docs</Button>
+      </div>
+      <div class="landing-hero__quickstart mt-4 max-w-2xl md:mt-6" id="quickstart">
+        <div class="landing-hero__quickstart-card rounded-lg border border-border bg-card p-3 text-card-foreground" aria-label="Quick install command">
+          <div class="flex items-center justify-between gap-3">
+            {
+              primaryHeroCommand && (
+                <>
+                  <code class="min-w-0 overflow-x-auto font-mono text-sm text-muted-foreground">
+                    {primaryHeroCommand.command}
+                  </code>
+                  <button
+                    class="group inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+                    type="button"
+                    aria-label="Copy install command"
+                    data-copy-value={primaryHeroCommand.command}
+                    data-copy-label="install command"
+                  >
+                    <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
+                    <Check
+                      class="hidden size-4 text-success group-data-[copied=true]:block"
+                      aria-hidden="true"
+                    />
+                    Copy
+                  </button>
+                </>
+              )
+            }
+          </div>
+          <p class="landing-hero__quickstart-note mt-2 text-sm leading-6 text-muted-foreground">Requires Node 24+. Run setup from the install section next.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

@@ -1,0 +1,36 @@
+---
+import Check from "@tabler/icons/outline/check.svg";
+import Copy from "@tabler/icons/outline/copy.svg";
+
+interface Props {
+  id: string;
+  label: string;
+  command: string;
+  copyLabel: string;
+}
+
+const { id, label, command, copyLabel } = Astro.props;
+---
+
+<div class="rounded-lg border border-border bg-card text-card-foreground">
+  <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+    <span class="text-sm font-medium text-muted-foreground">{label}</span>
+    <button
+      class="group inline-flex size-11 items-center justify-center rounded-md border border-border text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+      type="button"
+      aria-label={`Copy ${copyLabel}`}
+      aria-controls={id}
+      data-copy-value={command}
+      data-copy-label={copyLabel}
+    >
+      <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
+      <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
+    </button>
+  </div>
+  <pre
+    id={id}
+    class="overflow-x-auto p-4 text-sm leading-6 break-words whitespace-pre-wrap text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none sm:break-normal sm:whitespace-pre"
+    tabindex="0"
+    aria-label={`${label} command`}
+  ><code>{command}</code></pre>
+</div>
