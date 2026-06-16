@@ -135,6 +135,7 @@ function capletsFromConfig(config: CapletsConfig): CapletConfig[] {
   return [
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
+    ...Object.values(config.googleDiscoveryApis ?? {}),
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),
@@ -145,6 +146,9 @@ function capletsFromConfig(config: CapletsConfig): CapletConfig[] {
 function localReferencePaths(caplet: CapletConfig): string[] {
   if (caplet.backend === "openapi") {
     return filterLocalReferences([caplet.specPath]);
+  }
+  if (caplet.backend === "googleDiscovery") {
+    return filterLocalReferences([caplet.discoveryPath]);
   }
   if (caplet.backend === "graphql") {
     return filterLocalReferences([

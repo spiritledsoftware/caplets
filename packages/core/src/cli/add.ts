@@ -50,6 +50,13 @@ type AddOpenApiOptions = AddDestinationOptions & {
   tokenEnv?: string;
 };
 
+type AddGoogleDiscoveryOptions = AddDestinationOptions & {
+  discovery?: string;
+  discoveryUrl?: string;
+  baseUrl?: string;
+  tokenEnv?: string;
+};
+
 type AddGraphqlOptions = AddDestinationOptions & {
   endpointUrl?: string;
   schema?: string;
@@ -135,6 +142,30 @@ export function addOpenApiCaplet(
     "openapiEndpoint",
     [
       [isUrlLike(options.spec) ? "specUrl" : "specPath", options.spec],
+      ["baseUrl", options.baseUrl],
+      ["auth", authFromTokenEnv(options.tokenEnv) ?? { type: "none" }],
+    ],
+    options,
+  );
+}
+
+export function addGoogleDiscoveryCaplet(
+  id: string,
+  options: AddGoogleDiscoveryOptions,
+): { path?: string; text: string } {
+  const discovery = options.discovery ?? options.discoveryUrl;
+  if (!discovery) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Google Discovery Caplet requires --discovery or --discovery-url",
+    );
+  }
+  return writeGeneratedCaplet(
+    id,
+    "Google Discovery",
+    "googleDiscoveryApi",
+    [
+      [isUrlLike(discovery) ? "discoveryUrl" : "discoveryPath", discovery],
       ["baseUrl", options.baseUrl],
       ["auth", authFromTokenEnv(options.tokenEnv) ?? { type: "none" }],
     ],
@@ -366,7 +397,10 @@ function resolvePrintOutputPath(id: string, options: AddDestinationOptions): str
 
 function renderLocalPaths(fields: YamlField[], outputDir: string): YamlField[] {
   return fields.map(([key, value]) => {
-    if ((key !== "specPath" && key !== "schemaPath") || typeof value !== "string") {
+    if (
+      (key !== "specPath" && key !== "schemaPath" && key !== "discoveryPath") ||
+      typeof value !== "string"
+    ) {
       return [key, value];
     }
     return [key, localPathRelativeToOutput(value, outputDir)];

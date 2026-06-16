@@ -256,7 +256,7 @@ describe("cli init", () => {
       await runCli(["list"], { writeOut: (value) => out.push(value) });
 
       const text = out.join("");
-      expect(text).toContain("Configured Caplets (3)");
+      expect(text).toContain("Configured Caplets (4)");
       expect(text).toContain("Source:");
       expect(text).toContain("filesystem");
       expect(text).toContain("mcp");
@@ -267,6 +267,8 @@ describe("cli init", () => {
       expect(text).toContain("openapi");
       expect(text).toContain("catalog");
       expect(text).toContain("graphql");
+      expect(text).toContain("drive");
+      expect(text).toContain("googleDiscovery");
       expect(text).not.toContain("disabled_remote");
       expect(text).not.toContain("secret-access-token");
       expect(text).not.toContain("openapi-client");
@@ -318,6 +320,15 @@ describe("cli init", () => {
         expect.objectContaining({
           server: "catalog",
           backend: "graphql",
+          disabled: false,
+          status: "not_started",
+          source: "global-config",
+          path: configPath,
+          shadows: [],
+        }),
+        expect.objectContaining({
+          server: "drive",
+          backend: "googleDiscovery",
           disabled: false,
           status: "not_started",
           source: "global-config",
@@ -1061,7 +1072,7 @@ describe("cli init", () => {
     }
   });
 
-  it("prints added MCP and OpenAPI backend Caplets", async () => {
+  it("prints added MCP, OpenAPI, and Google Discovery backend Caplets", async () => {
     const out: string[] = [];
 
     await runCli(
@@ -1092,12 +1103,32 @@ describe("cli init", () => {
       ],
       { writeOut: (value) => out.push(value) },
     );
+    await runCli(
+      [
+        "add",
+        "google-discovery",
+        "drive",
+        "--discovery-url",
+        "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+        "--base-url",
+        "https://www.googleapis.com/drive/v3",
+        "--token-env",
+        "GOOGLE_TOKEN",
+        "--print",
+      ],
+      { writeOut: (value) => out.push(value) },
+    );
 
     expect(out.join("\n")).toContain("mcpServer:");
     expect(out.join("\n")).toContain('transport: "sse"');
     expect(out.join("\n")).toContain('token: "$env:MCP_TOKEN"');
     expect(out.join("\n")).toContain("openapiEndpoint:");
     expect(out.join("\n")).toContain('baseUrl: "https://api.example.com/v1"');
+    expect(out.join("\n")).toContain("googleDiscoveryApi:");
+    expect(out.join("\n")).toContain(
+      'discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"',
+    );
+    expect(out.join("\n")).toContain('token: "$env:GOOGLE_TOKEN"');
   });
 
   it("adds GraphQL and HTTP backend Caplets to the project root", async () => {
@@ -1162,6 +1193,35 @@ describe("cli init", () => {
         join(projectRoot, ".caplets", "config.json"),
       );
       expect(config.openapiEndpoints.users?.specPath).toBe(join(projectRoot, "openapi.json"));
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes Google Discovery local discovery paths that load from the original project file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-google-discovery-path-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(
+        join(projectRoot, "drive.discovery.json"),
+        JSON.stringify({ kind: "discovery#restDescription", name: "drive", version: "v3" }),
+      );
+      process.chdir(projectRoot);
+
+      await runCli(["add", "google-discovery", "drive", "--discovery", "./drive.discovery.json"], {
+        writeOut: () => {},
+      });
+
+      const config = loadConfig(
+        join(dir, "user", "config.json"),
+        join(projectRoot, ".caplets", "config.json"),
+      );
+      expect(config.googleDiscoveryApis.drive?.discoveryPath).toBe(
+        join(projectRoot, "drive.discovery.json"),
+      );
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -2203,6 +2263,72 @@ describe("cli init", () => {
     }
   });
 
+  it("refreshes Google Discovery OAuth credentials with explicit scopes without loading discovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-refresh-cli-"));
+    const authDir = join(dir, "auth");
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        access_token: "new-access-token",
+        refresh_token: "new-refresh-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    );
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          googleDiscoveryApis: {
+            drive: {
+              name: "Google Drive",
+              description: "Access Google Drive files.",
+              discoveryUrl: "https://discovery.example.invalid/drive/v3/rest",
+              auth: {
+                type: "oauth2",
+                clientId: "client",
+                tokenUrl: "https://auth.example.com/token",
+                scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+              },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          metadata: {
+            requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
+          },
+        },
+        authDir,
+      );
+
+      await runCli(["auth", "refresh", "drive"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://auth.example.com/token",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining("refresh_token=old-refresh-token"),
+        }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("logs out configured OpenAPI OAuth endpoints", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-"));
     const authDir = join(dir, "auth");
@@ -2253,6 +2379,36 @@ describe("cli setup", () => {
     expect(text).toContain("--dry-run");
     expect(text).not.toContain("plugin marketplace");
     expect(text).not.toContain("caplets@caplets");
+  });
+
+  it("resolves Google Discovery Caplets for Caplet setup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-google-discovery-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          googleDiscoveryApis: {
+            drive: {
+              name: "Drive API",
+              description: "Manage Drive files through Google Discovery.",
+              discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+              auth: { type: "none" },
+            },
+          },
+        }),
+      );
+
+      await runCli(["setup", "drive"], {
+        env: { CAPLETS_CONFIG: configPath },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(out.join("")).toBe("No setup metadata is defined for Drive API (drive).\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("prompts for integrations when stdin is available", async () => {
@@ -2644,6 +2800,7 @@ describe("cli completion commands", () => {
         "cli",
         "mcp",
         "openapi",
+        "google-discovery",
         "graphql",
         "http",
       ]);
@@ -2666,7 +2823,12 @@ describe("cli completion commands", () => {
         },
       );
 
-      expect(out.join("").split("\n").filter(Boolean)).toEqual(["catalog", "filesystem", "users"]);
+      expect(out.join("").split("\n").filter(Boolean)).toEqual([
+        "catalog",
+        "drive",
+        "filesystem",
+        "users",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2683,7 +2845,12 @@ describe("cli completion commands", () => {
         writeOut: (value) => out.push(value),
       });
 
-      expect(out.join("").split("\n").filter(Boolean)).toEqual(["catalog", "filesystem", "users"]);
+      expect(out.join("").split("\n").filter(Boolean)).toEqual([
+        "catalog",
+        "drive",
+        "filesystem",
+        "users",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2734,6 +2901,14 @@ function writeInspectionConfig(path: string): void {
           description: "Manage users through the internal HTTP API.",
           specPath: "/tmp/users-openapi.json",
           auth: { type: "oauth2", clientId: "openapi-client" },
+        },
+      },
+      googleDiscoveryApis: {
+        drive: {
+          name: "Drive API",
+          description: "Manage Drive files through Google Discovery.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          auth: { type: "none" },
         },
       },
       graphqlEndpoints: {

@@ -14,6 +14,7 @@ Supported backend families are:
 
 - `mcpServers`
 - `openapiEndpoints`
+- `googleDiscoveryApis`
 - `graphqlEndpoints`
 - `httpApis`
 - `cliTools`
@@ -89,9 +90,11 @@ Project Binding under `packages/core/src/project-binding/` connects a local proj
 
 MCP-backed Caplets preserve downstream tool results and expose resources, templates, prompts, and completion when the downstream server supports them. Direct exposure can register those downstream surfaces directly.
 
-### OpenAPI, GraphQL, And HTTP
+### OpenAPI, Google Discovery, GraphQL, And HTTP
 
-OpenAPI, GraphQL, and HTTP backends expose explicit operation/action tools. They do not synthesize MCP resources or prompts. HTTP-like backends enforce safe URL handling, bounded response bodies, timeouts, and redacted errors.
+OpenAPI, Google Discovery, GraphQL, and HTTP backends expose explicit operation/action tools. They do not synthesize MCP resources or prompts. HTTP-like backends enforce safe URL handling, bounded response bodies, timeouts, and redacted errors.
+
+Google Discovery backends load local or remote Google Discovery documents, infer request base URLs from the document unless overridden, expose filtered Discovery methods as tools, and infer OAuth scopes from the exposed operation set. Google media downloads and oversized or binary HTTP-like responses are written as Caplets media artifacts under the configured artifact root instead of being forced inline.
 
 ### CLI Tools
 

@@ -34,6 +34,7 @@ export async function runCapletSetupCli(
   const caplet = Object.values({
     ...config.mcpServers,
     ...config.openapiEndpoints,
+    ...config.googleDiscoveryApis,
     ...config.graphqlEndpoints,
     ...config.httpApis,
     ...config.cliTools,

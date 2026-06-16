@@ -11,7 +11,8 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import { readHttpLikeResponse } from "./http/response";
+import { isAbortError, readLimitedText } from "./http/utils";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -60,7 +61,7 @@ export class OpenApiManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string } = {},
+    private readonly options: { authDir?: string; artifactDir?: string } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -151,7 +152,10 @@ export class OpenApiManager {
           },
         );
       }
-      const parsed = await readResponse(response);
+      const parsed = await readHttpLikeResponse(response, {
+        capletId: endpoint.server,
+        ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+      });
       return {
         content: markdownStructuredContent(parsed, {
           title: `${endpoint.name} call_tool ${toolName}`,
@@ -715,22 +719,6 @@ function shouldSendSpecAuth(endpoint: OpenApiEndpointConfig): boolean {
     endpoint.baseUrl &&
     new URL(endpoint.specUrl).origin === new URL(endpoint.baseUrl).origin,
   );
-}
-
-async function readResponse(response: Response): Promise<Record<string, unknown>> {
-  const contentType = response.headers.get("content-type") ?? "";
-  const text = await readLimitedText(response, {
-    errorMessage: "OpenAPI response exceeded byte limit",
-  });
-  const body = parseHttpBody(contentType, text);
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: {
-      "content-type": contentType,
-    },
-    ...(body === undefined ? {} : { body }),
-  };
 }
 
 async function fetchWithLimit(

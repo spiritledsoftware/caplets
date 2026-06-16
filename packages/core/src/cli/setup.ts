@@ -142,6 +142,10 @@ export async function runSetup(integration: string, options: SetupOptions = {}):
     return await runCapletSetupCli(integration, {
       ...(options.yes === undefined ? {} : { yes: options.yes }),
       target: resolveSetupTargetKind(options),
+      ...(options.env?.CAPLETS_CONFIG ? { configPath: options.env.CAPLETS_CONFIG } : {}),
+      ...(options.env?.CAPLETS_PROJECT_CONFIG
+        ? { projectConfigPath: options.env.CAPLETS_PROJECT_CONFIG }
+        : {}),
       ...(options.remote === undefined && !isRemoteSetup(options)
         ? {}
         : { remote: isRemoteSetup(options) }),

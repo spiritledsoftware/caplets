@@ -282,6 +282,33 @@ describe("generated tool handlers", () => {
     });
   });
 
+  it("fails explicitly for Google Discovery tools until the manager is configured", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files and permissions.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          auth: { type: "none" },
+        },
+      },
+    });
+    const googleRegistry = new ServerRegistry(config);
+    const downstream = {} as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        config.googleDiscoveryApis.drive!,
+        { operation: "tools" },
+        googleRegistry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "Google Discovery manager is not configured",
+    });
+  });
+
   it("returns HTTP inspect without requiring an HTTP manager", async () => {
     const httpConfig = parseConfig({
       httpApis: {

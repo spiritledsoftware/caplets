@@ -962,6 +962,437 @@
         "additionalProperties": false
       }
     },
+    "googleDiscoveryApis": {
+      "default": {},
+      "description": "Google Discovery APIs keyed by stable Caplet ID.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "Human-readable Google Discovery API display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "Capability description shown to agents before Google Discovery operations are disclosed."
+          },
+          "discoveryPath": {
+            "description": "Local Google Discovery document path.",
+            "type": "string",
+            "minLength": 1
+          },
+          "discoveryUrl": {
+            "description": "Remote Google Discovery document URL.",
+            "type": "string",
+            "format": "uri"
+          },
+          "baseUrl": {
+            "description": "Override base URL for Google API requests.",
+            "type": "string",
+            "format": "uri"
+          },
+          "includeOperations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            }
+          },
+          "excludeOperations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            }
+          },
+          "auth": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "none"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "bearer"
+                  },
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["type", "token"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "headers"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "required": ["type", "headers"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "oauth2"
+                  },
+                  "authorizationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "tokenUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "resourceMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "authorizationServerMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "redirectUri": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "oidc"
+                  },
+                  "authorizationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "tokenUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "issuer": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "resourceMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "authorizationServerMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "openidConfigurationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientMetadataUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "clientId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "redirectUri": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            ],
+            "description": "Explicit Google API request auth config. Use {\"type\":\"none\"} for public APIs."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "progressive",
+              "code_mode",
+              "direct_and_code_mode",
+              "progressive_and_code_mode"
+            ],
+            "description": "How this Caplet is exposed to agents."
+          },
+          "shadowing": {
+            "default": "forbid",
+            "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
+            "type": "string",
+            "enum": ["forbid", "allow"]
+          },
+          "useWhen": {
+            "description": "When agents should prefer this Caplet or configured action.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "avoidWhen": {
+            "description": "When agents should avoid this Caplet or configured action.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "setup": {
+            "type": "object",
+            "properties": {
+              "commands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              },
+              "verify": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Human-readable setup or verification step label."
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Executable command to spawn without a shell."
+                    },
+                    "args": {
+                      "description": "Arguments passed to the command.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "env": {
+                      "description": "Additional environment variables.",
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "cwd": {
+                      "description": "Working directory for this command.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "timeoutMs": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxOutputBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["label", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "projectBinding": {
+            "type": "object",
+            "properties": {
+              "required": {
+                "type": "boolean",
+                "const": true,
+                "description": "Requires Project Binding before this Caplet can run."
+              }
+            },
+            "required": ["required"],
+            "additionalProperties": false,
+            "description": "Project Binding requirements for Caplets that need an attached project."
+          },
+          "runtime": {
+            "type": "object",
+            "properties": {
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["docker", "browser"]
+                },
+                "description": "Runtime features required by this Caplet."
+              },
+              "resources": {
+                "description": "Hosted sandbox resource requirements.",
+                "type": "object",
+                "properties": {
+                  "class": {
+                    "description": "Requested hosted sandbox resource class.",
+                    "type": "string",
+                    "enum": ["standard", "large", "heavy"]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false,
+            "description": "Runtime feature and resource requirements for hosted execution."
+          },
+          "requestTimeoutMs": {
+            "default": 60000,
+            "description": "Timeout in milliseconds for Google Discovery HTTP requests.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "operationCacheTtlMs": {
+            "default": 30000,
+            "description": "Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "disabled": {
+            "default": false,
+            "description": "When true, omit this Google Discovery Caplet from discovery.",
+            "type": "boolean"
+          }
+        },
+        "required": ["name", "description", "auth"],
+        "additionalProperties": false
+      }
+    },
     "graphqlEndpoints": {
       "default": {},
       "description": "GraphQL endpoints keyed by stable Caplet ID.",

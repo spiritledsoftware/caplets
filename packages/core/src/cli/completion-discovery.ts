@@ -183,6 +183,17 @@ function secretFreeServerShape(server: CapletConfig): Record<string, unknown> {
         authType: server.auth.type,
         requestTimeoutMs: server.requestTimeoutMs,
       };
+    case "googleDiscovery":
+      return {
+        ...base,
+        discoveryPath: server.discoveryPath,
+        discoveryUrl: server.discoveryUrl,
+        baseUrl: server.baseUrl,
+        includeOperations: server.includeOperations,
+        excludeOperations: server.excludeOperations,
+        authType: server.auth.type,
+        requestTimeoutMs: server.requestTimeoutMs,
+      };
     case "graphql":
       return {
         ...base,
@@ -271,6 +282,7 @@ function enabledServer(serverId: string, config: CapletsConfig): CapletConfig | 
   const server =
     config.mcpServers[serverId] ??
     config.openapiEndpoints[serverId] ??
+    config.googleDiscoveryApis[serverId] ??
     config.graphqlEndpoints[serverId] ??
     config.httpApis[serverId] ??
     config.cliTools[serverId] ??

@@ -9,7 +9,8 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import { readHttpLikeResponse } from "./http/response";
+import { isAbortError } from "./http/utils";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -20,7 +21,11 @@ type HttpActionOperation = HttpActionConfig & { name: string };
 export class HttpActionManager {
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      maxInlineBytes?: number;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -100,7 +105,15 @@ export class HttpActionManager {
           },
         );
       }
-      const parsed = await readResponse(response, api, Date.now() - startedAt);
+      const parsed = {
+        ...(await readHttpLikeResponse(response, {
+          capletId: api.server,
+          ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+          maxInlineBytes: this.options.maxInlineBytes ?? api.maxResponseBytes,
+          maxBytes: api.maxResponseBytes,
+        })),
+        elapsedMs: Date.now() - startedAt,
+      };
       return {
         content: markdownStructuredContent(parsed, {
           title: `${api.name} call_tool ${toolName}`,
@@ -369,32 +382,6 @@ async function authHeaders(api: HttpApiConfig, authDir?: string): Promise<Record
         authDir,
       );
   }
-}
-
-async function readResponse(
-  response: Response,
-  api: HttpApiConfig,
-  elapsedMs: number,
-): Promise<Record<string, unknown>> {
-  const contentType = response.headers.get("content-type") ?? "";
-  const text = await readLimitedText(response, {
-    maxBytes: maxResponseBytes(api),
-    errorMessage: "HTTP action response exceeded byte limit",
-  });
-  const body = parseHttpBody(contentType, text);
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: {
-      "content-type": contentType,
-    },
-    ...(body === undefined ? {} : { body }),
-    elapsedMs,
-  };
-}
-
-function maxResponseBytes(api: HttpApiConfig): number {
-  return api.maxResponseBytes;
 }
 
 function validateBaseUrl(api: HttpApiConfig): void {

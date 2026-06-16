@@ -90,6 +90,40 @@ describe("remote CLI routing", () => {
     expect(out.join("")).toBe("shared.echo\n");
   });
 
+  it("does not append remote completions for locally shadowed Google Discovery caplets", async () => {
+    const context = testContext("caplets-cli-remote-complete-google-shadowed-");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive API",
+            description: "Manage Drive files through Google Discovery.",
+            discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({ ok: true, result: ["drive.remote_only"] });
+      },
+    );
+
+    await runCli(["__complete", "--shell", "bash", "--", "call-tool", "drive."], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toEqual([]);
+    expect(out.join("")).not.toContain("remote_only");
+  });
+
   it("uses remote completions when a matching local overlay caplet is disabled", async () => {
     const context = testContext("caplets-cli-remote-complete-disabled-shadow-");
     const requests: unknown[] = [];
@@ -831,6 +865,24 @@ describe("remote CLI routing", () => {
         "API_TOKEN",
       ],
       { spec: "./openapi.yaml", baseUrl: "https://api.example.com", tokenEnv: "API_TOKEN" },
+    ],
+    [
+      "googleDiscovery",
+      [
+        "google-discovery",
+        "drive",
+        "--discovery-url",
+        "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+        "--base-url",
+        "https://www.googleapis.com/drive/v3",
+        "--token-env",
+        "GOOGLE_TOKEN",
+      ],
+      {
+        discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+        baseUrl: "https://www.googleapis.com/drive/v3",
+        tokenEnv: "GOOGLE_TOKEN",
+      },
     ],
     [
       "graphql",

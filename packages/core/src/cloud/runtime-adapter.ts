@@ -134,6 +134,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     return Object.values({
       ...this.engine.currentConfig().mcpServers,
       ...this.engine.currentConfig().openapiEndpoints,
+      ...this.engine.currentConfig().googleDiscoveryApis,
       ...this.engine.currentConfig().graphqlEndpoints,
       ...this.engine.currentConfig().httpApis,
       ...this.engine.currentConfig().cliTools,

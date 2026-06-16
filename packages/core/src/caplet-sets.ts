@@ -10,6 +10,7 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
+import { GoogleDiscoveryManager } from "./google-discovery";
 import { GraphQLManager } from "./graphql";
 import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
@@ -25,6 +26,7 @@ type ChildRuntime = {
   graphql: GraphQLManager;
   http: HttpActionManager;
   cli: CliToolsManager;
+  googleDiscovery: GoogleDiscoveryManager;
   capletSets: CapletSetManager;
   cacheKey: string;
   configFingerprint: string;
@@ -144,6 +146,8 @@ export class CapletSetManager {
         child.http,
         child.cli,
         child.capletSets,
+        {},
+        child.googleDiscovery,
       )) as CompatibilityCallToolResult;
     } catch (error) {
       return errorResult(error) as CompatibilityCallToolResult;
@@ -220,6 +224,7 @@ export class CapletSetManager {
         graphql: new GraphQLManager(registry, authOptions),
         http: new HttpActionManager(registry, authOptions),
         cli: new CliToolsManager(registry),
+        googleDiscovery: new GoogleDiscoveryManager(registry, authOptions),
         capletSets: new CapletSetManager(registry, {
           ...authOptions,
           ancestry: childAncestry,

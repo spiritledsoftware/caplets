@@ -2,6 +2,7 @@ import type {
   CapletConfig,
   CapletsConfig,
   CapletServerConfig,
+  GoogleDiscoveryApiConfig,
   GraphQlEndpointConfig,
 } from "./config";
 import type { SafeErrorSummary } from "./errors";
@@ -42,6 +43,13 @@ export type CapletServerDetail = {
         requestTimeoutMs: number;
         operationCacheTtlMs: number;
         source: "specPath" | "specUrl";
+      }
+    | {
+        type: "googleDiscovery";
+        disabled: boolean;
+        requestTimeoutMs: number;
+        operationCacheTtlMs: number;
+        source: "discoveryPath" | "discoveryUrl";
       }
     | {
         type: "graphql";
@@ -94,6 +102,7 @@ export class ServerRegistry {
     const server =
       this.config.mcpServers[serverId] ??
       this.config.openapiEndpoints[serverId] ??
+      this.config.googleDiscoveryApis?.[serverId] ??
       this.config.graphqlEndpoints[serverId] ??
       this.config.httpApis[serverId] ??
       this.config.cliTools[serverId] ??
@@ -148,6 +157,7 @@ export class ServerRegistry {
     return [
       ...Object.values(this.config.mcpServers),
       ...Object.values(this.config.openapiEndpoints),
+      ...Object.values(this.config.googleDiscoveryApis ?? {}),
       ...Object.values(this.config.graphqlEndpoints),
       ...Object.values(this.config.httpApis),
       ...Object.values(this.config.cliTools),
@@ -164,6 +174,16 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
       requestTimeoutMs: server.requestTimeoutMs,
       operationCacheTtlMs: server.operationCacheTtlMs,
       source: server.specPath ? "specPath" : "specUrl",
+    };
+  }
+
+  if (server.backend === "googleDiscovery") {
+    return {
+      type: "googleDiscovery",
+      disabled: server.disabled,
+      requestTimeoutMs: server.requestTimeoutMs,
+      operationCacheTtlMs: server.operationCacheTtlMs,
+      source: googleDiscoverySource(server),
     };
   }
 
@@ -213,6 +233,10 @@ function backendDetail(server: CapletConfig): CapletServerDetail["backend"] {
     callTimeoutMs: server.callTimeoutMs,
     toolCacheTtlMs: server.toolCacheTtlMs,
   };
+}
+
+function googleDiscoverySource(server: GoogleDiscoveryApiConfig): "discoveryPath" | "discoveryUrl" {
+  return server.discoveryPath ? "discoveryPath" : "discoveryUrl";
 }
 
 function capletSetSource(

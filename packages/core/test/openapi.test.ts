@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../src/config";
@@ -92,6 +92,11 @@ describe("native OpenAPI Caplets", () => {
         }
         if (request.url === "/schema-less") {
           response.end(JSON.stringify({ public: "ok", secret: "hidden" }));
+          return;
+        }
+        if (request.url === "/reports/42") {
+          response.setHeader("content-type", "application/pdf");
+          response.end(Buffer.from("%PDF-1.7 test"));
           return;
         }
         if (request.url === "/protected") {
@@ -186,7 +191,7 @@ describe("native OpenAPI Caplets", () => {
       )) as any;
       expect(
         list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
-      ).toEqual(["createUser", "GET /users/{id}"]);
+      ).toEqual(["createUser", "GET /users/{id}", "getReport"]);
       expect(
         list.structuredContent.result.items.find(
           (candidate: { name: string }) => candidate.name === "GET /users/{id}",
@@ -690,7 +695,7 @@ describe("native OpenAPI Caplets", () => {
     const openapi = new OpenApiManager(registry);
     const remote = registry.config.openapiEndpoints.remote!;
 
-    await expect(openapi.listTools(remote)).resolves.toHaveLength(2);
+    await expect(openapi.listTools(remote)).resolves.toHaveLength(3);
     await expect(
       openapi.listTools({ ...remote, specUrl: `${baseUrl}/slow-openapi.json` }),
     ).rejects.toMatchObject({ code: "TOOL_CALL_TIMEOUT" });
@@ -821,6 +826,7 @@ describe("native OpenAPI Caplets", () => {
         },
         mcpServers: {},
         openapiEndpoints: { remote: endpoint },
+        googleDiscoveryApis: {},
         graphqlEndpoints: {},
         httpApis: {},
         cliTools: {},
@@ -940,6 +946,51 @@ describe("native OpenAPI Caplets", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("writes binary OpenAPI responses as media artifacts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-artifacts-"));
+    const specPath = join(dir, "openapi.json");
+    const artifactDir = join(dir, "artifacts");
+    writeFileSync(specPath, JSON.stringify(openApiSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        reports: {
+          name: "Reports API",
+          description: "Download reports from the internal HTTP API.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry, { artifactDir });
+
+    try {
+      const result = await openapi.callTool(config.openapiEndpoints.reports!, "getReport", {
+        path: { id: "42" },
+      });
+      const structured = result.structuredContent as {
+        status: number;
+        headers: { "content-type": string };
+        body: { artifact: { path: string; mimeType: string; byteLength: number } };
+      };
+
+      expect(structured).toMatchObject({
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+        body: {
+          artifact: {
+            mimeType: "application/pdf",
+            byteLength: 13,
+          },
+        },
+      });
+      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("%PDF-1.7 test");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function openApiSpec(baseUrl: string) {
@@ -1001,6 +1052,28 @@ function openApiSpec(baseUrl: string) {
             },
           },
           responses: { "201": { description: "Created" } },
+        },
+      },
+      "/reports/{id}": {
+        get: {
+          operationId: "getReport",
+          summary: "Download a report",
+          parameters: [
+            {
+              name: "id",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "OK",
+              content: {
+                "application/pdf": {},
+              },
+            },
+          },
         },
       },
     },

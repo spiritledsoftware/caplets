@@ -47,10 +47,11 @@ type OAuthLikeAuthConfig = {
 
 export type GenericAuthTarget = {
   server: string;
-  backend: "openapi" | "graphql" | "http";
+  backend: "openapi" | "googleDiscovery" | "graphql" | "http";
   url?: string | undefined;
   baseUrl?: string | undefined;
   specUrl?: string | undefined;
+  resolvedScopes?: string[] | undefined;
   auth?: OAuthLikeAuthConfig | { type: string } | undefined;
   requestTimeoutMs?: number | undefined;
 };
@@ -557,7 +558,7 @@ export async function startGenericOAuthFlow(
     redirectUri,
     allowLoopbackHttp,
   );
-  const scope = scopesFor(authConfig);
+  const scope = scopesFor(authConfig, target.resolvedScopes);
   const authorizationUrl = new URL(authorizationEndpoint);
   authorizationUrl.searchParams.set("response_type", "code");
   authorizationUrl.searchParams.set("client_id", client.clientId);
@@ -621,6 +622,7 @@ export async function startGenericOAuthFlow(
           metadata: redactSecrets({
             protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
             authorizationServer: metadata,
+            requestedScopes: scope?.split(/\s+/u).filter(Boolean),
             dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
           }) as Record<string, unknown>,
         }),
@@ -680,7 +682,7 @@ export async function runGenericOAuthFlow(
       redirectUri,
       allowLoopbackHttp,
     );
-    const scope = scopesFor(authConfig);
+    const scope = scopesFor(authConfig, target.resolvedScopes);
     const authorizationUrl = new URL(authorizationEndpoint);
     authorizationUrl.searchParams.set("response_type", "code");
     authorizationUrl.searchParams.set("client_id", client.clientId);
@@ -755,6 +757,7 @@ export async function runGenericOAuthFlow(
       metadata: redactSecrets({
         protectedResource: target.url ?? target.baseUrl ?? target.specUrl,
         authorizationServer: metadata,
+        requestedScopes: scope?.split(/\s+/u).filter(Boolean),
         dynamicClient: client.dynamic ? { client_id: client.clientId } : undefined,
       }) as Record<string, unknown>,
     });
@@ -1098,7 +1101,8 @@ async function refreshGenericOAuthBundle(
     refreshToken: asString(tokenResponse.refresh_token) ?? bundle.refreshToken,
     tokenType: asString(tokenResponse.token_type) ?? bundle.tokenType,
     expiresAt: refreshedExpiresAt(tokenResponse.expires_in, bundle.expiresAt),
-    scope: asString(tokenResponse.scope) ?? bundle.scope ?? scopesFor(authConfig),
+    scope:
+      asString(tokenResponse.scope) ?? bundle.scope ?? scopesFor(authConfig, target.resolvedScopes),
     idToken: idToken ?? bundle.idToken,
     issuer: asString(idClaims?.iss) ?? bundle.issuer ?? metadata.issuer ?? authConfig.issuer,
     subject: asString(idClaims?.sub) ?? bundle.subject,
@@ -1201,7 +1205,8 @@ function assertTokenBundleMatchesTarget(
     bundle.authType !== authConfig.type ||
     (expectedOrigin && bundle.protectedResourceOrigin !== expectedOrigin) ||
     (configuredClientId && bundle.clientId !== configuredClientId) ||
-    (authConfig.issuer && bundle.issuer !== authConfig.issuer);
+    (authConfig.issuer && bundle.issuer !== authConfig.issuer) ||
+    tokenBundleMissingScopes(bundle, authConfig, target.resolvedScopes);
   if (mismatch) {
     throw new CapletsError(
       "AUTH_REQUIRED",
@@ -1242,9 +1247,46 @@ function isLoopbackHttpUrl(value: string): boolean {
   );
 }
 
-function scopesFor(authConfig: OAuthLikeAuthConfig): string | undefined {
+function tokenBundleMissingScopes(
+  bundle: StoredOAuthTokenBundle,
+  authConfig: OAuthLikeAuthConfig,
+  resolvedScopes: string[] | undefined,
+): boolean {
+  const required = requiredStoredScopes(authConfig, resolvedScopes);
+  if (required.length === 0) return false;
+  const metadataScopes = requestedScopesFromMetadata(bundle.metadata);
+  const actual = new Set(metadataScopes ?? bundle.scope?.split(/\s+/u).filter(Boolean) ?? []);
+  return required.some((scope) => !actual.has(scope));
+}
+
+function requiredStoredScopes(
+  authConfig: OAuthLikeAuthConfig,
+  resolvedScopes: string[] | undefined,
+): string[] {
+  if (authConfig.scopes?.length) return authConfig.scopes;
+  return resolvedScopes?.length ? [...new Set(resolvedScopes)].sort() : [];
+}
+
+function requestedScopesFromMetadata(metadata: unknown): string[] | undefined {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+  const value = (metadata as Record<string, unknown>).requestedScopes;
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? value
+    : undefined;
+}
+
+function scopesFor(
+  authConfig: OAuthLikeAuthConfig,
+  resolvedScopes?: string[] | undefined,
+): string | undefined {
   if (authConfig.scopes?.length) {
     return authConfig.scopes.join(" ");
+  }
+  if (resolvedScopes?.length) {
+    const apiScopes = [...new Set(resolvedScopes)].sort();
+    return authConfig.type === "oidc"
+      ? ["openid", "profile", "email", ...apiScopes].join(" ")
+      : apiScopes.join(" ");
   }
   return authConfig.type === "oidc" ? "openid profile email" : undefined;
 }

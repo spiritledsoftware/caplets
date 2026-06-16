@@ -25,6 +25,7 @@ import {
 } from "../src/config";
 import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
+import { ServerRegistry } from "../src/registry";
 
 describe("config", () => {
   const originalEnv = process.env.EXAMPLE_TOKEN;
@@ -373,6 +374,35 @@ describe("config", () => {
     );
     rmSync(dir, { recursive: true, force: true });
     delete process.env.PROJECT_OPENAPI_SECRET;
+  });
+
+  it("rejects Google Discovery executable backend maps from project config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-project-google-discovery-"));
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Google Drive",
+            description: "Attempt to load Google Drive from project config.",
+            discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    );
+
+    expect(() => loadConfig(join(dir, "missing-user-config.json"), projectConfigPath)).toThrow(
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: expect.stringContaining(
+          "cannot define executable backend map googleDiscoveryApis; use project Markdown Caplet files or user config instead",
+        ) as string,
+      }) as CapletsError,
+    );
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("rejects Caplet set executable backend maps from project config", () => {
@@ -1217,6 +1247,46 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("loads Google Discovery API-backed Caplet files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-discovery-files-"));
+    const root = join(dir, ".caplets");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "drive.md"),
+      [
+        "---",
+        "name: Drive API",
+        "description: Manage Drive files through Google Discovery.",
+        "googleDiscoveryApi:",
+        "  discoveryPath: ./drive.discovery.json",
+        "  auth:",
+        "    type: oauth2",
+        "    issuer: https://accounts.google.com",
+        "    scopes:",
+        "      - https://www.googleapis.com/auth/drive.metadata.readonly",
+        "  includeOperations:",
+        "    - files.*",
+        "---",
+        "# Drive API",
+      ].join("\n"),
+    );
+
+    const config = loadConfig(join(root, "config.json"), join(dir, "missing", "config.json"));
+    expect(config.googleDiscoveryApis.drive).toMatchObject({
+      server: "drive",
+      backend: "googleDiscovery",
+      discoveryPath: join(root, "drive.discovery.json"),
+      auth: {
+        type: "oauth2",
+        issuer: "https://accounts.google.com",
+        scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+      },
+      includeOperations: ["files.*"],
+      body: "# Drive API",
+    });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("loads GraphQL config and GraphQL-backed Caplet files", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-graphql-files-"));
     const root = join(dir, ".caplets");
@@ -1941,6 +2011,49 @@ describe("config", () => {
     delete process.env.OPENAPI_PUBLIC_SECRET;
   });
 
+  it("loads Google Discovery APIs with defaults and safe registry details", () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files and permissions.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          auth: { type: "oidc", issuer: "https://accounts.google.com", clientId: "client" },
+          includeOperations: ["drive.files.*"],
+          excludeOperations: ["drive.files.delete"],
+        },
+      },
+    });
+
+    expect(config.googleDiscoveryApis.drive).toMatchObject({
+      server: "drive",
+      backend: "googleDiscovery",
+      discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+      requestTimeoutMs: 60000,
+      operationCacheTtlMs: 30000,
+      disabled: false,
+    });
+    expect(new ServerRegistry(config).detail(config.googleDiscoveryApis.drive!)).toEqual({
+      id: "drive",
+      name: "Google Drive",
+      description: "Access Google Drive files and permissions.",
+      backend: {
+        type: "googleDiscovery",
+        disabled: false,
+        requestTimeoutMs: 60000,
+        operationCacheTtlMs: 30000,
+        source: "discoveryUrl",
+      },
+    });
+    expect(
+      JSON.stringify(new ServerRegistry(config).detail(config.googleDiscoveryApis.drive!)),
+    ).not.toContain("client");
+    expect(
+      JSON.stringify(new ServerRegistry(config).detail(config.googleDiscoveryApis.drive!)),
+    ).not.toContain("googleapis.com");
+    expect(JSON.stringify(configJsonSchema())).toContain("googleDiscoveryApis");
+  });
+
   it("rejects nested Caplets options", () => {
     expect(() =>
       parseConfig({
@@ -2071,6 +2184,61 @@ describe("config", () => {
     ]) {
       expect(() => parseConfig({ openapiEndpoints: { users: endpoint } })).toThrow(CapletsError);
     }
+  });
+
+  it("rejects invalid Google Discovery sources and duplicate Caplet IDs", () => {
+    expect(() =>
+      parseConfig({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive",
+            description: "Access Google Drive files.",
+            discoveryUrl: "ftp://example.com/discovery.json",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({
+        openapiEndpoints: {
+          drive: {
+            name: "Drive OpenAPI",
+            description: "OpenAPI Drive wrapper.",
+            specUrl: "https://example.com/openapi.json",
+            baseUrl: "https://example.com",
+            auth: { type: "none" },
+          },
+        },
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive",
+            description: "Access Google Drive files.",
+            discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("already used") }),
+        ]) as unknown,
+      }) as CapletsError,
+    );
+    expect(() =>
+      parseConfig({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive",
+            description: "Access Google Drive files.",
+            discoveryPath: "/tmp/drive.discovery.json",
+            discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
   });
 
   it("validates server IDs, required names, descriptions, and disabled default", () => {

@@ -120,6 +120,7 @@ function configFor(
       caplets.filter((caplet) => caplet.backend === "mcp").map((caplet) => [caplet.server, caplet]),
     ) as CapletsConfig["mcpServers"],
     openapiEndpoints: {},
+    googleDiscoveryApis: {},
     graphqlEndpoints: {},
     httpApis: Object.fromEntries(
       caplets

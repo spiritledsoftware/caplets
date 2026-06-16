@@ -69,7 +69,12 @@ export function classifyCapletRuntimeRoute(caplet: Record<string, unknown>): Run
   if (caplet.backend === "mcp") {
     return caplet.transport === "stdio" || Boolean(caplet.command) ? "process" : "worker_safe";
   }
-  if (caplet.backend === "openapi" || caplet.backend === "graphql" || caplet.backend === "http") {
+  if (
+    caplet.backend === "openapi" ||
+    caplet.backend === "googleDiscovery" ||
+    caplet.backend === "graphql" ||
+    caplet.backend === "http"
+  ) {
     return "worker_safe";
   }
   if (caplet.backend === "caplets") {

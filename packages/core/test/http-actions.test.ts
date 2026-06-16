@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseConfig, type HttpApiConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { HttpActionManager } from "../src/http-actions";
@@ -43,6 +46,23 @@ describe("HttpActionManager", () => {
         }
         if (request.url === "/large") {
           response.end("x".repeat(2 * 1024 * 1024));
+          return;
+        }
+        if (request.url === "/large-stream") {
+          response.write("x".repeat(128));
+          response.write("x".repeat(128));
+          response.end();
+          return;
+        }
+        if (request.url === "/pdf") {
+          response.setHeader("content-type", "application/pdf");
+          response.end(Buffer.from("%PDF-1.7 test"));
+          return;
+        }
+        if (request.url === "/attachment") {
+          response.removeHeader("content-type");
+          response.setHeader("content-disposition", 'attachment; filename="report.bin"');
+          response.end(Buffer.from([0, 1, 2, 3]));
           return;
         }
         if (request.url === "/missing") {
@@ -278,6 +298,150 @@ describe("HttpActionManager", () => {
       body: { error: "missing" },
     });
     expect(result.structuredContent).toHaveProperty("elapsedMs");
+  });
+
+  it("writes binary HTTP responses as media artifacts", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-artifacts-"));
+    const manager = new HttpActionManager(registry(), { artifactDir });
+    const api = httpApi({ actions: { pdf: { method: "GET", path: "/pdf" } } });
+
+    try {
+      const result = await manager.callTool(api, "pdf", {});
+      const structured = result.structuredContent as {
+        status: number;
+        headers: { "content-type": string };
+        body: { artifact: { path: string; mimeType: string; byteLength: number } };
+      };
+
+      expect(structured).toMatchObject({
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+        body: {
+          artifact: {
+            mimeType: "application/pdf",
+            byteLength: 13,
+          },
+        },
+      });
+      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("%PDF-1.7 test");
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes attachment responses without content type as media artifacts", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-attachment-artifacts-"));
+    const manager = new HttpActionManager(registry(), { artifactDir });
+    const api = httpApi({ actions: { attachment: { method: "GET", path: "/attachment" } } });
+
+    try {
+      const result = await manager.callTool(api, "attachment", {});
+      const structured = result.structuredContent as {
+        body: {
+          artifact: {
+            uri: string;
+            path: string;
+            filename: string;
+            byteLength: number;
+            sha256: string;
+          };
+        };
+      };
+
+      expect(structured.body.artifact).toMatchObject({
+        filename: "report.bin",
+        byteLength: 4,
+      });
+      expect(structured.body.artifact.uri).toContain("caplets://artifacts/");
+      expect(structured.body.artifact.sha256).toHaveLength(64);
+      expect(readFileSync(structured.body.artifact.path)).toEqual(Buffer.from([0, 1, 2, 3]));
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes HTTP artifacts through handleServerTool", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-tool-artifacts-"));
+    const config = parseConfig({
+      httpApis: {
+        http: {
+          name: "HTTP API",
+          description: "Call configured HTTP service actions.",
+          baseUrl,
+          auth: { type: "none" },
+          actions: { pdf: { method: "GET", path: "/pdf" } },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const http = new HttpActionManager(registry, { artifactDir });
+    const downstream = new DownstreamManager(registry);
+
+    try {
+      const result = (await handleServerTool(
+        config.httpApis.http!,
+        { operation: "call_tool", name: "pdf", args: {} },
+        registry,
+        downstream,
+        undefined,
+        undefined,
+        http,
+      )) as any;
+
+      expect(result.structuredContent.body.artifact.path).toContain(artifactDir);
+      expect(readFileSync(result.structuredContent.body.artifact.path, "utf8")).toBe(
+        "%PDF-1.7 test",
+      );
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes oversized streamed text responses as media artifacts", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-stream-artifacts-"));
+    const manager = new HttpActionManager(registry(), { artifactDir, maxInlineBytes: 100 });
+    const api = httpApi({
+      actions: { large_stream: { method: "GET", path: "/large-stream" } },
+    });
+
+    try {
+      const result = await manager.callTool(api, "large_stream", {});
+      const structured = result.structuredContent as {
+        status: number;
+        headers: { "content-type": string };
+        body: { artifact: { path: string; mimeType: string; byteLength: number } };
+      };
+
+      expect(structured).toMatchObject({
+        status: 200,
+        body: {
+          artifact: {
+            mimeType: "application/json",
+            byteLength: 256,
+          },
+        },
+      });
+      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("x".repeat(256));
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces maxResponseBytes as a hard response cap", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-cap-artifacts-"));
+    const manager = new HttpActionManager(registry(), { artifactDir, maxInlineBytes: 100 });
+    const api = httpApi({
+      maxResponseBytes: 200,
+      actions: { large_stream: { method: "GET", path: "/large-stream" } },
+    });
+
+    try {
+      await expect(manager.callTool(api, "large_stream", {})).rejects.toMatchObject({
+        code: "DOWNSTREAM_PROTOCOL_ERROR",
+      });
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
   });
 
   it("rejects query and header mappings that resolve to non-objects", async () => {

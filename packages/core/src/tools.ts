@@ -5,6 +5,7 @@ import type { CapletConfig } from "./config";
 import type { CliToolsManager } from "./cli-tools";
 import type { DownstreamManager } from "./downstream";
 import { CapletsError } from "./errors";
+import type { GoogleDiscoveryManager } from "./google-discovery";
 import type { GraphQLManager } from "./graphql";
 import type { HttpActionManager } from "./http-actions";
 import type { OpenApiManager } from "./openapi";
@@ -61,6 +62,7 @@ export async function handleServerTool(
   cli?: CliToolsManager,
   caplets?: CapletSetManager,
   options: HandleServerToolOptions = {},
+  googleDiscovery?: GoogleDiscoveryManager,
 ): Promise<any> {
   const startedAt = Date.now();
   const parsed = validateOperationRequest(
@@ -84,11 +86,21 @@ export async function handleServerTool(
         http,
         cli,
         caplets,
+        googleDiscovery,
       ).check(server as never);
       return jsonResult(result, metadataFor(server, "check", undefined, startedAt));
     }
     case "tools": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const backend = backendFor(
+        server,
+        downstream,
+        openapi,
+        graphql,
+        http,
+        cli,
+        caplets,
+        googleDiscovery,
+      );
       const tools = await backend.listTools(server as never);
       const page = pageItems(
         tools.map((tool) => backend.compact(server as never, tool)),
@@ -105,7 +117,16 @@ export async function handleServerTool(
       );
     }
     case "search_tools": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const backend = backendFor(
+        server,
+        downstream,
+        openapi,
+        graphql,
+        http,
+        cli,
+        caplets,
+        googleDiscovery,
+      );
       const tools = await backend.listTools(server as never);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
       const matches = backend.search(server as never, tools, parsed.query, limit);
@@ -121,7 +142,16 @@ export async function handleServerTool(
       );
     }
     case "describe_tool": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const backend = backendFor(
+        server,
+        downstream,
+        openapi,
+        graphql,
+        http,
+        cli,
+        caplets,
+        googleDiscovery,
+      );
       const tool = await backend.getTool(server as never, parsed.name);
       const observedOutputShape = await readObservedOutputShape(
         options,
@@ -140,7 +170,16 @@ export async function handleServerTool(
       );
     }
     case "call_tool": {
-      const backend = backendFor(server, downstream, openapi, graphql, http, cli, caplets);
+      const backend = backendFor(
+        server,
+        downstream,
+        openapi,
+        graphql,
+        http,
+        cli,
+        caplets,
+        googleDiscovery,
+      );
       const tool = await maybeGetToolForValidation(backend, server, parsed.name);
       validateToolArgsForAgent(tool, parsed.name, parsed.args);
       if (parsed.fields === undefined) {
@@ -1265,6 +1304,7 @@ function backendFor(
   http?: HttpActionManager,
   cli?: CliToolsManager,
   caplets?: CapletSetManager,
+  googleDiscovery?: GoogleDiscoveryManager,
 ) {
   if (server.backend === "mcp") {
     return {
@@ -1277,6 +1317,25 @@ function backendFor(
         downstream.callTool(...args),
       compact: (...args: Parameters<DownstreamManager["compact"]>) => downstream.compact(...args),
       search: (...args: Parameters<DownstreamManager["search"]>) => downstream.search(...args),
+    };
+  }
+  if (server.backend === "googleDiscovery") {
+    if (!googleDiscovery) {
+      throw new CapletsError("INTERNAL_ERROR", "Google Discovery manager is not configured");
+    }
+    return {
+      check: (...args: Parameters<GoogleDiscoveryManager["checkApi"]>) =>
+        googleDiscovery.checkApi(...args),
+      listTools: (...args: Parameters<GoogleDiscoveryManager["listTools"]>) =>
+        googleDiscovery.listTools(...args),
+      getTool: (...args: Parameters<GoogleDiscoveryManager["getTool"]>) =>
+        googleDiscovery.getTool(...args),
+      callTool: (...args: Parameters<GoogleDiscoveryManager["callTool"]>) =>
+        googleDiscovery.callTool(...args),
+      compact: (...args: Parameters<GoogleDiscoveryManager["compact"]>) =>
+        googleDiscovery.compact(...args),
+      search: (...args: Parameters<GoogleDiscoveryManager["search"]>) =>
+        googleDiscovery.search(...args),
     };
   }
   if (server.backend === "graphql") {

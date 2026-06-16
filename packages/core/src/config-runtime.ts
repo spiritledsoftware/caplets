@@ -92,6 +92,18 @@ export type OpenApiEndpointConfig = CommonCapletConfig & {
   operationCacheTtlMs: number;
 };
 
+export type GoogleDiscoveryApiConfig = CommonCapletConfig & {
+  backend: "googleDiscovery";
+  discoveryPath?: string | undefined;
+  discoveryUrl?: string | undefined;
+  baseUrl?: string | undefined;
+  includeOperations?: string[] | undefined;
+  excludeOperations?: string[] | undefined;
+  auth: OpenApiAuthConfig;
+  requestTimeoutMs: number;
+  operationCacheTtlMs: number;
+};
+
 export type GraphQlOperationConfig = AgentSelectionHintsConfig & {
   document?: string | undefined;
   documentPath?: string | undefined;
@@ -174,6 +186,7 @@ export type CapletSetConfig = CommonCapletConfig & {
 export type CapletConfig =
   | CapletServerConfig
   | OpenApiEndpointConfig
+  | GoogleDiscoveryApiConfig
   | GraphQlEndpointConfig
   | HttpApiConfig
   | CliToolsConfig
@@ -196,6 +209,7 @@ export type CapletsConfig = {
   };
   mcpServers: Record<string, CapletServerConfig>;
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
+  googleDiscoveryApis: Record<string, GoogleDiscoveryApiConfig>;
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
   httpApis: Record<string, HttpApiConfig>;
   cliTools: Record<string, CliToolsConfig>;
@@ -316,6 +330,20 @@ const openApiEndpointSchema = z
     specPath: z.string().min(1).optional(),
     specUrl: z.string().min(1).optional(),
     baseUrl: z.string().min(1).optional(),
+    auth: authSchema,
+    requestTimeoutMs: z.number().int().positive().default(60_000),
+    operationCacheTtlMs: z.number().int().nonnegative().default(30_000),
+  })
+  .strict();
+const operationFilterSchema = z.array(z.string().trim().min(1).max(160));
+const googleDiscoveryApiSchema = z
+  .object({
+    ...commonSchema,
+    discoveryPath: z.string().min(1).optional(),
+    discoveryUrl: z.string().min(1).optional(),
+    baseUrl: z.string().min(1).optional(),
+    includeOperations: operationFilterSchema.optional(),
+    excludeOperations: operationFilterSchema.optional(),
     auth: authSchema,
     requestTimeoutMs: z.number().int().positive().default(60_000),
     operationCacheTtlMs: z.number().int().nonnegative().default(30_000),
@@ -479,6 +507,9 @@ const configSchema = z
     openapiEndpoints: z
       .record(z.string().regex(SERVER_ID_PATTERN), openApiEndpointSchema)
       .default({}),
+    googleDiscoveryApis: z
+      .record(z.string().regex(SERVER_ID_PATTERN), googleDiscoveryApiSchema)
+      .default({}),
     graphqlEndpoints: z
       .record(z.string().regex(SERVER_ID_PATTERN), graphQlEndpointSchema)
       .default({}),
@@ -523,6 +554,7 @@ export function parseConfig(input: unknown): CapletsConfig {
       };
     }),
     openapiEndpoints: mapBackend(config.openapiEndpoints, "openapi"),
+    googleDiscoveryApis: mapBackend(config.googleDiscoveryApis, "googleDiscovery"),
     graphqlEndpoints: mapBackend(config.graphqlEndpoints, "graphql"),
     httpApis: mapBackend(config.httpApis, "http"),
     cliTools: mapBackend(config.cliTools, "cli"),
@@ -607,6 +639,36 @@ function validateBackends(config: z.infer<typeof configSchema>, ctx: z.Refinemen
       });
     }
     validateAuthHeaders(raw.auth, ctx, ["openapiEndpoints", server, "auth"]);
+  }
+  for (const [server, raw] of Object.entries(config.googleDiscoveryApis)) {
+    if (Boolean(raw.discoveryPath) === Boolean(raw.discoveryUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["googleDiscoveryApis", server],
+        message: "Google Discovery API must define exactly one discovery source",
+      });
+    }
+    if (
+      raw.discoveryUrl &&
+      !hasEnvReference(raw.discoveryUrl) &&
+      !isAllowedRemoteUrl(raw.discoveryUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["googleDiscoveryApis", server, "discoveryUrl"],
+        message:
+          "Google Discovery API discoveryUrl must use https except loopback development urls",
+      });
+    }
+    if (raw.baseUrl && !hasEnvReference(raw.baseUrl) && !isAllowedHttpBaseUrl(raw.baseUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["googleDiscoveryApis", server, "baseUrl"],
+        message:
+          "Google Discovery API baseUrl must use https except loopback development urls and must not include credentials, query, or fragment",
+      });
+    }
+    validateAuthHeaders(raw.auth, ctx, ["googleDiscoveryApis", server, "auth"]);
   }
   for (const [server, raw] of Object.entries(config.graphqlEndpoints)) {
     const sourceCount =
