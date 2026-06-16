@@ -9,10 +9,10 @@ import {
 } from "./../cli/add";
 import {
   assertLoginTarget,
-  findAuthTarget,
   listAuthRows,
   logoutAuthResult,
   refreshAuthResult,
+  resolveAuthTarget,
 } from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
@@ -180,7 +180,7 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
   const config = loadConfigWithSources(context.configPath, context.projectConfigPath).config;
-  const target = findAuthTarget(serverId, config);
+  const target = await resolveAuthTarget(serverId, config, context.authDir);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();
   const baseUrl = context.controlCallbackBaseUrl.endsWith("/")

@@ -267,7 +267,7 @@ export function findAuthTarget(serverId: string, config = loadConfig()): AuthTar
   return authTargets(config).find((server) => server.server === serverId);
 }
 
-async function resolveAuthTarget(
+export async function resolveAuthTarget(
   serverId: string,
   config: CapletsConfig,
   authDir?: string,
