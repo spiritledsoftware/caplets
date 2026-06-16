@@ -281,10 +281,7 @@ export async function resolveAuthTarget(
     authDir ? { authDir } : {},
   );
   const baseUrl =
-    api.baseUrl ??
-    (api.discoveryPath || !api.auth.scopes?.length
-      ? await manager.resolveBaseUrl(api).catch(() => api.discoveryUrl)
-      : api.discoveryUrl);
+    api.baseUrl ?? (await manager.resolveBaseUrl(api).catch(() => undefined)) ?? api.discoveryUrl;
   return {
     ...target,
     ...(baseUrl ? { baseUrl } : {}),

@@ -126,8 +126,12 @@ export class GoogleDiscoveryManager {
           },
         );
       }
+      if (response.status === 401 || response.status === 403) {
+        throw googleAuthError(requestApi, response);
+      }
       const parsed = await readHttpLikeResponse(response, {
         capletId: requestApi.server,
+        method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
         ...(typeof args.filename === "string" ? { filename: args.filename } : {}),
@@ -171,10 +175,13 @@ export class GoogleDiscoveryManager {
     operation: GoogleDiscoveryOperation,
     args: Record<string, unknown>,
   ): Promise<CompatibilityCallToolResult> {
-    const media = await readMediaInput(
-      args.media,
-      this.options.artifactDir ? { artifactRoot: this.options.artifactDir } : {},
-    );
+    const mediaOptions: {
+      artifactRoot?: string;
+      allowLocalPaths?: boolean;
+    } = {};
+    if (this.options.artifactDir) mediaOptions.artifactRoot = this.options.artifactDir;
+    if (this.options.exposeLocalArtifactPaths === false) mediaOptions.allowLocalPaths = false;
+    const media = await readMediaInput(args.media, mediaOptions);
     const headers = new Headers(await authHeaders(api, this.options.authDir, operation.scopes));
     const protocol = selectUploadProtocol(operation, media, args);
     const response =
@@ -183,6 +190,7 @@ export class GoogleDiscoveryManager {
         : await this.callSingleUpload(api, operation, args, media, headers, protocol);
     const parsed = await readHttpLikeResponse(response, {
       capletId: api.server,
+      method: operation.method,
       ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
       ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
     });
@@ -403,7 +411,14 @@ function selectUploadProtocol(
   ) {
     return "resumable";
   }
-  if ("body" in args && operation.mediaUploadProtocols.multipart) return "multipart";
+  if ("body" in args) {
+    if (operation.mediaUploadProtocols.multipart) return "multipart";
+    if (operation.mediaUploadProtocols.resumable) return "resumable";
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Google Discovery media upload metadata requires multipart or resumable upload",
+    );
+  }
   if (operation.mediaUploadProtocols.simple) return "simple";
   if (operation.mediaUploadProtocols.resumable) return "resumable";
   throw new CapletsError(
@@ -487,6 +502,9 @@ async function fetchGoogleRequest(
           location: response.headers.get("location") ? "[REDACTED]" : undefined,
         },
       );
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw googleAuthError(api, response);
     }
     return response;
   } catch (error) {
@@ -598,6 +616,23 @@ async function authHeaders(
     case "oidc":
       return genericOAuthHeaders({ ...api, resolvedScopes }, authDir);
   }
+}
+
+function googleAuthError(api: GoogleDiscoveryApiConfig, response: Response): CapletsError {
+  return new CapletsError(
+    response.status === 401 ? "AUTH_REQUIRED" : "AUTH_FAILED",
+    "Google Discovery authentication failed",
+    {
+      server: api.server,
+      status: response.status,
+      message: response.statusText,
+      authType: api.auth.type,
+      challenge: response.headers.get("www-authenticate") ? "[REDACTED]" : undefined,
+      ...(api.auth.type === "oauth2" || api.auth.type === "oidc"
+        ? { nextAction: "run_caplets_auth_login" }
+        : {}),
+    },
+  );
 }
 
 function shouldSendDiscoveryAuth(api: GoogleDiscoveryApiConfig): boolean {

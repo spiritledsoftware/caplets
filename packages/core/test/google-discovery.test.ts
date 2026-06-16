@@ -10,6 +10,7 @@ import {
   GoogleDiscoveryManager,
   googleDiscoveryScopesForOperations,
 } from "../src/google-discovery";
+import { writeTokenBundle } from "../src/auth";
 import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
@@ -131,6 +132,65 @@ beforeEach(async () => {
         );
         return;
       }
+      if (url === "/upload-resumable.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            schemas: {
+              File: {
+                id: "File",
+                type: "object",
+                properties: { id: { type: "string" } },
+              },
+            },
+            resources: {
+              files: {
+                methods: {
+                  create: {
+                    id: "drive.files.create",
+                    path: "files",
+                    httpMethod: "POST",
+                    request: { $ref: "File" },
+                    supportsMediaUpload: true,
+                    mediaUpload: {
+                      protocols: {
+                        simple: { path: "/upload/drive/v3/files", multipart: false },
+                        resumable: { path: "/upload/drive/v3/files", multipart: true },
+                      },
+                    },
+                    response: { $ref: "File" },
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (url === "/auth-error.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            resources: {
+              files: {
+                methods: {
+                  protected: {
+                    id: "drive.files.protected",
+                    path: "protected",
+                    httpMethod: "GET",
+                    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+                  },
+                },
+              },
+            },
+          }),
+        );
+        return;
+      }
       if (url === "/redirect.discovery.json") {
         response.statusCode = 302;
         response.setHeader("location", "/drive.discovery.json");
@@ -165,6 +225,16 @@ beforeEach(async () => {
       }
       if (url === "/drive/v3/files/folders/1") {
         response.end(JSON.stringify({ id: "folders/1" }));
+        return;
+      }
+      if (url === "/drive/v3/protected") {
+        response.statusCode = 401;
+        response.statusMessage = "Unauthorized";
+        response.setHeader(
+          "www-authenticate",
+          'Bearer error="invalid_token", access_token="secret-google-token"',
+        );
+        response.end(JSON.stringify({ error: "secret-google-token" }));
         return;
       }
       if (url === "/upload/drive/v3/files?uploadType=media" && request.method === "POST") {
@@ -790,6 +860,33 @@ describe("GoogleDiscoveryManager", () => {
     expect(upload?.body).not.toContain("cGRm");
   });
 
+  it("uses resumable upload to preserve metadata when multipart is unavailable", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-resumable.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+    const result = await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+      body: { name: "report.pdf" },
+      media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      status: 200,
+      body: { id: "uploaded-resumable" },
+    });
+    const start = requests.find((request) => request.url.includes("uploadType=resumable"));
+    expect(start?.body).toBe(JSON.stringify({ name: "report.pdf" }));
+    expect(start?.headers["x-upload-content-type"]).toBe("application/pdf");
+    expect(requests.find((request) => request.url.includes("uploadType=media"))).toBeUndefined();
+  });
+
   it("substitutes path and query args into media upload URLs", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -812,5 +909,55 @@ describe("GoogleDiscoveryManager", () => {
     expect(
       requests.find((request) => request.url.startsWith("/upload/drive/v3/files/1?"))?.url,
     ).toContain("fields=id");
+  });
+
+  it("surfaces Google OAuth failures as auth-required errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-auth-error-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/auth-error.discovery.json`,
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    writeTokenBundle(
+      {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "expired-access-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+        metadata: {
+          requestedScopes: ["https://www.googleapis.com/auth/drive.readonly"],
+        },
+      },
+      dir,
+    );
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await expect(
+        manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.protected", {}),
+      ).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        details: {
+          server: "drive",
+          status: 401,
+          nextAction: "run_caplets_auth_login",
+          challenge: "[REDACTED]",
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

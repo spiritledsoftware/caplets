@@ -109,6 +109,7 @@ export class HttpActionManager {
       const parsed = {
         ...(await readHttpLikeResponse(response, {
           capletId: api.server,
+          method: operation.method,
           ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
           ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
           maxInlineBytes: this.options.maxInlineBytes ?? api.maxResponseBytes,

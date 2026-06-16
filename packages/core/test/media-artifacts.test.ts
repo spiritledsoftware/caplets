@@ -247,6 +247,29 @@ describe("media artifacts", () => {
     });
   });
 
+  it("can forbid local media file paths for remote runtimes", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const file = join(root, "local.txt");
+    writeFileSync(file, "local");
+
+    await expect(
+      readMediaInput({ path: file }, { artifactRoot: root, allowLocalPaths: false }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "media.path is not available in this runtime",
+    });
+
+    await expect(
+      readMediaInput(
+        { dataUrl: "data:text/plain;base64,bG9jYWw=", filename: "local.txt" },
+        { artifactRoot: root, allowLocalPaths: false },
+      ),
+    ).resolves.toMatchObject({
+      filename: "local.txt",
+      bytes: Buffer.from("local"),
+    });
+  });
+
   it("rejects multiple media input sources and non-base64 data URLs", async () => {
     const root = tempDir("caplets-artifacts-");
     await expect(

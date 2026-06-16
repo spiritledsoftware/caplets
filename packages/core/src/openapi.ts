@@ -18,6 +18,7 @@ import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
+const DEFAULT_OPENAPI_RESPONSE_MAX_BYTES = 100 * 1024 * 1024;
 const JSON_CONTENT_TYPES = ["application/json"];
 const FORBIDDEN_ARGUMENT_HEADERS = new Set([
   "accept",
@@ -158,8 +159,10 @@ export class OpenApiManager {
       }
       const parsed = await readHttpLikeResponse(response, {
         capletId: endpoint.server,
+        method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        maxBytes: DEFAULT_OPENAPI_RESPONSE_MAX_BYTES,
       });
       return {
         content: markdownStructuredContent(parsed, {

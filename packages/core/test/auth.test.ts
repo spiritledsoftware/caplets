@@ -354,6 +354,50 @@ describe("auth helpers", () => {
     }
   });
 
+  it("rejects token bundles whose granted scopes omit a required scope", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-scope-mismatch-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "access-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          scope: "https://www.googleapis.com/auth/drive.metadata.readonly",
+          protectedResourceOrigin: "https://www.googleapis.com",
+          metadata: {
+            requestedScopes: [
+              "https://www.googleapis.com/auth/drive",
+              "https://www.googleapis.com/auth/drive.metadata.readonly",
+            ],
+          },
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "drive",
+            backend: "googleDiscovery",
+            baseUrl: "https://www.googleapis.com/drive/v3/",
+            auth: {
+              type: "oauth2",
+              scopes: ["https://www.googleapis.com/auth/drive"],
+            },
+          },
+          dir,
+        ),
+      ).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        details: { nextAction: "run_caplets_auth_login" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects generic OAuth headers when refresh returns an expired token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expired-"));
     const server = createServer((_request: IncomingMessage, response: ServerResponse) => {

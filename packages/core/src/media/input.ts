@@ -19,7 +19,7 @@ const DEFAULT_MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 
 export async function readMediaInput(
   input: unknown,
-  options: { artifactRoot?: string; maxBytes?: number } = {},
+  options: { artifactRoot?: string; maxBytes?: number; allowLocalPaths?: boolean } = {},
 ): Promise<ResolvedMediaInput> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new CapletsError("REQUEST_INVALID", "media must be an object");
@@ -38,6 +38,9 @@ export async function readMediaInput(
   const mimeType = typeof media.mimeType === "string" ? media.mimeType : undefined;
 
   if (typeof media.path === "string") {
+    if (options.allowLocalPaths === false) {
+      throw new CapletsError("REQUEST_INVALID", "media.path is not available in this runtime");
+    }
     const stat = statMediaFile(media.path);
     enforceSize(stat.size, options.maxBytes);
     return {

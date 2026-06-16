@@ -2263,19 +2263,22 @@ describe("cli init", () => {
     }
   });
 
-  it("refreshes Google Discovery OAuth credentials with explicit scopes without loading discovery", async () => {
+  it("refreshes Google Discovery OAuth credentials with explicit scopes when discovery is unavailable", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-refresh-cli-"));
     const authDir = join(dir, "auth");
     const configPath = join(dir, "config.json");
     const out: string[] = [];
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      Response.json({
-        access_token: "new-access-token",
-        refresh_token: "new-refresh-token",
-        token_type: "Bearer",
-        expires_in: 3600,
-      }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new Error("discovery unavailable"))
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "new-access-token",
+          refresh_token: "new-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+        }),
+      );
     try {
       writeFileSync(
         configPath,
@@ -2316,7 +2319,7 @@ describe("cli init", () => {
       });
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock).toHaveBeenCalledWith(
         "https://auth.example.com/token",
         expect.objectContaining({
@@ -2403,6 +2406,93 @@ describe("cli init", () => {
 
       expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
       expect(fetchMock).toHaveBeenCalledWith(
+        "https://auth.example.com/token",
+        expect.objectContaining({ method: "POST" }),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses Discovery-derived base URL for explicit Google Discovery OAuth scopes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-proxy-cli-"));
+    const authDir = join(dir, "auth");
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          kind: "discovery#restDescription",
+          baseUrl: "https://api.example.com/drive/v3/",
+          resources: {
+            files: {
+              methods: {
+                list: {
+                  id: "drive.files.list",
+                  path: "files",
+                  httpMethod: "GET",
+                },
+              },
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "new-access-token",
+          refresh_token: "new-refresh-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/drive.readonly",
+        }),
+      );
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          googleDiscoveryApis: {
+            drive: {
+              name: "Google Drive",
+              description: "Access Google Drive files.",
+              discoveryUrl: "https://discovery-proxy.example.com/drive/v3/rest",
+              auth: {
+                type: "oauth2",
+                clientId: "client",
+                tokenUrl: "https://auth.example.com/token",
+                scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+              },
+            },
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "old-access-token",
+          refreshToken: "old-refresh-token",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          protectedResourceOrigin: "https://api.example.com",
+          scope: "https://www.googleapis.com/auth/drive.readonly",
+        },
+        authDir,
+      );
+
+      await runCli(["auth", "refresh", "drive"], {
+        writeOut: (value) => out.push(value),
+        authDir,
+      });
+
+      expect(out.join("")).toBe("Refreshed OAuth credentials for `drive`.\n");
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "https://discovery-proxy.example.com/drive/v3/rest",
+        expect.anything(),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
         "https://auth.example.com/token",
         expect.objectContaining({ method: "POST" }),
       );

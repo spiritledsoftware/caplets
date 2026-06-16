@@ -5,6 +5,7 @@ import { DEFAULT_MAX_RESPONSE_BYTES, parseHttpBody } from "./utils";
 
 export type ReadHttpLikeResponseOptions = {
   capletId: string;
+  method?: string;
   artifactDir?: string;
   outputPath?: string;
   filename?: string;
@@ -22,7 +23,11 @@ export async function readHttpLikeResponse(
   const mimeType = mimeFromContentType(contentType);
   const maxInlineBytes = options.maxInlineBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  rejectOversizedContentLength(response, maxBytes);
+  const method = options.method?.toUpperCase();
+  rejectOversizedContentLength(response, maxBytes, method);
+  if (method === "HEAD") {
+    return responseEnvelope(response, contentType);
+  }
 
   if (!options.forceArtifact && shouldInline(response, mimeType)) {
     const inline = await readInlineCandidate(response, { maxInlineBytes, maxBytes });
@@ -88,7 +93,8 @@ async function readBoundedBytes(response: Response, maxBytes: number): Promise<B
   return Buffer.concat(chunks);
 }
 
-function rejectOversizedContentLength(response: Response, maxBytes: number): void {
+function rejectOversizedContentLength(response: Response, maxBytes: number, method?: string): void {
+  if (method === "HEAD") return;
   const contentLength = response.headers.get("content-length");
   if (!contentLength) return;
   const byteLength = Number.parseInt(contentLength, 10);

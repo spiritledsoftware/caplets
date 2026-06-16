@@ -94,6 +94,19 @@ describe("native OpenAPI Caplets", () => {
           response.end(JSON.stringify({ public: "ok", secret: "hidden" }));
           return;
         }
+        if (request.url === "/reports/large") {
+          const bytes = Buffer.alloc(1024 * 1024 + 1, "x");
+          response.setHeader("content-type", "application/pdf");
+          response.setHeader("content-length", String(bytes.byteLength));
+          response.end(bytes);
+          return;
+        }
+        if (request.url === "/reports/42" && request.method === "HEAD") {
+          response.setHeader("content-type", "application/pdf");
+          response.setHeader("content-length", String(1024 * 1024 + 1));
+          response.end();
+          return;
+        }
         if (request.url === "/reports/42") {
           response.setHeader("content-type", "application/pdf");
           response.end(Buffer.from("%PDF-1.7 test"));
@@ -191,7 +204,7 @@ describe("native OpenAPI Caplets", () => {
       )) as any;
       expect(
         list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
-      ).toEqual(["createUser", "GET /users/{id}", "getReport"]);
+      ).toEqual(["createUser", "GET /users/{id}", "getReport", "headReport"]);
       expect(
         list.structuredContent.result.items.find(
           (candidate: { name: string }) => candidate.name === "GET /users/{id}",
@@ -695,7 +708,7 @@ describe("native OpenAPI Caplets", () => {
     const openapi = new OpenApiManager(registry);
     const remote = registry.config.openapiEndpoints.remote!;
 
-    await expect(openapi.listTools(remote)).resolves.toHaveLength(3);
+    await expect(openapi.listTools(remote)).resolves.toHaveLength(4);
     await expect(
       openapi.listTools({ ...remote, specUrl: `${baseUrl}/slow-openapi.json` }),
     ).rejects.toMatchObject({ code: "TOOL_CALL_TIMEOUT" });
@@ -991,6 +1004,84 @@ describe("native OpenAPI Caplets", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("writes large OpenAPI responses as media artifacts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-large-artifacts-"));
+    const specPath = join(dir, "openapi.json");
+    const artifactDir = join(dir, "artifacts");
+    writeFileSync(specPath, JSON.stringify(openApiSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        reports: {
+          name: "Reports API",
+          description: "Download reports from the internal HTTP API.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry, { artifactDir });
+
+    try {
+      const result = await openapi.callTool(config.openapiEndpoints.reports!, "getReport", {
+        path: { id: "large" },
+      });
+      const structured = result.structuredContent as {
+        status: number;
+        body: { artifact: { path: string; mimeType: string; byteLength: number } };
+      };
+
+      expect(structured).toMatchObject({
+        status: 200,
+        body: {
+          artifact: {
+            mimeType: "application/pdf",
+            byteLength: 1024 * 1024 + 1,
+          },
+        },
+      });
+      expect(readFileSync(structured.body.artifact.path).byteLength).toBe(1024 * 1024 + 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reject OpenAPI HEAD responses by content length", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-head-"));
+    const specPath = join(dir, "openapi.json");
+    writeFileSync(specPath, JSON.stringify(openApiSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        reports: {
+          name: "Reports API",
+          description: "Download reports from the internal HTTP API.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const openapi = new OpenApiManager(registry);
+
+    try {
+      const result = await openapi.callTool(config.openapiEndpoints.reports!, "headReport", {
+        path: { id: "42" },
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+        },
+      });
+      expect(result.structuredContent).not.toHaveProperty("body");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function openApiSpec(baseUrl: string) {
@@ -1058,6 +1149,26 @@ function openApiSpec(baseUrl: string) {
         get: {
           operationId: "getReport",
           summary: "Download a report",
+          parameters: [
+            {
+              name: "id",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            "200": {
+              description: "OK",
+              content: {
+                "application/pdf": {},
+              },
+            },
+          },
+        },
+        head: {
+          operationId: "headReport",
+          summary: "Inspect a report",
           parameters: [
             {
               name: "id",

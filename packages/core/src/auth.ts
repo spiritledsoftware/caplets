@@ -1255,7 +1255,7 @@ function tokenBundleMissingScopes(
   const required = requiredStoredScopes(authConfig, resolvedScopes);
   if (required.length === 0) return false;
   const metadataScopes = requestedScopesFromMetadata(bundle.metadata);
-  const actual = new Set(metadataScopes ?? bundle.scope?.split(/\s+/u).filter(Boolean) ?? []);
+  const actual = new Set(bundle.scope?.split(/\s+/u).filter(Boolean) ?? metadataScopes ?? []);
   return required.some((scope) => !actual.has(scope));
 }
 
