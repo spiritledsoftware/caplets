@@ -128,6 +128,10 @@ const capletExposureSchema = z
   .enum(["direct", "progressive", "code_mode", "direct_and_code_mode", "progressive_and_code_mode"])
   .describe("How this Caplet is exposed to agents.");
 
+const capletShadowingSchema = z
+  .enum(["forbid", "allow"])
+  .describe("Whether attached local Caplets may shadow this remote Caplet ID.");
+
 const capletEndpointAuthSchema = z
   .discriminatedUnion("type", [
     z.object({ type: z.literal("none") }).strict(),
@@ -638,6 +642,7 @@ export const capletFileSchema = z
       .optional()
       .describe("Optional tags for grouping or searching Caplets."),
     exposure: capletExposureSchema.optional(),
+    shadowing: capletShadowingSchema.optional(),
     ...capletAgentSelectionHintsSchema,
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
@@ -982,6 +987,7 @@ function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, 
   return {
     ...(frontmatter.tags ? { tags: frontmatter.tags } : {}),
     ...(frontmatter.exposure ? { exposure: frontmatter.exposure } : {}),
+    ...(frontmatter.shadowing ? { shadowing: frontmatter.shadowing } : {}),
     ...(frontmatter.useWhen ? { useWhen: frontmatter.useWhen } : {}),
     ...(frontmatter.avoidWhen ? { avoidWhen: frontmatter.avoidWhen } : {}),
     ...(frontmatter.setup ? { setup: frontmatter.setup } : {}),

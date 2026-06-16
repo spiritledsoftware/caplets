@@ -59,6 +59,32 @@ mcpServer:
     );
   });
 
+  it("loads top-level shadowing from CAPLET.md frontmatter", () => {
+    const result = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "github/CAPLET.md",
+          content: `---
+name: GitHub
+description: Manage GitHub repositories.
+shadowing: allow
+mcpServer:
+  command: github-mcp
+---
+
+# GitHub
+`,
+        },
+      ],
+    });
+
+    expect(result?.config.mcpServers?.github).toEqual(
+      expect.objectContaining({
+        shadowing: "allow",
+      }),
+    );
+  });
+
   it("rejects duplicate in-memory caplet ids", () => {
     expect(() =>
       loadCapletFilesFromMap({

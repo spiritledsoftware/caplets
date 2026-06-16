@@ -40,6 +40,11 @@
       ],
       "description": "How this Caplet is exposed to agents."
     },
+    "shadowing": {
+      "type": "string",
+      "enum": ["forbid", "allow"],
+      "description": "Whether attached local Caplets may shadow this remote Caplet ID."
+    },
     "useWhen": {
       "description": "When agents should prefer this Caplet or configured action.",
       "type": "string",

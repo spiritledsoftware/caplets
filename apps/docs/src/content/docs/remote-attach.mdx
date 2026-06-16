@@ -8,13 +8,13 @@ runtime instead of starting local backends.
 
 ## Modes
 
-Caplets native integrations use the same mode resolver as `caplets attach`:
+Caplets native integrations use the same mode names as `caplets attach`:
 
 | Mode     | Use it when                                                                                                               |
 | -------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `local`  | The agent should start Caplets against local user and project config.                                                     |
 | `remote` | The agent should connect to a self-hosted Caplets service.                                                                |
-| `cloud`  | The agent should connect to Caplets Cloud with saved Cloud auth.                                                          |
+| `cloud`  | The agent should connect to Caplets Cloud with explicit `CAPLETS_REMOTE_*` or `CAPLETS_CLOUD_*` environment values.       |
 | `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, and local mode when no remote URL is set. |
 
 ## MCP client config
@@ -55,13 +55,29 @@ caplets attach
 Use `CAPLETS_REMOTE_USER` and `CAPLETS_REMOTE_PASSWORD` instead of
 `CAPLETS_REMOTE_TOKEN` when the remote uses Basic Auth.
 
-Run a finite preflight before wiring an agent:
+For Caplets Cloud native integrations, set the Cloud URL plus a workspace and token:
+
+```sh
+export CAPLETS_MODE=cloud
+export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
+export CAPLETS_REMOTE_WORKSPACE=...
+export CAPLETS_REMOTE_TOKEN=...
+
+caplets attach
+```
+
+Saved Cloud auth from `caplets cloud auth login` is used by the `caplets attach` CLI path.
+Native integrations do not read the saved auth store directly.
+
+Run a finite Project Binding smoke path before wiring an agent:
 
 ```sh
 caplets attach --once
 ```
 
-`caplets attach --once` validates credentials, checks the attach endpoint, and exits.
+`caplets attach --once` validates the configured Project Binding WebSocket URL once and
+exits. Use it when a remote project binding is expected, not as a generic attach manifest
+check.
 
 ## Project binding
 
