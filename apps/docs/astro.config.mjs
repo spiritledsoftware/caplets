@@ -20,9 +20,12 @@ export default defineConfig({
         },
       ],
       customCss: ["./src/styles/global.css"],
+      components: {
+        ThemeProvider: "./src/components/CapletsThemeProvider.astro",
+        ThemeSelect: "./src/components/CapletsThemeSelect.astro",
+      },
       editLink: {
-        baseUrl:
-          "https://github.com/spiritledsoftware/caplets/edit/main/apps/docs/src/content/docs/",
+        baseUrl: "https://github.com/spiritledsoftware/caplets/edit/main/apps/docs/",
       },
       sidebar: [
         {

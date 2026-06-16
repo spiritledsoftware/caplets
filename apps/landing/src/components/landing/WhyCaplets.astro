@@ -20,7 +20,7 @@ import { whyCapletsProblems } from "../../data/landing";
     </div>
 
     <div class="min-w-0 rounded-lg border border-border bg-card/82">
-      <div class="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-border px-4 py-3 text-sm font-medium text-muted-foreground">
+      <div class="hidden grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-border px-4 py-3 text-sm font-medium text-muted-foreground md:grid">
         <span>Direct MCP</span>
         <Route class="size-4 text-primary-accent" aria-hidden="true" />
         <span class="text-right">With Caplets</span>
@@ -30,11 +30,15 @@ import { whyCapletsProblems } from "../../data/landing";
           whyCapletsProblems.map((item) => (
             <div class="grid gap-4 px-4 py-5 md:grid-cols-[minmax(0,0.88fr)_auto_minmax(0,1fr)] md:items-start">
               <div class="min-w-0">
+                <p class="mb-2 text-xs font-medium text-muted-foreground md:hidden">Direct MCP</p>
                 <h3 class="font-semibold text-foreground">{item.label}</h3>
                 <p class="mt-2 text-sm leading-6 text-muted-foreground">{item.before}</p>
               </div>
               <div class="hidden h-full w-px bg-border md:block" aria-hidden="true"></div>
-              <p class="min-w-0 text-sm leading-6 text-foreground md:pt-8">{item.after}</p>
+              <div class="min-w-0">
+                <p class="mb-2 text-xs font-medium text-muted-foreground md:hidden">With Caplets</p>
+                <p class="text-sm leading-6 text-foreground md:pt-8">{item.after}</p>
+              </div>
             </div>
           ))
         }

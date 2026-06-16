@@ -7,6 +7,87 @@ description: "Generated reference for the TypeScript surface available inside `c
 
 Code Mode runs TypeScript with generated `caplets.<id>` handles. Prefer discovery methods first, then call downstream tools with compact, decision-ready inputs and outputs.
 
+## Common Code Mode recipes
+
+Guard against unavailable backends before you spend work on discovery:
+
+```ts
+const h = caplets.osv;
+const ready = await h.check();
+if (!ready.ok) {
+  return { ok: false, reason: ready.error.message };
+}
+```
+
+Discover, describe, and call the best matching tool:
+
+```ts
+const h = caplets.osv;
+const tools = await h.searchTools("package version", { limit: 5 });
+const tool = tools.items[0];
+if (!tool) return { ok: false, reason: "No matching tool" };
+
+const details = await h.describeTool(tool.name);
+const result = await h.callTool(tool.name, {
+  ecosystem: "npm",
+  name: "react",
+  version: "18.2.0",
+});
+
+return {
+  tool: tool.name,
+  callOk: result.ok,
+  evidence: result.ok ? result.data : result.error.message,
+  schemaKnown: details.ok,
+};
+```
+
+Page through larger result sets with `nextCursor`:
+
+```ts
+const h = caplets.github;
+const repos = [];
+let cursor: string | undefined;
+do {
+  const page = await h.tools({ limit: 25, cursor });
+  repos.push(...page.items.map((item) => item.name));
+  cursor = page.nextCursor;
+} while (cursor && repos.length < 100);
+
+return { count: repos.length, repos };
+```
+
+Use resources and prompts when a Caplet exposes reusable context:
+
+```ts
+const h = caplets.docs;
+const resources = await h.searchResources("configuration", { limit: 3 });
+const first = resources.items[0];
+const content = first?.uri ? await h.readResource(first.uri) : undefined;
+
+const prompts = await h.searchPrompts("review", { limit: 3 });
+
+return {
+  resources: resources.items.map((item) => item.uri),
+  firstResourceOk: content?.ok ?? false,
+  prompts: prompts.items.map((item) => item.name),
+};
+```
+
+Read execution logs through the generated debug handle when a Caplet returns a log ref:
+
+```ts
+const result = await caplets.debug.readLogs({
+  logRef: "caplet-run-log-ref",
+  limit: 100,
+});
+
+return {
+  nextCursor: result.nextCursor,
+  errors: result.entries.filter((entry) => entry.level === "error"),
+};
+```
+
 ## Runtime handles
 
 ```ts

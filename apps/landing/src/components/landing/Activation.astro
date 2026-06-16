@@ -80,7 +80,9 @@ import { exampleCaplets } from "../../data/landing";
                   <ol class="grid gap-3">
                     {example.steps.map((step, index) => (
                       <li class="grid grid-cols-[2rem_minmax(0,1fr)] gap-3">
-                        <span class="font-mono text-xs text-background/55">{String(index + 1).padStart(2, "0")}</span>
+                        <span class="select-none font-mono text-xs text-background/70" aria-hidden="true">
+                          {String(index + 1).padStart(2, "0")}
+                        </span>
                         <code class="overflow-x-auto whitespace-pre-wrap font-mono text-sm leading-6 text-background">{step.command}</code>
                       </li>
                     ))}

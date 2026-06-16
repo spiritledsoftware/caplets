@@ -97,6 +97,8 @@ The system is product-first: precise, calm, capable. It should feel like an expe
 
 The physical scene is a developer reviewing an agent setup at a desk during focused work, with docs, terminal output, and a browser open side by side. The theme stays light and warm because this surface is read for long stretches, compared with documentation, and used during configuration rather than incident response.
 
+The public landing page may invert into a dark aperture treatment for the hero, benchmark proof, and route-map storytelling. That exception is campaign art direction, not the default product UI theme: keep it precise, sparse, and tied to the capability-exposure metaphor rather than neon terminal cosplay.
+
 **Key Characteristics:**
 
 - Warm light surfaces with ink-like text and a rare ember accent.

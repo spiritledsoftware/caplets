@@ -11,8 +11,9 @@
   --caplets-olive: oklch(48% 0.045 110);
 
   --sl-color-accent-low: var(--caplets-parchment);
-  --sl-color-accent: var(--caplets-ember);
+  --sl-color-accent: var(--caplets-ember-deep);
   --sl-color-accent-high: var(--caplets-ember-deep);
+  --sl-color-text-accent: var(--caplets-ember-deep);
   --sl-color-white: var(--caplets-paper);
   --sl-color-gray-1: var(--caplets-ink);
   --sl-color-gray-2: oklch(35% 0.02 100);
@@ -68,10 +69,164 @@ li {
   background: color-mix(in oklch, var(--sl-color-accent-low), transparent 55%);
 }
 
+.sl-markdown-content code.caplets-token {
+  white-space: nowrap;
+}
+
 .sl-markdown-content table {
   font-size: 0.9rem;
 }
 
 .sl-markdown-content th {
   color: var(--sl-color-gray-1);
+}
+
+.sidebar-content .group-label .large {
+  color: var(--sl-color-gray-2);
+}
+
+@media (max-width: 44rem) {
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  :root {
+    --sl-menu-button-size: 2.75rem;
+  }
+
+  starlight-menu-button button {
+    border: 1px solid var(--sl-color-gray-5);
+    background-color: var(--sl-color-white);
+    color: var(--sl-color-gray-1);
+    box-shadow: none;
+  }
+
+  mobile-starlight-toc .display-current,
+  mobile-starlight-toc [aria-current="true"] {
+    color: var(--sl-color-gray-2);
+  }
+
+  mobile-starlight-toc details[open] .toggle,
+  mobile-starlight-toc details .toggle:hover {
+    color: var(--sl-color-gray-1);
+  }
+
+  mobile-starlight-toc .isMobile a {
+    align-items: center;
+    min-height: 44px;
+  }
+
+  header button,
+  header a,
+  .sidebar-content a,
+  .sidebar-content summary {
+    min-height: 44px;
+  }
+
+  header button,
+  header a {
+    min-width: 44px;
+  }
+
+  .mobile-preferences .social-icons a {
+    justify-content: center;
+    min-width: 44px;
+  }
+
+  .sidebar-content a,
+  .sidebar-content summary {
+    align-items: center;
+    display: flex;
+  }
+
+  .expressive-code .ec-line {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .expressive-code .ec-line .code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .expressive-code .copy button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  footer a[href*="/edit/main/apps/docs/"] {
+    align-items: center;
+    display: inline-flex;
+    min-height: 44px;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) {
+    display: block;
+    overflow: visible;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) tbody,
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) tr,
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td {
+    display: block;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) tr {
+    border-top: 1px solid var(--sl-color-gray-5);
+    padding: 0.75rem 0;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) tr:last-child {
+    border-bottom: 1px solid var(--sl-color-gray-5);
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: 0.75rem;
+    border: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 0.35rem 0;
+    word-break: break-word;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td > * {
+    min-width: 0;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td::before {
+    color: var(--sl-color-gray-3);
+    content: "";
+    font-family: var(--sl-font-mono);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td:nth-child(1)::before {
+    content: "Field";
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td:nth-child(2)::before {
+    content: "Status";
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td:nth-child(3)::before {
+    content: "Type";
+  }
+
+  .sl-markdown-content table:has(thead th:nth-child(4):last-child) td:nth-child(4)::before {
+    content: "Description";
+  }
 }

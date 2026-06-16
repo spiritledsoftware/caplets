@@ -16,7 +16,7 @@ const { id, label, command, copyLabel } = Astro.props;
   <div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
     <span class="text-sm font-medium text-muted-foreground">{label}</span>
     <button
-      class="group inline-flex size-9 items-center justify-center rounded-md border border-border text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+      class="group inline-flex size-11 items-center justify-center rounded-md border border-border text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
       type="button"
       aria-label={`Copy ${copyLabel}`}
       aria-controls={id}
@@ -27,5 +27,10 @@ const { id, label, command, copyLabel } = Astro.props;
       <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
     </button>
   </div>
-  <pre id={id} class="overflow-x-auto p-4 text-sm leading-6 text-foreground" tabindex="-1"><code>{command}</code></pre>
+  <pre
+    id={id}
+    class="overflow-x-auto p-4 text-sm leading-6 break-words whitespace-pre-wrap text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none sm:break-normal sm:whitespace-pre"
+    tabindex="0"
+    aria-label={`${label} command`}
+  ><code>{command}</code></pre>
 </div>

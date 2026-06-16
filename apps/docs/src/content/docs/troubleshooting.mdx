@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Diagnose Caplets config, agent setup, and remote attach issues.
 ---
 
-Start with:
+Start with the smallest local signal:
 
 ```sh
 caplets doctor
@@ -15,18 +15,39 @@ If you installed with `npx`, use:
 npx caplets doctor
 ```
 
-## Agent cannot see Caplets
+`doctor` should show the active Caplets paths and the checks Caplets can run for your
+configured integrations. Fix the first failed check, then rerun the same command.
 
-Run setup again:
+## Symptom map
+
+### Agent cannot see Caplets
+
+Expected symptom: the agent has no `caplets__code_mode` tool, or no Caplets MCP server is
+listed in the agent UI.
+
+Run setup again, then restart the agent:
 
 ```sh
 caplets setup
+caplets doctor
 ```
 
-Then restart the agent. Codex, Claude, OpenCode, and Pi usually read MCP or native plugin
-configuration at startup.
+Codex, Claude, OpenCode, and Pi usually read MCP or native plugin configuration at agent
+startup. If `doctor` is clean but the agent still cannot see Caplets, inspect the agent's
+configured MCP servers and confirm the command is `caplets serve` or the equivalent `npx`
+stdio command from [Install](/install/#manual-mcp-setup).
 
-## Wrong config is loading
+| Agent                | Verify registration                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex                | Run `codex mcp list`, then `codex mcp get caplets`; confirm `caplets serve` or `npx --yes caplets serve`.                                               |
+| Claude               | Run `claude mcp list`, then `claude mcp get caplets`; confirm the same command shape.                                                                   |
+| Other MCP clients    | Inspect the client MCP JSON and confirm the `caplets` server command and args from [Install](/install/#manual-mcp-setup).                               |
+| OpenCode / Pi native | Confirm the native integration starts with `CAPLETS_MODE` or remote values and exposes <code className="caplets-token">{"caplets\_\_code_mode"}</code>. |
+
+### Wrong config is loading
+
+Expected symptom: `doctor` reports a different config than the file you edited, or a Caplet
+is missing after you add it.
 
 Print the active user config path:
 
@@ -40,39 +61,107 @@ Override it for one command:
 CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
 ```
 
-Project config should be in `.caplets/config.json`.
+Project config should live at `.caplets/config.json`. User config is for personal agent
+setup; project config is for capabilities that should travel with a repository.
 
-## Remote attach fails
+### Code Mode returns `ok: false`
+
+Expected symptom: a Code Mode call returns an error envelope instead of tool data.
+
+First confirm the generated handles:
+
+```sh
+caplets code-mode types
+```
+
+Then rerun the smallest script that reproduces the failure and return the compact envelope:
+
+```ts
+const h = caplets.osv;
+const ready = await h.check();
+if (!ready.ok) return ready;
+return await h.callTool("query_package_version", {
+  ecosystem: "npm",
+  name: "react",
+  version: "18.2.0",
+});
+```
+
+Use the returned `error.code`, `error.message`, and Caplet ID to repair the call. Do not
+paste a full raw downstream payload back to the agent unless the error depends on it.
+
+### Remote attach fails
+
+Expected symptom: remote mode starts, but attach cannot reach the runtime or authenticate.
 
 Confirm the remote environment:
 
 ```sh
 export CAPLETS_MODE=remote
 export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
+export CAPLETS_REMOTE_TOKEN=...
 caplets doctor
 caplets attach
 ```
 
 If the remote requires auth, set either `CAPLETS_REMOTE_TOKEN` or
-`CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`.
-
-## Code Mode errors
-
-Check generated declarations:
+`CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`. If the URL belongs to Caplets Cloud,
+check whether your environment expects `CAPLETS_REMOTE_*` or `CAPLETS_CLOUD_*` values and
+keep the family consistent for that shell. Cloud native integrations also need the selected
+workspace:
 
 ```sh
-caplets code-mode types
+export CAPLETS_MODE=cloud
+export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
+export CAPLETS_REMOTE_WORKSPACE=...
+export CAPLETS_REMOTE_TOKEN=...
+caplets attach --once
 ```
 
-Then rerun the smallest Code Mode script that reproduces the issue. Return compact JSON
-from Code Mode so the agent can see the actual error envelope and repair the call.
+`caplets attach --once` validates the configured Project Binding WebSocket URL once and
+exits.
 
-## OSV first check
+### Attach URL or workspace is wrong
 
-If you need a no-auth smoke test, install OSV:
+Expected symptom: the agent connects to a stale workspace, or the runtime reports that the
+attach manifest is missing or stale.
+
+Rerun the attach command from the current workspace and copy the fresh values into the
+agent environment:
+
+```sh
+caplets attach
+```
+
+Use the versioned attach URL printed by the runtime. Attach connects to `/v1/attach`.
+Ordinary MCP clients that are not using attach connect to `/v1/mcp`. Do not reuse an older
+`/ws/...` path from shell history or a previous docs page.
+
+### Project Binding smoke check fails
+
+Expected symptom: a project Caplet exists, but the agent cannot use repository-local files
+or commands.
+
+Check the project config location:
+
+```sh
+pwd
+ls .caplets/config.json
+caplets doctor
+```
+
+Run the agent from the project root, then retry the smallest Code Mode script that uses the
+project Caplet. If the capability needs setup commands, run the commands listed in the
+Caplet's `setup` metadata before asking the agent to call it.
+
+## OSV no-auth smoke test
+
+If you need a public capability to separate Caplets setup from credential problems, install
+OSV:
 
 ```sh
 caplets install spiritledsoftware/caplets osv
 ```
 
-Then ask your agent to query OSV from Code Mode.
+Then ask your agent to query OSV from Code Mode. If OSV works but another Caplet fails, the
+remaining issue is likely that Caplet's auth, runtime, or downstream schema.

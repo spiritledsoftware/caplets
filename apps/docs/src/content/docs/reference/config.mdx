@@ -11,6 +11,55 @@ Canonical schema: [https://caplets.dev/config.schema.json](https://caplets.dev/c
 
 Status values are `Required` or `Optional` according to the schema's top-level `required` array.
 
+## Common config
+
+Minimal user config:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "mcpServers": {}
+}
+```
+
+Keep `options.exposure` at the default `code_mode` unless your client cannot run Code
+Mode. Add backend maps such as `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`,
+`httpApis`, `cliTools`, or `capletSets` only for the capability sources you actually
+want agents to see.
+
+Stdio MCP server:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "mcpServers": {
+    "github": {
+      "name": "GitHub",
+      "description": "Inspect repositories, issues, pull requests, and workflow runs.",
+      "command": "github-mcp-server",
+      "args": ["stdio"]
+    }
+  }
+}
+```
+
+Public OpenAPI endpoint:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "openapiEndpoints": {
+    "status-api": {
+      "name": "Status API",
+      "description": "Read public service health from the status API.",
+      "specUrl": "https://api.example.com/openapi.json",
+      "baseUrl": "https://api.example.com",
+      "auth": { "type": "none" }
+    }
+  }
+}
+```
+
 ## Top-level fields
 
 | Field                | Status   | Type    | Description                                            |
@@ -34,22 +83,22 @@ Status values are `Required` or `Optional` according to the schema's top-level `
 
 Shell completion discovery timeout and cache settings.
 
-| Field                | Status   | Type    | Description |
-| -------------------- | -------- | ------- | ----------- |
-| `discoveryTimeoutMs` | Optional | integer |             |
-| `overallTimeoutMs`   | Optional | integer |             |
-| `cacheTtlMs`         | Optional | integer |             |
-| `negativeCacheTtlMs` | Optional | integer |             |
+| Field                | Status   | Type    | Description                                               |
+| -------------------- | -------- | ------- | --------------------------------------------------------- |
+| `discoveryTimeoutMs` | Optional | integer | Timeout in milliseconds for downstream discovery checks.  |
+| `overallTimeoutMs`   | Optional | integer | Overall timeout in milliseconds for completion discovery. |
+| `cacheTtlMs`         | Optional | integer | Milliseconds successful discovery results stay fresh.     |
+| `negativeCacheTtlMs` | Optional | integer | Milliseconds failed discovery results stay cached.        |
 
 ### `options`
 
 Global Caplets runtime options.
 
-| Field                          | Status   | Type                                                                                              | Description                           |
-| ------------------------------ | -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `exposure`                     | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents. |
-| `exposureDiscoveryTimeoutMs`   | Optional | integer                                                                                           |                                       |
-| `exposureDiscoveryConcurrency` | Optional | integer                                                                                           |                                       |
+| Field                          | Status   | Type                                                                                              | Description                                                                 |
+| ------------------------------ | -------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `exposure`                     | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                       |
+| `exposureDiscoveryTimeoutMs`   | Optional | integer                                                                                           | Timeout in milliseconds for exposure discovery.                             |
+| `exposureDiscoveryConcurrency` | Optional | integer                                                                                           | Maximum number of Caplets inspected concurrently during exposure discovery. |
 
 ### `mcpServers`
 
@@ -65,13 +114,13 @@ Downstream MCP servers keyed by stable server ID.
 | `env`              | Optional | object                                                                                            | Environment variables for stdio servers. Supports $\{VAR\} and $env:VAR.        |
 | `cwd`              | Optional | string                                                                                            | Working directory for stdio servers.                                            |
 | `url`              | Optional | string                                                                                            | Remote MCP server URL for http or sse transport.                                |
-| `auth`             | Optional | object \| object \| object \| object \| object                                                    | Authentication settings for a remote MCP server.                                |
-| `tags`             | Optional | array                                                                                             |                                                                                 |
+| `auth`             | Optional | object                                                                                            | Authentication settings for a remote MCP server.                                |
+| `tags`             | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                |
 | `exposure`         | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                           |
 | `shadowing`        | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.                |
 | `useWhen`          | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.                     |
 | `avoidWhen`        | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.                      |
-| `setup`            | Optional | object                                                                                            |                                                                                 |
+| `setup`            | Optional | object                                                                                            | Optional setup and verification metadata.                                       |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.         |
 | `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                 |
 | `startupTimeoutMs` | Optional | integer                                                                                           | Timeout in milliseconds for starting or checking a downstream server.           |
@@ -90,13 +139,13 @@ OpenAPI endpoints keyed by stable Caplet ID.
 | `specPath`            | Optional | string                                                                                            | Local OpenAPI specification path.                                                 |
 | `specUrl`             | Optional | string                                                                                            | Remote OpenAPI specification URL.                                                 |
 | `baseUrl`             | Optional | string                                                                                            | Override base URL for OpenAPI requests.                                           |
-| `auth`                | Required | object \| object \| object \| object \| object                                                    | Explicit OpenAPI request auth config. Use \{"type":"none"\} for public APIs.      |
-| `tags`                | Optional | array                                                                                             |                                                                                   |
+| `auth`                | Required | object                                                                                            | Explicit OpenAPI request auth config. Use \{"type":"none"\} for public APIs.      |
+| `tags`                | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                  |
 | `exposure`            | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                             |
 | `shadowing`           | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.                  |
 | `useWhen`             | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.                       |
 | `avoidWhen`           | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.                        |
-| `setup`               | Optional | object                                                                                            |                                                                                   |
+| `setup`               | Optional | object                                                                                            | Optional setup and verification metadata.                                         |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
 | `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for OpenAPI HTTP requests.                                |
@@ -116,13 +165,13 @@ GraphQL endpoints keyed by stable Caplet ID.
 | `schemaUrl`           | Optional | string                                                                                            | Remote GraphQL SDL or introspection URL.                                          |
 | `introspection`       | Optional | boolean                                                                                           | Load schema through endpoint introspection.                                       |
 | `operations`          | Optional | object                                                                                            | Configured GraphQL operations keyed by stable tool name.                          |
-| `auth`                | Required | object \| object \| object \| object \| object                                                    | Explicit GraphQL request auth config. Use \{"type":"none"\} for public APIs.      |
-| `tags`                | Optional | array                                                                                             |                                                                                   |
+| `auth`                | Required | object                                                                                            | Explicit GraphQL request auth config. Use \{"type":"none"\} for public APIs.      |
+| `tags`                | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                                  |
 | `exposure`            | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                             |
 | `shadowing`           | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.                  |
 | `useWhen`             | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.                       |
 | `avoidWhen`           | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.                        |
-| `setup`               | Optional | object                                                                                            |                                                                                   |
+| `setup`               | Optional | object                                                                                            | Optional setup and verification metadata.                                         |
 | `projectBinding`      | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.           |
 | `runtime`             | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.                   |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for GraphQL HTTP requests.                                |
@@ -139,14 +188,14 @@ HTTP APIs keyed by stable Caplet ID.
 | `name`             | Required | string                                                                                            | Human-readable HTTP API display name.                                         |
 | `description`      | Required | string                                                                                            | Capability description shown to agents before HTTP actions are disclosed.     |
 | `baseUrl`          | Required | string                                                                                            | Base URL for HTTP action requests.                                            |
-| `auth`             | Required | object \| object \| object \| object \| object                                                    | Explicit HTTP API request auth config. Use \{"type":"none"\} for public APIs. |
+| `auth`             | Required | object                                                                                            | Explicit HTTP API request auth config. Use \{"type":"none"\} for public APIs. |
 | `actions`          | Required | object                                                                                            | Configured HTTP actions keyed by stable tool name.                            |
-| `tags`             | Optional | array                                                                                             |                                                                               |
+| `tags`             | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                              |
 | `exposure`         | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                         |
 | `shadowing`        | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.              |
 | `useWhen`          | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.                   |
 | `avoidWhen`        | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.                    |
-| `setup`            | Optional | object                                                                                            |                                                                               |
+| `setup`            | Optional | object                                                                                            | Optional setup and verification metadata.                                     |
 | `projectBinding`   | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.       |
 | `runtime`          | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.               |
 | `requestTimeoutMs` | Optional | integer                                                                                           | Timeout in milliseconds for HTTP action requests.                             |
@@ -164,12 +213,12 @@ CLI tools keyed by stable Caplet ID.
 | `actions`        | Required | object                                                                                            | Configured CLI actions keyed by stable tool name.                        |
 | `cwd`            | Optional | string                                                                                            | Default working directory for CLI actions.                               |
 | `env`            | Optional | object                                                                                            | Default environment variables for CLI actions.                           |
-| `tags`           | Optional | array                                                                                             |                                                                          |
+| `tags`           | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                         |
 | `exposure`       | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                    |
 | `shadowing`      | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.         |
 | `useWhen`        | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.              |
 | `avoidWhen`      | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.               |
-| `setup`          | Optional | object                                                                                            |                                                                          |
+| `setup`          | Optional | object                                                                                            | Optional setup and verification metadata.                                |
 | `projectBinding` | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.  |
 | `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.          |
 | `timeoutMs`      | Optional | integer                                                                                           | Default timeout in milliseconds for CLI actions.                         |
@@ -189,12 +238,12 @@ Nested Caplet collections keyed by stable Caplet ID.
 | `defaultSearchLimit` | Optional | integer                                                                                           | Default maximum number of child Caplet search results.                       |
 | `maxSearchLimit`     | Optional | integer                                                                                           | Maximum accepted child Caplet search result limit.                           |
 | `toolCacheTtlMs`     | Optional | integer                                                                                           | Milliseconds child Caplet metadata stays fresh. Set 0 to refresh every time. |
-| `tags`               | Optional | array                                                                                             |                                                                              |
+| `tags`               | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                             |
 | `exposure`           | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                        |
 | `shadowing`          | Optional | "forbid" \| "allow"                                                                               | Whether attached local Caplets may shadow this remote Caplet ID.             |
 | `useWhen`            | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.                  |
 | `avoidWhen`          | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.                   |
-| `setup`              | Optional | object                                                                                            |                                                                              |
+| `setup`              | Optional | object                                                                                            | Optional setup and verification metadata.                                    |
 | `projectBinding`     | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project.      |
 | `runtime`            | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.              |
 | `disabled`           | Optional | boolean                                                                                           | When true, omit this Caplet set.                                             |

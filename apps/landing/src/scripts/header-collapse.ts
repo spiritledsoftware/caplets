@@ -1,7 +1,32 @@
 const siteHeader = document.querySelector<HTMLElement>("[data-site-header]");
+const collapsedFocusTargets = siteHeader
+  ? Array.from(
+      siteHeader.querySelectorAll<HTMLElement>(
+        ".site-header__section-link, .site-header__docs-link",
+      ),
+    )
+  : [];
 
 let headerFrame = 0;
 let lastScrollY = window.scrollY;
+let isHeaderCollapsed = false;
+
+function setHeaderCollapsed(collapsed: boolean) {
+  if (!siteHeader || isHeaderCollapsed === collapsed) return;
+
+  isHeaderCollapsed = collapsed;
+  siteHeader.classList.toggle("is-header-collapsed", collapsed);
+
+  for (const target of collapsedFocusTargets) {
+    if (collapsed) {
+      target.setAttribute("aria-hidden", "true");
+      target.setAttribute("tabindex", "-1");
+    } else {
+      target.removeAttribute("aria-hidden");
+      target.removeAttribute("tabindex");
+    }
+  }
+}
 
 function updateHeaderState() {
   headerFrame = 0;
@@ -12,17 +37,17 @@ function updateHeaderState() {
   lastScrollY = scrollY;
 
   if (scrollY <= 72) {
-    siteHeader.classList.remove("is-header-collapsed");
+    setHeaderCollapsed(false);
     return;
   }
 
   if (delta > 4) {
-    siteHeader.classList.add("is-header-collapsed");
+    setHeaderCollapsed(true);
     return;
   }
 
   if (delta < -4) {
-    siteHeader.classList.remove("is-header-collapsed");
+    setHeaderCollapsed(false);
   }
 }
 

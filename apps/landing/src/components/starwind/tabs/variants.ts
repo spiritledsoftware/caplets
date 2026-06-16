@@ -12,7 +12,7 @@ export const tabsList = tv({
 
 export const tabsTrigger = tv({
   base: [
-    "inline-flex grow items-center justify-center gap-2 rounded-sm border border-transparent px-3 py-1.5 font-medium whitespace-nowrap transition-[color,box-shadow]",
+    "inline-flex min-h-11 grow items-center justify-center gap-2 rounded-sm border border-transparent px-3 py-1.5 font-medium whitespace-nowrap transition-[color,box-shadow]",
     "data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm",
     "dark:data-[state=active]:border-input dark:data-[state=active]:bg-input/30 dark:text-muted-foreground",
     "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",

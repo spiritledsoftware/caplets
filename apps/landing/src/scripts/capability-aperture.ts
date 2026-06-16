@@ -4,9 +4,25 @@ const apertureRoot = document.querySelector<HTMLElement>("[data-aperture]");
 const apertureStage = document.querySelector<HTMLElement>("[data-aperture-stage]");
 const apertureCanvas = document.querySelector<HTMLCanvasElement>("[data-aperture-canvas]");
 
+function canUseWebGl() {
+  const canvas = document.createElement("canvas");
+  const context =
+    canvas.getContext("webgl2", { failIfMajorPerformanceCaveat: true }) ??
+    canvas.getContext("webgl", { failIfMajorPerformanceCaveat: true });
+  if (!context) return false;
+
+  context.getExtension("WEBGL_lose_context")?.loseContext();
+  return true;
+}
+
 if (apertureRoot && apertureStage && apertureCanvas) {
   const bootApertureScene = async () => {
     if (!canAnimate) {
+      apertureRoot.classList.add("is-aperture-fallback");
+      return;
+    }
+
+    if (!canUseWebGl()) {
       apertureRoot.classList.add("is-aperture-fallback");
       return;
     }
