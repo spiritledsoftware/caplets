@@ -89,8 +89,18 @@ const { class: className, ...rest } = Astro.props;
       ) as NodeListOf<HTMLElement>;
       tempCloseButtons.forEach((button: HTMLElement) => {
         if (button.hasAttribute("data-as-child")) {
-          const childElement = button.firstElementChild;
+          const childElement = button.firstElementChild as HTMLElement | null;
           if (childElement) {
+            for (const attribute of Array.from(button.attributes)) {
+              if (attribute.name === "data-as-child") continue;
+              if (attribute.name === "class") {
+                childElement.classList.add(...attribute.value.split(/\s+/u).filter(Boolean));
+                continue;
+              }
+              if (!childElement.hasAttribute(attribute.name)) {
+                childElement.setAttribute(attribute.name, attribute.value);
+              }
+            }
             childElement.classList.add("starwind-dialog-close");
             button.parentNode?.replaceChild(childElement, button);
           }

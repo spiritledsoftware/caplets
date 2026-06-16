@@ -3,10 +3,9 @@
   window.StarlightThemeProvider = (() => {
     const storedTheme =
       typeof localStorage !== "undefined" && localStorage.getItem("starlight-theme");
-    const theme =
-      storedTheme === "dark" || storedTheme === "auto" || storedTheme === "light"
-        ? storedTheme
-        : "light";
+    const parseTheme = (theme) =>
+      theme === "dark" || theme === "auto" || theme === "light" ? theme : "light";
+    const theme = parseTheme(storedTheme);
     const resolvedTheme =
       theme === "auto"
         ? window.matchMedia("(prefers-color-scheme: light)").matches
@@ -16,6 +15,7 @@
     document.documentElement.dataset.theme = resolvedTheme;
     return {
       updatePickers(theme = storedTheme || "light") {
+        theme = parseTheme(theme);
         document.querySelectorAll("starlight-theme-select").forEach((picker) => {
           const select = picker.querySelector("select");
           if (select) select.value = theme;

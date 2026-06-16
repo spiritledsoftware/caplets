@@ -171,7 +171,6 @@ li {
     width: 1px;
     height: 1px;
     overflow: hidden;
-    clip: rect(0 0 0 0);
     clip-path: inset(50%);
     white-space: nowrap;
   }
@@ -199,7 +198,6 @@ li {
     min-width: 0;
     overflow-wrap: anywhere;
     padding: 0.35rem 0;
-    word-break: break-word;
   }
 
   .sl-markdown-content table:has(thead th:nth-child(4):last-child) td > * {
