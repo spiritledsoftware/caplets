@@ -35,9 +35,9 @@ const requiredContent = new Map<string, string[]>([
   [
     "install.mdx",
     [
-      "npx caplets setup",
       "npm install -g caplets",
       "npx caplets install spiritledsoftware/caplets osv",
+      '"command": "npx"',
     ],
   ],
   ["configuration.mdx", ["https://caplets.dev/config.schema.json", ".caplets/config.json"]],

@@ -17,12 +17,15 @@ Minimal Markdown Caplet:
 
 ```md
 ---
-name: OSV
-description: Query OSV vulnerability data for package versions.
+name: Example Tools
+description: Expose a small local MCP server to agents.
 exposure: code_mode
+mcpServer:
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-everything"]
 ---
 
-Use this Caplet when an agent needs vulnerability data from OSV.
+Use this Caplet when an agent needs the example MCP tools.
 ```
 
 Use `useWhen` and `avoidWhen` to guide agent selection, and add `setup` metadata when a
@@ -35,6 +38,12 @@ Project-bound Caplet with setup:
 name: Repository Checks
 description: Run repository-local checks before an agent edits this project.
 exposure: code_mode
+cliTools:
+  actions:
+    test:
+      description: Run the project test suite.
+      command: pnpm
+      args: ["test"]
 projectBinding:
   required: true
 setup:

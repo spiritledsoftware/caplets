@@ -91,10 +91,10 @@ export const whyCapletsProblems = [
 ] as const;
 
 export const remoteCommands = {
-  server: `CAPLETS_SERVER_URL=https://caplets.example.com/caplets
-CAPLETS_SERVER_PASSWORD=...
+  server: `export CAPLETS_SERVER_URL=https://caplets.example.com/caplets
+export CAPLETS_SERVER_PASSWORD=...
 caplets serve --transport http`,
-  client: `CAPLETS_REMOTE_PASSWORD=...
+  client: `export CAPLETS_REMOTE_PASSWORD=...
 caplets attach --remote-url https://caplets.example.com/caplets`,
 } as const;
 

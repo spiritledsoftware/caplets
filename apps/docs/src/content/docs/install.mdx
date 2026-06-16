@@ -11,16 +11,16 @@ Caplets is pre-1.0. Use the latest CLI and latest docs together.
 - An agent that can use MCP, such as Codex or Claude, or a native integration such as
   OpenCode or Pi.
 
-## One-off setup
+## Install
 
-Use `npx` if you do not want a global install:
+Use `npx` if you only want to try a command without installing globally:
 
 ```sh
-npx caplets setup
 npx caplets install spiritledsoftware/caplets osv
 ```
 
-Use the global CLI if you want `caplets` on your PATH:
+Use the global CLI before running setup. Setup writes agent configuration that launches
+`caplets serve`, so the binary needs to stay on your PATH:
 
 ```sh
 npm install -g caplets
@@ -33,7 +33,8 @@ first install because it is public and does not require credentials.
 
 ## Manual MCP setup
 
-If your client does not support `caplets setup`, add Caplets as a stdio MCP server:
+If your client does not support `caplets setup`, or if you are avoiding a global install,
+add Caplets as a stdio MCP server:
 
 ```json
 {
