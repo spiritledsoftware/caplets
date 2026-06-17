@@ -8,6 +8,7 @@ export type DiagnoseCodeModeTypeScriptInput = {
   declaration: string;
   maxDiagnostics?: number;
   timeoutMs?: number;
+  session?: CodeModeDiagnosticsSession;
 };
 
 const CODE_FILE = "/caplets-code-mode/input.ts";
@@ -49,7 +50,10 @@ export function diagnoseCodeModeTypeScript(
   const host = createVirtualCompilerHost(compilerOptions, {
     [CODE_FILE]: wrappedCode,
     [DECLARATION_FILE]: input.declaration,
-    [AMBIENT_FILE]: CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
+    [AMBIENT_FILE]: [
+      CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
+      input.session?.declaration() ?? "",
+    ].join("\n"),
   });
   const program = ts.createProgram(
     [CODE_FILE, DECLARATION_FILE, AMBIENT_FILE],
@@ -84,6 +88,115 @@ export function diagnoseCodeModeTypeScript(
     }
   }
   return diagnostics.slice(0, maxDiagnostics);
+}
+
+export class CodeModeDiagnosticsSession {
+  #declarations = new Map<string, string>();
+
+  declaration(): string {
+    return [...this.#declarations.values()].join("\n");
+  }
+
+  recordSuccessfulCell(code: string): void {
+    const source = ts.createSourceFile(
+      "/caplets-code-mode/session-cell.ts",
+      code,
+      ts.ScriptTarget.ES2022,
+      true,
+    );
+    for (const statement of source.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name) {
+        const typeParameters = statement.typeParameters
+          ? `<${statement.typeParameters.map((typeParameter) => typeParameter.getText(source)).join(", ")}>`
+          : "";
+        const params = statement.parameters.map((parameter) => ambientParameter(parameter, source));
+        const returnType = statement.type ? `: ${statement.type.getText(source)}` : ": unknown";
+        this.#declarations.set(
+          statement.name.text,
+          `declare function ${statement.name.text}${typeParameters}(${params.join(", ")})${returnType};`,
+        );
+      }
+    }
+    for (const name of collectFunctionScopedVarNames(source)) {
+      this.#declarations.set(name, `declare var ${name}: unknown;`);
+    }
+  }
+
+  clear(): void {
+    this.#declarations.clear();
+  }
+}
+
+function collectFunctionScopedVarNames(source: ts.SourceFile): string[] {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) {
+      return;
+    }
+    if (ts.isVariableStatement(node)) {
+      collectVarDeclarationListNames(node.declarationList, names);
+    }
+    if (
+      (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
+      node.initializer &&
+      ts.isVariableDeclarationList(node.initializer)
+    ) {
+      collectVarDeclarationListNames(node.initializer, names);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...names];
+}
+
+function collectVarDeclarationListNames(
+  declarationList: ts.VariableDeclarationList,
+  names: Set<string>,
+): void {
+  const isVar = (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0;
+  if (!isVar) {
+    return;
+  }
+  for (const declaration of declarationList.declarations) {
+    for (const name of bindingNames(declaration.name)) {
+      names.add(name);
+    }
+  }
+}
+
+function bindingNames(name: ts.BindingName): string[] {
+  if (ts.isIdentifier(name)) {
+    return [name.text];
+  }
+  return name.elements.flatMap((element) => {
+    if (ts.isOmittedExpression(element)) {
+      return [];
+    }
+    return bindingNames(element.name);
+  });
+}
+
+function ambientParameter(parameter: ts.ParameterDeclaration, source: ts.SourceFile): string {
+  const dotDotDot = parameter.dotDotDotToken ? "..." : "";
+  const name = parameter.name.getText(source);
+  const optional = parameter.questionToken || parameter.initializer ? "?" : "";
+  const type =
+    parameter.type?.getText(source) ??
+    (parameter.initializer ? inferLiteralType(parameter.initializer) : "unknown");
+  return `${dotDotDot}${name}${optional}: ${type}`;
+}
+
+function inferLiteralType(initializer: ts.Expression | undefined): string {
+  if (!initializer) return "unknown";
+  if (ts.isNumericLiteral(initializer)) return "number";
+  if (ts.isStringLiteral(initializer)) return "string";
+  if (
+    initializer.kind === ts.SyntaxKind.TrueKeyword ||
+    initializer.kind === ts.SyntaxKind.FalseKeyword
+  ) {
+    return "boolean";
+  }
+  return "unknown";
 }
 
 function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
