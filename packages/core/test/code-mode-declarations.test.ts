@@ -65,6 +65,31 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).not.toContain(" = ");
   });
 
+  it("includes the supported Code Mode platform globals", () => {
+    const declaration = generateCodeModeDeclarations({
+      caplets: [{ id: "github", name: "GitHub", description: "GitHub repo operations." }],
+    });
+
+    expect(declaration).toContain("declare function atob(input:string):string");
+    expect(declaration).toContain("declare const Buffer:BufferConstructor");
+    expect(declaration).toContain("declare class URL{");
+    expect(declaration).toContain("declare class TextEncoder{");
+    expect(declaration).toContain("declare const crypto:Crypto");
+    expect(declaration).toContain("declare function structuredClone<T>(value:T):T");
+    expect(declaration).toContain("declare class Headers{");
+    expect(declaration).toContain("declare class Blob{");
+    expect(declaration).toContain("declare class File extends Blob");
+    expect(declaration).toContain("declare class FormData{");
+    expect(declaration).toContain("declare class ReadableStream");
+    expect(declaration).toContain("declare class AbortController");
+    expect(declaration).toContain("declare class Request");
+    expect(declaration).toContain("declare class Response");
+    expect(declaration).toContain("declare function fetch");
+    expect(declaration).toContain("Promise<never>");
+    expect(declaration).toContain("declare function queueMicrotask");
+    expect(declaration).toContain("declare function setTimeout");
+  });
+
   it("builds the shared Code Mode tool description from generated declarations", () => {
     const declaration = 'declare const caplets:{docs:CapletHandle<"docs">;};';
     const description = generateCodeModeRunToolDescription(declaration);

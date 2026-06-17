@@ -20,13 +20,27 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain("callTool");
   });
 
-  it("blocks direct fetch because the ambient lib omits network globals", () => {
+  it("blocks direct fetch even though fetch is declared as unavailable", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: 'await fetch("https://example.com");',
     });
 
     expect(diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Direct fetch is not available",
+    );
+  });
+
+  it("blocks direct globalThis.fetch calls", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'await globalThis.fetch("https://example.com");',
+    });
+
+    expect(diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
       "Direct fetch is not available",
     );
@@ -47,18 +61,59 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   });
 
-  it("allows standard JavaScript, console, URL, JSON, and Caplet callTool", () => {
+  it("allows standard JavaScript, platform globals, JSON, and Caplet callTool", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: `
         const url = new URL("https://example.com/issues?state=open");
+        const params = new URLSearchParams([["q", "caplets"]]);
+        params.append("state", "open");
+        const utf8 = new TextEncoder().encode(url.searchParams.get("state") ?? "");
+        const decoded = new TextDecoder().decode(utf8);
+        const bytes = Buffer.from(btoa(decoded), "base64");
+        const clone = structuredClone({ decoded, params: params.toString() });
+        const random = crypto.getRandomValues(new Uint8Array(4));
+        const uuid = crypto.randomUUID();
+        const headers = new Headers({ accept: "application/json" });
+        headers.append("x-code-mode", "true");
+        const blob = new Blob([bytes.toString()], { type: "text/plain" });
+        const file = new File([blob], "state.txt", { type: blob.type });
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const request = new Request(url, { method: "POST", headers, body: form });
+        const response = Response.json({ ok: true, clone, uuid, random: random.length });
+        const reader = new ReadableStream<string>({
+          start(controller) {
+            controller.enqueue("ready");
+            controller.close();
+          },
+        }).getReader();
+        const writer = new WritableStream<string>({ write() {} }).getWriter();
+        const transform = new TransformStream<string, string>({
+          transform(chunk, controller) {
+            controller.enqueue(chunk);
+          },
+        });
+        const controller = new AbortController();
+        controller.abort("done");
+        controller.signal.throwIfAborted();
+        const timeout = setTimeout(() => undefined, 0);
+        clearTimeout(timeout);
+        const interval = setInterval(() => undefined, 1);
+        clearInterval(interval);
+        queueMicrotask(() => undefined);
         console.log(JSON.stringify({ state: url.searchParams.get("state") }));
+        await reader.read();
+        await writer.write(request.method);
+        await writer.close();
+        transform.readable.getReader();
+        await response.text();
         const result = await caplets.github.callTool("listIssues", { state: "open" });
         return result;
       `,
     });
 
-    expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+    expect(diagnostics).toEqual([]);
   });
 
   it("blocks static and dynamic imports", () => {
@@ -75,6 +130,25 @@ describe("diagnoseCodeModeTypeScript", () => {
     ).toBeGreaterThanOrEqual(1);
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
       "Imports are not available in Code Mode",
+    );
+  });
+
+  it("keeps Node process and require unavailable", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        process.cwd();
+        require("fs");
+      `,
+    });
+
+    const codes = diagnostics.map((diagnostic) => diagnostic.code);
+    expect(codes).toContain("2591");
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Cannot find name 'process'",
+    );
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Cannot find name 'require'",
     );
   });
 
