@@ -17,7 +17,7 @@
 - Keep `fetch` unavailable for direct use; static analysis must still return `FETCH_UNAVAILABLE`.
 - Supported platform APIs must be visible on both top-level bindings and `globalThis`.
 - Code Mode remains a context-management runtime, not a sandbox security boundary.
-- Runtime behavior and TypeScript declarations must stay in sync through checked generated files.
+- Platform builtins must be installed as runtime globals for JavaScript muscle memory, but must not be enumerated in generated Code Mode TypeScript declarations or the tool prompt. Keep the generated declaration payload lean and focused on Caplet handles, debug helpers, and `console`.
 - Add a changeset because this is user-facing package behavior.
 
 ## Package And Bridge Decisions
@@ -76,11 +76,11 @@ Modify:
 - `pnpm-lock.yaml` - update after adding dependencies.
 - `packages/core/package.json` - add runtime dependencies for package-backed platform APIs.
 - `packages/core/src/code-mode/sandbox.ts` - install host bridges, prepend generated guest runtime source, and dispose active timers/deferreds safely.
-- `packages/core/src/code-mode/runtime-api.d.ts` - declare all supported platform globals.
+- `packages/core/src/code-mode/runtime-api.d.ts` - keep lean Caplet handle/debug/console declarations.
 - `packages/core/src/code-mode/runtime-api.generated.ts` - regenerate from `runtime-api.d.ts`.
-- `packages/core/src/code-mode/diagnostics.ts` - remove duplicate ad hoc URL ambient declarations and keep fetch/import safety diagnostics authoritative.
-- `packages/core/test/code-mode-diagnostics.test.ts` - cover the expanded TypeScript surface and fetch blocking.
-- `packages/core/test/code-mode-declarations.test.ts` - ensure generated declarations include platform globals.
+- `packages/core/src/code-mode/diagnostics.ts` - keep fetch/import safety diagnostics authoritative.
+- `packages/core/test/code-mode-diagnostics.test.ts` - cover platform runtime behavior and fetch blocking without expanding the prompt declaration payload.
+- `packages/core/test/code-mode-declarations.test.ts` - ensure generated declarations stay focused on Caplet handles/debug/console.
 - `apps/docs/src/content/docs/code-mode.mdx` - document available platform APIs and unavailable direct I/O.
 - `apps/docs/src/content/docs/reference/code-mode-api.mdx` - regenerate after runtime API declaration changes.
 - `docs/architecture.md` - update Code Mode runtime contract.
@@ -288,7 +288,7 @@ Run: `pnpm --filter @caplets/core test -- test/code-mode-platform-api.test.ts te
 
 Expected: PASS.
 
-### Task 5: Update TypeScript Declarations And Diagnostics
+### Task 5: Keep Lean Declarations And Diagnostics
 
 **Files:**
 
@@ -300,27 +300,27 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Produces declaration coverage for every supported global.
+- Preserves the lean declaration surface for Caplet handles, debug helpers, and `console`.
+- Keeps platform builtins as runtime globals without listing them in generated declarations or the tool prompt.
 - Preserves diagnostics for direct `fetch` and imports.
 
-- [ ] **Step 1: Update runtime API declarations**
+- [ ] **Step 1: Keep runtime API declarations lean**
 
-Add declarations for the exact supported API subset. Do not import DOM libs. Declare only the methods and properties supported by the runtime implementation.
+Do not add declarations for `atob`, `btoa`, `Buffer`, URL helpers, Web data objects, timers, crypto, or `fetch`. Those APIs are runtime globals for standard JavaScript muscle memory, not generated prompt payload. Keep `runtime-api.d.ts` focused on Caplet handles, `caplets.debug`, shared result types, and `console`.
 
-Include a documented `fetch(...): Promise<never>` declaration so agents can inspect it, while preflight diagnostics still block direct calls.
+- [ ] **Step 2: Preserve diagnostics instead of ambient platform declarations**
 
-- [ ] **Step 2: Remove duplicate ambient URL declarations**
-
-Modify `packages/core/src/code-mode/diagnostics.ts` so `ambientDeclarations()` no longer separately declares `URL` and `URLSearchParams`. The generated runtime declaration must be the single source of truth.
+Keep direct `fetch` detection and import/module blocking authoritative. Do not use ambient declarations to make the generated prompt surface list platform builtins.
 
 - [ ] **Step 3: Add diagnostics tests**
 
 Extend `packages/core/test/code-mode-diagnostics.test.ts` to assert:
 
-- The supported globals type-check.
 - `await fetch("https://example.com")` still produces `FETCH_UNAVAILABLE`.
 - `await globalThis.fetch("https://example.com")` still produces `FETCH_UNAVAILABLE`.
 - `import("node:fs")`, `process.cwd()`, and `require("fs")` remain blocked or unknown.
+
+Extend `packages/core/test/code-mode-declarations.test.ts` to assert generated declarations do not enumerate platform globals such as `Buffer`, `URL`, or `fetch`.
 
 - [ ] **Step 4: Generate and check declarations**
 
@@ -342,7 +342,7 @@ Expected: PASS.
 - Modify: `apps/docs/src/content/docs/reference/code-mode-api.mdx`
 - Modify: `docs/architecture.md`
 - Modify: `docs/product/caplets-code-mode-prd.md`
-- Create: `.changeset/code-mode-platform-apis.md`
+- Modify or create: `.changeset/code-mode-platform-apis.md`
 
 **Interfaces:**
 
@@ -364,11 +364,11 @@ State that `fetch` is intentionally unavailable and Caplet handles must be used 
 
 Run: `pnpm docs:generate`
 
-Expected: `apps/docs/src/content/docs/reference/code-mode-api.mdx` reflects `runtime-api.d.ts`.
+Expected: `apps/docs/src/content/docs/reference/code-mode-api.mdx` reflects the lean `runtime-api.d.ts` handle/debug/console surface and does not claim to list every runtime builtin.
 
-- [ ] **Step 3: Add changeset**
+- [ ] **Step 3: Add or verify changeset**
 
-Create `.changeset/code-mode-platform-apis.md`:
+Create `.changeset/code-mode-platform-apis.md` if it does not already exist. If it exists, update it in place rather than creating a duplicate:
 
 ```md
 ---
@@ -448,4 +448,4 @@ Expected: PASS through `format:check`, `lint`, `code-mode:check-api`, `schema:ch
 
 - Spec coverage: every requested functional area has a decision and a task: base64/Buffer, URL, text encoding, crypto, timers, structured clone, headers, blob/file/form-data, streams, abort, request/response, declarations, docs, smoke, and release notes.
 - Placeholder scan: no unresolved implementation markers or unsupported vague steps.
-- Type consistency: generated runtime source is named `CODE_MODE_PLATFORM_RUNTIME_SOURCE`; host bridge installer is named `installCodeModePlatformHost`; runtime declarations are the single TypeScript source of truth.
+- Type consistency: generated runtime source is named `CODE_MODE_PLATFORM_RUNTIME_SOURCE`; host bridge installer is named `installCodeModePlatformHost`; runtime declarations remain the lean Caplet handle/debug/console source of truth, not an exhaustive catalog of platform builtins.
