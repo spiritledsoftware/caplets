@@ -422,13 +422,24 @@ describe("Code Mode platform API", () => {
         },
       });
       const writableStream = new globalThis.WritableStream({
-        write() {},
+        write(chunk) {
+          writes.push(chunk);
+        },
       });
       const transformStream = new globalThis.TransformStream({
         transform(chunk, controller) {
-          controller.enqueue(chunk);
+          controller.enqueue(String(chunk).toUpperCase());
         },
       });
+      const writes = [];
+      const readableFirst = await readableStream.getReader().read();
+      const writer = writableStream.getWriter();
+      await writer.write("written");
+      await writer.close();
+      const transformWriter = transformStream.writable.getWriter();
+      await transformWriter.write("mixed");
+      await transformWriter.close();
+      const transformFirst = await transformStream.readable.getReader().read();
 
       const request = new globalThis.Request("https://example.com/api", {
         method: "POST",
@@ -460,6 +471,9 @@ describe("Code Mode platform API", () => {
         readableStreamType: typeof readableStream.getReader,
         writableStreamType: typeof writableStream.getWriter,
         transformStreamType: typeof transformStream.readable,
+        readableFirst,
+        writes,
+        transformFirst,
         requestMethod: request.method,
         requestUrl: request.url,
         responseStatus: response.status,
@@ -491,6 +505,9 @@ describe("Code Mode platform API", () => {
         readableStreamType: "function",
         writableStreamType: "function",
         transformStreamType: "object",
+        readableFirst: { value: "hello", done: false },
+        writes: ["written"],
+        transformFirst: { value: "MIXED", done: false },
         requestMethod: "POST",
         requestUrl: "https://example.com/api",
         responseStatus: 201,
@@ -533,6 +550,7 @@ describe("Code Mode platform API", () => {
 
   it("keeps fetch unavailable for direct calls", async () => {
     const directResult = await runPlatformCode(`
+      console.log("fetch sentinel should not run");
       const response = await fetch("data:text/plain,blocked");
       return {
         ok: response.ok,
@@ -541,6 +559,7 @@ describe("Code Mode platform API", () => {
       };
     `);
     const globalResult = await runPlatformCode(`
+      console.log("global fetch sentinel should not run");
       const response = await globalThis.fetch("data:text/plain,blocked");
       return {
         ok: response.ok,
@@ -557,6 +576,8 @@ describe("Code Mode platform API", () => {
     expect(globalResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
       "FETCH_UNAVAILABLE",
     );
+    expect(directResult.logs.entries).toEqual([]);
+    expect(globalResult.logs.entries).toEqual([]);
   });
 
   it("keeps Node globals unavailable", async () => {
@@ -570,6 +591,8 @@ describe("Code Mode platform API", () => {
         globalThisExports: typeof globalThis.exports,
         require: typeof require,
         globalThisRequire: typeof globalThis.require,
+        global: typeof global,
+        globalThisGlobal: typeof globalThis.global,
         __dirname: typeof __dirname,
         globalThisDirname: typeof globalThis.__dirname,
         __filename: typeof __filename,
@@ -588,6 +611,8 @@ describe("Code Mode platform API", () => {
         globalThisExports: "undefined",
         require: "undefined",
         globalThisRequire: "undefined",
+        global: "undefined",
+        globalThisGlobal: "undefined",
         __dirname: "undefined",
         globalThisDirname: "undefined",
         __filename: "undefined",
