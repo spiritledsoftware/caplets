@@ -151,9 +151,19 @@ function operationFromMethod(
     supportsMediaUpload: entry.method.supportsMediaUpload === true,
     supportsMediaDownload: entry.method.supportsMediaDownload === true,
     ...(mediaUpload ? { mediaUpload } : {}),
-    mediaUploadProtocols: entry.method.mediaUpload?.protocols ?? {},
+    mediaUploadProtocols: mediaUploadProtocols(entry.method),
     parameterOrder: entry.method.parameterOrder ?? [],
   };
+}
+
+function mediaUploadProtocols(
+  method: GoogleDiscoveryMethod,
+): Record<string, { path?: string; multipart?: boolean }> {
+  const protocols = { ...method.mediaUpload?.protocols };
+  if (!protocols.multipart && protocols.simple?.multipart === true) {
+    protocols.multipart = protocols.simple;
+  }
+  return protocols;
 }
 
 function selectGoogleDiscoveryScopes(scopes: string[] | undefined): string[] {

@@ -1313,6 +1313,43 @@ describe("generated tool handlers", () => {
     });
   });
 
+  it("allows field projection from real API body.artifact objects", () => {
+    const result = projectCallToolResult(
+      {
+        content: [{ type: "text" as const, text: "full output" }],
+        structuredContent: {
+          body: {
+            artifact: {
+              id: "art_1",
+              name: "native response object",
+            },
+          },
+        },
+        isError: false,
+      },
+      {
+        type: "object",
+        properties: {
+          body: {
+            type: "object",
+            properties: {
+              artifact: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+      ["body.artifact.id"],
+    );
+
+    expect(result.structuredContent).toEqual({ body: { artifact: { id: "art_1" } } });
+  });
+
   it("preserves downstream isError results when fields are requested", async () => {
     const downstreamResult = {
       content: [{ type: "text" as const, text: "downstream failed with details" }],

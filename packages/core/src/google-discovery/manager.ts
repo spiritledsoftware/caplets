@@ -226,7 +226,12 @@ export class GoogleDiscoveryManager {
           `Google Discovery request timed out for ${api.server}/${operation.name}`,
         );
       }
-      throw error;
+      if (error instanceof CapletsError) throw error;
+      throw new CapletsError(
+        "DOWNSTREAM_TOOL_ERROR",
+        `Google Discovery request failed for ${api.server}/${operation.name}`,
+        toSafeError(error),
+      );
     } finally {
       clearTimeout(timeout);
     }
@@ -642,7 +647,7 @@ async function fetchDiscoverySource(
         { status: response.status },
       );
     }
-    return readLimitedText(response, {
+    return await readLimitedText(response, {
       maxBytes: DEFAULT_DISCOVERY_DOCUMENT_MAX_BYTES,
       errorMessage: "Google Discovery document exceeded byte limit",
     });
@@ -662,9 +667,13 @@ async function discoveryAuthHeaders(
 ): Promise<Record<string, string>> {
   if (api.auth.type === "none") return {};
   if (api.auth.type === "oauth2" || api.auth.type === "oidc") {
-    if (!shouldSendDiscoveryAuth(api) && !hasStoredOAuthBundle(api, authDir)) return {};
-    return storedOAuthAccessHeaders(api, authDir);
+    const protectedOrigin = discoveryProtectedResourceOrigin(api, authDir);
+    if (!protectedOrigin || !shouldSendDiscoveryAuth(api, protectedOrigin)) return {};
+    const bundle = readTokenBundle(api.server, authDir);
+    if (!bundle?.accessToken && !bundle?.refreshToken) return {};
+    return genericOAuthHeaders({ ...api, baseUrl: protectedOrigin }, authDir);
   }
+  if (!api.baseUrl || !shouldSendDiscoveryAuth(api, new URL(api.baseUrl).origin)) return {};
   return authHeaders(api, authDir);
 }
 
@@ -686,19 +695,13 @@ async function authHeaders(
   }
 }
 
-function hasStoredOAuthBundle(api: GoogleDiscoveryApiConfig, authDir?: string): boolean {
-  const bundle = readTokenBundle(api.server, authDir);
-  return Boolean(bundle?.accessToken || bundle?.refreshToken);
-}
-
-function storedOAuthAccessHeaders(
+function discoveryProtectedResourceOrigin(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
-): Record<string, string> {
+): string | undefined {
+  if (api.baseUrl) return new URL(api.baseUrl).origin;
   const bundle = readTokenBundle(api.server, authDir);
-  return bundle?.accessToken
-    ? { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` }
-    : {};
+  return bundle?.protectedResourceOrigin;
 }
 
 function copySessionAuthorization(
@@ -768,12 +771,11 @@ function googleAuthError(api: GoogleDiscoveryApiConfig, response: Response): Cap
   );
 }
 
-function shouldSendDiscoveryAuth(api: GoogleDiscoveryApiConfig): boolean {
-  return Boolean(
-    api.discoveryUrl &&
-    api.baseUrl &&
-    new URL(api.discoveryUrl).origin === new URL(api.baseUrl).origin,
-  );
+function shouldSendDiscoveryAuth(
+  api: GoogleDiscoveryApiConfig,
+  protectedResourceOrigin: string,
+): boolean {
+  return Boolean(api.discoveryUrl && new URL(api.discoveryUrl).origin === protectedResourceOrigin);
 }
 
 function googleDiscoveryCacheKey(api: GoogleDiscoveryApiConfig): string {

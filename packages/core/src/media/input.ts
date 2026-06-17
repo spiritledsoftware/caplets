@@ -108,7 +108,7 @@ function readDataUrl(
   dataUrl: string,
   options: { filename?: string; mimeType?: string; maxBytes?: number },
 ): ResolvedMediaInput {
-  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/u.exec(dataUrl);
+  const match = /^data:([^;,]+)(?:;[^,;=]+=[^,;]*)*;base64,([A-Za-z0-9+/=]+)$/u.exec(dataUrl);
   if (!match) {
     throw new CapletsError("REQUEST_INVALID", "media.dataUrl must be a base64 data URL");
   }

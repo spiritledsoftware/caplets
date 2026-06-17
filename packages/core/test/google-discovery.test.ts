@@ -48,12 +48,57 @@ beforeEach(async () => {
         return;
       }
       if (url === "/private.discovery.json") {
-        if (request.headers.authorization !== "Bearer private-discovery-token") {
+        if (
+          request.headers.authorization !== "Bearer private-discovery-token" &&
+          request.headers.authorization !== "Bearer refreshed-discovery-token"
+        ) {
           response.statusCode = 401;
           response.end(JSON.stringify({ error: "auth required" }));
           return;
         }
         response.end(JSON.stringify(fixture));
+        return;
+      }
+      if (url === "/slow.discovery.json") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"kind":"discovery#restDescription",');
+        setTimeout(() => response.end('"methods":{}}'), 100);
+        return;
+      }
+      if (url === "/simple-multipart.discovery.json") {
+        response.end(
+          JSON.stringify({
+            kind: "discovery#restDescription",
+            rootUrl: `${baseUrl}/`,
+            servicePath: "drive/v3/",
+            schemas: {
+              File: {
+                id: "File",
+                type: "object",
+                properties: { id: { type: "string" } },
+              },
+            },
+            resources: {
+              files: {
+                methods: {
+                  create: {
+                    id: "drive.files.create",
+                    path: "files",
+                    httpMethod: "POST",
+                    request: { $ref: "File" },
+                    supportsMediaUpload: true,
+                    mediaUpload: {
+                      protocols: {
+                        simple: { path: "/upload/drive/v3/files", multipart: true },
+                      },
+                    },
+                    response: { $ref: "File" },
+                  },
+                },
+              },
+            },
+          }),
+        );
         return;
       }
       if (url === "/drive-inferred.discovery.json") {
@@ -272,6 +317,17 @@ beforeEach(async () => {
         response.statusCode = 302;
         response.setHeader("location", "/drive.discovery.json");
         response.end("{}");
+        return;
+      }
+      if (url === "/token" && request.method === "POST") {
+        response.end(
+          JSON.stringify({
+            access_token: "refreshed-discovery-token",
+            refresh_token: "rotated-discovery-refresh-token",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+        );
         return;
       }
       if (url.startsWith("/drive/v3/files?")) {
@@ -785,6 +841,114 @@ describe("GoogleDiscoveryManager", () => {
     }
   });
 
+  it("does not send API OAuth credentials to cross-origin Discovery documents", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-cross-origin-discovery-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: "https://www.googleapis.com/drive/v3/",
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    writeTokenBundle(
+      {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "api-origin-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: "https://www.googleapis.com",
+      },
+      dir,
+    );
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "drive.files.list" })]),
+      );
+      expect(
+        requests.find((request) => request.url === "/drive.discovery.json")?.headers,
+      ).not.toHaveProperty("authorization");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes expired OAuth credentials before protected Discovery document fetches", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-private-discovery-refresh-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/private.discovery.json`,
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    writeTokenBundle(
+      {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "expired-discovery-token",
+        refreshToken: "old-discovery-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      },
+      dir,
+    );
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "drive.files.list" })]),
+      );
+      const refresh = requests.find((request) => request.url === "/token");
+      const discovery = requests.find((request) => request.url === "/private.discovery.json");
+      expect(new URLSearchParams(refresh?.body).get("refresh_token")).toBe(
+        "old-discovery-refresh-token",
+      );
+      expect(discovery?.headers.authorization).toBe("Bearer refreshed-discovery-token");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Discovery document body reads within the request timeout", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/slow.discovery.json`,
+          requestTimeoutMs: 20,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    await expect(manager.listTools(config.googleDiscoveryApis.drive!)).rejects.toMatchObject({
+      code: "TOOL_CALL_TIMEOUT",
+    });
+  });
+
   it("infers the request base URL from Discovery rootUrl and servicePath", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -1208,6 +1372,29 @@ describe("GoogleDiscoveryManager", () => {
     expect(upload?.body).not.toContain("cGRm");
   });
 
+  it("honors simple.multipart as multipart upload support for metadata uploads", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/simple-multipart.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+    const result = await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+      body: { name: "report.pdf" },
+      media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+    });
+
+    expect(result.structuredContent).toMatchObject({ status: 200, body: { id: "uploaded" } });
+    expect(
+      requests.find((request) => request.url === "/upload/drive/v3/files?uploadType=multipart"),
+    ).toBeDefined();
+  });
+
   it("rejects media MIME types that would inject multipart headers", async () => {
     const config = parseConfig({
       googleDiscoveryApis: {
@@ -1339,6 +1526,29 @@ describe("GoogleDiscoveryManager", () => {
         media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
       }),
     ).rejects.toMatchObject({ code: "TOOL_CALL_TIMEOUT" });
+  });
+
+  it("wraps media upload transport failures as downstream tool errors", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: "http://127.0.0.1:9/drive/v3/",
+          requestTimeoutMs: 200,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    await expect(
+      manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+        body: { name: "report.pdf" },
+        media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+      }),
+    ).rejects.toMatchObject({ code: "DOWNSTREAM_TOOL_ERROR" });
   });
 
   it("preserves OAuth authorization on resumable upload session requests", async () => {

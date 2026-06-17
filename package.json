@@ -12,6 +12,7 @@
     "benchmark:live:opencode": "pnpm --filter @caplets/benchmarks benchmark:live:opencode",
     "benchmark:live:pi": "pnpm --filter @caplets/benchmarks benchmark:live:pi",
     "benchmark:live:pi-eval": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval",
+    "benchmark:live:pi-eval:competitors": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval:competitors",
     "build": "turbo build",
     "build:watch": "turbo build:watch",
     "changeset": "changeset",

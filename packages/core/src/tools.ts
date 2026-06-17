@@ -1115,7 +1115,17 @@ function hasArtifactPlaceholderForSelectedFields(
   return (
     isPlainObject(body) &&
     isPlainObject(body.artifact) &&
+    isArtifactPlaceholder(body.artifact) &&
     fields.some((field) => field === "body" || field.startsWith("body."))
+  );
+}
+
+function isArtifactPlaceholder(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.uri === "string" &&
+    value.uri.startsWith("caplets://artifacts/") &&
+    typeof value.byteLength === "number" &&
+    typeof value.sha256 === "string"
   );
 }
 
