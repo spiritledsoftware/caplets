@@ -354,6 +354,86 @@ describe("auth helpers", () => {
     }
   });
 
+  it("rejects token bundles whose granted scopes omit a required scope", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-scope-mismatch-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "access-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          scope: "https://www.googleapis.com/auth/drive.metadata.readonly",
+          protectedResourceOrigin: "https://www.googleapis.com",
+          metadata: {
+            requestedScopes: [
+              "https://www.googleapis.com/auth/drive",
+              "https://www.googleapis.com/auth/drive.metadata.readonly",
+            ],
+          },
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "drive",
+            backend: "googleDiscovery",
+            baseUrl: "https://www.googleapis.com/drive/v3/",
+            auth: {
+              type: "oauth2",
+              scopes: ["https://www.googleapis.com/auth/drive"],
+            },
+          },
+          dir,
+        ),
+      ).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        details: { nextAction: "run_caplets_auth_login" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts broader Google Discovery OAuth scope alternatives", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-scope-alternative-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "access-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          scope: "https://www.googleapis.com/auth/drive",
+          protectedResourceOrigin: "https://www.googleapis.com",
+          metadata: {
+            requestedScopes: ["https://www.googleapis.com/auth/drive"],
+          },
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "drive",
+            backend: "googleDiscovery",
+            baseUrl: "https://www.googleapis.com/drive/v3/",
+            auth: { type: "oauth2" },
+            resolvedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+          },
+          dir,
+        ),
+      ).resolves.toEqual({ authorization: "Bearer access-token" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects generic OAuth headers when refresh returns an expired token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expired-"));
     const server = createServer((_request: IncomingMessage, response: ServerResponse) => {
@@ -1096,6 +1176,115 @@ describe("auth helpers", () => {
         dir,
       );
       expect(bundle).toEqual({ authorization: "Bearer new-access-token" });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes resolved Google Discovery scopes in generic OIDC authorization", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-scopes-"));
+    let baseUrl = "";
+    let authorizationUrl = "";
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        if (request.url === "/.well-known/oauth-protected-resource") {
+          response.end(JSON.stringify({ authorization_servers: [baseUrl] }));
+          return;
+        }
+        if (request.url === "/.well-known/oauth-authorization-server") {
+          response.statusCode = 404;
+          response.end(JSON.stringify({ error: "missing" }));
+          return;
+        }
+        if (request.url === "/.well-known/openid-configuration") {
+          response.end(
+            JSON.stringify({
+              issuer: baseUrl,
+              authorization_endpoint: `${baseUrl}/authorize`,
+              token_endpoint: `${baseUrl}/token`,
+              registration_endpoint: `${baseUrl}/register`,
+            }),
+          );
+          return;
+        }
+        if (request.url === "/register") {
+          response.statusCode = 201;
+          response.end(JSON.stringify({ client_id: "dynamic-client" }));
+          return;
+        }
+        if (request.url === "/token") {
+          const idToken = [
+            "header",
+            Buffer.from(
+              JSON.stringify({ iss: baseUrl, sub: "subject-123", aud: "dynamic-client" }),
+            ).toString("base64url"),
+            "signature",
+          ].join(".");
+          response.end(
+            JSON.stringify({
+              access_token: "new-access-token",
+              refresh_token: "new-refresh-token",
+              id_token: idToken,
+              token_type: "Bearer",
+              expires_in: 3600,
+            }),
+          );
+          return;
+        }
+        response.end("{}");
+      });
+    });
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind");
+      }
+      baseUrl = `http://127.0.0.1:${address.port}`;
+
+      await runGenericOAuthFlow(
+        {
+          server: "drive",
+          backend: "googleDiscovery",
+          baseUrl,
+          auth: { type: "oidc" },
+          resolvedScopes: [
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/drive",
+          ],
+        },
+        {
+          authDir: dir,
+          noOpen: true,
+          print: (line) => {
+            authorizationUrl = line.match(/https?:\/\/\S+/)?.[0] ?? "";
+          },
+          readManualInput: async () => {
+            const url = new URL(authorizationUrl);
+            return `http://127.0.0.1/callback?code=auth-code&state=${url.searchParams.get("state")}`;
+          },
+        },
+      );
+
+      expect(new URL(authorizationUrl).searchParams.get("scope")).toBe(
+        "openid profile email https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.readonly",
+      );
+      expect(readTokenBundle("drive", dir)?.metadata).toMatchObject({
+        requestedScopes: [
+          "openid",
+          "profile",
+          "email",
+          "https://www.googleapis.com/auth/drive",
+          "https://www.googleapis.com/auth/drive.readonly",
+        ],
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });

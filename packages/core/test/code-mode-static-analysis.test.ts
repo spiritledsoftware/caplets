@@ -7,6 +7,13 @@ describe("Code Mode static analysis", () => {
     expect(hasDirectFetchCall('return await fetch("https://example.com");')).toBe(true);
     expect(hasDirectFetchCall('await globalThis.fetch("https://example.com");')).toBe(true);
     expect(hasDirectFetchCall('await globalThis["fetch"]("https://example.com");')).toBe(true);
+    expect(hasDirectFetchCall('await window.fetch("https://example.com");')).toBe(true);
+    expect(hasDirectFetchCall('await self.fetch("https://example.com");')).toBe(true);
+    expect(hasDirectFetchCall("const f = fetch;")).toBe(false);
+    expect(hasDirectFetchCall("const f = globalThis.fetch;")).toBe(false);
+    expect(hasDirectFetchCall('const f = globalThis["fetch"];')).toBe(false);
+    expect(hasDirectFetchCall("const f = window.fetch;")).toBe(false);
+    expect(hasDirectFetchCall("const f = self.fetch;")).toBe(false);
     expect(hasDirectFetchCall('const note = "await fetch(\\"https://example.com\\")";')).toBe(
       false,
     );
@@ -14,6 +21,15 @@ describe("Code Mode static analysis", () => {
       hasDirectFetchCall("const fetch = client.fetch; await globalThis[fetch]('/issues');"),
     ).toBe(false);
     expect(hasDirectFetchCall("const result = client.fetch('/issues');")).toBe(false);
+    expect(hasDirectFetchCall("const f = client.fetch;")).toBe(false);
+  });
+
+  it("does not chase fetch aliases or wrapper methods", () => {
+    expect(hasDirectFetchCall('await fetch.call(globalThis, "https://example.com");')).toBe(false);
+    expect(
+      hasDirectFetchCall('await globalThis.fetch.call(globalThis, "https://example.com");'),
+    ).toBe(false);
+    expect(hasDirectFetchCall("const f = fetch; await f('/issues');")).toBe(false);
   });
 
   it("detects executable imports without blocking import text", () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   addCliCaplet,
+  addGoogleDiscoveryCaplet,
   addGraphqlCaplet,
   addHttpCaplet,
   addMcpCaplet,
@@ -8,10 +9,10 @@ import {
 } from "./../cli/add";
 import {
   assertLoginTarget,
-  findAuthTarget,
   listAuthRows,
   logoutAuthResult,
   refreshAuthResult,
+  resolveAuthTarget,
 } from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
@@ -30,7 +31,14 @@ export type RemoteControlDispatchContext = CapletsEngineOptions & {
   controlCallbackBaseUrl?: string;
 };
 
-type AddKind = "cli" | "mcp" | "openapi" | "graphql" | "http";
+type AddKind =
+  | "cli"
+  | "mcp"
+  | "openapi"
+  | "google-discovery"
+  | "googleDiscovery"
+  | "graphql"
+  | "http";
 
 const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
   "inspect",
@@ -172,7 +180,7 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
   const config = loadConfigWithSources(context.configPath, context.projectConfigPath).config;
-  const target = findAuthTarget(serverId, config);
+  const target = await resolveAuthTarget(serverId, config, context.authDir);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();
   const baseUrl = context.controlCallbackBaseUrl.endsWith("/")
@@ -252,6 +260,17 @@ function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispat
           print: false,
         }),
       };
+    case "google-discovery":
+    case "googleDiscovery":
+      return {
+        remote: true,
+        label: "Google Discovery",
+        ...addGoogleDiscoveryCaplet(id, {
+          ...options,
+          destinationRoot: context.projectCapletsRoot,
+          print: false,
+        }),
+      };
     case "graphql":
       return {
         remote: true,
@@ -275,7 +294,7 @@ function dispatchAdd(args: Record<string, unknown>, context: RemoteControlDispat
     default:
       throw new CapletsError(
         "REQUEST_INVALID",
-        "add.kind must be cli, mcp, openapi, graphql, or http",
+        "add.kind must be cli, mcp, openapi, google-discovery, googleDiscovery, graphql, or http",
       );
   }
 }
@@ -365,6 +384,15 @@ function remoteAddOptions(
     case "openapi":
       return pickOptions(options, {
         spec: "string",
+        baseUrl: "string",
+        tokenEnv: "string",
+        force: "boolean",
+      });
+    case "google-discovery":
+    case "googleDiscovery":
+      return pickOptions(options, {
+        discovery: "string",
+        discoveryUrl: "string",
         baseUrl: "string",
         tokenEnv: "string",
         force: "boolean",

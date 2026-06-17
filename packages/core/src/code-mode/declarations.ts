@@ -47,6 +47,7 @@ function capletHintText(caplet: CodeModeDeclarationInput["caplets"][number]): st
 export function minifyCodeModeDeclarationText(value: string): string {
   return value
     .replace(/^\s*export\s*\{\s*\}\s*;?\s*/u, "")
+    .replace(/\s*export\s*\{\s*\}\s*;?\s*$/u, "")
     .replace(/\r\n?/gu, "\n")
     .split("\n")
     .map((line) => line.trim())

@@ -50,6 +50,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
+  exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
@@ -138,7 +139,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       writeErr: this.writeErr,
     });
     this.postReloadRefresh = this.refreshExposureSnapshot({
-      emitToolsChanged: this.hasDirectMcpExposure(),
+      emitToolsChanged: this.hasSnapshotBackedDirectExposure(),
     });
     this.unsubscribeEngineReload = this.engine.onReload(() => {
       this.postReloadRefresh = this.refreshExposureSnapshot({ emitToolsChanged: true });
@@ -251,7 +252,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       const directTools =
         snapshot?.directTools
           .filter((entry) => entry.caplet.server === caplet.server)
-          .map((entry) => this.directMcpTool(caplet, entry)) ?? [];
+          .map((entry) => this.directDiscoveredTool(caplet, entry)) ?? [];
       return [
         ...directTools,
         ...mcpPrimitiveNativeTools(caplet, snapshot).map((operationName) =>
@@ -262,10 +263,14 @@ class DefaultNativeCapletsService implements NativeCapletsService {
         ),
       ];
     }
-    return [];
+    return (
+      snapshot?.directTools
+        .filter((entry) => entry.caplet.server === caplet.server)
+        .map((entry) => this.directDiscoveredTool(caplet, entry)) ?? []
+    );
   }
 
-  private directMcpTool(
+  private directDiscoveredTool(
     caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
     entry: DirectToolRegistration,
   ): NativeCapletTool {
@@ -325,9 +330,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     }
   }
 
-  private hasDirectMcpExposure(): boolean {
+  private hasSnapshotBackedDirectExposure(): boolean {
     return this.engine.enabledServers().some((caplet) => {
-      if (caplet.backend !== "mcp" || caplet.setup || caplet.projectBinding?.required) return false;
+      if (caplet.setup || caplet.projectBinding?.required) return false;
+      if (caplet.backend === "http" || caplet.backend === "cli") return false;
       return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure).direct;
     });
   }

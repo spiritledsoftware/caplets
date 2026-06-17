@@ -91,6 +91,24 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["gamma"]);
   });
 
+  it("includes enabled Google Discovery API Caplets", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files and permissions.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          auth: { type: "none" },
+        },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+
+    expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["drive"]);
+  });
+
   it("keeps last known-good config when reload validation fails", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

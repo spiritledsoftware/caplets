@@ -89,6 +89,14 @@ Code Mode runs TypeScript with generated `caplets.<id>` handles. Handles expose:
 - MCP-only resource, template, prompt, and completion methods where supported.
 - `caplets.debug.readLogs()` for stored Code Mode log inspection when available.
 
+The runtime also provides common JavaScript platform globals for data manipulation:
+`atob`, `btoa`, a minimal `Buffer` subset, `structuredClone`, URL and text encoding
+helpers, Web data objects (`Headers`, `Blob`, `File`, `FormData`, streams,
+`AbortController`, `AbortSignal`, `Request`, `Response`), timers, microtasks, and crypto
+randomness (`crypto.randomUUID()` and `crypto.getRandomValues(...)`). These are available
+as runtime globals for JS muscle memory, but they are intentionally not enumerated in the
+generated declaration payload or tool prompt so Code Mode keeps its context surface lean.
+
 Agents should keep bulky discovery and raw payload handling inside the Code Mode script, then return compact decision-ready JSON with the evidence fields needed by the user.
 
 ## Exposure Modes
@@ -113,6 +121,7 @@ Progressive exposure registers one wrapper tool per Caplet and supports scoped o
 - HTTP-like backends reject unsafe base URLs and redact configured secrets from errors.
 - OAuth/OIDC tokens are stored outside config and loaded lazily.
 - Project Binding sync filters deny dangerous directories, private keys, unsafe env files, caches, build outputs, and ignored files.
+- Direct `fetch`, Node/process/module APIs, filesystem access, child processes, and direct network access are unavailable inside Code Mode; route I/O through Caplet handles.
 - Progressive discovery and Code Mode are context-management tools, not permission boundaries.
 
 ## Evidence

@@ -90,6 +90,32 @@ return await h.callTool("query_package_version", {
 Use the returned `error.code`, `error.message`, and Caplet ID to repair the call. Do not
 paste a full raw downstream payload back to the agent unless the error depends on it.
 
+### Google auth asks for login again
+
+Expected symptom: a Google Discovery Caplet worked before, but `auth login` or a tool call
+now reports missing scopes after you changed operation filters or the Discovery document.
+
+Google Discovery Caplets infer OAuth scopes from the exposed operation set unless
+`auth.scopes` is configured. Re-run login for that Caplet so the stored token metadata
+matches the current scope set:
+
+```sh
+caplets auth login <caplet-id>
+caplets doctor
+```
+
+If the Caplet should never ask for newly inferred scopes, configure `auth.scopes`
+explicitly and keep `includeOperations` narrow.
+
+### Download returned an artifact
+
+Expected symptom: a tool result contains `body.artifact` instead of inline bytes or text.
+
+Binary downloads, Google media downloads, and oversized HTTP-like responses are written as
+Caplets media artifacts. Use the artifact `path` locally, or pass the artifact URI back to
+another media-capable tool as `media.artifact`. If you need a specific destination for a
+download, retry with `filename` or `outputPath` when the tool schema exposes those fields.
+
 ### Remote attach fails
 
 Expected symptom: remote mode starts, but attach cannot reach the runtime or authenticate.

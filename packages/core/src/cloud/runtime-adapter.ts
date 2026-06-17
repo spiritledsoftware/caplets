@@ -45,6 +45,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
         ? {}
         : { projectConfigPath: options.projectConfigPath }),
       ...(options.authDir === undefined ? {} : { authDir: options.authDir }),
+      exposeLocalArtifactPaths: false,
       watch: false,
     });
     this.setupStore = options.setupStore ?? new LocalSetupStore();
@@ -134,6 +135,7 @@ class DefaultCloudRuntimeAdapter implements CloudRuntimeAdapter {
     return Object.values({
       ...this.engine.currentConfig().mcpServers,
       ...this.engine.currentConfig().openapiEndpoints,
+      ...this.engine.currentConfig().googleDiscoveryApis,
       ...this.engine.currentConfig().graphqlEndpoints,
       ...this.engine.currentConfig().httpApis,
       ...this.engine.currentConfig().cliTools,

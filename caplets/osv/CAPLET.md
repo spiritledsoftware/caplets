@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: OSV Vulnerabilities
 description: Query OSV.dev vulnerability data through explicit HTTP actions.
 tags:

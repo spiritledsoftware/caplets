@@ -1,0 +1,132 @@
+{
+  "kind": "discovery#restDescription",
+  "id": "drive:v3",
+  "name": "drive",
+  "version": "v3",
+  "title": "Drive API",
+  "rootUrl": "https://www.googleapis.com/",
+  "servicePath": "drive/v3/",
+  "baseUrl": "https://www.googleapis.com/drive/v3/",
+  "auth": {
+    "oauth2": {
+      "scopes": {
+        "https://www.googleapis.com/auth/drive": { "description": "Full Drive access." },
+        "https://www.googleapis.com/auth/drive.readonly": { "description": "Read Drive files." }
+      }
+    }
+  },
+  "parameters": {
+    "fields": {
+      "type": "string",
+      "location": "query",
+      "description": "Partial response selector."
+    },
+    "prettyPrint": { "type": "boolean", "location": "query", "default": "true" },
+    "quotaUser": { "type": "string", "location": "header" }
+  },
+  "schemas": {
+    "File": {
+      "id": "File",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "parents": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "FileList": {
+      "id": "FileList",
+      "type": "object",
+      "properties": {
+        "files": { "type": "array", "items": { "$ref": "File" } },
+        "nextPageToken": { "type": "string" }
+      }
+    }
+  },
+  "resources": {
+    "files": {
+      "methods": {
+        "list": {
+          "id": "drive.files.list",
+          "path": "files",
+          "httpMethod": "GET",
+          "description": "Lists files.",
+          "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+          "parameters": {
+            "pageSize": {
+              "type": "integer",
+              "format": "int32",
+              "location": "query",
+              "default": "100"
+            }
+          },
+          "response": { "$ref": "FileList" }
+        },
+        "delete": {
+          "id": "drive.files.delete",
+          "path": "files/{fileId}",
+          "httpMethod": "DELETE",
+          "description": "Permanently deletes a file.",
+          "parameters": {
+            "fileId": { "type": "string", "location": "path", "required": true }
+          },
+          "scopes": ["https://www.googleapis.com/auth/drive"]
+        },
+        "create": {
+          "id": "drive.files.create",
+          "path": "files",
+          "httpMethod": "POST",
+          "description": "Creates a file.",
+          "request": { "$ref": "File" },
+          "response": { "$ref": "File" },
+          "scopes": ["https://www.googleapis.com/auth/drive"],
+          "supportsMediaUpload": true,
+          "mediaUpload": {
+            "accept": ["image/png"],
+            "maxSize": "10MB",
+            "protocols": {
+              "simple": { "path": "/upload/drive/v3/files", "multipart": false },
+              "multipart": { "path": "/upload/drive/v3/files", "multipart": true },
+              "resumable": { "path": "/upload/drive/v3/files", "multipart": true }
+            }
+          }
+        },
+        "download": {
+          "id": "drive.files.download",
+          "path": "files/{fileId}/download",
+          "httpMethod": "GET",
+          "description": "Downloads file media.",
+          "supportsMediaDownload": true,
+          "parameters": {
+            "fileId": { "type": "string", "location": "path", "required": true }
+          },
+          "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+        }
+      },
+      "resources": {
+        "permissions": {
+          "methods": {
+            "list": {
+              "id": "drive.permissions.list",
+              "path": "files/{fileId}/permissions",
+              "httpMethod": "GET",
+              "parameters": {
+                "fileId": { "type": "string", "location": "path", "required": true }
+              },
+              "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+            }
+          }
+        }
+      }
+    },
+    "changes": {
+      "methods": {
+        "getStartPageToken": {
+          "path": "changes/startPageToken",
+          "httpMethod": "GET",
+          "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+        }
+      }
+    }
+  }
+}

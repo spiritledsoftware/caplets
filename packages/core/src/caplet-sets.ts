@@ -10,6 +10,7 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
+import { GoogleDiscoveryManager } from "./google-discovery";
 import { GraphQLManager } from "./graphql";
 import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
@@ -25,6 +26,7 @@ type ChildRuntime = {
   graphql: GraphQLManager;
   http: HttpActionManager;
   cli: CliToolsManager;
+  googleDiscovery: GoogleDiscoveryManager;
   capletSets: CapletSetManager;
   cacheKey: string;
   configFingerprint: string;
@@ -37,7 +39,12 @@ export class CapletSetManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string; ancestry?: Set<string> } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
+      ancestry?: Set<string>;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -144,6 +151,8 @@ export class CapletSetManager {
         child.http,
         child.cli,
         child.capletSets,
+        {},
+        child.googleDiscovery,
       )) as CompatibilityCallToolResult;
     } catch (error) {
       return errorResult(error) as CompatibilityCallToolResult;
@@ -211,17 +220,24 @@ export class CapletSetManager {
         maxSearchLimit: config.maxSearchLimit,
       });
       const registry = new ServerRegistry(childConfig);
-      const authOptions = this.options.authDir ? { authDir: this.options.authDir } : {};
+      const sharedOptions = {
+        ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
+        ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false
+          ? { exposeLocalArtifactPaths: false }
+          : {}),
+      };
       const childAncestry = new Set([...ancestry, cacheKey]);
       child = {
         registry,
-        downstream: new DownstreamManager(registry, authOptions),
-        openapi: new OpenApiManager(registry, authOptions),
-        graphql: new GraphQLManager(registry, authOptions),
-        http: new HttpActionManager(registry, authOptions),
+        downstream: new DownstreamManager(registry, sharedOptions),
+        openapi: new OpenApiManager(registry, sharedOptions),
+        graphql: new GraphQLManager(registry, sharedOptions),
+        http: new HttpActionManager(registry, sharedOptions),
         cli: new CliToolsManager(registry),
+        googleDiscovery: new GoogleDiscoveryManager(registry, sharedOptions),
         capletSets: new CapletSetManager(registry, {
-          ...authOptions,
+          ...sharedOptions,
           ancestry: childAncestry,
         }),
         cacheKey,

@@ -69,7 +69,7 @@ const outputs = new Map<string, string>([
         title: "Caplet files",
         description: "Generated reference for Markdown Caplet file frontmatter.",
         sourcePath: "schemas/caplet.schema.json",
-        canonicalUrl: "https://caplets.dev/caplet-frontmatter.schema.json",
+        canonicalUrl: "https://caplets.dev/caplet.schema.json",
         intro:
           "Caplet files are Markdown files with YAML frontmatter. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when the capability needs nearby assets.",
       }),
@@ -412,10 +412,12 @@ function codeModeApiPage(): string {
     .map((name) => extractDeclaration(source, name))
     .filter((block): block is string => Boolean(block));
 
-  return `${frontmatter("Code Mode API", "Generated reference for the TypeScript surface available inside `caplets__code_mode`.")}
+  return `${frontmatter("Code Mode API", "Generated reference for the lean TypeScript handle surface available inside `caplets__code_mode`.")}
 ${generatedMarkerComment}
 
 Code Mode runs TypeScript with generated \`caplets.<id>\` handles. Prefer discovery methods first, then call downstream tools with compact, decision-ready inputs and outputs.
+
+This reference intentionally lists the lean generated declaration surface: Caplet handles, debug helpers, shared result types, and \`console\`. Runtime platform globals such as \`URL\`, \`TextEncoder\`, \`Headers\`, timers, and \`crypto.randomUUID()\` are available for ordinary JavaScript data shaping, but they are not enumerated here or in the Code Mode tool prompt.
 
 ${codeModeApiRecipes()}
 

@@ -7,6 +7,8 @@ import {
   type QuickJSRuntime,
 } from "quickjs-emscripten";
 import ts from "typescript";
+import { installCodeModePlatformHost } from "./platform-host";
+import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
 import type { CodeModeLogEntry } from "./types";
 
 export type CodeModeSandboxInvokeInput = {
@@ -76,6 +78,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
       context.setProp(context.global, "__caplets_log", logBridge);
       logBridge.dispose();
 
+      const platformHost = installCodeModePlatformHost(context, pendingDeferreds, {});
       const invokeBridge = createInvokeBridge(
         context,
         pendingDeferreds,
@@ -140,6 +143,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
         return { ok: true, value: readProp(context, stateHandle, "value"), logs };
       } finally {
         stateHandle.dispose();
+        platformHost.dispose();
       }
     } finally {
       for (const deferred of pendingDeferreds) {
@@ -217,19 +221,7 @@ function buildExecutionSource(code: string, capletIds: string[]): string {
   }).outputText;
   return [
     '"use strict";',
-    "const __formatLogArg = (value) => {",
-    "  if (typeof value === 'string') return value;",
-    "  try { return JSON.stringify(value); } catch { return String(value); }",
-    "};",
-    "const __formatLogLine = (args) => args.map(__formatLogArg).join(' ');",
-    "const console = {",
-    "  log: (...args) => __caplets_log('log', __formatLogLine(args)),",
-    "  info: (...args) => __caplets_log('info', __formatLogLine(args)),",
-    "  warn: (...args) => __caplets_log('warn', __formatLogLine(args)),",
-    "  error: (...args) => __caplets_log('error', __formatLogLine(args)),",
-    "  debug: (...args) => __caplets_log('debug', __formatLogLine(args)),",
-    "};",
-    "const fetch = () => { throw new Error('fetch is disabled in Code Mode'); };",
+    CODE_MODE_PLATFORM_RUNTIME_SOURCE,
     "const __invoke = (capletId, method, args) => Promise.resolve(__caplets_invoke(capletId, method, args)).then(JSON.parse);",
     "const __handle = (capletId) => ({",
     "  id: capletId,",

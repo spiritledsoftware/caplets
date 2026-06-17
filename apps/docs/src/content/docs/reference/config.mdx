@@ -62,20 +62,21 @@ Public OpenAPI endpoint:
 
 ## Top-level fields
 
-| Field                | Status   | Type    | Description                                            |
-| -------------------- | -------- | ------- | ------------------------------------------------------ |
-| `$schema`            | Optional | string  | Optional JSON Schema URL for editor validation.        |
-| `version`            | Optional | number  | Caplets config schema version.                         |
-| `defaultSearchLimit` | Optional | integer | Default maximum number of same-server search results.  |
-| `maxSearchLimit`     | Optional | integer | Maximum accepted search_tools limit.                   |
-| `completion`         | Optional | object  | Shell completion discovery timeout and cache settings. |
-| `options`            | Optional | object  | Global Caplets runtime options.                        |
-| `mcpServers`         | Optional | object  | Downstream MCP servers keyed by stable server ID.      |
-| `openapiEndpoints`   | Optional | object  | OpenAPI endpoints keyed by stable Caplet ID.           |
-| `graphqlEndpoints`   | Optional | object  | GraphQL endpoints keyed by stable Caplet ID.           |
-| `httpApis`           | Optional | object  | HTTP APIs keyed by stable Caplet ID.                   |
-| `cliTools`           | Optional | object  | CLI tools keyed by stable Caplet ID.                   |
-| `capletSets`         | Optional | object  | Nested Caplet collections keyed by stable Caplet ID.   |
+| Field                 | Status   | Type    | Description                                            |
+| --------------------- | -------- | ------- | ------------------------------------------------------ |
+| `$schema`             | Optional | string  | Optional JSON Schema for editor validation.            |
+| `version`             | Optional | number  | Caplets config schema version.                         |
+| `defaultSearchLimit`  | Optional | integer | Default maximum number of same-server search results.  |
+| `maxSearchLimit`      | Optional | integer | Maximum accepted search_tools limit.                   |
+| `completion`          | Optional | object  | Shell completion discovery timeout and cache settings. |
+| `options`             | Optional | object  | Global Caplets runtime options.                        |
+| `mcpServers`          | Optional | object  | Downstream MCP servers keyed by stable server ID.      |
+| `openapiEndpoints`    | Optional | object  | OpenAPI endpoints keyed by stable Caplet ID.           |
+| `googleDiscoveryApis` | Optional | object  | Google Discovery APIs keyed by stable Caplet ID.       |
+| `graphqlEndpoints`    | Optional | object  | GraphQL endpoints keyed by stable Caplet ID.           |
+| `httpApis`            | Optional | object  | HTTP APIs keyed by stable Caplet ID.                   |
+| `cliTools`            | Optional | object  | CLI tools keyed by stable Caplet ID.                   |
+| `capletSets`          | Optional | object  | Nested Caplet collections keyed by stable Caplet ID.   |
 
 ## Major sections
 

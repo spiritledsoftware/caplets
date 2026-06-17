@@ -66,6 +66,7 @@ describe("CLI completion resolver", () => {
       "cli",
       "mcp",
       "openapi",
+      "google-discovery",
       "graphql",
       "http",
     ]);

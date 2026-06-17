@@ -15,6 +15,7 @@ import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
 import { DownstreamManager } from "./downstream";
 import { CapletsError, errorResult, toSafeError } from "./errors";
 import { GraphQLManager } from "./graphql";
+import { GoogleDiscoveryManager } from "./google-discovery";
 import { HttpActionManager } from "./http-actions";
 import { OpenApiManager } from "./openapi";
 import {
@@ -32,6 +33,8 @@ export type CapletsEngineOptions = {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
+  artifactDir?: string;
+  exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
@@ -62,6 +65,7 @@ export class CapletsEngine {
   private registry: ServerRegistry;
   private readonly downstream: DownstreamManager;
   private readonly openapi: OpenApiManager;
+  private readonly googleDiscovery: GoogleDiscoveryManager;
   private readonly graphql: GraphQLManager;
   private readonly http: HttpActionManager;
   private readonly cli: CliToolsManager;
@@ -92,11 +96,15 @@ export class CapletsEngine {
     const config = this.configLoader(this.paths.configPath, this.paths.projectConfigPath);
     this.registry = new ServerRegistry(config);
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
-    this.openapi = new OpenApiManager(this.registry, selectAuthOptions(options.authDir));
+    this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
+    this.googleDiscovery = new GoogleDiscoveryManager(
+      this.registry,
+      selectHttpLikeOptions(options),
+    );
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
-    this.http = new HttpActionManager(this.registry, selectAuthOptions(options.authDir));
+    this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
     this.cli = new CliToolsManager(this.registry);
-    this.capletSets = new CapletSetManager(this.registry, selectAuthOptions(options.authDir));
+    this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
@@ -200,6 +208,7 @@ export class CapletsEngine {
           observedOutputShapeScope: this.observedOutputShapeScope,
           projectFingerprint: this.projectFingerprint,
         },
+        this.googleDiscovery,
       );
     } catch (error) {
       return errorResult(error);
@@ -307,13 +316,15 @@ export class CapletsEngine {
         ? await this.downstream.listTools(server)
         : server.backend === "openapi"
           ? await this.openapi.listTools(server)
-          : server.backend === "graphql"
-            ? await this.graphql.listTools(server)
-            : server.backend === "http"
-              ? await this.http.listTools(server)
-              : server.backend === "cli"
-                ? await this.cli.listTools(server)
-                : await this.capletSets.listTools(server);
+          : server.backend === "googleDiscovery"
+            ? await this.googleDiscovery.listTools(server)
+            : server.backend === "graphql"
+              ? await this.graphql.listTools(server)
+              : server.backend === "http"
+                ? await this.http.listTools(server)
+                : server.backend === "cli"
+                  ? await this.cli.listTools(server)
+                  : await this.capletSets.listTools(server);
     return tools.map((tool) => ({
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
@@ -325,13 +336,15 @@ export class CapletsEngine {
       ? await this.downstream.listTools(server)
       : server.backend === "openapi"
         ? await this.openapi.listTools(server)
-        : server.backend === "graphql"
-          ? await this.graphql.listTools(server)
-          : server.backend === "http"
-            ? await this.http.listTools(server)
-            : server.backend === "cli"
-              ? await this.cli.listTools(server)
-              : await this.capletSets.listTools(server);
+        : server.backend === "googleDiscovery"
+          ? await this.googleDiscovery.listTools(server)
+          : server.backend === "graphql"
+            ? await this.graphql.listTools(server)
+            : server.backend === "http"
+              ? await this.http.listTools(server)
+              : server.backend === "cli"
+                ? await this.cli.listTools(server)
+                : await this.capletSets.listTools(server);
   }
 
   private async callTool(server: CapletConfig, toolName: string, args: Record<string, unknown>) {
@@ -339,13 +352,15 @@ export class CapletsEngine {
       ? await this.downstream.callTool(server, toolName, args)
       : server.backend === "openapi"
         ? await this.openapi.callTool(server, toolName, args)
-        : server.backend === "graphql"
-          ? await this.graphql.callTool(server, toolName, args)
-          : server.backend === "http"
-            ? await this.http.callTool(server, toolName, args)
-            : server.backend === "cli"
-              ? await this.cli.callTool(server, toolName, args)
-              : await this.capletSets.callTool(server, toolName, args);
+        : server.backend === "googleDiscovery"
+          ? await this.googleDiscovery.callTool(server, toolName, args)
+          : server.backend === "graphql"
+            ? await this.graphql.callTool(server, toolName, args)
+            : server.backend === "http"
+              ? await this.http.callTool(server, toolName, args)
+              : server.backend === "cli"
+                ? await this.cli.callTool(server, toolName, args)
+                : await this.capletSets.callTool(server, toolName, args);
   }
 
   private async optionalMcpList<T>(
@@ -381,6 +396,7 @@ export class CapletsEngine {
     this.registry = nextRegistry;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
+    this.googleDiscovery.updateRegistry(nextRegistry);
     this.graphql.updateRegistry(nextRegistry);
     this.http.updateRegistry(nextRegistry);
     this.cli.updateRegistry(nextRegistry);
@@ -450,6 +466,9 @@ export class CapletsEngine {
       }
       if (before?.backend === "openapi" || after?.backend === "openapi" || !after) {
         this.openapi.invalidate(serverId);
+      }
+      if (before?.backend === "googleDiscovery" || after?.backend === "googleDiscovery" || !after) {
+        this.googleDiscovery.invalidate(serverId);
       }
       if (before?.backend === "graphql" || after?.backend === "graphql" || !after) {
         this.graphql.invalidate(serverId);
@@ -549,6 +568,18 @@ function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
   return authDir ? { authDir } : {};
 }
 
+function selectHttpLikeOptions(options: CapletsEngineOptions): {
+  authDir?: string;
+  artifactDir?: string;
+  exposeLocalArtifactPaths?: boolean;
+} {
+  return {
+    ...selectAuthOptions(options.authDir),
+    ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
+    ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
+  };
+}
+
 function safeProjectFingerprint(): string | undefined {
   try {
     return fingerprintProjectRoot(findProjectRoot());
@@ -584,6 +615,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
   return [
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
+    ...Object.values(config.googleDiscoveryApis ?? {}),
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),

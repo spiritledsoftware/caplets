@@ -14,6 +14,7 @@ Supported backend families are:
 
 - `mcpServers`
 - `openapiEndpoints`
+- `googleDiscoveryApis`
 - `graphqlEndpoints`
 - `httpApis`
 - `cliTools`
@@ -57,6 +58,10 @@ Code Mode is implemented under `packages/core/src/code-mode/`.
 
 The runtime generates TypeScript declarations from the current callable Caplets, statically checks the submitted script, runs it in the sandbox, bridges handle methods back to the native service, stores logs when configured, and returns JSON-serializable results with diagnostics.
 
+Code Mode installs a browser-like, non-I/O platform surface as runtime globals for common JavaScript data shaping: base64 helpers, a minimal `Buffer` subset, `structuredClone`, URL and text encoding helpers, Web data containers such as `Headers`, `Blob`, `File`, `FormData`, streams, abort signals, `Request`/`Response`, timers, microtasks, and crypto randomness. These globals are intentionally omitted from generated Code Mode TypeScript declarations and tool prompts so the declaration payload stays focused on Caplet handles, debug helpers, and `console`.
+
+Direct I/O remains routed through Caplet handles. `fetch` is intentionally unavailable, and Code Mode does not expose Node process, module loading, filesystem, child process, or direct network APIs.
+
 The intended agent pattern is one compact script:
 
 1. choose handles
@@ -89,9 +94,11 @@ Project Binding under `packages/core/src/project-binding/` connects a local proj
 
 MCP-backed Caplets preserve downstream tool results and expose resources, templates, prompts, and completion when the downstream server supports them. Direct exposure can register those downstream surfaces directly.
 
-### OpenAPI, GraphQL, And HTTP
+### OpenAPI, Google Discovery, GraphQL, And HTTP
 
-OpenAPI, GraphQL, and HTTP backends expose explicit operation/action tools. They do not synthesize MCP resources or prompts. HTTP-like backends enforce safe URL handling, bounded response bodies, timeouts, and redacted errors.
+OpenAPI, Google Discovery, GraphQL, and HTTP backends expose explicit operation/action tools. They do not synthesize MCP resources or prompts. HTTP-like backends enforce safe URL handling, bounded response bodies, timeouts, and redacted errors.
+
+Google Discovery backends load local or remote Google Discovery documents, infer request base URLs from the document unless overridden, expose filtered Discovery methods as tools, and infer OAuth scopes from the exposed operation set. Google media downloads and oversized or binary HTTP-like responses are written as Caplets media artifacts under the configured artifact root instead of being forced inline.
 
 ### CLI Tools
 

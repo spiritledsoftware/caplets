@@ -63,7 +63,7 @@ export const topLevelCommandNames = [
 ] as const;
 
 export const cliSubcommands = {
-  [cliCommands.add]: ["cli", "mcp", "openapi", "graphql", "http"],
+  [cliCommands.add]: ["cli", "mcp", "openapi", "google-discovery", "graphql", "http"],
   [cliCommands.auth]: ["login", "logout", "list", "refresh"],
   [cliCommands.cloud]: ["auth"],
   [cliCommands.codeMode]: ["types"],

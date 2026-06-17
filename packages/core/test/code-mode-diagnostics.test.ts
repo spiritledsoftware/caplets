@@ -20,16 +20,40 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain("callTool");
   });
 
-  it("blocks direct fetch because the ambient lib omits network globals", () => {
+  it("blocks direct fetch calls before execution", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: 'await fetch("https://example.com");',
     });
 
     expect(diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
       "Direct fetch is not available",
     );
+  });
+
+  it("blocks direct globalThis.fetch calls", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'await globalThis.fetch("https://example.com");',
+    });
+
+    expect(diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Direct fetch is not available",
+    );
+  });
+
+  it.each([
+    ["globalThis bracket fetch", 'await globalThis["fetch"]("https://example.com");'],
+    ["window fetch", 'await window.fetch("https://example.com");'],
+    ["self fetch", 'await self.fetch("https://example.com");'],
+  ])("blocks direct global fetch calls through %s", (_name, code) => {
+    const diagnostics = diagnoseCodeModeTypeScript({ declaration, code });
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
   });
 
   it("does not block fetch text or non-global fetch member calls", () => {
@@ -39,6 +63,7 @@ describe("diagnoseCodeModeTypeScript", () => {
         const guidance = "Use the browser Caplet instead of await fetch('https://example.com')";
         const client = { fetch: (value: string) => ({ value }) };
         const result = client.fetch(guidance);
+        const f = client.fetch;
         return result;
       `,
     });
@@ -47,18 +72,19 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   });
 
-  it("allows standard JavaScript, console, URL, JSON, and Caplet callTool", () => {
+  it("allows standard JavaScript, JSON, console, and Caplet callTool", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: `
-        const url = new URL("https://example.com/issues?state=open");
-        console.log(JSON.stringify({ state: url.searchParams.get("state") }));
+        const state = "open";
+        const issue = { state, labels: ["caplets"] };
+        console.log(JSON.stringify(issue));
         const result = await caplets.github.callTool("listIssues", { state: "open" });
         return result;
       `,
     });
 
-    expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+    expect(diagnostics).toEqual([]);
   });
 
   it("blocks static and dynamic imports", () => {
@@ -75,6 +101,77 @@ describe("diagnoseCodeModeTypeScript", () => {
     ).toBeGreaterThanOrEqual(1);
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
       "Imports are not available in Code Mode",
+    );
+  });
+
+  it("keeps Node process and require unavailable", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        process.cwd();
+        require("fs");
+      `,
+    });
+
+    const codes = diagnostics.map((diagnostic) => diagnostic.code);
+    expect(codes).toContain("2591");
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Cannot find name 'process'",
+    );
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
+      "Cannot find name 'require'",
+    );
+  });
+
+  it("allows platform globals through diagnostics without generated declaration bloat", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        const url = new URL("https://example.com/a?b=1");
+        const text = new TextDecoder().decode(new TextEncoder().encode("ok"));
+        const bytes = Buffer.from(btoa(text), "base64");
+        const headers = new Headers({ accept: "application/json" });
+        const blob = new Blob([bytes.toString()], { type: "text/plain" });
+        const file = new File([blob], "ok.txt", { type: blob.type });
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const request = new Request(url, { method: "POST", headers, body: form });
+        const response = Response.json({ ok: true });
+        const reader = new ReadableStream<string>({
+          start(controller) {
+            controller.enqueue("ready");
+            controller.close();
+          },
+        }).getReader();
+        const writer = new WritableStream<string>({ write() {} }).getWriter();
+        const transform = new TransformStream<string, string>({
+          transform(chunk, controller) {
+            controller.enqueue(chunk);
+          },
+        });
+        const controller = new AbortController();
+        controller.abort("done");
+        controller.signal.throwIfAborted();
+        const timeout = setTimeout(() => undefined, 0);
+        clearTimeout(timeout);
+        const interval = setInterval(() => undefined, 1);
+        clearInterval(interval);
+        queueMicrotask(() => undefined);
+        crypto.getRandomValues(new Uint8Array(4));
+        crypto.randomUUID();
+        structuredClone({ text, href: url.href });
+        await reader.read();
+        await writer.write(request.method);
+        await writer.close();
+        transform.readable.getReader();
+        await response.text();
+        return { text, b: url.searchParams.get("b"), atob: atob("b2s=") };
+      `,
+    });
+
+    expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).not.toContain(
+      "Cannot find name",
     );
   });
 

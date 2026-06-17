@@ -242,6 +242,76 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("discovers direct Google Discovery tools for native integrations", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          exposure: "direct",
+          discoveryPath: join(fixturesDir, "google-discovery/drive.discovery.json"),
+          baseUrl: "http://127.0.0.1:1/drive/v3/",
+          auth: { type: "none" },
+          includeOperations: ["drive.files.list"],
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+
+    try {
+      await expect(service.reload()).resolves.toBe(true);
+      expect(service.listTools()).toEqual([
+        expect.objectContaining({
+          caplet: "drive__drive.files.list",
+          toolName: "caplets__drive__drive.files.list",
+          title: "drive.files.list",
+          inputSchema: expect.objectContaining({
+            properties: expect.objectContaining({ query: expect.any(Object) }),
+          }),
+          annotations: { readOnlyHint: true, destructiveHint: false },
+        }),
+      ]);
+      await expect(
+        service.execute("drive__drive.files.list", { query: { pageSize: 1 } }),
+      ).resolves.toMatchObject({
+        isError: true,
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("notifies native tool listeners after cold-start direct Google Discovery refresh", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          exposure: "direct",
+          discoveryPath: join(fixturesDir, "google-discovery/drive.discovery.json"),
+          baseUrl: "http://127.0.0.1:1/drive/v3/",
+          auth: { type: "none" },
+          includeOperations: ["drive.files.list"],
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => {
+      events.push(configuredCapletIds(tools));
+    });
+
+    try {
+      await expect
+        .poll(() => events.at(-1), { timeout: 5_000 })
+        .toEqual(["drive__drive.files.list"]);
+    } finally {
+      await service.close();
+    }
+  });
+
   it("lists Code Mode only when exposure includes Code Mode", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       httpApis: {

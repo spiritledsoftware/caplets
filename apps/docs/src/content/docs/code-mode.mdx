@@ -52,6 +52,28 @@ uses handles such as `caplets.osv.searchTools(...)` and `caplets.osv.callTool(..
 For most tasks, keep bulky raw payloads inside the Code Mode script and return compact
 JSON with the evidence the user needs.
 
+## Platform globals
+
+Code Mode also installs standard JavaScript platform globals at runtime so scripts can
+shape data without reaching for direct I/O:
+
+- Pure utilities: `atob`, `btoa`, a documented `Buffer` subset, and `structuredClone`.
+- Web data objects: `URL`, `URLSearchParams`, `TextEncoder`, `TextDecoder`, `Headers`,
+  `Blob`, `File`, `FormData`, `ReadableStream`, `WritableStream`, `TransformStream`,
+  `AbortController`, `AbortSignal`, `Request`, and `Response`.
+- Scheduling: `queueMicrotask`, `setTimeout`, `clearTimeout`, `setInterval`, and
+  `clearInterval`.
+- Randomness: `crypto.randomUUID()` and `crypto.getRandomValues(...)`.
+
+These are runtime globals for JavaScript muscle memory. They are intentionally not
+enumerated in the generated Code Mode declaration payload or tool prompt, which stays
+focused on Caplet handles, debug helpers, and `console` to avoid token bloat.
+
+Direct I/O is intentionally unavailable. `fetch` is blocked; use Caplet handles for
+network, tool, resource, prompt, or command I/O. Node and module APIs such as `process`,
+`require`, imports, filesystem access, child processes, and direct network access are
+not available inside Code Mode scripts.
+
 ## Return shape
 
 Prefer compact decision-ready data:

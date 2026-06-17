@@ -65,6 +65,38 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).not.toContain(" = ");
   });
 
+  it("keeps platform globals out of generated declarations", () => {
+    const declaration = generateCodeModeDeclarations({
+      caplets: [{ id: "github", name: "GitHub", description: "GitHub repo operations." }],
+    });
+
+    expect(declaration).toContain("declare const console:Console");
+    expect(declaration).not.toContain("declare function atob");
+    expect(declaration).not.toContain("declare function btoa");
+    expect(declaration).not.toContain("declare const Buffer");
+    expect(declaration).not.toContain("declare class URL");
+    expect(declaration).not.toContain("declare class TextEncoder");
+    expect(declaration).not.toContain("declare const crypto");
+    expect(declaration).not.toContain("declare function structuredClone");
+    expect(declaration).not.toContain("declare class Headers");
+    expect(declaration).not.toContain("declare class Blob");
+    expect(declaration).not.toContain("declare class File");
+    expect(declaration).not.toContain("declare class FormData");
+    expect(declaration).not.toContain("declare class ReadableStream");
+    expect(declaration).not.toContain("declare class WritableStream");
+    expect(declaration).not.toContain("declare class TransformStream");
+    expect(declaration).not.toContain("declare class AbortController");
+    expect(declaration).not.toContain("declare class AbortSignal");
+    expect(declaration).not.toContain("declare class Request");
+    expect(declaration).not.toContain("declare class Response");
+    expect(declaration).not.toContain("declare function fetch");
+    expect(declaration).not.toContain("declare function queueMicrotask");
+    expect(declaration).not.toContain("declare function setTimeout");
+    expect(declaration).not.toContain("declare function clearTimeout");
+    expect(declaration).not.toContain("declare function setInterval");
+    expect(declaration).not.toContain("declare function clearInterval");
+  });
+
   it("builds the shared Code Mode tool description from generated declarations", () => {
     const declaration = 'declare const caplets:{docs:CapletHandle<"docs">;};';
     const description = generateCodeModeRunToolDescription(declaration);

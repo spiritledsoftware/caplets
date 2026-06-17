@@ -33,6 +33,32 @@ paths: {}
 `,
   },
   {
+    path: "drive/CAPLET.md",
+    content: `---
+name: Drive
+description: Query Google Drive metadata.
+googleDiscoveryApi:
+  discoveryPath: ./drive.discovery.json
+  auth:
+    type: oauth2
+    issuer: https://accounts.google.com
+    scopes:
+      - https://www.googleapis.com/auth/drive.metadata.readonly
+---
+
+# Drive
+`,
+  },
+  {
+    path: "drive/drive.discovery.json",
+    content: `{
+  "kind": "discovery#restDescription",
+  "name": "drive",
+  "version": "v3"
+}
+`,
+  },
+  {
     path: "tools/CAPLET.md",
     content: `---
 name: Project Tools
@@ -78,6 +104,8 @@ describe("CapletSource adapters", () => {
     const source = new BundleCapletSource(fixtureFiles);
 
     await expect(source.listFiles()).resolves.toEqual([
+      expect.objectContaining({ path: "drive/CAPLET.md" }),
+      expect.objectContaining({ path: "drive/drive.discovery.json" }),
       expect.objectContaining({ path: "tools/CAPLET.md" }),
       expect.objectContaining({ path: "tools/scripts/list-files.js" }),
       expect.objectContaining({ path: "weather/CAPLET.md" }),
@@ -95,6 +123,8 @@ describe("CapletSource adapters", () => {
     const source = new FilesystemCapletSource(root);
 
     await expect(source.listFiles()).resolves.toEqual([
+      expect.objectContaining({ path: "drive/CAPLET.md" }),
+      expect.objectContaining({ path: "drive/drive.discovery.json" }),
       expect.objectContaining({ path: "tools/CAPLET.md" }),
       expect.objectContaining({ path: "tools/scripts/list-files.js" }),
       expect.objectContaining({ path: "weather/CAPLET.md" }),
@@ -102,7 +132,7 @@ describe("CapletSource adapters", () => {
     ]);
     await expect(source.readFile("./tools/scripts/list-files.js")).resolves.toEqual({
       path: "tools/scripts/list-files.js",
-      content: fixtureFiles[3]!.content,
+      content: fixtureFiles[5]!.content,
     });
     await expect(source.readFile("/absolute.js")).resolves.toBeUndefined();
   });
@@ -127,6 +157,21 @@ describe("CapletSource adapters", () => {
           resources: { class: "small", cpu: 1, memoryMb: 1024, diskMb: 4096 },
         },
         localReferences: [{ path: "weather/openapi.yaml", exists: true }],
+      },
+      {
+        id: "drive",
+        backend: "googleDiscovery",
+        shadowing: "forbid",
+        setupRequired: false,
+        authRequired: true,
+        projectBindingRequired: false,
+        runtime: {
+          route: "worker_safe",
+          setupTarget: undefined,
+          features: [],
+          resources: { class: "small", cpu: 1, memoryMb: 1024, diskMb: 4096 },
+        },
+        localReferences: [{ path: "drive/drive.discovery.json", exists: true }],
       },
       {
         id: "tools",

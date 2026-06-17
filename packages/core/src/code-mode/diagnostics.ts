@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION } from "./diagnostics-builtins.generated";
 import { hasDirectFetchCall, hasExecutableImport } from "./static-analysis";
 import type { CodeModeDiagnostic } from "./types";
 
@@ -48,7 +49,7 @@ export function diagnoseCodeModeTypeScript(
   const host = createVirtualCompilerHost(compilerOptions, {
     [CODE_FILE]: wrappedCode,
     [DECLARATION_FILE]: input.declaration,
-    [AMBIENT_FILE]: ambientDeclarations(),
+    [AMBIENT_FILE]: CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
   });
   const program = ts.createProgram(
     [CODE_FILE, DECLARATION_FILE, AMBIENT_FILE],
@@ -107,7 +108,8 @@ function preflightDiagnostics(code: string): CodeModeDiagnostic[] {
     diagnostics.push({
       code: "FETCH_UNAVAILABLE",
       severity: "error",
-      message: "Direct fetch is not available in Code Mode; use a Caplet instead.",
+      message:
+        "Direct fetch is not available in Code Mode; use a Caplet instead. Cannot find name 'fetch'.",
     });
   }
   return diagnostics;
@@ -164,22 +166,4 @@ function formatDiagnostic(
         }
       : {}),
   };
-}
-
-function ambientDeclarations(): string {
-  return [
-    "declare class URL {",
-    "  constructor(input: string, base?: string);",
-    "  readonly href: string;",
-    "  readonly searchParams: URLSearchParams;",
-    "  toString(): string;",
-    "}",
-    "declare class URLSearchParams {",
-    "  constructor(init?: string | Record<string, string> | Array<[string, string]>);",
-    "  get(name: string): string | null;",
-    "  set(name: string, value: string): void;",
-    "  has(name: string): boolean;",
-    "  toString(): string;",
-    "}",
-  ].join("\n");
 }

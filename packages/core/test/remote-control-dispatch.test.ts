@@ -428,6 +428,114 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("resolves Google Discovery scopes before starting remote OAuth login", async () => {
+    const context = testContext();
+    const authFlowStore = new RemoteAuthFlowStore();
+    const authDir = join(context.tempRoot, "auth");
+    mkdirSync(authDir, { recursive: true });
+    const discoveryPath = join(context.tempRoot, "drive.discovery.json");
+    writeFileSync(
+      discoveryPath,
+      JSON.stringify({
+        kind: "discovery#restDescription",
+        name: "drive",
+        version: "v3",
+        title: "Drive API",
+        rootUrl: "https://www.googleapis.com/",
+        servicePath: "drive/v3/",
+        baseUrl: "https://www.googleapis.com/drive/v3/",
+        resources: {
+          files: {
+            methods: {
+              list: {
+                id: "drive.files.list",
+                path: "files",
+                httpMethod: "GET",
+                scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+              },
+            },
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive",
+            description: "Drive API.",
+            discoveryPath,
+            auth: {
+              type: "oauth2",
+              clientId: "client",
+              tokenUrl: "https://oauth2.googleapis.com/token",
+              authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+            },
+          },
+        },
+      }),
+    );
+
+    const response = await dispatchRemoteCliRequest(
+      { command: "auth_login_start", arguments: { server: "drive" } },
+      {
+        ...context,
+        authDir,
+        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+        authFlowStore,
+      },
+    );
+
+    expect(response).toMatchObject({ ok: true });
+    const result = response.ok
+      ? (response.result as { authorizationUrl: string; flowId: string })
+      : undefined;
+    expect(result?.flowId).toBeTruthy();
+    const authorizationUrl = new URL(result?.authorizationUrl ?? "");
+    expect(authorizationUrl.searchParams.get("scope")).toBe(
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        access_token: "drive-access-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    );
+
+    await dispatchRemoteCliRequest(
+      {
+        command: "auth_login_complete",
+        arguments: {
+          flowId: result?.flowId,
+          callbackUrl: `http://127.0.0.1/callback?code=code&state=${authorizationUrl.searchParams.get("state")}`,
+        },
+      },
+      {
+        ...context,
+        authDir,
+        authFlowStore,
+        controlCallbackBaseUrl: "http://127.0.0.1:5387/control",
+      },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://oauth2.googleapis.com/token",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("code=code"),
+      }),
+    );
+    expect(readTokenBundle("drive", authDir)).toMatchObject({
+      protectedResourceOrigin: "https://www.googleapis.com",
+      metadata: {
+        protectedResource: "https://www.googleapis.com/drive/v3/",
+        requestedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+      },
+    });
+  });
+
   it("does not create a pending auth flow when MCP auth is already authorized", async () => {
     const fixture = remoteFixtureWithOAuth();
     const authFlowStore = new RemoteAuthFlowStore();

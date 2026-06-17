@@ -391,6 +391,7 @@ function allCaplets(config: { [key: string]: unknown }): CapletConfig[] {
   const typed = config as {
     mcpServers?: Record<string, CapletConfig>;
     openapiEndpoints?: Record<string, CapletConfig>;
+    googleDiscoveryApis?: Record<string, CapletConfig>;
     graphqlEndpoints?: Record<string, CapletConfig>;
     httpApis?: Record<string, CapletConfig>;
     cliTools?: Record<string, CapletConfig>;
@@ -399,6 +400,7 @@ function allCaplets(config: { [key: string]: unknown }): CapletConfig[] {
   return [
     ...Object.values(typed.mcpServers ?? {}),
     ...Object.values(typed.openapiEndpoints ?? {}),
+    ...Object.values(typed.googleDiscoveryApis ?? {}),
     ...Object.values(typed.graphqlEndpoints ?? {}),
     ...Object.values(typed.httpApis ?? {}),
     ...Object.values(typed.cliTools ?? {}),

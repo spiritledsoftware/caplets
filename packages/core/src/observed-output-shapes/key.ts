@@ -67,6 +67,16 @@ function nonSecretBackendIdentity(caplet: CapletConfig): unknown {
         specUrl: caplet.specUrl,
         baseUrl: caplet.baseUrl,
       };
+    case "googleDiscovery":
+      return {
+        backend: caplet.backend,
+        server: caplet.server,
+        discoveryPath: caplet.discoveryPath,
+        discoveryUrl: caplet.discoveryUrl,
+        baseUrl: caplet.baseUrl,
+        includeOperations: caplet.includeOperations,
+        excludeOperations: caplet.excludeOperations,
+      };
     case "graphql":
       return {
         backend: caplet.backend,

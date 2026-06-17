@@ -108,12 +108,62 @@ describe("CapletSetManager", () => {
       },
     });
     const caplet = config.capletSets.nested!;
-    const manager = new CapletSetManager(new ServerRegistry(config));
+    const artifactDir = join(dir, "artifacts");
+    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
 
     await expect(manager.listTools(caplet)).resolves.toMatchObject([
       { name: "configured" },
       { name: "file" },
     ]);
+  });
+
+  it("routes child Google Discovery Caplets through nested tool calls", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-set-google-discovery-"));
+    dirs.push(dir);
+    const configPath = join(dir, "child.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        googleDiscoveryApis: {
+          drive: {
+            name: "Google Drive",
+            description: "Access Google Drive files.",
+            discoveryPath: join(__dirname, "fixtures/google-discovery/drive.discovery.json"),
+            baseUrl: "https://www.googleapis.com/drive/v3/",
+            auth: { type: "none" },
+            includeOperations: ["drive.files.list"],
+          },
+        },
+      }),
+    );
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const artifactDir = join(dir, "artifacts");
+    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
+
+    const result = await manager.callTool(caplet, "drive", { operation: "tools" });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      result: {
+        id: "drive",
+        items: [{ name: "drive.files.list" }],
+      },
+    });
+    const child = (
+      manager as unknown as {
+        children: Map<string, { googleDiscovery: { options: { artifactDir?: string } } }>;
+      }
+    ).children.get("nested");
+    expect(child?.googleDiscovery.options.artifactDir).toBe(artifactDir);
   });
 
   it("serializes concurrent refreshes for one parent Caplet set", async () => {

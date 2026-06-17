@@ -282,6 +282,33 @@ describe("generated tool handlers", () => {
     });
   });
 
+  it("fails explicitly for Google Discovery tools until the manager is configured", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files and permissions.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          auth: { type: "none" },
+        },
+      },
+    });
+    const googleRegistry = new ServerRegistry(config);
+    const downstream = {} as unknown as DownstreamManager;
+
+    await expect(
+      handleServerTool(
+        config.googleDiscoveryApis.drive!,
+        { operation: "tools" },
+        googleRegistry,
+        downstream,
+      ),
+    ).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: "Google Discovery manager is not configured",
+    });
+  });
+
   it("returns HTTP inspect without requiring an HTTP manager", async () => {
     const httpConfig = parseConfig({
       httpApis: {
@@ -992,6 +1019,42 @@ describe("generated tool handlers", () => {
     ]);
   });
 
+  it("extracts structured artifact envelopes from call_tool results", async () => {
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "downloaded" }],
+        structuredContent: {
+          status: 200,
+          body: {
+            artifact: {
+              uri: "caplets://artifacts/http/call-1/report.pdf",
+              path: "/tmp/caplets/report.pdf",
+              filename: "report.pdf",
+              mimeType: "application/pdf",
+              byteLength: 12,
+              sha256: "a".repeat(64),
+            },
+          },
+        },
+      }),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", name: "read", args: {} },
+      registry,
+      downstream,
+    );
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "file",
+        displayPath: "/tmp/caplets/report.pdf",
+        pathResolution: "absolute",
+      },
+    ]);
+  });
+
   it("extracts artifact links with spaces, title attributes, and parentheses", async () => {
     const result = await callToolWithText(
       'Saved artifact [Screenshot](./screenshots/final view.png), file [Trace](./trace.zip "trace"), and artifact [Archive](./run(1).zip)',
@@ -1248,6 +1311,43 @@ describe("generated tool handlers", () => {
     expect(downstreamResult.structuredContent).toEqual({
       body: { name: "Ada", email: "ada@example.com" },
     });
+  });
+
+  it("allows field projection from real API body.artifact objects", () => {
+    const result = projectCallToolResult(
+      {
+        content: [{ type: "text" as const, text: "full output" }],
+        structuredContent: {
+          body: {
+            artifact: {
+              id: "art_1",
+              name: "native response object",
+            },
+          },
+        },
+        isError: false,
+      },
+      {
+        type: "object",
+        properties: {
+          body: {
+            type: "object",
+            properties: {
+              artifact: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+      ["body.artifact.id"],
+    );
+
+    expect(result.structuredContent).toEqual({ body: { artifact: { id: "art_1" } } });
   });
 
   it("preserves downstream isError results when fields are requested", async () => {

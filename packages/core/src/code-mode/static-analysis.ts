@@ -6,6 +6,11 @@ type AstNode = {
   [key: string]: unknown;
 };
 
+type AstParent = {
+  node: AstNode;
+  key: string;
+};
+
 const PARSER_OPTIONS: ParserOptions = {
   sourceType: "module",
   errorRecovery: true,
@@ -14,21 +19,24 @@ const PARSER_OPTIONS: ParserOptions = {
 };
 
 export function hasDirectFetchCall(code: string): boolean {
-  return hasMatchingAstNode(code, (node) => isCallExpression(node) && isFetchCallee(node.callee));
+  return hasMatchingAstNode(code, isDirectFetchCallNode);
 }
 
 export function hasExecutableImport(code: string): boolean {
   return hasMatchingAstNode(code, isExecutableImportNode);
 }
 
-function hasMatchingAstNode(code: string, predicate: (node: AstNode) => boolean): boolean {
+function hasMatchingAstNode(
+  code: string,
+  predicate: (node: AstNode, parent?: AstParent) => boolean,
+): boolean {
   const ast = parseCode(code);
   if (!ast) return false;
 
   let found = false;
-  visitAst(ast, (node) => {
+  visitAst(ast, (node, parent) => {
     if (found) return;
-    found = predicate(node);
+    found = predicate(node, parent);
   });
   return found;
 }
@@ -58,13 +66,13 @@ function isCallExpression(node: AstNode): node is AstNode & { callee: unknown } 
   );
 }
 
-function isFetchCallee(value: unknown): boolean {
-  if (!isNode(value)) return false;
-  if (value.type === "Identifier") return value.name === "fetch";
-  if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
-    return isGlobalFetchMember(value);
-  }
-  return false;
+function isDirectFetchCallNode(node: AstNode): boolean {
+  if (!isCallExpression(node) || !isNode(node.callee)) return false;
+  if (isIdentifierNamed(node.callee, "fetch")) return true;
+  return (
+    (node.callee.type === "MemberExpression" || node.callee.type === "OptionalMemberExpression") &&
+    isGlobalFetchMember(node.callee)
+  );
 }
 
 function isGlobalFetchMember(node: AstNode): boolean {
@@ -81,17 +89,21 @@ function isExportDeclaration(node: AstNode): boolean {
   );
 }
 
-function visitAst(value: unknown, visit: (node: AstNode) => void): void {
+function visitAst(
+  value: unknown,
+  visit: (node: AstNode, parent?: AstParent) => void,
+  parent?: AstParent,
+): void {
   if (!isNode(value)) return;
-  visit(value);
+  visit(value, parent);
 
   for (const [key, child] of Object.entries(value)) {
     if (key === "loc" || key === "start" || key === "end" || key === "extra") continue;
     if (Array.isArray(child)) {
-      for (const item of child) visitAst(item, visit);
+      for (const item of child) visitAst(item, visit, { node: value, key });
       continue;
     }
-    visitAst(child, visit);
+    visitAst(child, visit, { node: value, key });
   }
 }
 

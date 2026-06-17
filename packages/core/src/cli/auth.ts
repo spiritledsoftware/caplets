@@ -14,10 +14,13 @@ import {
   loadGlobalConfig,
   loadProjectConfig,
   type CapletsConfig,
+  type GoogleDiscoveryApiConfig,
   type GraphQlEndpointConfig,
   type HttpApiConfig,
 } from "../config";
 import { CapletsError, toSafeError } from "../errors";
+import { GoogleDiscoveryManager } from "../google-discovery";
+import { ServerRegistry } from "../registry";
 
 type AuthTarget = ReturnType<typeof authTargets>[number];
 type AuthListFormat = "plain" | "markdown" | "json";
@@ -43,7 +46,7 @@ export async function loginAuth(
   },
 ): Promise<void> {
   const config = options.config ?? loadConfig(options.configPath);
-  const server = findAuthTarget(serverId, config);
+  const server = await resolveAuthTarget(serverId, config, options.authDir);
   assertLoginTarget(server, serverId);
 
   try {
@@ -108,7 +111,11 @@ export async function refreshAuthResult(
   serverId: string,
   options: { authDir?: string; configPath?: string; config?: CapletsConfig },
 ): Promise<{ server: string }> {
-  const target = findAuthTarget(serverId, options.config ?? loadConfig(options.configPath));
+  const target = await resolveAuthTarget(
+    serverId,
+    options.config ?? loadConfig(options.configPath),
+    options.authDir,
+  );
   assertLoginTarget(target, serverId);
   await refreshOAuthTokenBundle(target, options.authDir);
   return { server: serverId };
@@ -260,6 +267,28 @@ export function findAuthTarget(serverId: string, config = loadConfig()): AuthTar
   return authTargets(config).find((server) => server.server === serverId);
 }
 
+export async function resolveAuthTarget(
+  serverId: string,
+  config: CapletsConfig,
+  authDir?: string,
+): Promise<AuthTarget | undefined> {
+  const target = findAuthTarget(serverId, config);
+  if (target?.backend !== "googleDiscovery") return target;
+  const api = config.googleDiscoveryApis[serverId];
+  if (!api || (api.auth.type !== "oauth2" && api.auth.type !== "oidc")) return target;
+  const manager = new GoogleDiscoveryManager(
+    new ServerRegistry(config),
+    authDir ? { authDir } : {},
+  );
+  const baseUrl =
+    api.baseUrl ?? (await manager.resolveBaseUrl(api).catch(() => undefined)) ?? api.discoveryUrl;
+  return {
+    ...target,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(api.auth.scopes?.length ? {} : { resolvedScopes: await manager.resolveAuthScopes(api) }),
+  };
+}
+
 function authTargets(config: ReturnType<typeof loadConfig>) {
   return [
     ...Object.values(config.mcpServers).filter(
@@ -270,6 +299,9 @@ function authTargets(config: ReturnType<typeof loadConfig>) {
     ...Object.values(config.openapiEndpoints).filter(
       (endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc",
     ),
+    ...Object.values(config.googleDiscoveryApis)
+      .filter((api) => api.auth?.type === "oauth2" || api.auth?.type === "oidc")
+      .map(googleDiscoveryAuthTarget),
     ...Object.values(config.graphqlEndpoints)
       .filter((endpoint) => endpoint.auth?.type === "oauth2" || endpoint.auth?.type === "oidc")
       .map(graphQlAuthTarget),
@@ -277,6 +309,16 @@ function authTargets(config: ReturnType<typeof loadConfig>) {
       .filter((api) => api.auth?.type === "oauth2" || api.auth?.type === "oidc")
       .map(httpAuthTarget),
   ];
+}
+
+function googleDiscoveryAuthTarget(
+  api: GoogleDiscoveryApiConfig,
+): GoogleDiscoveryApiConfig & GenericAuthTarget {
+  const baseUrl = api.baseUrl ?? api.discoveryUrl;
+  return {
+    ...api,
+    ...(baseUrl ? { baseUrl } : {}),
+  };
 }
 
 function graphQlAuthTarget(

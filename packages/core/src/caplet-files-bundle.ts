@@ -342,6 +342,67 @@ const capletOpenApiEndpointSchema = z
     validateEndpointAuthHeaders(endpoint.auth, ctx);
   });
 
+const capletGoogleDiscoveryOperationFilterSchema = z.array(z.string().trim().min(1).max(160));
+
+const capletGoogleDiscoveryApiSchema = z
+  .object({
+    discoveryPath: z.string().min(1).optional().describe("Local Google Discovery document path."),
+    discoveryUrl: z.string().min(1).optional().describe("Remote Google Discovery document URL."),
+    baseUrl: z.string().min(1).optional().describe("Override base URL for Google API requests."),
+    auth: capletEndpointAuthSchema.describe(
+      'Explicit Google API request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Timeout in milliseconds for Google API HTTP requests."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time.",
+      ),
+    includeOperations: capletGoogleDiscoveryOperationFilterSchema.optional(),
+    excludeOperations: capletGoogleDiscoveryOperationFilterSchema.optional(),
+    disabled: z.boolean().optional().describe("When true, omit this Caplet from discovery."),
+    projectBinding: capletProjectBindingSchema.optional(),
+    runtime: capletRuntimeRequirementsSchema.optional(),
+  })
+  .strict()
+  .superRefine((api, ctx) => {
+    if (Boolean(api.discoveryPath) === Boolean(api.discoveryUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "googleDiscoveryApi must define exactly one discovery source: discoveryPath or discoveryUrl",
+      });
+    }
+    if (
+      api.discoveryUrl &&
+      !hasEnvReference(api.discoveryUrl) &&
+      !isAllowedRemoteUrl(api.discoveryUrl)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["discoveryUrl"],
+        message: "Google Discovery discoveryUrl must use https except loopback development urls",
+      });
+    }
+    if (api.baseUrl && !hasEnvReference(api.baseUrl) && !isAllowedHttpBaseUrl(api.baseUrl)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message:
+          "Google Discovery baseUrl must use https except loopback development urls and must not include credentials, query, or fragment",
+      });
+    }
+    validateEndpointAuthHeaders(api.auth, ctx);
+  });
+
 const capletGraphQlOperationSchema = z
   .object({
     document: z.string().min(1).optional().describe("Inline GraphQL operation document."),
@@ -623,11 +684,7 @@ const capletSetSchema = z
 
 export const capletFileSchema = z
   .object({
-    $schema: z
-      .string()
-      .url()
-      .optional()
-      .describe("Optional JSON Schema URL for editor validation."),
+    $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
     name: z.string().trim().min(1).max(80).describe("Human-readable Caplet display name."),
     description: z
       .string()
@@ -653,6 +710,9 @@ export const capletFileSchema = z
     openapiEndpoint: capletOpenApiEndpointSchema
       .describe("OpenAPI endpoint backend configuration for this Caplet.")
       .optional(),
+    googleDiscoveryApi: capletGoogleDiscoveryApiSchema
+      .describe("Google Discovery API backend configuration for this Caplet.")
+      .optional(),
     graphqlEndpoint: capletGraphQlEndpointSchema
       .describe("GraphQL endpoint backend configuration for this Caplet.")
       .optional(),
@@ -671,6 +731,7 @@ export const capletFileSchema = z
     const backendCount =
       Number(Boolean(frontmatter.mcpServer)) +
       Number(Boolean(frontmatter.openapiEndpoint)) +
+      Number(Boolean(frontmatter.googleDiscoveryApi)) +
       Number(Boolean(frontmatter.graphqlEndpoint)) +
       Number(Boolean(frontmatter.httpApi)) +
       Number(Boolean(frontmatter.cliTools)) +
@@ -679,7 +740,7 @@ export const capletFileSchema = z
       ctx.addIssue({
         code: "custom",
         message:
-          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, graphqlEndpoint, httpApi, cliTools, or capletSet",
+          "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, googleDiscoveryApi, graphqlEndpoint, httpApi, cliTools, or capletSet",
       });
     }
   });
@@ -689,7 +750,7 @@ type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 export function capletJsonSchema(): unknown {
   return patchCapletJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "https://caplets.dev/caplet-frontmatter.schema.json",
+    $id: "https://caplets.dev/caplet.schema.json",
     title: "Caplet file frontmatter",
     description: "YAML frontmatter schema for a Markdown Caplet file.",
     ...z.toJSONSchema(capletFileSchema, { io: "input" }),
@@ -699,6 +760,7 @@ export function capletJsonSchema(): unknown {
 export type CapletFileConfig = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
+  googleDiscoveryApis?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
   cliTools?: Record<string, unknown>;
@@ -756,6 +818,7 @@ export function buildCapletFileLoadResultFromEntries(
 ): BestEffortCapletFileLoadResult | undefined {
   const servers: Record<string, unknown> = {};
   const openapiEndpoints: Record<string, unknown> = {};
+  const googleDiscoveryApis: Record<string, unknown> = {};
   const graphqlEndpoints: Record<string, unknown> = {};
   const httpApis: Record<string, unknown> = {};
   const cliTools: Record<string, unknown> = {};
@@ -766,6 +829,7 @@ export function buildCapletFileLoadResultFromEntries(
     return Boolean(
       servers[id] ||
       openapiEndpoints[id] ||
+      googleDiscoveryApis[id] ||
       graphqlEndpoints[id] ||
       httpApis[id] ||
       cliTools[id] ||
@@ -804,6 +868,9 @@ export function buildCapletFileLoadResultFromEntries(
     if (isPlainObject(config) && config.backend === "openapi") {
       const { backend: _backend, ...endpoint } = config;
       openapiEndpoints[candidate.id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "googleDiscovery") {
+      const { backend: _backend, ...api } = config;
+      googleDiscoveryApis[candidate.id] = api;
     } else if (isPlainObject(config) && config.backend === "graphql") {
       const { backend: _backend, ...endpoint } = config;
       graphqlEndpoints[candidate.id] = endpoint;
@@ -823,6 +890,7 @@ export function buildCapletFileLoadResultFromEntries(
 
   const hasServers = Object.keys(servers).length > 0;
   const hasOpenApi = Object.keys(openapiEndpoints).length > 0;
+  const hasGoogleDiscovery = Object.keys(googleDiscoveryApis).length > 0;
   const hasGraphQl = Object.keys(graphqlEndpoints).length > 0;
   const hasHttpApis = Object.keys(httpApis).length > 0;
   const hasCliTools = Object.keys(cliTools).length > 0;
@@ -830,6 +898,7 @@ export function buildCapletFileLoadResultFromEntries(
   const config = {
     ...(hasServers ? { mcpServers: servers } : {}),
     ...(hasOpenApi ? { openapiEndpoints } : {}),
+    ...(hasGoogleDiscovery ? { googleDiscoveryApis } : {}),
     ...(hasGraphQl ? { graphqlEndpoints } : {}),
     ...(hasHttpApis ? { httpApis } : {}),
     ...(hasCliTools ? { cliTools } : {}),
@@ -913,6 +982,18 @@ function capletToServerConfig(
       ...frontmatter.openapiEndpoint,
       specPath: normalizePath(frontmatter.openapiEndpoint.specPath, baseDir),
       backend: "openapi",
+      name: frontmatter.name,
+      description: frontmatter.description,
+      ...sharedCapletFields(frontmatter),
+      body,
+    };
+  }
+
+  if (frontmatter.googleDiscoveryApi) {
+    return {
+      ...frontmatter.googleDiscoveryApi,
+      discoveryPath: normalizePath(frontmatter.googleDiscoveryApi.discoveryPath, baseDir),
+      backend: "googleDiscovery",
       name: frontmatter.name,
       description: frontmatter.description,
       ...sharedCapletFields(frontmatter),

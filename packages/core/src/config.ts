@@ -217,6 +217,29 @@ export type HttpApiConfig = AgentSelectionHintsConfig & {
   runtime?: RuntimeRequirementsConfig | undefined;
 };
 
+export type GoogleDiscoveryApiConfig = AgentSelectionHintsConfig & {
+  server: string;
+  backend: "googleDiscovery";
+  name: string;
+  description: string;
+  exposure?: CapletExposure | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
+  tags?: string[] | undefined;
+  body?: string | undefined;
+  discoveryPath?: string | undefined;
+  discoveryUrl?: string | undefined;
+  baseUrl?: string | undefined;
+  includeOperations?: string[] | undefined;
+  excludeOperations?: string[] | undefined;
+  auth: OpenApiAuthConfig;
+  requestTimeoutMs: number;
+  operationCacheTtlMs: number;
+  disabled: boolean;
+  setup?: CapletSetupConfig | undefined;
+  projectBinding?: ProjectBindingConfig | undefined;
+  runtime?: RuntimeRequirementsConfig | undefined;
+};
+
 export type CliToolOutputConfig = {
   type: "text" | "json";
 };
@@ -285,6 +308,7 @@ export type CapletSetConfig = AgentSelectionHintsConfig & {
 export type CapletConfig =
   | CapletServerConfig
   | OpenApiEndpointConfig
+  | GoogleDiscoveryApiConfig
   | GraphQlEndpointConfig
   | HttpApiConfig
   | CliToolsConfig
@@ -311,6 +335,7 @@ export type CapletsConfig = {
   options: CapletsOptions;
   mcpServers: Record<string, CapletServerConfig>;
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
+  googleDiscoveryApis: Record<string, GoogleDiscoveryApiConfig>;
   graphqlEndpoints: Record<string, GraphQlEndpointConfig>;
   httpApis: Record<string, HttpApiConfig>;
   cliTools: Record<string, CliToolsConfig>;
@@ -616,6 +641,66 @@ const publicOpenApiEndpointSchema = z
   .strict();
 
 const normalizedOpenApiEndpointSchema = publicOpenApiEndpointSchema.extend({
+  body: z.string().optional(),
+});
+
+const operationFilterSchema = z.array(z.string().trim().min(1).max(160));
+
+const publicGoogleDiscoveryApiSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .describe("Human-readable Google Discovery API display name."),
+    description: z
+      .string()
+      .describe(
+        "Capability description shown to agents before Google Discovery operations are disclosed.",
+      )
+      .refine(
+        (value) => value.trim().length >= 10,
+        "description must contain at least 10 non-whitespace characters",
+      )
+      .refine((value) => value.length <= 1500, "description must be at most 1500 characters"),
+    discoveryPath: z.string().min(1).optional().describe("Local Google Discovery document path."),
+    discoveryUrl: z.string().url().optional().describe("Remote Google Discovery document URL."),
+    baseUrl: z.string().url().optional().describe("Override base URL for Google API requests."),
+    includeOperations: operationFilterSchema.optional(),
+    excludeOperations: operationFilterSchema.optional(),
+    auth: openApiAuthSchema.describe(
+      'Explicit Google API request auth config. Use {"type":"none"} for public APIs.',
+    ),
+    tags: z.array(z.string().trim().min(1).max(80)).optional(),
+    exposure: exposureSchema.optional(),
+    shadowing: shadowingSchema,
+    ...agentSelectionHintsSchema,
+    setup: setupSchema.optional(),
+    projectBinding: projectBindingSchema.optional(),
+    runtime: runtimeRequirementsSchema.optional(),
+    requestTimeoutMs: z
+      .number()
+      .int()
+      .positive()
+      .default(60_000)
+      .describe("Timeout in milliseconds for Google Discovery HTTP requests."),
+    operationCacheTtlMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(30_000)
+      .describe(
+        "Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time.",
+      ),
+    disabled: z
+      .boolean()
+      .default(false)
+      .describe("When true, omit this Google Discovery Caplet from discovery."),
+  })
+  .strict();
+
+const normalizedGoogleDiscoveryApiSchema = publicGoogleDiscoveryApiSchema.extend({
   body: z.string().optional(),
 });
 
@@ -973,6 +1058,7 @@ const normalizedCapletSetSchema = publicCapletSetSchema.extend({
 
 type ConfigSchemaServerValue = z.infer<typeof normalizedServerSchema>;
 type ConfigSchemaOpenApiEndpointValue = z.infer<typeof normalizedOpenApiEndpointSchema>;
+type ConfigSchemaGoogleDiscoveryApiValue = z.infer<typeof normalizedGoogleDiscoveryApiSchema>;
 type ConfigSchemaGraphQlEndpointValue = z.infer<typeof normalizedGraphQlEndpointSchema>;
 type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
@@ -980,6 +1066,7 @@ type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
+  googleDiscoveryApis?: Record<string, unknown>;
   graphqlEndpoints?: Record<string, unknown>;
   httpApis?: Record<string, unknown>;
   cliTools?: Record<string, unknown>;
@@ -990,6 +1077,7 @@ type ConfigInput = {
 function configSchemaFor(
   serverValueSchema: z.ZodTypeAny,
   openApiEndpointValueSchema: z.ZodTypeAny,
+  googleDiscoveryApiValueSchema: z.ZodTypeAny,
   graphQlEndpointValueSchema: z.ZodTypeAny,
   httpApiValueSchema: z.ZodTypeAny,
   cliToolsValueSchema: z.ZodTypeAny,
@@ -997,11 +1085,7 @@ function configSchemaFor(
 ) {
   return z
     .object({
-      $schema: z
-        .string()
-        .url()
-        .optional()
-        .describe("Optional JSON Schema URL for editor validation."),
+      $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
       version: z.literal(1).default(1).describe("Caplets config schema version."),
       defaultSearchLimit: z
         .number()
@@ -1052,6 +1136,10 @@ function configSchemaFor(
         .record(z.string().regex(SERVER_ID_PATTERN), openApiEndpointValueSchema)
         .default({})
         .describe("OpenAPI endpoints keyed by stable Caplet ID."),
+      googleDiscoveryApis: z
+        .record(z.string().regex(SERVER_ID_PATTERN), googleDiscoveryApiValueSchema)
+        .default({})
+        .describe("Google Discovery APIs keyed by stable Caplet ID."),
       graphqlEndpoints: z
         .record(z.string().regex(SERVER_ID_PATTERN), graphQlEndpointValueSchema)
         .default({})
@@ -1189,13 +1277,82 @@ function configSchemaFor(
         }
       }
 
+      for (const [api, rawValue] of Object.entries(config.googleDiscoveryApis)) {
+        const raw = rawValue as ConfigSchemaGoogleDiscoveryApiValue;
+        const duplicateBackend = config.mcpServers[api]
+          ? "mcpServers"
+          : config.openapiEndpoints[api]
+            ? "openapiEndpoints"
+            : config.graphqlEndpoints[api]
+              ? "graphqlEndpoints"
+              : config.httpApis[api]
+                ? "httpApis"
+                : config.cliTools[api]
+                  ? "cliTools"
+                  : config.capletSets[api]
+                    ? "capletSets"
+                    : undefined;
+        if (duplicateBackend) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["googleDiscoveryApis", api],
+            message: `Caplet ID ${api} is already used by ${duplicateBackend}`,
+          });
+        }
+        if (!SERVER_ID_PATTERN.test(api)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["googleDiscoveryApis", api],
+            message: "Google Discovery API ID must match ^[a-zA-Z0-9_-]{1,64}$",
+          });
+        }
+        if (Boolean(raw.discoveryPath) === Boolean(raw.discoveryUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["googleDiscoveryApis", api],
+            message:
+              "Google Discovery API must define exactly one discovery source: discoveryPath or discoveryUrl",
+          });
+        }
+        if (raw.discoveryUrl && !isAllowedRemoteUrl(raw.discoveryUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["googleDiscoveryApis", api, "discoveryUrl"],
+            message:
+              "Google Discovery API discoveryUrl must use https except loopback development urls",
+          });
+        }
+        if (raw.baseUrl && !isAllowedHttpBaseUrl(raw.baseUrl)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["googleDiscoveryApis", api, "baseUrl"],
+            message:
+              "Google Discovery API baseUrl must use https except loopback development urls and must not include credentials, query, or fragment",
+          });
+        }
+        if (raw.auth?.type === "headers") {
+          for (const headerName of Object.keys(raw.auth.headers)) {
+            const normalized = headerName.toLowerCase();
+            if (!HEADER_NAME_PATTERN.test(headerName) || FORBIDDEN_HEADERS.has(normalized)) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["googleDiscoveryApis", api, "auth", "headers", headerName],
+                message: `header ${headerName} is not allowed`,
+              });
+            }
+          }
+        }
+      }
+
       for (const [endpoint, rawValue] of Object.entries(config.graphqlEndpoints)) {
         const raw = rawValue as ConfigSchemaGraphQlEndpointValue;
         const duplicateBackend = config.mcpServers[endpoint]
           ? "mcpServers"
           : config.openapiEndpoints[endpoint]
             ? "openapiEndpoints"
-            : undefined;
+            : config.googleDiscoveryApis[endpoint]
+              ? "googleDiscoveryApis"
+              : undefined;
         if (duplicateBackend) {
           ctx.addIssue({
             code: "custom",
@@ -1245,9 +1402,11 @@ function configSchemaFor(
           ? "mcpServers"
           : config.openapiEndpoints[endpoint]
             ? "openapiEndpoints"
-            : config.graphqlEndpoints[endpoint]
-              ? "graphqlEndpoints"
-              : undefined;
+            : config.googleDiscoveryApis[endpoint]
+              ? "googleDiscoveryApis"
+              : config.graphqlEndpoints[endpoint]
+                ? "graphqlEndpoints"
+                : undefined;
         if (duplicateBackend) {
           ctx.addIssue({
             code: "custom",
@@ -1290,11 +1449,13 @@ function configSchemaFor(
           ? "mcpServers"
           : config.openapiEndpoints[server]
             ? "openapiEndpoints"
-            : config.graphqlEndpoints[server]
-              ? "graphqlEndpoints"
-              : config.httpApis[server]
-                ? "httpApis"
-                : undefined;
+            : config.googleDiscoveryApis[server]
+              ? "googleDiscoveryApis"
+              : config.graphqlEndpoints[server]
+                ? "graphqlEndpoints"
+                : config.httpApis[server]
+                  ? "httpApis"
+                  : undefined;
         if (duplicateBackend) {
           ctx.addIssue({
             code: "custom",
@@ -1326,13 +1487,15 @@ function configSchemaFor(
           ? "mcpServers"
           : config.openapiEndpoints[server]
             ? "openapiEndpoints"
-            : config.graphqlEndpoints[server]
-              ? "graphqlEndpoints"
-              : config.httpApis[server]
-                ? "httpApis"
-                : config.cliTools[server]
-                  ? "cliTools"
-                  : undefined;
+            : config.googleDiscoveryApis[server]
+              ? "googleDiscoveryApis"
+              : config.graphqlEndpoints[server]
+                ? "graphqlEndpoints"
+                : config.httpApis[server]
+                  ? "httpApis"
+                  : config.cliTools[server]
+                    ? "cliTools"
+                    : undefined;
         if (duplicateBackend) {
           ctx.addIssue({
             code: "custom",
@@ -1361,6 +1524,7 @@ function configSchemaFor(
 export const configFileSchema = configSchemaFor(
   publicServerSchema,
   publicOpenApiEndpointSchema,
+  publicGoogleDiscoveryApiSchema,
   publicGraphQlEndpointSchema,
   publicHttpApiSchema,
   publicCliToolsSchema,
@@ -1369,6 +1533,7 @@ export const configFileSchema = configSchemaFor(
 const normalizedConfigFileSchema = configSchemaFor(
   normalizedServerSchema,
   normalizedOpenApiEndpointSchema,
+  normalizedGoogleDiscoveryApiSchema,
   normalizedGraphQlEndpointSchema,
   normalizedHttpApiSchema,
   normalizedCliToolsSchema,
@@ -1423,7 +1588,7 @@ export function loadConfigWithSources(
         : undefined,
     ],
     `Caplets config not found at ${path} or ${projectPath}`,
-    "Caplets config must define at least one MCP server, OpenAPI endpoint, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+    "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
   );
 }
 
@@ -1483,6 +1648,7 @@ function buildConfigWithSources(
       emptyMessage &&
       Object.keys(config.mcpServers).length === 0 &&
       Object.keys(config.openapiEndpoints).length === 0 &&
+      Object.keys(config.googleDiscoveryApis).length === 0 &&
       Object.keys(config.graphqlEndpoints).length === 0 &&
       Object.keys(config.httpApis).length === 0 &&
       Object.keys(config.cliTools).length === 0 &&
@@ -1614,6 +1780,7 @@ export function loadIsolatedConfig(options: {
   if (
     Object.keys(config.mcpServers).length === 0 &&
     Object.keys(config.openapiEndpoints).length === 0 &&
+    Object.keys(config.googleDiscoveryApis).length === 0 &&
     Object.keys(config.graphqlEndpoints).length === 0 &&
     Object.keys(config.httpApis).length === 0 &&
     Object.keys(config.cliTools).length === 0 &&
@@ -1660,6 +1827,11 @@ function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
   return stripUndefined({
     ...input,
     openapiEndpoints: normalizeEndpointPaths(input.openapiEndpoints, baseDir, normalizeOpenApiPath),
+    googleDiscoveryApis: normalizeEndpointPaths(
+      input.googleDiscoveryApis,
+      baseDir,
+      normalizeGoogleDiscoveryPath,
+    ),
     graphqlEndpoints: normalizeEndpointPaths(input.graphqlEndpoints, baseDir, normalizeGraphQlPath),
     cliTools: normalizeEndpointPaths(input.cliTools, baseDir, normalizeCliToolsPaths),
     capletSets: normalizeEndpointPaths(input.capletSets, baseDir, normalizeCapletSetPaths),
@@ -1689,6 +1861,16 @@ function normalizeOpenApiPath(
   return {
     ...endpoint,
     specPath: normalizeLocalPath(endpoint.specPath, baseDir),
+  };
+}
+
+function normalizeGoogleDiscoveryPath(
+  endpoint: Record<string, unknown>,
+  baseDir: string,
+): Record<string, unknown> {
+  return {
+    ...endpoint,
+    discoveryPath: normalizeLocalPath(endpoint.discoveryPath, baseDir),
   };
 }
 
@@ -1765,6 +1947,12 @@ function rejectProjectConfigExecutableBackendMaps(input: ConfigInput, path: stri
       `Project config at ${path} cannot define executable backend map openapiEndpoints; use project Markdown Caplet files or user config instead`,
     );
   }
+  if (input.googleDiscoveryApis && Object.keys(input.googleDiscoveryApis).length > 0) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Project config at ${path} cannot define executable backend map googleDiscoveryApis; use project Markdown Caplet files or user config instead`,
+    );
+  }
   if (input.graphqlEndpoints && Object.keys(input.graphqlEndpoints).length > 0) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -1808,6 +1996,10 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       openapiEndpoints: {
         ...merged?.openapiEndpoints,
         ...input.openapiEndpoints,
+      },
+      googleDiscoveryApis: {
+        ...merged?.googleDiscoveryApis,
+        ...input.googleDiscoveryApis,
       },
       graphqlEndpoints: {
         ...merged?.graphqlEndpoints,
@@ -1860,6 +2052,7 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
 function removeCapletId(input: ConfigInput, id: string): ConfigInput {
   const { [id]: _mcpServer, ...mcpServers } = input.mcpServers ?? {};
   const { [id]: _openapiEndpoint, ...openapiEndpoints } = input.openapiEndpoints ?? {};
+  const { [id]: _googleDiscoveryApi, ...googleDiscoveryApis } = input.googleDiscoveryApis ?? {};
   const { [id]: _graphqlEndpoint, ...graphqlEndpoints } = input.graphqlEndpoints ?? {};
   const { [id]: _httpApi, ...httpApis } = input.httpApis ?? {};
   const { [id]: _cliTools, ...cliTools } = input.cliTools ?? {};
@@ -1869,6 +2062,7 @@ function removeCapletId(input: ConfigInput, id: string): ConfigInput {
     ...input,
     mcpServers,
     openapiEndpoints,
+    googleDiscoveryApis,
     graphqlEndpoints,
     httpApis,
     cliTools,
@@ -1880,6 +2074,7 @@ function capletIds(input: ConfigInput): string[] {
   return [
     ...Object.keys(input.mcpServers ?? {}),
     ...Object.keys(input.openapiEndpoints ?? {}),
+    ...Object.keys(input.googleDiscoveryApis ?? {}),
     ...Object.keys(input.graphqlEndpoints ?? {}),
     ...Object.keys(input.httpApis ?? {}),
     ...Object.keys(input.cliTools ?? {}),
@@ -1919,6 +2114,16 @@ export function parseConfig(input: unknown): CapletsConfig {
       server,
       backend: "openapi",
     }) as OpenApiEndpointConfig;
+  }
+
+  const googleDiscoveryApis: Record<string, GoogleDiscoveryApiConfig> = {};
+  for (const [server, raw] of Object.entries(parsed.data.googleDiscoveryApis)) {
+    const interpolated = raw as ConfigSchemaGoogleDiscoveryApiValue;
+    googleDiscoveryApis[server] = stripUndefined({
+      ...interpolated,
+      server,
+      backend: "googleDiscovery",
+    }) as GoogleDiscoveryApiConfig;
   }
 
   const graphqlEndpoints: Record<string, GraphQlEndpointConfig> = {};
@@ -1973,6 +2178,7 @@ export function parseConfig(input: unknown): CapletsConfig {
     },
     mcpServers: servers,
     openapiEndpoints,
+    googleDiscoveryApis,
     graphqlEndpoints,
     httpApis,
     cliTools,
@@ -2032,6 +2238,7 @@ function isPublicMetadataPath(path: string[]): boolean {
     path.length < 3 ||
     (path[0] !== "mcpServers" &&
       path[0] !== "openapiEndpoints" &&
+      path[0] !== "googleDiscoveryApis" &&
       path[0] !== "graphqlEndpoints" &&
       path[0] !== "httpApis" &&
       path[0] !== "cliTools" &&

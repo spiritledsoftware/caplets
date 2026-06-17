@@ -62,6 +62,7 @@ function allCaplets(config: CapletsConfig): CapletConfig[] {
   return [
     ...Object.values(config.mcpServers),
     ...Object.values(config.openapiEndpoints),
+    ...Object.values(config.googleDiscoveryApis ?? {}),
     ...Object.values(config.graphqlEndpoints),
     ...Object.values(config.httpApis),
     ...Object.values(config.cliTools),

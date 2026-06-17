@@ -49,10 +49,7 @@ const requiredContent = new Map<string, string[]>([
   ["changelog.mdx", ["Changelog", "GitHub releases"]],
   ["reference/config.mdx", ["https://caplets.dev/config.schema.json", "Required"]],
   ["reference/code-mode-api.mdx", ["CapletHandle", "DebugApi", "CapletsResult"]],
-  [
-    "reference/caplet-files.mdx",
-    ["https://caplets.dev/caplet-frontmatter.schema.json", "CAPLET.md"],
-  ],
+  ["reference/caplet-files.mdx", ["https://caplets.dev/caplet.schema.json", "CAPLET.md"]],
 ]);
 
 const forbiddenPatterns = [

@@ -4,6 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
+  addGoogleDiscoveryCaplet,
   addGraphqlCaplet,
   addHttpCaplet,
   addMcpCaplet,
@@ -93,6 +94,7 @@ export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
 export {
   addCliCaplet,
+  addGoogleDiscoveryCaplet,
   addGraphqlCaplet,
   addHttpCaplet,
   addMcpCaplet,
@@ -1194,6 +1196,49 @@ export function createProgram(io: CliIO = {}): Command {
           destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
         });
         writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}OpenAPI`, result);
+      },
+    );
+
+  add
+    .command("google-discovery")
+    .description("Add a Google Discovery API backend Caplet.")
+    .argument("<id>", "Caplet ID/display seed")
+    .option("--discovery <path-or-url>", "Google Discovery document path or URL")
+    .option("--discovery-url <url>", "remote Google Discovery document URL")
+    .option("--base-url <url>", "request base URL override")
+    .option("--token-env <ENV>", "bearer token environment variable reference")
+    .option("--project", "write to the project Caplets root")
+    .option("-g, --global", "write to the user Caplets root")
+    .option("--remote", "add through remote control")
+    .option("--print", "print generated Caplet text without writing a file")
+    .option("--output <path>", "output path")
+    .option("--force", "overwrite an existing destination file")
+    .action(
+      async (
+        id: string,
+        options: AddBackendCliOptions & {
+          discovery?: string;
+          discoveryUrl?: string;
+          baseUrl?: string;
+          tokenEnv?: string;
+        },
+      ) => {
+        const target = parseMutationTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
+          const result = await remote.request("add", {
+            kind: "googleDiscovery",
+            id,
+            options: remoteAddOptions(options),
+          });
+          writeAddResult(writeOut, "Google Discovery", result as AddCliResult);
+          return;
+        }
+        const result = addGoogleDiscoveryCaplet(id, {
+          ...options,
+          destinationRoot: addDestinationRoot(target, currentConfigPath(), env),
+        });
+        writeAddResult(writeOut, `${localMutationTargetLabel(target, io)}Google Discovery`, result);
       },
     );
 
@@ -2368,6 +2413,7 @@ function mergePartialLocalOverlays(
 const capletConfigKinds = [
   "mcpServers",
   "openapiEndpoints",
+  "googleDiscoveryApis",
   "graphqlEndpoints",
   "httpApis",
   "cliTools",
@@ -2445,6 +2491,7 @@ function hasEnabledCaplet(config: CapletsConfig, id: string): boolean {
   const caplet =
     config.mcpServers[id] ??
     config.openapiEndpoints[id] ??
+    config.googleDiscoveryApis[id] ??
     config.graphqlEndpoints[id] ??
     config.httpApis[id] ??
     config.cliTools[id] ??
