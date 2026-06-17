@@ -11,6 +11,7 @@
     "benchmark:live": "pnpm --filter @caplets/benchmarks benchmark:live",
     "benchmark:live:opencode": "pnpm --filter @caplets/benchmarks benchmark:live:opencode",
     "benchmark:live:pi": "pnpm --filter @caplets/benchmarks benchmark:live:pi",
+    "benchmark:live:pi-eval": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval",
     "build": "turbo build",
     "build:watch": "turbo build:watch",
     "changeset": "changeset",
@@ -33,9 +34,7 @@
     "test": "vitest run",
     "typecheck": "tsgo --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
-    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write .",
-    "benchmark:live:pi-eval": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval",
-    "benchmark:live:pi-eval:competitors": "pnpm --filter @caplets/benchmarks benchmark:live:pi-eval:competitors"
+    "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
@@ -55,7 +54,8 @@
     "vitest": "^4.1.8"
   },
   "engines": {
-    "node": ">=24"
+    "bun": ">=1",
+    "node": ">=22"
   },
-  "packageManager": "pnpm@11.5.0"
+  "packageManager": "pnpm@11.7.0"
 }

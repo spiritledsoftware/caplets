@@ -1,2 +1,0 @@
-pnpm exec tsx ./scripts/commit-byterover-context.ts
-
