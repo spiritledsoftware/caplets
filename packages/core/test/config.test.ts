@@ -2228,6 +2228,38 @@ describe("config", () => {
     );
     expect(() =>
       parseConfig({
+        httpApis: {
+          drive: {
+            name: "Drive HTTP",
+            description: "HTTP Drive wrapper.",
+            baseUrl: "https://example.com",
+            auth: { type: "none" },
+            actions: {
+              list: { method: "GET", path: "/files" },
+            },
+          },
+        },
+        googleDiscoveryApis: {
+          drive: {
+            name: "Drive",
+            description: "Access Google Drive files.",
+            discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+            auth: { type: "none" },
+          },
+        },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        details: expect.arrayContaining([
+          expect.objectContaining({
+            path: ["googleDiscoveryApis", "drive"],
+            message: expect.stringContaining("already used by httpApis"),
+          }),
+        ]) as unknown,
+      }) as CapletsError,
+    );
+    expect(() =>
+      parseConfig({
         googleDiscoveryApis: {
           drive: {
             name: "Drive",

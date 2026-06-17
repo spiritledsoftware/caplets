@@ -175,6 +175,7 @@ function scopePreferenceRank(scope: string): number {
   if (tokens.includes("file")) return 1;
   if (tokens.includes("metadata") || tokens.includes("appdata")) return 2;
   if (tokens.includes("read")) return 3;
+  if (suffix === "cloud-platform") return 5;
   return 4;
 }
 

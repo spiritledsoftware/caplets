@@ -274,9 +274,10 @@ export class GoogleDiscoveryManager {
     if (!upload?.path) {
       throw new CapletsError("CONFIG_INVALID", "Google Discovery resumable upload path is missing");
     }
+    const contentType = safeMediaContentType(media.mimeType);
     const startUrl = buildGoogleDiscoveryUploadUrl(api, operation, upload.path, "resumable", args);
     headers.set("content-type", "application/json; charset=UTF-8");
-    headers.set("x-upload-content-type", media.mimeType ?? "application/octet-stream");
+    headers.set("x-upload-content-type", contentType);
     headers.set("x-upload-content-length", String(media.bytes.byteLength));
     const started = await fetchGoogleRequest(
       api,
@@ -302,7 +303,7 @@ export class GoogleDiscoveryManager {
     }
     const uploadUrl = new URL(location);
     const uploadHeaders = new Headers();
-    uploadHeaders.set("content-type", media.mimeType ?? "application/octet-stream");
+    uploadHeaders.set("content-type", contentType);
     uploadHeaders.set("content-length", String(media.bytes.byteLength));
     uploadHeaders.set("content-range", resumableContentRange(media.bytes.byteLength));
     copySessionAuthorization(api, startUrl, uploadUrl, headers, uploadHeaders);
@@ -474,7 +475,7 @@ function simpleUploadInit(
   media: ResolvedMediaInput,
   headers: Headers,
 ): RequestInit {
-  headers.set("content-type", media.mimeType ?? "application/octet-stream");
+  headers.set("content-type", safeMediaContentType(media.mimeType));
   headers.set("content-length", String(media.bytes.byteLength));
   return {
     method: operation.method.toUpperCase(),
@@ -491,7 +492,7 @@ function multipartUploadInit(
   headers: Headers,
 ): RequestInit {
   const boundary = `caplets_${randomUUID().replace(/-/gu, "")}`;
-  const contentType = media.mimeType ?? "application/octet-stream";
+  const contentType = safeMediaContentType(media.mimeType);
   const payload = Buffer.concat([
     Buffer.from(
       `--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(
@@ -514,6 +515,14 @@ function multipartUploadInit(
 
 function resumableContentRange(byteLength: number): string {
   return byteLength === 0 ? "bytes */0" : `bytes 0-${byteLength - 1}/${byteLength}`;
+}
+
+function safeMediaContentType(mimeType: string | undefined): string {
+  const contentType = mimeType ?? "application/octet-stream";
+  if (/[\r\n]/u.test(contentType)) {
+    throw new CapletsError("REQUEST_INVALID", "media.mimeType must not contain line breaks");
+  }
+  return contentType;
 }
 
 function googleDiscoveryBaseUrl(
@@ -651,12 +660,10 @@ async function discoveryAuthHeaders(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
 ): Promise<Record<string, string>> {
-  if (!shouldSendDiscoveryAuth(api)) return {};
-  if (
-    (api.auth.type === "oauth2" || api.auth.type === "oidc") &&
-    !hasStoredOAuthBundle(api, authDir)
-  ) {
-    return {};
+  if (api.auth.type === "none") return {};
+  if (api.auth.type === "oauth2" || api.auth.type === "oidc") {
+    if (!shouldSendDiscoveryAuth(api) && !hasStoredOAuthBundle(api, authDir)) return {};
+    return storedOAuthAccessHeaders(api, authDir);
   }
   return authHeaders(api, authDir);
 }
@@ -682,6 +689,16 @@ async function authHeaders(
 function hasStoredOAuthBundle(api: GoogleDiscoveryApiConfig, authDir?: string): boolean {
   const bundle = readTokenBundle(api.server, authDir);
   return Boolean(bundle?.accessToken || bundle?.refreshToken);
+}
+
+function storedOAuthAccessHeaders(
+  api: GoogleDiscoveryApiConfig,
+  authDir?: string,
+): Record<string, string> {
+  const bundle = readTokenBundle(api.server, authDir);
+  return bundle?.accessToken
+    ? { authorization: `${bundle.tokenType ?? "Bearer"} ${bundle.accessToken}` }
+    : {};
 }
 
 function copySessionAuthorization(

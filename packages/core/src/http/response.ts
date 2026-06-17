@@ -24,7 +24,7 @@ export async function readHttpLikeResponse(
   const maxInlineBytes = options.maxInlineBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const method = options.method?.toUpperCase();
-  rejectOversizedContentLength(response, maxBytes, method);
+  await rejectOversizedContentLength(response, maxBytes, method);
   if (method === "HEAD") {
     return responseEnvelope(response, contentType);
   }
@@ -93,12 +93,17 @@ async function readBoundedBytes(response: Response, maxBytes: number): Promise<B
   return Buffer.concat(chunks);
 }
 
-function rejectOversizedContentLength(response: Response, maxBytes: number, method?: string): void {
+async function rejectOversizedContentLength(
+  response: Response,
+  maxBytes: number,
+  method?: string,
+): Promise<void> {
   if (method === "HEAD") return;
   const contentLength = response.headers.get("content-length");
   if (!contentLength) return;
   const byteLength = Number.parseInt(contentLength, 10);
   if (Number.isFinite(byteLength) && byteLength > maxBytes) {
+    await response.body?.cancel().catch(() => {});
     throw responseExceededLimit(maxBytes);
   }
 }

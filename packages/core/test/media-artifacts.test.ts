@@ -162,6 +162,29 @@ describe("media artifacts", () => {
     expect(artifact.path).not.toBe(outputPath);
   });
 
+  it("cancels oversized responses rejected by content-length before reading", async () => {
+    let cancelled = false;
+    const body = new ReadableStream({
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(
+      readHttpLikeResponse(
+        new Response(body, {
+          headers: {
+            "content-length": "5",
+            "content-type": "application/octet-stream",
+          },
+        }),
+        { capletId: "drive", maxBytes: 4 },
+      ),
+    ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+
+    expect(cancelled).toBe(true);
+  });
+
   it("rejects oversized artifact and data URL inputs before reading decoded bytes", async () => {
     const root = tempDir("caplets-artifacts-");
     const artifact = await writeMediaArtifact({

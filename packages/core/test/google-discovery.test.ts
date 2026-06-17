@@ -47,6 +47,15 @@ beforeEach(async () => {
         response.end(JSON.stringify(fixture));
         return;
       }
+      if (url === "/private.discovery.json") {
+        if (request.headers.authorization !== "Bearer private-discovery-token") {
+          response.statusCode = 401;
+          response.end(JSON.stringify({ error: "auth required" }));
+          return;
+        }
+        response.end(JSON.stringify(fixture));
+        return;
+      }
       if (url === "/drive-inferred.discovery.json") {
         response.end(
           JSON.stringify({
@@ -514,6 +523,28 @@ describe("Google Discovery parser", () => {
     ]);
   });
 
+  it("prefers API-specific scopes over catch-all cloud-platform", () => {
+    expect(
+      discoveryOperations({
+        server: "bigquery",
+        document: {
+          kind: "discovery#restDescription",
+          methods: {
+            insert: {
+              id: "bigquery.jobs.insert",
+              path: "projects/{projectId}/jobs",
+              httpMethod: "POST",
+              scopes: [
+                "https://www.googleapis.com/auth/bigquery",
+                "https://www.googleapis.com/auth/cloud-platform",
+              ],
+            },
+          },
+        },
+      })[0]?.scopes,
+    ).toEqual(["https://www.googleapis.com/auth/bigquery"]);
+  });
+
   it("walks nested resources and uses stable fallback operation names", () => {
     const operations = discoveryOperations({
       server: "drive",
@@ -707,6 +738,48 @@ describe("GoogleDiscoveryManager", () => {
       expect(
         requests.find((request) => request.url === "/drive.discovery.json")?.headers,
       ).not.toHaveProperty("authorization");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends stored OAuth credentials for private remote Discovery documents without baseUrl", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-private-discovery-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/private.discovery.json`,
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    writeTokenBundle(
+      {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "private-discovery-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      },
+      dir,
+    );
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "drive.files.list" })]),
+      );
+      expect(
+        requests.find((request) => request.url === "/private.discovery.json")?.headers,
+      ).toHaveProperty("authorization", "Bearer private-discovery-token");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1133,6 +1206,32 @@ describe("GoogleDiscoveryManager", () => {
     const upload = requests.find((request) => request.url.includes("uploadType=multipart"));
     expect(upload?.headers["content-type"]).toContain("multipart/related");
     expect(upload?.body).not.toContain("cGRm");
+  });
+
+  it("rejects media MIME types that would inject multipart headers", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: `${baseUrl}/drive/v3/`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    await expect(
+      manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+        body: { name: "report.pdf" },
+        media: {
+          dataUrl: "data:application/pdf;base64,cGRm",
+          filename: "report.pdf",
+          mimeType: "application/pdf\r\n\r\ninjected-body-data",
+        },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
   });
 
   it("uses resumable upload to preserve metadata when multipart is unavailable", async () => {

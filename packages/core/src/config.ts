@@ -1283,18 +1283,24 @@ function configSchemaFor(
 
       for (const [api, rawValue] of Object.entries(config.googleDiscoveryApis)) {
         const raw = rawValue as ConfigSchemaGoogleDiscoveryApiValue;
-        if (config.mcpServers[api]) {
+        const duplicateBackend = config.mcpServers[api]
+          ? "mcpServers"
+          : config.openapiEndpoints[api]
+            ? "openapiEndpoints"
+            : config.graphqlEndpoints[api]
+              ? "graphqlEndpoints"
+              : config.httpApis[api]
+                ? "httpApis"
+                : config.cliTools[api]
+                  ? "cliTools"
+                  : config.capletSets[api]
+                    ? "capletSets"
+                    : undefined;
+        if (duplicateBackend) {
           ctx.addIssue({
             code: "custom",
             path: ["googleDiscoveryApis", api],
-            message: `Caplet ID ${api} is already used by mcpServers`,
-          });
-        }
-        if (config.openapiEndpoints[api]) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["googleDiscoveryApis", api],
-            message: `Caplet ID ${api} is already used by openapiEndpoints`,
+            message: `Caplet ID ${api} is already used by ${duplicateBackend}`,
           });
         }
         if (!SERVER_ID_PATTERN.test(api)) {
