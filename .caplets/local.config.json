@@ -1,0 +1,11 @@
+{
+  "$schema": "../schemas/caplets-config.schema.json",
+  "mcpServers": {
+    "everything": {
+      "name": "Everything",
+      "description": "This MCP server attempts to exercise all the features of the MCP protocol. It is not intended to be a useful server, but rather a test server for builders of MCP clients. It implements prompts, tools, resources, sampling, and more to showcase MCP capabilities.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    }
+  }
+}
