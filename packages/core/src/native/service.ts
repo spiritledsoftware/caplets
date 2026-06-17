@@ -30,7 +30,11 @@ import {
 } from "../code-mode/declarations";
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
+import {
+  codeModeRunInputJsonSchema,
+  codeModeRunInputSchema,
+  emptyCodeModeRunMeta,
+} from "../code-mode/tool";
 import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
@@ -564,20 +568,14 @@ async function executeCodeModeRunNative(
       },
       diagnostics: [],
       logs: { entries: [], truncated: false, stored: false },
-      meta: {
-        runId: "",
-        traceId: "",
-        declarationHash: "",
-        durationMs: 0,
-        timeoutMs: 0,
-        maxTimeoutMs: 0,
-      },
+      meta: emptyCodeModeRunMeta(),
     };
   }
   return await runCodeMode({
     code: parsed.data.code,
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
   });
 }

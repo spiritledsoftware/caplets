@@ -1774,6 +1774,11 @@ describe("createNativeCapletsService remote mode", () => {
     expect(tools.find((tool) => tool.caplet === "code_mode")).toEqual(
       expect.objectContaining({
         codeModeRun: true,
+        inputSchema: expect.objectContaining({
+          properties: expect.objectContaining({
+            sessionId: expect.objectContaining({ type: "string" }),
+          }),
+        }),
         codeModeCaplets: expect.arrayContaining([
           expect.objectContaining({ id: "remote-only" }),
           expect.objectContaining({ id: "local" }),
@@ -1922,6 +1927,15 @@ describe("createNativeCapletsService remote mode", () => {
       },
       diagnostics: [],
     });
+    const result = (await service.execute("code_mode", { timeoutMs: 1_000 })) as {
+      meta: Record<string, unknown>;
+    };
+    expect(result.meta).toMatchObject({
+      sessionId: null,
+      sessionStatus: null,
+      recoveryRef: null,
+      recoveryCommand: null,
+    });
     expect(localExecute).not.toHaveBeenCalled();
     expect(fixture.api.callTool).not.toHaveBeenCalled();
     await service.close();
@@ -1964,11 +1978,18 @@ describe("createNativeCapletsService remote mode", () => {
       await expect(
         service.execute("code_mode", {
           code: "return { keys: Object.keys(caplets).sort() };",
+          sessionId: "session-123",
         }),
       ).resolves.toMatchObject({
         ok: true,
         value: {
           keys: ["debug", "local-code", "remote-only"],
+        },
+        meta: {
+          sessionId: "session-123",
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
         },
       });
     } finally {

@@ -10,6 +10,7 @@ import type {
   CodeModeLogEntry,
   CodeModeLogs,
   CodeModeRunEnvelope,
+  CodeModeRunMeta,
   JsonValue,
 } from "./types";
 
@@ -23,6 +24,7 @@ export type RunCodeModeInput = {
   timeoutMs?: number;
   maxTimeoutMs?: number;
   runtimeScope?: string;
+  sessionId?: string;
   logStore?: CodeModeLogStore;
   sandbox?: CodeModeSandbox;
   returnedLogBytes?: number;
@@ -41,7 +43,12 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     declarationHash,
     timeoutMs,
     maxTimeoutMs,
+    sessionId: input.sessionId ?? null,
+    sessionStatus: null,
+    recoveryRef: null,
+    recoveryCommand: null,
   };
+  const meta = (): CodeModeRunMeta => ({ ...metaBase, durationMs: Date.now() - startedAt });
 
   const diagnostics =
     timeoutMs > maxTimeoutMs
@@ -62,7 +69,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       },
       diagnostics,
       logs: emptyLogs(),
-      meta: { ...metaBase, durationMs: Date.now() - startedAt },
+      meta: meta(),
     };
   }
 
@@ -114,7 +121,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       error: codeModeRuntimeError(result.error, result.stack),
       diagnostics,
       logs,
-      meta: { ...metaBase, durationMs: Date.now() - startedAt },
+      meta: meta(),
     };
   }
 
@@ -133,7 +140,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       },
       diagnostics: [...diagnostics, serializationDiagnostic],
       logs,
-      meta: { ...metaBase, durationMs: Date.now() - startedAt },
+      meta: meta(),
     };
   }
 
@@ -142,7 +149,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     value: serialized.value,
     diagnostics,
     logs,
-    meta: { ...metaBase, durationMs: Date.now() - startedAt },
+    meta: meta(),
   };
 }
 

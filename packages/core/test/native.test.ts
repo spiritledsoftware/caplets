@@ -63,6 +63,11 @@ describe("native Caplets service", () => {
             caplet: "code_mode",
             toolName: "caplets__code_mode",
             title: "Code Mode",
+            inputSchema: expect.objectContaining({
+              properties: expect.objectContaining({
+                sessionId: expect.objectContaining({ type: "string" }),
+              }),
+            }),
           }),
         ]),
       );
@@ -362,6 +367,26 @@ describe("native Caplets service", () => {
       expect(result).toMatchObject({
         ok: true,
         value: { id: "status", hasStatus: true },
+        meta: {
+          sessionId: null,
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      await expect(
+        service.execute("code_mode", {
+          code: "return { ok: true };",
+          sessionId: "session-123",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        meta: {
+          sessionId: "session-123",
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
       });
     } finally {
       await service.close();
@@ -392,6 +417,15 @@ describe("native Caplets service", () => {
           message: "Code Mode run input is invalid.",
         },
         diagnostics: [],
+      });
+      const result = (await service.execute("code_mode", { timeoutMs: 1_000 })) as {
+        meta: Record<string, unknown>;
+      };
+      expect(result.meta).toMatchObject({
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
       });
     } finally {
       await service.close();

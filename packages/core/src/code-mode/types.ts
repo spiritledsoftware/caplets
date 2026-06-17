@@ -30,6 +30,8 @@ export type CodeModeDiagnostic = {
   column?: number;
 };
 
+export type CodeModeSessionStatus = "created" | "reused";
+
 export type CodeModeRunMeta = {
   runId: string;
   traceId: string;
@@ -37,6 +39,10 @@ export type CodeModeRunMeta = {
   durationMs: number;
   timeoutMs: number;
   maxTimeoutMs: number;
+  sessionId?: string | null;
+  sessionStatus?: CodeModeSessionStatus | null;
+  recoveryRef?: string | null;
+  recoveryCommand?: string | null;
 };
 
 export type CodeModeRunError = {

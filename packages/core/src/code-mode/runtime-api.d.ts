@@ -129,6 +129,19 @@ type CodeModeLogEntry = {
   message: string;
   timestamp: string;
 };
+type CodeModeSessionStatus = "created" | "reused";
+type CodeModeRunMeta = {
+  runId: string;
+  traceId: string;
+  declarationHash: string;
+  durationMs: number;
+  timeoutMs: number;
+  maxTimeoutMs: number;
+  sessionId?: string | null;
+  sessionStatus?: CodeModeSessionStatus | null;
+  recoveryRef?: string | null;
+  recoveryCommand?: string | null;
+};
 
 interface Console {
   log(...values: unknown[]): void;

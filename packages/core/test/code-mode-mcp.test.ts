@@ -30,6 +30,7 @@ describe("Code Mode MCP tool", () => {
     expect(server.registered.get("github")).toBeDefined();
     expect(server.registered.get("code_mode")).toBeDefined();
     expect(server.registered.get("run")).toBeUndefined();
+    expect(server.definitions.get("code_mode")?.inputSchema).toHaveProperty("sessionId");
     expect(server.definitions.get("code_mode")?.description).toContain("caplets.<id>");
     expect(server.definitions.get("code_mode")?.description).toContain(
       "Prefer a compact one-pass script for most tasks",
@@ -111,8 +112,91 @@ describe("Code Mode MCP tool", () => {
     expect(result?.structuredContent).toMatchObject({
       ok: true,
       value: { ok: true },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
+      },
     });
     expect(result?.content[0]).toMatchObject({ type: "text" });
+
+    await session.close();
+    await engine.close();
+  });
+
+  it("echoes supplied session ids in Code Mode metadata scaffolding", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    const callback = server.callbacks.get("code_mode");
+
+    const result = await callback?.({ code: "return { ok: true };", sessionId: "session-123" });
+
+    expect(result?.structuredContent).toMatchObject({
+      ok: true,
+      meta: {
+        sessionId: "session-123",
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
+      },
+    });
+    expect(JSON.parse(result?.content[0].text ?? "{}").meta).toMatchObject({
+      sessionId: "session-123",
+      sessionStatus: null,
+      recoveryRef: null,
+      recoveryCommand: null,
+    });
+
+    await session.close();
+    await engine.close();
+  });
+
+  it("returns invalid-request envelopes with session metadata scaffolding", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    const callback = server.callbacks.get("code_mode");
+
+    const result = await callback?.({ timeoutMs: 1000 });
+    const meta = result?.structuredContent?.meta as Record<string, unknown>;
+
+    expect(result?.structuredContent).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+      },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
+      },
+    });
+    expect(Object.prototype.hasOwnProperty.call(meta, "sessionId")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "sessionStatus")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryRef")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryCommand")).toBe(true);
+    expect(JSON.parse(result?.content[0].text ?? "{}").meta).toMatchObject({
+      sessionId: null,
+      sessionStatus: null,
+      recoveryRef: null,
+      recoveryCommand: null,
+    });
 
     await session.close();
     await engine.close();
@@ -144,26 +228,28 @@ function progressiveTestConfig(config: unknown): unknown {
 
 function mockServer() {
   const registered = new Map<string, RegisteredTool>();
-  const definitions = new Map<string, { description?: string }>();
+  const definitions = new Map<string, { description?: string; inputSchema?: unknown }>();
   const callbacks = new Map<string, (request: unknown) => Promise<any>>();
   return {
     registered,
     definitions,
     callbacks,
-    registerTool: vi.fn((name: string, definition: { description?: string }, callback) => {
-      const tool = {
-        update: vi.fn(),
-        remove: vi.fn(() => registered.delete(name)),
-        enable: vi.fn(),
-        disable: vi.fn(),
-        enabled: true,
-        handler: vi.fn(),
-      } as unknown as RegisteredTool;
-      registered.set(name, tool);
-      definitions.set(name, definition);
-      callbacks.set(name, callback);
-      return tool;
-    }),
+    registerTool: vi.fn(
+      (name: string, definition: { description?: string; inputSchema?: unknown }, callback) => {
+        const tool = {
+          update: vi.fn(),
+          remove: vi.fn(() => registered.delete(name)),
+          enable: vi.fn(),
+          disable: vi.fn(),
+          enabled: true,
+          handler: vi.fn(),
+        } as unknown as RegisteredTool;
+        registered.set(name, tool);
+        definitions.set(name, definition);
+        callbacks.set(name, callback);
+        return tool;
+      },
+    ),
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };

@@ -45,6 +45,37 @@ describe("Code Mode CLI", () => {
       expect(JSON.parse(out.join(""))).toMatchObject({
         ok: true,
         value: { ok: true },
+        meta: {
+          sessionId: null,
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts optional session ids for one-shot code-mode runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = writeConfig(dir, {});
+
+      await runCli(["code-mode", "return { ok: true };", "--session-id", "session-123", "--json"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        ok: true,
+        value: { ok: true },
+        meta: {
+          sessionId: "session-123",
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -147,6 +178,65 @@ describe("Code Mode CLI", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("prints repl help with session and recovery option scaffolding", async () => {
+    const out: string[] = [];
+
+    await runCli(["code-mode", "repl", "--help"], {
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("--session-id <id>");
+    expect(out.join("")).toContain("--recover <ref>");
+  });
+
+  it("prints unsupported repl scaffolding as a JSON envelope", async () => {
+    const out: string[] = [];
+    let exitCode = 0;
+
+    await runCli(["code-mode", "repl", "--json"], {
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_OPERATION" },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
+      },
+    });
+  });
+
+  it("routes recovery-only code-mode calls to unsupported repl scaffolding", async () => {
+    const out: string[] = [];
+    let exitCode = 0;
+
+    await runCli(["code-mode", "--recover", "recovery-123", "--json"], {
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_OPERATION" },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
+      },
+    });
   });
 });
 

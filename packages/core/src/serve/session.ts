@@ -16,7 +16,11 @@ import {
 } from "../code-mode/declarations";
 import { CodeModeLogStore } from "../code-mode/logs";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputSchema, codeModeRunParamsSchema } from "../code-mode/tool";
+import {
+  codeModeRunInputSchema,
+  codeModeRunParamsSchema,
+  emptyCodeModeRunMeta,
+} from "../code-mode/tool";
 import type { CapletsEngine } from "../engine";
 import type {
   CallableCaplet,
@@ -222,6 +226,7 @@ export class CapletsMcpSession {
           code: parsed.data.code,
           service: new EngineNativeCapletsService(this.engine),
           ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+          ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
           logStore: new CodeModeLogStore(),
         })
       : {
@@ -233,14 +238,7 @@ export class CapletsMcpSession {
           },
           diagnostics: [],
           logs: { entries: [], truncated: false, stored: false },
-          meta: {
-            runId: "",
-            traceId: "",
-            declarationHash: "",
-            durationMs: 0,
-            timeoutMs: 0,
-            maxTimeoutMs: 0,
-          },
+          meta: emptyCodeModeRunMeta(),
         };
     return {
       content: [{ type: "text" as const, text: JSON.stringify(envelope, null, 2) }],

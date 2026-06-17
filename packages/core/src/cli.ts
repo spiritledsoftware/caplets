@@ -23,7 +23,7 @@ import {
   type AuthStatusRow,
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
-import { codeModeTypesCli, runCodeModeCli } from "./cli/code-mode";
+import { codeModeTypesCli, runCodeModeCli, runCodeModeReplCli } from "./cli/code-mode";
 import { initConfig } from "./cli/init";
 import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
 import {
@@ -389,13 +389,48 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Run, inspect, and debug Caplets Code Mode.")
     .argument("[code]", "inline TypeScript code to run")
     .option("--file <path>", "read TypeScript code from a file relative to the current directory")
+    .option("--session-id <id>", "optional Code Mode session identifier")
+    .option("--recover <ref>", "recover a prior Code Mode REPL session when supported")
     .option("--timeout-ms <ms>", "execution timeout in milliseconds", parsePositiveInteger)
     .option("--json", "print the structured run envelope")
     .action(
       async (
         code: string | undefined,
-        options: { file?: string; timeoutMs?: number; json?: boolean },
+        options: {
+          file?: string;
+          sessionId?: string;
+          recover?: string;
+          timeoutMs?: number;
+          json?: boolean;
+        },
       ) => {
+        if (code === "repl" && options.file === undefined) {
+          await runCodeModeReplCli({
+            env,
+            ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+            ...(options.recover === undefined ? {} : { recoveryRef: options.recover }),
+            ...(options.json === undefined ? {} : { json: options.json }),
+            writeOut,
+            setExitCode,
+          });
+          return;
+        }
+        if (options.recover !== undefined) {
+          await runCodeModeReplCli({
+            env,
+            ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            recoveryRef: options.recover,
+            ...(options.json === undefined ? {} : { json: options.json }),
+            writeOut,
+            setExitCode,
+          });
+          return;
+        }
         await runCodeModeCli({
           env,
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
@@ -403,6 +438,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(code === undefined ? {} : { inlineCode: code }),
           ...(options.file === undefined ? {} : { file: options.file }),
+          ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
           ...(options.json === undefined ? {} : { json: options.json }),
           ...(io.readStdin ? { readStdin: io.readStdin } : {}),

@@ -61,6 +61,11 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).not.toContain("fieldSelection");
     expect(declaration).toContain("resources(input?:PageInput):Promise<Page<ResourceSummary>>");
     expect(declaration).toContain("readLogs(input:ReadLogsInput):Promise<ReadLogsResult>");
+    expect(declaration).toContain('type CodeModeSessionStatus="created"|"reused"');
+    expect(declaration).toContain("sessionId?:string");
+    expect(declaration).toContain("sessionStatus?:CodeModeSessionStatus");
+    expect(declaration).toContain("recoveryRef?:string");
+    expect(declaration).toContain("recoveryCommand?:string");
     expect(declaration).not.toContain("\n\n");
     expect(declaration).not.toContain(" = ");
   });

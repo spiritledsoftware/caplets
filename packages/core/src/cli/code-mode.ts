@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createNativeCapletsService } from "../native/service";
 import { nativeCodeModeToolId } from "../native/tools";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "../code-mode/declarations";
+import { emptyCodeModeRunMeta } from "../code-mode/tool";
 import type {
   CodeModeCallableCaplet,
   CodeModeRunEnvelope,
@@ -19,6 +20,8 @@ export type CodeModeCliOptions = {
   inlineCode?: string | undefined;
   file?: string | undefined;
   timeoutMs?: number | undefined;
+  sessionId?: string | undefined;
+  recoveryRef?: string | undefined;
   json?: boolean | undefined;
   readStdin?: (() => Promise<string>) | undefined;
   writeOut: (value: string) => void;
@@ -37,6 +40,7 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
     const result = (await service.execute(nativeCodeModeToolId, {
       code,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
     })) as CodeModeRunEnvelope;
     if (options.json) {
       options.writeOut(`${JSON.stringify(result, null, 2)}\n`);
@@ -56,6 +60,39 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
   } finally {
     await service.close();
   }
+}
+
+export async function runCodeModeReplCli(
+  options: Pick<
+    CodeModeCliOptions,
+    | "env"
+    | "configPath"
+    | "projectConfigPath"
+    | "authDir"
+    | "sessionId"
+    | "recoveryRef"
+    | "json"
+    | "writeOut"
+    | "setExitCode"
+  >,
+): Promise<void> {
+  const envelope: CodeModeRunEnvelope = {
+    ok: false,
+    error: {
+      code: "UNSUPPORTED_OPERATION",
+      message:
+        "Code Mode REPL sessions are not available in this build. Use `caplets code-mode` for one-shot runs.",
+    },
+    diagnostics: [],
+    logs: { entries: [], truncated: false, stored: false },
+    meta: emptyCodeModeRunMeta(),
+  };
+  if (options.json) {
+    options.writeOut(`${JSON.stringify(envelope, null, 2)}\n`);
+  } else {
+    options.writeOut(`${envelope.error.code}: ${envelope.error.message}\n`);
+  }
+  options.setExitCode(1);
 }
 
 export async function codeModeTypesCli(
