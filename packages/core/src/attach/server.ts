@@ -64,6 +64,7 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
         url: options.selection.remote.attachUrl,
         ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
       }),
+    exposeLocalArtifactPaths: false,
     ...(io.writeErr ? { writeErr: io.writeErr } : {}),
   });
 }

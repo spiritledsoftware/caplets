@@ -50,6 +50,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
+  exposeLocalArtifactPaths?: boolean;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;

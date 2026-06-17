@@ -139,6 +139,34 @@ describe("Observed Output Shapes", () => {
     expect(JSON.stringify(key)).not.toContain("GH_TOKEN");
   });
 
+  it("builds Google Discovery backend fingerprints", () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive.",
+          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+          baseUrl: "https://www.googleapis.com/drive/v3/",
+          auth: { type: "none" },
+          includeOperations: ["drive.files.list"],
+        },
+      },
+    });
+
+    const key = observedOutputShapeKey({
+      scope: "local",
+      caplet: config.googleDiscoveryApis.drive!,
+      toolName: "drive.files.list",
+    });
+
+    expect(key).toMatchObject({
+      capletId: "drive",
+      backendKind: "googleDiscovery",
+      toolName: "drive.files.list",
+    });
+    expect(key.backendFingerprint).toHaveLength(64);
+  });
+
   it("stores, expires, and prunes filesystem cache entries", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-observed-shapes-"));
     const ttlMs = 1_000;

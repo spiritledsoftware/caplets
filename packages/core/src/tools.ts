@@ -1120,12 +1120,16 @@ function hasArtifactPlaceholderForSelectedFields(
 }
 
 export function extractArtifacts(result: unknown): CapletArtifact[] {
-  if (!isPlainObject(result) || !Array.isArray(result.content)) {
+  if (!isPlainObject(result)) {
     return [];
   }
 
   const artifacts: CapletArtifact[] = [];
   const seen = new Set<string>();
+  addStructuredArtifact(artifacts, seen, result.structuredContent);
+  if (!Array.isArray(result.content)) {
+    return artifacts;
+  }
   for (const item of result.content) {
     if (!isPlainObject(item) || item.type !== "text" || typeof item.text !== "string") {
       continue;
@@ -1165,6 +1169,26 @@ export function extractArtifacts(result: unknown): CapletArtifact[] {
     }
   }
   return artifacts;
+}
+
+function addStructuredArtifact(
+  artifacts: CapletArtifact[],
+  seen: Set<string>,
+  structuredContent: unknown,
+): void {
+  if (!isPlainObject(structuredContent)) return;
+  const body = structuredContent.body;
+  if (!isPlainObject(body) || !isPlainObject(body.artifact)) return;
+  const path = typeof body.artifact.path === "string" ? body.artifact.path : undefined;
+  const uri = typeof body.artifact.uri === "string" ? body.artifact.uri : undefined;
+  const displayPath = path ?? uri;
+  if (!displayPath || seen.has(displayPath)) return;
+  seen.add(displayPath);
+  artifacts.push({
+    kind: "file",
+    displayPath,
+    pathResolution: path ? "absolute" : "relative-to-mcp-server",
+  });
 }
 
 type MarkdownLink = {

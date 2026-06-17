@@ -474,12 +474,14 @@ export async function serveHttpWithSessionFactory(
   createSession: HttpMcpSessionFactory,
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
-  const engine = new CapletsEngine({});
+  const resolvedEngineOptions = { exposeLocalArtifactPaths: false };
+  const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
     exposeAttach: false,
     sessionFactory: createSession,
     control: {
+      ...resolvedEngineOptions,
       projectCapletsRoot: resolveProjectCapletsRoot(),
     },
   });

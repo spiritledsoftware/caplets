@@ -1019,6 +1019,42 @@ describe("generated tool handlers", () => {
     ]);
   });
 
+  it("extracts structured artifact envelopes from call_tool results", async () => {
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "downloaded" }],
+        structuredContent: {
+          status: 200,
+          body: {
+            artifact: {
+              uri: "caplets://artifacts/http/call-1/report.pdf",
+              path: "/tmp/caplets/report.pdf",
+              filename: "report.pdf",
+              mimeType: "application/pdf",
+              byteLength: 12,
+              sha256: "a".repeat(64),
+            },
+          },
+        },
+      }),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", name: "read", args: {} },
+      registry,
+      downstream,
+    );
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "file",
+        displayPath: "/tmp/caplets/report.pdf",
+        pathResolution: "absolute",
+      },
+    ]);
+  });
+
   it("extracts artifact links with spaces, title attributes, and parentheses", async () => {
     const result = await callToolWithText(
       'Saved artifact [Screenshot](./screenshots/final view.png), file [Trace](./trace.zip "trace"), and artifact [Archive](./run(1).zip)',
