@@ -7,6 +7,7 @@ import {
   type QuickJSRuntime,
 } from "quickjs-emscripten";
 import ts from "typescript";
+import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
 import type { CodeModeLogEntry } from "./types";
 
 export type CodeModeSandboxInvokeInput = {
@@ -217,19 +218,7 @@ function buildExecutionSource(code: string, capletIds: string[]): string {
   }).outputText;
   return [
     '"use strict";',
-    "const __formatLogArg = (value) => {",
-    "  if (typeof value === 'string') return value;",
-    "  try { return JSON.stringify(value); } catch { return String(value); }",
-    "};",
-    "const __formatLogLine = (args) => args.map(__formatLogArg).join(' ');",
-    "const console = {",
-    "  log: (...args) => __caplets_log('log', __formatLogLine(args)),",
-    "  info: (...args) => __caplets_log('info', __formatLogLine(args)),",
-    "  warn: (...args) => __caplets_log('warn', __formatLogLine(args)),",
-    "  error: (...args) => __caplets_log('error', __formatLogLine(args)),",
-    "  debug: (...args) => __caplets_log('debug', __formatLogLine(args)),",
-    "};",
-    "const fetch = () => { throw new Error('fetch is disabled in Code Mode'); };",
+    CODE_MODE_PLATFORM_RUNTIME_SOURCE,
     "const __invoke = (capletId, method, args) => Promise.resolve(__caplets_invoke(capletId, method, args)).then(JSON.parse);",
     "const __handle = (capletId) => ({",
     "  id: capletId,",
