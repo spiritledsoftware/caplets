@@ -1,5 +1,5 @@
 {
-  "$schema": "file:///Users/ianpascoe/src/caplets/schemas/caplets-config.schema.json",
+  "$schema": "../schemas/caplets-config.schema.json",
   "mcpServers": {
     "everything": {
       "name": "Everything",

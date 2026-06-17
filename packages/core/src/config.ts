@@ -1085,11 +1085,7 @@ function configSchemaFor(
 ) {
   return z
     .object({
-      $schema: z
-        .string()
-        .url()
-        .optional()
-        .describe("Optional JSON Schema URL for editor validation."),
+      $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
       version: z.literal(1).default(1).describe("Caplets config schema version."),
       defaultSearchLimit: z
         .number()

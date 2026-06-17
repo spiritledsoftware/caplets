@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION } from "./diagnostics-builtins.generated";
 import { hasDirectFetchCall, hasExecutableImport } from "./static-analysis";
 import type { CodeModeDiagnostic } from "./types";
 
@@ -48,7 +49,7 @@ export function diagnoseCodeModeTypeScript(
   const host = createVirtualCompilerHost(compilerOptions, {
     [CODE_FILE]: wrappedCode,
     [DECLARATION_FILE]: input.declaration,
-    [AMBIENT_FILE]: ambientDeclarations(),
+    [AMBIENT_FILE]: CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
   });
   const program = ts.createProgram(
     [CODE_FILE, DECLARATION_FILE, AMBIENT_FILE],
@@ -165,8 +166,4 @@ function formatDiagnostic(
         }
       : {}),
   };
-}
-
-function ambientDeclarations(): string {
-  return "";
 }

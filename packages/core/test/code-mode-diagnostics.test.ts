@@ -123,22 +123,56 @@ describe("diagnoseCodeModeTypeScript", () => {
     );
   });
 
-  it("keeps platform globals out of generated declarations", () => {
+  it("allows platform globals through diagnostics without generated declaration bloat", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: `
-        new URL("https://example.com");
-        Buffer.from("ok");
+        const url = new URL("https://example.com/a?b=1");
+        const text = new TextDecoder().decode(new TextEncoder().encode("ok"));
+        const bytes = Buffer.from(btoa(text), "base64");
+        const headers = new Headers({ accept: "application/json" });
+        const blob = new Blob([bytes.toString()], { type: "text/plain" });
+        const file = new File([blob], "ok.txt", { type: blob.type });
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const request = new Request(url, { method: "POST", headers, body: form });
+        const response = Response.json({ ok: true });
+        const reader = new ReadableStream<string>({
+          start(controller) {
+            controller.enqueue("ready");
+            controller.close();
+          },
+        }).getReader();
+        const writer = new WritableStream<string>({ write() {} }).getWriter();
+        const transform = new TransformStream<string, string>({
+          transform(chunk, controller) {
+            controller.enqueue(chunk);
+          },
+        });
+        const controller = new AbortController();
+        controller.abort("done");
+        controller.signal.throwIfAborted();
+        const timeout = setTimeout(() => undefined, 0);
+        clearTimeout(timeout);
+        const interval = setInterval(() => undefined, 1);
+        clearInterval(interval);
+        queueMicrotask(() => undefined);
+        crypto.getRandomValues(new Uint8Array(4));
         crypto.randomUUID();
-        setTimeout(() => undefined, 0);
+        structuredClone({ text, href: url.href });
+        await reader.read();
+        await writer.write(request.method);
+        await writer.close();
+        transform.readable.getReader();
+        await response.text();
+        return { text, b: url.searchParams.get("b"), atob: atob("b2s=") };
       `,
     });
 
-    const messages = diagnostics.map((diagnostic) => diagnostic.message).join("\n");
-    expect(messages).toContain("Cannot find name 'URL'");
-    expect(messages).toContain("Cannot find name 'Buffer'");
-    expect(messages).toContain("Cannot find name 'crypto'");
-    expect(messages).toContain("Cannot find name 'setTimeout'");
+    expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
+    expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).not.toContain(
+      "Cannot find name",
+    );
   });
 
   it("honors per-line @ts-ignore for TypeScript diagnostics", () => {
