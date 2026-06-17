@@ -4,10 +4,26 @@ import { Blob, File, FormData } from "formdata-node";
 import { Headers } from "headers-polyfill";
 
 declare function __caplets_log(level: string, message: string): void;
-declare function __caplets_platform_random_uuid(): string;
-declare function __caplets_platform_random_values(length: number): number[];
-declare function __caplets_platform_sleep(timerId: number, delayMs: number): Promise<boolean>;
-declare function __caplets_platform_clear_timer(timerId: number): boolean;
+
+type PlatformBridgeGlobals = typeof globalThis & {
+  __caplets_platform_random_uuid?: () => string;
+  __caplets_platform_random_values?: (length: number) => number[];
+  __caplets_platform_sleep?: (timerId: number, delayMs: number) => Promise<boolean>;
+  __caplets_platform_clear_timer?: (timerId: number) => boolean;
+};
+
+const platformBridgeGlobalThis = globalThis as PlatformBridgeGlobals;
+const capletsPlatformHost = {
+  randomUUID: platformBridgeGlobalThis.__caplets_platform_random_uuid,
+  randomValues: platformBridgeGlobalThis.__caplets_platform_random_values,
+  sleep: platformBridgeGlobalThis.__caplets_platform_sleep,
+  clearTimer: platformBridgeGlobalThis.__caplets_platform_clear_timer,
+};
+
+delete platformBridgeGlobalThis.__caplets_platform_random_uuid;
+delete platformBridgeGlobalThis.__caplets_platform_random_values;
+delete platformBridgeGlobalThis.__caplets_platform_sleep;
+delete platformBridgeGlobalThis.__caplets_platform_clear_timer;
 
 const DISABLED_FETCH_MESSAGE = "Direct fetch is not available in Code Mode; use a Caplet instead.";
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -911,7 +927,11 @@ class QuotaExceededErrorShim extends Error {
 
 const platformCrypto = {
   randomUUID(): string {
-    return __caplets_platform_random_uuid();
+    const randomUUID = capletsPlatformHost.randomUUID;
+    if (!randomUUID) {
+      throw new Error("Code Mode platform random UUID bridge is not installed");
+    }
+    return randomUUID();
   },
 
   getRandomValues<T extends ArrayBufferView>(typedArray: T): T {
@@ -926,7 +946,11 @@ const platformCrypto = {
         "crypto.getRandomValues cannot generate more than 65,536 bytes",
       );
     }
-    const bytes = __caplets_platform_random_values(typedArray.byteLength);
+    const randomValues = capletsPlatformHost.randomValues;
+    if (!randomValues) {
+      throw new Error("Code Mode platform random values bridge is not installed");
+    }
+    const bytes = randomValues(typedArray.byteLength);
     const target = new Uint8Array(typedArray.buffer, typedArray.byteOffset, typedArray.byteLength);
     target.set(bytes);
     return typedArray;
@@ -950,7 +974,11 @@ function setTimeoutShim(callback: TimerCallback, delay?: unknown, ...args: unkno
   }
   const timerId = nextTimerId++;
   activeTimers.add(timerId);
-  void __caplets_platform_sleep(timerId, normalizeTimerDelay(delay)).then((fired) => {
+  const sleep = capletsPlatformHost.sleep;
+  if (!sleep) {
+    throw new Error("Code Mode platform sleep bridge is not installed");
+  }
+  void sleep(timerId, normalizeTimerDelay(delay)).then((fired) => {
     activeTimers.delete(timerId);
     if (fired) {
       callback(...args);
@@ -962,7 +990,7 @@ function setTimeoutShim(callback: TimerCallback, delay?: unknown, ...args: unkno
 function clearTimeoutShim(timerId: unknown): void {
   const id = Number(timerId);
   activeTimers.delete(id);
-  __caplets_platform_clear_timer(id);
+  capletsPlatformHost.clearTimer?.(id);
 }
 
 function setIntervalShim(callback: TimerCallback, delay?: unknown, ...args: unknown[]): number {
@@ -974,7 +1002,11 @@ function setIntervalShim(callback: TimerCallback, delay?: unknown, ...args: unkn
   activeTimers.add(timerId);
 
   const tick = () => {
-    void __caplets_platform_sleep(timerId, intervalDelay).then((fired) => {
+    const sleep = capletsPlatformHost.sleep;
+    if (!sleep) {
+      throw new Error("Code Mode platform sleep bridge is not installed");
+    }
+    void sleep(timerId, intervalDelay).then((fired) => {
       if (!fired || !activeTimers.has(timerId)) {
         activeTimers.delete(timerId);
         return;

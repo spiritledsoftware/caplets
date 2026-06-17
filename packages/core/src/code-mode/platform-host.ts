@@ -6,13 +6,18 @@ type PlatformTimer = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
+const MAX_RANDOM_VALUES_BYTES = 65_536;
+
 export type CodeModePlatformHost = {
   dispose(): void;
 };
 
+export type CodeModePlatformHostOptions = Record<string, never>;
+
 export function installCodeModePlatformHost(
   context: QuickJSContext,
   pendingDeferreds: Set<QuickJSDeferredPromise>,
+  _options: CodeModePlatformHostOptions,
 ): CodeModePlatformHost {
   const timers = new Map<number, PlatformTimer>();
 
@@ -30,6 +35,9 @@ export function installCodeModePlatformHost(
       if (!Number.isSafeInteger(length) || length < 0) {
         const error = context.newError("Random byte length must be a non-negative safe integer");
         return error;
+      }
+      if (length > MAX_RANDOM_VALUES_BYTES) {
+        return context.newError("Random byte length cannot exceed 65,536 bytes");
       }
       return numberArrayHandle(context, [...randomBytes(length)]);
     },

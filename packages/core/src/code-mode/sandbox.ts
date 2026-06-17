@@ -78,7 +78,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
       context.setProp(context.global, "__caplets_log", logBridge);
       logBridge.dispose();
 
-      const platformHost = installCodeModePlatformHost(context, pendingDeferreds);
+      const platformHost = installCodeModePlatformHost(context, pendingDeferreds, {});
       const invokeBridge = createInvokeBridge(
         context,
         pendingDeferreds,

@@ -408,6 +408,76 @@ describe("Code Mode platform API", () => {
     });
   });
 
+  it("hides host bridge globals from user code while public crypto and timer APIs work", async () => {
+    const result = await runPlatformCode(`
+      const bridgeNames = [
+        "__caplets_platform_random_uuid",
+        "__caplets_platform_random_values",
+        "__caplets_platform_sleep",
+        "__caplets_platform_clear_timer",
+      ];
+      const bytes = new Uint8Array(8);
+      globalThis.crypto.getRandomValues(bytes);
+
+      const timeoutWorked = await new Promise((resolve) => {
+        const timeout = globalThis.setTimeout(() => resolve(true), 0);
+        globalThis.clearTimeout(timeout);
+        globalThis.setTimeout(() => resolve("rescheduled"), 0);
+      });
+
+      return {
+        bridges: bridgeNames.map((name) => ({
+          name,
+          inGlobalThis: name in globalThis,
+          globalThisType: typeof globalThis[name],
+          topLevelType: eval(\`typeof \${name}\`),
+        })),
+        randomUUID: globalThis.crypto.randomUUID(),
+        bytes: Array.from(bytes),
+        bytesChanged: bytes.some((value) => value !== 0),
+        timeoutWorked,
+      };
+    `);
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        bridges: [
+          {
+            name: "__caplets_platform_random_uuid",
+            inGlobalThis: false,
+            globalThisType: "undefined",
+            topLevelType: "undefined",
+          },
+          {
+            name: "__caplets_platform_random_values",
+            inGlobalThis: false,
+            globalThisType: "undefined",
+            topLevelType: "undefined",
+          },
+          {
+            name: "__caplets_platform_sleep",
+            inGlobalThis: false,
+            globalThisType: "undefined",
+            topLevelType: "undefined",
+          },
+          {
+            name: "__caplets_platform_clear_timer",
+            inGlobalThis: false,
+            globalThisType: "undefined",
+            topLevelType: "undefined",
+          },
+        ],
+        randomUUID: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+        ),
+        bytes: expect.any(Array),
+        bytesChanged: true,
+        timeoutWorked: "rescheduled",
+      },
+    });
+  });
+
   it("supports timers, intervals, and microtasks", async () => {
     const result = await runPlatformCode(`
       return await new Promise((resolve) => {
