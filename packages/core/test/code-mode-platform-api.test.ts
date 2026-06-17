@@ -35,33 +35,148 @@ async function runPlatformCode(code: string) {
 }
 
 describe("Code Mode platform API", () => {
-  it("exposes utility globals on globalThis", async () => {
+  it("exposes supported globals on top-level bindings and globalThis", async () => {
     const result = await runPlatformCode(`
       return {
+        atob: {
+          binding: typeof atob,
+          globalThis: typeof globalThis.atob,
+          same: typeof atob !== "undefined" && globalThis.atob === atob,
+        },
+        btoa: {
+          binding: typeof btoa,
+          globalThis: typeof globalThis.btoa,
+          same: typeof btoa !== "undefined" && globalThis.btoa === btoa,
+        },
+        Buffer: {
+          binding: typeof Buffer,
+          globalThis: typeof globalThis.Buffer,
+          same: typeof Buffer !== "undefined" && globalThis.Buffer === Buffer,
+        },
+        URL: {
+          binding: typeof URL,
+          globalThis: typeof globalThis.URL,
+          same: typeof URL !== "undefined" && globalThis.URL === URL,
+        },
+        URLSearchParams: {
+          binding: typeof URLSearchParams,
+          globalThis: typeof globalThis.URLSearchParams,
+          same: typeof URLSearchParams !== "undefined" && globalThis.URLSearchParams === URLSearchParams,
+        },
+        TextEncoder: {
+          binding: typeof TextEncoder,
+          globalThis: typeof globalThis.TextEncoder,
+          same: typeof TextEncoder !== "undefined" && globalThis.TextEncoder === TextEncoder,
+        },
+        TextDecoder: {
+          binding: typeof TextDecoder,
+          globalThis: typeof globalThis.TextDecoder,
+          same: typeof TextDecoder !== "undefined" && globalThis.TextDecoder === TextDecoder,
+        },
+        crypto: {
+          binding: typeof crypto,
+          globalThis: typeof globalThis.crypto,
+          same: typeof crypto !== "undefined" && globalThis.crypto === crypto,
+        },
+        structuredClone: {
+          binding: typeof structuredClone,
+          globalThis: typeof globalThis.structuredClone,
+          same:
+            typeof structuredClone !== "undefined" && globalThis.structuredClone === structuredClone,
+        },
+        Headers: {
+          binding: typeof Headers,
+          globalThis: typeof globalThis.Headers,
+          same: typeof Headers !== "undefined" && globalThis.Headers === Headers,
+        },
+        Blob: {
+          binding: typeof Blob,
+          globalThis: typeof globalThis.Blob,
+          same: typeof Blob !== "undefined" && globalThis.Blob === Blob,
+        },
+        File: {
+          binding: typeof File,
+          globalThis: typeof globalThis.File,
+          same: typeof File !== "undefined" && globalThis.File === File,
+        },
+        FormData: {
+          binding: typeof FormData,
+          globalThis: typeof globalThis.FormData,
+          same: typeof FormData !== "undefined" && globalThis.FormData === FormData,
+        },
+        ReadableStream: {
+          binding: typeof ReadableStream,
+          globalThis: typeof globalThis.ReadableStream,
+          same:
+            typeof ReadableStream !== "undefined" && globalThis.ReadableStream === ReadableStream,
+        },
+        WritableStream: {
+          binding: typeof WritableStream,
+          globalThis: typeof globalThis.WritableStream,
+          same:
+            typeof WritableStream !== "undefined" && globalThis.WritableStream === WritableStream,
+        },
+        TransformStream: {
+          binding: typeof TransformStream,
+          globalThis: typeof globalThis.TransformStream,
+          same:
+            typeof TransformStream !== "undefined" && globalThis.TransformStream === TransformStream,
+        },
+        AbortController: {
+          binding: typeof AbortController,
+          globalThis: typeof globalThis.AbortController,
+          same:
+            typeof AbortController !== "undefined" &&
+            globalThis.AbortController === AbortController,
+        },
+        AbortSignal: {
+          binding: typeof AbortSignal,
+          globalThis: typeof globalThis.AbortSignal,
+          same: typeof AbortSignal !== "undefined" && globalThis.AbortSignal === AbortSignal,
+        },
+        Request: {
+          binding: typeof Request,
+          globalThis: typeof globalThis.Request,
+          same: typeof Request !== "undefined" && globalThis.Request === Request,
+        },
+        Response: {
+          binding: typeof Response,
+          globalThis: typeof globalThis.Response,
+          same: typeof Response !== "undefined" && globalThis.Response === Response,
+        },
+        console: {
+          binding: typeof console,
+          globalThis: typeof globalThis.console,
+          same: typeof console !== "undefined" && globalThis.console === console,
+        },
         queueMicrotask: {
-          globalThis: typeof globalThis.queueMicrotask,
           binding: typeof queueMicrotask,
-          same: globalThis.queueMicrotask === queueMicrotask,
+          globalThis: typeof globalThis.queueMicrotask,
+          same:
+            typeof queueMicrotask !== "undefined" &&
+            globalThis.queueMicrotask === queueMicrotask,
         },
         setTimeout: {
-          globalThis: typeof globalThis.setTimeout,
           binding: typeof setTimeout,
-          same: globalThis.setTimeout === setTimeout,
+          globalThis: typeof globalThis.setTimeout,
+          same: typeof setTimeout !== "undefined" && globalThis.setTimeout === setTimeout,
         },
         clearTimeout: {
-          globalThis: typeof globalThis.clearTimeout,
           binding: typeof clearTimeout,
-          same: globalThis.clearTimeout === clearTimeout,
+          globalThis: typeof globalThis.clearTimeout,
+          same: typeof clearTimeout !== "undefined" && globalThis.clearTimeout === clearTimeout,
         },
         setInterval: {
-          globalThis: typeof globalThis.setInterval,
           binding: typeof setInterval,
-          same: globalThis.setInterval === setInterval,
+          globalThis: typeof globalThis.setInterval,
+          same: typeof setInterval !== "undefined" && globalThis.setInterval === setInterval,
         },
         clearInterval: {
-          globalThis: typeof globalThis.clearInterval,
           binding: typeof clearInterval,
-          same: globalThis.clearInterval === clearInterval,
+          globalThis: typeof globalThis.clearInterval,
+          same:
+            typeof clearInterval !== "undefined" &&
+            globalThis.clearInterval === clearInterval,
         },
       };
     `);
@@ -69,31 +184,32 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
-        queueMicrotask: {
-          globalThis: "function",
-          binding: "function",
-          same: true,
-        },
-        setTimeout: {
-          globalThis: "function",
-          binding: "function",
-          same: true,
-        },
-        clearTimeout: {
-          globalThis: "function",
-          binding: "function",
-          same: true,
-        },
-        setInterval: {
-          globalThis: "function",
-          binding: "function",
-          same: true,
-        },
-        clearInterval: {
-          globalThis: "function",
-          binding: "function",
-          same: true,
-        },
+        atob: { binding: "function", globalThis: "function", same: true },
+        btoa: { binding: "function", globalThis: "function", same: true },
+        Buffer: { binding: "function", globalThis: "function", same: true },
+        URL: { binding: "function", globalThis: "function", same: true },
+        URLSearchParams: { binding: "function", globalThis: "function", same: true },
+        TextEncoder: { binding: "function", globalThis: "function", same: true },
+        TextDecoder: { binding: "function", globalThis: "function", same: true },
+        crypto: { binding: "object", globalThis: "object", same: true },
+        structuredClone: { binding: "function", globalThis: "function", same: true },
+        Headers: { binding: "function", globalThis: "function", same: true },
+        Blob: { binding: "function", globalThis: "function", same: true },
+        File: { binding: "function", globalThis: "function", same: true },
+        FormData: { binding: "function", globalThis: "function", same: true },
+        ReadableStream: { binding: "function", globalThis: "function", same: true },
+        WritableStream: { binding: "function", globalThis: "function", same: true },
+        TransformStream: { binding: "function", globalThis: "function", same: true },
+        AbortController: { binding: "function", globalThis: "function", same: true },
+        AbortSignal: { binding: "function", globalThis: "function", same: true },
+        Request: { binding: "function", globalThis: "function", same: true },
+        Response: { binding: "function", globalThis: "function", same: true },
+        console: { binding: "object", globalThis: "object", same: true },
+        queueMicrotask: { binding: "function", globalThis: "function", same: true },
+        setTimeout: { binding: "function", globalThis: "function", same: true },
+        clearTimeout: { binding: "function", globalThis: "function", same: true },
+        setInterval: { binding: "function", globalThis: "function", same: true },
+        clearInterval: { binding: "function", globalThis: "function", same: true },
       },
     });
   });
@@ -194,6 +310,7 @@ describe("Code Mode platform API", () => {
 
       return {
         globalThisCrypto: typeof globalThis.crypto,
+        sameGlobal: globalThis.crypto === crypto,
         randomUUID: globalThis.crypto.randomUUID(),
         first: Array.from(first),
         second: Array.from(second),
@@ -207,8 +324,9 @@ describe("Code Mode platform API", () => {
       ok: true,
       value: {
         globalThisCrypto: "object",
+        sameGlobal: true,
         randomUUID: expect.stringMatching(
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
         ),
         first: expect.any(Array),
         second: expect.any(Array),
@@ -243,20 +361,18 @@ describe("Code Mode platform API", () => {
       });
     `);
 
-    expect(result).toMatchObject({
-      ok: true,
-      value: expect.arrayContaining(["microtask", "timeout", "interval-1", "interval-2"]),
-    });
-    expect(result).toMatchObject({
-      ok: true,
-      value: expect.arrayContaining(["microtask", "timeout"]),
-    });
-    expect((result as { ok: true; value: string[] }).value[0]).toBe("microtask");
-    expect(
-      (result as { ok: true; value: string[] }).value.filter((event) =>
-        event.startsWith("interval-"),
-      ),
-    ).toEqual(["interval-1", "interval-2"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.value).toEqual(expect.arrayContaining(["microtask", "timeout"]));
+    expect(result.value).toEqual(expect.arrayContaining(["interval-1", "interval-2"]));
+    expect(result.value[0]).toBe("microtask");
+    expect(result.value.filter((event) => event.startsWith("interval-"))).toEqual([
+      "interval-1",
+      "interval-2",
+    ]);
   });
 
   it("supports structuredClone", async () => {
@@ -271,6 +387,7 @@ describe("Code Mode platform API", () => {
 
       return {
         globalThisStructuredClone: typeof globalThis.structuredClone,
+        sameGlobal: globalThis.structuredClone === structuredClone,
         source: source.nested.count,
         clone: clone.nested.count,
         values: clone.values,
@@ -281,6 +398,7 @@ describe("Code Mode platform API", () => {
       ok: true,
       value: {
         globalThisStructuredClone: "function",
+        sameGlobal: true,
         source: 1,
         clone: 2,
         values: [1, 2, 3, 4],
@@ -297,10 +415,18 @@ describe("Code Mode platform API", () => {
       formData.set("name", "caplets");
       formData.set("fileName", file.name);
 
-      const stream = new globalThis.ReadableStream({
+      const readableStream = new globalThis.ReadableStream({
         start(controller) {
           controller.enqueue("hello");
           controller.close();
+        },
+      });
+      const writableStream = new globalThis.WritableStream({
+        write() {},
+      });
+      const transformStream = new globalThis.TransformStream({
+        transform(chunk, controller) {
+          controller.enqueue(chunk);
         },
       });
 
@@ -321,6 +447,8 @@ describe("Code Mode platform API", () => {
         globalThisFile: typeof globalThis.File,
         globalThisFormData: typeof globalThis.FormData,
         globalThisReadableStream: typeof globalThis.ReadableStream,
+        globalThisWritableStream: typeof globalThis.WritableStream,
+        globalThisTransformStream: typeof globalThis.TransformStream,
         globalThisRequest: typeof globalThis.Request,
         globalThisResponse: typeof globalThis.Response,
         headers: headers.get("x-one"),
@@ -329,7 +457,9 @@ describe("Code Mode platform API", () => {
         fileName: file.name,
         fileType: file.type,
         formEntries: [...formData.entries()],
-        streamType: typeof stream.getReader,
+        readableStreamType: typeof readableStream.getReader,
+        writableStreamType: typeof writableStream.getWriter,
+        transformStreamType: typeof transformStream.readable,
         requestMethod: request.method,
         requestUrl: request.url,
         responseStatus: response.status,
@@ -345,6 +475,8 @@ describe("Code Mode platform API", () => {
         globalThisFile: "function",
         globalThisFormData: "function",
         globalThisReadableStream: "function",
+        globalThisWritableStream: "function",
+        globalThisTransformStream: "function",
         globalThisRequest: "function",
         globalThisResponse: "function",
         headers: "1",
@@ -356,7 +488,9 @@ describe("Code Mode platform API", () => {
           ["name", "caplets"],
           ["fileName", "hello.txt"],
         ],
-        streamType: "function",
+        readableStreamType: "function",
+        writableStreamType: "function",
+        transformStreamType: "object",
         requestMethod: "POST",
         requestUrl: "https://example.com/api",
         responseStatus: 201,
@@ -375,6 +509,8 @@ describe("Code Mode platform API", () => {
       return {
         globalThisAbortController: typeof globalThis.AbortController,
         globalThisAbortSignal: typeof globalThis.AbortSignal,
+        sameAbortController: globalThis.AbortController === AbortController,
+        sameAbortSignal: globalThis.AbortSignal === AbortSignal,
         before,
         after: signal.aborted,
         reason: signal.reason,
@@ -386,6 +522,8 @@ describe("Code Mode platform API", () => {
       value: {
         globalThisAbortController: "function",
         globalThisAbortSignal: "function",
+        sameAbortController: true,
+        sameAbortSignal: true,
         before: false,
         after: true,
         reason: "done",
@@ -395,10 +533,20 @@ describe("Code Mode platform API", () => {
 
   it("keeps fetch unavailable for direct calls", async () => {
     const directResult = await runPlatformCode(`
-      return await fetch("https://example.com");
+      const response = await fetch("data:text/plain,blocked");
+      return {
+        ok: response.ok,
+        status: response.status,
+        text: await response.text(),
+      };
     `);
     const globalResult = await runPlatformCode(`
-      return await globalThis.fetch("https://example.com");
+      const response = await globalThis.fetch("data:text/plain,blocked");
+      return {
+        ok: response.ok,
+        status: response.status,
+        text: await response.text(),
+      };
     `);
 
     expect(directResult.ok).toBe(false);
@@ -448,10 +596,14 @@ describe("Code Mode platform API", () => {
     });
   });
 
-  it("blocks dynamic filesystem and child-process imports", async () => {
+  it.each([
+    ["node:fs", "filesystem"],
+    ["node:child_process", "child process"],
+    ["node:http", "direct network"],
+    ["left-pad", "arbitrary"],
+  ])("blocks %s imports with IMPORT_UNAVAILABLE", async (specifier) => {
     const result = await runPlatformCode(`
-      await import("node:fs");
-      await import("node:child_process");
+      await import(${JSON.stringify(specifier)});
       return { done: true };
     `);
 
