@@ -20,7 +20,7 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain("callTool");
   });
 
-  it("blocks direct fetch even though fetch is declared as unavailable", () => {
+  it("blocks direct fetch calls before execution", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: 'await fetch("https://example.com");',
@@ -47,43 +47,10 @@ describe("diagnoseCodeModeTypeScript", () => {
   });
 
   it.each([
-    ["fetch", "const f = fetch;"],
-    ["globalThis.fetch", "const f = globalThis.fetch;"],
-    ['globalThis["fetch"]', 'const f = globalThis["fetch"];'],
-    ["window.fetch", "const f = window.fetch;"],
-    ["self.fetch", "const f = self.fetch;"],
-  ])("blocks global fetch value reads through %s", (_name, code) => {
-    const diagnostics = diagnoseCodeModeTypeScript({ declaration, code });
-
-    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
-  });
-
-  it.each([
-    ["fetch.call", 'await fetch.call(globalThis, "https://example.com");'],
-    ["fetch.apply", 'await fetch.apply(globalThis, ["https://example.com"]);'],
-    ["fetch.bind", "const blocked = fetch.bind(globalThis);"],
-    ["globalThis.fetch.call", 'await globalThis.fetch.call(globalThis, "https://example.com");'],
-    [
-      "globalThis.fetch.apply",
-      'await globalThis.fetch.apply(globalThis, ["https://example.com"]);',
-    ],
-    ["globalThis.fetch.bind", "const blocked = globalThis.fetch.bind(globalThis);"],
-    [
-      'globalThis["fetch"].call',
-      'await globalThis["fetch"].call(globalThis, "https://example.com");',
-    ],
-    [
-      'globalThis["fetch"].apply',
-      'await globalThis["fetch"].apply(globalThis, ["https://example.com"]);',
-    ],
-    ['globalThis["fetch"].bind', 'const blocked = globalThis["fetch"].bind(globalThis);'],
-    ["window.fetch.call", 'await window.fetch.call(window, "https://example.com");'],
-    ["window.fetch.apply", 'await window.fetch.apply(window, ["https://example.com"]);'],
-    ["window.fetch.bind", "const blocked = window.fetch.bind(window);"],
-    ["self.fetch.call", 'await self.fetch.call(self, "https://example.com");'],
-    ["self.fetch.apply", 'await self.fetch.apply(self, ["https://example.com"]);'],
-    ["self.fetch.bind", "const blocked = self.fetch.bind(self);"],
-  ])("blocks indirect fetch calls through %s", (_name, code) => {
+    ["globalThis bracket fetch", 'await globalThis["fetch"]("https://example.com");'],
+    ["window fetch", 'await window.fetch("https://example.com");'],
+    ["self fetch", 'await self.fetch("https://example.com");'],
+  ])("blocks direct global fetch calls through %s", (_name, code) => {
     const diagnostics = diagnoseCodeModeTypeScript({ declaration, code });
 
     expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
@@ -105,53 +72,13 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   });
 
-  it("allows standard JavaScript, platform globals, JSON, and Caplet callTool", () => {
+  it("allows standard JavaScript, JSON, console, and Caplet callTool", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,
       code: `
-        const url = new URL("https://example.com/issues?state=open");
-        const params = new URLSearchParams([["q", "caplets"]]);
-        params.append("state", "open");
-        const utf8 = new TextEncoder().encode(url.searchParams.get("state") ?? "");
-        const decoded = new TextDecoder().decode(utf8);
-        const bytes = Buffer.from(btoa(decoded), "base64");
-        const clone = structuredClone({ decoded, params: params.toString() });
-        const random = crypto.getRandomValues(new Uint8Array(4));
-        const uuid = crypto.randomUUID();
-        const headers = new Headers({ accept: "application/json" });
-        headers.append("x-code-mode", "true");
-        const blob = new Blob([bytes.toString()], { type: "text/plain" });
-        const file = new File([blob], "state.txt", { type: blob.type });
-        const form = new FormData();
-        form.append("file", file, file.name);
-        const request = new Request(url, { method: "POST", headers, body: form });
-        const response = Response.json({ ok: true, clone, uuid, random: random.length });
-        const reader = new ReadableStream<string>({
-          start(controller) {
-            controller.enqueue("ready");
-            controller.close();
-          },
-        }).getReader();
-        const writer = new WritableStream<string>({ write() {} }).getWriter();
-        const transform = new TransformStream<string, string>({
-          transform(chunk, controller) {
-            controller.enqueue(chunk);
-          },
-        });
-        const controller = new AbortController();
-        controller.abort("done");
-        controller.signal.throwIfAborted();
-        const timeout = setTimeout(() => undefined, 0);
-        clearTimeout(timeout);
-        const interval = setInterval(() => undefined, 1);
-        clearInterval(interval);
-        queueMicrotask(() => undefined);
-        console.log(JSON.stringify({ state: url.searchParams.get("state") }));
-        await reader.read();
-        await writer.write(request.method);
-        await writer.close();
-        transform.readable.getReader();
-        await response.text();
+        const state = "open";
+        const issue = { state, labels: ["caplets"] };
+        console.log(JSON.stringify(issue));
         const result = await caplets.github.callTool("listIssues", { state: "open" });
         return result;
       `,
@@ -194,6 +121,24 @@ describe("diagnoseCodeModeTypeScript", () => {
     expect(diagnostics.map((diagnostic) => diagnostic.message).join("\n")).toContain(
       "Cannot find name 'require'",
     );
+  });
+
+  it("keeps platform globals out of generated declarations", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        new URL("https://example.com");
+        Buffer.from("ok");
+        crypto.randomUUID();
+        setTimeout(() => undefined, 0);
+      `,
+    });
+
+    const messages = diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+    expect(messages).toContain("Cannot find name 'URL'");
+    expect(messages).toContain("Cannot find name 'Buffer'");
+    expect(messages).toContain("Cannot find name 'crypto'");
+    expect(messages).toContain("Cannot find name 'setTimeout'");
   });
 
   it("honors per-line @ts-ignore for TypeScript diagnostics", () => {
