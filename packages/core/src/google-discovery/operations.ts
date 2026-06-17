@@ -120,7 +120,7 @@ function operationFromMethod(
 ): GoogleDiscoveryOperation {
   const method = normalizedHttpMethod(entry.method.httpMethod);
   const name = entry.method.id ?? [server, ...entry.resourcePath, entry.methodKey].join(".");
-  const scopes = [...new Set(entry.method.scopes ?? [])].sort();
+  const scopes = selectGoogleDiscoveryScopes(entry.method.scopes);
   const inputSchema = buildInputSchema(document.parameters ?? {}, entry.method, schemas);
   const bodyOutputSchema = entry.method.response?.$ref
     ? googleDiscoverySchemaToJsonSchema(entry.method.response, schemas)
@@ -154,6 +154,28 @@ function operationFromMethod(
     mediaUploadProtocols: entry.method.mediaUpload?.protocols ?? {},
     parameterOrder: entry.method.parameterOrder ?? [],
   };
+}
+
+function selectGoogleDiscoveryScopes(scopes: string[] | undefined): string[] {
+  const unique = [...new Set(scopes ?? [])].sort();
+  const preferred = unique.toSorted(compareScopePreference)[0];
+  return preferred ? [preferred] : [];
+}
+
+function compareScopePreference(left: string, right: string): number {
+  const leftRank = scopePreferenceRank(left);
+  const rightRank = scopePreferenceRank(right);
+  return leftRank - rightRank || right.length - left.length || left.localeCompare(right);
+}
+
+function scopePreferenceRank(scope: string): number {
+  const suffix = scope.toLowerCase().split("/").pop() ?? scope.toLowerCase();
+  const tokens = suffix.split(/[._:-]+/u);
+  if (tokens.includes("readonly")) return 0;
+  if (tokens.includes("file")) return 1;
+  if (tokens.includes("metadata") || tokens.includes("appdata")) return 2;
+  if (tokens.includes("read")) return 3;
+  return 4;
 }
 
 function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {

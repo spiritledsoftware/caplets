@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
-import { genericOAuthHeaders } from "../auth";
+import { genericOAuthHeaders, readTokenBundle } from "../auth";
 import type { GoogleDiscoveryApiConfig } from "../config";
 import {
   compactToolSafetyHints,
@@ -267,6 +267,7 @@ export class GoogleDiscoveryManager {
         "Google resumable upload missing Location",
       );
     }
+    const uploadUrl = new URL(location);
     const uploadHeaders = new Headers();
     uploadHeaders.set("content-type", media.mimeType ?? "application/octet-stream");
     uploadHeaders.set("content-length", String(media.bytes.byteLength));
@@ -274,7 +275,8 @@ export class GoogleDiscoveryManager {
       "content-range",
       `bytes 0-${media.bytes.byteLength - 1}/${media.bytes.byteLength}`,
     );
-    return fetchGoogleRequest(api, operation, new URL(location), {
+    copySessionAuthorization(api, startUrl, uploadUrl, headers, uploadHeaders);
+    return fetchGoogleRequest(api, operation, uploadUrl, {
       method: "PUT",
       headers: uploadHeaders,
       body: media.bytes,
@@ -560,10 +562,7 @@ async function loadGoogleDiscoverySource(
       `${api.server} is missing Google Discovery document source`,
     );
   }
-  return fetchDiscoverySource(
-    api,
-    shouldSendDiscoveryAuth(api) ? await authHeaders(api, authDir) : {},
-  );
+  return fetchDiscoverySource(api, await discoveryAuthHeaders(api, authDir));
 }
 
 async function fetchDiscoverySource(
@@ -605,6 +604,20 @@ async function fetchDiscoverySource(
   }
 }
 
+async function discoveryAuthHeaders(
+  api: GoogleDiscoveryApiConfig,
+  authDir?: string,
+): Promise<Record<string, string>> {
+  if (!shouldSendDiscoveryAuth(api)) return {};
+  if (
+    (api.auth.type === "oauth2" || api.auth.type === "oidc") &&
+    !hasStoredOAuthBundle(api, authDir)
+  ) {
+    return {};
+  }
+  return authHeaders(api, authDir);
+}
+
 async function authHeaders(
   api: GoogleDiscoveryApiConfig,
   authDir?: string,
@@ -621,6 +634,37 @@ async function authHeaders(
     case "oidc":
       return genericOAuthHeaders({ ...api, resolvedScopes }, authDir);
   }
+}
+
+function hasStoredOAuthBundle(api: GoogleDiscoveryApiConfig, authDir?: string): boolean {
+  const bundle = readTokenBundle(api.server, authDir);
+  return Boolean(bundle?.accessToken || bundle?.refreshToken);
+}
+
+function copySessionAuthorization(
+  api: GoogleDiscoveryApiConfig,
+  startUrl: URL,
+  uploadUrl: URL,
+  source: Headers,
+  target: Headers,
+): void {
+  const authorization = source.get("authorization");
+  if (!authorization || !isAllowedUploadSessionOrigin(api, startUrl, uploadUrl)) return;
+  target.set("authorization", authorization);
+}
+
+function isAllowedUploadSessionOrigin(
+  api: GoogleDiscoveryApiConfig,
+  startUrl: URL,
+  uploadUrl: URL,
+): boolean {
+  if (uploadUrl.origin === startUrl.origin) return true;
+  if (api.baseUrl && uploadUrl.origin === new URL(api.baseUrl).origin) return true;
+  return isGoogleApiOrigin(uploadUrl);
+}
+
+function isGoogleApiOrigin(url: URL): boolean {
+  return url.protocol === "https:" && url.hostname.endsWith(".googleapis.com");
 }
 
 function shouldRequestMediaDownload(

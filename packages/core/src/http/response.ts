@@ -119,7 +119,7 @@ async function writeResponseArtifact(
   return await writeMediaArtifact({
     capletId: options.capletId,
     ...(options.artifactDir ? { rootDir: options.artifactDir } : {}),
-    ...(options.outputPath ? { outputPath: options.outputPath } : {}),
+    ...(response.ok && options.outputPath ? { outputPath: options.outputPath } : {}),
     ...(options.exposeLocalPath === false ? { exposeLocalPath: false } : {}),
     suggestedFilename:
       options.filename ?? filenameFromContentDisposition(response) ?? "response.bin",

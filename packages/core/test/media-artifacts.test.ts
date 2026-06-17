@@ -16,6 +16,7 @@ import {
   resolveMediaArtifact,
   writeMediaArtifact,
 } from "../src/media";
+import { readHttpLikeResponse } from "../src/http/response";
 
 describe("media artifacts", () => {
   const dirs: string[] = [];
@@ -132,6 +133,33 @@ describe("media artifacts", () => {
       byteLength: 5,
     });
     expect(resolveMediaArtifact(first.uri, { artifactRoot: root }).mimeType).toBeUndefined();
+  });
+
+  it("does not overwrite explicit output paths with failed forced responses", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const outputDir = join(root, "drive", "call-1");
+    const outputPath = join(outputDir, "report.pdf");
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(outputPath, "previous-pdf");
+
+    const result = await readHttpLikeResponse(
+      new Response(JSON.stringify({ error: "missing" }), {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "application/json" },
+      }),
+      {
+        capletId: "drive",
+        artifactDir: root,
+        outputPath,
+        forceArtifact: true,
+      },
+    );
+
+    const artifact = (result.body as { artifact: { path?: string } }).artifact;
+    expect(result.status).toBe(404);
+    expect(readFileSync(outputPath, "utf8")).toBe("previous-pdf");
+    expect(artifact.path).not.toBe(outputPath);
   });
 
   it("rejects oversized artifact and data URL inputs before reading decoded bytes", async () => {

@@ -460,6 +460,40 @@ describe("Google Discovery parser", () => {
     });
   });
 
+  it("selects a minimal Google scope alternative instead of requiring every method scope", () => {
+    const operations = discoveryOperations({
+      server: "drive",
+      document: {
+        kind: "discovery#restDescription",
+        resources: {
+          files: {
+            methods: {
+              list: {
+                id: "drive.files.list",
+                path: "files",
+                httpMethod: "GET",
+                scopes: [
+                  "https://www.googleapis.com/auth/drive",
+                  "https://www.googleapis.com/auth/drive.metadata.readonly",
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(operations).toEqual([
+      expect.objectContaining({
+        name: "drive.files.list",
+        scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+      }),
+    ]);
+    expect(googleDiscoveryScopesForOperations(operations)).toEqual([
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ]);
+  });
+
   it("walks nested resources and uses stable fallback operation names", () => {
     const operations = discoveryOperations({
       server: "drive",
@@ -625,6 +659,37 @@ describe("GoogleDiscoveryManager", () => {
     await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual([
       expect.objectContaining({ name: "drive.files.list" }),
     ]);
+  });
+
+  it("fetches public remote Discovery documents before requiring OAuth credentials", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-public-discovery-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/drive.discovery.json`,
+          baseUrl: `${baseUrl}/drive/v3/`,
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await expect(manager.listTools(config.googleDiscoveryApis.drive!)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "drive.files.list" })]),
+      );
+      expect(
+        requests.find((request) => request.url === "/drive.discovery.json")?.headers,
+      ).not.toHaveProperty("authorization");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("infers the request base URL from Discovery rootUrl and servicePath", async () => {
@@ -1075,6 +1140,51 @@ describe("GoogleDiscoveryManager", () => {
     expect(start?.body).toBe(JSON.stringify({ name: "report.pdf" }));
     expect(start?.headers["x-upload-content-type"]).toBe("application/pdf");
     expect(requests.find((request) => request.url.includes("uploadType=media"))).toBeUndefined();
+  });
+
+  it("preserves OAuth authorization on resumable upload session requests", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-resumable-auth-"));
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-resumable.discovery.json`,
+          auth: {
+            type: "oauth2",
+            tokenUrl: `${baseUrl}/token`,
+            clientId: "client",
+          },
+        },
+      },
+    });
+    writeTokenBundle(
+      {
+        server: "drive",
+        authType: "oauth2",
+        accessToken: "upload-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        clientId: "client",
+        protectedResourceOrigin: baseUrl,
+      },
+      dir,
+    );
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config), { authDir: dir });
+
+    try {
+      await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+        body: { name: "report.pdf" },
+        media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+      });
+      const start = requests.find((request) => request.url.includes("uploadType=resumable"));
+      const upload = requests.find((request) => request.url === "/upload/session/abc");
+
+      expect(start?.headers.authorization).toBe("Bearer upload-token");
+      expect(upload?.headers.authorization).toBe("Bearer upload-token");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("substitutes path and query args into media upload URLs", async () => {
