@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: PyPI
 description: Query Python package metadata, releases, files, vulnerabilities, and Simple API project details from PyPI.
 tags:

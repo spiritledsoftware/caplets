@@ -18,7 +18,7 @@ const schemas = [
   {
     paths: [
       join(repoRoot, "schemas/caplet.schema.json"),
-      join(repoRoot, "apps/landing/public/caplet-frontmatter.schema.json"),
+      join(repoRoot, "apps/landing/public/caplet.schema.json"),
     ],
     schema: capletJsonSchema(),
   },

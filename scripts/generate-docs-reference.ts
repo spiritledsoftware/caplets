@@ -69,7 +69,7 @@ const outputs = new Map<string, string>([
         title: "Caplet files",
         description: "Generated reference for Markdown Caplet file frontmatter.",
         sourcePath: "schemas/caplet.schema.json",
-        canonicalUrl: "https://caplets.dev/caplet-frontmatter.schema.json",
+        canonicalUrl: "https://caplets.dev/caplet.schema.json",
         intro:
           "Caplet files are Markdown files with YAML frontmatter. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when the capability needs nearby assets.",
       }),

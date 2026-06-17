@@ -211,7 +211,7 @@ function renderCaplet(input: {
 }): string {
   const lines = [
     "---",
-    "# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json",
+    "# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json",
     `name: ${yamlString(input.name)}`,
     `description: ${yamlString(input.description)}`,
     "tags:",

@@ -7,7 +7,7 @@ description: "Generated reference for Markdown Caplet file frontmatter."
 
 Caplet files are Markdown files with YAML frontmatter. Store a single-file Caplet as `osv.md`, or use a folder with `CAPLET.md` when the capability needs nearby assets.
 
-Canonical schema: [https://caplets.dev/caplet-frontmatter.schema.json](https://caplets.dev/caplet-frontmatter.schema.json)
+Canonical schema: [https://caplets.dev/caplet.schema.json](https://caplets.dev/caplet.schema.json)
 
 Status values are `Required` or `Optional` according to the schema's top-level `required` array.
 
@@ -60,7 +60,7 @@ Use this Caplet when an agent needs the current repository's local test signal.
 
 | Field                | Status   | Type                                                                                              | Description                                                                    |
 | -------------------- | -------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `$schema`            | Optional | string                                                                                            | Optional JSON Schema URL for editor validation.                                |
+| `$schema`            | Optional | string                                                                                            | Optional JSON Schema for editor validation.                                    |
 | `name`               | Required | string                                                                                            | Human-readable Caplet display name.                                            |
 | `description`        | Required | string                                                                                            | Compact capability description shown before the full Caplet card is disclosed. |
 | `tags`               | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                               |

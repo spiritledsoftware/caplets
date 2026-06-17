@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: LSP
 description: Language Server Protocol tools for project-aware code intelligence through language-server-mcp.
 tags:

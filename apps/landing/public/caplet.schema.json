@@ -1,14 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://caplets.dev/caplet-frontmatter.schema.json",
+  "$id": "https://caplets.dev/caplet.schema.json",
   "title": "Caplet file frontmatter",
   "description": "YAML frontmatter schema for a Markdown Caplet file.",
   "type": "object",
   "properties": {
     "$schema": {
-      "description": "Optional JSON Schema URL for editor validation.",
-      "type": "string",
-      "format": "uri"
+      "description": "Optional JSON Schema for editor validation.",
+      "type": "string"
     },
     "name": {
       "type": "string",

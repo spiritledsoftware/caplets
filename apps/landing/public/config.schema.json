@@ -6,9 +6,8 @@
   "type": "object",
   "properties": {
     "$schema": {
-      "description": "Optional JSON Schema URL for editor validation.",
-      "type": "string",
-      "format": "uri"
+      "description": "Optional JSON Schema for editor validation.",
+      "type": "string"
     },
     "version": {
       "default": 1,

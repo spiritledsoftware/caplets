@@ -1,5 +1,5 @@
 ---
-# yaml-language-server: $schema=https://caplets.dev/caplet-frontmatter.schema.json
+# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: ast-grep
 description: Search, scan, test, rewrite, and scaffold ast-grep rules through curated MCP tools.
 tags:

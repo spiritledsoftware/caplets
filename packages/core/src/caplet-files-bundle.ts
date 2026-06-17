@@ -684,11 +684,7 @@ const capletSetSchema = z
 
 export const capletFileSchema = z
   .object({
-    $schema: z
-      .string()
-      .url()
-      .optional()
-      .describe("Optional JSON Schema URL for editor validation."),
+    $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
     name: z.string().trim().min(1).max(80).describe("Human-readable Caplet display name."),
     description: z
       .string()
@@ -754,7 +750,7 @@ type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
 export function capletJsonSchema(): unknown {
   return patchCapletJsonSchema({
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "https://caplets.dev/caplet-frontmatter.schema.json",
+    $id: "https://caplets.dev/caplet.schema.json",
     title: "Caplet file frontmatter",
     description: "YAML frontmatter schema for a Markdown Caplet file.",
     ...z.toJSONSchema(capletFileSchema, { io: "input" }),
