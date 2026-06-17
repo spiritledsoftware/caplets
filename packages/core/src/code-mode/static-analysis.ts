@@ -6,6 +6,11 @@ type AstNode = {
   [key: string]: unknown;
 };
 
+type AstParent = {
+  node: AstNode;
+  key: string;
+};
+
 const PARSER_OPTIONS: ParserOptions = {
   sourceType: "module",
   errorRecovery: true,
@@ -14,21 +19,24 @@ const PARSER_OPTIONS: ParserOptions = {
 };
 
 export function hasDirectFetchCall(code: string): boolean {
-  return hasMatchingAstNode(code, (node) => isCallExpression(node) && isFetchCallee(node.callee));
+  return hasMatchingAstNode(code, isFetchValueReference);
 }
 
 export function hasExecutableImport(code: string): boolean {
   return hasMatchingAstNode(code, isExecutableImportNode);
 }
 
-function hasMatchingAstNode(code: string, predicate: (node: AstNode) => boolean): boolean {
+function hasMatchingAstNode(
+  code: string,
+  predicate: (node: AstNode, parent?: AstParent) => boolean,
+): boolean {
   const ast = parseCode(code);
   if (!ast) return false;
 
   let found = false;
-  visitAst(ast, (node) => {
+  visitAst(ast, (node, parent) => {
     if (found) return;
-    found = predicate(node);
+    found = predicate(node, parent);
   });
   return found;
 }
@@ -58,22 +66,65 @@ function isCallExpression(node: AstNode): node is AstNode & { callee: unknown } 
   );
 }
 
-function isFetchCallee(value: unknown): boolean {
-  if (!isNode(value)) return false;
-  if (isFetchReference(value)) return true;
-  if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
-    return isGlobalFetchMember(value) || isFetchMethodMember(value);
+function isFetchValueReference(node: AstNode, parent?: AstParent): boolean {
+  if (isIdentifierNamed(node, "fetch")) {
+    return !isNonReferenceIdentifier(node, parent);
+  }
+  if (node.type === "MemberExpression" || node.type === "OptionalMemberExpression") {
+    return isGlobalFetchMember(node) || isFetchMethodMember(node);
   }
   return false;
 }
 
-function isFetchReference(value: unknown): boolean {
-  if (!isNode(value)) return false;
-  if (isIdentifierNamed(value, "fetch")) return true;
-  if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
-    return isGlobalFetchMember(value);
-  }
-  return false;
+function isNonReferenceIdentifier(node: AstNode, parent?: AstParent): boolean {
+  if (!parent) return false;
+  if (isMemberProperty(node, parent)) return true;
+  if (isComputedMemberProperty(node, parent)) return true;
+  if (isObjectPropertyKey(node, parent)) return true;
+  return isBindingIdentifier(node, parent);
+}
+
+function isMemberProperty(node: AstNode, parent: AstParent): boolean {
+  return (
+    parent.key === "property" &&
+    (parent.node.type === "MemberExpression" || parent.node.type === "OptionalMemberExpression") &&
+    parent.node.computed !== true &&
+    parent.node.property === node
+  );
+}
+
+function isComputedMemberProperty(node: AstNode, parent: AstParent): boolean {
+  return (
+    parent.key === "property" &&
+    (parent.node.type === "MemberExpression" || parent.node.type === "OptionalMemberExpression") &&
+    parent.node.computed === true &&
+    parent.node.property === node
+  );
+}
+
+function isObjectPropertyKey(node: AstNode, parent: AstParent): boolean {
+  return (
+    parent.key === "key" &&
+    (parent.node.type === "ObjectProperty" || parent.node.type === "ObjectMethod") &&
+    parent.node.computed !== true &&
+    parent.node.key === node
+  );
+}
+
+function isBindingIdentifier(node: AstNode, parent: AstParent): boolean {
+  return (
+    ((parent.node.type === "VariableDeclarator" ||
+      parent.node.type === "FunctionDeclaration" ||
+      parent.node.type === "FunctionExpression" ||
+      parent.node.type === "ClassDeclaration" ||
+      parent.node.type === "ClassExpression") &&
+      parent.key === "id" &&
+      parent.node.id === node) ||
+    ((parent.node.type === "FunctionDeclaration" ||
+      parent.node.type === "FunctionExpression" ||
+      parent.node.type === "ArrowFunctionExpression") &&
+      parent.key === "params")
+  );
 }
 
 function isGlobalFetchMember(node: AstNode): boolean {
@@ -83,7 +134,8 @@ function isGlobalFetchMember(node: AstNode): boolean {
 }
 
 function isFetchMethodMember(node: AstNode): boolean {
-  if (!isFetchReference(node.object)) return false;
+  if (!isNode(node.object)) return false;
+  if (!isFetchValueReference(node.object)) return false;
   if (node.computed === true) {
     return (
       isStringLiteralNamed(node.property, "call") ||
@@ -102,17 +154,21 @@ function isExportDeclaration(node: AstNode): boolean {
   );
 }
 
-function visitAst(value: unknown, visit: (node: AstNode) => void): void {
+function visitAst(
+  value: unknown,
+  visit: (node: AstNode, parent?: AstParent) => void,
+  parent?: AstParent,
+): void {
   if (!isNode(value)) return;
-  visit(value);
+  visit(value, parent);
 
   for (const [key, child] of Object.entries(value)) {
     if (key === "loc" || key === "start" || key === "end" || key === "extra") continue;
     if (Array.isArray(child)) {
-      for (const item of child) visitAst(item, visit);
+      for (const item of child) visitAst(item, visit, { node: value, key });
       continue;
     }
-    visitAst(child, visit);
+    visitAst(child, visit, { node: value, key });
   }
 }
 

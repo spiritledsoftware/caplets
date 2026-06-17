@@ -7,6 +7,11 @@ describe("Code Mode static analysis", () => {
     expect(hasDirectFetchCall('return await fetch("https://example.com");')).toBe(true);
     expect(hasDirectFetchCall('await globalThis.fetch("https://example.com");')).toBe(true);
     expect(hasDirectFetchCall('await globalThis["fetch"]("https://example.com");')).toBe(true);
+    expect(hasDirectFetchCall("const f = fetch;")).toBe(true);
+    expect(hasDirectFetchCall("const f = globalThis.fetch;")).toBe(true);
+    expect(hasDirectFetchCall('const f = globalThis["fetch"];')).toBe(true);
+    expect(hasDirectFetchCall("const f = window.fetch;")).toBe(true);
+    expect(hasDirectFetchCall("const f = self.fetch;")).toBe(true);
     expect(hasDirectFetchCall('const note = "await fetch(\\"https://example.com\\")";')).toBe(
       false,
     );
@@ -14,6 +19,7 @@ describe("Code Mode static analysis", () => {
       hasDirectFetchCall("const fetch = client.fetch; await globalThis[fetch]('/issues');"),
     ).toBe(false);
     expect(hasDirectFetchCall("const result = client.fetch('/issues');")).toBe(false);
+    expect(hasDirectFetchCall("const f = client.fetch;")).toBe(false);
   });
 
   it.each([

@@ -47,6 +47,18 @@ describe("diagnoseCodeModeTypeScript", () => {
   });
 
   it.each([
+    ["fetch", "const f = fetch;"],
+    ["globalThis.fetch", "const f = globalThis.fetch;"],
+    ['globalThis["fetch"]', 'const f = globalThis["fetch"];'],
+    ["window.fetch", "const f = window.fetch;"],
+    ["self.fetch", "const f = self.fetch;"],
+  ])("blocks global fetch value reads through %s", (_name, code) => {
+    const diagnostics = diagnoseCodeModeTypeScript({ declaration, code });
+
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
+  });
+
+  it.each([
     ["fetch.call", 'await fetch.call(globalThis, "https://example.com");'],
     ["fetch.apply", 'await fetch.apply(globalThis, ["https://example.com"]);'],
     ["fetch.bind", "const blocked = fetch.bind(globalThis);"],
@@ -84,6 +96,7 @@ describe("diagnoseCodeModeTypeScript", () => {
         const guidance = "Use the browser Caplet instead of await fetch('https://example.com')";
         const client = { fetch: (value: string) => ({ value }) };
         const result = client.fetch(guidance);
+        const f = client.fetch;
         return result;
       `,
     });
