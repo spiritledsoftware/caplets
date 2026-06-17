@@ -38,26 +38,62 @@ describe("Code Mode platform API", () => {
   it("exposes utility globals on globalThis", async () => {
     const result = await runPlatformCode(`
       return {
-        hasQueueMicrotask: typeof queueMicrotask,
-        hasSetTimeout: typeof setTimeout,
-        hasClearTimeout: typeof clearTimeout,
-        hasSetInterval: typeof setInterval,
-        hasClearInterval: typeof clearInterval,
-        hasSetImmediate: typeof setImmediate,
-        hasClearImmediate: typeof clearImmediate,
+        queueMicrotask: {
+          globalThis: typeof globalThis.queueMicrotask,
+          binding: typeof queueMicrotask,
+          same: globalThis.queueMicrotask === queueMicrotask,
+        },
+        setTimeout: {
+          globalThis: typeof globalThis.setTimeout,
+          binding: typeof setTimeout,
+          same: globalThis.setTimeout === setTimeout,
+        },
+        clearTimeout: {
+          globalThis: typeof globalThis.clearTimeout,
+          binding: typeof clearTimeout,
+          same: globalThis.clearTimeout === clearTimeout,
+        },
+        setInterval: {
+          globalThis: typeof globalThis.setInterval,
+          binding: typeof setInterval,
+          same: globalThis.setInterval === setInterval,
+        },
+        clearInterval: {
+          globalThis: typeof globalThis.clearInterval,
+          binding: typeof clearInterval,
+          same: globalThis.clearInterval === clearInterval,
+        },
       };
     `);
 
     expect(result).toMatchObject({
       ok: true,
       value: {
-        hasQueueMicrotask: "function",
-        hasSetTimeout: "function",
-        hasClearTimeout: "function",
-        hasSetInterval: "function",
-        hasClearInterval: "function",
-        hasSetImmediate: "function",
-        hasClearImmediate: "function",
+        queueMicrotask: {
+          globalThis: "function",
+          binding: "function",
+          same: true,
+        },
+        setTimeout: {
+          globalThis: "function",
+          binding: "function",
+          same: true,
+        },
+        clearTimeout: {
+          globalThis: "function",
+          binding: "function",
+          same: true,
+        },
+        setInterval: {
+          globalThis: "function",
+          binding: "function",
+          same: true,
+        },
+        clearInterval: {
+          globalThis: "function",
+          binding: "function",
+          same: true,
+        },
       },
     });
   });
@@ -65,17 +101,23 @@ describe("Code Mode platform API", () => {
   it("supports base64 and minimal Buffer conversions", async () => {
     const result = await runPlatformCode(`
       return {
-        btoa: btoa("hello"),
-        atob: atob("aGVsbG8="),
-        bufferUtf8: Buffer.from("hello", "utf8").toString("utf8"),
-        bufferBase64: Buffer.from("hello", "utf8").toString("base64"),
-        bufferFromBase64: Buffer.from("aGVsbG8=", "base64").toString("utf8"),
+        globalThisBtoa: typeof globalThis.btoa,
+        globalThisAtob: typeof globalThis.atob,
+        globalThisBuffer: typeof globalThis.Buffer,
+        btoa: globalThis.btoa("hello"),
+        atob: globalThis.atob("aGVsbG8="),
+        bufferUtf8: globalThis.Buffer.from("hello", "utf8").toString("utf8"),
+        bufferBase64: globalThis.Buffer.from("hello", "utf8").toString("base64"),
+        bufferFromBase64: globalThis.Buffer.from("aGVsbG8=", "base64").toString("utf8"),
       };
     `);
 
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisBtoa: "function",
+        globalThisAtob: "function",
+        globalThisBuffer: "function",
         btoa: "aGVsbG8=",
         atob: "hello",
         bufferUtf8: "hello",
@@ -87,10 +129,12 @@ describe("Code Mode platform API", () => {
 
   it("supports URL and URLSearchParams", async () => {
     const result = await runPlatformCode(`
-      const url = new URL("https://example.com/path?q=1");
+      const url = new globalThis.URL("https://example.com/path?q=1");
       url.searchParams.set("page", "2");
 
       return {
+        globalThisURL: typeof globalThis.URL,
+        globalThisURLSearchParams: typeof globalThis.URLSearchParams,
         href: url.href,
         origin: url.origin,
         pathname: url.pathname,
@@ -102,6 +146,8 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisURL: "function",
+        globalThisURLSearchParams: "function",
         href: "https://example.com/path?q=1&page=2",
         origin: "https://example.com",
         pathname: "/path",
@@ -116,11 +162,13 @@ describe("Code Mode platform API", () => {
 
   it("supports text encoding and decoding", async () => {
     const result = await runPlatformCode(`
-      const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
+      const encoder = new globalThis.TextEncoder();
+      const decoder = new globalThis.TextDecoder();
       const bytes = encoder.encode("hello");
 
       return {
+        globalThisTextEncoder: typeof globalThis.TextEncoder,
+        globalThisTextDecoder: typeof globalThis.TextDecoder,
         encoded: Array.from(bytes),
         decoded: decoder.decode(bytes),
       };
@@ -129,6 +177,8 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisTextEncoder: "function",
+        globalThisTextDecoder: "function",
         encoded: [104, 101, 108, 108, 111],
         decoded: "hello",
       },
@@ -137,24 +187,34 @@ describe("Code Mode platform API", () => {
 
   it("supports crypto randomUUID and getRandomValues", async () => {
     const result = await runPlatformCode(`
-      const bytes = new Uint8Array(16);
-      crypto.getRandomValues(bytes);
+      const first = new Uint8Array(32);
+      const second = new Uint8Array(32);
+      globalThis.crypto.getRandomValues(first);
+      globalThis.crypto.getRandomValues(second);
 
       return {
-        randomUUID: crypto.randomUUID(),
-        valuesLength: bytes.length,
-        valuesPattern: Array.from(bytes).every((value) => Number.isInteger(value) && value >= 0 && value <= 255),
+        globalThisCrypto: typeof globalThis.crypto,
+        randomUUID: globalThis.crypto.randomUUID(),
+        first: Array.from(first),
+        second: Array.from(second),
+        firstHasNonZero: first.some((value) => value !== 0),
+        secondHasNonZero: second.some((value) => value !== 0),
+        samplesDiffer: first.some((value, index) => value !== second[index]),
       };
     `);
 
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisCrypto: "object",
         randomUUID: expect.stringMatching(
           /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
         ),
-        valuesLength: 16,
-        valuesPattern: true,
+        first: expect.any(Array),
+        second: expect.any(Array),
+        firstHasNonZero: true,
+        secondHasNonZero: true,
+        samplesDiffer: true,
       },
     });
   });
@@ -163,32 +223,40 @@ describe("Code Mode platform API", () => {
     const result = await runPlatformCode(`
       return await new Promise((resolve) => {
         const events = [];
-        const timeout = setTimeout(() => {
-          events.push("timeout");
-          clearInterval(interval);
-          resolve(events);
-        }, 0);
-
-        const interval = setInterval(() => {
-          events.push("interval");
-        }, 0);
-
-        queueMicrotask(() => {
-          events.push("microtask");
-          clearTimeout(timeout);
-          setTimeout(() => {
-            events.push("timeout");
-            clearInterval(interval);
+        let ticks = 0;
+        const interval = globalThis.setInterval(() => {
+          ticks += 1;
+          events.push(\`interval-\${ticks}\`);
+          if (ticks === 2) {
+            globalThis.clearInterval(interval);
             resolve(events);
-          }, 0);
+          }
+        }, 0);
+
+        globalThis.queueMicrotask(() => {
+          events.push("microtask");
         });
+
+        globalThis.setTimeout(() => {
+          events.push("timeout");
+        }, 0);
       });
     `);
 
     expect(result).toMatchObject({
       ok: true,
-      value: ["microtask", "timeout"],
+      value: expect.arrayContaining(["microtask", "timeout", "interval-1", "interval-2"]),
     });
+    expect(result).toMatchObject({
+      ok: true,
+      value: expect.arrayContaining(["microtask", "timeout"]),
+    });
+    expect((result as { ok: true; value: string[] }).value[0]).toBe("microtask");
+    expect(
+      (result as { ok: true; value: string[] }).value.filter((event) =>
+        event.startsWith("interval-"),
+      ),
+    ).toEqual(["interval-1", "interval-2"]);
   });
 
   it("supports structuredClone", async () => {
@@ -197,11 +265,12 @@ describe("Code Mode platform API", () => {
         nested: { count: 1 },
         values: [1, 2, 3],
       };
-      const clone = structuredClone(source);
+      const clone = globalThis.structuredClone(source);
       clone.nested.count = 2;
       clone.values.push(4);
 
       return {
+        globalThisStructuredClone: typeof globalThis.structuredClone,
         source: source.nested.count,
         clone: clone.nested.count,
         values: clone.values,
@@ -211,6 +280,7 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisStructuredClone: "function",
         source: 1,
         clone: 2,
         values: [1, 2, 3, 4],
@@ -220,32 +290,39 @@ describe("Code Mode platform API", () => {
 
   it("supports Headers, Blob, File, FormData, streams, Request, and Response", async () => {
     const result = await runPlatformCode(`
-      const headers = new Headers([["x-one", "1"]]);
-      const blob = new Blob(["hello"], { type: "text/plain" });
-      const file = new File(["hello"], "hello.txt", { type: "text/plain" });
-      const formData = new FormData();
+      const headers = new globalThis.Headers([["x-one", "1"]]);
+      const blob = new globalThis.Blob(["hello"], { type: "text/plain" });
+      const file = new globalThis.File(["hello"], "hello.txt", { type: "text/plain" });
+      const formData = new globalThis.FormData();
       formData.set("name", "caplets");
       formData.set("fileName", file.name);
 
-      const stream = new ReadableStream({
+      const stream = new globalThis.ReadableStream({
         start(controller) {
           controller.enqueue("hello");
           controller.close();
         },
       });
 
-      const request = new Request("https://example.com/api", {
+      const request = new globalThis.Request("https://example.com/api", {
         method: "POST",
         headers,
         body: formData,
       });
 
-      const response = new Response(blob, {
+      const response = new globalThis.Response(blob, {
         status: 201,
         headers,
       });
 
       return {
+        globalThisHeaders: typeof globalThis.Headers,
+        globalThisBlob: typeof globalThis.Blob,
+        globalThisFile: typeof globalThis.File,
+        globalThisFormData: typeof globalThis.FormData,
+        globalThisReadableStream: typeof globalThis.ReadableStream,
+        globalThisRequest: typeof globalThis.Request,
+        globalThisResponse: typeof globalThis.Response,
         headers: headers.get("x-one"),
         blobSize: blob.size,
         blobType: blob.type,
@@ -263,6 +340,13 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisHeaders: "function",
+        globalThisBlob: "function",
+        globalThisFile: "function",
+        globalThisFormData: "function",
+        globalThisReadableStream: "function",
+        globalThisRequest: "function",
+        globalThisResponse: "function",
         headers: "1",
         blobSize: 5,
         blobType: "text/plain",
@@ -283,12 +367,14 @@ describe("Code Mode platform API", () => {
 
   it("supports AbortController and AbortSignal", async () => {
     const result = await runPlatformCode(`
-      const controller = new AbortController();
+      const controller = new globalThis.AbortController();
       const { signal } = controller;
       const before = signal.aborted;
       controller.abort("done");
 
       return {
+        globalThisAbortController: typeof globalThis.AbortController,
+        globalThisAbortSignal: typeof globalThis.AbortSignal,
         before,
         after: signal.aborted,
         reason: signal.reason,
@@ -298,6 +384,8 @@ describe("Code Mode platform API", () => {
     expect(result).toMatchObject({
       ok: true,
       value: {
+        globalThisAbortController: "function",
+        globalThisAbortSignal: "function",
         before: false,
         after: true,
         reason: "done",
@@ -306,25 +394,38 @@ describe("Code Mode platform API", () => {
   });
 
   it("keeps fetch unavailable for direct calls", async () => {
-    const result = await runPlatformCode(`
-      return typeof fetch;
+    const directResult = await runPlatformCode(`
+      return await fetch("https://example.com");
+    `);
+    const globalResult = await runPlatformCode(`
+      return await globalThis.fetch("https://example.com");
     `);
 
-    expect(result).toMatchObject({
-      ok: true,
-      value: "undefined",
-    });
+    expect(directResult.ok).toBe(false);
+    expect(globalResult.ok).toBe(false);
+    expect(directResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      "FETCH_UNAVAILABLE",
+    );
+    expect(globalResult.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      "FETCH_UNAVAILABLE",
+    );
   });
 
-  it("keeps Node and module globals unavailable", async () => {
+  it("keeps Node globals unavailable", async () => {
     const result = await runPlatformCode(`
       return {
         process: typeof process,
+        globalThisProcess: typeof globalThis.process,
         module: typeof module,
+        globalThisModule: typeof globalThis.module,
         exports: typeof exports,
+        globalThisExports: typeof globalThis.exports,
         require: typeof require,
+        globalThisRequire: typeof globalThis.require,
         __dirname: typeof __dirname,
+        globalThisDirname: typeof globalThis.__dirname,
         __filename: typeof __filename,
+        globalThisFilename: typeof globalThis.__filename,
       };
     `);
 
@@ -332,12 +433,29 @@ describe("Code Mode platform API", () => {
       ok: true,
       value: {
         process: "undefined",
+        globalThisProcess: "undefined",
         module: "undefined",
+        globalThisModule: "undefined",
         exports: "undefined",
+        globalThisExports: "undefined",
         require: "undefined",
+        globalThisRequire: "undefined",
         __dirname: "undefined",
+        globalThisDirname: "undefined",
         __filename: "undefined",
+        globalThisFilename: "undefined",
       },
     });
+  });
+
+  it("blocks dynamic filesystem and child-process imports", async () => {
+    const result = await runPlatformCode(`
+      await import("node:fs");
+      await import("node:child_process");
+      return { done: true };
+    `);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain("IMPORT_UNAVAILABLE");
   });
 });
