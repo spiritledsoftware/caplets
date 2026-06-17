@@ -16,6 +16,35 @@ describe("Code Mode static analysis", () => {
     expect(hasDirectFetchCall("const result = client.fetch('/issues');")).toBe(false);
   });
 
+  it.each([
+    ["fetch.call", 'await fetch.call(globalThis, "https://example.com");'],
+    ["fetch.apply", 'await fetch.apply(globalThis, ["https://example.com"]);'],
+    ["fetch.bind", "const blocked = fetch.bind(globalThis);"],
+    ["globalThis.fetch.call", 'await globalThis.fetch.call(globalThis, "https://example.com");'],
+    [
+      "globalThis.fetch.apply",
+      'await globalThis.fetch.apply(globalThis, ["https://example.com"]);',
+    ],
+    ["globalThis.fetch.bind", "const blocked = globalThis.fetch.bind(globalThis);"],
+    [
+      'globalThis["fetch"].call',
+      'await globalThis["fetch"].call(globalThis, "https://example.com");',
+    ],
+    [
+      'globalThis["fetch"].apply',
+      'await globalThis["fetch"].apply(globalThis, ["https://example.com"]);',
+    ],
+    ['globalThis["fetch"].bind', 'const blocked = globalThis["fetch"].bind(globalThis);'],
+    ["window.fetch.call", 'await window.fetch.call(window, "https://example.com");'],
+    ["window.fetch.apply", 'await window.fetch.apply(window, ["https://example.com"]);'],
+    ["window.fetch.bind", "const blocked = window.fetch.bind(window);"],
+    ["self.fetch.call", 'await self.fetch.call(self, "https://example.com");'],
+    ["self.fetch.apply", 'await self.fetch.apply(self, ["https://example.com"]);'],
+    ["self.fetch.bind", "const blocked = self.fetch.bind(self);"],
+  ])("detects indirect fetch calls through %s", (_name, code) => {
+    expect(hasDirectFetchCall(code)).toBe(true);
+  });
+
   it("detects executable imports without blocking import text", () => {
     expect(hasExecutableImport('import fs from "node:fs";')).toBe(true);
     expect(hasExecutableImport('import { readFile } from "node:fs";')).toBe(true);

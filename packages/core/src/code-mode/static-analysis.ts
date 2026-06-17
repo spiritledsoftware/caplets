@@ -68,7 +68,12 @@ function isFetchCallee(value: unknown): boolean {
 }
 
 function isFetchReference(value: unknown): boolean {
-  return isIdentifierNamed(value, "fetch");
+  if (!isNode(value)) return false;
+  if (isIdentifierNamed(value, "fetch")) return true;
+  if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
+    return isGlobalFetchMember(value);
+  }
+  return false;
 }
 
 function isGlobalFetchMember(node: AstNode): boolean {
