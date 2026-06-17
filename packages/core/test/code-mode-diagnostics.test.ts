@@ -46,6 +46,21 @@ describe("diagnoseCodeModeTypeScript", () => {
     );
   });
 
+  it("blocks indirect fetch calls through call, apply, and bind", () => {
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: `
+        await fetch.call(globalThis, "https://example.com");
+        await fetch.apply(globalThis, ["https://example.com"]);
+        const blocked = fetch.bind(globalThis);
+        await blocked("https://example.com");
+      `,
+    });
+
+    expect(diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(true);
+    expect(diagnostics.map((diagnostic) => diagnostic.code)).toContain("FETCH_UNAVAILABLE");
+  });
+
   it("does not block fetch text or non-global fetch member calls", () => {
     const diagnostics = diagnoseCodeModeTypeScript({
       declaration,

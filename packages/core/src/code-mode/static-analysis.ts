@@ -60,17 +60,33 @@ function isCallExpression(node: AstNode): node is AstNode & { callee: unknown } 
 
 function isFetchCallee(value: unknown): boolean {
   if (!isNode(value)) return false;
-  if (value.type === "Identifier") return value.name === "fetch";
+  if (isFetchReference(value)) return true;
   if (value.type === "MemberExpression" || value.type === "OptionalMemberExpression") {
-    return isGlobalFetchMember(value);
+    return isGlobalFetchMember(value) || isFetchMethodMember(value);
   }
   return false;
+}
+
+function isFetchReference(value: unknown): boolean {
+  return isIdentifierNamed(value, "fetch");
 }
 
 function isGlobalFetchMember(node: AstNode): boolean {
   if (!isIdentifierNamed(node.object, "globalThis", "window", "self")) return false;
   if (node.computed === true) return isStringLiteralNamed(node.property, "fetch");
   return isIdentifierNamed(node.property, "fetch");
+}
+
+function isFetchMethodMember(node: AstNode): boolean {
+  if (!isFetchReference(node.object)) return false;
+  if (node.computed === true) {
+    return (
+      isStringLiteralNamed(node.property, "call") ||
+      isStringLiteralNamed(node.property, "apply") ||
+      isStringLiteralNamed(node.property, "bind")
+    );
+  }
+  return isIdentifierNamed(node.property, "call", "apply", "bind");
 }
 
 function isExportDeclaration(node: AstNode): boolean {
