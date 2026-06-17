@@ -1,6 +1,6 @@
 // @ts-expect-error package has no bundled types in this repo
 import structuredClone from "@ungap/structured-clone";
-import { Blob, File, FormData } from "../../node_modules/formdata-node/lib/form-data.js";
+import { Blob, File, FormData } from "formdata-node";
 import { Headers } from "headers-polyfill";
 
 declare function __caplets_log(level: string, message: string): void;
@@ -174,35 +174,93 @@ class URLSearchParamsShim {
   }
 }
 
+type ParsedUrl = {
+  protocol: string;
+  host: string;
+  pathname: string;
+  search: string;
+  hash: string;
+};
+
+function parseAbsoluteUrl(input: string): ParsedUrl | undefined {
+  const match =
+    /^(?<protocol>[a-zA-Z][a-zA-Z\d+.-]*:)\/\/(?<host>[^/?#]*)(?<pathname>[^?#]*)?(?<search>\?[^#]*)?(?<hash>#.*)?$/u.exec(
+      input,
+    );
+  if (!match?.groups?.protocol || !match.groups.host) {
+    return undefined;
+  }
+  return {
+    protocol: match.groups.protocol,
+    host: match.groups.host,
+    pathname: match.groups.pathname || "/",
+    search: match.groups.search || "",
+    hash: match.groups.hash || "",
+  };
+}
+
+function normalizePathname(pathname: string): string {
+  const segments: string[] = [];
+  for (const part of pathname.split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  return `/${segments.join("/")}`;
+}
+
+function resolveUrl(input: string, base?: string | URLShim): ParsedUrl {
+  const absolute = parseAbsoluteUrl(input);
+  if (absolute) {
+    return absolute;
+  }
+  if (base === undefined) {
+    throw new TypeError(`Invalid URL: ${input}`);
+  }
+  const baseUrl = base instanceof URLShim ? base : new URLShim(String(base));
+  const basePath = baseUrl.pathname.endsWith("/")
+    ? baseUrl.pathname
+    : baseUrl.pathname.slice(0, baseUrl.pathname.lastIndexOf("/") + 1);
+  const [beforeHash, rawHash = ""] = input.split("#");
+  const [rawPath, rawSearch = ""] = (beforeHash ?? "").split("?");
+  const pathname = rawPath?.startsWith("/") ? rawPath : `${basePath}${rawPath || ""}`;
+  return {
+    protocol: baseUrl.protocol,
+    host: baseUrl.host,
+    pathname: normalizePathname(pathname),
+    search: rawSearch ? `?${rawSearch}` : "",
+    hash: rawHash ? `#${rawHash}` : "",
+  };
+}
+
 class URLShim {
-  readonly hash: string;
   readonly host: string;
   readonly hostname: string;
   readonly origin: string;
   readonly password = "";
-  readonly pathname: string;
   readonly port: string;
   readonly protocol: string;
   readonly searchParams: URLSearchParamsShim;
   readonly username = "";
+  hash: string;
+  pathname: string;
   #search: string;
 
-  constructor(input: string) {
-    const match =
-      /^(?<protocol>[a-zA-Z][a-zA-Z\d+.-]*:)?\/\/(?<host>[^/?#]*)(?<pathname>[^?#]*)?(?<search>\?[^#]*)?(?<hash>#.*)?$/u.exec(
-        String(input),
-      );
-    if (!match?.groups?.protocol || !match.groups.host) {
-      throw new TypeError(`Invalid URL: ${input}`);
-    }
-    this.protocol = match.groups.protocol;
-    this.host = match.groups.host;
+  constructor(input: string, base?: string | URLShim) {
+    const parsed = resolveUrl(String(input), base);
+    this.protocol = parsed.protocol;
+    this.host = parsed.host;
     const portIndex = this.host.lastIndexOf(":");
     this.hostname = portIndex >= 0 ? this.host.slice(0, portIndex) : this.host;
     this.port = portIndex >= 0 ? this.host.slice(portIndex + 1) : "";
-    this.pathname = match.groups.pathname || "/";
-    this.#search = match.groups.search || "";
-    this.hash = match.groups.hash || "";
+    this.pathname = parsed.pathname;
+    this.#search = parsed.search;
+    this.hash = parsed.hash;
     this.origin = `${this.protocol}//${this.host}`;
     this.searchParams = new URLSearchParamsShim(this.#search, () => {
       const next = this.searchParams.toString();
@@ -216,6 +274,14 @@ class URLShim {
 
   get search(): string {
     return this.#search;
+  }
+
+  toString(): string {
+    return this.href;
+  }
+
+  toJSON(): string {
+    return this.href;
   }
 }
 
@@ -734,7 +800,11 @@ class RequestShim extends BodyMixin {
   ) {
     const sourceBody = input instanceof RequestShim ? input._bodyInit : undefined;
     super(init.body ?? sourceBody);
-    this.url = String(input instanceof RequestShim ? input.url : input);
+    if (input instanceof RequestShim) {
+      this.url = input.url;
+    } else {
+      this.url = input instanceof URLShim ? input.href : new URLShim(String(input)).href;
+    }
     this.method = normalizeMethod(
       init.method ?? (input instanceof RequestShim ? input.method : "GET"),
     );

@@ -32,6 +32,9 @@ async function generateBundle() {
   const bundle = await build({
     input: join(root, input),
     platform: "browser",
+    resolve: {
+      conditionNames: ["node", "import", "default"],
+    },
     output: {
       format: "iife",
       name: "__caplets_platform_runtime",

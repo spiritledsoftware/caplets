@@ -276,6 +276,75 @@ describe("Code Mode platform API", () => {
     });
   });
 
+  it("supports relative URL construction with live URLSearchParams mutation", async () => {
+    const result = await runPlatformCode(`
+      const url = new globalThis.URL("/child?x=1", "https://example.com/base");
+      const before = {
+        href: url.href,
+        toString: url.toString(),
+        search: url.search,
+        params: [...url.searchParams.entries()],
+      };
+      url.searchParams.set("x", "2");
+      url.searchParams.append("page", "3");
+
+      return {
+        before,
+        after: {
+          href: url.href,
+          toString: url.toString(),
+          json: url.toJSON(),
+          origin: url.origin,
+          pathname: url.pathname,
+          search: url.search,
+          params: [...url.searchParams.entries()],
+        },
+      };
+    `);
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        before: {
+          href: "https://example.com/child?x=1",
+          toString: "https://example.com/child?x=1",
+          search: "?x=1",
+          params: [["x", "1"]],
+        },
+        after: {
+          href: "https://example.com/child?x=2&page=3",
+          toString: "https://example.com/child?x=2&page=3",
+          json: "https://example.com/child?x=2&page=3",
+          origin: "https://example.com",
+          pathname: "/child",
+          search: "?x=2&page=3",
+          params: [
+            ["x", "2"],
+            ["page", "3"],
+          ],
+        },
+      },
+    });
+  });
+
+  it("uses href when constructing Request from URL objects", async () => {
+    const result = await runPlatformCode(`
+      const url = new globalThis.URL("/api?x=1", "https://example.com/base");
+      const request = new globalThis.Request(url);
+
+      return {
+        url: request.url,
+      };
+    `);
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        url: "https://example.com/api?x=1",
+      },
+    });
+  });
+
   it("supports text encoding and decoding", async () => {
     const result = await runPlatformCode(`
       const encoder = new globalThis.TextEncoder();
