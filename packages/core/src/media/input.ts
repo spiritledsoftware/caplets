@@ -108,14 +108,14 @@ function readDataUrl(
   dataUrl: string,
   options: { filename?: string; mimeType?: string; maxBytes?: number },
 ): ResolvedMediaInput {
-  const match = /^data:([^;,]+)(?:;[^,;=]+=[^,;]*)*;base64,([A-Za-z0-9+/=]+)$/u.exec(dataUrl);
+  const match = /^data:([^;,]+)(?:;[^,;=]+=[^,;]*)*;base64,([A-Za-z0-9+/=]*)$/u.exec(dataUrl);
   if (!match) {
     throw new CapletsError("REQUEST_INVALID", "media.dataUrl must be a base64 data URL");
   }
 
-  const dataMimeType = match[1];
-  const base64 = match[2];
-  if (!dataMimeType || !base64 || !isStrictBase64(base64)) {
+  const dataMimeType = match[1] ?? "";
+  const base64 = match[2] ?? "";
+  if (!dataMimeType || !isStrictBase64(base64)) {
     throw new CapletsError("REQUEST_INVALID", "media.dataUrl must be a base64 data URL");
   }
 

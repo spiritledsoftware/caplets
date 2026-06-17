@@ -51,11 +51,87 @@ function utf8Encode(input: string): Uint8Array {
 }
 
 function utf8Decode(input: Uint8Array): string {
-  let encoded = "";
-  for (const value of input) {
-    encoded += value < 128 ? String.fromCharCode(value) : `%${value.toString(16).padStart(2, "0")}`;
+  let output = "";
+  for (let index = 0; index < input.length; index += 1) {
+    const first = input[index] ?? 0;
+    if (first < 0x80) {
+      output += String.fromCharCode(first);
+      continue;
+    }
+    if (first >= 0xc2 && first <= 0xdf) {
+      const second = input[index + 1];
+      if (isUtf8Continuation(second)) {
+        output += String.fromCodePoint(((first & 0x1f) << 6) | (second & 0x3f));
+        index += 1;
+        continue;
+      }
+      output += "\uFFFD";
+      continue;
+    }
+    if (first >= 0xe0 && first <= 0xef) {
+      const second = input[index + 1];
+      const third = input[index + 2];
+      if (isValidUtf8SecondForThreeByte(first, second) && isUtf8Continuation(third)) {
+        output += String.fromCodePoint(
+          ((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f),
+        );
+        index += 2;
+        continue;
+      }
+      output += "\uFFFD";
+      if (isValidUtf8SecondForThreeByte(first, second)) {
+        index += 1;
+      }
+      continue;
+    }
+    if (first >= 0xf0 && first <= 0xf4) {
+      const second = input[index + 1];
+      const third = input[index + 2];
+      const fourth = input[index + 3];
+      if (
+        isValidUtf8SecondForFourByte(first, second) &&
+        isUtf8Continuation(third) &&
+        isUtf8Continuation(fourth)
+      ) {
+        output += String.fromCodePoint(
+          ((first & 0x07) << 18) |
+            ((second & 0x3f) << 12) |
+            ((third & 0x3f) << 6) |
+            (fourth & 0x3f),
+        );
+        index += 3;
+        continue;
+      }
+      output += "\uFFFD";
+      if (isValidUtf8SecondForFourByte(first, second)) {
+        index += isUtf8Continuation(third) ? 2 : 1;
+      }
+      continue;
+    }
+    output += "\uFFFD";
   }
-  return decodeURIComponent(encoded);
+  return output;
+}
+
+function isUtf8Continuation(value: number | undefined): value is number {
+  return value !== undefined && value >= 0x80 && value <= 0xbf;
+}
+
+function isValidUtf8SecondForThreeByte(
+  first: number,
+  second: number | undefined,
+): second is number {
+  if (second === undefined) return false;
+  if (first === 0xe0) return second >= 0xa0 && second <= 0xbf;
+  if (first === 0xed) return second >= 0x80 && second <= 0x9f;
+  return second >= 0x80 && second <= 0xbf;
+}
+
+function isValidUtf8SecondForFourByte(first: number, second: number | undefined): second is number {
+  if (second === undefined) return false;
+  if (first === 0xf0) return second >= 0x90 && second <= 0xbf;
+  if (first === 0xf4) return second >= 0x80 && second <= 0x8f;
+  return second >= 0x80 && second <= 0xbf;
 }
 
 class TextEncoderShim {
@@ -103,10 +179,10 @@ class URLSearchParamsShim {
         if (!pair) {
           continue;
         }
-        const parts = pair.split("=");
-        const key = parts[0] ?? "";
-        const value = parts[1] ?? "";
-        this.#entries.push([decodeURIComponent(key), decodeURIComponent(value)]);
+        const separatorIndex = pair.indexOf("=");
+        const key = separatorIndex >= 0 ? pair.slice(0, separatorIndex) : pair;
+        const value = separatorIndex >= 0 ? pair.slice(separatorIndex + 1) : "";
+        this.#entries.push([decodeUrlParam(key), decodeUrlParam(value)]);
       }
       return;
     }
@@ -195,6 +271,10 @@ class URLSearchParamsShim {
   }
 }
 
+function decodeUrlParam(value: string): string {
+  return decodeURIComponent(value.replace(/\+/gu, " "));
+}
+
 type ParsedUrl = {
   protocol: string;
   host: string;
@@ -248,13 +328,23 @@ function resolveUrl(input: string, base?: string | URLShim): ParsedUrl {
     ? baseUrl.pathname
     : baseUrl.pathname.slice(0, baseUrl.pathname.lastIndexOf("/") + 1);
   const [beforeHash, rawHash = ""] = input.split("#");
+  const hasExplicitSearch = beforeHash?.includes("?") ?? false;
   const [rawPath, rawSearch = ""] = (beforeHash ?? "").split("?");
-  const pathname = rawPath?.startsWith("/") ? rawPath : `${basePath}${rawPath || ""}`;
+  const pathname =
+    rawPath === "" && (input === "" || input.startsWith("?") || input.startsWith("#"))
+      ? baseUrl.pathname
+      : rawPath?.startsWith("/")
+        ? rawPath
+        : `${basePath}${rawPath || ""}`;
   return {
     protocol: baseUrl.protocol,
     host: baseUrl.host,
     pathname: normalizePathname(pathname),
-    search: rawSearch ? `?${rawSearch}` : "",
+    search: hasExplicitSearch
+      ? `?${rawSearch}`
+      : rawPath === "" && (input === "" || input.startsWith("#"))
+        ? baseUrl.search
+        : "",
     hash: rawHash ? `#${rawHash}` : "",
   };
 }
@@ -309,6 +399,11 @@ class URLShim {
 class ReadableStreamShim<T = unknown> {
   #queue: T[] = [];
   #closed = false;
+  #pulling = false;
+  #source: {
+    pull?: (controller: { enqueue: (value: T) => void; close: () => void }) => unknown;
+  };
+  #controller: { enqueue: (value: T) => void; close: () => void };
   #pending:
     | {
         resolve: (value: { done: boolean; value?: T }) => void;
@@ -318,9 +413,11 @@ class ReadableStreamShim<T = unknown> {
   constructor(
     source: {
       start?: (controller: { enqueue: (value: T) => void; close: () => void }) => void;
+      pull?: (controller: { enqueue: (value: T) => void; close: () => void }) => unknown;
     } = {},
   ) {
-    source.start?.({
+    this.#source = source;
+    this.#controller = {
       enqueue: (value) => {
         if (this.#pending) {
           this.#pending.resolve({ done: false, value });
@@ -336,7 +433,20 @@ class ReadableStreamShim<T = unknown> {
           this.#pending = undefined;
         }
       },
-    });
+    };
+    source.start?.(this.#controller);
+  }
+
+  async #pull(): Promise<void> {
+    if (this.#pulling || this.#closed || !this.#source.pull) {
+      return;
+    }
+    this.#pulling = true;
+    try {
+      await this.#source.pull(this.#controller);
+    } finally {
+      this.#pulling = false;
+    }
   }
 
   getReader() {
@@ -345,11 +455,16 @@ class ReadableStreamShim<T = unknown> {
         if (this.#queue.length > 0) {
           return { done: false, value: this.#queue.shift() as T };
         }
+        await this.#pull();
+        if (this.#queue.length > 0) {
+          return { done: false, value: this.#queue.shift() as T };
+        }
         if (this.#closed) {
           return { done: true, value: undefined };
         }
         return await new Promise<{ done: boolean; value?: T }>((resolve) => {
           this.#pending = { resolve };
+          void this.#pull();
         });
       },
     };

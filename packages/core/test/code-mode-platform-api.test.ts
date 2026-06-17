@@ -281,6 +281,9 @@ describe("Code Mode platform API", () => {
   it("supports relative URL construction with live URLSearchParams mutation", async () => {
     const result = await runPlatformCode(`
       const url = new globalThis.URL("/child?x=1", "https://example.com/base");
+      const queryOnly = new globalThis.URL("?page=2", "https://api.example.com/v1/items");
+      const hashOnly = new globalThis.URL("#details", "https://api.example.com/v1/items?token=abc==");
+      const params = new globalThis.URLSearchParams("token=abc==&space=a+b");
       const before = {
         href: url.href,
         toString: url.toString(),
@@ -301,6 +304,9 @@ describe("Code Mode platform API", () => {
           search: url.search,
           params: [...url.searchParams.entries()],
         },
+        queryOnly: queryOnly.href,
+        hashOnly: hashOnly.href,
+        params: [...params.entries()],
       };
     `);
 
@@ -325,6 +331,12 @@ describe("Code Mode platform API", () => {
             ["page", "3"],
           ],
         },
+        queryOnly: "https://api.example.com/v1/items?page=2",
+        hashOnly: "https://api.example.com/v1/items?token=abc==#details",
+        params: [
+          ["token", "abc=="],
+          ["space", "a b"],
+        ],
       },
     });
   });
@@ -358,6 +370,8 @@ describe("Code Mode platform API", () => {
         globalThisTextDecoder: typeof globalThis.TextDecoder,
         encoded: Array.from(bytes),
         decoded: decoder.decode(bytes),
+        malformedTextDecoder: decoder.decode(new Uint8Array([0xc3, 0x28])),
+        malformedBuffer: globalThis.Buffer.from([0xc3, 0x28]).toString("utf8"),
       };
     `);
 
@@ -368,6 +382,8 @@ describe("Code Mode platform API", () => {
         globalThisTextDecoder: "function",
         encoded: [104, 101, 108, 108, 111],
         decoded: "hello",
+        malformedTextDecoder: "\uFFFD(",
+        malformedBuffer: "\uFFFD(",
       },
     });
   });
@@ -552,6 +568,7 @@ describe("Code Mode platform API", () => {
     const result = await runPlatformCode(`
       const headers = new globalThis.Headers([["x-one", "1"]]);
       const blob = new globalThis.Blob(["hello"], { type: "text/plain" });
+      const nestedBlobText = await new globalThis.Blob([new globalThis.Blob(["x"])]).text();
       const file = new globalThis.File(["hello"], "hello.txt", { type: "text/plain" });
       const formData = new globalThis.FormData();
       formData.set("name", "caplets");
@@ -607,6 +624,7 @@ describe("Code Mode platform API", () => {
         headers: headers.get("x-one"),
         blobSize: blob.size,
         blobType: blob.type,
+        nestedBlobText,
         fileName: file.name,
         fileType: file.type,
         formEntries: [...formData.entries()],
@@ -638,6 +656,7 @@ describe("Code Mode platform API", () => {
         headers: "1",
         blobSize: 5,
         blobType: "text/plain",
+        nestedBlobText: "x",
         fileName: "hello.txt",
         fileType: "text/plain",
         formEntries: [

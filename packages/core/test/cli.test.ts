@@ -1228,6 +1228,31 @@ describe("cli init", () => {
     }
   });
 
+  it("writes Google Discovery env discovery URL references as URLs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-google-discovery-env-url-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      const out: string[] = [];
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(
+        ["add", "google-discovery", "drive", "--discovery-url", "$env:DISCOVERY_URL", "--print"],
+        {
+          writeOut: (value) => out.push(value),
+        },
+      );
+
+      const text = out.join("\n");
+      expect(text).toContain('discoveryUrl: "$env:DISCOVERY_URL"');
+      expect(text).not.toContain("discoveryPath:");
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("writes GraphQL local schema paths that load from the original project file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-add-graphql-path-"));
     const projectRoot = join(dir, "project");

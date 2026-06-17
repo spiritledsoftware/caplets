@@ -307,6 +307,16 @@ describe("media artifacts", () => {
       filename: "params.txt",
       mimeType: "text/plain",
     });
+    await expect(
+      readMediaInput(
+        { dataUrl: "data:application/octet-stream;base64,", filename: "empty.bin" },
+        { artifactRoot: root },
+      ),
+    ).resolves.toMatchObject({
+      bytes: Buffer.alloc(0),
+      filename: "empty.bin",
+      mimeType: "application/octet-stream",
+    });
   });
 
   it("can forbid local media file paths for remote runtimes", async () => {

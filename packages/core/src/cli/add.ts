@@ -160,12 +160,17 @@ export function addGoogleDiscoveryCaplet(
       "Google Discovery Caplet requires --discovery or --discovery-url",
     );
   }
+  const discoveryField = options.discoveryUrl
+    ? "discoveryUrl"
+    : isUrlLike(discovery)
+      ? "discoveryUrl"
+      : "discoveryPath";
   return writeGeneratedCaplet(
     id,
     "Google Discovery",
     "googleDiscoveryApi",
     [
-      [isUrlLike(discovery) ? "discoveryUrl" : "discoveryPath", discovery],
+      [discoveryField, discovery],
       ["baseUrl", options.baseUrl],
       ["auth", authFromTokenEnv(options.tokenEnv) ?? { type: "none" }],
     ],
