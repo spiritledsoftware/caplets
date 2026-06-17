@@ -7,6 +7,7 @@ import {
   type QuickJSRuntime,
 } from "quickjs-emscripten";
 import ts from "typescript";
+import { installCodeModePlatformHost } from "./platform-host";
 import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
 import type { CodeModeLogEntry } from "./types";
 
@@ -77,6 +78,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
       context.setProp(context.global, "__caplets_log", logBridge);
       logBridge.dispose();
 
+      const platformHost = installCodeModePlatformHost(context, pendingDeferreds);
       const invokeBridge = createInvokeBridge(
         context,
         pendingDeferreds,
@@ -141,6 +143,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
         return { ok: true, value: readProp(context, stateHandle, "value"), logs };
       } finally {
         stateHandle.dispose();
+        platformHost.dispose();
       }
     } finally {
       for (const deferred of pendingDeferreds) {

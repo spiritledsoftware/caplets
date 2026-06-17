@@ -4,6 +4,10 @@ import { Blob, File, FormData } from "formdata-node";
 import { Headers } from "headers-polyfill";
 
 declare function __caplets_log(level: string, message: string): void;
+declare function __caplets_platform_random_uuid(): string;
+declare function __caplets_platform_random_values(length: number): number[];
+declare function __caplets_platform_sleep(timerId: number, delayMs: number): Promise<boolean>;
+declare function __caplets_platform_clear_timer(timerId: number): boolean;
 
 const DISABLED_FETCH_MESSAGE = "Direct fetch is not available in Code Mode; use a Caplet instead.";
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -14,6 +18,7 @@ type BodyValue = Blob | FormData | string | ArrayBuffer | ArrayBufferView | null
 type HeadersValue = Headers | Record<string, string> | Array<[string, string]>;
 type AbortListener = (event: { type: "abort"; target: AbortSignalShim }) => void;
 type UrlParamInit = string | Array<[string, string]> | Record<string, string> | URLSearchParamsShim;
+type TimerCallback = (...args: unknown[]) => void;
 
 function utf8Encode(input: string): Uint8Array {
   const encoded = encodeURIComponent(input);
@@ -885,6 +890,109 @@ function disabledFetch(): never {
   throw new Error(DISABLED_FETCH_MESSAGE);
 }
 
+const integerTypedArrayConstructors = new Set<unknown>([
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  typeof BigInt64Array === "undefined" ? undefined : BigInt64Array,
+  typeof BigUint64Array === "undefined" ? undefined : BigUint64Array,
+]);
+
+class QuotaExceededErrorShim extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "QuotaExceededError";
+  }
+}
+
+const platformCrypto = {
+  randomUUID(): string {
+    return __caplets_platform_random_uuid();
+  },
+
+  getRandomValues<T extends ArrayBufferView>(typedArray: T): T {
+    if (!ArrayBuffer.isView(typedArray) || typedArray instanceof DataView) {
+      throw new TypeError("crypto.getRandomValues requires an integer typed array");
+    }
+    if (!integerTypedArrayConstructors.has(typedArray.constructor)) {
+      throw new TypeError("crypto.getRandomValues requires an integer typed array");
+    }
+    if (typedArray.byteLength > 65_536) {
+      throw new QuotaExceededErrorShim(
+        "crypto.getRandomValues cannot generate more than 65,536 bytes",
+      );
+    }
+    const bytes = __caplets_platform_random_values(typedArray.byteLength);
+    const target = new Uint8Array(typedArray.buffer, typedArray.byteOffset, typedArray.byteLength);
+    target.set(bytes);
+    return typedArray;
+  },
+};
+
+let nextTimerId = 1;
+const activeTimers = new Set<number>();
+
+function normalizeTimerDelay(delay: unknown): number {
+  const value = Number(delay ?? 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.trunc(value);
+}
+
+function setTimeoutShim(callback: TimerCallback, delay?: unknown, ...args: unknown[]): number {
+  if (typeof callback !== "function") {
+    throw new TypeError("setTimeout callback must be a function");
+  }
+  const timerId = nextTimerId++;
+  activeTimers.add(timerId);
+  void __caplets_platform_sleep(timerId, normalizeTimerDelay(delay)).then((fired) => {
+    activeTimers.delete(timerId);
+    if (fired) {
+      callback(...args);
+    }
+  });
+  return timerId;
+}
+
+function clearTimeoutShim(timerId: unknown): void {
+  const id = Number(timerId);
+  activeTimers.delete(id);
+  __caplets_platform_clear_timer(id);
+}
+
+function setIntervalShim(callback: TimerCallback, delay?: unknown, ...args: unknown[]): number {
+  if (typeof callback !== "function") {
+    throw new TypeError("setInterval callback must be a function");
+  }
+  const timerId = nextTimerId++;
+  const intervalDelay = normalizeTimerDelay(delay);
+  activeTimers.add(timerId);
+
+  const tick = () => {
+    void __caplets_platform_sleep(timerId, intervalDelay).then((fired) => {
+      if (!fired || !activeTimers.has(timerId)) {
+        activeTimers.delete(timerId);
+        return;
+      }
+      callback(...args);
+      if (activeTimers.has(timerId)) {
+        tick();
+      }
+    });
+  };
+  tick();
+  return timerId;
+}
+
+function clearIntervalShim(timerId: unknown): void {
+  clearTimeoutShim(timerId);
+}
+
 definePlatformGlobal("atob", atobShim);
 definePlatformGlobal("btoa", btoaShim);
 definePlatformGlobal("Buffer", BufferShim);
@@ -904,6 +1012,11 @@ definePlatformGlobal("AbortController", AbortControllerShim);
 definePlatformGlobal("AbortSignal", AbortSignalShim);
 definePlatformGlobal("Request", RequestShim);
 definePlatformGlobal("Response", ResponseShim);
+definePlatformGlobal("crypto", platformCrypto);
+definePlatformGlobal("setTimeout", setTimeoutShim);
+definePlatformGlobal("clearTimeout", clearTimeoutShim);
+definePlatformGlobal("setInterval", setIntervalShim);
+definePlatformGlobal("clearInterval", clearIntervalShim);
 definePlatformGlobal("queueMicrotask", queueMicrotaskShim);
 definePlatformGlobal("console", platformConsole);
 definePlatformGlobal("fetch", disabledFetch, { overwrite: true });

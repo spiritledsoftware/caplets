@@ -437,10 +437,11 @@ describe("Code Mode platform API", () => {
       return;
     }
 
-    expect(result.value).toEqual(expect.arrayContaining(["microtask", "timeout"]));
-    expect(result.value).toEqual(expect.arrayContaining(["interval-1", "interval-2"]));
-    expect(result.value[0]).toBe("microtask");
-    expect(result.value.filter((event) => event.startsWith("interval-"))).toEqual([
+    const events = result.value as string[];
+    expect(events).toEqual(expect.arrayContaining(["microtask", "timeout"]));
+    expect(events).toEqual(expect.arrayContaining(["interval-1", "interval-2"]));
+    expect(events[0]).toBe("microtask");
+    expect(events.filter((event) => event.startsWith("interval-"))).toEqual([
       "interval-1",
       "interval-2",
     ]);
