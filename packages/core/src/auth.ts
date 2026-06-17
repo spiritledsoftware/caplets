@@ -1256,7 +1256,18 @@ function tokenBundleMissingScopes(
   if (required.length === 0) return false;
   const metadataScopes = requestedScopesFromMetadata(bundle.metadata);
   const actual = new Set(bundle.scope?.split(/\s+/u).filter(Boolean) ?? metadataScopes ?? []);
-  return required.some((scope) => !actual.has(scope));
+  return required.some(
+    (scope) => ![...actual].some((grantedScope) => oauthScopeSatisfies(grantedScope, scope)),
+  );
+}
+
+function oauthScopeSatisfies(grantedScope: string, requiredScope: string): boolean {
+  if (grantedScope === requiredScope) return true;
+  const googleScopePrefix = "https://www.googleapis.com/auth/";
+  if (!grantedScope.startsWith(googleScopePrefix) || !requiredScope.startsWith(googleScopePrefix)) {
+    return false;
+  }
+  return requiredScope.startsWith(`${grantedScope}.`);
 }
 
 function requiredStoredScopes(

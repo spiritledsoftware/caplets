@@ -188,26 +188,48 @@ export class GoogleDiscoveryManager {
     const media = await readMediaInput(args.media, mediaOptions);
     const headers = new Headers(await authHeaders(api, this.options.authDir, operation.scopes));
     const protocol = selectUploadProtocol(operation, media, args);
-    const response =
-      protocol === "resumable"
-        ? await this.callResumableUpload(api, operation, args, media, headers)
-        : await this.callSingleUpload(api, operation, args, media, headers, protocol);
-    const parsed = await readHttpLikeResponse(response, {
-      capletId: api.server,
-      method: operation.method,
-      ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
-      ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
-    });
-    return {
-      content: markdownStructuredContent(parsed, {
-        title: `${api.name} call_tool ${operation.name}`,
-        backend: "googleDiscovery",
-        operation: "call_tool",
-        tool: operation.name,
-      }),
-      structuredContent: parsed as Record<string, unknown>,
-      isError: !response.ok,
-    };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
+    try {
+      const response =
+        protocol === "resumable"
+          ? await this.callResumableUpload(api, operation, args, media, headers, controller.signal)
+          : await this.callSingleUpload(
+              api,
+              operation,
+              args,
+              media,
+              headers,
+              protocol,
+              controller.signal,
+            );
+      const parsed = await readHttpLikeResponse(response, {
+        capletId: api.server,
+        method: operation.method,
+        ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+      });
+      return {
+        content: markdownStructuredContent(parsed, {
+          title: `${api.name} call_tool ${operation.name}`,
+          backend: "googleDiscovery",
+          operation: "call_tool",
+          tool: operation.name,
+        }),
+        structuredContent: parsed as Record<string, unknown>,
+        isError: !response.ok,
+      };
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new CapletsError(
+          "TOOL_CALL_TIMEOUT",
+          `Google Discovery request timed out for ${api.server}/${operation.name}`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async callSingleUpload(
@@ -217,6 +239,7 @@ export class GoogleDiscoveryManager {
     media: ResolvedMediaInput,
     headers: Headers,
     protocol: "simple" | "multipart",
+    signal?: AbortSignal,
   ): Promise<Response> {
     const upload = operation.mediaUploadProtocols[protocol];
     if (!upload?.path) {
@@ -236,7 +259,7 @@ export class GoogleDiscoveryManager {
       protocol === "simple"
         ? simpleUploadInit(operation, media, headers)
         : multipartUploadInit(operation, args.body, media, headers);
-    return fetchGoogleRequest(api, operation, url, init);
+    return fetchGoogleRequest(api, operation, url, init, { signal });
   }
 
   private async callResumableUpload(
@@ -245,6 +268,7 @@ export class GoogleDiscoveryManager {
     args: Record<string, unknown>,
     media: ResolvedMediaInput,
     headers: Headers,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const upload = operation.mediaUploadProtocols.resumable;
     if (!upload?.path) {
@@ -254,12 +278,21 @@ export class GoogleDiscoveryManager {
     headers.set("content-type", "application/json; charset=UTF-8");
     headers.set("x-upload-content-type", media.mimeType ?? "application/octet-stream");
     headers.set("x-upload-content-length", String(media.bytes.byteLength));
-    const started = await fetchGoogleRequest(api, operation, startUrl, {
-      method: operation.method.toUpperCase(),
-      headers,
-      body: JSON.stringify(args.body ?? {}),
-      redirect: "manual",
-    });
+    const started = await fetchGoogleRequest(
+      api,
+      operation,
+      startUrl,
+      {
+        method: operation.method.toUpperCase(),
+        headers,
+        body: JSON.stringify(args.body ?? {}),
+        redirect: "manual",
+      },
+      { signal },
+    );
+    if (!started.ok) {
+      return started;
+    }
     const location = started.headers.get("location");
     if (!location) {
       throw new CapletsError(
@@ -271,17 +304,20 @@ export class GoogleDiscoveryManager {
     const uploadHeaders = new Headers();
     uploadHeaders.set("content-type", media.mimeType ?? "application/octet-stream");
     uploadHeaders.set("content-length", String(media.bytes.byteLength));
-    uploadHeaders.set(
-      "content-range",
-      `bytes 0-${media.bytes.byteLength - 1}/${media.bytes.byteLength}`,
-    );
+    uploadHeaders.set("content-range", resumableContentRange(media.bytes.byteLength));
     copySessionAuthorization(api, startUrl, uploadUrl, headers, uploadHeaders);
-    return fetchGoogleRequest(api, operation, uploadUrl, {
-      method: "PUT",
-      headers: uploadHeaders,
-      body: media.bytes,
-      redirect: "manual",
-    });
+    return fetchGoogleRequest(
+      api,
+      operation,
+      uploadUrl,
+      {
+        method: "PUT",
+        headers: uploadHeaders,
+        body: media.bytes,
+        redirect: "manual",
+      },
+      { signal },
+    );
   }
 
   compact(_api: GoogleDiscoveryApiConfig, tool: Tool): CompactTool {
@@ -476,6 +512,10 @@ function multipartUploadInit(
   };
 }
 
+function resumableContentRange(byteLength: number): string {
+  return byteLength === 0 ? "bytes */0" : `bytes 0-${byteLength - 1}/${byteLength}`;
+}
+
 function googleDiscoveryBaseUrl(
   api: GoogleDiscoveryApiConfig,
   document: GoogleDiscoveryDocument,
@@ -493,11 +533,14 @@ async function fetchGoogleRequest(
   operation: GoogleDiscoveryOperation,
   url: URL,
   init: RequestInit,
+  options: { signal?: AbortSignal | undefined } = {},
 ): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), api.requestTimeoutMs);
+  const controller = options.signal ? undefined : new AbortController();
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), api.requestTimeoutMs)
+    : undefined;
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, { ...init, signal: options.signal ?? controller!.signal });
     if (response.status >= 300 && response.status < 400) {
       throw new CapletsError(
         "DOWNSTREAM_PROTOCOL_ERROR",
@@ -522,7 +565,7 @@ async function fetchGoogleRequest(
     }
     throw error;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
   }
 }
 

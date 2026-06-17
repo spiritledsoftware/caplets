@@ -398,6 +398,42 @@ describe("auth helpers", () => {
     }
   });
 
+  it("accepts broader Google Discovery OAuth scope alternatives", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-auth-google-scope-alternative-"));
+    try {
+      writeTokenBundle(
+        {
+          server: "drive",
+          authType: "oauth2",
+          accessToken: "access-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          scope: "https://www.googleapis.com/auth/drive",
+          protectedResourceOrigin: "https://www.googleapis.com",
+          metadata: {
+            requestedScopes: ["https://www.googleapis.com/auth/drive"],
+          },
+        },
+        dir,
+      );
+
+      await expect(
+        genericOAuthHeaders(
+          {
+            server: "drive",
+            backend: "googleDiscovery",
+            baseUrl: "https://www.googleapis.com/drive/v3/",
+            auth: { type: "oauth2" },
+            resolvedScopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+          },
+          dir,
+        ),
+      ).resolves.toEqual({ authorization: "Bearer access-token" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects generic OAuth headers when refresh returns an expired token", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-auth-refresh-expired-"));
     const server = createServer((_request: IncomingMessage, response: ServerResponse) => {

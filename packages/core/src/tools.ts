@@ -1092,6 +1092,12 @@ export function projectCallToolResult<T extends object>(
       "Field selection requires the downstream tool to return object structuredContent",
     );
   }
+  if (hasArtifactPlaceholderForSelectedFields(structuredContent, fields)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Field selection cannot project from an artifact response. Retry without fields and read the returned artifact.",
+    );
+  }
 
   const projected = projectStructuredContent(structuredContent, outputSchema, fields);
   return {
@@ -1099,6 +1105,18 @@ export function projectCallToolResult<T extends object>(
     content: markdownStructuredContent(projected, context),
     structuredContent: projected,
   } as T & CallToolResult;
+}
+
+function hasArtifactPlaceholderForSelectedFields(
+  structuredContent: Record<string, unknown>,
+  fields: string[],
+): boolean {
+  const body = structuredContent.body;
+  return (
+    isPlainObject(body) &&
+    isPlainObject(body.artifact) &&
+    fields.some((field) => field === "body" || field.startsWith("body."))
+  );
 }
 
 export function extractArtifacts(result: unknown): CapletArtifact[] {

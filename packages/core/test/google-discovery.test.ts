@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -342,9 +342,29 @@ beforeEach(async () => {
         return;
       }
       if (url === "/upload/drive/v3/files?uploadType=resumable" && request.method === "POST") {
+        const metadata = bodyChunks.length
+          ? (JSON.parse(Buffer.concat(bodyChunks).toString("utf8")) as { name?: string })
+          : {};
+        if (metadata.name === "invalid-metadata.pdf") {
+          response.statusCode = 400;
+          response.end(JSON.stringify({ error: "invalid metadata" }));
+          return;
+        }
+        if (metadata.name === "slow-response.pdf") {
+          response.statusCode = 200;
+          response.setHeader("location", `${baseUrl}/upload/session/slow`);
+          response.end("{}");
+          return;
+        }
         response.statusCode = 200;
         response.setHeader("location", `${baseUrl}/upload/session/abc`);
         response.end("{}");
+        return;
+      }
+      if (url === "/upload/session/slow" && request.method === "PUT") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write("{");
+        setTimeout(() => response.end('"id":"uploaded-resumable"}'), 100);
         return;
       }
       if (url === "/upload/session/abc" && request.method === "PUT") {
@@ -1140,6 +1160,86 @@ describe("GoogleDiscoveryManager", () => {
     expect(start?.body).toBe(JSON.stringify({ name: "report.pdf" }));
     expect(start?.headers["x-upload-content-type"]).toBe("application/pdf");
     expect(requests.find((request) => request.url.includes("uploadType=media"))).toBeUndefined();
+  });
+
+  it("returns resumable upload initiation errors as downstream responses", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-resumable.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    const result = await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+      body: { name: "invalid-metadata.pdf" },
+      media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+    });
+
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: {
+        status: 400,
+        body: { error: "invalid metadata" },
+      },
+    });
+    expect(requests.find((request) => request.url === "/upload/session/abc")).toBeUndefined();
+  });
+
+  it("sends a valid content range for empty resumable uploads", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-google-empty-upload-"));
+    const path = join(dir, "empty.txt");
+    writeFileSync(path, "");
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-resumable.discovery.json`,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    try {
+      await manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+        body: { name: "empty.txt" },
+        media: { path },
+      });
+
+      const upload = requests.find((request) => request.url === "/upload/session/abc");
+      expect(upload?.headers["content-length"]).toBe("0");
+      expect(upload?.headers["content-range"]).toBe("bytes */0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps resumable upload response reads within the request timeout", async () => {
+    const config = parseConfig({
+      googleDiscoveryApis: {
+        drive: {
+          name: "Google Drive",
+          description: "Access Google Drive files.",
+          discoveryUrl: `${baseUrl}/upload-resumable.discovery.json`,
+          requestTimeoutMs: 20,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const manager = new GoogleDiscoveryManager(new ServerRegistry(config));
+
+    await expect(
+      manager.callTool(config.googleDiscoveryApis.drive!, "drive.files.create", {
+        body: { name: "slow-response.pdf" },
+        media: { dataUrl: "data:application/pdf;base64,cGRm", filename: "report.pdf" },
+      }),
+    ).rejects.toMatchObject({ code: "TOOL_CALL_TIMEOUT" });
   });
 
   it("preserves OAuth authorization on resumable upload session requests", async () => {

@@ -77,6 +77,12 @@ describe("native OpenAPI Caplets", () => {
           response.end(JSON.stringify({ id: "42", active: true, name: "Ada" }));
           return;
         }
+        if (request.url?.startsWith("/users/large?active=true")) {
+          response.end(
+            JSON.stringify({ id: "large", name: "Ada", padding: "x".repeat(1024 * 1024) }),
+          );
+          return;
+        }
         if (request.url?.startsWith("/api/v1/users/42?active=true")) {
           response.end(JSON.stringify({ id: "42", active: true, prefixed: true }));
           return;
@@ -1043,6 +1049,47 @@ describe("native OpenAPI Caplets", () => {
         },
       });
       expect(readFileSync(structured.body.artifact.path).byteLength).toBe(1024 * 1024 + 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects field projection when OpenAPI JSON responses become artifacts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-openapi-large-json-fields-"));
+    const specPath = join(dir, "openapi.json");
+    const artifactDir = join(dir, "artifacts");
+    writeFileSync(specPath, JSON.stringify(openApiSpec(baseUrl)));
+    const config = parseConfig({
+      openapiEndpoints: {
+        users: {
+          name: "Users API",
+          description: "Manage users through the internal HTTP API.",
+          specPath,
+          baseUrl,
+          auth: { type: "none" },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const caplet = config.openapiEndpoints.users!;
+    const openapi = new OpenApiManager(registry, { artifactDir });
+    const downstream = new DownstreamManager(registry);
+
+    try {
+      await expect(
+        handleServerTool(
+          caplet,
+          {
+            operation: "call_tool",
+            name: "GET /users/{id}",
+            args: { path: { id: "large" }, query: { active: true } },
+            fields: ["body.name"],
+          },
+          registry,
+          downstream,
+          openapi,
+        ),
+      ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
