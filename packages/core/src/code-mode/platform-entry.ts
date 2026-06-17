@@ -423,8 +423,12 @@ class TransformStreamShim<I = unknown, O = unknown> {
   }
 }
 
-function definePlatformGlobal(name: string, value: unknown): void {
-  if (name in globalThis) {
+function definePlatformGlobal(
+  name: string,
+  value: unknown,
+  options: { overwrite?: boolean } = {},
+): void {
+  if (!options.overwrite && name in globalThis) {
     return;
   }
   Object.defineProperty(globalThis, name, {
@@ -902,4 +906,4 @@ definePlatformGlobal("Request", RequestShim);
 definePlatformGlobal("Response", ResponseShim);
 definePlatformGlobal("queueMicrotask", queueMicrotaskShim);
 definePlatformGlobal("console", platformConsole);
-definePlatformGlobal("fetch", disabledFetch);
+definePlatformGlobal("fetch", disabledFetch, { overwrite: true });

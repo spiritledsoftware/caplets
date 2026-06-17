@@ -1,4 +1,6 @@
+import { getQuickJS } from "quickjs-emscripten";
 import { describe, expect, it, vi } from "vitest";
+import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "../src/code-mode/platform-runtime.generated";
 import { runCodeMode } from "../src/code-mode/runner";
 import type { NativeCapletTool, NativeCapletsService } from "../src/native/service";
 
@@ -647,6 +649,52 @@ describe("Code Mode platform API", () => {
     );
     expect(directResult.logs.entries).toEqual([]);
     expect(globalResult.logs.entries).toEqual([]);
+  });
+
+  it("overwrites host fetch with the disabled Code Mode fetch during platform install", async () => {
+    const QuickJS = await getQuickJS();
+    const runtime = QuickJS.newRuntime();
+    const context = runtime.newContext();
+    try {
+      const logBridge = context.newFunction("__caplets_log", () => context.undefined);
+      context.setProp(context.global, "__caplets_log", logBridge);
+      logBridge.dispose();
+
+      const result = context.evalCode(`
+        Object.defineProperty(globalThis, "fetch", {
+          value: () => "host-fetch-leaked",
+          writable: true,
+          configurable: true,
+        });
+        ${CODE_MODE_PLATFORM_RUNTIME_SOURCE}
+        (() => {
+          try {
+            globalThis.fetch("data:text/plain,blocked");
+            return { threw: false };
+          } catch (error) {
+            return {
+              threw: true,
+              message: error && error.message,
+            };
+          }
+        })()
+      `);
+
+      expect(result.error).toBeUndefined();
+      if (result.error) {
+        result.error.dispose();
+        return;
+      }
+      expect(context.dump(result.value)).toEqual({
+        threw: true,
+        message: "Direct fetch is not available in Code Mode; use a Caplet instead.",
+      });
+      result.value.dispose();
+      runtime.executePendingJobs();
+    } finally {
+      context.dispose();
+      runtime.dispose();
+    }
   });
 
   it("keeps Node globals unavailable", async () => {
