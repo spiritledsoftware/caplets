@@ -1,5 +1,13 @@
 # @caplets/core
 
+## 0.23.0
+
+### Minor Changes
+
+- efed480: Expand Code Mode with browser-like platform APIs for data manipulation, encoding, timers, crypto randomness, and web object compatibility while keeping direct network and Node APIs unavailable.
+- efed480: Add Google Discovery API Caplets with inferred OAuth scopes, operation filters, media upload/download handling, and shared HTTP-like media artifacts.
+- efed480: Add stdlib to code_mode sandbox
+
 ## 0.22.0
 
 ### Minor Changes
