@@ -76,6 +76,7 @@ function publicMcpToolUseTaskMetadata(task: any) {
     fuzzy_description: task.fuzzy_description ?? null,
     dependency_analysis: task.dependency_analysis ?? null,
     expectedEvidence: task.expectedEvidence ?? null,
+    repeatedWorkflow: task.repeatedWorkflow ?? null,
     validator: task.validator ?? null,
   };
 }
@@ -206,6 +207,7 @@ function buildMcpToolUsePrompt(task: any, mode: string): string {
     "You are running a benchmark. Complete the backend tool-use task using the configured MCP tools.",
     "Do not inspect benchmark harness files. Do not edit task files.",
     "Use tool evidence for every material fact. Do not guess.",
+    repeatedWorkflowHint(task, mode),
     "Return a concise final answer containing one JSON object with keys: taskId, decision, facts, summary.",
     "Each facts entry must include key, value, and evidence.",
     mcpToolUseModeHint(mode),
@@ -233,4 +235,12 @@ function mcpToolUseModeHint(mode: string) {
     "executor-mcp": "Executor is available through direct Pi tools registered by the MCP adapter.",
   };
   return hints[mode] ?? "";
+}
+
+function repeatedWorkflowHint(task: any, mode: string) {
+  if (!task.repeatedWorkflow) return null;
+  if (mode.includes("code-mode")) {
+    return "This is a repeated workflow: define reusable helper logic once when useful and reuse it across adjacent Code Mode calls instead of repeating setup code.";
+  }
+  return "This is a repeated workflow: avoid repeating setup work where your available tools support reuse, but do not assume Code Mode is available unless this mode exposes it.";
 }

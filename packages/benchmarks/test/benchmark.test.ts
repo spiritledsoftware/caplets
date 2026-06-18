@@ -1318,6 +1318,12 @@ describe("Pi live tool surface eval harness", () => {
         "release-readiness-risk-report",
       ],
     });
+    expect(
+      parsePiEvalArgs(["--task-suite", "mcp-tool-use", "--tasks", "repeated-release-gates"]),
+    ).toMatchObject({
+      taskSuite: "mcp-tool-use",
+      tasks: ["repeated-release-gates"],
+    });
     expect(parsePiEvalArgs(["--task-suite", "mcp-realistic-noauth"])).toMatchObject({
       taskSuite: "mcp-realistic-noauth",
       tasks: [
@@ -1376,6 +1382,20 @@ describe("Pi live tool surface eval harness", () => {
         "duckduckgo",
       ],
     });
+  });
+
+  it("builds repeated-workflow prompts without asking non-Code Mode modes to use Code Mode", async () => {
+    const suite = resolvePiEvalSuite("mcp-tool-use");
+    const tasks = await loadTasks(suite.tasksPath);
+    const repeated = tasks.find((task: any) => task.id === "repeated-release-gates");
+    expect(repeated).toBeTruthy();
+
+    const codeModePrompt = suite.buildPrompt(repeated, "caplets-code-mode");
+    const directPrompt = suite.buildPrompt(repeated, "caplets-direct");
+
+    expect(codeModePrompt).toContain("adjacent Code Mode calls");
+    expect(directPrompt).toContain("do not assume Code Mode is available");
+    expect(directPrompt).not.toContain("adjacent Code Mode calls");
   });
 
   it("builds mode-specific prompts and Pi commands without user context files", () => {
@@ -1888,10 +1908,12 @@ describe("Pi live tool surface eval harness", () => {
   it("loads MCP tool-use suite tasks with expected dependency metadata", async () => {
     const suite = resolvePiEvalSuite("mcp-tool-use");
     const tasks = await loadTasks(suite.tasksPath);
+    const repeated = tasks.find((task: any) => task.id === "repeated-release-gates");
     expect(tasks.map((task: any) => task.id)).toEqual([
       "api-pagination-audit",
       "incident-customer-impact-join",
       "release-readiness-risk-report",
+      "repeated-release-gates",
     ]);
     expect(tasks[0]).toMatchObject({
       dependency_analysis: { servers: ["api_catalog"] },
@@ -1899,6 +1921,18 @@ describe("Pi live tool surface eval harness", () => {
     });
     expect(tasks[1].dependency_analysis.servers).toEqual(["incidents", "customers"]);
     expect(tasks[2].dependency_analysis.servers).toEqual(["deployments", "quality", "policies"]);
+    expect(repeated).toMatchObject({
+      repeatedWorkflow: {
+        setupCodeMarkers: [
+          "async function loadGateInputs",
+          "const summarizeGate =",
+          "const gateIds =",
+        ],
+      },
+      expectedEvidence: {
+        tools: ["deployments.get_release", "quality.list_checks", "policies.get_release_policy"],
+      },
+    });
   });
 
   it("loads realistic no-auth MCP workflow tasks with broad multi-server dependencies", async () => {
@@ -2529,6 +2563,48 @@ describe("Pi live tool surface eval harness", () => {
     expect(metrics.requestTokenBuckets.sharesOfRequest.toolSurfaceEstimatedTokens).toBeCloseTo(
       50 / 180,
     );
+  });
+
+  it("summarizes repeated-workflow setup code from Code Mode tool calls", () => {
+    const metrics = summarizePiEvalMetrics([
+      {
+        type: "tool_execution_start",
+        toolName: "caplets__code_mode",
+        input: {
+          code: [
+            "async function loadGateInputs(id) { return await deployments.get_release({ id }); }",
+            "const summarizeGate = (gate) => gate.status;",
+            "const gateIds = ['deploy-2026-06-17', 'deploy-2026-06-18'];",
+          ].join("\n"),
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolName: "caplets__code_mode",
+        input: {
+          code: "const decisions = await Promise.all(gateIds.map(loadGateInputs));",
+          sessionId: "session-1",
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolName: "deployments_get_release",
+      },
+    ]);
+
+    expect(metrics.repeatedWorkflow).toMatchObject({
+      codeModeCallCount: 2,
+      sessionReuseCallCount: 1,
+      setupCodeCallCount: 1,
+      repeatedSetupCodeCallCount: 0,
+      setupCodeBytes: expect.any(Number),
+      setupCodeEstimatedTokens: expect.any(Number),
+      repeatedSetupCodeBytes: 0,
+      repeatedSetupCodeEstimatedTokens: 0,
+      setupCodeMarkers: ["async function loadGateInputs", "const summarizeGate", "const gateIds"],
+    });
+    expect(metrics.repeatedWorkflow.setupCodeBytes).toBeGreaterThan(100);
+    expect(metrics.repeatedWorkflow.setupCodeReuseRate).toBe(1);
   });
 
   it("instruments OpenAI Responses input payloads into request token buckets", async () => {
@@ -3816,6 +3892,16 @@ describe("Pi live tool surface eval harness", () => {
         hybridChoice: "code-mode-only",
         domainCoverage: { issues: true, ci: true, docs: true, api: true, codeMap: false },
         providerUsage: { totalTokens: 120 },
+        repeatedWorkflow: {
+          codeModeCallCount: 2,
+          setupCodeCallCount: 1,
+          repeatedSetupCodeCallCount: 0,
+          setupCodeBytes: 120,
+          setupCodeEstimatedTokens: 30,
+          repeatedSetupCodeBytes: 0,
+          repeatedSetupCodeEstimatedTokens: 0,
+          setupCodeReuseRate: 0.5,
+        },
       },
     };
     const executorResult = {
@@ -3847,6 +3933,16 @@ describe("Pi live tool surface eval harness", () => {
         toolEventCount: 6,
         hybridChoice: "vanilla-mcp-only",
         providerUsage: { totalTokens: 240, outputTokens: 20 },
+        repeatedWorkflow: {
+          codeModeCallCount: 0,
+          setupCodeCallCount: 0,
+          repeatedSetupCodeCallCount: 0,
+          setupCodeBytes: 260,
+          setupCodeEstimatedTokens: 65,
+          repeatedSetupCodeBytes: 260,
+          repeatedSetupCodeEstimatedTokens: 65,
+          setupCodeReuseRate: 0,
+        },
       },
     };
     const summary = summarizePiEvalResults([result, executorResult, vanillaResult]);
@@ -3874,6 +3970,8 @@ describe("Pi live tool surface eval harness", () => {
             averageProviderTokens: 120,
           }),
           averageToolCalls: 1,
+          averageRepeatedSetupCodeEstimatedTokens: 0,
+          averageSetupCodeReuseRate: 0.5,
           averageRequestTokenBuckets: expect.objectContaining({
             requestPayloadEstimatedTokens: 100,
             toolSurfaceEstimatedTokens: 60,
@@ -3889,6 +3987,7 @@ describe("Pi live tool surface eval harness", () => {
           averageRequestPlusOutputEstimatedTokens: 212,
           passedOnly: null,
           averageToolCalls: 2,
+          averageRepeatedSetupCodeEstimatedTokens: 0,
           hybridChoice: { "executor-only": 1 },
         }),
       ]),
@@ -3920,6 +4019,7 @@ describe("Pi live tool surface eval harness", () => {
       expect.arrayContaining([
         expect.objectContaining({
           label: "caplets-code-mode vs vanilla-mcp",
+          repeatedSetupTokenReduction: expect.any(Number),
           requestPlusOutputTokenReduction: expect.any(Number),
           passRateComparable: true,
           publishableTokenEfficiencyClaim: true,
@@ -3944,6 +4044,8 @@ describe("Pi live tool surface eval harness", () => {
     expect(markdown).toContain("request+output tokens");
     expect(markdown).toContain("Avg LLM round trips");
     expect(markdown).toContain("Avg provider tokens");
+    expect(markdown).toContain("Avg repeated setup-code tokens");
+    expect(markdown).toContain("setup-code tokens");
     expect(markdown).toContain("Avg non-surface estimated tokens");
     expect(markdown).toContain("provider tokens");
     expect(markdown).toContain("## Validator Summary");

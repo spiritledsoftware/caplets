@@ -70,6 +70,7 @@ export function summarizePiEvalMetrics(
     providerRequests.map((event) => event.toolSurfaceEstimatedTokens),
   );
   const requestTokenBuckets = summarizeRequestTokenBuckets(providerRequests);
+  const repeatedWorkflow = summarizeRepeatedWorkflow(toolStartEvents);
   return {
     tokenizer: TOKENIZER_INFO,
     providerRequestCount: providerRequests.length,
@@ -94,9 +95,114 @@ export function summarizePiEvalMetrics(
       providerRequests.map((event) => event.messagePayloadEstimatedTokens),
     ),
     requestTokenBuckets,
+    repeatedWorkflow: repeatedWorkflow.codeModeCallCount > 0 ? repeatedWorkflow : null,
     providerUsage: mergeUsage(events, jsonEvents),
     resolvedModel: latestRequest?.model ?? null,
   };
+}
+
+const DEFAULT_SETUP_CODE_MARKERS = [
+  "function ",
+  "async function ",
+  "const ",
+  "let ",
+  "var ",
+  "class ",
+  "=>",
+] as const;
+
+export function summarizeRepeatedWorkflow(toolStartEvents: any[] = []) {
+  const codeModeEvents = toolStartEvents.filter(
+    (event) => toolNameFromEvent(event) === "caplets__code_mode",
+  );
+  const codeSnippets = codeModeEvents.map(codeFromToolEvent).filter(Boolean) as string[];
+  const sessionReuseCallCount = codeModeEvents.filter(hasSessionIdInput).length;
+  const setupSnippets = codeSnippets.filter(hasSetupCodeMarker);
+  const normalizedCounts = new Map<string, number>();
+  for (const snippet of setupSnippets) {
+    const normalized = normalizeSetupCode(snippet);
+    normalizedCounts.set(normalized, (normalizedCounts.get(normalized) ?? 0) + 1);
+  }
+  const repeatedSetupCodeCallCount = [...normalizedCounts.values()].reduce(
+    (total, count) => total + Math.max(0, count - 1),
+    0,
+  );
+  const repeatedSetupCode = repeatedSetupSnippets(setupSnippets).join("\n\n");
+  const setupCode = setupSnippets.join("\n\n");
+  const repeatedSetupCodeEstimatedTokens =
+    estimateTokens(repeatedSetupCode) ?? byteTokenProxy(repeatedSetupCode);
+  return {
+    codeModeCallCount: codeModeEvents.length,
+    sessionReuseCallCount,
+    setupCodeCallCount: setupSnippets.length,
+    repeatedSetupCodeCallCount,
+    setupCodeBytes: Buffer.byteLength(setupCode, "utf8"),
+    setupCodeEstimatedTokens: estimateTokens(setupCode) ?? byteTokenProxy(setupCode),
+    repeatedSetupCodeBytes: Buffer.byteLength(repeatedSetupCode, "utf8"),
+    repeatedSetupCodeEstimatedTokens,
+    setupCodeMarkers: matchedSetupCodeMarkers(setupSnippets),
+    setupCodeReuseRate:
+      codeModeEvents.length > 1 ? sessionReuseCallCount / (codeModeEvents.length - 1) : 0,
+  };
+}
+
+function codeFromToolEvent(event: any): string | null {
+  const input = inputFromToolEvent(event);
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return null;
+  const code = input.code ?? input.script ?? input.source ?? input.program;
+  return typeof code === "string" ? code : null;
+}
+
+function hasSessionIdInput(event: any): boolean {
+  const input = inputFromToolEvent(event);
+  return Boolean(
+    input &&
+    typeof input === "object" &&
+    typeof input.sessionId === "string" &&
+    input.sessionId.trim(),
+  );
+}
+
+function inputFromToolEvent(event: any): any {
+  return event?.input ?? event?.args ?? event?.params ?? event?.toolInput;
+}
+
+function hasSetupCodeMarker(code: string): boolean {
+  const markerCount = DEFAULT_SETUP_CODE_MARKERS.filter((marker) => code.includes(marker)).length;
+  return (
+    /\b(?:async\s+)?function\s+[$\w]+/u.test(code) ||
+    /\bclass\s+[$\w]+/u.test(code) ||
+    markerCount >= 2
+  );
+}
+
+function matchedSetupCodeMarkers(snippets: string[]): string[] {
+  const text = snippets.join("\n");
+  const markers = new Set<string>();
+  for (const match of text.matchAll(/\basync function\s+[$\w]+/gu)) markers.add(match[0]);
+  for (const match of text.matchAll(/(?<!async\s)\bfunction\s+[$\w]+/gu)) markers.add(match[0]);
+  for (const match of text.matchAll(/\bconst\s+[$\w]+(?=\s*=)/gu)) markers.add(match[0]);
+  for (const match of text.matchAll(/\blet\s+[$\w]+(?=\s*=)/gu)) markers.add(match[0]);
+  for (const match of text.matchAll(/\bvar\s+[$\w]+(?=\s*=)/gu)) markers.add(match[0]);
+  for (const match of text.matchAll(/\bclass\s+[$\w]+/gu)) markers.add(match[0]);
+  return [...markers];
+}
+
+function normalizeSetupCode(code: string): string {
+  return code.replace(/\s+/gu, " ").trim();
+}
+
+function repeatedSetupSnippets(setupSnippets: string[]): string[] {
+  const seen = new Map<string, number>();
+  const repeated: string[] = [];
+  for (const snippet of setupSnippets) {
+    const normalized = normalizeSetupCode(snippet);
+    const count = seen.get(normalized) ?? 0;
+    if (count > 0) repeated.push(snippet);
+    seen.set(normalized, count + 1);
+  }
+  return repeated;
 }
 
 export function summarizeRequestTokenBuckets(providerRequests: any[] = []) {

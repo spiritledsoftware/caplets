@@ -3,8 +3,10 @@ import {
   CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS,
   computeCodeModeComplexWorkflowEval,
   computeCodeModeLiveRegressionEval,
+  computeCodeModeRepeatedWorkflowEval,
   validateCodeModeComplexWorkflowEval,
   validateCodeModeLiveRegressionEval,
+  validateCodeModeRepeatedWorkflowEval,
 } from "../lib/code-mode";
 
 describe("Code Mode complex workflow eval", () => {
@@ -42,5 +44,25 @@ describe("Code Mode complex workflow eval", () => {
     expect(result.improvements).toContain("optional-use-avoid-hints");
     expect(result.improvements).toContain("schema-error-call-signatures");
     expect(result.improvements).toContain("transport-body-normalization");
+  });
+
+  it("captures repeated-workflow session reuse without deterministic live claims", () => {
+    const result = computeCodeModeRepeatedWorkflowEval();
+    const codeMode = result.strategies.find((strategy) => strategy.strategy === "code-mode")!;
+    const progressive = result.strategies.find(
+      (strategy) => strategy.strategy === "progressive-disclosure",
+    )!;
+
+    expect(validateCodeModeRepeatedWorkflowEval(result)).toEqual([]);
+    expect(result.task.id).toBe("repeated-release-gates");
+    expect(codeMode.taskSuccess).toBe(true);
+    expect(progressive.taskSuccess).toBe(true);
+    expect(codeMode.setupCodeEstimatedTokens).toBeLessThan(progressive.setupCodeEstimatedTokens);
+    expect(codeMode.providerRequests).toBeLessThan(progressive.providerRequests);
+    expect(codeMode.setupCodeReuseRate).toBeGreaterThan(0);
+    expect(result.reductions.setupCodeTokens).toBeGreaterThanOrEqual(
+      CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedSetupTokenReduction,
+    );
+    expect(result.claim).toContain("deterministic metric shape");
   });
 });

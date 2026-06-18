@@ -59,6 +59,17 @@ Task: Discover GitHub issue/PR tools, inspect schemas or observed shapes, fetch 
 
 Code Mode preserves required triage fields (`number`, `title`, `state`, `url`, `html_url`, `labels`, `created_at`, `updated_at`) while reducing external calls versus progressive disclosure by 92.3% and approximate payload tokens by 73.3%.
 
+### Repeated Workflow Session Reuse
+
+Task: Evaluate adjacent release gates where helper setup can be defined once and reused across Code Mode calls.
+
+| Strategy               | Provider requests | Tool calls | Setup-code tokens | Request overhead proxy | Elapsed time | Setup reuse rate | Task success |
+| ---------------------- | ----------------: | ---------: | ----------------: | ---------------------: | -----------: | ---------------: | ------------ |
+| Progressive disclosure |                 6 |         12 |               620 |                    980 |      18000ms |             0.0% | yes          |
+| Code Mode              |                 2 |          2 |               210 |                    340 |       7200ms |            50.0% | yes          |
+
+This deterministic metric shape validates report dimensions for repeated setup-code volume, provider requests, tool calls, token overhead proxy, elapsed time, and task success; it is not a live model win-rate claim. In this stable fixture, Code Mode reduces repeated setup-code tokens by 66.1%, provider requests by 66.7%, tool calls by 83.3%, request overhead proxy by 65.3%, and elapsed time by 60.0% while preserving task success.
+
 ### Live Regression Guardrails
 
 The deterministic report also records live cold-agent failure classes without treating model-dependent runs as deterministic claims. Current guardrails: `code-mode-one-run-guidance`, `optional-use-avoid-hints`, `schema-error-call-signatures`, `transport-body-normalization`.

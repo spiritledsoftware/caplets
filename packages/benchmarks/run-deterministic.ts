@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   computeSurfaceBenchmark,
@@ -11,10 +13,12 @@ import {
   computeCodeModeBenchmark,
   computeCodeModeComplexWorkflowEval,
   computeCodeModeLiveRegressionEval,
+  computeCodeModeRepeatedWorkflowEval,
   renderCodeModeMarkdownReport,
   validateCodeModeBenchmark,
   validateCodeModeComplexWorkflowEval,
   validateCodeModeLiveRegressionEval,
+  validateCodeModeRepeatedWorkflowEval,
 } from "./lib/code-mode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,11 +30,13 @@ const result = await computeSurfaceBenchmark();
 const codeModeResult = computeCodeModeBenchmark();
 const complexWorkflowResult = computeCodeModeComplexWorkflowEval();
 const liveRegressionResult = computeCodeModeLiveRegressionEval();
+const repeatedWorkflowResult = computeCodeModeRepeatedWorkflowEval();
 const failures = [
   ...validateSurfaceBenchmark(result),
   ...validateCodeModeBenchmark(codeModeResult),
   ...validateCodeModeComplexWorkflowEval(complexWorkflowResult),
   ...validateCodeModeLiveRegressionEval(liveRegressionResult),
+  ...validateCodeModeRepeatedWorkflowEval(repeatedWorkflowResult),
 ];
 if (failures.length > 0) {
   for (const failure of failures) {
@@ -39,7 +45,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-const markdown = renderMarkdownReport(result, renderCodeModeMarkdownReport());
+const markdown = formatMarkdown(renderMarkdownReport(result, renderCodeModeMarkdownReport()));
 
 if (checkMode) {
   let current;
@@ -59,4 +65,16 @@ if (checkMode) {
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, markdown, "utf8");
   console.log(`Wrote ${reportPath}`);
+}
+
+function formatMarkdown(value: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-benchmark-docs-"));
+  const path = join(dir, "coding-agent.md");
+  try {
+    writeFileSync(path, value);
+    execFileSync("pnpm", ["exec", "oxfmt", path], { stdio: "inherit" });
+    return readFileSync(path, "utf8");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
