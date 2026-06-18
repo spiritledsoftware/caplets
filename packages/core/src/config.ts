@@ -1781,7 +1781,7 @@ function quarantineMissingEnvCaplets(
         continue;
       }
 
-      filtered = removeCapletId(filtered, id);
+      filtered = removeCapletBackendId(filtered, backend, id);
       warnings.push({
         kind,
         path: typeof sourcePath === "function" ? sourcePath(id) : sourcePath,
@@ -2168,6 +2168,19 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
   }
 
   return { input: merged, sources, shadows };
+}
+
+function removeCapletBackendId(
+  input: ConfigInput,
+  backend: (typeof CAPLET_BACKEND_KEYS)[number],
+  id: string,
+): ConfigInput {
+  const caplets = input[backend];
+  if (!isPlainObject(caplets)) {
+    return input;
+  }
+  const { [id]: _removed, ...remaining } = caplets;
+  return { ...input, [backend]: remaining };
 }
 
 function removeCapletId(input: ConfigInput, id: string): ConfigInput {

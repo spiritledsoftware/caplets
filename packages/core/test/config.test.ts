@@ -945,6 +945,71 @@ describe("config", () => {
     }
   });
 
+  it("quarantines only the affected backend entry when another backend uses the same ID", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-missing-env-shared-id-"));
+    const missingEnvName = "CAPLETS_TEST_MISSING_SHARED_REMOTE_URL";
+    const originalMissingEnv = process.env[missingEnvName];
+    delete process.env[missingEnvName];
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            shared: {
+              name: "Broken Remote",
+              description: "References a missing startup URL.",
+              transport: "http",
+              url: `$env:${missingEnvName}`,
+            },
+          },
+          cliTools: {
+            shared: {
+              name: "Healthy CLI",
+              description: "Uses the same ID as the broken remote.",
+              actions: {
+                status: {
+                  command: "git",
+                  args: ["status", "--short"],
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config.mcpServers.shared).toBeUndefined();
+      expect(config.cliTools.shared?.actions.status).toEqual(
+        expect.objectContaining({ command: "git" }),
+      );
+      expect(sources.shared).toEqual({ kind: "global-config", path: userConfigPath });
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          kind: "global-config",
+          path: userConfigPath,
+          message: expect.stringContaining(missingEnvName),
+          recoverable: true,
+        }),
+      ]);
+      expect(warnings[0]?.message).toContain("mcpServers.shared.url");
+    } finally {
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("quarantines Caplet files with missing env refs in local overlays without dropping valid siblings", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-file-missing-env-"));
     const missingEnvName = "CAPLETS_TEST_MISSING_FILE_REMOTE_URL";
