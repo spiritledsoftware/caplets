@@ -61,7 +61,28 @@ describe("@caplets/opencode", () => {
           ],
         },
       ],
-      execute: vi.fn(async () => ({ ok: true })),
+      execute: vi.fn(async (caplet: string) =>
+        caplet === "code_mode"
+          ? {
+              ok: true,
+              value: { ok: true },
+              diagnostics: [],
+              logs: { entries: [], truncated: false, stored: false },
+              meta: {
+                runId: "run-1",
+                traceId: "trace-1",
+                declarationHash: "hash-1",
+                sessionId: "session-1",
+                sessionStatus: "created",
+                recoveryRef: "recovery-1",
+                recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
+                timeoutMs: 10000,
+                maxTimeoutMs: 10000,
+                durationMs: 25,
+              },
+            }
+          : { ok: true },
+      ),
       reload: vi.fn(async () => true),
       onToolsChanged: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
@@ -91,6 +112,20 @@ describe("@caplets/opencode", () => {
     const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("code_mode", { code: "return {ok:true};" });
     expect(runResult).toContain('"ok": true');
+    expect(JSON.parse(runResult)).toMatchObject({
+      meta: {
+        runId: "run-1",
+        traceId: "trace-1",
+        declarationHash: "hash-1",
+        sessionId: "session-1",
+        sessionStatus: "created",
+        recoveryRef: "recovery-1",
+        recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
+        timeoutMs: 10000,
+        maxTimeoutMs: 10000,
+        durationMs: 25,
+      },
+    });
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
