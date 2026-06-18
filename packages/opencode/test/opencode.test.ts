@@ -305,11 +305,9 @@ describe("@caplets/opencode", () => {
       {} as never,
       {
         mode: "remote",
-        server: {
+        remote: {
           url: "https://caplets.example.com",
           user: "caplets",
-        },
-        remote: {
           pollIntervalMs: 5_000,
         },
       } as never,
@@ -317,11 +315,9 @@ describe("@caplets/opencode", () => {
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "remote",
-      server: {
+      remote: {
         url: "https://caplets.example.com",
         user: "caplets",
-      },
-      remote: {
         pollIntervalMs: 5_000,
       },
     });
@@ -344,12 +340,12 @@ describe("@caplets/opencode", () => {
 
     await plugin(
       {} as never,
-      { mode: "cloud", server: { url: "https://cloud.caplets.dev" } } as never,
+      { mode: "cloud", remote: { url: "https://cloud.caplets.dev" } } as never,
     );
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "cloud",
-      server: { url: "https://cloud.caplets.dev" },
+      remote: { url: "https://cloud.caplets.dev" },
     });
   });
 

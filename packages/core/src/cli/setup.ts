@@ -314,7 +314,6 @@ function remoteSetupDefinition(
     nonEmpty(options.remoteUrl) ??
     nonEmpty(options.serverUrl) ??
     nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
-    nonEmpty(options.env?.CAPLETS_SERVER_URL) ??
     "https://caplets.example.com/caplets";
 
   if (id === "opencode") {
@@ -329,8 +328,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
-        `Run OpenCode with CAPLETS_MODE=remote and CAPLETS_SERVER_URL=${serverUrl}.`,
-        "Keep CAPLETS_SERVER_PASSWORD in your shell or secret manager.",
+        `Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
       ],
     };
   }
@@ -347,8 +346,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
-        `Start Pi with CAPLETS_MODE=remote and CAPLETS_SERVER_URL=${serverUrl}.`,
-        "Keep CAPLETS_SERVER_PASSWORD in your shell or secret manager.",
+        `Start Pi with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
       ],
     };
   }
@@ -412,7 +411,7 @@ function remoteSetupDefinition(
     ],
     nextSteps: [
       "Add Basic Auth credentials through your agent's secret mechanism.",
-      "Do not hardcode CAPLETS_SERVER_PASSWORD in a committed config file.",
+      "Do not hardcode CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in a committed config file.",
     ],
   };
 }

@@ -1323,7 +1323,7 @@ describe("createNativeCapletsService remote mode", () => {
     const fixture = client();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
     });
 
@@ -1341,7 +1341,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         remoteClientFactory,
         localServiceFactory,
       }),
@@ -1368,7 +1368,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory,
       }),
@@ -1397,7 +1397,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory,
         writeErr,
@@ -1425,7 +1425,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory: vi.fn(() => {
           throw new Error("Project Binding unavailable");
@@ -1446,7 +1446,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
 
     const service = createNativeCapletsService({
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => {
         throw new Error("Project Binding unavailable");
       }),
@@ -1455,7 +1455,7 @@ describe("createNativeCapletsService remote mode", () => {
       writeErr,
     });
     const secondService = createNativeCapletsService({
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => {
         throw new Error("Project Binding unavailable");
       }),
@@ -1488,7 +1488,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1522,7 +1522,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1567,7 +1567,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
       writeErr,
@@ -1615,7 +1615,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1697,7 +1697,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1747,7 +1747,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1772,7 +1772,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1838,7 +1838,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1875,7 +1875,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1898,7 +1898,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1932,7 +1932,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1984,7 +1984,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2048,7 +2048,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
+      remote: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
       configPath: localConfig.configPath,
       projectConfigPath: localConfig.projectConfigPath,
     });
@@ -2083,7 +2083,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2112,7 +2112,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2158,7 +2158,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2192,7 +2192,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2231,7 +2231,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2256,7 +2256,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2284,7 +2284,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "cloud",
-      server: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
+      remote: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
       remoteClientFactory: factory,
       configPath,
       projectConfigPath,
@@ -2314,7 +2314,7 @@ describe("createNativeCapletsService remote mode", () => {
     );
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2355,11 +2355,10 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387", pollIntervalMs: 1_000 },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
-      remote: { pollIntervalMs: 1_000 },
     });
 
     await service.close();
@@ -2398,8 +2397,9 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch },
       remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
         cloud: {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
@@ -2454,8 +2454,9 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch },
       remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
         cloud: {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
@@ -2489,7 +2490,7 @@ describe("createNativeCapletsService remote mode", () => {
 
   it("fails fast for invalid remote config", () => {
     expect(() =>
-      createNativeCapletsService({ mode: "remote", server: { url: "http://example.com" } }),
+      createNativeCapletsService({ mode: "remote", remote: { url: "http://example.com" } }),
     ).toThrow(/https/u);
   });
 });

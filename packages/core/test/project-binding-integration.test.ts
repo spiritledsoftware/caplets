@@ -88,7 +88,7 @@ describe("Project Binding integration", () => {
     ]);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => remoteClient),
       configPath,
       projectConfigPath,

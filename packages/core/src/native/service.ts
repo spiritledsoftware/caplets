@@ -662,9 +662,9 @@ class CloudNativeCapletsService implements NativeCapletsService {
     if (this.closed) return false;
     if (!this.delegate) {
       try {
-        const cloudFetch = this.options.remote?.fetch ?? this.options.server?.fetch;
+        const cloudFetch = this.options.remote?.fetch;
         const remoteUrl =
-          this.options.server?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
+          this.options.remote?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
         const selection = await resolveRemoteSelection(
           {
             mode: "cloud",
@@ -963,7 +963,7 @@ function createProjectBindingSessionManager(
     return undefined;
   }
   const projectRoot = cloud.projectRoot ?? findProjectRoot();
-  const cloudFetch = options.remote?.fetch ?? options.server?.fetch;
+  const cloudFetch = options.remote?.fetch;
   const clientOptions = {
     baseUrl: cloud.url,
     accessToken: cloud.accessToken,

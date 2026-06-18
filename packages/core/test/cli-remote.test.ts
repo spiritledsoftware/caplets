@@ -30,7 +30,7 @@ describe("remote CLI routing", () => {
     await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
         CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
       },
@@ -156,7 +156,7 @@ describe("remote CLI routing", () => {
     await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
       },
       fetch,
       writeOut: (value) => out.push(value),
@@ -212,7 +212,7 @@ describe("remote CLI routing", () => {
     await runCli(["list", "--json"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
         CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
       },
@@ -412,7 +412,7 @@ describe("remote CLI routing", () => {
       {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
           CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
           CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
         },
@@ -601,7 +601,7 @@ describe("remote CLI routing", () => {
     });
 
     const io = {
-      env: { CAPLETS_MODE: "remote", CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets" },
+      env: { CAPLETS_MODE: "remote", CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets" },
       fetch,
       writeOut: (value: string) => out.push(value),
     };
@@ -642,7 +642,7 @@ describe("remote CLI routing", () => {
     await runCli(["config", "path"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_CONFIG: "/tmp/caplets-local-config.json",
       },
       fetch,
@@ -660,7 +660,7 @@ describe("remote CLI routing", () => {
     await runCli(["config", "paths", "--json"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
         CAPLETS_CONFIG: "/tmp/caplets-local-config.json",
       },
       fetch,
@@ -760,7 +760,7 @@ describe("remote CLI routing", () => {
       {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
         },
         fetch: fetchMock as typeof fetch,
         writeOut: (value) => out.push(value),
@@ -800,7 +800,7 @@ describe("remote CLI routing", () => {
         {
           env: {
             CAPLETS_MODE: "remote",
-            CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+            CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
             CAPLETS_CONFIG: local.configPath,
           },
           fetch: async (input, init) => remote.app.fetch(new Request(input, init)),
@@ -1029,7 +1029,7 @@ describe("remote CLI routing", () => {
     await runCli(["install", "spiritledsoftware/caplets", "github", "--remote"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value) => out.push(value),
@@ -1116,7 +1116,7 @@ describe("remote CLI routing", () => {
     await runCli(["init", "--force", "--remote"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value) => out.push(value),
@@ -1191,7 +1191,7 @@ describe("remote CLI routing", () => {
     const io = {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value: string) => out.push(value),
@@ -1298,7 +1298,7 @@ describe("remote CLI routing", () => {
     const io = {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value: string) => out.push(value),
@@ -1341,7 +1341,7 @@ describe("remote CLI routing", () => {
     await runCli(["auth", "login", "remote"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value) => out.push(value),
@@ -1366,7 +1366,7 @@ describe("remote CLI routing", () => {
     await runCli(["auth", "login", "remote", "--no-open"], {
       env: {
         CAPLETS_MODE: "remote",
-        CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
       writeOut: (value) => out.push(value),
@@ -1399,7 +1399,7 @@ async function runRemoteAdd(args: string[]): Promise<unknown> {
   await runCli(["add", ...args], {
     env: {
       CAPLETS_MODE: "remote",
-      CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+      CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
     },
     fetch: fetchMock as typeof fetch,
     writeOut: () => {},
@@ -1454,7 +1454,7 @@ function remoteEnv(context: {
 }): Record<string, string> {
   return {
     CAPLETS_MODE: "remote",
-    CAPLETS_SERVER_URL: "http://127.0.0.1:5387/caplets",
+    CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
     CAPLETS_CONFIG: context.configPath,
     CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
   };

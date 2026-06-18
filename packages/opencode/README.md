@@ -50,11 +50,9 @@ export default {
       "@caplets/opencode",
       {
         mode: "remote",
-        server: {
+        remote: {
           url: "https://caplets.example.com/caplets",
           user: "caplets",
-        },
-        remote: {
           pollIntervalMs: 5_000,
         },
       },
@@ -63,4 +61,4 @@ export default {
 };
 ```
 
-Plugin config overrides environment variables. The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`. Prefer `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` for self-hosted credentials unless your OpenCode setup provides secure secret storage.
+Plugin config overrides environment variables. The explicit config shape is `{ mode, remote: { url, user, pollIntervalMs } }`. Prefer `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` for self-hosted credentials unless your OpenCode setup provides secure secret storage.

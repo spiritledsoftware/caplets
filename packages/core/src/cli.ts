@@ -76,7 +76,7 @@ import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
-import { resolveCapletsMode, resolveCapletsServer } from "./server/options";
+import { resolveCapletsRemote, resolveRemoteMode } from "./remote/options";
 import {
   daemonStatus,
   disableDaemon,
@@ -1903,10 +1903,10 @@ function envConfigPath(
 
 function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
   const env = io.env ?? process.env;
-  if (resolveCapletsMode({}, env).mode !== "remote") {
+  if (resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
-  const server = resolveCapletsServer(io.fetch ? { fetch: io.fetch } : {}, env);
+  const server = resolveCapletsRemote(io.fetch ? { fetch: io.fetch } : {}, env);
   return new RemoteControlClient(server);
 }
 
@@ -2122,7 +2122,7 @@ function requireRemoteClientForTarget(io: CliIO): RemoteControlClient {
   if (!remote) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "--remote requires CAPLETS_MODE=remote and CAPLETS_SERVER_URL",
+      "--remote requires CAPLETS_MODE=remote and CAPLETS_REMOTE_URL",
     );
   }
   return remote;

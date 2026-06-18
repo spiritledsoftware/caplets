@@ -56,11 +56,9 @@ options are supplied:
   "packages": ["npm:@caplets/pi"],
   "caplets": {
     "mode": "remote",
-    "server": {
-      "url": "https://caplets.example.com/caplets",
-      "user": "caplets"
-    },
     "remote": {
+      "url": "https://caplets.example.com/caplets",
+      "user": "caplets",
       "pollIntervalMs": 5000
     },
     "statusWidget": true,
@@ -84,17 +82,15 @@ import { createCapletsPiExtension } from "@caplets/pi";
 export default createCapletsPiExtension({
   args: {
     mode: "remote",
-    server: {
+    remote: {
       url: "https://caplets.example.com/caplets",
       user: "caplets",
-    },
-    remote: {
       pollIntervalMs: 5_000,
     },
   },
 });
 ```
 
-The explicit config shape is `{ mode, server: { url, user }, remote: { pollIntervalMs } }`.
+The explicit config shape is `{ mode, remote: { url, user, pollIntervalMs } }`.
 Prefer environment variables for `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
 settings files or source code.

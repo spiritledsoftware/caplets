@@ -20,9 +20,12 @@ describe("resolveRemoteMode", () => {
   });
 
   it("does not treat CAPLETS_SERVER_URL as client remote configuration", () => {
-    expect(resolveRemoteMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" })).toEqual({
-      mode: "local",
-    });
+    expect(
+      resolveRemoteMode({}, { CAPLETS_SERVER_URL: "https://example.com/caplets" } as Record<
+        string,
+        string
+      >),
+    ).toEqual({ mode: "local" });
   });
 
   it("requires CAPLETS_REMOTE_URL in explicit remote mode", () => {
