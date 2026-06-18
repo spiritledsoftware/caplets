@@ -50,24 +50,16 @@ function openCodeCodeModeDescription(description: string): string {
   return [
     description,
     "",
-    "OpenCode argument shape: omit `reuse` to start a fresh reusable session. To reuse a live session, pass `{ reuse: { sessionId: meta.sessionId } }`.",
+    "OpenCode argument shape: omit top-level `sessionId` to start a fresh reusable session. To reuse a live session, pass top-level `sessionId: meta.sessionId`.",
   ].join("\n");
 }
 
 function normalizeCodeModeRunArgs(args: unknown): unknown {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
   const record = args as Record<string, unknown>;
-  const reuse =
-    record.reuse && typeof record.reuse === "object" && !Array.isArray(record.reuse)
-      ? (record.reuse as Record<string, unknown>)
-      : undefined;
-  const reuseSessionId = reuse?.sessionId;
-  const { reuse: _reuse, sessionId: _sessionId, ...rest } = record;
+  const { sessionId: _sessionId, ...rest } = record;
   if (typeof record.sessionId === "string" && record.sessionId.trim() !== "") {
     return { ...rest, sessionId: record.sessionId };
-  }
-  if (typeof reuseSessionId === "string" && reuseSessionId.trim() !== "") {
-    return { ...rest, sessionId: reuseSessionId };
   }
   return rest;
 }

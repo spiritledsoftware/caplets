@@ -8,7 +8,7 @@ MCP-backed Caplets advertise resource, prompt, template, and completion operatio
 
 Use `caplets__code_mode` for multi-step workflows that benefit from Code Mode: TypeScript with generated `caplets.<id>` handles, progressive discovery, downstream tool calls, filtering, joins, and compact synthesis in one native OpenCode call.
 
-For adjacent workflows, omit `reuse` to start a fresh reusable Code Mode session, then pass `{ "reuse": { "sessionId": "<meta.sessionId>" } }` on later calls that should reuse live helper functions, `var` bindings, and runtime state while the session remains available. Unknown or expired sessions fail before execution; use recovery metadata for audit or manual reconstruction rather than automatic replay.
+For adjacent workflows, omit top-level `sessionId` to start a fresh reusable Code Mode session, then pass the returned `meta.sessionId` as top-level `sessionId` on later calls that should reuse live helper functions, `var` bindings, and runtime state while the session remains available. Unknown or expired sessions fail before execution; use recovery metadata for audit or manual reconstruction rather than automatic replay.
 
 ```jsonc
 {
