@@ -68,6 +68,7 @@ export interface CodeModeSandbox {
 
 export interface CodeModeReplSession extends CodeModeSandbox {
   dispose(): void;
+  isDisposed(): boolean;
 }
 
 export class QuickJsCodeModeSandbox implements CodeModeSandbox {
@@ -254,6 +255,10 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       return;
     }
     this.#disposeNow();
+  }
+
+  isDisposed(): boolean {
+    return this.#disposed;
   }
 
   #disposeNow(): void {

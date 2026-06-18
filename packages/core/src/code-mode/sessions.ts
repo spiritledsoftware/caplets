@@ -1,0 +1,237 @@
+import { randomUUID } from "node:crypto";
+import {
+  QuickJsCodeModeSandbox,
+  type CodeModeReplSession,
+  type CodeModeSandboxResult,
+  type CodeModeSandboxInput,
+} from "./sandbox";
+import type { CodeModeSessionStatus } from "./types";
+
+export const CODE_MODE_SESSION_COMPATIBILITY_VERSION = 1;
+export const DEFAULT_CODE_MODE_SESSION_TTL_MS = 30 * 60 * 1_000;
+export const DEFAULT_CODE_MODE_SESSION_LIMIT = 32;
+
+export type CodeModeSessionCompatibility = {
+  declarationHash: string;
+  platformRuntimeHash: string;
+  runtimeScope: string;
+  version?: number;
+};
+
+export type CodeModeSessionRunInput = CodeModeSandboxInput & {
+  sessionId?: string;
+  compatibility: CodeModeSessionCompatibility;
+};
+
+export type CodeModeSessionRunResult =
+  | {
+      ok: true;
+      sessionId: string;
+      sessionStatus: CodeModeSessionStatus;
+      result: CodeModeSandboxResult;
+    }
+  | {
+      ok: false;
+      sessionId: string;
+      sessionStatus: null;
+      error: "not_found" | "busy" | "closed";
+    };
+
+export type CodeModeSessionManagerOptions = {
+  idGenerator?: () => string;
+  now?: () => number;
+  ttlMs?: number;
+  maxSessions?: number;
+  sandboxFactory?: () => CodeModeReplSessionFactory;
+};
+
+export type CodeModeReplSessionFactory = {
+  createSession(): Promise<CodeModeReplSession>;
+};
+
+type SessionRecord = {
+  id: string;
+  session: CodeModeReplSession;
+  compatibilityKey: string;
+  lastUsedAt: number;
+  busy: boolean;
+};
+
+export class CodeModeSessionManager {
+  readonly ttlMs: number;
+  readonly maxSessions: number;
+  #sessions = new Map<string, SessionRecord>();
+  #idGenerator: () => string;
+  #now: () => number;
+  #sandboxFactory: () => CodeModeReplSessionFactory;
+  #closed = false;
+
+  constructor(options: CodeModeSessionManagerOptions = {}) {
+    this.ttlMs = options.ttlMs ?? DEFAULT_CODE_MODE_SESSION_TTL_MS;
+    this.maxSessions = options.maxSessions ?? DEFAULT_CODE_MODE_SESSION_LIMIT;
+    this.#idGenerator = options.idGenerator ?? randomUUID;
+    this.#now = options.now ?? Date.now;
+    this.#sandboxFactory = options.sandboxFactory ?? (() => new QuickJsCodeModeSandbox());
+  }
+
+  async run(input: CodeModeSessionRunInput): Promise<CodeModeSessionRunResult> {
+    if (this.#closed) {
+      return {
+        ok: false,
+        sessionId: input.sessionId ?? "",
+        sessionStatus: null,
+        error: "closed",
+      };
+    }
+    this.#evictExpired();
+    const compatibilityKey = compatibilityKeyFor(input.compatibility);
+    const requestedSessionId = input.sessionId;
+    let record: SessionRecord | undefined;
+    let sessionStatus: CodeModeSessionStatus;
+
+    if (requestedSessionId) {
+      record = this.#sessions.get(requestedSessionId);
+      if (!record) {
+        return {
+          ok: false,
+          sessionId: requestedSessionId,
+          sessionStatus: null,
+          error: "not_found",
+        };
+      }
+      if (record.busy) {
+        return {
+          ok: false,
+          sessionId: requestedSessionId,
+          sessionStatus: null,
+          error: "busy",
+        };
+      }
+      if (record.compatibilityKey !== compatibilityKey) {
+        this.#disposeRecord(record.id);
+        record = await this.#createRecord(requestedSessionId, compatibilityKey);
+        if (!record) return this.#closedResult(requestedSessionId);
+        sessionStatus = "created";
+      } else {
+        sessionStatus = "reused";
+      }
+    } else {
+      const sessionId = this.#nextSessionId();
+      record = await this.#createRecord(sessionId, compatibilityKey);
+      if (!record) return this.#closedResult(sessionId);
+      sessionStatus = "created";
+    }
+
+    this.#evictToLimit(record.id);
+    record.busy = true;
+    try {
+      const result = await record.session.run({
+        ...input,
+        invoke: async (invokeInput) => {
+          if (this.#closed) {
+            throw new Error("Code Mode session manager is closed.");
+          }
+          return await input.invoke(invokeInput);
+        },
+      });
+      record.lastUsedAt = this.#now();
+      if (record.session.isDisposed()) {
+        this.#sessions.delete(record.id);
+      }
+      return {
+        ok: true,
+        sessionId: record.id,
+        sessionStatus,
+        result,
+      };
+    } finally {
+      record.busy = false;
+      this.#evictToLimit(record.id);
+    }
+  }
+
+  close(): void {
+    this.#closed = true;
+    for (const record of this.#sessions.values()) {
+      record.session.dispose();
+    }
+    this.#sessions.clear();
+  }
+
+  has(sessionId: string): boolean {
+    this.#evictExpired();
+    return this.#sessions.has(sessionId);
+  }
+
+  async #createRecord(id: string, compatibilityKey: string): Promise<SessionRecord | undefined> {
+    if (this.#closed) {
+      return undefined;
+    }
+    const session = await this.#sandboxFactory().createSession();
+    if (this.#closed) {
+      session.dispose();
+      return undefined;
+    }
+    const record: SessionRecord = {
+      id,
+      session,
+      compatibilityKey,
+      lastUsedAt: this.#now(),
+      busy: false,
+    };
+    this.#sessions.set(id, record);
+    return record;
+  }
+
+  #nextSessionId(): string {
+    let id = this.#idGenerator();
+    while (this.#sessions.has(id)) {
+      id = this.#idGenerator();
+    }
+    return id;
+  }
+
+  #evictExpired(): void {
+    const now = this.#now();
+    for (const record of this.#sessions.values()) {
+      if (!record.busy && now - record.lastUsedAt > this.ttlMs) {
+        this.#disposeRecord(record.id);
+      }
+    }
+  }
+
+  #evictToLimit(protectedId: string): void {
+    while (this.#sessions.size > this.maxSessions) {
+      const candidate = [...this.#sessions.values()]
+        .filter((record) => !record.busy && record.id !== protectedId)
+        .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+      if (!candidate) return;
+      this.#disposeRecord(candidate.id);
+    }
+  }
+
+  #disposeRecord(id: string): void {
+    const record = this.#sessions.get(id);
+    if (!record) return;
+    record.session.dispose();
+    this.#sessions.delete(id);
+  }
+
+  #closedResult(sessionId: string): CodeModeSessionRunResult {
+    return {
+      ok: false,
+      sessionId,
+      sessionStatus: null,
+      error: "closed",
+    };
+  }
+}
+
+function compatibilityKeyFor(input: CodeModeSessionCompatibility): string {
+  return JSON.stringify({
+    declarationHash: input.declarationHash,
+    platformRuntimeHash: input.platformRuntimeHash,
+    runtimeScope: input.runtimeScope,
+    version: input.version ?? CODE_MODE_SESSION_COMPATIBILITY_VERSION,
+  });
+}

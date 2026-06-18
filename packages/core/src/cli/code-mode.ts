@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createNativeCapletsService } from "../native/service";
-import { nativeCodeModeToolId } from "../native/tools";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "../code-mode/declarations";
+import { runCodeMode } from "../code-mode/runner";
 import { emptyCodeModeRunMeta } from "../code-mode/tool";
 import type {
   CodeModeCallableCaplet,
@@ -37,11 +37,13 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
   });
   try {
     const code = await readCodeModeCliCode(options);
-    const result = (await service.execute(nativeCodeModeToolId, {
+    const result = await runCodeMode({
       code,
+      service: service.codeModeService?.() ?? service,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
-    })) as CodeModeRunEnvelope;
+      runtimeScope: "cli-one-shot",
+    });
     if (options.json) {
       options.writeOut(`${JSON.stringify(result, null, 2)}\n`);
     } else if (result.ok) {

@@ -30,6 +30,7 @@ import {
 } from "../code-mode/declarations";
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
+import { CodeModeSessionManager } from "../code-mode/sessions";
 import {
   codeModeRunInputJsonSchema,
   codeModeRunInputSchema,
@@ -85,6 +86,7 @@ export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => v
 export type NativeCapletsService = {
   listTools(): NativeCapletTool[];
   execute(capletId: string, request: unknown): Promise<unknown>;
+  codeModeService?(): NativeCapletsService;
   reload(): Promise<boolean>;
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void;
   close(): Promise<void>;
@@ -133,6 +135,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
   private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
   private exposureSnapshot: ExposureSnapshot | undefined;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private postReloadRefresh: Promise<void> | undefined;
   private exposureRefreshGeneration = 0;
 
@@ -183,7 +186,11 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this.codeModeDelegate(), request);
+      return await executeCodeModeRunNative(
+        this.codeModeDelegate(),
+        request,
+        this.codeModeSessions,
+      );
     }
     const route = this.directToolRoutes.get(capletId);
     if (route) {
@@ -202,6 +209,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     return await this.engine.execute(capletId, request);
   }
 
+  codeModeService(): NativeCapletsService {
+    return this.codeModeDelegate();
+  }
+
   async reload(): Promise<boolean> {
     const reloaded = await this.engine.reload();
     await this.postReloadRefresh;
@@ -217,6 +228,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async close(): Promise<void> {
     this.unsubscribeEngineReload();
+    this.codeModeSessions.close();
     this.toolListeners.clear();
     await this.engine.close();
   }
@@ -556,6 +568,7 @@ function codeModeCallableNativeTools(
 async function executeCodeModeRunNative(
   service: NativeCapletsService,
   request: unknown,
+  sessionManager?: CodeModeSessionManager,
 ): Promise<unknown> {
   const parsed = codeModeRunInputSchema.safeParse(request);
   if (!parsed.success) {
@@ -577,6 +590,7 @@ async function executeCodeModeRunNative(
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+    ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }
 
@@ -639,6 +653,10 @@ class CloudNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     return await (this.delegate ?? this.local).execute(capletId, request);
+  }
+
+  codeModeService(): NativeCapletsService {
+    return (this.delegate ?? this.local).codeModeService?.() ?? this.delegate ?? this.local;
   }
 
   async reload(): Promise<boolean> {
@@ -736,6 +754,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private tools: NativeCapletTool[] = [];
   private closed = false;
   private batchingReload = false;
+  private readonly codeModeSessions = new CodeModeSessionManager();
 
   constructor(
     private readonly remote: NativeCapletsService,
@@ -762,12 +781,23 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this, request);
+      return await executeCodeModeRunNative(this, request, this.codeModeSessions);
     }
     if (this.localCanExecute(capletId)) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
+  }
+
+  codeModeService(): NativeCapletsService {
+    return {
+      listTools: () => codeModeCallableNativeTools(this.listTools(), { fallbackToVisible: false }),
+      execute: async (capletId, request) => await this.execute(capletId, request),
+      codeModeService: () => this.codeModeService(),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
   }
 
   async reload(): Promise<boolean> {
@@ -804,6 +834,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       unsubscribe();
     }
     this.listeners.clear();
+    this.codeModeSessions.close();
     await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
   }
 

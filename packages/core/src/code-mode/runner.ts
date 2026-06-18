@@ -4,7 +4,9 @@ import { createCodeModeCapletsApi, listCodeModeCallableCaplets } from "./api";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "./declarations";
 import { diagnoseCodeModeTypeScript } from "./diagnostics";
 import { CodeModeLogStore, redactCodeModeLogText } from "./logs";
-import { QuickJsCodeModeSandbox, type CodeModeSandbox } from "./sandbox";
+import { QuickJsCodeModeSandbox, type CodeModeSandbox, type CodeModeSandboxInput } from "./sandbox";
+import { CODE_MODE_SESSION_COMPATIBILITY_VERSION, type CodeModeSessionManager } from "./sessions";
+import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
 import type {
   CodeModeDiagnostic,
   CodeModeLogEntry,
@@ -27,6 +29,7 @@ export type RunCodeModeInput = {
   sessionId?: string;
   logStore?: CodeModeLogStore;
   sandbox?: CodeModeSandbox;
+  sessionManager?: CodeModeSessionManager;
   returnedLogBytes?: number;
 };
 
@@ -37,13 +40,14 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   const callable = listCodeModeCallableCaplets(input.service);
   const declaration = generateCodeModeDeclarations({ caplets: callable });
   const declarationHash = codeModeDeclarationHash(declaration);
-  const metaBase = {
+  const platformRuntimeHash = codeModeDeclarationHash(CODE_MODE_PLATFORM_RUNTIME_SOURCE);
+  const metaBase: Omit<CodeModeRunMeta, "durationMs"> = {
     runId: randomUUID(),
     traceId: randomUUID(),
     declarationHash,
     timeoutMs,
     maxTimeoutMs,
-    sessionId: input.sessionId ?? null,
+    sessionId: input.sessionManager ? null : (input.sessionId ?? null),
     sessionStatus: null,
     recoveryRef: null,
     recoveryCommand: null,
@@ -78,8 +82,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     service: input.service,
     readLogs: async (readInput) => input.logStore?.read(readInput) ?? { entries: [] },
   });
-  const sandbox = input.sandbox ?? new QuickJsCodeModeSandbox();
-  const result = await sandbox.run({
+  const sandboxInput: CodeModeSandboxInput = {
     code: input.code,
     capletIds: callable.map((caplet) => caplet.id),
     timeoutMs,
@@ -112,7 +115,52 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       if (method === "complete") return await handle.complete(args[0]);
       throw new Error(`Unknown Code Mode CapletHandle method: ${method}.`);
     },
-  });
+  };
+  const sessionRun = input.sessionManager
+    ? await input.sessionManager.run({
+        ...sandboxInput,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        compatibility: {
+          declarationHash,
+          platformRuntimeHash,
+          runtimeScope: input.runtimeScope ?? "",
+          version: CODE_MODE_SESSION_COMPATIBILITY_VERSION,
+        },
+      })
+    : undefined;
+  if (sessionRun && !sessionRun.ok) {
+    const code =
+      sessionRun.error === "not_found"
+        ? "SESSION_NOT_FOUND"
+        : sessionRun.error === "closed"
+          ? "SESSION_CLOSED"
+          : "SESSION_BUSY";
+    return {
+      ok: false,
+      error: {
+        code,
+        message:
+          sessionRun.error === "not_found"
+            ? `Code Mode session ${sessionRun.sessionId} was not found.`
+            : sessionRun.error === "closed"
+              ? "Code Mode session manager is closed."
+              : `Code Mode session ${sessionRun.sessionId} is already running.`,
+      },
+      diagnostics,
+      logs: emptyLogs(),
+      meta: {
+        ...meta(),
+        sessionId: sessionRun.sessionId,
+        sessionStatus: null,
+      },
+    };
+  }
+  const result =
+    sessionRun?.result ?? (await (input.sandbox ?? new QuickJsCodeModeSandbox()).run(sandboxInput));
+  const sessionId = sessionRun?.sessionId ?? metaBase.sessionId ?? null;
+  const sessionStatus = sessionRun?.sessionStatus ?? metaBase.sessionStatus ?? null;
+  metaBase.sessionId = sessionId;
+  metaBase.sessionStatus = sessionStatus;
   capturedLogs.push(...result.logs.map(redactLogEntry));
   const logs = await buildLogs(capturedLogs, input.logStore, input.returnedLogBytes);
   if (!result.ok) {

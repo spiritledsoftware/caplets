@@ -1975,19 +1975,23 @@ describe("createNativeCapletsService remote mode", () => {
     try {
       await service.reload();
 
+      const first = (await service.execute("code_mode", {
+        code: "var counter = 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
+      })) as { meta: { sessionId: string } };
       await expect(
         service.execute("code_mode", {
-          code: "return { keys: Object.keys(caplets).sort() };",
-          sessionId: "session-123",
+          code: "counter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
+          sessionId: first.meta.sessionId,
         }),
       ).resolves.toMatchObject({
         ok: true,
         value: {
+          counter: 2,
           keys: ["debug", "local-code", "remote-only"],
         },
         meta: {
-          sessionId: "session-123",
-          sessionStatus: null,
+          sessionId: first.meta.sessionId,
+          sessionStatus: "reused",
           recoveryRef: null,
           recoveryCommand: null,
         },

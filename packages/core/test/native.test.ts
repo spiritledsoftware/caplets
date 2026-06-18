@@ -368,8 +368,8 @@ describe("native Caplets service", () => {
         ok: true,
         value: { id: "status", hasStatus: true },
         meta: {
-          sessionId: null,
-          sessionStatus: null,
+          sessionId: expect.any(String),
+          sessionStatus: "created",
           recoveryRef: null,
           recoveryCommand: null,
         },
@@ -380,7 +380,8 @@ describe("native Caplets service", () => {
           sessionId: "session-123",
         }),
       ).resolves.toMatchObject({
-        ok: true,
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
         meta: {
           sessionId: "session-123",
           sessionStatus: null,

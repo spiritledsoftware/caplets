@@ -82,6 +82,35 @@ describe("Code Mode CLI", () => {
     }
   });
 
+  it("does not expose progressive-only Caplets to one-shot code-mode runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = writeConfig(dir, {
+        options: { exposure: "progressive" },
+        mcpServers: {
+          alpha: {
+            name: "Alpha",
+            description: "Progressive-only operations.",
+            command: "node",
+            exposure: "progressive",
+          },
+        },
+      });
+
+      await runCli(["code-mode", "return Object.keys(caplets).sort();", "--json"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        ok: true,
+        value: ["debug"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reads --file paths relative to the current working directory", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
     const cwd = process.cwd();

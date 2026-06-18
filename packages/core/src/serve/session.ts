@@ -16,6 +16,7 @@ import {
 } from "../code-mode/declarations";
 import { CodeModeLogStore } from "../code-mode/logs";
 import { runCodeMode } from "../code-mode/runner";
+import { CodeModeSessionManager } from "../code-mode/sessions";
 import {
   codeModeRunInputSchema,
   codeModeRunParamsSchema,
@@ -59,6 +60,7 @@ export class CapletsMcpSession {
   private readonly resources = new Map<string, RegisteredResource | RegisteredResourceTemplate>();
   private readonly prompts = new Map<string, RegisteredPrompt>();
   private codeModeTool: RegisteredTool | undefined;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private readonly unsubscribeReload: () => void;
   private closed = false;
 
@@ -102,6 +104,7 @@ export class CapletsMcpSession {
     if (this.closed) return;
     this.closed = true;
     this.unsubscribeReload();
+    this.codeModeSessions.close();
     this.clearRegistrations();
     await this.server.close();
   }
@@ -228,6 +231,8 @@ export class CapletsMcpSession {
           ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
           ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
           logStore: new CodeModeLogStore(),
+          sessionManager: this.codeModeSessions,
+          runtimeScope: "mcp",
         })
       : {
           ok: false as const,

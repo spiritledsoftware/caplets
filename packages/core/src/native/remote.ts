@@ -6,6 +6,7 @@ import {
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
 import { runCodeMode } from "../code-mode/runner";
+import { CodeModeSessionManager } from "../code-mode/sessions";
 import {
   codeModeRunInputJsonSchema,
   codeModeRunInputSchema,
@@ -173,6 +174,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   private client: RemoteCapletsClient;
   private unsubscribeRemote: () => void;
   private readonly pollTimer: ReturnType<typeof setInterval>;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private closed = false;
   private resetInFlight: Promise<boolean> | undefined;
 
@@ -192,7 +194,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunRemote(this, request);
+      return await executeCodeModeRunRemote(this, request, this.codeModeSessions);
     }
     const remoteToolId = this.toolRoutes.get(capletId) ?? capletId;
     try {
@@ -216,6 +218,17 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       }
       throw error;
     }
+  }
+
+  codeModeService(): NativeCapletsService {
+    return {
+      listTools: () => remoteCodeModeCallableNativeTools(this.listTools()),
+      execute: async (capletId, request) => await this.execute(capletId, request),
+      codeModeService: () => this.codeModeService(),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
   }
 
   async reload(): Promise<boolean> {
@@ -254,6 +267,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
     }
     this.closed = true;
     clearInterval(this.pollTimer);
+    this.codeModeSessions.close();
     this.unsubscribeRemote();
     this.listeners.clear();
     await this.client.close();
@@ -359,6 +373,28 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     ...(isPlainObject(tool.annotations) ? { annotations: tool.annotations } : {}),
     ...(operationNames ? { operationNames } : {}),
   };
+}
+
+function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCapletTool[] {
+  const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  const hasExplicitCodeModeManifest = tools.some((tool) => tool.codeModeCaplets !== undefined);
+  if (codeModeCaplets.length === 0) {
+    return hasExplicitCodeModeManifest ? [] : tools.filter((tool) => tool.codeModeRun !== true);
+  }
+  const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
+  return codeModeCaplets.map((caplet) => {
+    const tool = byId.get(caplet.id);
+    return {
+      caplet: caplet.id,
+      toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
+      title: caplet.name,
+      description: caplet.description,
+      ...(caplet.shadowing ? { shadowing: caplet.shadowing } : {}),
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+      promptGuidance: tool?.promptGuidance ?? [],
+    };
+  });
 }
 
 function nativeToolRouteId(tool: RemoteCapletsTool): string {
@@ -807,6 +843,7 @@ function startAttachEvents(
 async function executeCodeModeRunRemote(
   service: NativeCapletsService,
   request: unknown,
+  sessionManager?: CodeModeSessionManager,
 ): Promise<unknown> {
   const parsed = codeModeRunInputSchema.safeParse(request);
   if (!parsed.success) {
@@ -828,6 +865,7 @@ async function executeCodeModeRunRemote(
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "remote",
+    ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }
 

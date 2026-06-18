@@ -113,8 +113,8 @@ describe("Code Mode MCP tool", () => {
       ok: true,
       value: { ok: true },
       meta: {
-        sessionId: null,
-        sessionStatus: null,
+        sessionId: expect.any(String),
+        sessionStatus: "created",
         recoveryRef: null,
         recoveryCommand: null,
       },
@@ -125,7 +125,7 @@ describe("Code Mode MCP tool", () => {
     await engine.close();
   });
 
-  it("echoes supplied session ids in Code Mode metadata scaffolding", async () => {
+  it("reuses issued session ids and rejects unknown session ids", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
         github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
@@ -137,22 +137,28 @@ describe("Code Mode MCP tool", () => {
     const session = new CapletsMcpSession(engine, { server });
     const callback = server.callbacks.get("code_mode");
 
-    const result = await callback?.({ code: "return { ok: true };", sessionId: "session-123" });
+    const first = await callback?.({ code: "var counter = 1;\nreturn counter;" });
+    const sessionId = first?.structuredContent?.meta.sessionId as string;
+    const reused = await callback?.({
+      code: "counter += 1;\nreturn counter;",
+      sessionId,
+    });
+    const missing = await callback?.({ code: "return { ok: true };", sessionId: "session-123" });
 
-    expect(result?.structuredContent).toMatchObject({
+    expect(reused?.structuredContent).toMatchObject({
       ok: true,
+      value: 2,
       meta: {
-        sessionId: "session-123",
-        sessionStatus: null,
+        sessionId,
+        sessionStatus: "reused",
         recoveryRef: null,
         recoveryCommand: null,
       },
     });
-    expect(JSON.parse(result?.content[0].text ?? "{}").meta).toMatchObject({
-      sessionId: "session-123",
-      sessionStatus: null,
-      recoveryRef: null,
-      recoveryCommand: null,
+    expect(missing?.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "SESSION_NOT_FOUND" },
+      meta: { sessionId: "session-123", sessionStatus: null },
     });
 
     await session.close();
