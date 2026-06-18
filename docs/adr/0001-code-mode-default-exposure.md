@@ -18,7 +18,11 @@ Code Mode is the default backend exposure for Caplets.
 
 Configured backends should enter the primary agent surface as generated `caplets.<id>` handles inside a Code Mode TypeScript script. Agents should perform discovery, exact schema inspection, tool calls, filtering, joins, and compact synthesis inside that script.
 
+Code Mode executions may opt into a live REPL session by passing a `sessionId` returned in tool metadata. Session reuse is an affordance for iterative work against the same generated declarations and platform runtime; the live heap is process-local and not durable persistence. Recovery history is exposed through opaque `recoveryRef` metadata so agents can inspect recent runs without treating session state as a stored source of truth.
+
 Progressive wrapper tools remain supported through the `progressive` and `progressive_and_code_mode` exposure modes. Direct MCP exposure remains supported through `direct` and `direct_and_code_mode` when the downstream surface should be registered directly.
+
+Code Mode is not a security boundary. Backends still define the capability surface, and hosts remain responsible for process isolation, credentials, policy, and transport-level trust decisions.
 
 ## Consequences
 
@@ -26,6 +30,7 @@ Progressive wrapper tools remain supported through the `progressive` and `progre
 - Progressive disclosure remains an implementation and compatibility model, but not the primary product frame.
 - Benchmarks should report Code Mode separately from progressive modes.
 - Agent guidance should prefer compact one-pass Code Mode scripts for multi-step work.
+- Session metadata should be documented as optional live reuse state, not as a durable workspace or database.
 - Long-lived docs should preserve progressive exposure details as an alternate mode, not as the main PRD.
 
 ## Evidence

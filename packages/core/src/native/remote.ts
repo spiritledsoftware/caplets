@@ -5,15 +5,30 @@ import {
 } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
+import { CodeModeJournalStore } from "../code-mode/journal";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
+import { CodeModeSessionManager } from "../code-mode/sessions";
+import {
+  generateCodeModeDeclarations,
+  generateCodeModeRunToolDescription,
+} from "../code-mode/declarations";
+import {
+  codeModeRunInputJsonSchema,
+  codeModeRunInputSchema,
+  emptyCodeModeRunMeta,
+} from "../code-mode/tool";
 import type { ResolvedNativeCapletsServiceOptions } from "./options";
 import type {
   NativeCapletsService,
   NativeCapletsToolsChangedListener,
   NativeCapletTool,
 } from "./service";
-import { nativeCapletToolName, nativeCodeModeToolId, nativeCodeModeToolName } from "./tools";
+import {
+  nativeCapletToolName,
+  nativeCodeModePromptGuidance,
+  nativeCodeModeToolId,
+  nativeCodeModeToolName,
+} from "./tools";
 
 export type RemoteCapletsTool = {
   name: string;
@@ -169,6 +184,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
   private client: RemoteCapletsClient;
   private unsubscribeRemote: () => void;
   private readonly pollTimer: ReturnType<typeof setInterval>;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private closed = false;
   private resetInFlight: Promise<boolean> | undefined;
 
@@ -188,7 +204,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunRemote(this, request);
+      return await executeCodeModeRunRemote(this, request, this.codeModeSessions);
     }
     const remoteToolId = this.toolRoutes.get(capletId) ?? capletId;
     try {
@@ -212,6 +228,17 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
       }
       throw error;
     }
+  }
+
+  codeModeService(): NativeCapletsService {
+    return {
+      listTools: () => remoteCodeModeCallableNativeTools(this.listTools()),
+      execute: async (capletId, request) => await this.execute(capletId, request),
+      codeModeService: () => this.codeModeService(),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
   }
 
   async reload(): Promise<boolean> {
@@ -250,6 +277,7 @@ export class RemoteNativeCapletsService implements NativeCapletsService {
     }
     this.closed = true;
     clearInterval(this.pollTimer);
+    this.codeModeSessions.close();
     this.unsubscribeRemote();
     this.listeners.clear();
     await this.client.close();
@@ -326,6 +354,7 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     tool.sourceCapletId === undefined && !tool.codeModeRun
       ? operationNamesFromSchema(inputSchema)
       : undefined;
+  const description = tool.codeModeRun ? remoteCodeModeToolDescription(tool) : tool.description;
   return {
     caplet: capletId,
     ...(sourceCaplet && sourceCaplet !== capletId ? { sourceCaplet } : {}),
@@ -333,12 +362,14 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     toolName,
     title: tool.title ?? capletId,
     description: [
-      tool.description ?? "Remote Caplets tool.",
+      description ?? "Remote Caplets tool.",
       "",
       `Native tool name: ${toolName}`,
       `Remote Caplet ID: ${capletId}`,
     ].join("\n"),
-    promptGuidance: [`Use ${toolName} through the remote Caplets service.`],
+    promptGuidance: tool.codeModeRun
+      ? nativeCodeModePromptGuidance()
+      : [`Use ${toolName} through the remote Caplets service.`],
     ...(tool.codeModeRun || capletId === nativeCodeModeToolId ? { codeModeRun: true } : {}),
     ...(tool.codeModeCaplets
       ? {
@@ -355,6 +386,41 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     ...(isPlainObject(tool.annotations) ? { annotations: tool.annotations } : {}),
     ...(operationNames ? { operationNames } : {}),
   };
+}
+
+function remoteCodeModeToolDescription(tool: RemoteCapletsTool): string | undefined {
+  if (!tool.codeModeCaplets || tool.codeModeCaplets.length === 0) return tool.description;
+  const declaration = generateCodeModeDeclarations({
+    caplets: tool.codeModeCaplets.map((caplet) => ({
+      id: caplet.capletId,
+      name: caplet.name,
+      description: caplet.description ?? "",
+      shadowing: caplet.shadowing,
+    })),
+  });
+  return generateCodeModeRunToolDescription(declaration);
+}
+
+function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCapletTool[] {
+  const codeModeCaplets = tools.flatMap((tool) => tool.codeModeCaplets ?? []);
+  const hasExplicitCodeModeManifest = tools.some((tool) => tool.codeModeCaplets !== undefined);
+  if (codeModeCaplets.length === 0) {
+    return hasExplicitCodeModeManifest ? [] : tools.filter((tool) => tool.codeModeRun !== true);
+  }
+  const byId = new Map(tools.map((tool) => [tool.caplet, tool]));
+  return codeModeCaplets.map((caplet) => {
+    const tool = byId.get(caplet.id);
+    return {
+      caplet: caplet.id,
+      toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
+      title: caplet.name,
+      description: caplet.description,
+      ...(caplet.shadowing ? { shadowing: caplet.shadowing } : {}),
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
+      promptGuidance: tool?.promptGuidance ?? [],
+    };
+  });
 }
 
 function nativeToolRouteId(tool: RemoteCapletsTool): string {
@@ -543,8 +609,9 @@ function primitiveInvokeInput(
 }
 
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
-  const codeModeMarker = attachCodeModeMarker(manifest);
-  const codeModeShadowing: "forbid" | "allow" = manifest.codeModeCaplets.some(
+  const codeModeCaplets = manifest.codeModeCaplets ?? [];
+  const codeModeMarker = attachCodeModeMarker(codeModeCaplets);
+  const codeModeShadowing: "forbid" | "allow" = codeModeCaplets.some(
     (entry) => entry.shadowing === "forbid",
   )
     ? "forbid"
@@ -572,7 +639,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
       ...codeModeMarker,
     })),
     ...primitiveToolsFromManifest(manifest, codeModeMarker),
-    ...(manifest.codeModeCaplets.length > 0
+    ...(codeModeCaplets.length > 0
       ? [
           {
             name: nativeCodeModeToolId,
@@ -580,7 +647,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
             title: "Code Mode",
             description: "Remote Caplets available to locally-run attached Code Mode.",
             codeModeRun: true,
-            codeModeCaplets: manifest.codeModeCaplets,
+            codeModeCaplets,
             shadowing: codeModeShadowing,
             inputSchema: codeModeRunInputJsonSchema(),
           },
@@ -590,9 +657,9 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
 }
 
 function attachCodeModeMarker(
-  manifest: AttachManifest,
+  codeModeCaplets: AttachCodeModeCaplet[] = [],
 ): Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never> {
-  return manifest.codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
+  return codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
 }
 
 function primitiveToolsFromManifest(
@@ -724,7 +791,7 @@ function exportMapFor(manifest: AttachManifest): Map<string, AttachManifestExpor
   for (const entry of manifest.tools) {
     mapped.set(entry.name, entry);
   }
-  for (const entry of manifest.codeModeCaplets) {
+  for (const entry of manifest.codeModeCaplets ?? []) {
     setIfAbsent(entry.capletId, entry);
     setIfAbsent(entry.name, entry);
   }
@@ -803,6 +870,7 @@ function startAttachEvents(
 async function executeCodeModeRunRemote(
   service: NativeCapletsService,
   request: unknown,
+  sessionManager?: CodeModeSessionManager,
 ): Promise<unknown> {
   const parsed = codeModeRunInputSchema.safeParse(request);
   if (!parsed.success) {
@@ -815,21 +883,17 @@ async function executeCodeModeRunRemote(
       },
       diagnostics: [],
       logs: { entries: [], truncated: false, stored: false },
-      meta: {
-        runId: "",
-        traceId: "",
-        declarationHash: "",
-        durationMs: 0,
-        timeoutMs: 0,
-        maxTimeoutMs: 0,
-      },
+      meta: emptyCodeModeRunMeta(),
     };
   }
   return await runCodeMode({
     code: parsed.data.code,
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "remote",
+    journalStore: new CodeModeJournalStore(),
+    ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }
 
@@ -844,7 +908,7 @@ function compatibleExport(
     ...manifest.resourceTemplates,
     ...manifest.prompts,
     ...manifest.completions,
-    ...manifest.codeModeCaplets,
+    ...(manifest.codeModeCaplets ?? []),
   ].find((entry) => entry.stableId === previous.stableId);
   if (!next) return undefined;
   if (next.kind !== previous.kind) return undefined;

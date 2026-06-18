@@ -52,6 +52,46 @@ uses handles such as `caplets.osv.searchTools(...)` and `caplets.osv.callTool(..
 For most tasks, keep bulky raw payloads inside the Code Mode script and return compact
 JSON with the evidence the user needs.
 
+## Reuse a live session
+
+Code Mode accepts an optional `sessionId`. Omit it to create a fresh session. Successful
+fresh runs and reused runs include `meta.sessionId`; pass that value to a nearby follow-up
+call when you want to reuse helper functions, variables, or cached discovery results in the
+same QuickJS heap.
+
+```ts
+const first = await caplets__code_mode({
+  code: `
+    var pickNames = (items) => items.map((item) => item.name);
+    return pickNames((await caplets.osv.searchTools("package")).items);
+  `,
+});
+
+const sessionId = first.meta?.sessionId;
+
+const second = await caplets__code_mode({
+  sessionId,
+  code: `
+    const tools = await caplets.osv.searchTools("version");
+    return { names: pickNames(tools.items) };
+  `,
+});
+```
+
+Unknown or expired session IDs fail before submitted code runs, using structured session
+errors such as `SESSION_NOT_FOUND`. Heap state is live runtime state only; it is not durable
+across process restarts or TTL eviction. Ordinary CLI calls such as `caplets code-mode
+'return 1'` are one-shot and do not share heap with later CLI invocations.
+
+## Recovery history
+
+When a Code Mode session is created, successful metadata can include a `recoveryRef`.
+Agents that already possess that reference can call `caplets.debug.readRecovery(...)` to read
+redacted, bounded summaries of prior session runs. Recovery history helps reconstruct safe
+setup code manually; it does not restore heap values, closures, timers, promises, or host
+handles. A stale or unknown `sessionId` alone does not grant access to recovery history, and
+there is no recent-session lookup.
+
 ## Platform globals
 
 Code Mode also installs standard JavaScript platform globals at runtime so scripts can

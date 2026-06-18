@@ -39,11 +39,8 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
     mode: options.selection.kind === "hosted_cloud" ? "cloud" : "remote",
     configPath: options.configPath,
     projectConfigPath: options.projectConfigPath,
-    server: {
-      url: options.selection.remote.baseUrl.toString(),
-      ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
-    },
     remote: {
+      url: options.selection.remote.baseUrl.toString(),
       ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
       ...(options.selection.kind === "hosted_cloud"
         ? {

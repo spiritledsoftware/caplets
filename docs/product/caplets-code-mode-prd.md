@@ -88,6 +88,8 @@ Code Mode runs TypeScript with generated `caplets.<id>` handles. Handles expose:
 - `callTool()` for execution.
 - MCP-only resource, template, prompt, and completion methods where supported.
 - `caplets.debug.readLogs()` for stored Code Mode log inspection when available.
+- `caplets.debug.readRecovery()` for redacted, bounded recovery summaries when the agent
+  already has the session's `recoveryRef`.
 
 The runtime also provides common JavaScript platform globals for data manipulation:
 `atob`, `btoa`, a minimal `Buffer` subset, `structuredClone`, URL and text encoding
@@ -98,6 +100,21 @@ as runtime globals for JS muscle memory, but they are intentionally not enumerat
 generated declaration payload or tool prompt so Code Mode keeps its context surface lean.
 
 Agents should keep bulky discovery and raw payload handling inside the Code Mode script, then return compact decision-ready JSON with the evidence fields needed by the user.
+
+Code Mode runs accept an optional `sessionId`. Omitting it creates a fresh QuickJS session;
+successful fresh and reused runs return `meta.sessionId` so adjacent calls can reuse live
+helpers, variables, and cached discovery state. Unknown or expired session IDs fail before
+submitted code runs with structured session errors. Session heap state is intentionally not
+durable across process restarts or TTL eviction, and ordinary `caplets code-mode ...` CLI
+invocations remain one-shot unless a separate long-lived REPL command is implemented.
+
+Recovery is reference-scoped, not broad lookup-based. Agents can read recovery history when
+they possess the `recoveryRef` returned when the session was created, and a still-retained
+journal may return that same reference when a known session ID was cleaned up by TTL,
+compatibility eviction, or runtime restart while the retained journal remains readable.
+Recovery summaries are redacted and bounded, and they help agents reconstruct setup code
+manually. They do not restore heap, closures, timers, promises, or host handles. Unknown
+session IDs do not upgrade into recovery references, and there is no recent-session lookup.
 
 ## Exposure Modes
 

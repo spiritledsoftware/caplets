@@ -1,20 +1,19 @@
 import { CapletsError } from "../errors";
-import type { CapletsServerEnv, CapletsServerInput } from "../server/options";
 import {
   resolveCapletsRemote,
   resolveHostedCloudRemote,
   resolveRemoteMode,
   type CapletsRemoteAuth,
   type CapletsRemoteEnv,
+  type CapletsRemoteInput,
 } from "../remote/options";
 
 type CapletsMode = "auto" | "local" | "remote" | "cloud";
 
 export type NativeCapletsMode = CapletsMode;
 
-export type NativeRemoteCapletsOptions = {
+export type NativeRemoteCapletsOptions = CapletsRemoteInput & {
   pollIntervalMs?: number;
-  fetch?: typeof fetch;
   cloud?: NativeCloudPresenceInput;
 };
 
@@ -28,11 +27,19 @@ export type NativeCloudPresenceInput = {
 
 export type NativeCapletsServiceResolutionInput = {
   mode?: NativeCapletsMode;
-  server?: CapletsServerInput;
   remote?: NativeRemoteCapletsOptions;
 };
 
-export type NativeCapletsEnv = CapletsServerEnv & CapletsRemoteEnv;
+export type NativeCapletsEnv = CapletsRemoteEnv &
+  Partial<
+    Record<
+      | "CAPLETS_CLOUD_URL"
+      | "CAPLETS_CLOUD_TOKEN"
+      | "CAPLETS_CLOUD_WORKSPACE_ID"
+      | "CAPLETS_PROJECT_ROOT",
+      string
+    >
+  >;
 
 export type NativeRemoteAuthOptions =
   | { enabled: false; user: string }
@@ -62,7 +69,7 @@ export function resolveNativeCapletsServiceOptions(
   const mode = resolveRemoteMode(
     {
       ...(input.mode ? { mode: input.mode } : {}),
-      ...(input.server?.url ? { remoteUrl: input.server.url } : {}),
+      ...(input.remote?.url ? { remoteUrl: input.remote.url } : {}),
     },
     env,
   );
@@ -70,19 +77,15 @@ export function resolveNativeCapletsServiceOptions(
     return { mode: "local" };
   }
 
-  const serverFetch = input.remote?.fetch ?? input.server?.fetch;
-  const serverInput = {
-    ...input.server,
-    ...(serverFetch ? { fetch: serverFetch } : {}),
-  };
+  const remoteFetch = input.remote?.fetch;
   const server =
     mode.mode === "cloud"
       ? resolveNativeHostedCloudRemote(
-          input.server?.url ?? env.CAPLETS_REMOTE_URL ?? "",
+          input.remote?.url ?? env.CAPLETS_REMOTE_URL ?? "",
           optionalWorkspace(input, env).workspace,
-          serverFetch,
+          remoteFetch,
         )
-      : resolveCapletsRemote(serverInput, env);
+      : resolveCapletsRemote(input.remote, env);
 
   const cloud = resolveNativeCloudPresence(input.remote?.cloud, env);
   return {
@@ -119,6 +122,7 @@ function optionalWorkspace(
 ): { workspace?: string } {
   const workspace =
     input.remote?.cloud?.workspaceId ??
+    input.remote?.workspace ??
     env.CAPLETS_REMOTE_WORKSPACE ??
     env.CAPLETS_CLOUD_WORKSPACE_ID;
   return workspace ? { workspace } : {};

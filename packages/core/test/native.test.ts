@@ -52,7 +52,8 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      expect(service.listTools()).toEqual(
+      const tools = service.listTools();
+      expect(tools).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             caplet: "git-hub",
@@ -63,10 +64,35 @@ describe("native Caplets service", () => {
             caplet: "code_mode",
             toolName: "caplets__code_mode",
             title: "Code Mode",
+            inputSchema: expect.objectContaining({
+              properties: expect.objectContaining({
+                sessionId: expect.objectContaining({ type: "string" }),
+              }),
+            }),
           }),
         ]),
       );
-      const githubTool = service.listTools().find((tool) => tool.caplet === "git-hub");
+      const codeModeTool = tools.find((tool) => tool.caplet === "code_mode");
+      expect(codeModeTool?.description).toContain("`meta.sessionId`");
+      expect(codeModeTool?.description).toContain("fails before executing your code");
+      expect(codeModeTool?.promptGuidance).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("meta.recoveryRef"),
+        ]),
+      );
+      expect(
+        (
+          codeModeTool?.inputSchema as {
+            properties?: { sessionId?: { description?: string } };
+          }
+        )?.properties?.sessionId?.description,
+      ).toContain("Omit to create a fresh reusable session");
+      expect(nativeCapletsSystemGuidance(["caplets__code_mode"])).toContain(
+        "omit sessionId to start fresh",
+      );
+      const githubTool = tools.find((tool) => tool.caplet === "git-hub");
       expect(githubTool?.description).toContain("Native tool name: caplets__git-hub");
       expect(githubTool?.inputSchema).toMatchObject({
         properties: expect.objectContaining({ fields: expect.anything() }),
@@ -362,6 +388,25 @@ describe("native Caplets service", () => {
       expect(result).toMatchObject({
         ok: true,
         value: { id: "status", hasStatus: true },
+        meta: {
+          sessionId: expect.any(String),
+          sessionStatus: "created",
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        },
+      });
+      await expect(
+        service.execute("code_mode", {
+          code: "return { ok: true };",
+          sessionId: "session-123",
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "session-123",
+          sessionStatus: null,
+          recoveryRef: null,
+        },
       });
     } finally {
       await service.close();
@@ -392,6 +437,14 @@ describe("native Caplets service", () => {
           message: "Code Mode run input is invalid.",
         },
         diagnostics: [],
+      });
+      const result = (await service.execute("code_mode", { timeoutMs: 1_000 })) as {
+        meta: Record<string, unknown>;
+      };
+      expect(result.meta).toMatchObject({
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
       });
     } finally {
       await service.close();

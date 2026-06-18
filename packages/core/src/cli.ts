@@ -23,7 +23,7 @@ import {
   type AuthStatusRow,
 } from "./cli/auth";
 import { cliCommands } from "./cli/commands";
-import { codeModeTypesCli, runCodeModeCli } from "./cli/code-mode";
+import { codeModeTypesCli, runCodeModeCli, runCodeModeReplCli } from "./cli/code-mode";
 import { initConfig } from "./cli/init";
 import { doctorJsonReport, formatDoctorReport } from "./cli/doctor";
 import {
@@ -76,7 +76,7 @@ import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
-import { resolveCapletsMode, resolveCapletsServer } from "./server/options";
+import { resolveCapletsRemote, resolveRemoteMode } from "./remote/options";
 import {
   daemonStatus,
   disableDaemon,
@@ -389,13 +389,49 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Run, inspect, and debug Caplets Code Mode.")
     .argument("[code]", "inline TypeScript code to run")
     .option("--file <path>", "read TypeScript code from a file relative to the current directory")
+    .option("--session-id <id>", "optional Code Mode session identifier")
+    .option("--recover <ref>", "recover a prior Code Mode REPL session when supported")
     .option("--timeout-ms <ms>", "execution timeout in milliseconds", parsePositiveInteger)
     .option("--json", "print the structured run envelope")
     .action(
       async (
         code: string | undefined,
-        options: { file?: string; timeoutMs?: number; json?: boolean },
+        options: {
+          file?: string;
+          sessionId?: string;
+          recover?: string;
+          timeoutMs?: number;
+          json?: boolean;
+        },
       ) => {
+        if (code === "repl" && options.file === undefined) {
+          await runCodeModeReplCli({
+            env,
+            ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+            ...(options.recover === undefined ? {} : { recoveryRef: options.recover }),
+            ...(options.json === undefined ? {} : { json: options.json }),
+            writeOut,
+            setExitCode,
+          });
+          return;
+        }
+        if (options.recover !== undefined) {
+          await runCodeModeReplCli({
+            env,
+            ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
+            projectConfigPath: envProjectConfigPath(env),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+            recoveryRef: options.recover,
+            ...(options.json === undefined ? {} : { json: options.json }),
+            writeOut,
+            setExitCode,
+          });
+          return;
+        }
         await runCodeModeCli({
           env,
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
@@ -403,6 +439,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(code === undefined ? {} : { inlineCode: code }),
           ...(options.file === undefined ? {} : { file: options.file }),
+          ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
           ...(options.json === undefined ? {} : { json: options.json }),
           ...(io.readStdin ? { readStdin: io.readStdin } : {}),
@@ -1867,10 +1904,10 @@ function envConfigPath(
 
 function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
   const env = io.env ?? process.env;
-  if (resolveCapletsMode({}, env).mode !== "remote") {
+  if (resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
-  const server = resolveCapletsServer(io.fetch ? { fetch: io.fetch } : {}, env);
+  const server = resolveCapletsRemote(io.fetch ? { fetch: io.fetch } : {}, env);
   return new RemoteControlClient(server);
 }
 
@@ -2086,7 +2123,7 @@ function requireRemoteClientForTarget(io: CliIO): RemoteControlClient {
   if (!remote) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "--remote requires CAPLETS_MODE=remote and CAPLETS_SERVER_URL",
+      "--remote requires CAPLETS_MODE=remote and CAPLETS_REMOTE_URL",
     );
   }
   return remote;

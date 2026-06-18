@@ -1,9 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runCodeMode } from "../src/code-mode/runner";
+import { CodeModeJournalStore } from "../src/code-mode/journal";
 import { CodeModeLogStore } from "../src/code-mode/logs";
+import { CodeModeSessionManager } from "../src/code-mode/sessions";
 import type { NativeCapletTool, NativeCapletsService } from "../src/native/service";
 
 function service(): NativeCapletsService {
@@ -151,6 +153,96 @@ describe("runCodeMode", () => {
     });
   });
 
+  it("rejects session ids when no session manager is available", async () => {
+    const native = service();
+    const result = await runCodeMode({
+      code: "return missingFromSession;",
+      service: native,
+      sessionId: "expired-session",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "SESSION_NOT_FOUND" },
+      diagnostics: [],
+      meta: { sessionId: "expired-session", sessionStatus: null },
+    });
+    expect(native.execute).not.toHaveBeenCalled();
+  });
+
+  it("journals Caplet execution as side-effecting recovery history", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-runner-journal-"));
+    try {
+      const journalStore = new CodeModeJournalStore({
+        stateDir: dir,
+        secret: "test-secret",
+        now: () => new Date("2026-06-17T12:00:00.000Z"),
+      });
+      const sessionManager = new CodeModeSessionManager({ idGenerator: () => "session-journal" });
+      const result = await runCodeMode({
+        code: 'return await caplets.github.callTool("listIssues", { state: "open" });',
+        service: service(),
+        sessionManager,
+        journalStore,
+      });
+
+      expect(result.ok).toBe(true);
+      const recovery = await journalStore.readRecovery({
+        recoveryRef: result.meta.recoveryRef ?? "",
+      });
+
+      expect(recovery.entries).toEqual([
+        expect.objectContaining({
+          recoveryClassification: "side_effecting",
+          code: expect.stringContaining("caplets.github.callTool"),
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replace Code Mode results when journal storage fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-runner-journal-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "caplets-code-mode-runner-journal-outside-"));
+    try {
+      mkdirSync(join(dir, "code-mode"));
+      symlinkSync(outside, join(dir, "code-mode", "journal"));
+      const journalStore = new CodeModeJournalStore({
+        stateDir: dir,
+        secret: "test-secret",
+      });
+      const native = service();
+      const sessionManager = new CodeModeSessionManager({
+        idGenerator: () => "session-journal-failure",
+      });
+      const success = await runCodeMode({
+        code: 'return await caplets.github.callTool("listIssues", { state: "open" });',
+        service: native,
+        sessionManager,
+        journalStore,
+      });
+      const diagnostic = await runCodeMode({
+        code: 'await caplets.github.call("listIssues", {});',
+        service: service(),
+        sessionManager,
+        sessionId: "session-journal-failure",
+        journalStore,
+      });
+
+      expect(success).toMatchObject({ ok: true });
+      expect(native.execute).toHaveBeenCalled();
+      expect(diagnostic).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+      });
+      sessionManager.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("fails non-JSON return values with a structured serialization diagnostic", async () => {
     const result = await runCodeMode({
       code: "return 1n;",
@@ -161,5 +253,29 @@ describe("runCodeMode", () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
       "SERIALIZATION_ERROR",
     );
+  });
+
+  it("records successful session cells before serialization errors return", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-serialization" });
+    try {
+      const first = await runCodeMode({
+        code: "function helper() { return 1n; }\nreturn helper();",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "return typeof helper;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-serialization",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: false, error: { code: "SERIALIZATION_ERROR" } });
+      expect(second).toMatchObject({ ok: true, value: "function", diagnostics: [] });
+    } finally {
+      manager.close();
+    }
   });
 });

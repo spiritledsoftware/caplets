@@ -30,6 +30,8 @@ export type CodeModeDiagnostic = {
   column?: number;
 };
 
+export type CodeModeSessionStatus = "created" | "reused";
+
 export type CodeModeRunMeta = {
   runId: string;
   traceId: string;
@@ -37,6 +39,9 @@ export type CodeModeRunMeta = {
   durationMs: number;
   timeoutMs: number;
   maxTimeoutMs: number;
+  sessionId?: string | null;
+  sessionStatus?: CodeModeSessionStatus | null;
+  recoveryRef?: string | null;
 };
 
 export type CodeModeRunError = {
@@ -119,5 +124,35 @@ export type ReadLogsInput = {
 
 export type ReadLogsResult = {
   entries: CodeModeLogEntry[];
+  nextCursor?: string;
+};
+
+export type ReadCodeModeRecoveryInput = {
+  recoveryRef: string;
+  cursor?: string;
+  limit?: number;
+};
+
+export type CodeModeRecoveryClassification = "setup_like" | "side_effecting" | "unknown";
+
+export type CodeModeRecoveryEntry = {
+  timestamp: string;
+  code: string;
+  declarationHash: string;
+  outcome:
+    | { ok: true }
+    | {
+        ok: false;
+        code: string;
+        message: string;
+      };
+  diagnostics: Array<Pick<CodeModeDiagnostic, "code" | "severity" | "message">>;
+  recoveryClassification: CodeModeRecoveryClassification;
+  logsStored?: boolean;
+  summary?: string;
+};
+
+export type ReadCodeModeRecoveryResult = {
+  entries: CodeModeRecoveryEntry[];
   nextCursor?: string;
 };

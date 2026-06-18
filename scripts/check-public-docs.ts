@@ -41,7 +41,10 @@ const requiredContent = new Map<string, string[]>([
     ],
   ],
   ["configuration.mdx", ["https://caplets.dev/config.schema.json", ".caplets/config.json"]],
-  ["code-mode.mdx", ["caplets__code_mode", "caplets.osv.searchTools", "caplets.osv.callTool"]],
+  [
+    "code-mode.mdx",
+    ["caplets__code_mode", "caplets.osv.searchTools", "caplets.osv.callTool", "sessionId"],
+  ],
   ["capabilities.mdx", ["CAPLET.md", "OpenAPI", "GraphQL", "MCP"]],
   ["agent-integrations.mdx", ["Codex", "Claude", "OpenCode", "Pi"]],
   ["remote-attach.mdx", ["caplets attach", "CAPLETS_MODE=remote"]],

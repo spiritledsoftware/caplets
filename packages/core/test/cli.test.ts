@@ -742,7 +742,7 @@ describe("cli init", () => {
         {
           env: {
             CAPLETS_MODE: "remote",
-            CAPLETS_SERVER_URL: "http://127.0.0.1:5387",
+            CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
             CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
             CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
           },
@@ -2830,8 +2830,8 @@ describe("cli setup", () => {
         },
       ],
       nextSteps: [
-        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_SERVER_URL=https://caplets.example.test/caplets.",
-        "Keep CAPLETS_SERVER_PASSWORD in your shell or secret manager.",
+        "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://caplets.example.test/caplets.",
+        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
       ],
     });
   });

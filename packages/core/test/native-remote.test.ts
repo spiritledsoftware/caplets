@@ -367,6 +367,36 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("loads older attach manifests without Code Mode caplet entries", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          const { codeModeCaplets: _codeModeCaplets, ...manifest } = attachManifest(
+            "rev-1",
+            "export-caplet",
+          );
+          return Response.json(manifest);
+        }
+        return Response.json({ ok: true, data: { invoked: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await expect(remote.listTools()).resolves.toEqual([
+      expect.objectContaining({
+        name: "remote",
+        codeModeCaplets: [],
+      }),
+    ]);
+    await expect(remote.callTool("remote", { operation: "inspect" })).resolves.toEqual({
+      invoked: true,
+    });
+    await remote.close();
+  });
+
   it("notifies listeners when the attach events stream reports a manifest change", async () => {
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();
@@ -969,9 +999,20 @@ describe("RemoteNativeCapletsService", () => {
       expect.objectContaining({
         caplet: "code_mode",
         codeModeRun: true,
+        description: expect.stringContaining("`meta.sessionId`"),
+        promptGuidance: expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("meta.recoveryRef"),
+        ]),
         inputSchema: expect.objectContaining({
           required: ["code"],
-          properties: expect.objectContaining({ code: expect.any(Object) }),
+          properties: expect.objectContaining({
+            code: expect.any(Object),
+            sessionId: expect.objectContaining({
+              description: expect.stringContaining("Omit to create a fresh reusable session"),
+            }),
+          }),
         }),
       }),
     );
@@ -1312,7 +1353,7 @@ describe("createNativeCapletsService remote mode", () => {
     const fixture = client();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
     });
 
@@ -1330,7 +1371,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         remoteClientFactory,
         localServiceFactory,
       }),
@@ -1357,7 +1398,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory,
       }),
@@ -1386,7 +1427,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory,
         writeErr,
@@ -1414,7 +1455,7 @@ describe("createNativeCapletsService remote mode", () => {
     expect(() =>
       createNativeCapletsService({
         mode: "remote",
-        server: { url: "http://127.0.0.1:5387" },
+        remote: { url: "http://127.0.0.1:5387" },
         localServiceFactory: vi.fn(() => localService),
         remoteClientFactory: vi.fn(() => {
           throw new Error("Project Binding unavailable");
@@ -1435,7 +1476,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
 
     const service = createNativeCapletsService({
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => {
         throw new Error("Project Binding unavailable");
       }),
@@ -1444,7 +1485,7 @@ describe("createNativeCapletsService remote mode", () => {
       writeErr,
     });
     const secondService = createNativeCapletsService({
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => {
         throw new Error("Project Binding unavailable");
       }),
@@ -1477,7 +1518,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1511,7 +1552,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1556,7 +1597,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
       writeErr,
@@ -1604,7 +1645,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1686,7 +1727,7 @@ describe("createNativeCapletsService remote mode", () => {
     const writeErr = vi.fn();
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1736,7 +1777,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1761,7 +1802,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1774,6 +1815,18 @@ describe("createNativeCapletsService remote mode", () => {
     expect(tools.find((tool) => tool.caplet === "code_mode")).toEqual(
       expect.objectContaining({
         codeModeRun: true,
+        description: expect.stringContaining("`meta.sessionId`"),
+        promptGuidance: expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+        ]),
+        inputSchema: expect.objectContaining({
+          properties: expect.objectContaining({
+            sessionId: expect.objectContaining({
+              type: "string",
+              description: expect.stringContaining("Unknown or unavailable session IDs fail"),
+            }),
+          }),
+        }),
         codeModeCaplets: expect.arrayContaining([
           expect.objectContaining({ id: "remote-only" }),
           expect.objectContaining({ id: "local" }),
@@ -1815,7 +1868,7 @@ describe("createNativeCapletsService remote mode", () => {
     } satisfies NativeCapletsService;
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1852,7 +1905,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1875,7 +1928,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1909,7 +1962,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       localServiceFactory: vi.fn(() => localService),
     });
@@ -1921,6 +1974,14 @@ describe("createNativeCapletsService remote mode", () => {
         message: "Code Mode run input is invalid.",
       },
       diagnostics: [],
+    });
+    const result = (await service.execute("code_mode", { timeoutMs: 1_000 })) as {
+      meta: Record<string, unknown>;
+    };
+    expect(result.meta).toMatchObject({
+      sessionId: null,
+      sessionStatus: null,
+      recoveryRef: null,
     });
     expect(localExecute).not.toHaveBeenCalled();
     expect(fixture.api.callTool).not.toHaveBeenCalled();
@@ -1952,7 +2013,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -1961,14 +2022,24 @@ describe("createNativeCapletsService remote mode", () => {
     try {
       await service.reload();
 
+      const first = (await service.execute("code_mode", {
+        code: "var counter = 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
+      })) as { meta: { sessionId: string } };
       await expect(
         service.execute("code_mode", {
-          code: "return { keys: Object.keys(caplets).sort() };",
+          code: "counter += 1;\nreturn { keys: Object.keys(caplets).sort(), counter };",
+          sessionId: first.meta.sessionId,
         }),
       ).resolves.toMatchObject({
         ok: true,
         value: {
+          counter: 2,
           keys: ["debug", "local-code", "remote-only"],
+        },
+        meta: {
+          sessionId: first.meta.sessionId,
+          sessionStatus: "reused",
+          recoveryRef: null,
         },
       });
     } finally {
@@ -2005,7 +2076,7 @@ describe("createNativeCapletsService remote mode", () => {
     };
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
+      remote: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
       configPath: localConfig.configPath,
       projectConfigPath: localConfig.projectConfigPath,
     });
@@ -2040,7 +2111,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2069,7 +2140,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2115,7 +2186,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2149,7 +2220,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2188,7 +2259,7 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2213,7 +2284,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2241,7 +2312,7 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "cloud",
-      server: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
+      remote: { url: "https://cloud.caplets.dev/v1/ws/personal/mcp" },
       remoteClientFactory: factory,
       configPath,
       projectConfigPath,
@@ -2271,7 +2342,7 @@ describe("createNativeCapletsService remote mode", () => {
     );
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387" },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
@@ -2312,11 +2383,10 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387" },
+      remote: { url: "http://127.0.0.1:5387", pollIntervalMs: 1_000 },
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
-      remote: { pollIntervalMs: 1_000 },
     });
 
     await service.close();
@@ -2355,8 +2425,9 @@ describe("createNativeCapletsService remote mode", () => {
 
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch },
       remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
         cloud: {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
@@ -2411,8 +2482,9 @@ describe("createNativeCapletsService remote mode", () => {
     dirs.push(dir);
     const service = createNativeCapletsService({
       mode: "remote",
-      server: { url: "http://127.0.0.1:5387", fetch },
       remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
         cloud: {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
@@ -2446,7 +2518,7 @@ describe("createNativeCapletsService remote mode", () => {
 
   it("fails fast for invalid remote config", () => {
     expect(() =>
-      createNativeCapletsService({ mode: "remote", server: { url: "http://example.com" } }),
+      createNativeCapletsService({ mode: "remote", remote: { url: "http://example.com" } }),
     ).toThrow(/https/u);
   });
 });

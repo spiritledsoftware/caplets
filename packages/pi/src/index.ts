@@ -17,7 +17,7 @@ import {
   type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
-type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "server" | "remote">;
+type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
 
 export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
   Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">> & {
@@ -258,33 +258,44 @@ function topLevelCapletsOptions(
 
 function parsePiNativeOptions(
   value: unknown,
-  writeWarning?: (message: string) => void,
-  path = "settings.caplets",
+  _writeWarning?: (message: string) => void,
+  _path = "settings.caplets",
 ): PiCapletsSettings | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
+  const raw = value as Record<string, unknown>;
   const result: PiCapletsSettings = {};
-  const mode = (value as Record<string, unknown>).mode;
+  const mode = raw.mode;
   if (mode !== undefined) {
     if (mode !== "auto" && mode !== "local" && mode !== "remote" && mode !== "cloud") {
       return undefined;
     }
     result.mode = mode;
   }
-  const statusWidget = (value as Record<string, unknown>).statusWidget;
+  const statusWidget = raw.statusWidget;
   if (statusWidget !== undefined) {
     if (typeof statusWidget !== "boolean") return undefined;
     result.statusWidget = statusWidget;
   }
-  const nerdFontIcons = (value as Record<string, unknown>).nerdFontIcons;
+  const nerdFontIcons = raw.nerdFontIcons;
   if (nerdFontIcons !== undefined) {
     if (typeof nerdFontIcons !== "boolean") return undefined;
     result.nerdFontIcons = nerdFontIcons;
   }
   const remote = objectProperty(value, "remote");
+  if (raw.remote !== undefined && !remote) {
+    return undefined;
+  }
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
+    for (const key of ["url", "user", "password", "token", "workspace"] as const) {
+      const field = remote[key];
+      if (field !== undefined) {
+        if (typeof field !== "string") return undefined;
+        parsedRemote[key] = field;
+      }
+    }
     const pollIntervalMs = remote.pollIntervalMs;
     if (pollIntervalMs !== undefined) {
       if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
@@ -292,45 +303,10 @@ function parsePiNativeOptions(
     }
     result.remote = parsedRemote;
   }
-  const server = objectProperty(value, "server");
-  const parsedServer = parsePiServerOptions(server);
-  if (parsedServer === undefined && server) {
+  if (raw.server !== undefined) {
     return undefined;
-  }
-  const legacyServer = parsePiServerOptions(remote);
-  if (legacyServer === undefined && remote && hasLegacyRemoteServerFields(remote)) {
-    return undefined;
-  }
-  if (legacyServer && !parsedServer) {
-    writeWarning?.(
-      `[caplets/pi] ${path}.remote.url is deprecated; move remote.url/user/password to server.url/user/password.`,
-    );
-  }
-  if (legacyServer || parsedServer) {
-    result.server = { ...legacyServer, ...parsedServer };
   }
   return result;
-}
-
-function parsePiServerOptions(
-  value: Record<string, unknown> | undefined,
-): NonNullable<PiNativeCapletsOptions["server"]> | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const parsedServer: NonNullable<PiNativeCapletsOptions["server"]> = {};
-  for (const key of ["url", "user", "password"] as const) {
-    const field = value[key];
-    if (field !== undefined) {
-      if (typeof field !== "string") return undefined;
-      parsedServer[key] = field;
-    }
-  }
-  return Object.keys(parsedServer).length > 0 ? parsedServer : undefined;
-}
-
-function hasLegacyRemoteServerFields(remote: Record<string, unknown>): boolean {
-  return remote.url !== undefined || remote.user !== undefined || remote.password !== undefined;
 }
 
 function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {
@@ -343,7 +319,6 @@ function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons:
 function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOptions {
   return {
     ...(options.mode ? { mode: options.mode } : {}),
-    ...(options.server ? { server: options.server } : {}),
     ...(options.remote ? { remote: options.remote } : {}),
   };
 }
@@ -361,8 +336,8 @@ function shouldShowStatusWidget(
   return (
     options.mode === "remote" ||
     options.mode === "cloud" ||
-    !!options.server?.url ||
-    process.env.CAPLETS_SERVER_URL !== undefined
+    !!options.remote?.url ||
+    process.env.CAPLETS_REMOTE_URL !== undefined
   );
 }
 
@@ -634,8 +609,7 @@ function codeModeAgentContent(result: unknown): Array<{ type: "text"; text: stri
   if (diagnostics.length > 0) compact.diagnostics = diagnostics;
   const logSummary = codeModeLogSummary(logs);
   if (logSummary) compact.logs = logSummary;
-  const durationMs = meta?.durationMs;
-  if (typeof durationMs === "number") compact.durationMs = durationMs;
+  if (meta) compact.meta = meta;
   return [{ type: "text", text: JSON.stringify(compact) ?? "null" }];
 }
 

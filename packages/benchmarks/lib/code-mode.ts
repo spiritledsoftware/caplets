@@ -39,6 +39,17 @@ export type ComplexWorkflowStrategyResult = {
   successScore: number;
 };
 
+export type RepeatedWorkflowStrategyResult = {
+  strategy: "progressive-disclosure" | "code-mode";
+  providerRequests: number;
+  externalToolCalls: number;
+  setupCodeEstimatedTokens: number;
+  requestOverheadTokenProxy: number;
+  elapsedMs: number;
+  setupCodeReuseRate: number;
+  taskSuccess: boolean;
+};
+
 export type CodeModeComplexWorkflowEval = {
   task: {
     id: string;
@@ -63,6 +74,22 @@ export type CodeModeLiveRegressionScenario = {
 export type CodeModeLiveRegressionEval = {
   scenarios: CodeModeLiveRegressionScenario[];
   improvements: string[];
+};
+
+export type CodeModeRepeatedWorkflowEval = {
+  task: {
+    id: string;
+    description: string;
+  };
+  strategies: RepeatedWorkflowStrategyResult[];
+  reductions: {
+    setupCodeTokens: number;
+    providerRequests: number;
+    toolCalls: number;
+    requestOverheadTokenProxy: number;
+    elapsedMs: number;
+  };
+  claim: string;
 };
 
 export const CODE_MODE_BENCHMARK_TASKS: CodeModeBenchmarkTask[] = [
@@ -185,6 +212,11 @@ export const CODE_MODE_BENCHMARK_THRESHOLDS = {
 export const CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS = {
   minExternalCallReduction: 0.5,
   minSuccessScore: 0.9,
+  minRepeatedSetupTokenReduction: 0.4,
+  minRepeatedProviderRequestReduction: 0.4,
+  minRepeatedToolCallReduction: 0.4,
+  minRepeatedRequestOverheadReduction: 0.4,
+  minRepeatedElapsedTimeReduction: 0.4,
 } as const;
 
 const REQUIRED_LIVE_REGRESSION_IMPROVEMENTS = [
@@ -369,6 +401,114 @@ export function computeCodeModeLiveRegressionEval(): CodeModeLiveRegressionEval 
   };
 }
 
+export function computeCodeModeRepeatedWorkflowEval(): CodeModeRepeatedWorkflowEval {
+  const strategies: RepeatedWorkflowStrategyResult[] = [
+    repeatedStrategy({
+      strategy: "progressive-disclosure",
+      providerRequests: 6,
+      externalToolCalls: 12,
+      setupCodeEstimatedTokens: 620,
+      requestOverheadTokenProxy: 980,
+      elapsedMs: 18_000,
+      setupCodeReuseRate: 0,
+      taskSuccess: true,
+    }),
+    repeatedStrategy({
+      strategy: "code-mode",
+      providerRequests: 2,
+      externalToolCalls: 2,
+      setupCodeEstimatedTokens: 210,
+      requestOverheadTokenProxy: 340,
+      elapsedMs: 7_200,
+      setupCodeReuseRate: 0.5,
+      taskSuccess: true,
+    }),
+  ];
+  const progressive = repeatedStrategyByName(strategies, "progressive-disclosure");
+  const codeMode = repeatedStrategyByName(strategies, "code-mode");
+  return {
+    task: {
+      id: "repeated-release-gates",
+      description:
+        "Evaluate adjacent release gates where helper setup can be defined once and reused across Code Mode calls.",
+    },
+    strategies,
+    reductions: {
+      setupCodeTokens: reduction(
+        progressive.setupCodeEstimatedTokens,
+        codeMode.setupCodeEstimatedTokens,
+      ),
+      providerRequests: reduction(progressive.providerRequests, codeMode.providerRequests),
+      toolCalls: reduction(progressive.externalToolCalls, codeMode.externalToolCalls),
+      requestOverheadTokenProxy: reduction(
+        progressive.requestOverheadTokenProxy,
+        codeMode.requestOverheadTokenProxy,
+      ),
+      elapsedMs: reduction(progressive.elapsedMs, codeMode.elapsedMs),
+    },
+    claim:
+      "This deterministic metric shape validates report dimensions for repeated setup-code volume, provider requests, tool calls, token overhead proxy, elapsed time, and task success; it is not a live model win-rate claim.",
+  };
+}
+
+export function validateCodeModeRepeatedWorkflowEval(
+  result: CodeModeRepeatedWorkflowEval,
+): string[] {
+  const failures: string[] = [];
+  const codeMode = repeatedStrategyByName(result.strategies, "code-mode");
+  const progressive = repeatedStrategyByName(result.strategies, "progressive-disclosure");
+  if (!codeMode.taskSuccess || !progressive.taskSuccess) {
+    failures.push("Repeated workflow eval must keep task success true for both strategies.");
+  }
+  if (codeMode.setupCodeEstimatedTokens >= progressive.setupCodeEstimatedTokens) {
+    failures.push("Repeated workflow Code Mode setup-code tokens must be lower than baseline.");
+  }
+  if (codeMode.providerRequests >= progressive.providerRequests) {
+    failures.push("Repeated workflow Code Mode provider requests must be lower than baseline.");
+  }
+  if (codeMode.externalToolCalls >= progressive.externalToolCalls) {
+    failures.push("Repeated workflow Code Mode tool calls must be lower than baseline.");
+  }
+  if (codeMode.requestOverheadTokenProxy >= progressive.requestOverheadTokenProxy) {
+    failures.push(
+      "Repeated workflow Code Mode request-overhead proxy must be lower than baseline.",
+    );
+  }
+  if (codeMode.elapsedMs >= progressive.elapsedMs) {
+    failures.push("Repeated workflow Code Mode elapsed time must be lower than baseline.");
+  }
+  if (
+    result.reductions.setupCodeTokens <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedSetupTokenReduction
+  ) {
+    failures.push("Repeated workflow setup-code token reduction is below threshold.");
+  }
+  if (
+    result.reductions.providerRequests <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedProviderRequestReduction
+  ) {
+    failures.push("Repeated workflow provider request reduction is below threshold.");
+  }
+  if (
+    result.reductions.toolCalls < CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedToolCallReduction
+  ) {
+    failures.push("Repeated workflow tool-call reduction is below threshold.");
+  }
+  if (
+    result.reductions.requestOverheadTokenProxy <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedRequestOverheadReduction
+  ) {
+    failures.push("Repeated workflow request-overhead proxy reduction is below threshold.");
+  }
+  if (
+    result.reductions.elapsedMs <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedElapsedTimeReduction
+  ) {
+    failures.push("Repeated workflow elapsed-time reduction is below threshold.");
+  }
+  return failures;
+}
+
 export function validateCodeModeLiveRegressionEval(result: CodeModeLiveRegressionEval): string[] {
   const failures: string[] = [];
   for (const required of REQUIRED_LIVE_REGRESSION_IMPROVEMENTS) {
@@ -388,9 +528,12 @@ export function renderCodeModeMarkdownReport(): string {
   const benchmark = computeCodeModeBenchmark();
   const complex = computeCodeModeComplexWorkflowEval();
   const liveRegressions = computeCodeModeLiveRegressionEval();
+  const repeated = computeCodeModeRepeatedWorkflowEval();
   const codeMode = strategyByName(complex.strategies, "code-mode");
   const progressive = strategyByName(complex.strategies, "progressive-disclosure");
   const vanilla = strategyByName(complex.strategies, "vanilla-mcp");
+  const repeatedCodeMode = repeatedStrategyByName(repeated.strategies, "code-mode");
+  const repeatedProgressive = repeatedStrategyByName(repeated.strategies, "progressive-disclosure");
   return `## Code Mode Workflow Eval
 
 The deterministic Code Mode fixture covers ${benchmark.tasks.length} PRD task categories and shows ${percent(benchmark.totals.roundTripReduction)} fewer model/tool round trips versus equivalent progressive-disclosure sequences, with ${percent(benchmark.totals.contextTokenReduction)} lower approximate context tokens.
@@ -406,6 +549,17 @@ Task: ${complex.task.description}
 | Code Mode              |              ${codeMode.externalToolCalls} |               ${codeMode.llmRoundTrips} |               ${codeMode.codeModeRunCalls} |                     ${codeMode.internalCapletCalls} |                   ${codeMode.approxPayloadTokens} |          ${codeMode.successScore.toFixed(2)} |
 
 Code Mode preserves required triage fields (${complex.task.requiredFields.map((field) => `\`${field}\``).join(", ")}) while reducing external calls versus progressive disclosure by ${percent(complex.reductions.codeModeVsProgressiveExternalCalls)} and approximate payload tokens by ${percent(complex.reductions.codeModeVsProgressivePayloadTokens)}.
+
+### Repeated Workflow Session Reuse
+
+Task: ${repeated.task.description}
+
+| Strategy               | Provider requests | Tool calls | Setup-code tokens | Request overhead proxy | Elapsed time | Setup reuse rate | Task success |
+| ---------------------- | ----------------: | ---------: | ----------------: | ---------------------: | -----------: | ---------------: | ------------ |
+| Progressive disclosure |                 ${repeatedProgressive.providerRequests} |         ${repeatedProgressive.externalToolCalls} |               ${repeatedProgressive.setupCodeEstimatedTokens} |                    ${repeatedProgressive.requestOverheadTokenProxy} |      ${repeatedProgressive.elapsedMs}ms |            ${percent(repeatedProgressive.setupCodeReuseRate)} | ${repeatedProgressive.taskSuccess ? "yes" : "no"} |
+| Code Mode              |                 ${repeatedCodeMode.providerRequests} |         ${repeatedCodeMode.externalToolCalls} |               ${repeatedCodeMode.setupCodeEstimatedTokens} |                    ${repeatedCodeMode.requestOverheadTokenProxy} |       ${repeatedCodeMode.elapsedMs}ms |            ${percent(repeatedCodeMode.setupCodeReuseRate)} | ${repeatedCodeMode.taskSuccess ? "yes" : "no"} |
+
+${repeated.claim} In this stable fixture, Code Mode reduces repeated setup-code tokens by ${percent(repeated.reductions.setupCodeTokens)}, provider requests by ${percent(repeated.reductions.providerRequests)}, tool calls by ${percent(repeated.reductions.toolCalls)}, request overhead proxy by ${percent(repeated.reductions.requestOverheadTokenProxy)}, and elapsed time by ${percent(repeated.reductions.elapsedMs)} while preserving task success.
 
 ### Live Regression Guardrails
 
@@ -447,6 +601,19 @@ function strategy(
     ...input,
     missingFields: COMPLEX_WORKFLOW_REQUIRED_FIELDS.filter((field) => !preserved.has(field)),
   };
+}
+
+function repeatedStrategy(input: RepeatedWorkflowStrategyResult): RepeatedWorkflowStrategyResult {
+  return input;
+}
+
+function repeatedStrategyByName(
+  strategies: RepeatedWorkflowStrategyResult[],
+  name: RepeatedWorkflowStrategyResult["strategy"],
+): RepeatedWorkflowStrategyResult {
+  const result = strategies.find((strategy) => strategy.strategy === name);
+  if (!result) throw new Error(`Missing repeated workflow strategy ${name}`);
+  return result;
 }
 
 function strategyByName(

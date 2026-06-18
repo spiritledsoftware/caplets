@@ -3,6 +3,8 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "./runtime-api.generated";
 
 const JS_IDENTIFIER = /^[A-Za-z_$][\w$]*$/u;
 const MAX_JSDOC_CHARS = 180;
+const CODE_MODE_REPL_GUIDANCE =
+  "REPL reuse: omit `sessionId` to start a fresh reusable Code Mode session; after a successful run, keep `meta.sessionId` and pass it as `sessionId` on later calls when you want to reuse live state. Reused sessions preserve successful top-level `var` bindings, function declarations, and runtime state only while the live session remains available and compatible. A supplied `sessionId` that is unknown or no longer available fails before executing your code instead of starting an empty context. Use `meta.recoveryRef` with `caplets.debug.readRecovery({ recoveryRef })` for audit and manual reconstruction; do not automatically replay recovery history.";
 
 export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): string {
   const caplets = [...input.caplets].sort((left, right) => left.id.localeCompare(right.id));
@@ -26,6 +28,7 @@ export function generateCodeModeDeclarations(input: CodeModeDeclarationInput): s
 export function generateCodeModeRunToolDescription(declaration: string): string {
   return [
     'Run TypeScript with generated `caplets.<id>` handles and declaration hints below. Prefer a compact one-pass script for most tasks: discover, filter, execute, and synthesize inside Code Mode, then return only decision-ready JSON. Do not return full tool lists, full descriptors, schemas, raw tool payloads, or exploratory transcripts unless the user specifically needs them; keep bulky intermediate data inside the script. For discovery, use tools/searchTools for names and arg hints, then describeTool only for short-listed operations needing exact schemas, nested args, fields, or disambiguation. Never invent tool names, resource URIs, prompt names, input args, output fields, or schemas; use requiredArgs/acceptedArgs for simple calls, otherwise use describeTool for the exact callSignature/inputSchema/inputTypeScript. For fallback, check candidate handles first: `for(const h of candidates){const ready=await h.check();if(!ready.ok)continue;}`. For triage, list broad candidate records and filter in script before targeted searches so adjacent relevant items are not missed. Execute with exact args, handle `{ok:false}`, and derive final recommendations from all relevant records, not the first matching record. If records disagree or have ranges/statuses, compute the strictest applicable conclusion and preserve only the compact evidence used. Return summaries, key ids/names/titles/statuses/urls, derived fields, recommendation, caveats, and residual missing data. Before returning, remove unused descriptors/schemas/raw content. Pattern: `const h=caplets["caplet-id"];const tools=await h.searchTools("query");const d=needSchema?await h.describeTool("tool_name"):undefined;const r=await h.callTool("tool_name",args);return {facts:[...],evidence:[...]};`',
+    CODE_MODE_REPL_GUIDANCE,
     "",
     "Generated declaration hints:",
     "```ts",

@@ -95,5 +95,50 @@
     },
     "distractorFacts": ["go", "REL-2026-06-10-search", "EXC-410 is valid"],
     "validator": "release-readiness-risk-report"
+  },
+  {
+    "id": "repeated-release-gates",
+    "title": "Repeated release gate validation",
+    "prompt": "Evaluate two adjacent release gates by reusing any helper code or lookups that make the repeated workflow shorter. Return only the requested JSON final answer.",
+    "task_description": "Evaluate deploy readiness for two adjacent release records. Reuse helper setup when the selected tool surface supports it, and return whether each release can proceed, its blockers, and the shared policy threshold used.",
+    "fuzzy_description": "The agent benefits from defining helper logic once for loading deployment, quality, and policy inputs, then reusing that setup where the selected tool surface supports reuse instead of repeating boilerplate.",
+    "dependency_analysis": {
+      "servers": ["deployments", "quality", "policies"],
+      "requires": [
+        "load adjacent deployment release records",
+        "inspect quality check details",
+        "apply the shared release policy",
+        "reuse helper setup across repeated gate evaluations"
+      ],
+      "dependency_pattern": "repeated-workflow"
+    },
+    "repeatedWorkflow": {
+      "setupCodeMarkers": [
+        "async function loadGateInputs",
+        "const summarizeGate =",
+        "const gateIds ="
+      ]
+    },
+    "expectedEvidence": {
+      "servers": ["deployments", "quality", "policies"],
+      "tools": ["deployments.get_release", "quality.list_checks", "policies.get_release_policy"]
+    },
+    "expectedFacts": {
+      "gateIds": ["REL-2026-06-10-payments", "REL-2026-06-10-search"],
+      "decisionByGate": {
+        "REL-2026-06-10-payments": "hold",
+        "REL-2026-06-10-search": "proceed"
+      },
+      "blockersByGate": {
+        "REL-2026-06-10-payments": ["contract-tests", "rollback-plan"],
+        "REL-2026-06-10-search": []
+      },
+      "sharedPolicyThreshold": "risk score must not exceed 70, blocking checks must not fail, and rollback-plan warnings require a valid scoped exception"
+    },
+    "distractorFacts": [
+      "REL-2026-06-10-payments can proceed",
+      "policy threshold allows critical failures"
+    ],
+    "validator": "repeated-release-gates"
   }
 ]

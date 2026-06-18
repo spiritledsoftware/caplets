@@ -9,8 +9,7 @@ export type CapletsRemoteEnv = Partial<
     | "CAPLETS_REMOTE_USER"
     | "CAPLETS_REMOTE_PASSWORD"
     | "CAPLETS_REMOTE_TOKEN"
-    | "CAPLETS_REMOTE_WORKSPACE"
-    | "CAPLETS_SERVER_URL",
+    | "CAPLETS_REMOTE_WORKSPACE",
     string
   >
 >;

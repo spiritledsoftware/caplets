@@ -14,9 +14,15 @@ import {
   generateCodeModeDeclarations,
   generateCodeModeRunToolDescription,
 } from "../code-mode/declarations";
+import { CodeModeJournalStore } from "../code-mode/journal";
 import { CodeModeLogStore } from "../code-mode/logs";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputSchema, codeModeRunParamsSchema } from "../code-mode/tool";
+import { CodeModeSessionManager } from "../code-mode/sessions";
+import {
+  codeModeRunInputSchema,
+  codeModeRunParamsSchema,
+  emptyCodeModeRunMeta,
+} from "../code-mode/tool";
 import type { CapletsEngine } from "../engine";
 import type {
   CallableCaplet,
@@ -55,6 +61,7 @@ export class CapletsMcpSession {
   private readonly resources = new Map<string, RegisteredResource | RegisteredResourceTemplate>();
   private readonly prompts = new Map<string, RegisteredPrompt>();
   private codeModeTool: RegisteredTool | undefined;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private readonly unsubscribeReload: () => void;
   private closed = false;
 
@@ -98,6 +105,7 @@ export class CapletsMcpSession {
     if (this.closed) return;
     this.closed = true;
     this.unsubscribeReload();
+    this.codeModeSessions.close();
     this.clearRegistrations();
     await this.server.close();
   }
@@ -222,7 +230,11 @@ export class CapletsMcpSession {
           code: parsed.data.code,
           service: new EngineNativeCapletsService(this.engine),
           ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+          ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
           logStore: new CodeModeLogStore(),
+          journalStore: new CodeModeJournalStore(),
+          sessionManager: this.codeModeSessions,
+          runtimeScope: "mcp",
         })
       : {
           ok: false as const,
@@ -233,14 +245,7 @@ export class CapletsMcpSession {
           },
           diagnostics: [],
           logs: { entries: [], truncated: false, stored: false },
-          meta: {
-            runId: "",
-            traceId: "",
-            declarationHash: "",
-            durationMs: 0,
-            timeoutMs: 0,
-            maxTimeoutMs: 0,
-          },
+          meta: emptyCodeModeRunMeta(),
         };
     return {
       content: [{ type: "text" as const, text: JSON.stringify(envelope, null, 2) }],

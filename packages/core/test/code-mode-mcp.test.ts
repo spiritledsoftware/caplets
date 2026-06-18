@@ -30,6 +30,17 @@ describe("Code Mode MCP tool", () => {
     expect(server.registered.get("github")).toBeDefined();
     expect(server.registered.get("code_mode")).toBeDefined();
     expect(server.registered.get("run")).toBeUndefined();
+    const codeModeInputSchema = server.definitions.get("code_mode")?.inputSchema as Record<
+      string,
+      { description?: string }
+    >;
+    expect(codeModeInputSchema).toHaveProperty("sessionId");
+    expect(codeModeInputSchema.sessionId?.description).toContain(
+      "Omit to create a fresh reusable session",
+    );
+    expect(codeModeInputSchema.sessionId?.description).toContain(
+      "Unknown or unavailable session IDs fail before code execution",
+    );
     expect(server.definitions.get("code_mode")?.description).toContain("caplets.<id>");
     expect(server.definitions.get("code_mode")?.description).toContain(
       "Prefer a compact one-pass script for most tasks",
@@ -61,6 +72,16 @@ describe("Code Mode MCP tool", () => {
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "exact callSignature/inputSchema/inputTypeScript",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "omit `sessionId` to start a fresh reusable Code Mode session",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain("`meta.sessionId`");
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "fails before executing your code",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "do not automatically replay recovery history",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "list broad candidate records",
@@ -111,8 +132,93 @@ describe("Code Mode MCP tool", () => {
     expect(result?.structuredContent).toMatchObject({
       ok: true,
       value: { ok: true },
+      meta: {
+        sessionId: expect.any(String),
+        sessionStatus: "created",
+        recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+      },
     });
     expect(result?.content[0]).toMatchObject({ type: "text" });
+
+    await session.close();
+    await engine.close();
+  });
+
+  it("reuses issued session ids and rejects unknown session ids", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    const callback = server.callbacks.get("code_mode");
+
+    const first = await callback?.({ code: "var counter = 1;\nreturn counter;" });
+    const sessionId = first?.structuredContent?.meta.sessionId as string;
+    const reused = await callback?.({
+      code: "counter += 1;\nreturn counter;",
+      sessionId,
+    });
+    const missing = await callback?.({ code: "return { ok: true };", sessionId: "session-123" });
+
+    expect(reused?.structuredContent).toMatchObject({
+      ok: true,
+      value: 2,
+      meta: {
+        sessionId,
+        sessionStatus: "reused",
+        recoveryRef: null,
+      },
+    });
+    expect(missing?.structuredContent).toMatchObject({
+      ok: false,
+      error: { code: "SESSION_NOT_FOUND" },
+      meta: { sessionId: "session-123", sessionStatus: null },
+    });
+
+    await session.close();
+    await engine.close();
+  });
+
+  it("returns invalid-request envelopes with session metadata scaffolding", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: { name: "GitHub", description: "GitHub repo operations.", command: "node" },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    const callback = server.callbacks.get("code_mode");
+
+    const result = await callback?.({ timeoutMs: 1000 });
+    const meta = result?.structuredContent?.meta as Record<string, unknown>;
+
+    expect(result?.structuredContent).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Code Mode run input is invalid.",
+      },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+      },
+    });
+    expect(Object.prototype.hasOwnProperty.call(meta, "sessionId")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "sessionStatus")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryRef")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryCommand")).toBe(false);
+    expect(JSON.parse(result?.content[0].text ?? "{}").meta).toMatchObject({
+      sessionId: null,
+      sessionStatus: null,
+      recoveryRef: null,
+    });
 
     await session.close();
     await engine.close();
@@ -144,26 +250,28 @@ function progressiveTestConfig(config: unknown): unknown {
 
 function mockServer() {
   const registered = new Map<string, RegisteredTool>();
-  const definitions = new Map<string, { description?: string }>();
+  const definitions = new Map<string, { description?: string; inputSchema?: unknown }>();
   const callbacks = new Map<string, (request: unknown) => Promise<any>>();
   return {
     registered,
     definitions,
     callbacks,
-    registerTool: vi.fn((name: string, definition: { description?: string }, callback) => {
-      const tool = {
-        update: vi.fn(),
-        remove: vi.fn(() => registered.delete(name)),
-        enable: vi.fn(),
-        disable: vi.fn(),
-        enabled: true,
-        handler: vi.fn(),
-      } as unknown as RegisteredTool;
-      registered.set(name, tool);
-      definitions.set(name, definition);
-      callbacks.set(name, callback);
-      return tool;
-    }),
+    registerTool: vi.fn(
+      (name: string, definition: { description?: string; inputSchema?: unknown }, callback) => {
+        const tool = {
+          update: vi.fn(),
+          remove: vi.fn(() => registered.delete(name)),
+          enable: vi.fn(),
+          disable: vi.fn(),
+          enabled: true,
+          handler: vi.fn(),
+        } as unknown as RegisteredTool;
+        registered.set(name, tool);
+        definitions.set(name, definition);
+        callbacks.set(name, callback);
+        return tool;
+      },
+    ),
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };

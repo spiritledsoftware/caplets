@@ -52,12 +52,36 @@ describe("@caplets/opencode", () => {
           caplet: "code_mode",
           toolName: "caplets__code_mode",
           title: "Code Mode",
-          description: "Run Caplets Code Mode TypeScript.",
+          description:
+            "Run Caplets Code Mode TypeScript. Omit sessionId to start fresh and pass returned meta.sessionId to reuse live state.",
           codeModeRun: true,
-          promptGuidance: ["Use caplets__code_mode for multi-step Caplets workflows."],
+          promptGuidance: [
+            "Use caplets__code_mode for multi-step Caplets workflows.",
+            "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
+          ],
         },
       ],
-      execute: vi.fn(async () => ({ ok: true })),
+      execute: vi.fn(async (caplet: string) =>
+        caplet === "code_mode"
+          ? {
+              ok: true,
+              value: { ok: true },
+              diagnostics: [],
+              logs: { entries: [], truncated: false, stored: false },
+              meta: {
+                runId: "run-1",
+                traceId: "trace-1",
+                declarationHash: "hash-1",
+                sessionId: "session-1",
+                sessionStatus: "created",
+                recoveryRef: "recovery-1",
+                timeoutMs: 10000,
+                maxTimeoutMs: 10000,
+                durationMs: 25,
+              },
+            }
+          : { ok: true },
+      ),
       reload: vi.fn(async () => true),
       onToolsChanged: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
@@ -74,16 +98,44 @@ describe("@caplets/opencode", () => {
     expect(result).toContain('"ok": true');
 
     const runTool = hooks.tool!.caplets__code_mode as {
-      args: { code?: unknown; timeoutMs?: unknown };
+      description?: string;
+      args: { code?: unknown; timeoutMs?: unknown; sessionId?: unknown };
       execute(args: unknown, context: unknown): Promise<string>;
     };
+    expect(runTool.description).toContain("meta.sessionId");
     expect(runTool.args).toMatchObject({
       code: { type: "string" },
       timeoutMs: { type: "number", optional: true },
+      sessionId: { type: "string", optional: true },
     });
     const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("code_mode", { code: "return {ok:true};" });
     expect(runResult).toContain('"ok": true');
+    expect(JSON.parse(runResult)).toMatchObject({
+      meta: {
+        runId: "run-1",
+        traceId: "trace-1",
+        declarationHash: "hash-1",
+        sessionId: "session-1",
+        sessionStatus: "created",
+        recoveryRef: "recovery-1",
+        timeoutMs: 10000,
+        maxTimeoutMs: 10000,
+        durationMs: 25,
+      },
+    });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", { code: "return {ok:true};" });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "session-1" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", {
+      code: "return {ok:true};",
+      sessionId: "session-1",
+    });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "session-2" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", {
+      code: "return {ok:true};",
+      sessionId: "session-2",
+    });
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);
@@ -251,11 +303,9 @@ describe("@caplets/opencode", () => {
       {} as never,
       {
         mode: "remote",
-        server: {
+        remote: {
           url: "https://caplets.example.com",
           user: "caplets",
-        },
-        remote: {
           pollIntervalMs: 5_000,
         },
       } as never,
@@ -263,11 +313,9 @@ describe("@caplets/opencode", () => {
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "remote",
-      server: {
+      remote: {
         url: "https://caplets.example.com",
         user: "caplets",
-      },
-      remote: {
         pollIntervalMs: 5_000,
       },
     });
@@ -290,12 +338,12 @@ describe("@caplets/opencode", () => {
 
     await plugin(
       {} as never,
-      { mode: "cloud", server: { url: "https://cloud.caplets.dev" } } as never,
+      { mode: "cloud", remote: { url: "https://cloud.caplets.dev" } } as never,
     );
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "cloud",
-      server: { url: "https://cloud.caplets.dev" },
+      remote: { url: "https://cloud.caplets.dev" },
     });
   });
 

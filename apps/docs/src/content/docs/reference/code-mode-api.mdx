@@ -76,6 +76,32 @@ return {
 };
 ```
 
+Reuse a live session only when the calling client passes the `sessionId` returned in
+`meta.sessionId` from a successful fresh or reused run. Unknown or expired sessions fail
+before submitted code runs, and heap state is not durable across process restarts or TTL
+eviction.
+
+Read recovery history only with a `recoveryRef` that was already returned when the session
+was created:
+
+```ts
+const history = await caplets.debug.readRecovery({
+  recoveryRef: "code-mode-recovery-ref",
+  limit: 20,
+});
+
+return {
+  nextCursor: history.nextCursor,
+  setupCandidates: history.entries
+    .filter((entry) => entry.recoveryClassification === "setup_like")
+    .map((entry) => ({ summary: entry.summary, ok: entry.outcome.ok })),
+};
+```
+
+Recovery returns redacted, bounded summaries for reconstructing setup code manually. It does
+not restore heap, closures, timers, promises, or host handles, and a stale `sessionId` does
+not grant a recovery ref.
+
 Read execution logs through the generated debug handle when a Caplet returns a log ref:
 
 ```ts
@@ -91,6 +117,14 @@ return {
 ```
 
 ## Runtime handles
+
+```ts
+type JsonPrimitive = string | number | boolean | null;
+```
+
+```ts
+type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+```
 
 ```ts
 interface CapletHandle<Id extends string> {
@@ -129,7 +163,24 @@ interface CapletHandle<Id extends string> {
 ```ts
 interface DebugApi {
   readLogs(input: ReadLogsInput): Promise<ReadLogsResult>;
+  readRecovery(input: ReadCodeModeRecoveryInput): Promise<ReadCodeModeRecoveryResult>;
 }
+```
+
+```ts
+type CapletCard<Id extends string> = {
+  id: Id;
+  name: string;
+  description: string;
+  useWhen?: string;
+  avoidWhen?: string;
+  tags?: string[];
+  backend?: unknown;
+};
+```
+
+```ts
+type PageInput = { limit?: number; cursor?: string };
 ```
 
 ```ts
@@ -140,6 +191,18 @@ type Page<T> = { items: T[]; nextCursor?: string; truncated?: boolean };
 type CapletsResult<T> =
   | { ok: true; data: T; meta?: CapletsMeta }
   | { ok: false; error: CapletsError; meta?: CapletsMeta };
+```
+
+```ts
+type CapletsMeta = { [key: string]: unknown };
+```
+
+```ts
+type CapletsError = { code: string; message: string; details?: unknown };
+```
+
+```ts
+type BackendCheckResult = unknown;
 ```
 
 ```ts
@@ -174,9 +237,134 @@ type ToolDescriptor = {
 ```
 
 ```ts
+type ObservedOutputShape = {
+  version: 1;
+  source: "observed";
+  observedAt: string;
+  sampleCount: number;
+  typeScript: string;
+  jsonShape: JsonShape;
+  truncated: boolean;
+};
+```
+
+```ts
+type JsonShape =
+  | { kind: "null" }
+  | { kind: "boolean" }
+  | { kind: "number" }
+  | { kind: "string" }
+  | { kind: "unknown" }
+  | { kind: "array"; element?: JsonShape; truncated?: boolean }
+  | {
+      kind: "object";
+      fields: Record<string, { optional: boolean; shape: JsonShape }>;
+      truncated?: boolean;
+    }
+  | { kind: "union"; variants: JsonShape[] };
+```
+
+```ts
+type ResourceSummary = { uri?: string; name?: string; title?: string; description?: string };
+```
+
+```ts
+type ResourceTemplateSummary = {
+  uriTemplate?: string;
+  name?: string;
+  title?: string;
+  description?: string;
+};
+```
+
+```ts
+type ResourceReadResult = unknown;
+```
+
+```ts
+type PromptSummary = { name?: string; title?: string; description?: string };
+```
+
+```ts
+type PromptResult = unknown;
+```
+
+```ts
+type CompleteInput = {
+  ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
+  argument: { name: string; value: string };
+};
+```
+
+```ts
+type CompleteResult = unknown;
+```
+
+```ts
 type ReadLogsInput = { logRef: string; cursor?: string; limit?: number };
 ```
 
 ```ts
 type ReadLogsResult = { entries: CodeModeLogEntry[]; nextCursor?: string };
+```
+
+```ts
+type ReadCodeModeRecoveryInput = { recoveryRef: string; cursor?: string; limit?: number };
+```
+
+```ts
+type CodeModeDiagnostic = {
+  code: string;
+  message: string;
+  severity: "error" | "warning" | "info";
+  line?: number;
+  column?: number;
+};
+```
+
+```ts
+type CodeModeRecoveryClassification = "setup_like" | "side_effecting" | "unknown";
+```
+
+```ts
+type CodeModeRecoveryEntry = {
+  timestamp: string;
+  code: string;
+  declarationHash: string;
+  outcome: { ok: true } | { ok: false; code: string; message: string };
+  diagnostics: Array<Pick<CodeModeDiagnostic, "code" | "severity" | "message">>;
+  recoveryClassification: CodeModeRecoveryClassification;
+  logsStored?: boolean;
+  summary?: string;
+};
+```
+
+```ts
+type ReadCodeModeRecoveryResult = { entries: CodeModeRecoveryEntry[]; nextCursor?: string };
+```
+
+```ts
+type CodeModeLogEntry = {
+  level: "log" | "info" | "warn" | "error" | "debug";
+  message: string;
+  timestamp: string;
+};
+```
+
+```ts
+type CodeModeSessionStatus = "created" | "reused";
+```
+
+```ts
+type CodeModeRunMeta = {
+  runId: string;
+  traceId: string;
+  declarationHash: string;
+  durationMs: number;
+  timeoutMs: number;
+  maxTimeoutMs: number;
+  sessionId?: string | null;
+  sessionStatus?: CodeModeSessionStatus | null;
+  recoveryRef?: string | null;
+};
 ```

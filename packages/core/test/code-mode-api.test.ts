@@ -556,7 +556,7 @@ describe("Code Mode Caplets API", () => {
     expect(JSON.stringify(result)).not.toContain('"_meta"');
   });
 
-  it("adds debug.readLogs without hiding a debug caplet handle", () => {
+  it("adds debug helpers without hiding a debug caplet handle", () => {
     const native = service([
       {
         caplet: "debug",
@@ -571,11 +571,18 @@ describe("Code Mode Caplets API", () => {
       readLogs: vi.fn(async () => ({
         entries: [],
       })),
+      readRecovery: vi.fn(async () => ({
+        entries: [],
+      })),
     });
-    const debug = api.debug as CodeModeCapletHandle & { readLogs: unknown };
+    const debug = api.debug as CodeModeCapletHandle & {
+      readLogs: unknown;
+      readRecovery: unknown;
+    };
 
     expect(debug.id).toBe("debug");
     expect(debug.readLogs).toBeTypeOf("function");
+    expect(debug.readRecovery).toBeTypeOf("function");
     expect(debug.callTool).toBeTypeOf("function");
   });
 });

@@ -378,6 +378,32 @@ function codeModeApiRecipes(): string {
     "};",
     "```",
     "",
+    "Reuse a live session only when the calling client passes the `sessionId` returned in",
+    "`meta.sessionId` from a successful fresh or reused run. Unknown or expired sessions fail",
+    "before submitted code runs, and heap state is not durable across process restarts or TTL",
+    "eviction.",
+    "",
+    "Read recovery history only with a `recoveryRef` that was already returned when the session",
+    "was created:",
+    "",
+    "```ts",
+    "const history = await caplets.debug.readRecovery({",
+    '  recoveryRef: "code-mode-recovery-ref",',
+    "  limit: 20,",
+    "});",
+    "",
+    "return {",
+    "  nextCursor: history.nextCursor,",
+    "  setupCandidates: history.entries",
+    '    .filter((entry) => entry.recoveryClassification === "setup_like")',
+    "    .map((entry) => ({ summary: entry.summary, ok: entry.outcome.ok })),",
+    "};",
+    "```",
+    "",
+    "Recovery returns redacted, bounded summaries for reconstructing setup code manually. It does",
+    "not restore heap, closures, timers, promises, or host handles, and a stale `sessionId` does",
+    "not grant a recovery ref.",
+    "",
     "Read execution logs through the generated debug handle when a Caplet returns a log ref:",
     "",
     "```ts",
@@ -400,14 +426,38 @@ function codeModeApiPage(): string {
     "utf8",
   );
   const blocks = [
+    "type JsonPrimitive",
+    "type JsonValue",
     "interface CapletHandle",
     "interface DebugApi",
+    "type CapletCard",
+    "type PageInput",
     "type Page",
     "type CapletsResult",
+    "type CapletsMeta",
+    "type CapletsError",
+    "type BackendCheckResult",
     "type ToolSummary",
     "type ToolDescriptor",
+    "type ObservedOutputShape",
+    "type JsonShape",
+    "type ResourceSummary",
+    "type ResourceTemplateSummary",
+    "type ResourceReadResult",
+    "type PromptSummary",
+    "type PromptResult",
+    "type CompleteInput",
+    "type CompleteResult",
     "type ReadLogsInput",
     "type ReadLogsResult",
+    "type ReadCodeModeRecoveryInput",
+    "type CodeModeDiagnostic",
+    "type CodeModeRecoveryClassification",
+    "type CodeModeRecoveryEntry",
+    "type ReadCodeModeRecoveryResult",
+    "type CodeModeLogEntry",
+    "type CodeModeSessionStatus",
+    "type CodeModeRunMeta",
   ]
     .map((name) => extractDeclaration(source, name))
     .filter((block): block is string => Boolean(block));
@@ -447,6 +497,9 @@ function extractDeclaration(source: string, declaration: string): string | undef
   const lineEnd = source.indexOf("\n", start);
   const declarationLine = source.slice(start, lineEnd === -1 ? undefined : lineEnd);
   if (!declarationLine.includes("{")) {
+    if (declarationLine.trimEnd().endsWith(";")) {
+      return declarationLine.trim();
+    }
     const nextDeclaration = /\n(?:interface|type)\s+[A-Za-z_$]/u.exec(source.slice(lineEnd + 1));
     const end = nextDeclaration ? lineEnd + 1 + nextDeclaration.index : source.length;
     return source.slice(start, end).trim();

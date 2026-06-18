@@ -106,6 +106,56 @@ describe("@caplets/pi", () => {
     expect(registered[0]?.parameters).toEqual(generatedToolInputJsonSchema());
   });
 
+  it("registers Code Mode reuse guidance and session parameters", () => {
+    const service = mockService([
+      {
+        caplet: "code_mode",
+        toolName: "caplets__code_mode",
+        title: "Code Mode",
+        description:
+          "Run Caplets Code Mode. Omit sessionId to start fresh and pass returned meta.sessionId to reuse live state.",
+        promptGuidance: [
+          "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
+          "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
+        ],
+        inputSchema: {
+          type: "object",
+          properties: {
+            code: { type: "string" },
+            sessionId: {
+              type: "string",
+              description:
+                "Omit to create a fresh reusable session; pass a known live session ID from meta.sessionId to reuse existing REPL state.",
+            },
+          },
+          required: ["code"],
+          additionalProperties: false,
+        },
+      },
+    ]);
+    const registered: RegisteredTool[] = [];
+
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
+
+    expect(registered[0]).toMatchObject({
+      name: "caplets__code_mode",
+      description: expect.stringContaining("meta.sessionId"),
+      promptGuidelines: expect.arrayContaining([
+        expect.stringContaining("omit sessionId to start fresh"),
+        expect.stringContaining("meta.recoveryRef"),
+      ]),
+      parameters: expect.objectContaining({
+        properties: expect.objectContaining({
+          sessionId: expect.objectContaining({
+            description: expect.stringContaining("Omit to create a fresh reusable session"),
+          }),
+        }),
+      }),
+    });
+  });
+
   it("registers prefixed native tools with explicit prompt guidance", async () => {
     const service = mockService([
       {
@@ -249,6 +299,9 @@ describe("@caplets/pi", () => {
         runId: "run-1",
         traceId: "trace-1",
         declarationHash: "hash-1",
+        sessionId: "session-1",
+        sessionStatus: "created",
+        recoveryRef: "recovery-1",
         timeoutMs: 10000,
         maxTimeoutMs: 10000,
         durationMs: 25,
@@ -267,6 +320,17 @@ describe("@caplets/pi", () => {
     expect(parsed.value.issue).toEqual({
       id: "BENCH-451",
       title: "Checkout authorization retry double-submit",
+    });
+    expect(parsed.meta).toEqual({
+      runId: "run-1",
+      traceId: "trace-1",
+      declarationHash: "hash-1",
+      sessionId: "session-1",
+      sessionStatus: "created",
+      recoveryRef: "recovery-1",
+      timeoutMs: 10000,
+      maxTimeoutMs: 10000,
+      durationMs: 25,
     });
     expect(parsed.value.descriptor).toEqual({
       id: "api",
@@ -664,8 +728,8 @@ describe("@caplets/pi", () => {
     const service = mockService([]);
     const args = {
       mode: "remote",
-      server: { url: "https://caplets.example.com", user: "pi-user" },
-    } satisfies Pick<NativeCapletsServiceOptions, "mode" | "server" | "remote">;
+      remote: { url: "https://caplets.example.com", user: "pi-user" },
+    } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
 
     createCapletsPiExtension({ args })({ registerTool: vi.fn() });
@@ -963,7 +1027,7 @@ describe("@caplets/pi", () => {
           packages: ["npm:@caplets/pi"],
           caplets: {
             mode: "remote",
-            server: { url: "http://localhost:5387" },
+            remote: { url: "http://localhost:5387" },
           },
         }),
       );
@@ -983,11 +1047,11 @@ describe("@caplets/pi", () => {
     );
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
-      server: { url: "http://localhost:5387" },
+      remote: { url: "http://localhost:5387" },
     });
   });
 
-  it("loads deprecated remote server fields with a warning", async () => {
+  it("loads remote URL fields from Pi settings", async () => {
     const writeWarning = vi.fn();
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
@@ -1009,16 +1073,69 @@ describe("@caplets/pi", () => {
 
     expect(args).toEqual({
       mode: "remote",
-      server: {
+      remote: {
         url: "https://caplets.example.com",
         user: "ian",
         password: "test-password",
-      },
-      remote: {
         pollIntervalMs: 1_000,
       },
     });
-    expect(writeWarning).toHaveBeenCalledWith(expect.stringContaining("remote.url is deprecated"));
+    expect(writeWarning).not.toHaveBeenCalled();
+  });
+
+  it("rejects native server settings in Pi config", async () => {
+    const writeWarning = vi.fn();
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          server: {
+            url: "https://caplets.example.com",
+          },
+        },
+      }),
+    );
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+
+    const args = await loadPiSettingsArgs({ writeWarning });
+
+    expect(args).toEqual({});
+    expect(writeWarning).toHaveBeenCalledWith(
+      expect.stringContaining("Ignoring Pi settings args: invalid"),
+    );
+  });
+
+  it("rejects malformed legacy remote and server settings in Pi config", async () => {
+    const writeWarning = vi.fn();
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: "https://caplets.example.com",
+        },
+      }),
+    );
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          server: "https://caplets.example.com",
+        },
+      }),
+    );
+
+    const malformedRemoteArgs = await loadPiSettingsArgs({ writeWarning });
+    const malformedServerArgs = await loadPiSettingsArgs({ writeWarning });
+
+    expect(malformedRemoteArgs).toEqual({});
+    expect(malformedServerArgs).toEqual({});
+    expect(writeWarning).toHaveBeenCalledTimes(2);
+    expect(writeWarning).toHaveBeenCalledWith(
+      expect.stringContaining("Ignoring Pi settings args: invalid"),
+    );
   });
 
   it("default export loads top-level Pi settings for the native service", async () => {
@@ -1029,11 +1146,9 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          server: {
+          remote: {
             url: "https://caplets.example.com",
             user: "ian",
-          },
-          remote: {
             pollIntervalMs: 1_000,
           },
         },
@@ -1046,11 +1161,9 @@ describe("@caplets/pi", () => {
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
-      server: {
+      remote: {
         url: "https://caplets.example.com",
         user: "ian",
-      },
-      remote: {
         pollIntervalMs: 1_000,
       },
     });
@@ -1062,7 +1175,7 @@ describe("@caplets/pi", () => {
     fsMocks.readFile.mockImplementation(async (path: string) =>
       path.includes(".pi/agent/settings.json")
         ? JSON.stringify({
-            caplets: { mode: "cloud", server: { url: "https://cloud.caplets.dev" } },
+            caplets: { mode: "cloud", remote: { url: "https://cloud.caplets.dev" } },
           })
         : Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" })),
     );
@@ -1073,7 +1186,7 @@ describe("@caplets/pi", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: "cloud",
-        server: { url: "https://cloud.caplets.dev" },
+        remote: { url: "https://cloud.caplets.dev" },
       }),
     );
   });
@@ -1086,7 +1199,7 @@ describe("@caplets/pi", () => {
         packages: [
           {
             source: "npm:@caplets/pi",
-            args: { mode: "remote", server: { url: "https://ignored.example.com" } },
+            args: { mode: "remote", remote: { url: "https://ignored.example.com" } },
           },
         ],
       }),
@@ -1150,7 +1263,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          server: { url: "https://caplets.example.com" },
+          remote: { url: "https://caplets.example.com" },
         },
       }),
     );
@@ -1174,7 +1287,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          server: { url: "https://caplets.example.com" },
+          remote: { url: "https://caplets.example.com" },
           nerdFontIcons: false,
         },
       }),
@@ -1199,7 +1312,7 @@ describe("@caplets/pi", () => {
         packages: ["npm:@caplets/pi"],
         caplets: {
           mode: "remote",
-          server: { url: "https://caplets.example.com" },
+          remote: { url: "https://caplets.example.com" },
           statusWidget: false,
         },
       }),
@@ -1220,7 +1333,7 @@ describe("@caplets/pi", () => {
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
         packages: ["npm:@caplets/pi"],
-        caplets: { mode: "remote", server: { url: "https://caplets.example.com" } },
+        caplets: { mode: "remote", remote: { url: "https://caplets.example.com" } },
       }),
     );
     const { api } = mockPiApi();

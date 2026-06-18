@@ -19,11 +19,23 @@ export function nativeCapletsSystemGuidance(toolNames: string[]): string {
     tools,
     "",
     `${nativeCodeModeToolName} executes Caplets Code Mode: TypeScript with generated caplets.<id> handles for multi-step discovery, tool calls, filtering, and compact synthesis in one native call.`,
+    ...nativeCodeModePromptGuidance(),
     "Flow: inspect when the domain is unfamiliar; use tools/search_tools for downstream names, arg hints, and callTemplate; call_tool directly from callTemplate/argsTemplate for simple calls; reserve describe_tool for complex schemas, nested args, fields, or uncertainty.",
     "Do not guess downstream tool names, resource URIs, prompt names, input args, output fields, or schemas. Do not infer input/output schemas from memory.",
     "Prefer list/read/search operations for triage and avoid broad provider searches that can return huge payloads or hit rate limits.",
     "When output shaping matters, inspect one tool with describe_tool and follow its fieldSelection hint.",
   ].join("\n");
+}
+
+export function nativeCodeModePromptGuidance(): string[] {
+  return [
+    `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
+    "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
+    "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
+    "Reused sessions preserve successful top-level var bindings, function declarations, and runtime state only while the live session remains available and compatible.",
+    "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
+    "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
+  ];
 }
 
 export function nativeCapletPromptGuidance(toolName: string, caplet: CapletConfig): string[] {

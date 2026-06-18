@@ -19,6 +19,7 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
+  nativeCodeModePromptGuidance,
   nativeCodeModeToolId,
   nativeCodeModeToolName,
 } from "./tools";
@@ -30,7 +31,13 @@ import {
 } from "../code-mode/declarations";
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
-import { codeModeRunInputJsonSchema, codeModeRunInputSchema } from "../code-mode/tool";
+import { CodeModeSessionManager } from "../code-mode/sessions";
+import { CodeModeJournalStore } from "../code-mode/journal";
+import {
+  codeModeRunInputJsonSchema,
+  codeModeRunInputSchema,
+  emptyCodeModeRunMeta,
+} from "../code-mode/tool";
 import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
@@ -81,6 +88,7 @@ export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => v
 export type NativeCapletsService = {
   listTools(): NativeCapletTool[];
   execute(capletId: string, request: unknown): Promise<unknown>;
+  codeModeService?(): NativeCapletsService;
   reload(): Promise<boolean>;
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void;
   close(): Promise<void>;
@@ -129,6 +137,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
   private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
   private exposureSnapshot: ExposureSnapshot | undefined;
+  private readonly codeModeSessions = new CodeModeSessionManager();
   private postReloadRefresh: Promise<void> | undefined;
   private exposureRefreshGeneration = 0;
 
@@ -179,7 +188,11 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this.codeModeDelegate(), request);
+      return await executeCodeModeRunNative(
+        this.codeModeDelegate(),
+        request,
+        this.codeModeSessions,
+      );
     }
     const route = this.directToolRoutes.get(capletId);
     if (route) {
@@ -198,6 +211,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     return await this.engine.execute(capletId, request);
   }
 
+  codeModeService(): NativeCapletsService {
+    return this.codeModeDelegate();
+  }
+
   async reload(): Promise<boolean> {
     const reloaded = await this.engine.reload();
     await this.postReloadRefresh;
@@ -213,6 +230,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async close(): Promise<void> {
     this.unsubscribeEngineReload();
+    this.codeModeSessions.close();
     this.toolListeners.clear();
     await this.engine.close();
   }
@@ -513,11 +531,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     ].join("\n"),
     codeModeRun: true,
     codeModeCaplets,
-    promptGuidance: [
-      `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
-      "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
-      "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
-    ],
+    promptGuidance: nativeCodeModePromptGuidance(),
     inputSchema: codeModeRunInputJsonSchema(),
   };
 }
@@ -552,6 +566,7 @@ function codeModeCallableNativeTools(
 async function executeCodeModeRunNative(
   service: NativeCapletsService,
   request: unknown,
+  sessionManager?: CodeModeSessionManager,
 ): Promise<unknown> {
   const parsed = codeModeRunInputSchema.safeParse(request);
   if (!parsed.success) {
@@ -564,21 +579,17 @@ async function executeCodeModeRunNative(
       },
       diagnostics: [],
       logs: { entries: [], truncated: false, stored: false },
-      meta: {
-        runId: "",
-        traceId: "",
-        declarationHash: "",
-        durationMs: 0,
-        timeoutMs: 0,
-        maxTimeoutMs: 0,
-      },
+      meta: emptyCodeModeRunMeta(),
     };
   }
   return await runCodeMode({
     code: parsed.data.code,
     service,
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
+    ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+    journalStore: new CodeModeJournalStore(),
+    ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }
 
@@ -643,13 +654,17 @@ class CloudNativeCapletsService implements NativeCapletsService {
     return await (this.delegate ?? this.local).execute(capletId, request);
   }
 
+  codeModeService(): NativeCapletsService {
+    return (this.delegate ?? this.local).codeModeService?.() ?? this.delegate ?? this.local;
+  }
+
   async reload(): Promise<boolean> {
     if (this.closed) return false;
     if (!this.delegate) {
       try {
-        const cloudFetch = this.options.remote?.fetch ?? this.options.server?.fetch;
+        const cloudFetch = this.options.remote?.fetch;
         const remoteUrl =
-          this.options.server?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
+          this.options.remote?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
         const selection = await resolveRemoteSelection(
           {
             mode: "cloud",
@@ -738,6 +753,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private tools: NativeCapletTool[] = [];
   private closed = false;
   private batchingReload = false;
+  private readonly codeModeSessions = new CodeModeSessionManager();
 
   constructor(
     private readonly remote: NativeCapletsService,
@@ -764,12 +780,23 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(this, request);
+      return await executeCodeModeRunNative(this, request, this.codeModeSessions);
     }
     if (this.localCanExecute(capletId)) {
       return await this.local.execute(capletId, request);
     }
     return await this.remote.execute(capletId, request);
+  }
+
+  codeModeService(): NativeCapletsService {
+    return {
+      listTools: () => codeModeCallableNativeTools(this.listTools(), { fallbackToVisible: false }),
+      execute: async (capletId, request) => await this.execute(capletId, request),
+      codeModeService: () => this.codeModeService(),
+      reload: async () => await this.reload(),
+      onToolsChanged: () => () => undefined,
+      close: async () => undefined,
+    };
   }
 
   async reload(): Promise<boolean> {
@@ -806,6 +833,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       unsubscribe();
     }
     this.listeners.clear();
+    this.codeModeSessions.close();
     await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
   }
 
@@ -935,7 +963,7 @@ function createProjectBindingSessionManager(
     return undefined;
   }
   const projectRoot = cloud.projectRoot ?? findProjectRoot();
-  const cloudFetch = options.remote?.fetch ?? options.server?.fetch;
+  const cloudFetch = options.remote?.fetch;
   const clientOptions = {
     baseUrl: cloud.url,
     accessToken: cloud.accessToken,

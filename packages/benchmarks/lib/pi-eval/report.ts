@@ -27,6 +27,12 @@ export function summarizePiEvalResults(results: any[] = []) {
       averageToolSurfaceEstimatedTokens: average(
         rows.map((row) => row.metrics?.toolSurfaceEstimatedTokens),
       ),
+      averageRepeatedSetupCodeEstimatedTokens: average(
+        rows.map((row) => row.metrics?.repeatedWorkflow?.repeatedSetupCodeEstimatedTokens),
+      ),
+      averageSetupCodeReuseRate: averageRaw(
+        rows.map((row) => row.metrics?.repeatedWorkflow?.setupCodeReuseRate),
+      ),
       averageRequestTokenBuckets: averageRequestTokenBuckets(rows),
       averageToolCalls: average(
         rows.map((row) => row.metrics?.toolCallCount ?? row.score?.metrics?.toolCallCount),
@@ -47,9 +53,13 @@ export function renderPiEvalMarkdownReport(report: any): string {
     (row: any) =>
       `| ${row.mode} | ${row.product ?? "n/a"} | ${row.adapterExposure ?? "n/a"} | ${row.passed}/${row.total} | ${formatMs(row.averageDurationMs)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageRequestEstimatedTokens)} | ${formatNumber(row.averageEstimatedOutputTokens)} | ${formatNumber(row.averageRequestPlusOutputEstimatedTokens)} | ${formatNumber(row.passedOnly?.averageRequestPlusOutputEstimatedTokens)} | ${formatNumber(row.averageNonSurfaceEstimatedTokens)} | ${formatNumber(row.averageProviderTokens)} | ${formatNumber(row.passedOnly?.averageProviderTokens)} | ${formatNumber(row.averageToolSurfaceEstimatedTokens)} | ${formatNumber(row.averageToolCalls)} |`,
   );
+  const repeatedRows = report.summary.byMode.map(
+    (row: any) =>
+      `| ${row.mode} | ${formatNumber(row.averageRepeatedSetupCodeEstimatedTokens)} | ${formatPercent(row.averageSetupCodeReuseRate)} | ${formatNumber(row.averageProviderRequestCount)} | ${formatNumber(row.averageToolCalls)} | ${row.passed}/${row.total} |`,
+  );
   const comparisonRows = report.summary.comparisons.map(
     (comparison: any) =>
-      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}, request+output tokens ${formatPercent(comparison.requestPlusOutputTokenReduction)}, provider tokens ${formatPercent(comparison.providerTokenReduction)}`,
+      `- ${comparison.label}: duration ${formatPercent(comparison.durationReduction)}, LLM round trips ${formatPercent(comparison.providerRequestReduction)}, estimated request tokens ${formatPercent(comparison.requestTokenReduction)}, request+output tokens ${formatPercent(comparison.requestPlusOutputTokenReduction)}, setup-code tokens ${formatPercent(comparison.repeatedSetupTokenReduction)}, provider tokens ${formatPercent(comparison.providerTokenReduction)}`,
   );
   const publishabilityRows = report.summary.comparisons.map(
     (comparison: any) =>
@@ -85,6 +95,14 @@ export function renderPiEvalMarkdownReport(report: any): string {
     "| Mode | Product | Adapter exposure | Passed | Avg total duration | Avg LLM round trips | Avg tokenizer-estimated request tokens | Avg estimated output tokens | Avg request+output estimated tokens | Passed-only request+output estimated tokens | Avg non-surface estimated tokens | Avg provider tokens | Passed-only provider tokens | Avg tool surface estimated tokens | Avg tool calls |",
     "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...rows,
+    "",
+    "## Repeated Workflow Reuse",
+    "",
+    "Average repeated setup-code tokens are measured from Code Mode run inputs when present. Lower setup-code volume with unchanged task success is evidence of session reuse reducing repeated workflow overhead; live win rates remain model-dependent.",
+    "",
+    "| Mode | Avg repeated setup-code tokens | Avg setup-code reuse rate | Avg LLM round trips | Avg tool calls | Passed |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ...repeatedRows,
     "",
     "## Token Bucket Breakdown",
     "",
@@ -180,6 +198,10 @@ function compareRows(a: any, b: any, label: any) {
     b.averageRequestPlusOutputEstimatedTokens,
     a.averageRequestPlusOutputEstimatedTokens,
   );
+  const repeatedSetupTokenReduction = reduction(
+    b.averageRepeatedSetupCodeEstimatedTokens,
+    a.averageRepeatedSetupCodeEstimatedTokens,
+  );
   const providerTokenReduction = reduction(b.averageProviderTokens, a.averageProviderTokens);
   return {
     label,
@@ -193,6 +215,7 @@ function compareRows(a: any, b: any, label: any) {
       a.averageRequestEstimatedTokens,
     ),
     requestPlusOutputTokenReduction,
+    repeatedSetupTokenReduction,
     providerTokenReduction,
     passRateDelta,
     passRateComparable,
@@ -290,6 +313,12 @@ function average(values: any[]): number | null {
   const nums = values.filter((value) => typeof value === "number" && Number.isFinite(value));
   if (!nums.length) return null;
   return Math.round(nums.reduce((sum, value) => sum + value, 0) / nums.length);
+}
+
+function averageRaw(values: any[]): number | null {
+  const nums = values.filter((value) => typeof value === "number" && Number.isFinite(value));
+  if (!nums.length) return null;
+  return nums.reduce((sum, value) => sum + value, 0) / nums.length;
 }
 
 function formatMs(value: any) {
