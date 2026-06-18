@@ -3142,6 +3142,50 @@ describe("CodeModeDiagnosticsSession", () => {
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual([]);
   });
 
+  it("falls back to unknown for unresolved or excessively complex var types", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell(
+      "var unresolved = JSON.parse('{\"value\":1}');\nreturn unresolved;",
+    );
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return unresolved.value;",
+      session,
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "18046",
+          message: expect.stringContaining("'unresolved' is of type 'unknown'"),
+        }),
+      ]),
+    );
+  });
+
+  it("does not emit block-scoped let or const bindings into session diagnostics", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell(
+      "let localLet = 1;\nconst localConst = 2;\nreturn localLet + localConst;",
+    );
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return localLet + localConst;",
+      session,
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "2304", message: expect.stringContaining("localLet") }),
+        expect.objectContaining({ code: "2304", message: expect.stringContaining("localConst") }),
+      ]),
+    );
+  });
+
   it("uses the latest helper declaration for later diagnostics", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
