@@ -15,7 +15,9 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
       capletTools.map((caplet) => [
         caplet.toolName,
         tool({
-          description: caplet.description,
+          description: caplet.codeModeRun
+            ? openCodeCodeModeDescription(caplet.description)
+            : caplet.description,
           args: caplet.codeModeRun
             ? capletsOpenCodeRunArgs()
             : caplet.operationNames
@@ -44,11 +46,29 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
   };
 }
 
+function openCodeCodeModeDescription(description: string): string {
+  return [
+    description,
+    "",
+    "OpenCode argument shape: omit `reuse` to start a fresh reusable session. To reuse a live session, pass `{ reuse: { sessionId: meta.sessionId } }`.",
+  ].join("\n");
+}
+
 function normalizeCodeModeRunArgs(args: unknown): unknown {
   if (!args || typeof args !== "object" || Array.isArray(args)) return args;
   const record = args as Record<string, unknown>;
-  if (typeof record.sessionId !== "string" || record.sessionId.trim() !== "") return args;
-  const { sessionId: _sessionId, ...rest } = record;
+  const reuse =
+    record.reuse && typeof record.reuse === "object" && !Array.isArray(record.reuse)
+      ? (record.reuse as Record<string, unknown>)
+      : undefined;
+  const reuseSessionId = reuse?.sessionId;
+  const { reuse: _reuse, sessionId: _sessionId, ...rest } = record;
+  if (typeof record.sessionId === "string" && record.sessionId.trim() !== "") {
+    return { ...rest, sessionId: record.sessionId };
+  }
+  if (typeof reuseSessionId === "string" && reuseSessionId.trim() !== "") {
+    return { ...rest, sessionId: reuseSessionId };
+  }
   return rest;
 }
 

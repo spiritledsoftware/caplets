@@ -36,7 +36,12 @@ export function capletsOpenCodeRunArgs() {
   return {
     code: tool.schema.string(),
     timeoutMs: tool.schema.number().int().positive().optional(),
-    sessionId: tool.schema.string().optional(),
+    reuse: tool.schema
+      .object({
+        sessionId: tool.schema.string().min(1),
+      })
+      .strict()
+      .optional(),
   };
 }
 

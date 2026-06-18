@@ -100,15 +100,19 @@ describe("@caplets/opencode", () => {
 
     const runTool = hooks.tool!.caplets__code_mode as {
       description?: string;
-      args: { code?: unknown; timeoutMs?: unknown; sessionId?: unknown };
+      args: { code?: unknown; timeoutMs?: unknown; reuse?: unknown; sessionId?: unknown };
       execute(args: unknown, context: unknown): Promise<string>;
     };
     expect(runTool.description).toContain("meta.sessionId");
     expect(runTool.args).toMatchObject({
       code: { type: "string" },
       timeoutMs: { type: "number", optional: true },
-      sessionId: { type: "string", optional: true },
+      reuse: {
+        type: "object",
+        optional: true,
+      },
     });
+    expect(runTool.args).not.toHaveProperty("sessionId");
     const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("code_mode", { code: "return {ok:true};" });
     expect(runResult).toContain('"ok": true');
@@ -128,10 +132,18 @@ describe("@caplets/opencode", () => {
     });
     await runTool.execute({ code: "return {ok:true};", sessionId: "" }, {} as never);
     expect(service.execute).toHaveBeenLastCalledWith("code_mode", { code: "return {ok:true};" });
-    await runTool.execute({ code: "return {ok:true};", sessionId: "session-1" }, {} as never);
+    await runTool.execute(
+      { code: "return {ok:true};", reuse: { sessionId: "session-1" } },
+      {} as never,
+    );
     expect(service.execute).toHaveBeenLastCalledWith("code_mode", {
       code: "return {ok:true};",
       sessionId: "session-1",
+    });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "session-2" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", {
+      code: "return {ok:true};",
+      sessionId: "session-2",
     });
 
     const output = { system: [] as string[] };
