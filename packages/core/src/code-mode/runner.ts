@@ -66,6 +66,20 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   };
   const meta = (): CodeModeRunMeta => ({ ...metaBase, durationMs: Date.now() - startedAt });
 
+  if (input.sessionId !== undefined && !input.sessionManager) {
+    return {
+      ok: false,
+      error: {
+        code: "SESSION_NOT_FOUND",
+        message:
+          "Code Mode session reuse is not available in this runtime. Omit sessionId to run one-shot.",
+      },
+      diagnostics: [],
+      logs: emptyLogs(),
+      meta: meta(),
+    };
+  }
+
   const diagnostics =
     timeoutMs > maxTimeoutMs
       ? [
@@ -186,6 +200,9 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ...sandboxInput,
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
         compatibility: sessionCompatibility,
+        onSuccessfulCell: (sessionId, code) => {
+          input.sessionManager?.recordSuccessfulCell(sessionId, code);
+        },
       })
     : undefined;
   if (sessionRun && !sessionRun.ok) {
@@ -295,10 +312,6 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     journalScope: sessionRun?.compatibilityKey,
   });
   if (recoveryRef && exposeRecoveryRef) setRecoveryMeta(metaBase, recoveryRef);
-  if (input.sessionManager && sessionId) {
-    input.sessionManager.recordSuccessfulCell(sessionId, input.code);
-  }
-
   return {
     ok: true,
     value: serialized.value,

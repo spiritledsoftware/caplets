@@ -2576,6 +2576,7 @@ describe("Pi live tool surface eval harness", () => {
             "const summarizeGate = (gate) => gate.status;",
             "const gateIds = ['deploy-2026-06-17', 'deploy-2026-06-18'];",
           ].join("\n"),
+          sessionId: "session-1",
         },
       },
       {
@@ -2605,6 +2606,48 @@ describe("Pi live tool surface eval harness", () => {
     });
     expect(metrics.repeatedWorkflow.setupCodeBytes).toBeGreaterThan(100);
     expect(metrics.repeatedWorkflow.setupCodeReuseRate).toBe(1);
+  });
+
+  it("uses agent JSON tool inputs when Pi instrumentation only records tool names", () => {
+    const metrics = summarizePiEvalMetrics(
+      [
+        {
+          type: "tool_execution_start",
+          toolName: "caplets__code_mode",
+        },
+        {
+          type: "tool_execution_start",
+          toolName: "caplets__code_mode",
+        },
+      ],
+      [
+        {
+          type: "tool_execution_start",
+          toolName: "caplets__code_mode",
+          input: {
+            code: "function loadGateInputs(id) { return id; }\nconst gateIds = ['deploy'];",
+            sessionId: "session-json",
+          },
+        },
+        {
+          type: "tool_execution_start",
+          toolName: "caplets__code_mode",
+          input: {
+            code: "return gateIds.map(loadGateInputs);",
+            sessionId: "session-json",
+          },
+        },
+      ],
+    );
+
+    expect(metrics.toolCallEventSource).toBe("metrics-jsonl");
+    expect(metrics.repeatedWorkflow).toMatchObject({
+      codeModeCallCount: 2,
+      sessionReuseCallCount: 1,
+      setupCodeCallCount: 1,
+      setupCodeReuseRate: 1,
+    });
+    expect(metrics.repeatedWorkflow.setupCodeEstimatedTokens).toBeGreaterThan(0);
   });
 
   it("instruments OpenAI Responses input payloads into request token buckets", async () => {

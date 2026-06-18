@@ -811,4 +811,39 @@ describe("CodeModeSessionManager", () => {
       manager.close();
     }
   });
+
+  it("updates inferred session var types after object destructuring assignment", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-destructuring" });
+    try {
+      const first = await runCodeMode({
+        code: "var counter = 1;\nreturn counter;",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const assigned = await runCodeMode({
+        code: '({ next: counter } = { next: "ready" });\nreturn counter;',
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-destructuring",
+        runtimeScope: "test",
+      });
+      const reused = await runCodeMode({
+        code: "return counter.toUpperCase();",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-destructuring",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 1 });
+      expect(assigned).toMatchObject({ ok: true, value: "ready" });
+      expect(reused).toMatchObject({ ok: true, value: "READY" });
+      expect(reused.diagnostics.filter((diagnostic) => diagnostic.severity === "error")).toEqual(
+        [],
+      );
+    } finally {
+      manager.close();
+    }
+  });
 });

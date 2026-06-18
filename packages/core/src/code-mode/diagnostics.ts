@@ -268,6 +268,18 @@ function collectAssignedBindingNames(node: ts.Node, names: Set<string>): void {
     names.add(node.text);
     return;
   }
+  if (ts.isPropertyAssignment(node)) {
+    collectAssignedBindingNames(node.initializer, names);
+    return;
+  }
+  if (ts.isShorthandPropertyAssignment(node)) {
+    names.add(node.name.text);
+    return;
+  }
+  if (ts.isSpreadAssignment(node)) {
+    collectAssignedBindingNames(node.expression, names);
+    return;
+  }
   if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
     ts.forEachChild(node, (child) => collectAssignedBindingNames(child, names));
   }

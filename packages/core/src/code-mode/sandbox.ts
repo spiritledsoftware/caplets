@@ -93,6 +93,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
   #runtime: QuickJSRuntime;
   #context: QuickJSContext;
   #pendingDeferreds = new Set<QuickJSDeferredPromise>();
+  #pendingInvokes = new Set<QuickJSDeferredPromise>();
   #platformHost: ReturnType<typeof installCodeModePlatformHost>;
   #capletIds = new Set<string>();
   #persistentNames = new Set<string>();
@@ -183,6 +184,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
         context: this.#context,
         runtime: this.#runtime,
         pendingDeferreds: this.#pendingDeferreds,
+        pendingInvokes: this.#pendingInvokes,
         deadlineMs,
         timeoutMs,
         logs: this.#logs,
@@ -192,6 +194,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
         for (const name of cell.persistentNames) {
           this.#persistentNames.add(name);
         }
+        this.#snapshotPersistentNames(cell.persistentNames);
       } else {
         this.#restorePersistentNames([...this.#persistentNames]);
         this.#rollbackNewPersistentNames(cell.newNames);
@@ -209,7 +212,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       const persistDescriptorsChanged = this.#persistDescriptorsChanged(
         result.ok ? cell.snapshotNames : [],
       );
-      const hasObjectLikePersistentState = result.ok ? false : this.#hasObjectLikePersistentState();
+      const hasObjectLikePersistentState = this.#hasObjectLikePersistentState();
       shouldDispose = result.ok
         ? this.#pendingDeferreds.size > 0 ||
           hasGlobalNameAdditions ||
@@ -279,6 +282,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       }
     }
     this.#pendingDeferreds.clear();
+    this.#pendingInvokes.clear();
     this.#context.dispose();
     this.#runtime.dispose();
   }
@@ -297,6 +301,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     const invokeBridge = createInvokeJsonBridge(
       this.#context,
       this.#pendingDeferreds,
+      this.#pendingInvokes,
       () => this.#invoke,
       () => this.#deadlineMs,
       () => this.#timeoutMs,
@@ -632,6 +637,7 @@ async function evaluateInQuickJs(input: CodeModeSandboxInput): Promise<CodeModeS
           context,
           runtime,
           pendingDeferreds,
+          pendingInvokes: pendingDeferreds,
           deadlineMs,
           timeoutMs,
           logs,
@@ -668,6 +674,7 @@ type EvaluateCellInContextInput = {
   context: QuickJSContext;
   runtime: QuickJSRuntime;
   pendingDeferreds: Set<QuickJSDeferredPromise>;
+  pendingInvokes: Set<QuickJSDeferredPromise>;
   deadlineMs: number;
   timeoutMs: number;
   logs: CodeModeLogEntry[];
@@ -727,11 +734,19 @@ async function evaluateCellInContext(
   const stateHandle = stateResult.value;
   try {
     if (input.session) {
-      drainJobs(input.context, input.runtime, input.deadlineMs, input.timeoutMs);
-      const earlyResult = readSettledPromiseState(input.context, stateHandle, input.logs);
-      if (earlyResult) {
-        return earlyResult;
+      if (input.pendingInvokes.size > 0) {
+        await drainAsync(
+          input.context,
+          input.runtime,
+          input.pendingInvokes,
+          input.deadlineMs,
+          input.timeoutMs,
+        );
+      } else {
+        drainJobs(input.context, input.runtime, input.deadlineMs, input.timeoutMs);
       }
+      const earlyResult = readSettledPromiseState(input.context, stateHandle, input.logs);
+      if (earlyResult) return earlyResult;
     }
     await drainAsync(
       input.context,
@@ -836,6 +851,7 @@ function createInvokeBridge(
 function createInvokeJsonBridge(
   context: QuickJSContext,
   pendingDeferreds: Set<QuickJSDeferredPromise>,
+  pendingInvokes: Set<QuickJSDeferredPromise>,
   invoke: () => (input: CodeModeSandboxInvokeInput) => Promise<unknown>,
   deadlineMs: () => number,
   timeoutMs: () => number,
@@ -847,7 +863,11 @@ function createInvokeJsonBridge(
     const args = context.dump(argsHandle) as unknown[];
     const deferred = context.newPromise();
     pendingDeferreds.add(deferred);
-    deferred.settled.finally(() => pendingDeferreds.delete(deferred));
+    pendingInvokes.add(deferred);
+    deferred.settled.finally(() => {
+      pendingDeferreds.delete(deferred);
+      pendingInvokes.delete(deferred);
+    });
 
     if (
       !isCodeModeSandboxMethod(method) ||
@@ -1261,7 +1281,10 @@ function buildSessionInitSource(checkpointToken: string): string {
     "  Object.defineProperty(globalThis, '__caplets_snapshot_persist', { configurable: false, writable: false, value: (token, names) => {",
     "    assertToken(token);",
     "    const next = Object.create(null);",
-    "    for (const name of names) next[name] = hasOwn(persistBacking, name) ? persistBacking[name] : undefined;",
+    "    for (const name of names) {",
+    "      try { next[name] = (0, eval)(name); }",
+    "      catch { next[name] = hasOwn(globalThis, name) ? globalThis[name] : hasOwn(persistBacking, name) ? persistBacking[name] : undefined; }",
+    "    }",
     "    checkpointState.current = next;",
     "  } });",
     "  Object.defineProperty(globalThis, '__caplets_checkpoint_value', { configurable: false, writable: false, value: (token, name) => {",
@@ -1497,8 +1520,8 @@ function returnWithPersistenceExpression(
     return expression ? `return ${expression};` : "return;";
   }
   return expression
-    ? `return ((${returnTempName}) => (${postludeExpression}, ${returnTempName}))(${expression});`
-    : `return void (${postludeExpression});`;
+    ? `return (async (${returnTempName}) => { await Promise.resolve(); ${postludeExpression}; return ${returnTempName}; })(${expression});`
+    : `await Promise.resolve();\nreturn void (${postludeExpression});`;
 }
 
 function uniqueInternalName(baseName: string, unavailableNames: string[]): string {

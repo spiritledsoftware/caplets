@@ -22,6 +22,7 @@ export type CodeModeSessionCompatibility = {
 export type CodeModeSessionRunInput = CodeModeSandboxInput & {
   sessionId?: string;
   compatibility: CodeModeSessionCompatibility;
+  onSuccessfulCell?: (sessionId: string, code: string) => void;
 };
 
 export type CodeModeSessionRunResult =
@@ -145,6 +146,8 @@ export class CodeModeSessionManager {
       const sessionDisposedAfterRun = record.session.isDisposed();
       if (sessionDisposedAfterRun) {
         this.#sessions.delete(record.id);
+      } else if (result.ok) {
+        input.onSuccessfulCell?.(record.id, input.code);
       }
       return {
         ok: true,

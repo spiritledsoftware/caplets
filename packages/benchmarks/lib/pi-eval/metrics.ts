@@ -54,9 +54,7 @@ export function summarizePiEvalMetrics(
   const jsonToolStartEvents = jsonEvents.filter(
     (event) => String(event.type ?? event.event ?? "") === "tool_execution_start",
   );
-  const toolStartEvents = instrumentedToolStartEvents.length
-    ? instrumentedToolStartEvents
-    : jsonToolStartEvents;
+  const toolStartEvents = mergeToolStartEvents(instrumentedToolStartEvents, jsonToolStartEvents);
   const toolCallNames = toolStartEvents.map(toolNameFromEvent).filter(Boolean) as string[];
   const hybridChoice = classifyHybridChoice(toolCallNames, options);
   const directToolsPrewarmFailure =
@@ -116,7 +114,7 @@ export function summarizeRepeatedWorkflow(toolStartEvents: any[] = []) {
     (event) => toolNameFromEvent(event) === "caplets__code_mode",
   );
   const codeSnippets = codeModeEvents.map(codeFromToolEvent).filter(Boolean) as string[];
-  const sessionReuseCallCount = codeModeEvents.filter(hasSessionIdInput).length;
+  const sessionReuseCallCount = countSessionReuseCalls(codeModeEvents);
   const setupSnippets = codeSnippets.filter(hasSetupCodeMarker);
   const normalizedCounts = new Map<string, number>();
   for (const snippet of setupSnippets) {
@@ -154,14 +152,47 @@ function codeFromToolEvent(event: any): string | null {
   return typeof code === "string" ? code : null;
 }
 
-function hasSessionIdInput(event: any): boolean {
+function sessionIdFromToolEvent(event: any): string | null {
   const input = inputFromToolEvent(event);
-  return Boolean(
-    input &&
-    typeof input === "object" &&
-    typeof input.sessionId === "string" &&
-    input.sessionId.trim(),
-  );
+  if (!input || typeof input !== "object") return null;
+  if (typeof input.sessionId !== "string") return null;
+  const value = input.sessionId.trim();
+  return value.length > 0 ? value : null;
+}
+
+function countSessionReuseCalls(codeModeEvents: any[]): number {
+  const seenSessionIds = new Set<string>();
+  let count = 0;
+  for (const event of codeModeEvents) {
+    const sessionId = sessionIdFromToolEvent(event);
+    if (!sessionId) continue;
+    if (seenSessionIds.has(sessionId)) {
+      count += 1;
+      continue;
+    }
+    seenSessionIds.add(sessionId);
+  }
+  return count;
+}
+
+function mergeToolStartEvents(instrumented: any[], jsonEvents: any[]): any[] {
+  if (instrumented.length === 0) return jsonEvents;
+  if (jsonEvents.length === 0) return instrumented;
+  const jsonByToolName = new Map<string, any[]>();
+  for (const event of jsonEvents) {
+    const name = toolNameFromEvent(event);
+    if (!name) continue;
+    const events = jsonByToolName.get(name) ?? [];
+    events.push(event);
+    jsonByToolName.set(name, events);
+  }
+  return instrumented.map((event) => {
+    if (inputFromToolEvent(event) !== undefined) return event;
+    const name = toolNameFromEvent(event);
+    if (!name) return event;
+    const replacement = jsonByToolName.get(name)?.shift();
+    return replacement && inputFromToolEvent(replacement) !== undefined ? replacement : event;
+  });
 }
 
 function inputFromToolEvent(event: any): any {

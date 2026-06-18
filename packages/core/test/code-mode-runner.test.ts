@@ -153,6 +153,23 @@ describe("runCodeMode", () => {
     });
   });
 
+  it("rejects session ids when no session manager is available", async () => {
+    const native = service();
+    const result = await runCodeMode({
+      code: "return missingFromSession;",
+      service: native,
+      sessionId: "expired-session",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "SESSION_NOT_FOUND" },
+      diagnostics: [],
+      meta: { sessionId: "expired-session", sessionStatus: null },
+    });
+    expect(native.execute).not.toHaveBeenCalled();
+  });
+
   it("journals Caplet execution as side-effecting recovery history", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-runner-journal-"));
     try {
@@ -196,15 +213,19 @@ describe("runCodeMode", () => {
         secret: "test-secret",
       });
       const native = service();
+      const sessionManager = new CodeModeSessionManager({
+        idGenerator: () => "session-journal-failure",
+      });
       const success = await runCodeMode({
         code: 'return await caplets.github.callTool("listIssues", { state: "open" });',
         service: native,
-        sessionId: "session-journal-failure",
+        sessionManager,
         journalStore,
       });
       const diagnostic = await runCodeMode({
         code: 'await caplets.github.call("listIssues", {});',
         service: service(),
+        sessionManager,
         sessionId: "session-journal-failure",
         journalStore,
       });
@@ -215,6 +236,7 @@ describe("runCodeMode", () => {
         ok: false,
         error: { code: "diagnostic_blocked" },
       });
+      sessionManager.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
@@ -231,5 +253,29 @@ describe("runCodeMode", () => {
     expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
       "SERIALIZATION_ERROR",
     );
+  });
+
+  it("records successful session cells before serialization errors return", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-serialization" });
+    try {
+      const first = await runCodeMode({
+        code: "function helper() { return 1n; }\nreturn helper();",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "return typeof helper;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-serialization",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: false, error: { code: "SERIALIZATION_ERROR" } });
+      expect(second).toMatchObject({ ok: true, value: "function", diagnostics: [] });
+    } finally {
+      manager.close();
+    }
   });
 });

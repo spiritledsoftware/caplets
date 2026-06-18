@@ -2147,7 +2147,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
-  it("disposes after successful cells persist pending host promises", async () => {
+  it("drains successful cells that persist pending host promises before later runs", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
     const localInvoke = vi.fn(async () => {
@@ -2169,7 +2169,7 @@ describe("QuickJsCodeModeSandbox sessions", () => {
       });
 
       expect(first).toMatchObject({ ok: true, value: "stored" });
-      expect(second).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+      expect(second).toMatchObject({ ok: true, value: { ok: true } });
     } finally {
       session.dispose();
     }
@@ -2632,6 +2632,59 @@ describe("QuickJsCodeModeSandbox sessions", () => {
 
       expect(queued).toMatchObject({ ok: true, value: "persisted" });
       expect(next).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps primitive state changed by drained microtasks", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      await session.run({
+        code: "var x = 1;\nreturn x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const queued = await session.run({
+        code: "queueMicrotask(() => { x = 2; });\nreturn x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const next = await session.run({
+        code: "return x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(queued).toMatchObject({ ok: true, value: 1 });
+      expect(next).toMatchObject({ ok: true, value: 2 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("waits for unawaited Caplet calls before returning session results", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    const calls: string[] = [];
+    try {
+      const result = await session.run({
+        code: 'void caplets.github.check();\nreturn "done";',
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke: async (input) => {
+          await Promise.resolve();
+          calls.push(`${input.capletId}.${input.method}`);
+          return { ok: true };
+        },
+      });
+
+      expect(result).toMatchObject({ ok: true, value: "done" });
+      expect(calls).toEqual(["github.check"]);
     } finally {
       session.dispose();
     }

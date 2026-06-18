@@ -63,6 +63,33 @@ describe("Code Mode complex workflow eval", () => {
     expect(result.reductions.setupCodeTokens).toBeGreaterThanOrEqual(
       CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedSetupTokenReduction,
     );
+    expect(result.reductions.providerRequests).toBeGreaterThanOrEqual(
+      CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedProviderRequestReduction,
+    );
+    expect(result.reductions.toolCalls).toBeGreaterThanOrEqual(
+      CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedToolCallReduction,
+    );
+    expect(result.reductions.requestOverheadTokenProxy).toBeGreaterThanOrEqual(
+      CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedRequestOverheadReduction,
+    );
+    expect(result.reductions.elapsedMs).toBeGreaterThanOrEqual(
+      CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedElapsedTimeReduction,
+    );
     expect(result.claim).toContain("deterministic metric shape");
+  });
+
+  it("fails repeated-workflow validation when claimed dimensions regress", () => {
+    const result = computeCodeModeRepeatedWorkflowEval();
+    result.reductions.toolCalls = 0;
+    result.reductions.requestOverheadTokenProxy = 0;
+    result.reductions.elapsedMs = 0;
+
+    expect(validateCodeModeRepeatedWorkflowEval(result)).toEqual(
+      expect.arrayContaining([
+        "Repeated workflow tool-call reduction is below threshold.",
+        "Repeated workflow request-overhead proxy reduction is below threshold.",
+        "Repeated workflow elapsed-time reduction is below threshold.",
+      ]),
+    );
   });
 });

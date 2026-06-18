@@ -424,6 +424,7 @@ export function createProgram(io: CliIO = {}): Command {
             ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
             projectConfigPath: envProjectConfigPath(env),
             ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
             recoveryRef: options.recover,
             ...(options.json === undefined ? {} : { json: options.json }),
             writeOut,

@@ -367,6 +367,36 @@ describe("RemoteNativeCapletsService", () => {
     await remote.close();
   });
 
+  it("loads older attach manifests without Code Mode caplet entries", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          const { codeModeCaplets: _codeModeCaplets, ...manifest } = attachManifest(
+            "rev-1",
+            "export-caplet",
+          );
+          return Response.json(manifest);
+        }
+        return Response.json({ ok: true, data: { invoked: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+
+    await expect(remote.listTools()).resolves.toEqual([
+      expect.objectContaining({
+        name: "remote",
+        codeModeCaplets: [],
+      }),
+    ]);
+    await expect(remote.callTool("remote", { operation: "inspect" })).resolves.toEqual({
+      invoked: true,
+    });
+    await remote.close();
+  });
+
   it("notifies listeners when the attach events stream reports a manifest change", async () => {
     let eventController: ReadableStreamDefaultController<Uint8Array> | undefined;
     const encoder = new TextEncoder();

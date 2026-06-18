@@ -609,8 +609,9 @@ function primitiveInvokeInput(
 }
 
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
-  const codeModeMarker = attachCodeModeMarker(manifest);
-  const codeModeShadowing: "forbid" | "allow" = manifest.codeModeCaplets.some(
+  const codeModeCaplets = manifest.codeModeCaplets ?? [];
+  const codeModeMarker = attachCodeModeMarker(codeModeCaplets);
+  const codeModeShadowing: "forbid" | "allow" = codeModeCaplets.some(
     (entry) => entry.shadowing === "forbid",
   )
     ? "forbid"
@@ -638,7 +639,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
       ...codeModeMarker,
     })),
     ...primitiveToolsFromManifest(manifest, codeModeMarker),
-    ...(manifest.codeModeCaplets.length > 0
+    ...(codeModeCaplets.length > 0
       ? [
           {
             name: nativeCodeModeToolId,
@@ -646,7 +647,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
             title: "Code Mode",
             description: "Remote Caplets available to locally-run attached Code Mode.",
             codeModeRun: true,
-            codeModeCaplets: manifest.codeModeCaplets,
+            codeModeCaplets,
             shadowing: codeModeShadowing,
             inputSchema: codeModeRunInputJsonSchema(),
           },
@@ -656,9 +657,9 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
 }
 
 function attachCodeModeMarker(
-  manifest: AttachManifest,
+  codeModeCaplets: AttachCodeModeCaplet[] = [],
 ): Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never> {
-  return manifest.codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
+  return codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
 }
 
 function primitiveToolsFromManifest(
@@ -790,7 +791,7 @@ function exportMapFor(manifest: AttachManifest): Map<string, AttachManifestExpor
   for (const entry of manifest.tools) {
     mapped.set(entry.name, entry);
   }
-  for (const entry of manifest.codeModeCaplets) {
+  for (const entry of manifest.codeModeCaplets ?? []) {
     setIfAbsent(entry.capletId, entry);
     setIfAbsent(entry.name, entry);
   }
@@ -907,7 +908,7 @@ function compatibleExport(
     ...manifest.resourceTemplates,
     ...manifest.prompts,
     ...manifest.completions,
-    ...manifest.codeModeCaplets,
+    ...(manifest.codeModeCaplets ?? []),
   ].find((entry) => entry.stableId === previous.stableId);
   if (!next) return undefined;
   if (next.kind !== previous.kind) return undefined;

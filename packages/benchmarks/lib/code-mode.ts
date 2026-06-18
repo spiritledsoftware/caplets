@@ -213,6 +213,10 @@ export const CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS = {
   minExternalCallReduction: 0.5,
   minSuccessScore: 0.9,
   minRepeatedSetupTokenReduction: 0.4,
+  minRepeatedProviderRequestReduction: 0.4,
+  minRepeatedToolCallReduction: 0.4,
+  minRepeatedRequestOverheadReduction: 0.4,
+  minRepeatedElapsedTimeReduction: 0.4,
 } as const;
 
 const REQUIRED_LIVE_REGRESSION_IMPROVEMENTS = [
@@ -462,11 +466,45 @@ export function validateCodeModeRepeatedWorkflowEval(
   if (codeMode.providerRequests >= progressive.providerRequests) {
     failures.push("Repeated workflow Code Mode provider requests must be lower than baseline.");
   }
+  if (codeMode.externalToolCalls >= progressive.externalToolCalls) {
+    failures.push("Repeated workflow Code Mode tool calls must be lower than baseline.");
+  }
+  if (codeMode.requestOverheadTokenProxy >= progressive.requestOverheadTokenProxy) {
+    failures.push(
+      "Repeated workflow Code Mode request-overhead proxy must be lower than baseline.",
+    );
+  }
+  if (codeMode.elapsedMs >= progressive.elapsedMs) {
+    failures.push("Repeated workflow Code Mode elapsed time must be lower than baseline.");
+  }
   if (
     result.reductions.setupCodeTokens <
     CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedSetupTokenReduction
   ) {
     failures.push("Repeated workflow setup-code token reduction is below threshold.");
+  }
+  if (
+    result.reductions.providerRequests <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedProviderRequestReduction
+  ) {
+    failures.push("Repeated workflow provider request reduction is below threshold.");
+  }
+  if (
+    result.reductions.toolCalls < CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedToolCallReduction
+  ) {
+    failures.push("Repeated workflow tool-call reduction is below threshold.");
+  }
+  if (
+    result.reductions.requestOverheadTokenProxy <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedRequestOverheadReduction
+  ) {
+    failures.push("Repeated workflow request-overhead proxy reduction is below threshold.");
+  }
+  if (
+    result.reductions.elapsedMs <
+    CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minRepeatedElapsedTimeReduction
+  ) {
+    failures.push("Repeated workflow elapsed-time reduction is below threshold.");
   }
   return failures;
 }
