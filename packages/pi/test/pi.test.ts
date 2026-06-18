@@ -299,6 +299,10 @@ describe("@caplets/pi", () => {
         runId: "run-1",
         traceId: "trace-1",
         declarationHash: "hash-1",
+        sessionId: "session-1",
+        sessionStatus: "created",
+        recoveryRef: "recovery-1",
+        recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
         timeoutMs: 10000,
         maxTimeoutMs: 10000,
         durationMs: 25,
@@ -317,6 +321,18 @@ describe("@caplets/pi", () => {
     expect(parsed.value.issue).toEqual({
       id: "BENCH-451",
       title: "Checkout authorization retry double-submit",
+    });
+    expect(parsed.meta).toEqual({
+      runId: "run-1",
+      traceId: "trace-1",
+      declarationHash: "hash-1",
+      sessionId: "session-1",
+      sessionStatus: "created",
+      recoveryRef: "recovery-1",
+      recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
+      timeoutMs: 10000,
+      maxTimeoutMs: 10000,
+      durationMs: 25,
     });
     expect(parsed.value.descriptor).toEqual({
       id: "api",

@@ -634,8 +634,7 @@ function codeModeAgentContent(result: unknown): Array<{ type: "text"; text: stri
   if (diagnostics.length > 0) compact.diagnostics = diagnostics;
   const logSummary = codeModeLogSummary(logs);
   if (logSummary) compact.logs = logSummary;
-  const durationMs = meta?.durationMs;
-  if (typeof durationMs === "number") compact.durationMs = durationMs;
+  if (meta) compact.meta = meta;
   return [{ type: "text", text: JSON.stringify(compact) ?? "null" }];
 }
 
