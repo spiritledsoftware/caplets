@@ -17,9 +17,32 @@ describe("@caplets/core/code-mode public API", () => {
   it("imports as a pure API entrypoint without runtime-only exports", () => {
     const entrypoint = readFileSync(resolve(codeModeSourceRoot, "index.ts"), "utf8");
 
-    expect(entrypoint).not.toContain("codeModeRunInputSchema");
-    expect(entrypoint).not.toContain("runCodeMode");
-    expect(entrypoint).not.toContain("QuickJsCodeModeSandbox");
+    const forbiddenRuntimeExports = [
+      "codeModeRunInputSchema",
+      "runCodeMode",
+      "RunCodeModeInput",
+      "QuickJsCodeModeSandbox",
+      "CodeModeSandbox",
+      "CodeModeReplSession",
+      "CodeModeSessionManager",
+      "CodeModeSessionRunInput",
+      "CodeModeSessionRunResult",
+      "CodeModeJournalStore",
+      "CodeModeJournalEntry",
+      "StoreCodeModeJournalEntryInput",
+      "CODE_MODE_SESSION_COMPATIBILITY_VERSION",
+      "DEFAULT_CODE_MODE_SESSION_TTL_MS",
+      "DEFAULT_CODE_MODE_SESSION_LIMIT",
+    ];
+    for (const forbiddenExport of forbiddenRuntimeExports) {
+      expect(entrypoint).not.toContain(forbiddenExport);
+    }
+
+    expect(entrypointModules(resolve(codeModeSourceRoot, "index.ts"))).toEqual([
+      "./declarations",
+      "./static-analysis",
+      "./types",
+    ]);
     expect(transitiveValueImports(resolve(codeModeSourceRoot, "index.ts"))).toEqual([
       "static-analysis.ts imports @babel/parser",
     ]);
@@ -43,6 +66,17 @@ describe("@caplets/core/code-mode public API", () => {
     expect(generateCodeModeRunToolDescription(declaration)).toContain(
       'const h=caplets["caplet-id"]',
     );
+  });
+
+  it("exports public session and recovery declaration types without runtime stores", () => {
+    const entrypoint = readFileSync(resolve(codeModeSourceRoot, "index.ts"), "utf8");
+
+    expect(entrypoint).toContain("CodeModeSessionStatus");
+    expect(entrypoint).toContain("ReadCodeModeRecoveryInput");
+    expect(entrypoint).toContain("ReadCodeModeRecoveryResult");
+    expect(entrypoint).toContain("CodeModeRecoveryEntry");
+    expect(entrypoint).not.toContain("CodeModeJournalStore");
+    expect(entrypoint).not.toContain("CodeModeSessionManager");
   });
 });
 
@@ -100,6 +134,31 @@ function valueSpecifiers(source: string): string[] {
   }
 
   return specifiers;
+}
+
+function entrypointModules(entrypoint: string): string[] {
+  const source = readFileSync(entrypoint, "utf8");
+  const modules: string[] = [];
+
+  const sourceFile = ts.createSourceFile(
+    "/caplets-code-mode-public-api.ts",
+    source,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  for (const statement of sourceFile.statements) {
+    if (
+      (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      modules.push(statement.moduleSpecifier.text);
+    }
+  }
+
+  return modules.sort();
 }
 
 function resolveModule(baseDir: string, specifier: string): string | undefined {
