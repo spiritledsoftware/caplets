@@ -196,8 +196,17 @@ export class CodeModeSessionManager {
     return record.diagnosticsSession;
   }
 
-  recordSuccessfulCell(sessionId: string, code: string): void {
-    this.#sessions.get(sessionId)?.diagnosticsSession.recordSuccessfulCell(code);
+  isBusy(sessionId: string, compatibility: CodeModeSessionCompatibility): boolean {
+    this.#evictExpired();
+    const record = this.#sessions.get(sessionId);
+    if (!record) return false;
+    const compatibilityKey = compatibilityKeyFor(compatibility);
+    if (record.compatibilityKey !== compatibilityKey) return false;
+    return record.busy;
+  }
+
+  recordSuccessfulCell(sessionId: string, code: string, declaration = ""): void {
+    this.#sessions.get(sessionId)?.diagnosticsSession.recordSuccessfulCell(code, declaration);
   }
 
   async #createRecord(id: string, compatibilityKey: string): Promise<SessionRecord | undefined> {

@@ -554,6 +554,33 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("keeps debug helpers additive on a real debug Caplet handle", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    const localInvoke = vi.fn(async (input) => ({
+      capletId: input.capletId,
+      method: input.method,
+    }));
+    try {
+      const result = await session.run({
+        code: "return { inspect: await caplets.debug.inspect(), readLogs: typeof caplets.debug.readLogs };",
+        capletIds: ["debug"],
+        timeoutMs: 1_000,
+        invoke: localInvoke,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          inspect: { capletId: "debug", method: "inspect" },
+          readLogs: "function",
+        },
+      });
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("preserves duplicate var and let binding errors inside a cell", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
@@ -2662,6 +2689,29 @@ describe("QuickJsCodeModeSandbox sessions", () => {
 
       expect(queued).toMatchObject({ ok: true, value: 1 });
       expect(next).toMatchObject({ ok: true, value: 2 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("does not restore persisted names inside switch blocks shadowed by later clauses", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      await session.run({
+        code: "var x = 'persisted';\nreturn x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const result = await session.run({
+        code: 'const kind = "a";\nswitch (kind) { case "a": return 1; case "b": let x = 2; return x; }\nreturn 0;',
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 1 });
     } finally {
       session.dispose();
     }

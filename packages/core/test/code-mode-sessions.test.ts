@@ -136,6 +136,54 @@ describe("CodeModeSessionManager", () => {
     }
   });
 
+  it("infers prior helper return types for reused-session diagnostics", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-helper-inferred" });
+    try {
+      const first = await runCodeMode({
+        code: "function helper() { return 42; }\nreturn helper();",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "const n: number = helper();\nreturn n + 1;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-helper-inferred",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 42 });
+      expect(second).toMatchObject({ ok: true, value: 43, diagnostics: [] });
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("records generated Caplet handle declarations for persisted session vars", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-handle-var" });
+    try {
+      const first = await runCodeMode({
+        code: "var gh = caplets.github;\nreturn gh.id;",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "return await gh.inspect();",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-handle-var",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: "github" });
+      expect(second).toMatchObject({ ok: true, diagnostics: [] });
+    } finally {
+      manager.close();
+    }
+  });
+
   it("evicts idle sessions by TTL", async () => {
     let now = 0;
     const manager = new CodeModeSessionManager({
@@ -461,6 +509,7 @@ describe("CodeModeSessionManager", () => {
       });
 
       expect(result).toMatchObject({ ok: true, value: 1 });
+      expect(result.meta).toMatchObject({ sessionId: null, sessionStatus: null });
       expect(recovery.entries).toEqual([
         expect.objectContaining({
           recoveryClassification: "unknown",
@@ -603,6 +652,42 @@ describe("CodeModeSessionManager", () => {
       expect(busy).toMatchObject({
         ok: false,
         error: { code: "SESSION_BUSY" },
+      });
+      await slow;
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("returns busy before diagnostics for overlapping cells that reference new state", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-busy-diagnostics" });
+    try {
+      await runCodeMode({
+        code: "var value = 1;\nreturn value;",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const slow = runCodeMode({
+        code: "await new Promise((resolve) => setTimeout(resolve, 50));\nfunction activeHelper() { return value; }\nreturn activeHelper();",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-busy-diagnostics",
+        runtimeScope: "test",
+        timeoutMs: 1_000,
+      });
+      const busy = await runCodeMode({
+        code: "return activeHelper();",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-busy-diagnostics",
+        runtimeScope: "test",
+      });
+
+      expect(busy).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_BUSY" },
+        diagnostics: [],
       });
       await slow;
     } finally {

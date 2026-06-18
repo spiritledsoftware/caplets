@@ -101,29 +101,17 @@ export class CodeModeDiagnosticsSession {
     return [...this.#declarations.values()].join("\n");
   }
 
-  recordSuccessfulCell(code: string): void {
+  recordSuccessfulCell(code: string, declaration = ""): void {
     const source = ts.createSourceFile(
       "/caplets-code-mode/session-cell.ts",
       code,
       ts.ScriptTarget.ES2022,
       true,
     );
-    for (const statement of source.statements) {
-      if (ts.isFunctionDeclaration(statement) && statement.name) {
-        const typeParameters = statement.typeParameters
-          ? `<${statement.typeParameters.map((typeParameter) => typeParameter.getText(source)).join(", ")}>`
-          : "";
-        const params = statement.parameters.map((parameter) => ambientParameter(parameter, source));
-        const returnType = statement.type ? `: ${statement.type.getText(source)}` : ": unknown";
-        this.#declarations.set(
-          statement.name.text,
-          `declare function ${statement.name.text}${typeParameters}(${params.join(", ")})${returnType};`,
-        );
-      }
-    }
     const compilerOptions = codeModeCompilerOptions();
     const ambientDeclarations = [
       CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
+      declaration,
       this.declaration(),
     ].join("\n");
     const host = createVirtualCompilerHost(compilerOptions, {
@@ -133,10 +121,38 @@ export class CodeModeDiagnosticsSession {
     const program = ts.createProgram([CODE_FILE, AMBIENT_FILE], compilerOptions, host);
     const checker = program.getTypeChecker();
     const programSource = program.getSourceFile(CODE_FILE) ?? source;
+    for (const statement of programSource.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name) {
+        const typeParameters = statement.typeParameters
+          ? `<${statement.typeParameters.map((typeParameter) => typeParameter.getText(programSource)).join(", ")}>`
+          : "";
+        const params = statement.parameters.map((parameter) =>
+          ambientParameter(parameter, programSource),
+        );
+        const signature = checker.getSignatureFromDeclaration(statement);
+        const inferredReturnType = signature
+          ? safeAmbientFunctionReturnType(
+              checker.getReturnTypeOfSignature(signature),
+              checker,
+              ambientDeclarations,
+            )
+          : "unknown";
+        const returnType = statement.type
+          ? statement.type.getText(programSource)
+          : inferredReturnType;
+        this.#declarations.set(
+          statement.name.text,
+          `declare function ${statement.name.text}${typeParameters}(${params.join(", ")}): ${returnType};`,
+        );
+      }
+    }
     const previousBindingNames = new Set(this.#declarations.keys());
     const assignedNames = collectFunctionScopedAssignedNames(programSource);
     for (const binding of collectFunctionScopedVarBindings(programSource, checker, {
-      ambientDeclarationFor: (name) => this.declarationExcluding(name),
+      ambientDeclarationFor: (name) =>
+        [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION, declaration, this.declarationExcluding(name)]
+          .filter(Boolean)
+          .join("\n"),
       assignedNames,
       previousBindingNames,
     })) {
@@ -300,6 +316,30 @@ function safeAmbientType(
   checker: ts.TypeChecker,
   ambientDeclaration: string,
 ): string {
+  return safeAmbientTypeText(type, checker, ambientDeclaration, (typeText) =>
+    isSelfContainedAmbientDeclaration(`declare let ${name}: ${typeText};`, ambientDeclaration),
+  );
+}
+
+function safeAmbientFunctionReturnType(
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  ambientDeclaration: string,
+): string {
+  return safeAmbientTypeText(type, checker, ambientDeclaration, (typeText) =>
+    isSelfContainedAmbientDeclaration(
+      `declare function __caplets_return_probe__(): ${typeText};`,
+      ambientDeclaration,
+    ),
+  );
+}
+
+function safeAmbientTypeText(
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  ambientDeclaration: string,
+  isSelfContained: (typeText: string) => boolean,
+): string {
   if (isUnsafeAmbientType(type)) {
     return "unknown";
   }
@@ -319,7 +359,7 @@ function safeAmbientType(
   if (/\bimport\(/u.test(text)) {
     return "unknown";
   }
-  if (!isSelfContainedAmbientVarType(name, text, ambientDeclaration)) {
+  if (!isSelfContained(text)) {
     return "unknown";
   }
   return text;
@@ -329,14 +369,13 @@ function isUnsafeAmbientType(type: ts.Type): boolean {
   return Boolean(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never));
 }
 
-function isSelfContainedAmbientVarType(
-  name: string,
-  typeText: string,
+function isSelfContainedAmbientDeclaration(
+  candidateDeclaration: string,
   ambientDeclaration: string,
 ): boolean {
   const compilerOptions = codeModeCompilerOptions();
   const host = createVirtualCompilerHost(compilerOptions, {
-    [CODE_FILE]: `declare let ${name}: ${typeText};`,
+    [CODE_FILE]: candidateDeclaration,
     [AMBIENT_FILE]: ambientDeclaration,
   });
   const program = ts.createProgram([CODE_FILE, AMBIENT_FILE], compilerOptions, host);

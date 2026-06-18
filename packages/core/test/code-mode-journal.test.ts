@@ -1,4 +1,12 @@
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -75,6 +83,8 @@ describe("Code Mode journal", () => {
         now: () => new Date("2026-06-17T12:00:01.000Z"),
       });
 
+      expect(readdirSync(join(dir, "code-mode", "journal", "recovery-index"))).toHaveLength(1);
+      expect(readdirSync(join(dir, "code-mode", "journal", "session-index"))).toHaveLength(1);
       await expect(second.lookupSession("session-retained")).resolves.toEqual({
         expiresAt: stored.expiresAt,
         recoveryRef: stored.recoveryRef,

@@ -305,7 +305,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       () => this.#invoke,
       () => this.#deadlineMs,
       () => this.#timeoutMs,
-      (capletId) => capletId === "debug" || this.#capletIds.has(capletId),
+      (capletId) => this.#capletIds.has(capletId),
     );
     this.#context.setProp(this.#context.global, "__caplets_invoke_json", invokeBridge);
     invokeBridge.dispose();
@@ -869,9 +869,10 @@ function createInvokeJsonBridge(
       pendingInvokes.delete(deferred);
     });
 
+    const debugCapletActive = capletId === "debug" && isCapletActive("debug");
     if (
       !isCodeModeSandboxMethod(method) ||
-      (capletId === "debug" && !CODE_MODE_DEBUG_METHODS.has(method)) ||
+      (capletId === "debug" && !CODE_MODE_DEBUG_METHODS.has(method) && !debugCapletActive) ||
       (capletId !== "debug" && CODE_MODE_DEBUG_METHODS.has(method))
     ) {
       const errorHandle = context.newError(
@@ -1152,7 +1153,7 @@ function buildSessionInitSource(checkpointToken: string): string {
     "Object.defineProperty(globalThis, '__caplets_global_keys', { configurable: false, writable: false, value: __caplets_restore_platform.globalKeys });",
     "Object.defineProperty(globalThis, '__caplets_is_global_extensible', { configurable: false, writable: false, value: __caplets_restore_platform.isGlobalExtensible });",
     "Object.defineProperty(globalThis, '__caplets_assert_active_id', { configurable: false, writable: false, value: (capletId) => {",
-    "  if (capletId === 'debug') return;",
+    "  if (capletId === 'debug' && !__caplets_is_active_id(capletId)) return;",
     "  if (!__caplets_is_active_id(capletId)) throw new Error(`Caplet ${capletId} is not available in this Code Mode session cell.`);",
     "} });",
     "Object.defineProperty(globalThis, '__caplets_handle', { configurable: false, writable: false, value: (capletId) => ({",
@@ -1355,7 +1356,7 @@ function buildCellCapletsSource(capletIds: string[]): string {
       (capletId) =>
         `caplets[${JSON.stringify(capletId)}] = __caplets_handle(${JSON.stringify(capletId)});`,
     ),
-    "caplets.debug = {};",
+    "caplets.debug = caplets.debug ?? {};",
     "caplets.debug.readLogs = (input) => __caplets_invoke_json('debug', 'readLogs', [input]);",
     "caplets.debug.readRecovery = (input) => __caplets_invoke_json('debug', 'readRecovery', [input]);",
   ].join("\n");
@@ -1490,6 +1491,26 @@ function lexicalNamesDeclaredByNode(node: ts.Node): Set<string> {
       }
       if (ts.isFunctionDeclaration(statement) && statement.name) {
         names.add(statement.name.text);
+      }
+    }
+  }
+  if (ts.isSwitchStatement(node)) {
+    for (const clause of node.caseBlock.clauses) {
+      for (const statement of clause.statements) {
+        if (ts.isVariableStatement(statement) && !isVarDeclarationList(statement.declarationList)) {
+          for (const name of declarationListBindingNames(statement.declarationList)) {
+            names.add(name);
+          }
+        }
+        if (
+          (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) &&
+          statement.name
+        ) {
+          names.add(statement.name.text);
+        }
+        if (ts.isFunctionDeclaration(statement) && statement.name) {
+          names.add(statement.name.text);
+        }
       }
     }
   }

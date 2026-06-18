@@ -93,6 +93,12 @@ type StoredJournalFile = {
   entries: CodeModeJournalEntry[];
 };
 
+type StoredJournalIndex = {
+  version: typeof JOURNAL_VERSION;
+  journalKey: string;
+  updatedAt: string;
+};
+
 export class CodeModeJournalStore {
   private readonly stateDir: string;
   private readonly now: () => Date;
@@ -104,6 +110,7 @@ export class CodeModeJournalStore {
   private secret: string | undefined;
   private recoveryRefs = new Map<string, string>();
   private sessionRecoveryRefs = new Map<string, { recoveryRef: string; expiresAt: string }>();
+  private nextPruneAt = 0;
 
   constructor(options: CodeModeJournalStoreOptions = {}) {
     this.stateDir = options.stateDir ?? join(defaultStateBaseDir(), "caplets");
@@ -140,6 +147,8 @@ export class CodeModeJournalStore {
       entries: [...(existing?.entries ?? []), entry].slice(-this.maxEntries),
     };
     this.writeJournal(path, stored);
+    this.writeIndex(this.recoveryIndexPath(recoveryRefHash), stored);
+    this.writeIndex(this.sessionIndexPath(stored.sessionIdHash), stored);
     return { recoveryRef, expiresAt, journalKey };
   }
 
@@ -233,6 +242,18 @@ export class CodeModeJournalStore {
   }
 
   private findByRecoveryRefHash(recoveryRefHash: string): StoredJournalFile | undefined {
+    const indexed = this.readIndexPath(this.recoveryIndexPath(recoveryRefHash));
+    if (indexed) return this.readJournalPath(this.journalPath(indexed.journalKey));
+    return this.findByRecoveryRefHashSlow(recoveryRefHash);
+  }
+
+  private findBySessionIdHash(sessionIdHash: string): StoredJournalFile | undefined {
+    const indexed = this.readIndexPath(this.sessionIndexPath(sessionIdHash));
+    if (indexed) return this.readJournalPath(this.journalPath(indexed.journalKey));
+    return this.findBySessionIdHashSlow(sessionIdHash);
+  }
+
+  private findByRecoveryRefHashSlow(recoveryRefHash: string): StoredJournalFile | undefined {
     for (const filename of readdirSync(this.journalDir())) {
       if (!filename.endsWith(".json")) continue;
       const journal = this.readJournalPath(join(this.journalDir(), filename));
@@ -241,7 +262,7 @@ export class CodeModeJournalStore {
     return undefined;
   }
 
-  private findBySessionIdHash(sessionIdHash: string): StoredJournalFile | undefined {
+  private findBySessionIdHashSlow(sessionIdHash: string): StoredJournalFile | undefined {
     const journals: StoredJournalFile[] = [];
     for (const filename of readdirSync(this.journalDir())) {
       if (!filename.endsWith(".json")) continue;
@@ -251,6 +272,44 @@ export class CodeModeJournalStore {
     return journals.sort(
       (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
     )[0];
+  }
+
+  private writeIndex(path: string, journal: StoredJournalFile): void {
+    const index: StoredJournalIndex = {
+      version: JOURNAL_VERSION,
+      journalKey: journal.journalKey,
+      updatedAt: journal.updatedAt,
+    };
+    rejectSymlinkPathComponents(this.journalDir(), path, true);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(path), 0o700);
+    const tempPath = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+    writeFileSync(tempPath, `${JSON.stringify(index, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(tempPath, 0o600);
+    renameSync(tempPath, path);
+    chmodSync(path, 0o600);
+  }
+
+  private readIndexPath(path: string): StoredJournalIndex | undefined {
+    try {
+      rejectSymlinkPathComponents(this.journalDir(), path, true);
+      if (!existsSync(path)) return undefined;
+      const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<StoredJournalIndex>;
+      if (
+        parsed.version !== JOURNAL_VERSION ||
+        typeof parsed.journalKey !== "string" ||
+        typeof parsed.updatedAt !== "string"
+      ) {
+        return undefined;
+      }
+      return {
+        version: JOURNAL_VERSION,
+        journalKey: parsed.journalKey,
+        updatedAt: parsed.updatedAt,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private readJournalPath(path: string): StoredJournalFile | undefined {
@@ -302,6 +361,9 @@ export class CodeModeJournalStore {
   private pruneExpired(): void {
     const dir = this.journalDir();
     if (!existsSync(dir)) return;
+    const now = this.now().getTime();
+    if (now < this.nextPruneAt) return;
+    this.nextPruneAt = now + 60_000;
     for (const filename of readdirSync(dir)) {
       if (!filename.endsWith(".json")) continue;
       const path = join(dir, filename);
@@ -367,6 +429,14 @@ export class CodeModeJournalStore {
 
   private journalPath(journalKey: string): string {
     return join(this.journalDir(), `${journalKey}.json`);
+  }
+
+  private recoveryIndexPath(recoveryRefHash: string): string {
+    return join(this.journalDir(), "recovery-index", `${recoveryRefHash}.json`);
+  }
+
+  private sessionIndexPath(sessionIdHash: string | undefined): string {
+    return join(this.journalDir(), "session-index", `${sessionIdHash ?? "unknown"}.json`);
   }
 
   private secretPath(): string {

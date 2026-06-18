@@ -80,6 +80,27 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     };
   }
 
+  if (
+    input.sessionManager &&
+    input.sessionId &&
+    input.sessionManager.isBusy(input.sessionId, sessionCompatibility)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: "SESSION_BUSY",
+        message: `Code Mode session ${input.sessionId} is already running.`,
+      },
+      diagnostics: [],
+      logs: emptyLogs(),
+      meta: {
+        ...meta(),
+        sessionId: input.sessionId,
+        sessionStatus: null,
+      },
+    };
+  }
+
   const diagnostics =
     timeoutMs > maxTimeoutMs
       ? [
@@ -201,7 +222,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
         compatibility: sessionCompatibility,
         onSuccessfulCell: (sessionId, code) => {
-          input.sessionManager?.recordSuccessfulCell(sessionId, code);
+          input.sessionManager?.recordSuccessfulCell(sessionId, code, declaration);
         },
       })
     : undefined;
@@ -243,8 +264,8 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   const sessionId = sessionRun?.sessionId ?? metaBase.sessionId ?? null;
   const sessionStatus = sessionRun?.sessionStatus ?? metaBase.sessionStatus ?? null;
   const exposeRecoveryRef = !input.sessionManager || sessionStatus === "created";
-  metaBase.sessionId = sessionId;
-  metaBase.sessionStatus = sessionStatus;
+  metaBase.sessionId = sessionRun?.sessionDisposedAfterRun ? null : sessionId;
+  metaBase.sessionStatus = sessionRun?.sessionDisposedAfterRun ? null : sessionStatus;
   capturedLogs.push(...result.logs.map(redactLogEntry));
   const logs = await buildLogs(capturedLogs, input.logStore, input.returnedLogBytes);
   if (!result.ok) {
