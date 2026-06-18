@@ -67,6 +67,7 @@ Use these methods inside the heredoc:
 
 | Need                          | Code Mode call                               |
 | ----------------------------- | -------------------------------------------- |
+| Inspect Caplet card           | `await h.inspect()`                          |
 | Check backend readiness       | `await h.check()`                            |
 | List tools                    | `await h.tools()`                            |
 | Search tools                  | `await h.searchTools("query", { limit: 5 })` |
@@ -74,8 +75,10 @@ Use these methods inside the heredoc:
 | Call a tool                   | `await h.callTool("tool_name", args)`        |
 | List resources                | `await h.resources()`                        |
 | Search resources              | `await h.searchResources("query")`           |
+| List resource templates       | `await h.resourceTemplates()`                |
 | Read resource                 | `await h.readResource(uri)`                  |
 | List prompts                  | `await h.prompts()`                          |
+| Search prompts                | `await h.searchPrompts("query")`             |
 | Get prompt                    | `await h.getPrompt("name", args)`            |
 | Complete prompt/resource args | `await h.complete(...)`                      |
 

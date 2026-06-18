@@ -1085,6 +1085,8 @@ const CAPLET_BACKEND_KEYS = [
   "capletSets",
 ] as const satisfies ReadonlyArray<keyof ConfigInput>;
 
+const CAPLET_BACKEND_KEY_SET = new Set<string>(CAPLET_BACKEND_KEYS);
+
 type MissingEnvReference = {
   name: string;
   path: string;
@@ -2353,16 +2355,7 @@ function interpolateConfig<T>(value: T, path: string[] = []): T {
 }
 
 function isPublicMetadataPath(path: string[]): boolean {
-  if (
-    path.length < 3 ||
-    (path[0] !== "mcpServers" &&
-      path[0] !== "openapiEndpoints" &&
-      path[0] !== "googleDiscoveryApis" &&
-      path[0] !== "graphqlEndpoints" &&
-      path[0] !== "httpApis" &&
-      path[0] !== "cliTools" &&
-      path[0] !== "capletSets")
-  ) {
+  if (path.length < 3 || !CAPLET_BACKEND_KEY_SET.has(path[0] ?? "")) {
     return false;
   }
   return NON_INTERPOLATED_SERVER_FIELDS.has(path[2] ?? "");
