@@ -116,7 +116,7 @@ describe("@caplets/pi", () => {
           "Run Caplets Code Mode. Omit sessionId to start fresh and pass returned meta.sessionId to reuse live state.",
         promptGuidance: [
           "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
-          "Unknown or unavailable sessionId values fail before code execution; use recoveryRef or recoveryCommand for audit and manual reconstruction, not automatic replay.",
+          "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
         ],
         inputSchema: {
           type: "object",
@@ -144,7 +144,7 @@ describe("@caplets/pi", () => {
       description: expect.stringContaining("meta.sessionId"),
       promptGuidelines: expect.arrayContaining([
         expect.stringContaining("omit sessionId to start fresh"),
-        expect.stringContaining("recoveryRef or recoveryCommand"),
+        expect.stringContaining("meta.recoveryRef"),
       ]),
       parameters: expect.objectContaining({
         properties: expect.objectContaining({
@@ -302,7 +302,6 @@ describe("@caplets/pi", () => {
         sessionId: "session-1",
         sessionStatus: "created",
         recoveryRef: "recovery-1",
-        recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
         timeoutMs: 10000,
         maxTimeoutMs: 10000,
         durationMs: 25,
@@ -329,7 +328,6 @@ describe("@caplets/pi", () => {
       sessionId: "session-1",
       sessionStatus: "created",
       recoveryRef: "recovery-1",
-      recoveryCommand: "caplets.debug.readRecovery({ recoveryRef: 'recovery-1' })",
       timeoutMs: 10000,
       maxTimeoutMs: 10000,
       durationMs: 25,

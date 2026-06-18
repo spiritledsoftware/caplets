@@ -581,6 +581,38 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("allows synthetic debug recovery reads without an active debug Caplet", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    const localInvoke = vi.fn(async (input) => ({
+      capletId: input.capletId,
+      method: input.method,
+      args: input.args,
+    }));
+    try {
+      const result = await session.run({
+        code: 'return await caplets.debug.readRecovery({ recoveryRef: "recovery-1" });',
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke: localInvoke,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          capletId: "debug",
+          method: "readRecovery",
+          args: [{ recoveryRef: "recovery-1" }],
+        },
+      });
+      expect(localInvoke).toHaveBeenCalledWith(
+        expect.objectContaining({ capletId: "debug", method: "readRecovery" }),
+      );
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("preserves duplicate var and let binding errors inside a cell", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();

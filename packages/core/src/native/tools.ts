@@ -33,7 +33,7 @@ export function nativeCodeModePromptGuidance(): string[] {
     "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
     "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
     "Reused sessions preserve successful top-level var bindings, function declarations, and runtime state only while the live session remains available and compatible.",
-    "Unknown or unavailable sessionId values fail before code execution; use recoveryRef or recoveryCommand for audit and manual reconstruction, not automatic replay.",
+    "Unknown or unavailable sessionId values fail before code execution; use meta.recoveryRef with caplets.debug.readRecovery({ recoveryRef }) for audit and manual reconstruction, not automatic replay.",
     "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
   ];
 }

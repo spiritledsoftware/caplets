@@ -56,6 +56,5 @@ export function emptyCodeModeRunMeta(): CodeModeRunMeta {
     sessionId: null,
     sessionStatus: null,
     recoveryRef: null,
-    recoveryCommand: null,
   };
 }

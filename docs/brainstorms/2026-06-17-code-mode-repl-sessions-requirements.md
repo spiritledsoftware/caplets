@@ -94,7 +94,7 @@ flowchart TB
 - R22. The `sessionId` input description tells agents that known IDs reuse existing REPL state and missing IDs fail instead of starting an empty context.
 - R23. Code Mode tool descriptions explain which bindings survive reuse: successful top-level `var` bindings, function declarations, and runtime state inside the live session.
 - R24. Native prompt guidance for Pi, OpenCode, and other native surfaces reinforces the same reuse contract as MCP tool metadata.
-- R25. Recovery metadata guidance explains that `recoveryRef` and `recoveryCommand` are for audit and reconstruction, not automatic replay.
+- R25. Recovery metadata guidance explains that `recoveryRef` is for audit and reconstruction, not automatic replay.
 
 **Validation**
 

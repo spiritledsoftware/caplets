@@ -877,11 +877,12 @@ function createInvokeJsonBridge(
       }
     });
 
+    const debugMethod = CODE_MODE_DEBUG_METHODS.has(method as CodeModeSandboxInvokeInput["method"]);
     const debugCapletActive = capletId === "debug" && isCapletActive("debug");
     if (
       !isCodeModeSandboxMethod(method) ||
-      (capletId === "debug" && !CODE_MODE_DEBUG_METHODS.has(method) && !debugCapletActive) ||
-      (capletId !== "debug" && CODE_MODE_DEBUG_METHODS.has(method))
+      (capletId === "debug" && !debugMethod && !debugCapletActive) ||
+      (capletId !== "debug" && debugMethod)
     ) {
       const errorHandle = context.newError(
         `Method ${method} is not available in this Code Mode session cell.`,
@@ -891,7 +892,7 @@ function createInvokeJsonBridge(
       return deferred.handle;
     }
 
-    if (!isCapletActive(capletId)) {
+    if (!(capletId === "debug" && debugMethod) && !isCapletActive(capletId)) {
       const errorHandle = context.newError(
         `Caplet ${capletId} is not available in this Code Mode session cell.`,
       );

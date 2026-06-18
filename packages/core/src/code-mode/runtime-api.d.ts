@@ -161,7 +161,6 @@ type CodeModeRunMeta = {
   sessionId?: string | null;
   sessionStatus?: CodeModeSessionStatus | null;
   recoveryRef?: string | null;
-  recoveryCommand?: string | null;
 };
 
 interface Console {

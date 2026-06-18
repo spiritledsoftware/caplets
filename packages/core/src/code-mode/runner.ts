@@ -62,7 +62,6 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     sessionId: input.sessionManager ? null : (input.sessionId ?? null),
     sessionStatus: null,
     recoveryRef: null,
-    recoveryCommand: null,
   };
   const meta = (): CodeModeRunMeta => ({ ...metaBase, durationMs: Date.now() - startedAt });
 
@@ -381,7 +380,6 @@ async function journalRun(
 
 function setRecoveryMeta(metaBase: Omit<CodeModeRunMeta, "durationMs">, recoveryRef: string): void {
   metaBase.recoveryRef = recoveryRef;
-  metaBase.recoveryCommand = `await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} })`;
 }
 
 async function recoveryRefForSession(
@@ -392,16 +390,11 @@ async function recoveryRefForSession(
   return lookup?.recoveryRef;
 }
 
-function recoveryMeta(
-  recoveryRef: string | undefined,
-): Pick<CodeModeRunMeta, "recoveryRef" | "recoveryCommand"> {
+function recoveryMeta(recoveryRef: string | undefined): Pick<CodeModeRunMeta, "recoveryRef"> {
   if (!recoveryRef) {
-    return { recoveryRef: null, recoveryCommand: null };
+    return { recoveryRef: null };
   }
-  return {
-    recoveryRef,
-    recoveryCommand: `await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} })`,
-  };
+  return { recoveryRef };
 }
 
 function codeModeRuntimeError(message: string, stack?: string) {

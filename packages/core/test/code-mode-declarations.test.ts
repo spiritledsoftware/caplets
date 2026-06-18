@@ -65,7 +65,7 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).toContain("sessionId?:string");
     expect(declaration).toContain("sessionStatus?:CodeModeSessionStatus");
     expect(declaration).toContain("recoveryRef?:string");
-    expect(declaration).toContain("recoveryCommand?:string");
+    expect(declaration).not.toContain("recoveryCommand?:string");
     expect(declaration).not.toContain("\n\n");
     expect(declaration).not.toContain(" = ");
   });
@@ -120,7 +120,7 @@ describe("generateCodeModeDeclarations", () => {
     expect(description).toContain("keep `meta.sessionId`");
     expect(description).toContain("successful top-level `var` bindings, function declarations");
     expect(description).toContain("fails before executing your code");
-    expect(description).toContain("Use `meta.recoveryRef` or `meta.recoveryCommand`");
+    expect(description).toContain("Use `meta.recoveryRef` with `caplets.debug.readRecovery");
     expect(description).toContain("do not automatically replay recovery history");
     expect(description).toContain("Generated declaration hints:");
     expect(description).toContain(declaration);

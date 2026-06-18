@@ -49,7 +49,6 @@ describe("Code Mode CLI", () => {
           sessionId: null,
           sessionStatus: null,
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
     } finally {
@@ -85,7 +84,6 @@ describe("Code Mode CLI", () => {
           sessionId: null,
           sessionStatus: null,
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
     } finally {
@@ -250,7 +248,6 @@ describe("Code Mode CLI", () => {
         sessionId: null,
         sessionStatus: null,
         recoveryRef: null,
-        recoveryCommand: null,
       },
     });
   });
@@ -274,7 +271,6 @@ describe("Code Mode CLI", () => {
         sessionId: null,
         sessionStatus: null,
         recoveryRef: null,
-        recoveryCommand: null,
       },
     });
   });

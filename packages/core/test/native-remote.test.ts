@@ -1003,7 +1003,7 @@ describe("RemoteNativeCapletsService", () => {
         promptGuidance: expect.arrayContaining([
           expect.stringContaining("omit sessionId to start fresh"),
           expect.stringContaining("returned meta.sessionId"),
-          expect.stringContaining("recoveryRef or recoveryCommand"),
+          expect.stringContaining("meta.recoveryRef"),
         ]),
         inputSchema: expect.objectContaining({
           required: ["code"],
@@ -1982,7 +1982,6 @@ describe("createNativeCapletsService remote mode", () => {
       sessionId: null,
       sessionStatus: null,
       recoveryRef: null,
-      recoveryCommand: null,
     });
     expect(localExecute).not.toHaveBeenCalled();
     expect(fixture.api.callTool).not.toHaveBeenCalled();
@@ -2041,7 +2040,6 @@ describe("createNativeCapletsService remote mode", () => {
           sessionId: first.meta.sessionId,
           sessionStatus: "reused",
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
     } finally {

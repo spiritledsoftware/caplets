@@ -9,7 +9,7 @@ origin: docs/brainstorms/2026-06-17-code-mode-repl-sessions-requirements.md
 
 ## Summary
 
-Update the agent-facing Code Mode metadata so MCP, native, Pi, OpenCode, and remote attach surfaces teach the REPL reuse contract directly where agents inspect the tool. This plan does not change session runtime behavior; it makes the already-shipped `sessionId`, `meta.sessionId`, `sessionStatus`, `recoveryRef`, and `recoveryCommand` behavior obvious and tested.
+Update the agent-facing Code Mode metadata so MCP, native, Pi, OpenCode, and remote attach surfaces teach the REPL reuse contract directly where agents inspect the tool. This plan does not change session runtime behavior; it makes the already-shipped `sessionId`, `meta.sessionId`, `sessionStatus`, and `recoveryRef` behavior obvious and tested.
 
 ---
 
@@ -28,7 +28,7 @@ The requirements call out this gap directly: REPL reuse only creates value when 
 - R1. The generated Code Mode tool description teaches agents to omit `sessionId` for a fresh reusable session, capture `meta.sessionId`, and pass it back for later reuse.
 - R2. The description names the live-state boundary: successful top-level `var` bindings, function declarations, and runtime state survive only while the live session remains available and compatible.
 - R3. The `sessionId` input schema description states that known IDs reuse existing REPL state and unknown or unavailable IDs fail before execution instead of starting an empty context.
-- R4. Recovery guidance states that `recoveryRef` and `recoveryCommand` are for audit and manual reconstruction, not automatic replay.
+- R4. Recovery guidance states that `recoveryRef` is for audit and manual reconstruction, not automatic replay.
 - R5. One-shot usage remains simple: agents may omit `sessionId` when reuse is not useful.
 
 ### Surface Parity

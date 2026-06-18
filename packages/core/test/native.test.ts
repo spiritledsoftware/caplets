@@ -79,7 +79,7 @@ describe("native Caplets service", () => {
         expect.arrayContaining([
           expect.stringContaining("omit sessionId to start fresh"),
           expect.stringContaining("returned meta.sessionId"),
-          expect.stringContaining("recoveryRef or recoveryCommand"),
+          expect.stringContaining("meta.recoveryRef"),
         ]),
       );
       expect(
@@ -392,7 +392,6 @@ describe("native Caplets service", () => {
           sessionId: expect.any(String),
           sessionStatus: "created",
           recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
       await expect(
@@ -407,7 +406,6 @@ describe("native Caplets service", () => {
           sessionId: "session-123",
           sessionStatus: null,
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
     } finally {
@@ -447,7 +445,6 @@ describe("native Caplets service", () => {
         sessionId: null,
         sessionStatus: null,
         recoveryRef: null,
-        recoveryCommand: null,
       });
     } finally {
       await service.close();

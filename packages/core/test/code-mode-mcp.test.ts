@@ -136,7 +136,6 @@ describe("Code Mode MCP tool", () => {
         sessionId: expect.any(String),
         sessionStatus: "created",
         recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
-        recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
       },
     });
     expect(result?.content[0]).toMatchObject({ type: "text" });
@@ -172,7 +171,6 @@ describe("Code Mode MCP tool", () => {
         sessionId,
         sessionStatus: "reused",
         recoveryRef: null,
-        recoveryCommand: null,
       },
     });
     expect(missing?.structuredContent).toMatchObject({
@@ -210,18 +208,16 @@ describe("Code Mode MCP tool", () => {
         sessionId: null,
         sessionStatus: null,
         recoveryRef: null,
-        recoveryCommand: null,
       },
     });
     expect(Object.prototype.hasOwnProperty.call(meta, "sessionId")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(meta, "sessionStatus")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(meta, "recoveryRef")).toBe(true);
-    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryCommand")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(meta, "recoveryCommand")).toBe(false);
     expect(JSON.parse(result?.content[0].text ?? "{}").meta).toMatchObject({
       sessionId: null,
       sessionStatus: null,
       recoveryRef: null,
-      recoveryCommand: null,
     });
 
     await session.close();

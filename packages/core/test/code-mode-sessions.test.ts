@@ -71,7 +71,6 @@ describe("CodeModeSessionManager", () => {
           sessionId: "session-1",
           sessionStatus: "reused",
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
     } finally {
@@ -258,7 +257,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionId: "session-expired",
           recoveryRef: first.meta.recoveryRef,
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
 
@@ -266,7 +264,6 @@ describe("CodeModeSessionManager", () => {
         ok: true,
         meta: {
           recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
       const recoveryRef = first.meta.recoveryRef ?? "";
@@ -321,7 +318,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionId: "session-restart",
           recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
       freshManager.close();
@@ -363,7 +359,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionId: "ghost",
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
       expect(next).toMatchObject({
@@ -372,7 +367,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionId: "ghost",
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
       await expect(journalStore.lookupSession("ghost")).resolves.toBeUndefined();
@@ -427,7 +421,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionId: "session-diagnostic-expired",
           recoveryRef: first.meta.recoveryRef,
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
       expect(recovery.entries).toHaveLength(1);
@@ -475,7 +468,6 @@ describe("CodeModeSessionManager", () => {
           sessionId: "session-diagnostic",
           sessionStatus: "reused",
           recoveryRef: null,
-          recoveryCommand: null,
         },
       });
       expect(recovery.entries).toHaveLength(2);
@@ -612,7 +604,6 @@ describe("CodeModeSessionManager", () => {
         meta: {
           sessionStatus: null,
           recoveryRef: first.meta.recoveryRef,
-          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
         },
       });
       expect(oldRecovery.entries).toHaveLength(1);
