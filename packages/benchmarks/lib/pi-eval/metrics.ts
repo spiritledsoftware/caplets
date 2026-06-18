@@ -161,16 +161,13 @@ function sessionIdFromToolEvent(event: any): string | null {
 }
 
 function countSessionReuseCalls(codeModeEvents: any[]): number {
-  const seenSessionIds = new Set<string>();
   let count = 0;
-  for (const event of codeModeEvents) {
+  for (const [index, event] of codeModeEvents.entries()) {
     const sessionId = sessionIdFromToolEvent(event);
     if (!sessionId) continue;
-    if (seenSessionIds.has(sessionId)) {
+    if (index > 0) {
       count += 1;
-      continue;
     }
-    seenSessionIds.add(sessionId);
   }
   return count;
 }

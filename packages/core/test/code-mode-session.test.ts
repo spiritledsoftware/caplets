@@ -2802,6 +2802,92 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("disposes when drained unawaited Caplet callbacks mutate persisted bindings", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const result = await session.run({
+        code: "var x = 1;\nvoid caplets.github.check().then(() => { x = 2; });\nreturn x;",
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke: async () => {
+          await Promise.resolve();
+          return { ok: true };
+        },
+      });
+      const followup = await session.run({
+        code: "return x;",
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 1 });
+      expect(followup).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps sessions reusable when drained callbacks only mutate local shadows", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const result = await session.run({
+        code: "var x = 1;\nvoid caplets.github.check().then(() => { let x = 2; x += 1; });\nreturn x;",
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke: async () => {
+          await Promise.resolve();
+          return { ok: true };
+        },
+      });
+      const followup = await session.run({
+        code: "return x;",
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 1 });
+      expect(followup).toMatchObject({ ok: true, value: 1 });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("disposes when named callbacks mutate persisted bindings after drained invokes", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      const result = await session.run({
+        code: [
+          "var x = 1;",
+          "const update = () => { x = 2; };",
+          "void caplets.github.check().then(update);",
+          "return x;",
+        ].join("\n"),
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke: async () => {
+          await Promise.resolve();
+          return { ok: true };
+        },
+      });
+      const followup = await session.run({
+        code: "return x;",
+        capletIds: ["github"],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 1 });
+      expect(followup).toMatchObject({ ok: false, error: "Code Mode session is disposed." });
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("disposes after nested lexical shadows write to persisted state through computed access", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();

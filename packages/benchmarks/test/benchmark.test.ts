@@ -2608,6 +2608,32 @@ describe("Pi live tool surface eval harness", () => {
     expect(metrics.repeatedWorkflow.setupCodeReuseRate).toBe(1);
   });
 
+  it("counts the first supplied session id after an initial fresh Code Mode call as reuse", () => {
+    const metrics = summarizePiEvalMetrics([
+      {
+        type: "tool_execution_start",
+        toolName: "caplets__code_mode",
+        input: {
+          code: "function loadGateInputs(id) { return id; }\nconst gateIds = ['deploy'];",
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolName: "caplets__code_mode",
+        input: {
+          code: "return gateIds.map(loadGateInputs);",
+          sessionId: "session-from-previous-call",
+        },
+      },
+    ]);
+
+    expect(metrics.repeatedWorkflow).toMatchObject({
+      codeModeCallCount: 2,
+      sessionReuseCallCount: 1,
+      setupCodeReuseRate: 1,
+    });
+  });
+
   it("uses agent JSON tool inputs when Pi instrumentation only records tool names", () => {
     const metrics = summarizePiEvalMetrics(
       [

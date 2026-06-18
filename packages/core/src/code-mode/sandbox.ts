@@ -178,6 +178,7 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       this.#snapshotGlobalNames();
       this.#snapshotPersistDescriptors();
       this.#snapshotPersistentNames([...this.#persistentNames]);
+      let pendingInvokePersistentValuesChanged = false;
       const result = await evaluateCellInContext({
         code: input.code,
         compiledSource: cell.source,
@@ -189,6 +190,12 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
         timeoutMs,
         logs: this.#logs,
         session: true,
+        afterPendingInvokesDrained: () => {
+          pendingInvokePersistentValuesChanged = this.#persistentValuesDivergedFromPersist(
+            cell.persistentNames,
+          );
+          this.#snapshotPersistentNames(cell.persistentNames);
+        },
       });
       if (result.ok) {
         for (const name of cell.persistentNames) {
@@ -214,7 +221,8 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
       );
       const hasObjectLikePersistentState = this.#hasObjectLikePersistentState();
       shouldDispose = result.ok
-        ? this.#pendingDeferreds.size > 0 ||
+        ? pendingInvokePersistentValuesChanged ||
+          this.#pendingDeferreds.size > 0 ||
           hasGlobalNameAdditions ||
           directPersistAccess ||
           persistDescriptorsChanged ||
@@ -572,6 +580,24 @@ export class QuickJsCodeModeReplSession implements CodeModeReplSession {
     result.value.dispose();
   }
 
+  #persistentValuesDivergedFromPersist(names: string[]): boolean {
+    if (this.#disposed || names.length === 0) {
+      return false;
+    }
+    const result = this.#context.evalCode(
+      `(${JSON.stringify(names)}).some((name) => !Object.is((0, eval)(name), globalThis.__caplets_get_persist(${JSON.stringify(this.#checkpointToken)}, name)))`,
+    );
+    if (result.error) {
+      result.error.dispose();
+      return true;
+    }
+    try {
+      return this.#context.dump(result.value) === true;
+    } finally {
+      result.value.dispose();
+    }
+  }
+
   #restorePersistentNames(names: string[]): void {
     if (names.length === 0 || this.#disposed) {
       return;
@@ -679,6 +705,7 @@ type EvaluateCellInContextInput = {
   timeoutMs: number;
   logs: CodeModeLogEntry[];
   session: boolean;
+  afterPendingInvokesDrained?: () => void;
 };
 
 async function evaluateCellInContext(
@@ -742,6 +769,16 @@ async function evaluateCellInContext(
           input.deadlineMs,
           input.timeoutMs,
         );
+        await drainAsync(
+          input.context,
+          input.runtime,
+          input.pendingDeferreds,
+          input.deadlineMs,
+          input.timeoutMs,
+        );
+        await Promise.resolve();
+        drainJobs(input.context, input.runtime, input.deadlineMs, input.timeoutMs);
+        input.afterPendingInvokesDrained?.();
       } else {
         drainJobs(input.context, input.runtime, input.deadlineMs, input.timeoutMs);
       }
