@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.24.1
+
+### Patch Changes
+
+- 473e7b0: Keep local overlay startup alive when a Caplet references a missing environment variable by skipping only the affected Caplet and warning with the missing variable and config path.
+
 ## 0.24.0
 
 ### Minor Changes
