@@ -30,18 +30,7 @@ export function diagnoseCodeModeTypeScript(
     return diagnostics.slice(0, maxDiagnostics);
   }
 
-  const compilerOptions: ts.CompilerOptions = {
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    lib: ["lib.es2022.d.ts"],
-    types: [],
-    strict: true,
-    noEmit: true,
-    skipLibCheck: true,
-    noErrorTruncation: true,
-    allowJs: false,
-  };
+  const compilerOptions = codeModeCompilerOptions();
   const wrappedCode = [
     "async function __capletsCodeModeMain(): Promise<unknown> {",
     input.code,
@@ -90,6 +79,21 @@ export function diagnoseCodeModeTypeScript(
   return diagnostics.slice(0, maxDiagnostics);
 }
 
+function codeModeCompilerOptions(): ts.CompilerOptions {
+  return {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    lib: ["lib.es2022.d.ts"],
+    types: [],
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    noErrorTruncation: true,
+    allowJs: false,
+  };
+}
+
 export class CodeModeDiagnosticsSession {
   #declarations = new Map<string, string>();
 
@@ -117,8 +121,16 @@ export class CodeModeDiagnosticsSession {
         );
       }
     }
-    for (const name of collectFunctionScopedVarNames(source)) {
-      this.#declarations.set(name, `declare var ${name}: unknown;`);
+    const compilerOptions = codeModeCompilerOptions();
+    const host = createVirtualCompilerHost(compilerOptions, {
+      [CODE_FILE]: code,
+      [AMBIENT_FILE]: [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION, this.declaration()].join("\n"),
+    });
+    const program = ts.createProgram([CODE_FILE, AMBIENT_FILE], compilerOptions, host);
+    const checker = program.getTypeChecker();
+    const programSource = program.getSourceFile(CODE_FILE) ?? source;
+    for (const binding of collectFunctionScopedVarBindings(programSource, checker)) {
+      this.#declarations.set(binding.name, `declare var ${binding.name}: ${binding.type};`);
     }
   }
 
@@ -127,31 +139,40 @@ export class CodeModeDiagnosticsSession {
   }
 }
 
-function collectFunctionScopedVarNames(source: ts.SourceFile): string[] {
-  const names = new Set<string>();
+type AmbientVarBinding = {
+  name: string;
+  type: string;
+};
+
+function collectFunctionScopedVarBindings(
+  source: ts.SourceFile,
+  checker: ts.TypeChecker,
+): AmbientVarBinding[] {
+  const bindings = new Map<string, string>();
   const visit = (node: ts.Node): void => {
     if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) {
       return;
     }
     if (ts.isVariableStatement(node)) {
-      collectVarDeclarationListNames(node.declarationList, names);
+      collectVarDeclarationListBindings(node.declarationList, checker, bindings);
     }
     if (
       (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
       node.initializer &&
       ts.isVariableDeclarationList(node.initializer)
     ) {
-      collectVarDeclarationListNames(node.initializer, names);
+      collectVarDeclarationListBindings(node.initializer, checker, bindings);
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return [...names];
+  return [...bindings.entries()].map(([name, type]) => ({ name, type }));
 }
 
-function collectVarDeclarationListNames(
+function collectVarDeclarationListBindings(
   declarationList: ts.VariableDeclarationList,
-  names: Set<string>,
+  checker: ts.TypeChecker,
+  bindings: Map<string, string>,
 ): void {
   const isVar = (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0;
   if (!isVar) {
@@ -159,14 +180,15 @@ function collectVarDeclarationListNames(
   }
   for (const declaration of declarationList.declarations) {
     for (const name of bindingNames(declaration.name)) {
-      names.add(name);
+      const type = ambientTypeForBindingName(name, checker);
+      bindings.set(name.text, type);
     }
   }
 }
 
-function bindingNames(name: ts.BindingName): string[] {
+function bindingNames(name: ts.BindingName): ts.Identifier[] {
   if (ts.isIdentifier(name)) {
-    return [name.text];
+    return [name];
   }
   return name.elements.flatMap((element) => {
     if (ts.isOmittedExpression(element)) {
@@ -174,6 +196,38 @@ function bindingNames(name: ts.BindingName): string[] {
     }
     return bindingNames(element.name);
   });
+}
+
+function ambientTypeForBindingName(name: ts.Identifier, checker: ts.TypeChecker): string {
+  const type = checker.getTypeAtLocation(name);
+  return safeAmbientType(type, checker);
+}
+
+function safeAmbientType(type: ts.Type, checker: ts.TypeChecker): string {
+  if (isUnsafeAmbientType(type)) {
+    return "unknown";
+  }
+  const text = checker.typeToString(
+    type,
+    undefined,
+    ts.TypeFormatFlags.NoTruncation |
+      ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope |
+      ts.TypeFormatFlags.WriteArrayAsGenericType,
+  );
+  if (!text || text === "any" || text === "{}" || text === "never") {
+    return "unknown";
+  }
+  if (text.length > 500) {
+    return "unknown";
+  }
+  if (/\bimport\(/u.test(text)) {
+    return "unknown";
+  }
+  return text;
+}
+
+function isUnsafeAmbientType(type: ts.Type): boolean {
+  return Boolean(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never));
 }
 
 function ambientParameter(parameter: ts.ParameterDeclaration, source: ts.SourceFile): string {
