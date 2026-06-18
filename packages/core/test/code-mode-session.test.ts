@@ -3113,6 +3113,51 @@ describe("CodeModeDiagnosticsSession", () => {
     );
   });
 
+  it("keeps the previous var ambient type for uninitialized redeclarations", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
+    session.recordSuccessfulCell("var counter;\nreturn counter;");
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "counter += 1;\nreturn counter;",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("keeps the previous var ambient type for annotated uninitialized redeclarations", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
+    session.recordSuccessfulCell('var counter: string;\nreturn "ok";');
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "counter += 1;\nreturn counter;",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("updates var ambient types for annotated redeclarations with same-cell writes", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("var counter = 1;\nreturn counter;");
+    session.recordSuccessfulCell('var counter: string;\ncounter = "ready";\nreturn counter;');
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return counter.toUpperCase();",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
   it("allows later cells to reference destructured var bindings", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";
@@ -3160,6 +3205,50 @@ describe("CodeModeDiagnosticsSession", () => {
         expect.objectContaining({
           code: "18046",
           message: expect.stringContaining("'unresolved' is of type 'unknown'"),
+        }),
+      ]),
+    );
+  });
+
+  it("falls back to unknown for var types that reference cell-local classes", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("class Local { value = 1; }\nvar saved = new Local();");
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return saved.value;",
+      session,
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "18046",
+          message: expect.stringContaining("'saved' is of type 'unknown'"),
+        }),
+      ]),
+    );
+  });
+
+  it("falls back to unknown for excessively large var types", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell(
+      `var large = { ${Array.from({ length: 60 }, (_, index) => `p${index}: ${index}`).join(", ")} };`,
+    );
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "return large.p1;",
+      session,
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "18046",
+          message: expect.stringContaining("'large' is of type 'unknown'"),
         }),
       ]),
     );

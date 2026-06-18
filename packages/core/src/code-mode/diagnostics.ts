@@ -122,20 +122,40 @@ export class CodeModeDiagnosticsSession {
       }
     }
     const compilerOptions = codeModeCompilerOptions();
+    const ambientDeclarations = [
+      CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION,
+      this.declaration(),
+    ].join("\n");
     const host = createVirtualCompilerHost(compilerOptions, {
       [CODE_FILE]: code,
-      [AMBIENT_FILE]: [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION, this.declaration()].join("\n"),
+      [AMBIENT_FILE]: ambientDeclarations,
     });
     const program = ts.createProgram([CODE_FILE, AMBIENT_FILE], compilerOptions, host);
     const checker = program.getTypeChecker();
     const programSource = program.getSourceFile(CODE_FILE) ?? source;
-    for (const binding of collectFunctionScopedVarBindings(programSource, checker)) {
+    const previousBindingNames = new Set(this.#declarations.keys());
+    const assignedNames = collectFunctionScopedAssignedNames(programSource);
+    for (const binding of collectFunctionScopedVarBindings(programSource, checker, {
+      ambientDeclarationFor: (name) => this.declarationExcluding(name),
+      assignedNames,
+      previousBindingNames,
+    })) {
       this.#declarations.set(binding.name, `declare var ${binding.name}: ${binding.type};`);
     }
   }
 
   clear(): void {
     this.#declarations.clear();
+  }
+
+  private declarationExcluding(name: string): string {
+    const declarations: string[] = [CODE_MODE_DIAGNOSTICS_BUILTINS_DECLARATION];
+    for (const [declarationName, declaration] of this.#declarations) {
+      if (declarationName !== name) {
+        declarations.push(declaration);
+      }
+    }
+    return declarations.join("\n");
   }
 }
 
@@ -144,9 +164,16 @@ type AmbientVarBinding = {
   type: string;
 };
 
+type AmbientVarBindingOptions = {
+  ambientDeclarationFor: (name: string) => string;
+  assignedNames: ReadonlySet<string>;
+  previousBindingNames: ReadonlySet<string>;
+};
+
 function collectFunctionScopedVarBindings(
   source: ts.SourceFile,
   checker: ts.TypeChecker,
+  options: AmbientVarBindingOptions,
 ): AmbientVarBinding[] {
   const bindings = new Map<string, string>();
   const visit = (node: ts.Node): void => {
@@ -154,14 +181,14 @@ function collectFunctionScopedVarBindings(
       return;
     }
     if (ts.isVariableStatement(node)) {
-      collectVarDeclarationListBindings(node.declarationList, checker, bindings);
+      collectVarDeclarationListBindings(node.declarationList, checker, bindings, options);
     }
     if (
       (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
       node.initializer &&
       ts.isVariableDeclarationList(node.initializer)
     ) {
-      collectVarDeclarationListBindings(node.initializer, checker, bindings);
+      collectVarDeclarationListBindings(node.initializer, checker, bindings, options);
     }
     ts.forEachChild(node, visit);
   };
@@ -173,6 +200,7 @@ function collectVarDeclarationListBindings(
   declarationList: ts.VariableDeclarationList,
   checker: ts.TypeChecker,
   bindings: Map<string, string>,
+  options: AmbientVarBindingOptions,
 ): void {
   const isVar = (ts.getCombinedNodeFlags(declarationList) & ts.NodeFlags.BlockScoped) === 0;
   if (!isVar) {
@@ -180,7 +208,18 @@ function collectVarDeclarationListBindings(
   }
   for (const declaration of declarationList.declarations) {
     for (const name of bindingNames(declaration.name)) {
-      const type = ambientTypeForBindingName(name, checker);
+      const type = ambientTypeForBindingName(
+        name,
+        checker,
+        options.ambientDeclarationFor(name.text),
+      );
+      if (
+        options.previousBindingNames.has(name.text) &&
+        declaration.initializer === undefined &&
+        !options.assignedNames.has(name.text)
+      ) {
+        continue;
+      }
       bindings.set(name.text, type);
     }
   }
@@ -198,12 +237,57 @@ function bindingNames(name: ts.BindingName): ts.Identifier[] {
   });
 }
 
-function ambientTypeForBindingName(name: ts.Identifier, checker: ts.TypeChecker): string {
-  const type = checker.getTypeAtLocation(name);
-  return safeAmbientType(type, checker);
+function collectFunctionScopedAssignedNames(source: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (node !== source && (ts.isFunctionLike(node) || ts.isClassLike(node))) {
+      return;
+    }
+    if (ts.isBinaryExpression(node) && isAssignmentOperator(node.operatorToken.kind)) {
+      collectAssignedBindingNames(node.left, names);
+    }
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      collectAssignedBindingNames(node.operand, names);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return names;
 }
 
-function safeAmbientType(type: ts.Type, checker: ts.TypeChecker): string {
+function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
+  return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
+}
+
+function collectAssignedBindingNames(node: ts.Node, names: Set<string>): void {
+  if (ts.isIdentifier(node)) {
+    names.add(node.text);
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+    ts.forEachChild(node, (child) => collectAssignedBindingNames(child, names));
+  }
+}
+
+function ambientTypeForBindingName(
+  name: ts.Identifier,
+  checker: ts.TypeChecker,
+  ambientDeclaration: string,
+): string {
+  const type = checker.getTypeAtLocation(name);
+  return safeAmbientType(name.text, type, checker, ambientDeclaration);
+}
+
+function safeAmbientType(
+  name: string,
+  type: ts.Type,
+  checker: ts.TypeChecker,
+  ambientDeclaration: string,
+): string {
   if (isUnsafeAmbientType(type)) {
     return "unknown";
   }
@@ -223,11 +307,28 @@ function safeAmbientType(type: ts.Type, checker: ts.TypeChecker): string {
   if (/\bimport\(/u.test(text)) {
     return "unknown";
   }
+  if (!isSelfContainedAmbientVarType(name, text, ambientDeclaration)) {
+    return "unknown";
+  }
   return text;
 }
 
 function isUnsafeAmbientType(type: ts.Type): boolean {
   return Boolean(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Never));
+}
+
+function isSelfContainedAmbientVarType(
+  name: string,
+  typeText: string,
+  ambientDeclaration: string,
+): boolean {
+  const compilerOptions = codeModeCompilerOptions();
+  const host = createVirtualCompilerHost(compilerOptions, {
+    [CODE_FILE]: `declare let ${name}: ${typeText};`,
+    [AMBIENT_FILE]: ambientDeclaration,
+  });
+  const program = ts.createProgram([CODE_FILE, AMBIENT_FILE], compilerOptions, host);
+  return program.getSemanticDiagnostics(program.getSourceFile(CODE_FILE)).length === 0;
 }
 
 function ambientParameter(parameter: ts.ParameterDeclaration, source: ts.SourceFile): string {
