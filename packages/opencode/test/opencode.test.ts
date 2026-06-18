@@ -126,6 +126,13 @@ describe("@caplets/opencode", () => {
         durationMs: 25,
       },
     });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", { code: "return {ok:true};" });
+    await runTool.execute({ code: "return {ok:true};", sessionId: "session-1" }, {} as never);
+    expect(service.execute).toHaveBeenLastCalledWith("code_mode", {
+      code: "return {ok:true};",
+      sessionId: "session-1",
+    });
 
     const output = { system: [] as string[] };
     await hooks["experimental.chat.system.transform"]?.({} as never, output);

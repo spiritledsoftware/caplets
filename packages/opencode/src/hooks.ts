@@ -22,7 +22,10 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
               ? capletsOpenCodeArgs(caplet.operationNames)
               : capletsOpenCodeJsonSchemaArgs(caplet.inputSchema),
           async execute(args) {
-            const result = await service.execute(caplet.caplet, args);
+            const result = await service.execute(
+              caplet.caplet,
+              caplet.codeModeRun ? normalizeCodeModeRunArgs(args) : args,
+            );
             return compactOpenCodeResult(result);
           },
         }),
@@ -39,6 +42,14 @@ export async function createCapletsOpenCodeHooks(service: NativeCapletsService):
       );
     },
   };
+}
+
+function normalizeCodeModeRunArgs(args: unknown): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  const record = args as Record<string, unknown>;
+  if (typeof record.sessionId !== "string" || record.sessionId.trim() !== "") return args;
+  const { sessionId: _sessionId, ...rest } = record;
+  return rest;
 }
 
 function compactOpenCodeResult(result: unknown): string {
