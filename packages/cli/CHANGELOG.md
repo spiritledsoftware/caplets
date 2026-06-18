@@ -1,5 +1,20 @@
 # caplets
 
+## 0.19.1
+
+### Patch Changes
+
+- 6201153: Expand the Code Mode tool contract with optional `sessionId` reuse, `meta.sessionId` run metadata, and recovery history lookup through `recoveryRef`.
+
+  Sessions are live reuse affordances for iterative Code Mode runs; this does not provide durable heap persistence across host restarts.
+
+  OpenCode now accepts the optional `sessionId` argument on Code Mode tools so agents can reuse live sessions there too.
+
+  Native integrations and remote CLI control now use `CAPLETS_REMOTE_*` exclusively for attach/client behavior. `CAPLETS_SERVER_*` remains reserved for serving/self-hosting configuration.
+
+- Updated dependencies [6201153]
+  - @caplets/core@0.24.0
+
 ## 0.19.0
 
 ### Minor Changes
