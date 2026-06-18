@@ -65,9 +65,10 @@ Session heaps are runtime memory only and disappear on process restart or TTL ev
 
 Recovery history is keyed by `recoveryRef`, which is returned in creation metadata when
 available. `caplets.debug.readRecovery()` reads redacted, bounded summaries for agents that
-already have that reference. It is a setup-code reconstruction aid, not heap restoration, and
-there is no recent-session lookup or stale-session upgrade path from `sessionId` to
-`recoveryRef`.
+already have that reference. A still-retained journal can also return the same reference when
+a known session ID was evicted by TTL, compatibility invalidation, or runtime restart while
+the journal remains readable. It is a setup-code reconstruction aid, not heap restoration, and
+unknown session IDs do not become recovery lookup paths.
 
 Code Mode installs a browser-like, non-I/O platform surface as runtime globals for common JavaScript data shaping: base64 helpers, a minimal `Buffer` subset, `structuredClone`, URL and text encoding helpers, Web data containers such as `Headers`, `Blob`, `File`, `FormData`, streams, abort signals, `Request`/`Response`, timers, microtasks, and crypto randomness. These globals are intentionally omitted from generated Code Mode TypeScript declarations and tool prompts so the declaration payload stays focused on Caplet handles, debug helpers, and `console`.
 

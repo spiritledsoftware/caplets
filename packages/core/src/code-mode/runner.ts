@@ -43,6 +43,16 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   const declaration = generateCodeModeDeclarations({ caplets: callable });
   const declarationHash = codeModeDeclarationHash(declaration);
   const platformRuntimeHash = codeModeDeclarationHash(CODE_MODE_PLATFORM_RUNTIME_SOURCE);
+  const sessionCompatibility = {
+    declarationHash,
+    platformRuntimeHash,
+    runtimeScope: input.runtimeScope ?? "",
+    version: CODE_MODE_SESSION_COMPATIBILITY_VERSION,
+  };
+  const diagnosticsSession =
+    input.sessionManager && input.sessionId
+      ? input.sessionManager.diagnosticsSession(input.sessionId, sessionCompatibility)
+      : undefined;
   const metaBase: Omit<CodeModeRunMeta, "durationMs"> = {
     runId: randomUUID(),
     traceId: randomUUID(),
@@ -65,13 +75,18 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
             message: `timeoutMs must be <= ${maxTimeoutMs}.`,
           },
         ]
-      : diagnoseCodeModeTypeScript({ code: input.code, declaration });
+      : diagnoseCodeModeTypeScript({
+          code: input.code,
+          declaration,
+          ...(diagnosticsSession === undefined ? {} : { session: diagnosticsSession }),
+        });
   if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
     const diagnosticJournalScope =
       input.sessionManager && input.sessionId
         ? input.sessionManager.compatibilityKey(input.sessionId)
         : undefined;
     if (input.sessionManager && input.sessionId && diagnosticJournalScope === undefined) {
+      const recoveryRef = await recoveryRefForSession(input, input.sessionId);
       return {
         ok: false,
         error: {
@@ -84,8 +99,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
           ...meta(),
           sessionId: input.sessionId,
           sessionStatus: null,
-          recoveryRef: null,
-          recoveryCommand: null,
+          ...recoveryMeta(recoveryRef),
         },
       };
     }
@@ -171,15 +185,14 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     ? await input.sessionManager.run({
         ...sandboxInput,
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-        compatibility: {
-          declarationHash,
-          platformRuntimeHash,
-          runtimeScope: input.runtimeScope ?? "",
-          version: CODE_MODE_SESSION_COMPATIBILITY_VERSION,
-        },
+        compatibility: sessionCompatibility,
       })
     : undefined;
   if (sessionRun && !sessionRun.ok) {
+    const recoveryRef =
+      sessionRun.error === "not_found"
+        ? await recoveryRefForSession(input, sessionRun.sessionId)
+        : undefined;
     const code =
       sessionRun.error === "not_found"
         ? "SESSION_NOT_FOUND"
@@ -204,8 +217,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ...meta(),
         sessionId: sessionRun.sessionId,
         sessionStatus: null,
-        recoveryRef: null,
-        recoveryCommand: null,
+        ...recoveryMeta(recoveryRef),
       },
     };
   }
@@ -283,6 +295,9 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     journalScope: sessionRun?.compatibilityKey,
   });
   if (recoveryRef && exposeRecoveryRef) setRecoveryMeta(metaBase, recoveryRef);
+  if (input.sessionManager && sessionId) {
+    input.sessionManager.recordSuccessfulCell(sessionId, input.code);
+  }
 
   return {
     ok: true,
@@ -333,6 +348,26 @@ async function journalRun(
 function setRecoveryMeta(metaBase: Omit<CodeModeRunMeta, "durationMs">, recoveryRef: string): void {
   metaBase.recoveryRef = recoveryRef;
   metaBase.recoveryCommand = `await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} })`;
+}
+
+async function recoveryRefForSession(
+  input: RunCodeModeInput,
+  sessionId: string,
+): Promise<string | undefined> {
+  const lookup = await input.journalStore?.lookupSession(sessionId);
+  return lookup?.recoveryRef;
+}
+
+function recoveryMeta(
+  recoveryRef: string | undefined,
+): Pick<CodeModeRunMeta, "recoveryRef" | "recoveryCommand"> {
+  if (!recoveryRef) {
+    return { recoveryRef: null, recoveryCommand: null };
+  }
+  return {
+    recoveryRef,
+    recoveryCommand: `await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} })`,
+  };
 }
 
 function codeModeRuntimeError(message: string, stack?: string) {

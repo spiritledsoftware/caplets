@@ -69,6 +69,7 @@ export type ReadCodeModeRecoveryResult = {
 
 export type CodeModeJournalLookupResult = {
   expiresAt: string;
+  recoveryRef?: string;
 };
 
 export type CodeModeJournalStoreOptions = {
@@ -84,6 +85,7 @@ export type CodeModeJournalStoreOptions = {
 type StoredJournalFile = {
   version: typeof JOURNAL_VERSION;
   journalKey: string;
+  sessionIdHash?: string;
   recoveryRefHashes: string[];
   createdAt: string;
   updatedAt: string;
@@ -101,6 +103,7 @@ export class CodeModeJournalStore {
   private readonly configuredSecret: string | undefined;
   private secret: string | undefined;
   private recoveryRefs = new Map<string, string>();
+  private sessionRecoveryRefs = new Map<string, { recoveryRef: string; expiresAt: string }>();
 
   constructor(options: CodeModeJournalStoreOptions = {}) {
     this.stateDir = options.stateDir ?? join(defaultStateBaseDir(), "caplets");
@@ -118,8 +121,10 @@ export class CodeModeJournalStore {
     const now = this.now();
     const expiresAt = new Date(now.getTime() + this.retentionMs).toISOString();
     const journalKey = this.journalKey(input.sessionId, input.journalScope);
-    const recoveryRef = this.recoveryRefs.get(journalKey) ?? randomBytes(24).toString("hex");
+    const recoveryRef =
+      this.recoveryRefs.get(journalKey) ?? this.recoveryRefForJournalKey(journalKey);
     this.recoveryRefs.set(journalKey, recoveryRef);
+    this.sessionRecoveryRefs.set(input.sessionId, { recoveryRef, expiresAt });
     const recoveryRefHash = this.recoveryRefHash(recoveryRef);
     const path = this.journalPath(journalKey);
     const existing = this.readJournalPath(path);
@@ -127,6 +132,7 @@ export class CodeModeJournalStore {
     const stored: StoredJournalFile = {
       version: JOURNAL_VERSION,
       journalKey,
+      sessionIdHash: this.sessionIdHash(input.sessionId),
       recoveryRefHashes: [...new Set([...(existing?.recoveryRefHashes ?? []), recoveryRefHash])],
       createdAt: existing?.createdAt ?? now.toISOString(),
       updatedAt: now.toISOString(),
@@ -140,6 +146,17 @@ export class CodeModeJournalStore {
   async lookupSession(sessionId: string): Promise<CodeModeJournalLookupResult | undefined> {
     this.ensureJournalDir();
     this.pruneExpired();
+    const retained = this.sessionRecoveryRefs.get(sessionId);
+    if (retained && new Date(retained.expiresAt).getTime() > this.now().getTime()) {
+      return retained;
+    }
+    const scopedJournal = this.findBySessionIdHash(this.sessionIdHash(sessionId));
+    if (scopedJournal && !this.isExpired(scopedJournal)) {
+      return {
+        expiresAt: scopedJournal.expiresAt,
+        recoveryRef: this.recoveryRefForJournalKey(scopedJournal.journalKey),
+      };
+    }
     const journal = this.readJournalPath(this.journalPath(this.journalKey(sessionId)));
     if (!journal || this.isExpired(journal)) return undefined;
     return {
@@ -224,6 +241,18 @@ export class CodeModeJournalStore {
     return undefined;
   }
 
+  private findBySessionIdHash(sessionIdHash: string): StoredJournalFile | undefined {
+    const journals: StoredJournalFile[] = [];
+    for (const filename of readdirSync(this.journalDir())) {
+      if (!filename.endsWith(".json")) continue;
+      const journal = this.readJournalPath(join(this.journalDir(), filename));
+      if (journal?.sessionIdHash === sessionIdHash) journals.push(journal);
+    }
+    return journals.sort(
+      (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+    )[0];
+  }
+
   private readJournalPath(path: string): StoredJournalFile | undefined {
     try {
       rejectSymlinkPathComponents(this.journalDir(), path, true);
@@ -243,6 +272,9 @@ export class CodeModeJournalStore {
       return {
         version: JOURNAL_VERSION,
         journalKey: parsed.journalKey,
+        ...(typeof parsed.sessionIdHash === "string"
+          ? { sessionIdHash: parsed.sessionIdHash }
+          : {}),
         recoveryRefHashes: parsed.recoveryRefHashes.filter(
           (hash): hash is string => typeof hash === "string",
         ),
@@ -290,6 +322,14 @@ export class CodeModeJournalStore {
 
   private recoveryRefHash(recoveryRef: string): string {
     return this.hmac(`recovery-ref:${recoveryRef}`);
+  }
+
+  private recoveryRefForJournalKey(journalKey: string): string {
+    return this.hmac(`recovery-ref-material:${journalKey}`).slice(0, 48);
+  }
+
+  private sessionIdHash(sessionId: string): string {
+    return this.hmac(`session-id:${sessionId}`);
   }
 
   private hmac(value: string): string {

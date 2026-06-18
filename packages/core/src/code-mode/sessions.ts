@@ -5,6 +5,7 @@ import {
   type CodeModeSandboxResult,
   type CodeModeSandboxInput,
 } from "./sandbox";
+import { CodeModeDiagnosticsSession } from "./diagnostics";
 import type { CodeModeSessionStatus } from "./types";
 
 export const CODE_MODE_SESSION_COMPATIBILITY_VERSION = 1;
@@ -54,6 +55,7 @@ export type CodeModeReplSessionFactory = {
 type SessionRecord = {
   id: string;
   session: CodeModeReplSession;
+  diagnosticsSession: CodeModeDiagnosticsSession;
   compatibilityKey: string;
   lastUsedAt: number;
   busy: boolean;
@@ -111,9 +113,12 @@ export class CodeModeSessionManager {
       }
       if (record.compatibilityKey !== compatibilityKey) {
         this.#disposeRecord(record.id);
-        record = await this.#createRecord(requestedSessionId, compatibilityKey);
-        if (!record) return this.#closedResult(requestedSessionId);
-        sessionStatus = "created";
+        return {
+          ok: false,
+          sessionId: requestedSessionId,
+          sessionStatus: null,
+          error: "not_found",
+        };
       } else {
         sessionStatus = "reused";
       }
@@ -173,6 +178,25 @@ export class CodeModeSessionManager {
     return this.#sessions.get(sessionId)?.compatibilityKey;
   }
 
+  diagnosticsSession(
+    sessionId: string,
+    compatibility: CodeModeSessionCompatibility,
+  ): CodeModeDiagnosticsSession | undefined {
+    this.#evictExpired();
+    const record = this.#sessions.get(sessionId);
+    if (!record) return undefined;
+    const compatibilityKey = compatibilityKeyFor(compatibility);
+    if (record.compatibilityKey !== compatibilityKey) {
+      this.#disposeRecord(sessionId);
+      return undefined;
+    }
+    return record.diagnosticsSession;
+  }
+
+  recordSuccessfulCell(sessionId: string, code: string): void {
+    this.#sessions.get(sessionId)?.diagnosticsSession.recordSuccessfulCell(code);
+  }
+
   async #createRecord(id: string, compatibilityKey: string): Promise<SessionRecord | undefined> {
     if (this.#closed) {
       return undefined;
@@ -185,6 +209,7 @@ export class CodeModeSessionManager {
     const record: SessionRecord = {
       id,
       session,
+      diagnosticsSession: new CodeModeDiagnosticsSession(),
       compatibilityKey,
       lastUsedAt: this.#now(),
       busy: false,

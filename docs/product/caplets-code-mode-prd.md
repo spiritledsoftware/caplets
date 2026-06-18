@@ -108,11 +108,13 @@ submitted code runs with structured session errors. Session heap state is intent
 durable across process restarts or TTL eviction, and ordinary `caplets code-mode ...` CLI
 invocations remain one-shot unless a separate long-lived REPL command is implemented.
 
-Recovery is reference-scoped, not lookup-based. Agents can read recovery history only when
-they already possess the `recoveryRef` returned when the session was created. Recovery
-summaries are redacted and bounded, and they help agents reconstruct setup code manually.
-They do not restore heap, closures, timers, promises, or host handles. A stale or unknown
-`sessionId` does not upgrade into a recovery reference, and there is no recent-session lookup.
+Recovery is reference-scoped, not broad lookup-based. Agents can read recovery history when
+they possess the `recoveryRef` returned when the session was created, and a still-retained
+journal may return that same reference when a known session ID was cleaned up by TTL,
+compatibility eviction, or runtime restart while the retained journal remains readable.
+Recovery summaries are redacted and bounded, and they help agents reconstruct setup code
+manually. They do not restore heap, closures, timers, promises, or host handles. Unknown
+session IDs do not upgrade into recovery references, and there is no recent-session lookup.
 
 ## Exposure Modes
 

@@ -36,12 +36,31 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
     ...(options.authDir ? { authDir: options.authDir } : {}),
   });
   try {
+    if (options.sessionId !== undefined) {
+      const result: CodeModeRunEnvelope = {
+        ok: false,
+        error: {
+          code: "SESSION_NOT_FOUND",
+          message:
+            "Code Mode one-shot CLI runs do not support --session-id. Omit --session-id to start a fresh one-shot run.",
+        },
+        diagnostics: [],
+        logs: { entries: [], truncated: false, stored: false },
+        meta: emptyCodeModeRunMeta(),
+      };
+      if (options.json) {
+        options.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        options.writeOut(`${result.error.code}: ${result.error.message}\n`);
+      }
+      options.setExitCode(1);
+      return;
+    }
     const code = await readCodeModeCliCode(options);
     const result = await runCodeMode({
       code,
       service: service.codeModeService?.() ?? service,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
       runtimeScope: "cli-one-shot",
     });
     if (options.json) {

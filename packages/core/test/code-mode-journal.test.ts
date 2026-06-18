@@ -77,6 +77,7 @@ describe("Code Mode journal", () => {
 
       await expect(second.lookupSession("session-retained")).resolves.toEqual({
         expiresAt: stored.expiresAt,
+        recoveryRef: stored.recoveryRef,
       });
       await expect(second.readRecovery({ recoveryRef: stored.recoveryRef })).resolves.toMatchObject(
         {
@@ -118,7 +119,7 @@ describe("Code Mode journal", () => {
         recoveryClassification: "setup_like",
       });
 
-      expect(second.recoveryRef).not.toBe(first.recoveryRef);
+      expect(second.recoveryRef).toBe(first.recoveryRef);
       await expect(
         secondStore.readRecovery({ recoveryRef: first.recoveryRef }),
       ).resolves.toMatchObject({
