@@ -8,6 +8,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Caplets Docs",
+      favicon: "/icon.png",
       logo: {
         src: "./src/assets/caplets-icon.png",
         alt: "Caplets",
