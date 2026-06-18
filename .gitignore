@@ -32,3 +32,6 @@ benchmark-results/
 
 # autoresearch
 .auto/
+
+# Compound Engineering local config
+.compound-engineering/*.local.yaml
