@@ -2302,6 +2302,7 @@ describe("createNativeCapletsService remote mode", () => {
     const fixture = client([{ name: "remote", title: "Remote" }]);
     const writeErr = vi.fn();
     const missingEnvName = "CAPLETS_NATIVE_TEST_MISSING_REMOTE_URL";
+    const originalMissingEnv = process.env[missingEnvName];
     delete process.env[missingEnvName];
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -2316,23 +2317,32 @@ describe("createNativeCapletsService remote mode", () => {
     });
     dirs.push(dir);
 
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: { url: "http://127.0.0.1:5387" },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      configPath,
-      projectConfigPath,
-      writeErr,
-    });
+    let service: NativeCapletsService | undefined;
+    try {
+      service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387" },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        writeErr,
+      });
 
-    await service.reload();
+      await service.reload();
 
-    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
-    expect(writeErr).toHaveBeenCalledWith(
-      expect.stringContaining(`missing environment variable ${missingEnvName}`),
-    );
-    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("mcpServers.broken.url"));
-    await service.close();
+      expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
+      expect(writeErr).toHaveBeenCalledWith(
+        expect.stringContaining(`missing environment variable ${missingEnvName}`),
+      );
+      expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("mcpServers.broken.url"));
+    } finally {
+      await service?.close();
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
+    }
   });
 
   it("starts Cloud Project Binding when native service runs in cloud mode", async () => {
@@ -2407,6 +2417,69 @@ describe("createNativeCapletsService remote mode", () => {
     expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
     expect(writeErr).toHaveBeenCalledWith(expect.stringContaining(badCapletPath));
     await service.close();
+  });
+
+  it("picks up healthy local overlay edits when reload introduces missing-env warnings", async () => {
+    const fixture = client([{ name: "remote", title: "Remote" }]);
+    const writeErr = vi.fn();
+    const missingEnvName = "CAPLETS_NATIVE_TEST_RELOAD_MISSING_REMOTE_URL";
+    const originalMissingEnv = process.env[missingEnvName];
+    delete process.env[missingEnvName];
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+
+    let service: NativeCapletsService | undefined;
+    try {
+      service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387" },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        writeErr,
+      });
+      await service.reload();
+
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              broken: {
+                name: "Broken Remote",
+                description: "References a missing startup URL.",
+                transport: "http",
+                url: `$env:${missingEnvName}`,
+              },
+              alpha: { name: "Alpha", description: "Alpha Caplet.", command: process.execPath },
+              beta: { name: "Beta", description: "Beta Caplet.", command: process.execPath },
+            },
+          }),
+        ),
+        "utf8",
+      );
+
+      await expect(service.reload()).resolves.toBe(true);
+
+      expect(configuredCapletIds(service.listTools())).toEqual(["remote", "alpha", "beta"]);
+      expect(writeErr).toHaveBeenCalledWith(
+        expect.stringContaining(`missing environment variable ${missingEnvName}`),
+      );
+      expect(writeErr).not.toHaveBeenCalledWith(
+        expect.stringContaining("reload produced new warnings"),
+      );
+    } finally {
+      await service?.close();
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
+    }
   });
 
   it("closes remote and local overlay services idempotently", async () => {

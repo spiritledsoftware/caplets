@@ -945,6 +945,71 @@ describe("config", () => {
     }
   });
 
+  it("quarantines Caplet files with missing env refs in local overlays without dropping valid siblings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-file-missing-env-"));
+    const missingEnvName = "CAPLETS_TEST_MISSING_FILE_REMOTE_URL";
+    const originalMissingEnv = process.env[missingEnvName];
+    delete process.env[missingEnvName];
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        join(userRoot, "broken.md"),
+        [
+          "---",
+          "name: Broken Remote",
+          "description: References a missing startup URL.",
+          "mcpServer:",
+          "  transport: http",
+          `  url: $env:${missingEnvName}`,
+          "---",
+          "# Broken Remote",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(userRoot, "healthy.md"),
+        [
+          "---",
+          "name: Healthy Local",
+          "description: A useful healthy downstream server.",
+          "mcpServer:",
+          "  command: healthy-server",
+          "---",
+          "# Healthy Local",
+        ].join("\n"),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config.mcpServers.healthy?.command).toBe("healthy-server");
+      expect(config.mcpServers.broken).toBeUndefined();
+      expect(sources.healthy).toEqual({ kind: "global-file", path: join(userRoot, "healthy.md") });
+      expect(sources.broken).toBeUndefined();
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          kind: "global-file",
+          path: join(userRoot, "broken.md"),
+          message: expect.stringContaining(missingEnvName),
+          recoverable: true,
+        }),
+      ]);
+      expect(warnings[0]?.message).toContain("mcpServers.broken.url");
+      expect(warnings[0]?.message).toContain("skipping Caplet broken");
+    } finally {
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves local overlay source and shadow metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-shadows-"));
     try {

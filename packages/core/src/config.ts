@@ -359,6 +359,7 @@ export type LocalOverlayConfigWarning = {
   kind: ConfigSourceKind;
   path: string;
   message: string;
+  recoverable?: boolean | undefined;
 };
 
 export type LocalOverlayConfigWithSources = ConfigWithSources & {
@@ -1761,7 +1762,7 @@ function readBestEffortJsonConfigInput(path: string): ConfigInput {
 function quarantineMissingEnvCaplets(
   input: ConfigInput,
   kind: ConfigSourceKind,
-  sourcePath: string,
+  sourcePath: string | ((id: string) => string),
   warnings: LocalOverlayConfigWarning[],
 ): ConfigInput {
   let filtered = input;
@@ -1781,8 +1782,9 @@ function quarantineMissingEnvCaplets(
       filtered = removeCapletId(filtered, id);
       warnings.push({
         kind,
-        path: sourcePath,
+        path: typeof sourcePath === "function" ? sourcePath(id) : sourcePath,
         message: formatMissingEnvWarning(id, missing),
+        recoverable: true,
       });
     }
   }
@@ -1839,7 +1841,17 @@ function loadBestEffortCapletFiles(
   for (const warning of result.warnings) {
     warnings.push({ kind, path: warning.path ?? root, message: warning.message });
   }
-  return { config: result.config, paths: result.paths };
+  const config = quarantineMissingEnvCaplets(
+    result.config,
+    kind,
+    (id) => result.paths[id] ?? root,
+    warnings,
+  );
+  const retainedIds = new Set(capletIds(config));
+  const paths = Object.fromEntries(
+    Object.entries(result.paths).filter(([id]) => retainedIds.has(id)),
+  );
+  return { config, paths };
 }
 
 function errorMessage(error: unknown): string {

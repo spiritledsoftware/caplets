@@ -1009,14 +1009,16 @@ function createLocalOverlayConfigLoader(options: NativeCapletsServiceOptions) {
       const path = typeof warning.path === "string" ? ` at ${warning.path}` : "";
       writeErr(options, `Caplets local overlay warning${path}: ${warning.message}\n`);
     }
-    const warnings = new Set(result.warnings.map(warningKey));
-    if (hasLoaded && [...warnings].some((warning) => !previousWarnings.has(warning))) {
+    const fatalWarnings = new Set(
+      result.warnings.filter((warning) => !warning.recoverable).map(warningKey),
+    );
+    if (hasLoaded && [...fatalWarnings].some((warning) => !previousWarnings.has(warning))) {
       throw new CapletsError(
         "CONFIG_INVALID",
         "Caplets local overlay reload produced new warnings; keeping last known-good config.",
       );
     }
-    previousWarnings = warnings;
+    previousWarnings = fatalWarnings;
     hasLoaded = true;
     return result.config;
   };
