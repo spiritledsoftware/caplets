@@ -816,7 +816,12 @@ function createInvokeBridge(
     const args = context.dump(argsHandle) as unknown[];
     const deferred = context.newPromise();
     pendingDeferreds.add(deferred);
-    deferred.settled.finally(() => pendingDeferreds.delete(deferred));
+    deferred.settled.finally(() => {
+      pendingDeferreds.delete(deferred);
+      if (deferred.alive) {
+        deferred.dispose();
+      }
+    });
 
     void invoke({ capletId, method, args }).then(
       (value) => {
@@ -867,6 +872,9 @@ function createInvokeJsonBridge(
     deferred.settled.finally(() => {
       pendingDeferreds.delete(deferred);
       pendingInvokes.delete(deferred);
+      if (deferred.alive) {
+        deferred.dispose();
+      }
     });
 
     const debugCapletActive = capletId === "debug" && isCapletActive("debug");
@@ -1541,7 +1549,7 @@ function returnWithPersistenceExpression(
     return expression ? `return ${expression};` : "return;";
   }
   return expression
-    ? `return (async (${returnTempName}) => { await Promise.resolve(); ${postludeExpression}; return ${returnTempName}; })(${expression});`
+    ? `return (async (${returnTempName}) => { await Promise.resolve(); ${postludeExpression}; return ${returnTempName}; })((${expression}));`
     : `await Promise.resolve();\nreturn void (${postludeExpression});`;
 }
 

@@ -2717,6 +2717,36 @@ describe("QuickJsCodeModeSandbox sessions", () => {
     }
   });
 
+  it("preserves comma-expression return values while snapshotting persisted state", async () => {
+    const sandbox = new QuickJsCodeModeSandbox();
+    const session = await sandbox.createSession();
+    try {
+      await session.run({
+        code: "var x = 0;\nreturn x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const result = await session.run({
+        code: "return x = 1, x + 1;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+      const followup = await session.run({
+        code: "return x;",
+        capletIds: [],
+        timeoutMs: 1_000,
+        invoke,
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 2 });
+      expect(followup).toMatchObject({ ok: true, value: 1 });
+    } finally {
+      session.dispose();
+    }
+  });
+
   it("waits for unawaited Caplet calls before returning session results", async () => {
     const sandbox = new QuickJsCodeModeSandbox();
     const session = await sandbox.createSession();
