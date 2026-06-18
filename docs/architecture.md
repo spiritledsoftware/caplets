@@ -58,6 +58,17 @@ Code Mode is implemented under `packages/core/src/code-mode/`.
 
 The runtime generates TypeScript declarations from the current callable Caplets, statically checks the submitted script, runs it in the sandbox, bridges handle methods back to the native service, stores logs when configured, and returns JSON-serializable results with diagnostics.
 
+Code Mode supports optional live sessions. A run without `sessionId` creates a fresh QuickJS
+heap and returns `meta.sessionId`; a run with a known live `sessionId` reuses that heap for
+adjacent calls. Unknown or expired session IDs are rejected before user code executes.
+Session heaps are runtime memory only and disappear on process restart or TTL eviction.
+
+Recovery history is keyed by `recoveryRef`, which is returned in creation metadata when
+available. `caplets.debug.readRecovery()` reads redacted, bounded summaries for agents that
+already have that reference. It is a setup-code reconstruction aid, not heap restoration, and
+there is no recent-session lookup or stale-session upgrade path from `sessionId` to
+`recoveryRef`.
+
 Code Mode installs a browser-like, non-I/O platform surface as runtime globals for common JavaScript data shaping: base64 helpers, a minimal `Buffer` subset, `structuredClone`, URL and text encoding helpers, Web data containers such as `Headers`, `Blob`, `File`, `FormData`, streams, abort signals, `Request`/`Response`, timers, microtasks, and crypto randomness. These globals are intentionally omitted from generated Code Mode TypeScript declarations and tool prompts so the declaration payload stays focused on Caplet handles, debug helpers, and `console`.
 
 Direct I/O remains routed through Caplet handles. `fetch` is intentionally unavailable, and Code Mode does not expose Node process, module loading, filesystem, child process, or direct network APIs.

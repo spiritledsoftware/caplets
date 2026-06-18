@@ -126,6 +126,13 @@ type CompleteResult = unknown;
 type ReadLogsInput = { logRef: string; cursor?: string; limit?: number };
 type ReadLogsResult = { entries: CodeModeLogEntry[]; nextCursor?: string };
 type ReadCodeModeRecoveryInput = { recoveryRef: string; cursor?: string; limit?: number };
+type CodeModeDiagnostic = {
+  code: string;
+  message: string;
+  severity: "error" | "warning" | "info";
+  line?: number;
+  column?: number;
+};
 type CodeModeRecoveryClassification = "setup_like" | "side_effecting" | "unknown";
 type CodeModeRecoveryEntry = {
   timestamp: string;
