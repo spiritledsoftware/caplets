@@ -9,6 +9,8 @@ topic: code-mode-repl-sessions
 
 Code Mode should support reusable in-memory REPL sessions so agents can define helper functions and workflow code once, then call them again while the live runtime remains available. V1 includes a redacted expiring call journal because expired-session reconstruction and auditability are launch requirements, not a separate later feature.
 
+Agent-facing Code Mode guidance should make this reuse path obvious wherever the tool is exposed. Agents should learn from tool metadata and prompt guidance to omit `sessionId` for a fresh session, capture `meta.sessionId`, pass it back for reuse, expect unknown sessions to fail, and use recovery metadata when available.
+
 ---
 
 ## Problem Frame
@@ -31,6 +33,7 @@ The product bet should be validated with `pi-eval`: add or identify a repeated-w
 - **Live reuse has a concrete expectation.** Sessions are process-local, but adjacent calls in the same healthy runtime should normally reuse state unless an idle TTL, compatibility change, lifecycle event, or explicit resource pressure evicts the context.
 - **Journal entries support safe reconstruction.** Recovery history distinguishes setup-like code from side-effecting calls so agents do not blindly replay everything.
 - **Durable heap persistence is out of scope.** Caplets stores reconstruction breadcrumbs, not QuickJS heap snapshots, closures, promises, timers, or live host handles.
+- **REPL reuse must be taught at the tool surface.** The behavior is only useful if agents see the reuse contract in the Code Mode tool description, `sessionId` input schema, and native prompt guidance before they decide how to call the tool.
 
 ```mermaid
 flowchart TB
@@ -84,14 +87,19 @@ flowchart TB
 
 **Agent ergonomics**
 
-- R18. Tool descriptions and docs teach agents to capture `meta.sessionId` and pass it on later calls when they intend to reuse definitions.
+- R18. Tool descriptions and docs teach agents to omit `sessionId` for a fresh session, capture `meta.sessionId`, and pass it on later calls when they intend to reuse definitions.
 - R19. Errors for expired sessions should tell the agent whether reconstruction history exists and how to retrieve it.
 - R20. The default path remains simple for one-shot Code Mode use: agents can ignore `sessionId` when reuse is not useful.
 - R21. If an agent loses the returned session ID while the live context still exists, Caplets provides a scoped recent-session lookup or durable conversation/run binding that can recover eligible active sessions without exposing unrelated sessions.
+- R22. The `sessionId` input description tells agents that known IDs reuse existing REPL state and missing IDs fail instead of starting an empty context.
+- R23. Code Mode tool descriptions explain which bindings survive reuse: successful top-level `var` bindings, function declarations, and runtime state inside the live session.
+- R24. Native prompt guidance for Pi, OpenCode, and other native surfaces reinforces the same reuse contract as MCP tool metadata.
+- R25. Recovery metadata guidance explains that `recoveryRef` and `recoveryCommand` are for audit and reconstruction, not automatic replay.
 
 **Validation**
 
-- R22. `pi-eval` validates the feature with a repeated-workflow task that compares the current one-shot Code Mode path against session-enabled reuse using task success, provider request count, tool-call count, token/request overhead, and repeated setup-code volume.
+- R26. `pi-eval` validates the feature with a repeated-workflow task that compares the current one-shot Code Mode path against session-enabled reuse using task success, provider request count, tool-call count, token/request overhead, and repeated setup-code volume.
+- R27. Tests cover the generated Code Mode tool description, `sessionId` schema description, and native prompt guidance so the reuse contract does not drift across surfaces.
 
 ---
 
@@ -107,13 +115,13 @@ flowchart TB
   - **Trigger:** The agent has a prior `sessionId` and wants to reuse helper definitions or cached local variables.
   - **Actors:** A1, A2
   - **Steps:** The agent calls Code Mode with `sessionId`; Caplets validates the live session, executes in the existing context, records the call, and returns normal run metadata.
-  - **Covered by:** R2, R6, R7, R8, R11
+  - **Covered by:** R2, R6, R7, R8, R11, R22, R23
 
 - F3. Expired session reconstruction
   - **Trigger:** The agent resumes with a `sessionId` whose live context has been cleaned up.
   - **Actors:** A1, A2, A3
   - **Steps:** Caplets refuses to execute in a fresh empty context, returns an expired-session failure with a reconstruction pointer, and the agent reads the journal to reconstruct useful helper code.
-  - **Covered by:** R4, R12, R15, R16, R17, R19
+  - **Covered by:** R4, R12, R15, R16, R17, R19, R25
 
 - F4. Unknown session failure
   - **Trigger:** The agent supplies a session ID that Caplets has neither live state nor retained journal for.
@@ -127,6 +135,12 @@ flowchart TB
   - **Steps:** The agent uses a scoped lookup or conversation/run binding; Caplets authorizes the lookup against the same session scope and returns only eligible active session candidates.
   - **Covered by:** R7, R21
 
+- F6. Agent learns reuse from tool metadata
+  - **Trigger:** The agent inspects or receives the Code Mode tool definition before deciding whether to run one-shot or reusable code.
+  - **Actors:** A1, A2
+  - **Steps:** Caplets presents concise reuse guidance in the tool description, `sessionId` field description, and native prompt guidance; the agent starts fresh or reuses an existing session intentionally.
+  - **Covered by:** R18, R22, R23, R24, R25, R27
+
 ---
 
 ## Acceptance Examples
@@ -139,7 +153,8 @@ flowchart TB
 - AE6. **Covers R7, R15.** Given another actor lacks authorization for the originating session scope, when it tries to reuse the session or read the journal, then Caplets rejects the request.
 - AE7. **Covers R12, R17.** Given a journal contains helper definitions and calls with external side effects, when the recovery surface renders it, then setup-like code is distinguishable from side-effecting calls.
 - AE8. **Covers R21.** Given an agent loses `meta.sessionId` while the runtime still has active sessions, when it uses the scoped recovery mechanism, then Caplets returns only eligible sessions for the same authorized conversation or run scope.
-- AE9. **Covers R22.** Given `pi-eval` runs a repeated-workflow task before and after session reuse ships, when results are compared, then the report shows whether session reuse improves repeated setup-code volume, tool calls, request overhead, and task success.
+- AE9. **Covers R26.** Given `pi-eval` runs a repeated-workflow task before and after session reuse ships, when results are compared, then the report shows whether session reuse improves repeated setup-code volume, tool calls, request overhead, and task success.
+- AE10. **Covers R18, R22, R23, R24, R25, R27.** Given an agent sees Code Mode through MCP, Pi, OpenCode, or another native surface, when it reads the tool metadata or prompt guidance, then it can infer how to create, reuse, recover, and intentionally abandon a REPL session.
 
 ---
 
@@ -155,6 +170,7 @@ flowchart TB
 ## Success Criteria
 
 - Agents can reuse helper functions and workflow state across multiple Code Mode calls in the same live runtime.
+- Agents can infer the reuse workflow from Code Mode tool metadata without reading separate product docs.
 - Adjacent calls in a healthy runtime normally reuse live state; eviction is an explicit recovery path, not the default experience.
 - Session loss is understandable: expired sessions point to reconstruction history when available.
 - Existing one-shot Code Mode workflows continue to work without session-specific setup.
@@ -168,6 +184,7 @@ flowchart TB
 - Durable QuickJS heap snapshots are not in scope.
 - Saved named workflows are not in scope.
 - A separate reset tool is not in scope; agents start fresh by omitting `sessionId`.
+- A broad human-facing documentation rewrite is not in scope for the tool-guidance follow-up unless it directly supports the exposed agent guidance.
 - Cross-process or cross-device REPL continuity is not in scope.
 - Replaying journal entries automatically is not in scope for V1 because prior calls may include side effects; recovery output only helps agents decide what is safe to reconstruct manually.
 
@@ -191,5 +208,6 @@ flowchart TB
 - `docs/plans/2026-06-17-code-mode-platform-api-compat.md` for the adjacent platform-runtime expansion.
 - `packages/core/src/code-mode/runner.ts` and `packages/core/src/code-mode/sandbox.ts` for the current one-shot runtime shape.
 - `packages/core/src/code-mode/tool.ts`, `packages/core/src/serve/session.ts`, `packages/core/src/native/service.ts`, and `packages/core/src/native/remote.ts` for the current public Code Mode input surfaces.
+- `packages/core/src/code-mode/declarations.ts`, `packages/core/src/native/tools.ts`, `packages/pi/src/index.ts`, and `packages/opencode/README.md` for current agent-facing Code Mode guidance surfaces.
 - `packages/core/src/code-mode/logs.ts` for the existing TTL-backed redacted log-store pattern.
 - `packages/benchmarks/lib/pi-eval/config.ts`, `packages/benchmarks/lib/pi-eval/suites.ts`, `packages/benchmarks/lib/pi-eval/metrics.ts`, and `docs/benchmarks/coding-agent.md` for the live Pi eval validation path.

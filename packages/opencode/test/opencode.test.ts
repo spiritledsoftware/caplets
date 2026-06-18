@@ -52,9 +52,13 @@ describe("@caplets/opencode", () => {
           caplet: "code_mode",
           toolName: "caplets__code_mode",
           title: "Code Mode",
-          description: "Run Caplets Code Mode TypeScript.",
+          description:
+            "Run Caplets Code Mode TypeScript. Omit sessionId to start fresh and pass returned meta.sessionId to reuse live state.",
           codeModeRun: true,
-          promptGuidance: ["Use caplets__code_mode for multi-step Caplets workflows."],
+          promptGuidance: [
+            "Use caplets__code_mode for multi-step Caplets workflows.",
+            "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
+          ],
         },
       ],
       execute: vi.fn(async () => ({ ok: true })),
@@ -74,12 +78,15 @@ describe("@caplets/opencode", () => {
     expect(result).toContain('"ok": true');
 
     const runTool = hooks.tool!.caplets__code_mode as {
-      args: { code?: unknown; timeoutMs?: unknown };
+      description?: string;
+      args: { code?: unknown; timeoutMs?: unknown; sessionId?: unknown };
       execute(args: unknown, context: unknown): Promise<string>;
     };
+    expect(runTool.description).toContain("meta.sessionId");
     expect(runTool.args).toMatchObject({
       code: { type: "string" },
       timeoutMs: { type: "number", optional: true },
+      sessionId: { type: "string", optional: true },
     });
     const runResult = await runTool.execute({ code: "return {ok:true};" }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("code_mode", { code: "return {ok:true};" });

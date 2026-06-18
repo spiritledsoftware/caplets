@@ -52,7 +52,8 @@ describe("native Caplets service", () => {
     const service = createNativeCapletsService({ configPath, projectConfigPath });
 
     try {
-      expect(service.listTools()).toEqual(
+      const tools = service.listTools();
+      expect(tools).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             caplet: "git-hub",
@@ -71,7 +72,27 @@ describe("native Caplets service", () => {
           }),
         ]),
       );
-      const githubTool = service.listTools().find((tool) => tool.caplet === "git-hub");
+      const codeModeTool = tools.find((tool) => tool.caplet === "code_mode");
+      expect(codeModeTool?.description).toContain("`meta.sessionId`");
+      expect(codeModeTool?.description).toContain("fails before executing your code");
+      expect(codeModeTool?.promptGuidance).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("recoveryRef or recoveryCommand"),
+        ]),
+      );
+      expect(
+        (
+          codeModeTool?.inputSchema as {
+            properties?: { sessionId?: { description?: string } };
+          }
+        )?.properties?.sessionId?.description,
+      ).toContain("Omit to create a fresh reusable session");
+      expect(nativeCapletsSystemGuidance(["caplets__code_mode"])).toContain(
+        "omit sessionId to start fresh",
+      );
+      const githubTool = tools.find((tool) => tool.caplet === "git-hub");
       expect(githubTool?.description).toContain("Native tool name: caplets__git-hub");
       expect(githubTool?.inputSchema).toMatchObject({
         properties: expect.objectContaining({ fields: expect.anything() }),

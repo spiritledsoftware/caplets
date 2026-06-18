@@ -116,6 +116,12 @@ describe("generateCodeModeDeclarations", () => {
     expect(description).toContain("Never invent tool names, resource URIs, prompt names");
     expect(description).toContain("use requiredArgs/acceptedArgs for simple calls");
     expect(description).toContain("exact callSignature/inputSchema/inputTypeScript");
+    expect(description).toContain("omit `sessionId` to start a fresh reusable Code Mode session");
+    expect(description).toContain("keep `meta.sessionId`");
+    expect(description).toContain("successful top-level `var` bindings, function declarations");
+    expect(description).toContain("fails before executing your code");
+    expect(description).toContain("Use `meta.recoveryRef` or `meta.recoveryCommand`");
+    expect(description).toContain("do not automatically replay recovery history");
     expect(description).toContain("Generated declaration hints:");
     expect(description).toContain(declaration);
     expect(description).not.toContain("Do not split discovery and execution");

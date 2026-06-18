@@ -30,7 +30,17 @@ describe("Code Mode MCP tool", () => {
     expect(server.registered.get("github")).toBeDefined();
     expect(server.registered.get("code_mode")).toBeDefined();
     expect(server.registered.get("run")).toBeUndefined();
-    expect(server.definitions.get("code_mode")?.inputSchema).toHaveProperty("sessionId");
+    const codeModeInputSchema = server.definitions.get("code_mode")?.inputSchema as Record<
+      string,
+      { description?: string }
+    >;
+    expect(codeModeInputSchema).toHaveProperty("sessionId");
+    expect(codeModeInputSchema.sessionId?.description).toContain(
+      "Omit to create a fresh reusable session",
+    );
+    expect(codeModeInputSchema.sessionId?.description).toContain(
+      "Unknown or unavailable session IDs fail before code execution",
+    );
     expect(server.definitions.get("code_mode")?.description).toContain("caplets.<id>");
     expect(server.definitions.get("code_mode")?.description).toContain(
       "Prefer a compact one-pass script for most tasks",
@@ -62,6 +72,16 @@ describe("Code Mode MCP tool", () => {
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "exact callSignature/inputSchema/inputTypeScript",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "omit `sessionId` to start a fresh reusable Code Mode session",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain("`meta.sessionId`");
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "fails before executing your code",
+    );
+    expect(server.definitions.get("code_mode")?.description).toContain(
+      "do not automatically replay recovery history",
     );
     expect(server.definitions.get("code_mode")?.description).toContain(
       "list broad candidate records",

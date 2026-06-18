@@ -969,9 +969,20 @@ describe("RemoteNativeCapletsService", () => {
       expect.objectContaining({
         caplet: "code_mode",
         codeModeRun: true,
+        description: expect.stringContaining("`meta.sessionId`"),
+        promptGuidance: expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+          expect.stringContaining("returned meta.sessionId"),
+          expect.stringContaining("recoveryRef or recoveryCommand"),
+        ]),
         inputSchema: expect.objectContaining({
           required: ["code"],
-          properties: expect.objectContaining({ code: expect.any(Object) }),
+          properties: expect.objectContaining({
+            code: expect.any(Object),
+            sessionId: expect.objectContaining({
+              description: expect.stringContaining("Omit to create a fresh reusable session"),
+            }),
+          }),
         }),
       }),
     );
@@ -1774,9 +1785,16 @@ describe("createNativeCapletsService remote mode", () => {
     expect(tools.find((tool) => tool.caplet === "code_mode")).toEqual(
       expect.objectContaining({
         codeModeRun: true,
+        description: expect.stringContaining("`meta.sessionId`"),
+        promptGuidance: expect.arrayContaining([
+          expect.stringContaining("omit sessionId to start fresh"),
+        ]),
         inputSchema: expect.objectContaining({
           properties: expect.objectContaining({
-            sessionId: expect.objectContaining({ type: "string" }),
+            sessionId: expect.objectContaining({
+              type: "string",
+              description: expect.stringContaining("Unknown or unavailable session IDs fail"),
+            }),
           }),
         }),
         codeModeCaplets: expect.arrayContaining([

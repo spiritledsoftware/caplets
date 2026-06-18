@@ -2,9 +2,9 @@
 
 ## Commands
 
-- Use `pnpm` only; the repo pins `pnpm@11.5.0` and requires Node `>=24`.
+- Use `pnpm` only; the repo pins `pnpm@11.7.0` and requires Node `>=22`.
 - Install with `pnpm install --frozen-lockfile` when matching CI.
-- Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> code-mode:check-api -> typecheck -> schema:check -> test -> benchmark:check -> build`).
+- Full local gate and pre-push hook: `pnpm verify` (`format:check -> lint -> code-mode:check-api -> schema:check -> docs:check -> typecheck -> test -> benchmark:check -> build`).
 - Fast focused checks: `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`.
 - Run one package: `pnpm --filter @caplets/core test`, `pnpm --filter caplets build`, or replace the filter with `@caplets/opencode`, `@caplets/pi`, `@caplets/benchmarks`.
 - Run one Vitest file by passing it after the package script, e.g. `pnpm --filter @caplets/core test -- test/config.test.ts`.
@@ -17,13 +17,20 @@
 - `packages/opencode` and `packages/pi` are native agent integrations that wrap `@caplets/core/native`; keep integration-specific schema/adapter code there.
 - `packages/benchmarks` owns deterministic and opt-in live coding-agent benchmarks; deterministic benchmark docs are generated from `pnpm benchmark`.
 
-## Generated And Checked Files
+## Agent skills
 
-- Source code is the source of truth. Keep long-lived product docs in `docs/product/`, architecture docs in `docs/`, and ADRs in `docs/adr/`. Avoid committing short-lived implementation plans or design specs unless explicitly requested; if they are needed, put them in `docs/plans/` or `docs/specs/` and delete or repurpose them once they are superseded. Do not use `docs/superpowers/` in this repo.
-- Config schema source of truth is Zod in `packages/core/src/config.ts`; update `schemas/caplets-config.schema.json` with `pnpm schema:generate` and verify with `pnpm schema:check`.
-- Code Mode runtime API declaration source of truth is `packages/core/src/code-mode/runtime-api.d.ts`; update `packages/core/src/code-mode/runtime-api.generated.ts` with `pnpm code-mode:generate-api` and verify with `pnpm code-mode:check-api`.
-- `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` fails if the committed report is stale.
-- Live benchmarks are opt-in only: build first, then run `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode` or `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi`; results are local/model-dependent and not deterministic product claims.
+- Issues and PRDs live in GitHub Issues for `spiritledsoftware/caplets`; use `gh` with `--repo spiritledsoftware/caplets`. Details: `docs/agents/issue-tracker.md`.
+- Triage labels are documented in `docs/agents/triage-labels.md`; current live labels include `question` for `needs-info` and `wontfix` for `wontfix`.
+- This is a single-context repo. Start with `CONTEXT.md`, relevant ADRs in `docs/adr/`, and `docs/agents/domain.md`; use `STRATEGY.md`, `CONCEPTS.md`, and `docs/solutions/` when the task touches product direction, vocabulary, or documented patterns.
+
+## Docs And Generated Files
+
+- Source code is authoritative. Keep durable product docs in `docs/product/`, architecture docs in `docs/`, ADRs in `docs/adr/`, specs/plans in `docs/specs/` or `docs/plans/`, and solution patterns in `docs/solutions/`.
+- Avoid committing short-lived plans unless explicitly requested. Do not use `docs/superpowers/` in this repo.
+- Config schema source: `packages/core/src/config.ts`. Generate with `pnpm schema:generate`; check with `pnpm schema:check`.
+- Code Mode API sources: `packages/core/src/code-mode/runtime-api.d.ts` and `packages/core/src/code-mode/platform-entry.ts`. Generate with `pnpm code-mode:generate-api`; check with `pnpm code-mode:check-api`.
+- Benchmark report: `pnpm benchmark` updates `docs/benchmarks/coding-agent.md`; `pnpm benchmark:check` checks staleness.
+- Live benchmarks are opt-in and local/model-dependent: build first, then run `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:opencode`, `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi`, or `CAPLETS_BENCH_LIVE=1 pnpm benchmark:live:pi-eval`.
 
 ## Config And Runtime Gotchas
 
@@ -34,7 +41,7 @@
 
 ## PR And Release Checks
 
-- CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `no changeset` label.
+- CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `[no changeset]` label.
 - User-facing package changes usually need a changeset; current versioning is handled by Changesets and `pnpm version-packages`/`pnpm release`.
 - Pre-commit only runs `pnpm lint-staged` (`oxfmt --check` and `oxlint` on staged JS/TS/config/docs files); pre-push runs the full `pnpm verify`.
-- Core Alchemy deploys the public landing page only from `apps/landing`; it does not deploy Cloud Worker or dashboard paths.
+- Alchemy deploy workflows are in `.github/workflows/deploy.yml` and `.github/workflows/pr-preview-deploy.yml`; check `alchemy.run.ts` and `infra/` before changing deploy behavior.

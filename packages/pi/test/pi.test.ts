@@ -106,6 +106,56 @@ describe("@caplets/pi", () => {
     expect(registered[0]?.parameters).toEqual(generatedToolInputJsonSchema());
   });
 
+  it("registers Code Mode reuse guidance and session parameters", () => {
+    const service = mockService([
+      {
+        caplet: "code_mode",
+        toolName: "caplets__code_mode",
+        title: "Code Mode",
+        description:
+          "Run Caplets Code Mode. Omit sessionId to start fresh and pass returned meta.sessionId to reuse live state.",
+        promptGuidance: [
+          "For REPL reuse, omit sessionId to start fresh, then pass the returned meta.sessionId on later calls that should reuse live state.",
+          "Unknown or unavailable sessionId values fail before code execution; use recoveryRef or recoveryCommand for audit and manual reconstruction, not automatic replay.",
+        ],
+        inputSchema: {
+          type: "object",
+          properties: {
+            code: { type: "string" },
+            sessionId: {
+              type: "string",
+              description:
+                "Omit to create a fresh reusable session; pass a known live session ID from meta.sessionId to reuse existing REPL state.",
+            },
+          },
+          required: ["code"],
+          additionalProperties: false,
+        },
+      },
+    ]);
+    const registered: RegisteredTool[] = [];
+
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
+
+    expect(registered[0]).toMatchObject({
+      name: "caplets__code_mode",
+      description: expect.stringContaining("meta.sessionId"),
+      promptGuidelines: expect.arrayContaining([
+        expect.stringContaining("omit sessionId to start fresh"),
+        expect.stringContaining("recoveryRef or recoveryCommand"),
+      ]),
+      parameters: expect.objectContaining({
+        properties: expect.objectContaining({
+          sessionId: expect.objectContaining({
+            description: expect.stringContaining("Omit to create a fresh reusable session"),
+          }),
+        }),
+      }),
+    });
+  });
+
   it("registers prefixed native tools with explicit prompt guidance", async () => {
     const service = mockService([
       {

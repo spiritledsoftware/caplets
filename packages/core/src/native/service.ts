@@ -19,6 +19,7 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
   nativeCapletToolName,
+  nativeCodeModePromptGuidance,
   nativeCodeModeToolId,
   nativeCodeModeToolName,
 } from "./tools";
@@ -530,11 +531,7 @@ function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletToo
     ].join("\n"),
     codeModeRun: true,
     codeModeCaplets,
-    promptGuidance: [
-      `Use ${nativeCodeModeToolName} to run Caplets Code Mode TypeScript with generated caplets.<id> handles.`,
-      "Prefer Code Mode for multi-step Caplet discovery, tool calls, filtering, joins, and compact synthesis.",
-      "Return decision-ready JSON from Code Mode rather than raw bulky provider payloads.",
-    ],
+    promptGuidance: nativeCodeModePromptGuidance(),
     inputSchema: codeModeRunInputJsonSchema(),
   };
 }
