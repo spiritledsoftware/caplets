@@ -4,6 +4,7 @@ import { createCodeModeCapletsApi, listCodeModeCallableCaplets } from "./api";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "./declarations";
 import { diagnoseCodeModeTypeScript } from "./diagnostics";
 import { CodeModeLogStore, redactCodeModeLogText } from "./logs";
+import { classifyCodeModeRecovery, CodeModeJournalStore } from "./journal";
 import { QuickJsCodeModeSandbox, type CodeModeSandbox, type CodeModeSandboxInput } from "./sandbox";
 import { CODE_MODE_SESSION_COMPATIBILITY_VERSION, type CodeModeSessionManager } from "./sessions";
 import { CODE_MODE_PLATFORM_RUNTIME_SOURCE } from "./platform-runtime.generated";
@@ -28,6 +29,7 @@ export type RunCodeModeInput = {
   runtimeScope?: string;
   sessionId?: string;
   logStore?: CodeModeLogStore;
+  journalStore?: CodeModeJournalStore;
   sandbox?: CodeModeSandbox;
   sessionManager?: CodeModeSessionManager;
   returnedLogBytes?: number;
@@ -65,6 +67,48 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ]
       : diagnoseCodeModeTypeScript({ code: input.code, declaration });
   if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+    const diagnosticJournalScope =
+      input.sessionManager && input.sessionId
+        ? input.sessionManager.compatibilityKey(input.sessionId)
+        : undefined;
+    if (input.sessionManager && input.sessionId && diagnosticJournalScope === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "SESSION_NOT_FOUND",
+          message: `Code Mode session ${input.sessionId} was not found.`,
+        },
+        diagnostics,
+        logs: emptyLogs(),
+        meta: {
+          ...meta(),
+          sessionId: input.sessionId,
+          sessionStatus: null,
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      };
+    }
+    const recoveryRef = await journalRun(input, {
+      sessionId: input.sessionId ?? null,
+      code: input.code,
+      declarationHash,
+      diagnostics,
+      logs: emptyLogs(),
+      outcome: {
+        ok: false,
+        code: "diagnostic_blocked",
+        message: "Code Mode diagnostics failed before execution.",
+      },
+      invokedCaplet: false,
+      sessionDisposedAfterRun: false,
+      journalScope: diagnosticJournalScope,
+    });
+    if (input.sessionManager && input.sessionId) {
+      metaBase.sessionId = input.sessionId;
+      metaBase.sessionStatus = "reused";
+    }
+    if (recoveryRef && !input.sessionManager) setRecoveryMeta(metaBase, recoveryRef);
     return {
       ok: false,
       error: {
@@ -78,9 +122,12 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   }
 
   const capturedLogs: CodeModeLogEntry[] = [];
+  let invokedCaplet = false;
   const api = createCodeModeCapletsApi({
     service: input.service,
     readLogs: async (readInput) => input.logStore?.read(readInput) ?? { entries: [] },
+    readRecovery: async (readInput) =>
+      input.journalStore?.readRecovery(readInput) ?? { entries: [] },
   });
   const sandboxInput: CodeModeSandboxInput = {
     code: input.code,
@@ -90,6 +137,10 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       if (method === "readLogs") {
         return await api.debug.readLogs(args[0] as never);
       }
+      if (method === "readRecovery") {
+        return await api.debug.readRecovery(args[0] as never);
+      }
+      invokedCaplet = true;
       const handle = api[capletId];
       if (!handle || !("callTool" in handle)) {
         throw new Error(`Caplet ${capletId} is not available.`);
@@ -135,16 +186,17 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         : sessionRun.error === "closed"
           ? "SESSION_CLOSED"
           : "SESSION_BUSY";
+    const message =
+      sessionRun.error === "not_found"
+        ? `Code Mode session ${sessionRun.sessionId} was not found.`
+        : sessionRun.error === "closed"
+          ? "Code Mode session manager is closed."
+          : `Code Mode session ${sessionRun.sessionId} is already running.`;
     return {
       ok: false,
       error: {
         code,
-        message:
-          sessionRun.error === "not_found"
-            ? `Code Mode session ${sessionRun.sessionId} was not found.`
-            : sessionRun.error === "closed"
-              ? "Code Mode session manager is closed."
-              : `Code Mode session ${sessionRun.sessionId} is already running.`,
+        message,
       },
       diagnostics,
       logs: emptyLogs(),
@@ -152,6 +204,8 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
         ...meta(),
         sessionId: sessionRun.sessionId,
         sessionStatus: null,
+        recoveryRef: null,
+        recoveryCommand: null,
       },
     };
   }
@@ -159,11 +213,24 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     sessionRun?.result ?? (await (input.sandbox ?? new QuickJsCodeModeSandbox()).run(sandboxInput));
   const sessionId = sessionRun?.sessionId ?? metaBase.sessionId ?? null;
   const sessionStatus = sessionRun?.sessionStatus ?? metaBase.sessionStatus ?? null;
+  const exposeRecoveryRef = !input.sessionManager || sessionStatus === "created";
   metaBase.sessionId = sessionId;
   metaBase.sessionStatus = sessionStatus;
   capturedLogs.push(...result.logs.map(redactLogEntry));
   const logs = await buildLogs(capturedLogs, input.logStore, input.returnedLogBytes);
   if (!result.ok) {
+    const recoveryRef = await journalRun(input, {
+      sessionId,
+      code: input.code,
+      declarationHash,
+      diagnostics,
+      logs,
+      outcome: { ok: false, code: runtimeErrorCode(result.error), message: result.error },
+      invokedCaplet,
+      sessionDisposedAfterRun: sessionRun?.sessionDisposedAfterRun ?? false,
+      journalScope: sessionRun?.compatibilityKey,
+    });
+    if (recoveryRef && exposeRecoveryRef) setRecoveryMeta(metaBase, recoveryRef);
     return {
       ok: false,
       error: codeModeRuntimeError(result.error, result.stack),
@@ -180,6 +247,18 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
       severity: "error",
       message: serialized.message,
     };
+    const recoveryRef = await journalRun(input, {
+      sessionId,
+      code: input.code,
+      declarationHash,
+      diagnostics: [...diagnostics, serializationDiagnostic],
+      logs,
+      outcome: { ok: false, code: "SERIALIZATION_ERROR", message: serialized.message },
+      invokedCaplet,
+      sessionDisposedAfterRun: sessionRun?.sessionDisposedAfterRun ?? false,
+      journalScope: sessionRun?.compatibilityKey,
+    });
+    if (recoveryRef && exposeRecoveryRef) setRecoveryMeta(metaBase, recoveryRef);
     return {
       ok: false,
       error: {
@@ -192,6 +271,19 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     };
   }
 
+  const recoveryRef = await journalRun(input, {
+    sessionId,
+    code: input.code,
+    declarationHash,
+    diagnostics,
+    logs,
+    outcome: { ok: true },
+    invokedCaplet,
+    sessionDisposedAfterRun: sessionRun?.sessionDisposedAfterRun ?? false,
+    journalScope: sessionRun?.compatibilityKey,
+  });
+  if (recoveryRef && exposeRecoveryRef) setRecoveryMeta(metaBase, recoveryRef);
+
   return {
     ok: true,
     value: serialized.value,
@@ -199,6 +291,48 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     logs,
     meta: meta(),
   };
+}
+
+async function journalRun(
+  input: RunCodeModeInput,
+  run: {
+    sessionId: string | null;
+    code: string;
+    declarationHash: string;
+    diagnostics: CodeModeDiagnostic[];
+    logs: CodeModeLogs;
+    outcome: { ok: true } | { ok: false; code: string; message: string };
+    invokedCaplet: boolean;
+    sessionDisposedAfterRun: boolean;
+    journalScope: string | undefined;
+  },
+): Promise<string | undefined> {
+  if (!input.journalStore || !run.sessionId) return undefined;
+  try {
+    const stored = await input.journalStore.store({
+      sessionId: run.sessionId,
+      ...(run.journalScope === undefined ? {} : { journalScope: run.journalScope }),
+      code: run.code,
+      declarationHash: run.declarationHash,
+      outcome: run.outcome,
+      diagnostics: run.diagnostics,
+      recoveryClassification: classifyCodeModeRecovery({
+        code: run.code,
+        invokedCaplet: run.invokedCaplet,
+        sessionDisposedAfterRun: run.sessionDisposedAfterRun,
+      }),
+      ...(run.logs.logRef ? { logRef: run.logs.logRef } : {}),
+    });
+    return stored.recoveryRef;
+  } catch {
+    // Journal storage is recovery-only; never replace the primary Code Mode result.
+    return undefined;
+  }
+}
+
+function setRecoveryMeta(metaBase: Omit<CodeModeRunMeta, "durationMs">, recoveryRef: string): void {
+  metaBase.recoveryRef = recoveryRef;
+  metaBase.recoveryCommand = `await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} })`;
 }
 
 function codeModeRuntimeError(message: string, stack?: string) {

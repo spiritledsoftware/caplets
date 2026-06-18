@@ -14,6 +14,7 @@ import {
   generateCodeModeDeclarations,
   generateCodeModeRunToolDescription,
 } from "../code-mode/declarations";
+import { CodeModeJournalStore } from "../code-mode/journal";
 import { CodeModeLogStore } from "../code-mode/logs";
 import { runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
@@ -231,6 +232,7 @@ export class CapletsMcpSession {
           ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
           ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
           logStore: new CodeModeLogStore(),
+          journalStore: new CodeModeJournalStore(),
           sessionManager: this.codeModeSessions,
           runtimeScope: "mcp",
         })

@@ -115,8 +115,8 @@ describe("Code Mode MCP tool", () => {
       meta: {
         sessionId: expect.any(String),
         sessionStatus: "created",
-        recoveryRef: null,
-        recoveryCommand: null,
+        recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+        recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
       },
     });
     expect(result?.content[0]).toMatchObject({ type: "text" });

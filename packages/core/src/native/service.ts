@@ -31,6 +31,7 @@ import {
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
 import { runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
+import { CodeModeJournalStore } from "../code-mode/journal";
 import {
   codeModeRunInputJsonSchema,
   codeModeRunInputSchema,
@@ -590,6 +591,7 @@ async function executeCodeModeRunNative(
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "local",
+    journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }

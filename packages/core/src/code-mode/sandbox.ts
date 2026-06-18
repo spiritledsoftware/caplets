@@ -29,7 +29,8 @@ export type CodeModeSandboxInvokeInput = {
     | "searchPrompts"
     | "getPrompt"
     | "complete"
-    | "readLogs";
+    | "readLogs"
+    | "readRecovery";
   args: unknown[];
 };
 
@@ -56,6 +57,12 @@ const CODE_MODE_SANDBOX_METHODS = new Set<CodeModeSandboxInvokeInput["method"]>(
   "getPrompt",
   "complete",
   "readLogs",
+  "readRecovery",
+]);
+
+const CODE_MODE_DEBUG_METHODS = new Set<CodeModeSandboxInvokeInput["method"]>([
+  "readLogs",
+  "readRecovery",
 ]);
 
 export type CodeModeSandboxResult =
@@ -844,8 +851,8 @@ function createInvokeJsonBridge(
 
     if (
       !isCodeModeSandboxMethod(method) ||
-      (capletId === "debug" && method !== "readLogs") ||
-      (capletId !== "debug" && method === "readLogs")
+      (capletId === "debug" && !CODE_MODE_DEBUG_METHODS.has(method)) ||
+      (capletId !== "debug" && CODE_MODE_DEBUG_METHODS.has(method))
     ) {
       const errorHandle = context.newError(
         `Method ${method} is not available in this Code Mode session cell.`,
@@ -962,6 +969,7 @@ function buildExecutionSource(code: string, capletIds: string[]): string {
     ),
     "caplets.debug = caplets.debug || {};",
     "caplets.debug.readLogs = (input) => __invoke('debug', 'readLogs', [input]);",
+    "caplets.debug.readRecovery = (input) => __invoke('debug', 'readRecovery', [input]);",
     "(async () => {",
     javascript,
     "})()",
@@ -1326,6 +1334,7 @@ function buildCellCapletsSource(capletIds: string[]): string {
     ),
     "caplets.debug = {};",
     "caplets.debug.readLogs = (input) => __caplets_invoke_json('debug', 'readLogs', [input]);",
+    "caplets.debug.readRecovery = (input) => __caplets_invoke_json('debug', 'readRecovery', [input]);",
   ].join("\n");
 }
 

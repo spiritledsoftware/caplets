@@ -5,6 +5,7 @@ import {
 } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
+import { CodeModeJournalStore } from "../code-mode/journal";
 import { runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
 import {
@@ -865,6 +866,7 @@ async function executeCodeModeRunRemote(
     ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
     ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
     runtimeScope: process.env.CAPLETS_MODE?.trim() || "remote",
+    journalStore: new CodeModeJournalStore(),
     ...(sessionManager === undefined ? {} : { sessionManager }),
   });
 }

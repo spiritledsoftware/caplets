@@ -4,6 +4,8 @@ import type {
   CodeModeCallableCaplet,
   Page,
   PageInput,
+  ReadCodeModeRecoveryInput,
+  ReadCodeModeRecoveryResult,
   ReadLogsInput,
   ReadLogsResult,
   ToolCallError,
@@ -34,6 +36,7 @@ export type CodeModeCapletHandle = {
 
 export type CodeModeDebugApi = {
   readLogs(input: ReadLogsInput): Promise<ReadLogsResult>;
+  readRecovery(input: ReadCodeModeRecoveryInput): Promise<ReadCodeModeRecoveryResult>;
 };
 
 export type CodeModeCapletsApi = {
@@ -47,6 +50,7 @@ export type CodeModeCapletsApi = {
 export type CreateCodeModeCapletsApiInput = {
   service: NativeCapletsService;
   readLogs?: (input: ReadLogsInput) => Promise<ReadLogsResult>;
+  readRecovery?: (input: ReadCodeModeRecoveryInput) => Promise<ReadCodeModeRecoveryResult>;
 };
 
 export function listCodeModeCallableCaplets(
@@ -88,6 +92,7 @@ export function createCodeModeCapletsApi(input: CreateCodeModeCapletsApiInput): 
 
   const debugApi: CodeModeDebugApi = {
     readLogs: input.readLogs ?? defaultReadLogs,
+    readRecovery: input.readRecovery ?? defaultReadRecovery,
   };
   api.debug =
     "debug" in api ? Object.assign(api.debug as CodeModeCapletHandle, debugApi) : debugApi;
@@ -465,6 +470,10 @@ async function defaultReadLogs(): Promise<ReadLogsResult> {
       },
     ],
   };
+}
+
+async function defaultReadRecovery(): Promise<ReadCodeModeRecoveryResult> {
+  return { entries: [] };
 }
 
 function resultIsError(result: unknown): boolean {

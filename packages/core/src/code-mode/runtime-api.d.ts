@@ -37,6 +37,7 @@ interface CapletHandle<Id extends string> {
 
 interface DebugApi {
   readLogs(input: ReadLogsInput): Promise<ReadLogsResult>;
+  readRecovery(input: ReadCodeModeRecoveryInput): Promise<ReadCodeModeRecoveryResult>;
 }
 
 type CapletCard<Id extends string> = {
@@ -124,6 +125,19 @@ type CompleteResult = unknown;
 
 type ReadLogsInput = { logRef: string; cursor?: string; limit?: number };
 type ReadLogsResult = { entries: CodeModeLogEntry[]; nextCursor?: string };
+type ReadCodeModeRecoveryInput = { recoveryRef: string; cursor?: string; limit?: number };
+type CodeModeRecoveryClassification = "setup_like" | "side_effecting" | "unknown";
+type CodeModeRecoveryEntry = {
+  timestamp: string;
+  code: string;
+  declarationHash: string;
+  outcome: { ok: true } | { ok: false; code: string; message: string };
+  diagnostics: Array<Pick<CodeModeDiagnostic, "code" | "severity" | "message">>;
+  recoveryClassification: CodeModeRecoveryClassification;
+  logsStored?: boolean;
+  summary?: string;
+};
+type ReadCodeModeRecoveryResult = { entries: CodeModeRecoveryEntry[]; nextCursor?: string };
 type CodeModeLogEntry = {
   level: "log" | "info" | "warn" | "error" | "debug";
   message: string;

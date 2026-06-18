@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { CodeModeJournalStore } from "../src/code-mode/journal";
 import { CodeModeSessionManager } from "../src/code-mode/sessions";
 import { runCodeMode } from "../src/code-mode/runner";
 import type { CodeModeReplSession } from "../src/code-mode/sandbox";
@@ -63,7 +67,12 @@ describe("CodeModeSessionManager", () => {
       expect(second).toMatchObject({
         ok: true,
         value: 2,
-        meta: { sessionId: "session-1", sessionStatus: "reused" },
+        meta: {
+          sessionId: "session-1",
+          sessionStatus: "reused",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
       });
     } finally {
       manager.close();
@@ -125,6 +134,308 @@ describe("CodeModeSessionManager", () => {
     }
   });
 
+  it("reads retained recovery history with the ref from the original run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    let now = 0;
+    const manager = new CodeModeSessionManager({
+      idGenerator: () => "session-expired",
+      now: () => now,
+      ttlMs: 10,
+    });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      const first = await runCodeMode({
+        code: "function helper() { return 42; }\nreturn helper();",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+      });
+      now = 11;
+      const expired = await runCodeMode({
+        code: "return helper();",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        sessionId: "session-expired",
+        runtimeScope: "test",
+      });
+
+      expect(expired).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "session-expired",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+
+      expect(first).toMatchObject({
+        ok: true,
+        meta: {
+          recoveryRef: expect.stringMatching(/^[a-f0-9]{48}$/u),
+          recoveryCommand: expect.stringContaining("caplets.debug.readRecovery"),
+        },
+      });
+      const recoveryRef = first.meta.recoveryRef ?? "";
+      const recovered = await runCodeMode({
+        code: `return await caplets.debug.readRecovery({ recoveryRef: ${JSON.stringify(recoveryRef)} });`,
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+      });
+
+      expect(recovered).toMatchObject({
+        ok: true,
+        value: {
+          entries: [
+            expect.objectContaining({
+              code: expect.stringContaining("function helper"),
+              recoveryClassification: "setup_like",
+            }),
+          ],
+        },
+      });
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not exchange an old session id for recovery history in a fresh manager", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    const firstManager = new CodeModeSessionManager({ idGenerator: () => "session-restart" });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      await runCodeMode({
+        code: "function helper() { return 42; }\nreturn helper();",
+        service: service(),
+        sessionManager: firstManager,
+        journalStore,
+        runtimeScope: "test",
+      });
+      firstManager.close();
+      const freshManager = new CodeModeSessionManager();
+      const result = await runCodeMode({
+        code: "return helper();",
+        service: service(),
+        sessionManager: freshManager,
+        journalStore,
+        sessionId: "session-restart",
+        runtimeScope: "test",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "session-restart",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      freshManager.close();
+    } finally {
+      firstManager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not journal diagnostic-only calls for unknown managed session ids", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    const manager = new CodeModeSessionManager();
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      const diagnostic = await runCodeMode({
+        code: 'await caplets.github.call("listIssues", {});',
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        sessionId: "ghost",
+        runtimeScope: "test",
+      });
+      const next = await runCodeMode({
+        code: "return 1;",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        sessionId: "ghost",
+        runtimeScope: "test",
+      });
+
+      expect(diagnostic).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "ghost",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      expect(next).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "ghost",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      await expect(journalStore.lookupSession("ghost")).resolves.toBeUndefined();
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not journal diagnostic-only cells when the session expires at validation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    let now = 0;
+    const manager = new CodeModeSessionManager({
+      idGenerator: () => "session-diagnostic-expired",
+      ttlMs: 10,
+      now: () => now,
+    });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      const first = await runCodeMode({
+        code: "var saved = 1;\nreturn saved;",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+      });
+      now = 11;
+      const diagnostic = await runCodeMode({
+        code: 'await caplets.github.call("listIssues", {});',
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        sessionId: "session-diagnostic-expired",
+        runtimeScope: "test",
+      });
+      const recovery = await journalStore.readRecovery({
+        recoveryRef: first.meta.recoveryRef ?? "",
+      });
+
+      expect(diagnostic).toMatchObject({
+        ok: false,
+        error: { code: "SESSION_NOT_FOUND" },
+        meta: {
+          sessionId: "session-diagnostic-expired",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      expect(recovery.entries).toHaveLength(1);
+      await expect(
+        journalStore.lookupSession("session-diagnostic-expired"),
+      ).resolves.toBeUndefined();
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("journals diagnostic-blocked active session cells under the original recovery ref", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-diagnostic" });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      const first = await runCodeMode({
+        code: "var saved = 1;\nreturn saved;",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+      });
+      const diagnostic = await runCodeMode({
+        code: 'await caplets.github.call("listIssues", {});',
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        sessionId: "session-diagnostic",
+        runtimeScope: "test",
+      });
+      const recovery = await journalStore.readRecovery({
+        recoveryRef: first.meta.recoveryRef ?? "",
+      });
+
+      expect(diagnostic).toMatchObject({
+        ok: false,
+        error: { code: "diagnostic_blocked" },
+        meta: {
+          sessionId: "session-diagnostic",
+          sessionStatus: "reused",
+          recoveryRef: null,
+          recoveryCommand: null,
+        },
+      });
+      expect(recovery.entries).toHaveLength(2);
+      expect(recovery.entries[0]?.code).toContain("var saved");
+      expect(recovery.entries[1]?.outcome).toMatchObject({ ok: false, code: "diagnostic_blocked" });
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies timer-disposed session cells as unknown recovery history", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-timer" });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    try {
+      const result = await runCodeMode({
+        code: 'const timer = setTimeout(() => console.log("later"), 1000);\nreturn 1;',
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+        timeoutMs: 2_000,
+      });
+      const recovery = await journalStore.readRecovery({
+        recoveryRef: result.meta.recoveryRef ?? "",
+      });
+
+      expect(result).toMatchObject({ ok: true, value: 1 });
+      expect(recovery.entries).toEqual([
+        expect.objectContaining({
+          recoveryClassification: "unknown",
+        }),
+      ]);
+      expect(manager.has("session-timer")).toBe(false);
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("creates a fresh session when compatibility changes", async () => {
     const manager = new CodeModeSessionManager({ idGenerator: () => "session-compat" });
     const changedService = service();
@@ -159,6 +470,65 @@ describe("CodeModeSessionManager", () => {
       });
     } finally {
       manager.close();
+    }
+  });
+
+  it("keeps recovery history separate across compatibility resets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-session-journal-"));
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-compat-journal" });
+    const journalStore = new CodeModeJournalStore({
+      stateDir: dir,
+      secret: "test-secret",
+      now: () => new Date("2026-06-17T12:00:00.000Z"),
+    });
+    const changedService = service();
+    changedService.listTools = () => [
+      {
+        caplet: "linear",
+        toolName: "caplets__linear",
+        title: "Linear",
+        description: "Linear operations.",
+        promptGuidance: [],
+      },
+    ];
+    try {
+      const first = await runCodeMode({
+        code: "var oldValue = 1;\nreturn oldValue;",
+        service: service(),
+        sessionManager: manager,
+        journalStore,
+        runtimeScope: "test",
+      });
+      const second = await runCodeMode({
+        code: "var newValue = 2;\nreturn typeof oldValue;",
+        service: changedService,
+        sessionManager: manager,
+        journalStore,
+        sessionId: "session-compat-journal",
+        runtimeScope: "test",
+      });
+
+      const oldRecovery = await journalStore.readRecovery({
+        recoveryRef: first.meta.recoveryRef ?? "",
+      });
+      const newRecovery = await journalStore.readRecovery({
+        recoveryRef: second.meta.recoveryRef ?? "",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 1 });
+      expect(second).toMatchObject({
+        ok: true,
+        value: "undefined",
+        meta: { sessionStatus: "created" },
+      });
+      expect(oldRecovery.entries).toHaveLength(1);
+      expect(newRecovery.entries).toHaveLength(1);
+      expect(oldRecovery.entries[0]?.code).toContain("var oldValue = 1");
+      expect(oldRecovery.entries[0]?.code).not.toContain("newValue");
+      expect(newRecovery.entries[0]?.code).toContain("var newValue = 2");
+    } finally {
+      manager.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

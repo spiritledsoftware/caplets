@@ -28,6 +28,8 @@ export type CodeModeSessionRunResult =
       ok: true;
       sessionId: string;
       sessionStatus: CodeModeSessionStatus;
+      sessionDisposedAfterRun: boolean;
+      compatibilityKey: string;
       result: CodeModeSandboxResult;
     }
   | {
@@ -135,13 +137,16 @@ export class CodeModeSessionManager {
         },
       });
       record.lastUsedAt = this.#now();
-      if (record.session.isDisposed()) {
+      const sessionDisposedAfterRun = record.session.isDisposed();
+      if (sessionDisposedAfterRun) {
         this.#sessions.delete(record.id);
       }
       return {
         ok: true,
         sessionId: record.id,
         sessionStatus,
+        sessionDisposedAfterRun,
+        compatibilityKey: record.compatibilityKey,
         result,
       };
     } finally {
@@ -161,6 +166,11 @@ export class CodeModeSessionManager {
   has(sessionId: string): boolean {
     this.#evictExpired();
     return this.#sessions.has(sessionId);
+  }
+
+  compatibilityKey(sessionId: string): string | undefined {
+    this.#evictExpired();
+    return this.#sessions.get(sessionId)?.compatibilityKey;
   }
 
   async #createRecord(id: string, compatibilityKey: string): Promise<SessionRecord | undefined> {
