@@ -1074,6 +1074,21 @@ type ConfigInput = {
   [key: string]: unknown;
 };
 
+const CAPLET_BACKEND_KEYS = [
+  "mcpServers",
+  "openapiEndpoints",
+  "googleDiscoveryApis",
+  "graphqlEndpoints",
+  "httpApis",
+  "cliTools",
+  "capletSets",
+] as const satisfies ReadonlyArray<keyof ConfigInput>;
+
+type MissingEnvReference = {
+  name: string;
+  path: string;
+};
+
 function configSchemaFor(
   serverValueSchema: z.ZodTypeAny,
   openApiEndpointValueSchema: z.ZodTypeAny,
@@ -1712,12 +1727,104 @@ function readBestEffortConfigInput(
   transform?: (input: ConfigInput) => ConfigInput,
 ): ConfigInput | undefined {
   try {
-    const input = readPublicConfigInput(path);
-    return transform ? transform(input) : input;
+    const input = readBestEffortJsonConfigInput(path);
+    const normalized = normalizeLocalPaths(input, dirname(path));
+    const transformed = transform ? transform(normalized) : normalized;
+    const filtered = quarantineMissingEnvCaplets(transformed, kind, path, warnings);
+    const parsed = configFileSchema.safeParse(interpolateConfig(filtered));
+    if (!parsed.success) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplets config at ${path} is invalid`,
+        parsed.error.issues,
+      );
+    }
+    return filtered;
   } catch (error) {
     warnings.push({ kind, path, message: errorMessage(error) });
     return undefined;
   }
+}
+
+function readBestEffortJsonConfigInput(path: string): ConfigInput {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as ConfigInput;
+  } catch (error) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplets config at ${path} is not valid JSON`,
+      redactSecrets(error),
+    );
+  }
+}
+
+function quarantineMissingEnvCaplets(
+  input: ConfigInput,
+  kind: ConfigSourceKind,
+  sourcePath: string,
+  warnings: LocalOverlayConfigWarning[],
+): ConfigInput {
+  let filtered = input;
+
+  for (const backend of CAPLET_BACKEND_KEYS) {
+    const caplets = filtered[backend];
+    if (!isPlainObject(caplets)) {
+      continue;
+    }
+
+    for (const [id, caplet] of Object.entries(caplets)) {
+      const missing = missingEnvReferences(caplet, [backend, id]);
+      if (missing.length === 0) {
+        continue;
+      }
+
+      filtered = removeCapletId(filtered, id);
+      warnings.push({
+        kind,
+        path: sourcePath,
+        message: formatMissingEnvWarning(id, missing),
+      });
+    }
+  }
+
+  return filtered;
+}
+
+function missingEnvReferences(value: unknown, path: string[]): MissingEnvReference[] {
+  if (isPublicMetadataPath(path)) {
+    return [];
+  }
+  if (typeof value === "string") {
+    return missingEnvReferencesInString(value, path.join("."));
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => missingEnvReferences(item, [...path, String(index)]));
+  }
+  if (isPlainObject(value)) {
+    return Object.entries(value).flatMap(([key, nested]) =>
+      missingEnvReferences(nested, [...path, key]),
+    );
+  }
+  return [];
+}
+
+function missingEnvReferencesInString(value: string, path: string): MissingEnvReference[] {
+  const missing: MissingEnvReference[] = [];
+  const pattern = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$env:([A-Za-z_][A-Za-z0-9_]*)/g;
+  for (const match of value.matchAll(pattern)) {
+    const name = match[1] ?? match[2];
+    if (name && process.env[name] === undefined) {
+      missing.push({ name, path });
+    }
+  }
+  return missing;
+}
+
+function formatMissingEnvWarning(id: string, missing: MissingEnvReference[]): string {
+  const names = [...new Set(missing.map((reference) => reference.name))];
+  const paths = [...new Set(missing.map((reference) => reference.path))];
+  const variableLabel = names.length === 1 ? "environment variable" : "environment variables";
+  return `Caplet ${id} references missing ${variableLabel} ${names.join(", ")} at ${paths.join(", ")}; skipping Caplet ${id}.`;
 }
 
 function loadBestEffortCapletFiles(

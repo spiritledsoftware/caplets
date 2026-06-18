@@ -2298,6 +2298,43 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("starts valid local tools and loudly warns when a sibling Caplet references a missing env var", async () => {
+    const fixture = client([{ name: "remote", title: "Remote" }]);
+    const writeErr = vi.fn();
+    const missingEnvName = "CAPLETS_NATIVE_TEST_MISSING_REMOTE_URL";
+    delete process.env[missingEnvName];
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        broken: {
+          name: "Broken Remote",
+          description: "References a missing startup URL.",
+          transport: "http",
+          url: `$env:${missingEnvName}`,
+        },
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      writeErr,
+    });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["remote", "local"]);
+    expect(writeErr).toHaveBeenCalledWith(
+      expect.stringContaining(`missing environment variable ${missingEnvName}`),
+    );
+    expect(writeErr).toHaveBeenCalledWith(expect.stringContaining("mcpServers.broken.url"));
+    await service.close();
+  });
+
   it("starts Cloud Project Binding when native service runs in cloud mode", async () => {
     const path = tempCloudAuthPath();
     vi.stubEnv("CAPLETS_CLOUD_AUTH_PATH", path);
