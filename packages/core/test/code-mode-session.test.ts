@@ -3031,6 +3031,88 @@ describe("CodeModeDiagnosticsSession", () => {
     expect(diagnostics).toEqual([]);
   });
 
+  it("preserves inferred primitive var types for later session diagnostics", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("var workflowRuns = 1;\nreturn workflowRuns;");
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "workflowRuns += 1;\nreturn workflowRuns;",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("preserves explicit var annotations for later session diagnostics", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell('var items: string[] = [];\nitems.push("a");\nreturn items;');
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: 'items.push("b");\nreturn items.join(",");',
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("preserves inferred object and array var types for later session diagnostics", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell(
+      'var summary = { count: 1, label: "one" };\nvar numbers = [1, 2, 3];',
+    );
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "summary.count += numbers[0] ?? 0;\nreturn `${summary.label}:${summary.count}`;",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("preserves checker-inferred destructured var binding types when available", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell(
+      'var { count, label } = { count: 1, label: "ready" };\nreturn label;',
+    );
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "count += 1;\nreturn label.toUpperCase();",
+      session,
+    });
+
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("updates var ambient types when successful cells redeclare a binding", () => {
+    const session = new CodeModeDiagnosticsSession();
+    const declaration = "declare const caplets: {};";
+
+    session.recordSuccessfulCell("var mutable = 1;\nreturn mutable;");
+    session.recordSuccessfulCell('var mutable = "ready";\nreturn mutable;');
+    const diagnostics = diagnoseCodeModeTypeScript({
+      declaration,
+      code: "const numeric: number = mutable;\nreturn numeric;",
+      session,
+    });
+
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "2322",
+          message: expect.stringContaining("not assignable to type 'number'"),
+        }),
+      ]),
+    );
+  });
+
   it("allows later cells to reference destructured var bindings", () => {
     const session = new CodeModeDiagnosticsSession();
     const declaration = "declare const caplets: {};";

@@ -778,4 +778,37 @@ describe("CodeModeSessionManager", () => {
       manager.close();
     }
   });
+
+  it("does not record failed diagnostic cells into inferred session var types", async () => {
+    const manager = new CodeModeSessionManager({ idGenerator: () => "session-var-diagnostics" });
+    try {
+      const first = await runCodeMode({
+        code: "var counter = 1;\nreturn counter;",
+        service: service(),
+        sessionManager: manager,
+        runtimeScope: "test",
+      });
+      const rejected = await runCodeMode({
+        code: 'await caplets.github.call("listIssues", {});\nvar counter = "bad";',
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-var-diagnostics",
+        runtimeScope: "test",
+      });
+      const reused = await runCodeMode({
+        code: "counter += 1;\nreturn counter;",
+        service: service(),
+        sessionManager: manager,
+        sessionId: "session-var-diagnostics",
+        runtimeScope: "test",
+      });
+
+      expect(first).toMatchObject({ ok: true, value: 1 });
+      expect(rejected).toMatchObject({ ok: false, error: { code: "diagnostic_blocked" } });
+      expect(reused).toMatchObject({ ok: true, value: 2 });
+      expect(reused.diagnostics).toEqual([]);
+    } finally {
+      manager.close();
+    }
+  });
 });
