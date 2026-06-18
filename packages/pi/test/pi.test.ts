@@ -1108,6 +1108,38 @@ describe("@caplets/pi", () => {
     );
   });
 
+  it("rejects malformed legacy remote and server settings in Pi config", async () => {
+    const writeWarning = vi.fn();
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          remote: "https://caplets.example.com",
+        },
+      }),
+    );
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "remote",
+          server: "https://caplets.example.com",
+        },
+      }),
+    );
+
+    const malformedRemoteArgs = await loadPiSettingsArgs({ writeWarning });
+    const malformedServerArgs = await loadPiSettingsArgs({ writeWarning });
+
+    expect(malformedRemoteArgs).toEqual({});
+    expect(malformedServerArgs).toEqual({});
+    expect(writeWarning).toHaveBeenCalledTimes(2);
+    expect(writeWarning).toHaveBeenCalledWith(
+      expect.stringContaining("Ignoring Pi settings args: invalid"),
+    );
+  });
+
   it("default export loads top-level Pi settings for the native service", async () => {
     const service = mockService([]);
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);

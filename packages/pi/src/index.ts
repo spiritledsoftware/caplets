@@ -264,25 +264,29 @@ function parsePiNativeOptions(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
+  const raw = value as Record<string, unknown>;
   const result: PiCapletsSettings = {};
-  const mode = (value as Record<string, unknown>).mode;
+  const mode = raw.mode;
   if (mode !== undefined) {
     if (mode !== "auto" && mode !== "local" && mode !== "remote" && mode !== "cloud") {
       return undefined;
     }
     result.mode = mode;
   }
-  const statusWidget = (value as Record<string, unknown>).statusWidget;
+  const statusWidget = raw.statusWidget;
   if (statusWidget !== undefined) {
     if (typeof statusWidget !== "boolean") return undefined;
     result.statusWidget = statusWidget;
   }
-  const nerdFontIcons = (value as Record<string, unknown>).nerdFontIcons;
+  const nerdFontIcons = raw.nerdFontIcons;
   if (nerdFontIcons !== undefined) {
     if (typeof nerdFontIcons !== "boolean") return undefined;
     result.nerdFontIcons = nerdFontIcons;
   }
   const remote = objectProperty(value, "remote");
+  if (raw.remote !== undefined && !remote) {
+    return undefined;
+  }
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
     for (const key of ["url", "user", "password", "token", "workspace"] as const) {
@@ -299,8 +303,7 @@ function parsePiNativeOptions(
     }
     result.remote = parsedRemote;
   }
-  const server = objectProperty(value, "server");
-  if (server) {
+  if (raw.server !== undefined) {
     return undefined;
   }
   return result;
