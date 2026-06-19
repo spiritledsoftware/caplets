@@ -10,8 +10,6 @@ export type RawServeOptions = {
   host?: string;
   port?: string | number;
   path?: string;
-  user?: string;
-  password?: string;
   remoteStatePath?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
@@ -27,7 +25,7 @@ export type HttpServeOptions = {
   port: number;
   path: string;
   publicOrigin?: string | undefined;
-  auth: HttpBasicAuthOptions;
+  auth: HttpServeAuthOptions;
   remoteCredentialStateDir?: string | undefined;
   allowUnauthenticatedHttp: boolean;
   warnUnauthenticatedNetwork: boolean;
@@ -35,28 +33,20 @@ export type HttpServeOptions = {
   trustProxy: boolean;
 };
 
-export type HttpBasicAuthOptions =
-  | { enabled: false; user: string }
-  | { enabled: true; user: string; password: string };
+export type HttpServeAuthOptions =
+  | { type: "remote_credentials" }
+  | { type: "development_unauthenticated" };
 
 export type ServeOptions = StdioServeOptions | HttpServeOptions;
 
 export type ServeEnv = Partial<
-  Record<
-    | "CAPLETS_SERVER_URL"
-    | "CAPLETS_SERVER_USER"
-    | "CAPLETS_SERVER_PASSWORD"
-    | "CAPLETS_REMOTE_SERVER_STATE_DIR",
-    string
-  >
+  Record<"CAPLETS_SERVER_URL" | "CAPLETS_REMOTE_SERVER_STATE_DIR", string>
 >;
 
 const HTTP_ONLY_OPTIONS = [
   "host",
   "port",
   "path",
-  "user",
-  "password",
   "remoteStatePath",
   "allowUnauthenticatedHttp",
   "trustProxy",
@@ -84,32 +74,21 @@ export function resolveServeOptions(
   const host = nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? "127.0.0.1";
   const port = parsePort(raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : 5387));
   const path = normalizeHttpPath(raw.path ?? serverUrl?.pathname ?? "/");
-  const userWasExplicit = raw.user !== undefined || hasEnv(env.CAPLETS_SERVER_USER);
-  const user =
-    nonEmpty(raw.user, "--user") ??
-    nonEmpty(env.CAPLETS_SERVER_USER, "CAPLETS_SERVER_USER") ??
-    "caplets";
-  const password =
-    nonEmpty(raw.password, "--password") ??
-    nonEmpty(env.CAPLETS_SERVER_PASSWORD, "CAPLETS_SERVER_PASSWORD");
   const remoteCredentialStateDir =
     nonEmpty(raw.remoteStatePath, "--remote-state-path") ??
     nonEmpty(env.CAPLETS_REMOTE_SERVER_STATE_DIR, "CAPLETS_REMOTE_SERVER_STATE_DIR") ??
     join(DEFAULT_AUTH_DIR, "remote-server");
 
-  if (userWasExplicit && password === undefined) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "HTTP Basic Auth requires a password; pass --password or set CAPLETS_SERVER_PASSWORD.",
-    );
-  }
-
   const loopback = isLoopbackHost(host);
-  const auth =
-    password === undefined
-      ? { enabled: false as const, user }
-      : { enabled: true as const, user, password };
-  if (!loopback && !auth.enabled && raw.allowUnauthenticatedHttp !== true) {
+  const auth: HttpServeAuthOptions =
+    raw.allowUnauthenticatedHttp === true
+      ? { type: "development_unauthenticated" }
+      : { type: "remote_credentials" };
+  if (
+    !loopback &&
+    auth.type === "development_unauthenticated" &&
+    raw.allowUnauthenticatedHttp !== true
+  ) {
     throw new CapletsError(
       "REQUEST_INVALID",
       "Unauthenticated HTTP serving on non-loopback hosts requires --allow-unauthenticated-http.",
@@ -122,9 +101,9 @@ export function resolveServeOptions(
     path,
     ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
     auth,
-    remoteCredentialStateDir,
+    ...(auth.type === "remote_credentials" ? { remoteCredentialStateDir } : {}),
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp === true,
-    warnUnauthenticatedNetwork: !loopback && !auth.enabled,
+    warnUnauthenticatedNetwork: !loopback && auth.type === "development_unauthenticated",
     loopback,
     trustProxy: raw.trustProxy === true,
   };
@@ -199,8 +178,4 @@ function nonEmpty(value: string | undefined, label: string): string | undefined 
     throw new CapletsError("REQUEST_INVALID", `${label} must not be empty`);
   }
   return trimmed;
-}
-
-function hasEnv(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== "";
 }

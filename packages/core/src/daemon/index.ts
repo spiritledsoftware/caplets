@@ -403,13 +403,13 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
     },
     serve: {
       ...config.serve,
-      auth: config.serve.auth.enabled
-        ? { ...config.serve.auth, password: "[redacted]" }
-        : config.serve.auth,
+      ...(config.serve.remoteCredentialStateDir
+        ? { remoteCredentialStateDir: "[REDACTED]" }
+        : {}),
     },
     command: {
       ...config.command,
-      args: redactPasswordArgs(config.command.args),
+      args: redactSensitiveArgs(config.command.args),
       env: redactEnv(config.command.env),
     },
   };
@@ -429,7 +429,7 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
   const secrets = Array.from(
     new Set(
       [
-        config.serve.auth.enabled ? config.serve.auth.password : undefined,
+        config.serve.remoteCredentialStateDir,
         ...Object.values(config.env.values),
         ...Object.values(config.command.env),
       ].filter((value): value is string => value !== undefined && value.length > 0),
@@ -441,7 +441,7 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
 }
 
 function redactNativeValue(value: unknown, secrets: string[]): unknown {
-  if (typeof value === "string") return redactSecrets(redactPasswordString(value), secrets);
+  if (typeof value === "string") return redactSecrets(redactSensitiveFlagString(value), secrets);
   if (Array.isArray(value)) return value.map((item) => redactNativeValue(item, secrets));
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -518,14 +518,22 @@ function posixShellQuotedSecret(secret: string): string {
   return `'${posixShellEscapedSecret(secret)}'`;
 }
 
-function redactPasswordString(value: string): string {
-  return value.replace(/(--password(?:=|\s+))("[^"]*"|'[^']*'|\S+)/giu, "$1[redacted]");
+function redactSensitiveFlagString(value: string): string {
+  return value.replace(
+    /(--(?:password|remote-state-path)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/giu,
+    "$1[redacted]",
+  );
 }
 
-function redactPasswordArgs(args: string[]): string[] {
+function redactSensitiveArgs(args: string[]): string[] {
   const redacted = [...args];
   for (let index = 0; index < redacted.length; index += 1) {
-    if (redacted[index] === "--password" && redacted[index + 1]) redacted[index + 1] = "[redacted]";
+    if (
+      (redacted[index] === "--password" || redacted[index] === "--remote-state-path") &&
+      redacted[index + 1]
+    ) {
+      redacted[index + 1] = "[redacted]";
+    }
   }
   return redacted;
 }
@@ -602,15 +610,10 @@ function mergeServeOptions(
       : existing?.serve.path
         ? { path: existing.serve.path }
         : {}),
-    ...(install.user !== undefined
-      ? { user: install.user }
-      : existing?.serve.auth.enabled
-        ? { user: existing.serve.auth.user }
-        : {}),
-    ...(install.password !== undefined
-      ? { password: install.password }
-      : existing?.serve.auth.enabled
-        ? { password: existing.serve.auth.password }
+    ...(install.remoteStatePath !== undefined
+      ? { remoteStatePath: install.remoteStatePath }
+      : existing?.serve.remoteCredentialStateDir
+        ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
         : {}),
     ...(install.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: install.allowUnauthenticatedHttp }
@@ -623,9 +626,8 @@ function mergeServeOptions(
         ? { trustProxy: existing.serve.trustProxy }
         : {}),
     ...(existing &&
-    !existing.serve.auth.enabled &&
-    install.user === undefined &&
-    install.password === undefined
+    existing.serve.auth.type === "development_unauthenticated" &&
+    install.allowUnauthenticatedHttp === undefined
       ? { preserveUnauthenticatedAuth: true }
       : {}),
   };

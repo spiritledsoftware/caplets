@@ -13,20 +13,18 @@ describe("resolveServeOptions", () => {
       host: "127.0.0.1",
       port: 5387,
       path: "/",
-      auth: { enabled: false, user: "caplets" },
+      auth: { type: "remote_credentials" },
+      remoteCredentialStateDir: expect.stringContaining("remote-server"),
       trustProxy: false,
     });
   });
 
   it("uses CAPLETS_SERVER_URL as HTTP serve defaults", () => {
-    const testPassword = ["test", "env", "password"].join("-");
-
     expect(
       resolveServeOptions(
         { transport: "http" },
         {
           CAPLETS_SERVER_URL: "http://localhost:7890/caplets/",
-          CAPLETS_SERVER_PASSWORD: testPassword,
         },
       ),
     ).toMatchObject({
@@ -34,7 +32,7 @@ describe("resolveServeOptions", () => {
       host: "localhost",
       port: 7890,
       path: "/caplets",
-      auth: { enabled: true, user: "caplets", password: testPassword },
+      auth: { type: "remote_credentials" },
       publicOrigin: "http://localhost:7890",
     });
   });
@@ -79,7 +77,7 @@ describe("resolveServeOptions", () => {
       host: "::1",
       port: 5387,
       path: "/caplets",
-      auth: { enabled: false, user: "caplets" },
+      auth: { type: "remote_credentials" },
       loopback: true,
       warnUnauthenticatedNetwork: false,
     });
@@ -115,39 +113,25 @@ describe("resolveServeOptions", () => {
     });
   });
 
-  it("resolves Basic Auth from password with default user", () => {
-    const testPassword = ["test", "password"].join("-");
-
-    expect(resolveServeOptions({ transport: "http", password: testPassword }, {})).toMatchObject({
-      transport: "http",
-      auth: { enabled: true, user: "caplets", password: testPassword },
-    });
-  });
-
-  it("resolves Basic Auth from env and lets flags win", () => {
-    const envPassword = ["test", "env", "password"].join("-");
-
+  it("ignores removed Basic Auth env vars and keeps remote credential auth", () => {
     expect(
-      resolveServeOptions(
-        { transport: "http", user: "cli-user" },
-        { CAPLETS_SERVER_USER: "env-user", CAPLETS_SERVER_PASSWORD: envPassword },
-      ),
+      resolveServeOptions({ transport: "http" }, {
+        CAPLETS_SERVER_USER: "env-user",
+        CAPLETS_SERVER_PASSWORD: "env-password",
+      } as Record<string, string>),
     ).toMatchObject({
       transport: "http",
-      auth: { enabled: true, user: "cli-user", password: envPassword },
+      auth: { type: "remote_credentials" },
     });
   });
 
-  it("rejects explicit user without password", () => {
-    expect(() => resolveServeOptions({ transport: "http", user: "alice" }, {})).toThrow(
-      /requires a password/u,
-    );
-  });
-
-  it("requires explicit opt-in for unauthenticated non-loopback HTTP serving", () => {
-    expect(() => resolveServeOptions({ transport: "http", host: "0.0.0.0" }, {})).toThrow(
-      /requires --allow-unauthenticated-http/u,
-    );
+  it("allows non-loopback HTTP serving when protected by remote credentials", () => {
+    expect(resolveServeOptions({ transport: "http", host: "0.0.0.0" }, {})).toMatchObject({
+      transport: "http",
+      host: "0.0.0.0",
+      auth: { type: "remote_credentials" },
+      warnUnauthenticatedNetwork: false,
+    });
   });
 
   it("enables proxy trust only with explicit HTTP opt-in", () => {
@@ -180,17 +164,17 @@ describe("resolveServeOptions", () => {
   });
 
   it("allows unauthenticated non-loopback HTTP serving with explicit opt-in", () => {
-    expect(
-      resolveServeOptions(
-        { transport: "http", host: "0.0.0.0", allowUnauthenticatedHttp: true },
-        {},
-      ),
-    ).toMatchObject({
+    const resolved = resolveServeOptions(
+      { transport: "http", host: "0.0.0.0", allowUnauthenticatedHttp: true },
+      {},
+    );
+    expect(resolved).toMatchObject({
       transport: "http",
       host: "0.0.0.0",
-      auth: { enabled: false, user: "caplets" },
+      auth: { type: "development_unauthenticated" },
       warnUnauthenticatedNetwork: true,
     });
+    expect("remoteCredentialStateDir" in resolved).toBe(false);
   });
 
   it("rejects HTTP-only options for stdio", () => {

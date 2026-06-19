@@ -41,7 +41,7 @@ describe("createHttpServeApp", () => {
           },
         },
       ],
-      auth: { type: "basic", enabled: false },
+      auth: { type: "development_unauthenticated" },
     });
 
     const v1 = await app.request("http://127.0.0.1:5387/v1");
@@ -85,23 +85,25 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("requires Basic Auth on MCP path when password is configured", async () => {
+  it("rejects Basic Auth on MCP path when remote credentials are required", async () => {
     const { engine } = testEngine();
-    const testPassword = ["test", "password"].join("-");
     const app = createHttpServeApp(
-      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
+      httpOptions({
+        auth: { type: "remote_credentials" },
+        remoteCredentialStateDir: tempDir("caplets-http-remote-credentials-"),
+      }),
       engine,
       { writeErr: () => {} },
     );
 
     const missing = await app.request("http://127.0.0.1:5387/v1/mcp", { method: "POST" });
     expect(missing.status).toBe(401);
-    expect(missing.headers.get("www-authenticate")).toContain("Basic");
+    expect(missing.headers.get("www-authenticate")).toBeNull();
 
     const wrong = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
-        authorization: `Basic ${Buffer.from(`caplets:not-the-${testPassword}`).toString("base64")}`,
+        authorization: `Basic ${Buffer.from("caplets:password").toString("base64")}`,
       },
     });
     expect(wrong.status).toBe(401);
@@ -113,7 +115,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const credentials = pairedClient(store);
-    const app = createHttpServeApp(httpOptions(), engine, {
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
       remoteCredentialStore: store,
     });
@@ -121,7 +123,7 @@ describe("createHttpServeApp", () => {
     const root = await app.request("http://127.0.0.1:5387/");
     expect(root.status).toBe(200);
     await expect(root.json()).resolves.toMatchObject({
-      auth: { type: "remote_credentials", enabled: true },
+      auth: { type: "remote_credentials" },
     });
 
     const basic = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
@@ -182,7 +184,7 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const issued = store.createPairingCode({ hostUrl: "http://127.0.0.1:5387/" });
-    const app = createHttpServeApp(httpOptions(), engine, {
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
       remoteCredentialStore: store,
     });
@@ -232,44 +234,47 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("requires Basic Auth on attach manifest when password is configured", async () => {
+  it("rejects Basic Auth on attach manifest when remote credentials are required", async () => {
     const { engine } = testEngine();
-    const testPassword = ["test", "password"].join("-");
     const app = createHttpServeApp(
-      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
+      httpOptions({
+        auth: { type: "remote_credentials" },
+        remoteCredentialStateDir: tempDir("caplets-http-remote-credentials-"),
+      }),
       engine,
       { writeErr: () => {} },
     );
 
     const missing = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
     expect(missing.status).toBe(401);
-    expect(missing.headers.get("www-authenticate")).toContain("Basic");
+    expect(missing.headers.get("www-authenticate")).toBeNull();
 
     await engine.close();
   });
 
-  it("requires Basic Auth on control path and dispatches authenticated list requests", async () => {
+  it("requires remote credentials on control path and dispatches authenticated list requests", async () => {
     const context = testContext();
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
     });
-    const testPassword = ["test", "password"].join("-");
-    const app = createHttpServeApp(
-      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
-      engine,
-      { writeErr: () => {}, control: context },
-    );
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: store,
+    });
 
     const missing = await app.request("http://127.0.0.1:5387/v1/admin", { method: "POST" });
     expect(missing.status).toBe(401);
-    expect(missing.headers.get("www-authenticate")).toContain("Basic");
+    expect(missing.headers.get("www-authenticate")).toBeNull();
 
     const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
       headers: {
-        authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+        authorization: `Bearer ${credentials.accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ command: "list", arguments: {} }),
@@ -282,12 +287,12 @@ describe("createHttpServeApp", () => {
 
   it("exposes authenticated Project Binding status under the attach namespace", async () => {
     const { engine } = testEngine();
-    const testPassword = ["test", "password"].join("-");
-    const app = createHttpServeApp(
-      httpOptions({ auth: { enabled: true, user: "caplets", password: testPassword } }),
-      engine,
-      { writeErr: () => {} },
-    );
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+    });
 
     const missing = await app.request(
       "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
@@ -298,7 +303,7 @@ describe("createHttpServeApp", () => {
       "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
       {
         headers: {
-          authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+          authorization: `Bearer ${credentials.accessToken}`,
         },
       },
     );
@@ -386,14 +391,12 @@ describe("createHttpServeApp", () => {
       projectConfigPath: context.projectConfigPath,
       watch: false,
     });
-    const testPassword = ["test", "password"].join("-");
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store, "http://127.0.0.1:5387/caplets");
     const app = createHttpServeApp(
-      httpOptions({
-        path: "/caplets",
-        auth: { enabled: true, user: "caplets", password: testPassword },
-      }),
+      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
       engine,
-      { writeErr: () => {}, control: context },
+      { writeErr: () => {}, control: context, remoteCredentialStore: store },
     );
 
     const rootControl = await app.request("http://127.0.0.1:5387/control", { method: "POST" });
@@ -407,7 +410,7 @@ describe("createHttpServeApp", () => {
     const listed = await app.request("http://127.0.0.1:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
-        authorization: `Basic ${Buffer.from(`caplets:${testPassword}`).toString("base64")}`,
+        authorization: `Bearer ${credentials.accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ command: "list", arguments: {} }),
@@ -925,20 +928,21 @@ describe("createHttpServeApp", () => {
 
   it("allows authenticated attach requests through the configured public origin host", async () => {
     const { engine } = testEngine();
-    const password = "test-password";
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store, "https://caplets.tail7ff085.ts.net/");
     const app = createHttpServeApp(
       httpOptions({
         publicOrigin: "https://caplets.tail7ff085.ts.net",
-        auth: { enabled: true, user: "caplets", password },
+        auth: { type: "remote_credentials" },
       }),
       engine,
-      { writeErr: () => {} },
+      { writeErr: () => {}, remoteCredentialStore: store },
     );
 
     const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
       headers: {
         host: "caplets.tail7ff085.ts.net",
-        authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
+        authorization: `Bearer ${credentials.accessToken}`,
       },
     });
 
@@ -992,21 +996,22 @@ describe("createHttpServeApp", () => {
 
   it("allows authenticated MCP requests through the configured public origin host", async () => {
     const { engine } = testEngine();
-    const password = "test-password";
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store, "https://caplets.tail7ff085.ts.net/");
     const app = createHttpServeApp(
       httpOptions({
         publicOrigin: "https://caplets.tail7ff085.ts.net",
-        auth: { enabled: true, user: "caplets", password },
+        auth: { type: "remote_credentials" },
       }),
       engine,
-      { writeErr: () => {} },
+      { writeErr: () => {}, remoteCredentialStore: store },
     );
 
     const init = await app.request("http://127.0.0.1:5387/v1/mcp", {
       method: "POST",
       headers: {
         host: "caplets.tail7ff085.ts.net",
-        authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
+        authorization: `Bearer ${credentials.accessToken}`,
         accept: "application/json, text/event-stream",
         "content-type": "application/json",
       },
@@ -1156,7 +1161,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     port: 5387,
     path: "/",
     publicOrigin: undefined,
-    auth: { enabled: false, user: "caplets" },
+    auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,
@@ -1169,13 +1174,16 @@ function remoteCredentialStore(): RemoteServerCredentialStore {
   return new RemoteServerCredentialStore({ dir: tempDir("caplets-http-remote-credentials-") });
 }
 
-function pairedClient(store: RemoteServerCredentialStore): {
+function pairedClient(
+  store: RemoteServerCredentialStore,
+  hostUrl = "http://127.0.0.1:5387/",
+): {
   accessToken: string;
   refreshToken: string;
 } {
-  const issued = store.createPairingCode({ hostUrl: "http://127.0.0.1:5387/" });
+  const issued = store.createPairingCode({ hostUrl });
   return store.exchangePairingCode({
-    hostUrl: "http://127.0.0.1:5387/",
+    hostUrl,
     code: issued.code,
   });
 }

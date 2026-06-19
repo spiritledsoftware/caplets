@@ -84,13 +84,18 @@ describe("self-hosted remote pairing", () => {
     );
     for (let attempt = 0; attempt < 2; attempt += 1) {
       expect(() =>
-        store.exchangePairingCode({ hostUrl: "https://caplets.example.com", code: badCode }),
+        store.exchangePairingCode({
+          hostUrl: "https://caplets.example.com",
+          code: badCode,
+          now: new Date("2026-06-19T12:00:00.000Z"),
+        }),
       ).toThrow(CapletsError);
     }
     expect(() =>
       store.exchangePairingCode({
         hostUrl: "https://caplets.example.com",
         code: exhausted.code,
+        now: new Date("2026-06-19T12:00:00.000Z"),
       }),
     ).toThrow(/attempts/u);
   });

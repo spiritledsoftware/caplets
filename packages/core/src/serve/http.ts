@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
@@ -20,7 +20,7 @@ import {
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
-import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
+import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
 type HttpServeIo = {
@@ -64,7 +64,8 @@ export function createHttpServeApp(
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
-  const protectedRouteAuth = routeAuth(options, io.remoteCredentialStore, paths.base);
+  const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -78,9 +79,7 @@ export function createHttpServeApp(
       transport: "http",
       base: paths.base,
       versions: [versionDiscovery(paths, exposeAttach)],
-      auth: io.remoteCredentialStore
-        ? { type: "remote_credentials", enabled: true }
-        : { type: "basic", enabled: options.auth.enabled },
+      auth: { type: options.auth.type },
     }),
   );
 
@@ -92,13 +91,13 @@ export function createHttpServeApp(
     }),
   );
 
-  if (io.remoteCredentialStore) {
+  if (remoteCredentialStore) {
     app.post(paths.pairingExchange, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
         const code = stringField(parsed, "code");
         const clientLabel = optionalStringField(parsed, "clientLabel");
-        const credentials = io.remoteCredentialStore!.exchangePairingCode({
+        const credentials = remoteCredentialStore.exchangePairingCode({
           hostUrl: publicHostUrl(
             c.req.url,
             paths.base,
@@ -126,7 +125,7 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
         const refreshToken = stringField(parsed, "refreshToken");
-        const credentials = io.remoteCredentialStore!.refreshClientCredentials({
+        const credentials = remoteCredentialStore.refreshClientCredentials({
           hostUrl: publicHostUrl(
             c.req.url,
             paths.base,
@@ -545,9 +544,7 @@ export async function serveHttp(
     writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(
-      `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
-    );
+    writeErr(`Auth: ${authDescription(options)}\n`);
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
@@ -584,9 +581,7 @@ export async function serveHttpWithSessionFactory(
     writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(
-      `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
-    );
+    writeErr(`Auth: ${authDescription(options)}\n`);
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
@@ -653,32 +648,22 @@ async function createHttpSession(
   return { server, transport };
 }
 
-function basicAuth(auth: HttpBasicAuthOptions): MiddlewareHandler {
-  return async (c, next) => {
-    if (!auth.enabled) {
-      await next();
-      return;
-    }
-    const header = c.req.header("authorization") ?? "";
-    const credentials = parseBasicAuth(header);
-    if (
-      !credentials ||
-      !safeEqual(credentials.user, auth.user) ||
-      !safeEqual(credentials.password, auth.password)
-    ) {
-      c.header("www-authenticate", 'Basic realm="caplets"');
-      return c.text("Unauthorized", 401);
-    }
-    await next();
-  };
-}
-
 function routeAuth(
   options: HttpServeOptions,
   remoteCredentialStore: RemoteServerCredentialStore | undefined,
   basePath: string,
 ): MiddlewareHandler {
-  if (!remoteCredentialStore) return basicAuth(options.auth);
+  if (options.auth.type === "development_unauthenticated") {
+    return async (_c, next) => {
+      await next();
+    };
+  }
+  if (!remoteCredentialStore) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth requires a server credential store.",
+    );
+  }
   return async (c, next) => {
     const header = c.req.header("authorization") ?? "";
     const token = bearerToken(header);
@@ -701,6 +686,21 @@ function routeAuth(
     }
     await next();
   };
+}
+
+function remoteCredentialStoreForOptions(
+  options: HttpServeOptions,
+  store: RemoteServerCredentialStore | undefined,
+): RemoteServerCredentialStore | undefined {
+  if (options.auth.type !== "remote_credentials") return undefined;
+  if (store) return store;
+  if (!options.remoteCredentialStateDir) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth requires a server credential state directory.",
+    );
+  }
+  return new RemoteServerCredentialStore({ dir: options.remoteCredentialStateDir });
 }
 
 function bearerToken(header: string): string | undefined {
@@ -766,25 +766,6 @@ function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
   };
 }
 
-function parseBasicAuth(header: string): { user: string; password: string } | undefined {
-  const [scheme, encoded] = header.split(" ");
-  if (scheme?.toLocaleLowerCase() !== "basic" || !encoded) {
-    return undefined;
-  }
-  const decoded = Buffer.from(encoded, "base64").toString("utf8");
-  const separator = decoded.indexOf(":");
-  if (separator < 0) {
-    return undefined;
-  }
-  return { user: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
-}
-
-function safeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 type DnsRebindingOptions = {
   enableDnsRebindingProtection: true;
   allowedHosts: string[];
@@ -794,7 +775,7 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
   const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
   const publicHosts =
-    publicUrl && (options.auth.enabled || options.allowUnauthenticatedHttp)
+    publicUrl && (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
       ? [publicUrl.hostname, publicUrl.host]
       : [];
   return {
@@ -807,6 +788,12 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
       ...publicHosts,
     ],
   };
+}
+
+function authDescription(options: HttpServeOptions): string {
+  return options.auth.type === "remote_credentials"
+    ? "remote credentials"
+    : "development unauthenticated";
 }
 
 function installHttpSignalHandlers(

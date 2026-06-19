@@ -164,8 +164,6 @@ type DaemonInstallCommandOptions = {
   host?: string;
   port?: string;
   path?: string;
-  user?: string;
-  password?: string;
   remoteStatePath?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
@@ -200,8 +198,6 @@ function addDaemonInstallOptions(command: Command): Command {
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
-    .option("--user <user>", "HTTP Basic Auth username")
-    .option("--password <password>", "HTTP Basic Auth password")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--allow-unauthenticated-http",
@@ -299,8 +295,6 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
     ...(options.host !== undefined ? { host: options.host } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.path !== undefined ? { path: options.path } : {}),
-    ...(options.user !== undefined ? { user: options.user } : {}),
-    ...(options.password !== undefined ? { password: options.password } : {}),
     ...(options.remoteStatePath !== undefined ? { remoteStatePath: options.remoteStatePath } : {}),
     ...(options.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
@@ -702,8 +696,6 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
-    .option("--user <user>", "HTTP Basic Auth username")
-    .option("--password <password>", "HTTP Basic Auth password")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--allow-unauthenticated-http",
@@ -716,8 +708,6 @@ export function createProgram(io: CliIO = {}): Command {
         host?: string;
         port?: string;
         path?: string;
-        user?: string;
-        password?: string;
         remoteStatePath?: string;
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;

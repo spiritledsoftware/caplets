@@ -1416,7 +1416,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     host: "127.0.0.1",
     port: 5387,
     path: "/caplets",
-    auth: { enabled: false, user: "caplets" },
+    auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,

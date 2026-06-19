@@ -2670,7 +2670,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     port: 5387,
     path: "/",
     publicOrigin: undefined,
-    auth: { enabled: false, user: "caplets" },
+    auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,

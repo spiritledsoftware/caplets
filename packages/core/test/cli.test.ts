@@ -234,7 +234,8 @@ describe("cli init", () => {
         host: "127.0.0.1",
         port: 5387,
         path: "/",
-        auth: { enabled: false, user: "caplets" },
+        auth: { type: "remote_credentials" },
+        remoteCredentialStateDir: expect.stringContaining("remote-server"),
       }),
     ]);
   });
