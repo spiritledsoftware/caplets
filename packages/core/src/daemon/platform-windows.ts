@@ -41,15 +41,15 @@ ${Object.entries(config.command.env)
 }
 
 function windowsArg(value: string): string {
-  return `"${value.replaceAll('"', '""')}"`;
+  return `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
 }
 
 function windowsEnvValue(value: string): string {
-  if (/[\r\n]/u.test(value)) {
+  if (/["\r\n]/u.test(value)) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Windows daemon environment values cannot contain CR or LF characters.",
+      'Windows daemon environment values cannot contain ", CR, or LF characters.',
     );
   }
-  return value.replaceAll("%", "%%").replaceAll('"', '""');
+  return value.replaceAll("%", "%%");
 }

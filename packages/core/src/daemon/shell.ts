@@ -1,3 +1,5 @@
+import { CapletsError } from "../errors";
+
 export function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_./:=@%+-]+$/u.test(value)) return value;
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -71,5 +73,11 @@ function cmdQuote(value: string): string {
 }
 
 function cmdEnvValue(value: string): string {
-  return value.replaceAll(/\r?\n/gu, " ").replaceAll("%", "%%").replaceAll('"', '""');
+  if (/["\r\n]/u.test(value)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      'Windows daemon environment values used with cmd.exe cannot contain ", CR, or LF characters.',
+    );
+  }
+  return value.replaceAll("%", "%%");
 }

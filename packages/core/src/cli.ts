@@ -82,6 +82,7 @@ import {
   daemonStatus,
   followDaemonLogs,
   installDaemon,
+  redactDaemonInstallResult,
   resolveDaemonPaths,
   restartDaemon,
   startDaemon,
@@ -595,7 +596,7 @@ export function createProgram(io: CliIO = {}): Command {
           : { isInteractive: false }),
       });
       if (options.json) {
-        writeOut(`${JSON.stringify(result, null, 2)}\n`);
+        writeOut(`${JSON.stringify(redactDaemonInstallResult(result), null, 2)}\n`);
         return;
       }
       if (result.dryRun) {

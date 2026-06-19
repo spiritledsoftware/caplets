@@ -133,7 +133,19 @@ export async function installDaemon(
     });
   } else if (restartDecisionRequired && options.readPrompt) {
     const answer = await options.readPrompt("Restart the running Caplets daemon now? [y/N] ");
-    if (/^y(?:es)?$/iu.test(answer.trim())) await manager.restart(config);
+    if (/^y(?:es)?$/iu.test(answer.trim())) {
+      const action = await manager.restart(config);
+      const health = await waitForDaemonHealth(config, options);
+      assertDaemonHealth(health, "Native daemon health check");
+      writeDaemonState(paths, {
+        instance: "default",
+        installed: true,
+        running: action.native.running,
+        nativeState: action.native.state,
+        updatedAt: (options.now ?? new Date()).toISOString(),
+        ...(action.native.pid === undefined ? {} : { pid: action.native.pid }),
+      });
+    }
   }
 
   return {
@@ -332,6 +344,26 @@ async function daemonStatusSnapshot(
   return status;
 }
 
+export function redactDaemonInstallResult(result: DaemonInstallResult): DaemonInstallResult {
+  const secrets = collectDaemonSecrets(result.config);
+  return {
+    ...result,
+    config: redactDaemonConfig(result.config),
+    descriptor: redactDescriptor(result.descriptor, secrets),
+    ...(result.native
+      ? {
+          native: {
+            ...result.native,
+            native: redactNativeStatus(result.native.native, result.config),
+            ...(result.native.descriptor
+              ? { descriptor: redactDescriptor(result.native.descriptor, secrets) }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
 function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
   const env = redactEnv(config.env.values);
   return {
@@ -383,6 +415,10 @@ function redactNativeValue(value: unknown, secrets: string[]): unknown {
     );
   }
   return value;
+}
+
+function redactDescriptor<T>(descriptor: T, secrets: string[]): T {
+  return redactNativeValue(descriptor, secrets) as T;
 }
 
 function redactEnv(env: Record<string, string>): Record<string, string> {

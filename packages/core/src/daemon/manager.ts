@@ -116,6 +116,9 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
           ? stopped({ stderr: show.stderr, stdout: show.stdout })
           : notInstalled({ stderr: show.stderr });
       }
+      const raw = parseSystemdShow(show.stdout);
+      if (!existsSync(paths.descriptorFile) && raw.LoadState === "not-found")
+        return notInstalled({ raw, stderr: show.stderr });
       const active = await runner.exec("systemctl", ["--user", "is-active", SYSTEMD_UNIT]);
       if (active.code !== 0 && isSystemdUnavailable(active.stderr || active.stdout))
         return unavailable(`systemd --user is not available: ${active.stderr || active.stdout}`);
@@ -124,17 +127,17 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
           state: "running",
           installed: true,
           running: true,
-          raw: parseSystemdShow(show.stdout),
+          raw,
         };
       if (active.stdout.trim() === "failed")
         return failedStatus({
           active: active.stdout.trim(),
-          raw: parseSystemdShow(show.stdout),
+          raw,
           stderr: active.stderr,
         });
       return stopped({
         active: active.stdout.trim(),
-        raw: parseSystemdShow(show.stdout),
+        raw,
         stderr: active.stderr,
       });
     },

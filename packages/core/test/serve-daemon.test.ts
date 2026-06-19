@@ -128,6 +128,41 @@ describe("caplets daemon CLI", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("redacts daemon install --json config and descriptors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-json-redaction-"));
+    try {
+      const out: string[] = [];
+
+      await runCli(
+        [
+          "daemon",
+          "install",
+          "--json",
+          "--dry-run",
+          "--user",
+          "alice",
+          "--password",
+          "secret",
+          "--env",
+          "TOKEN=abc123",
+        ],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          writeErr: () => {},
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const serialized = out.join("");
+      expect(serialized).toContain("[redacted]");
+      expect(serialized).not.toContain("secret");
+      expect(serialized).not.toContain("abc123");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("daemon paths and config", () => {
@@ -353,6 +388,23 @@ describe("daemon paths and config", () => {
       expect(windows.descriptor.xml).toContain("<WorkingDirectory>");
       expect(windows.descriptor.wrapper.contents).toContain(">> ");
       expect(windows.descriptor.wrapper.contents).toContain("2>> ");
+
+      const escapedWindows = await installDaemon(
+        { ...common, password: "pa%USERNAME%ss", allowUnauthenticatedHttp: false },
+        {
+          env: {
+            APPDATA: join(dir, "Escaped", "Roaming"),
+            LOCALAPPDATA: join(dir, "Escaped", "Local"),
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(escapedWindows.descriptor.kind).toBe("windows-scheduled-task");
+      if (escapedWindows.descriptor.kind !== "windows-scheduled-task")
+        throw new Error("expected task");
+      expect(escapedWindows.descriptor.wrapper.contents).toContain("pa%%USERNAME%%ss");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -374,7 +426,22 @@ describe("daemon paths and config", () => {
             commandRunner: fakeRunner(),
           },
         ),
-      ).rejects.toThrow(/cannot contain CR or LF/u);
+      ).rejects.toThrow(/cannot contain/u);
+
+      await expect(
+        installDaemon(
+          { env: ['TOKEN=a"b'], validate: false, dryRun: true },
+          {
+            env: {
+              APPDATA: join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/cannot contain/u);
 
       const descriptor = await installDaemon(
         { env: ["TOKEN=%PATH%"], validate: false, dryRun: true },
@@ -435,6 +502,37 @@ describe("daemon paths and config", () => {
     });
     expect(bash.args.at(-1)).toContain("export PATH=/custom/bin; exec ");
     expect(bash.args.at(-1)).toContain(" /usr/local/bin/caplets serve");
+
+    expect(() =>
+      serviceCommand({
+        command: {
+          executable: "C:\\Program Files\\Caplets\\cli.js",
+          args: ["serve"],
+          env: { TOKEN: 'a"b' },
+          shell: { executable: "cmd.exe", args: ["/d", "/s", "/c"] },
+        },
+      }),
+    ).toThrow(/cannot contain/u);
+  });
+
+  it("preserves env-derived public origins in the service environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-public-origin-"));
+    try {
+      const result = await installDaemon(
+        { validate: false, dryRun: true, allowUnauthenticatedHttp: true },
+        {
+          env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/daemon" },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.serve.publicOrigin).toBe("https://caplets.example.com");
+      expect(result.config.command.env.CAPLETS_SERVER_URL).toBe("https://caplets.example.com");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("uses non-login inherited shell mode for /bin/sh", async () => {
@@ -657,6 +755,39 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("treats not-found systemd units as uninstalled when only config remains", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-systemd-not-found-"));
+    try {
+      const installed = await installDaemon(
+        { validate: false },
+        { env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() },
+      );
+      rmSync(installed.config.paths.descriptorFile, { force: true });
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "systemctl" && args.includes("show")) {
+            return { stdout: "LoadState=not-found\n", stderr: "", code: 0 };
+          }
+          if (command === "systemctl" && args.includes("is-active")) {
+            return { stdout: "inactive\n", stderr: "", code: 3 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+
+      const status = await daemonStatus({
+        env: testEnv(dir),
+        platform: "linux",
+        commandRunner: runner,
+      });
+
+      expect(status.installed).toBe(false);
+      expect(status.nativeState).toBe("not_installed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runtime start fails before install with install guidance", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-start-"));
     try {
@@ -776,6 +907,37 @@ describe("daemon lifecycle and logs", () => {
         "systemctl",
         "--user",
         "enable",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("checks health after prompted restarts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-prompt-restart-health-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        isInteractive: true,
+        readPrompt: async () => "y",
+        fetch: async () => new Response("nope", { status: 503 }),
+        healthTimeoutMs: 10,
+        healthIntervalMs: 1,
+      };
+      await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      await expect(installDaemon({ validate: false, env: ["NAME=new"] }, options)).rejects.toThrow(
+        /Native daemon health check failed/u,
+      );
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "restart",
         "caplets-daemon-default.service",
       ]);
     } finally {

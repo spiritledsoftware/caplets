@@ -54,11 +54,16 @@ export function buildDaemonCommandPlan(options: {
   const executable = resolveDaemonExecutable(process.argv[1]);
   const args = daemonServeArgs(options.serve);
   const workingDirectory = options.operation.home ?? homedir();
+  const explicitEnv = options.explicitEnv ?? {};
+  const serviceEnv =
+    options.serve.publicOrigin && explicitEnv.CAPLETS_SERVER_URL === undefined
+      ? { ...explicitEnv, CAPLETS_SERVER_URL: options.serve.publicOrigin }
+      : explicitEnv;
   const base = {
     executable,
     args,
     workingDirectory,
-    env: options.explicitEnv ?? {},
+    env: serviceEnv,
     inheritEnv: options.inheritEnv ?? false,
     stdoutLog: options.paths.stdoutLog,
     stderrLog: options.paths.stderrLog,
