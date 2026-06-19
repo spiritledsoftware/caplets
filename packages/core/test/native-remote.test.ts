@@ -474,6 +474,54 @@ describe("RemoteNativeCapletsService", () => {
     }
   });
 
+  it("uses refreshed runtime options when reconnecting the attach events stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const eventAuthHeaders: Array<string | null> = [];
+      let token = "token-1";
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
+        if (url.endsWith("/events")) {
+          eventAuthHeaders.push(new Headers(init?.headers).get("authorization"));
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return Response.json({ ok: true });
+      });
+      const remoteOptions = () => ({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" } as const,
+        pollIntervalMs: 60_000,
+      });
+      const remote = createSdkRemoteCapletsClient({
+        ...remoteOptions(),
+        resolveRuntimeOptions: async () => remoteOptions(),
+      });
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(controllers).toHaveLength(1));
+      token = "token-2";
+      controllers[0]!.close();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await vi.waitFor(() => expect(controllers).toHaveLength(2));
+      expect(eventAuthHeaders).toEqual(["Bearer token-1", "Bearer token-2"]);
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not reconnect the attach events stream after an HTTP error response", async () => {
     vi.useFakeTimers();
     try {
@@ -1320,6 +1368,43 @@ describe("RemoteNativeCapletsService", () => {
 
     await service.close();
     vi.useRealTimers();
+  });
+
+  it("uses refreshed runtime options when fallback polling the remote service", async () => {
+    vi.useFakeTimers();
+    try {
+      const manifestAuthHeaders: Array<string | null> = [];
+      let token = "token-1";
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        if (String(input).endsWith("/manifest")) {
+          manifestAuthHeaders.push(new Headers(init?.headers).get("authorization"));
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      });
+      const remoteOptions = () => ({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" } as const,
+        pollIntervalMs: 60_000,
+      });
+      const remote = createSdkRemoteCapletsClient({
+        ...remoteOptions(),
+        resolveRuntimeOptions: async () => remoteOptions(),
+      });
+      const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 1_000 });
+
+      await service.reload();
+      token = "token-2";
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await vi.waitFor(() => expect(manifestAuthHeaders).toContain("Bearer token-2"));
+      expect(manifestAuthHeaders[0]).toBe("Bearer token-1");
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cleans up subscriptions, polling, listeners, and client close idempotently", async () => {

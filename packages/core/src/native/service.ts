@@ -12,6 +12,7 @@ import {
   createSdkRemoteCapletsClient,
   RemoteNativeCapletsService,
   type RemoteCapletsClient,
+  type SdkRemoteCapletsClientOptions,
 } from "./remote";
 import { CapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
@@ -631,18 +632,33 @@ function createCompositeRemoteParts(
   local: NativeCapletsService,
   options: NativeCapletsServiceOptions,
   authKind: "self_hosted_remote" | "hosted_cloud",
+  resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
 ): { remote: NativeCapletsService; presence?: ProjectBindingSessionManager } {
-  const client = (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(remoteOptions);
+  const client = createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions);
   const remote = new RemoteNativeCapletsService({
     client,
-    clientFactory: () =>
-      (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(remoteOptions),
+    clientFactory: () => createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions),
     pollIntervalMs: remoteOptions.pollIntervalMs,
     authKind,
     ...(options.writeErr ? { writeErr: options.writeErr } : {}),
   });
   const presence = createProjectBindingSessionManager(remoteOptions.cloud, local, options);
   return { remote, ...(presence ? { presence } : {}) };
+}
+
+function createRemoteClient(
+  remoteOptions: ResolvedNativeRemoteOptions,
+  options: NativeCapletsServiceOptions,
+  resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
+): RemoteCapletsClient {
+  if (options.remoteClientFactory) {
+    return options.remoteClientFactory(remoteOptions);
+  }
+  const sdkOptions: SdkRemoteCapletsClientOptions = {
+    ...remoteOptions,
+    ...(resolveRuntimeRemoteOptions ? { resolveRuntimeOptions: resolveRuntimeRemoteOptions } : {}),
+  };
+  return createSdkRemoteCapletsClient(sdkOptions);
 }
 
 class ProfileBackedNativeCapletsService implements NativeCapletsService {
@@ -729,6 +745,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
           this.local,
           this.options,
           this.authKind,
+          () => this.resolveProfileRemoteOptions(),
         );
         this.delegate = new CompositeNativeCapletsService(
           remote,
@@ -747,6 +764,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
         this.local,
         this.options,
         this.authKind,
+        () => this.resolveProfileRemoteOptions(),
       );
       await this.delegate.replaceRemote(remote, presence);
       this.remoteSignature = signature;

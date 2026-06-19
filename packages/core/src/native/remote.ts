@@ -55,6 +55,10 @@ export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
   mode: "remote" | "cloud";
 };
 
+export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"] & {
+  resolveRuntimeOptions?: () => Promise<RemoteCapletsClientOptions["remote"]>;
+};
+
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
   clientFactory?: () => RemoteCapletsClient;
@@ -64,14 +68,46 @@ export type RemoteNativeCapletsServiceOptions = {
 };
 
 export function createSdkRemoteCapletsClient(
-  options: RemoteCapletsClientOptions["remote"],
+  options: SdkRemoteCapletsClientOptions,
 ): RemoteCapletsClient {
-  const fetchImpl = options.fetch ?? fetch;
   const listeners = new Set<() => void>();
   let manifest: AttachManifest | undefined;
   let exportByName = new Map<string, AttachManifestExport>();
   let eventsAbort: AbortController | undefined;
+  let eventsStartInFlight: Promise<void> | undefined;
   let eventsReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const resolveRuntimeOptions = async (): Promise<RemoteCapletsClientOptions["remote"]> => {
+    return options.resolveRuntimeOptions ? await options.resolveRuntimeOptions() : options;
+  };
+
+  const fetchFor = (runtimeOptions: RemoteCapletsClientOptions["remote"]): typeof fetch =>
+    runtimeOptions.fetch ?? fetch;
+
+  const fetchCurrentManifest = async (): Promise<AttachManifest> => {
+    const runtimeOptions = await resolveRuntimeOptions();
+    return await fetchAttachManifest(
+      runtimeOptions.url,
+      runtimeOptions.requestInit,
+      fetchFor(runtimeOptions),
+    );
+  };
+
+  const invokeCurrentExport = async (body: {
+    revision: string;
+    kind: string;
+    exportId: string;
+    input: unknown;
+  }): Promise<unknown> => {
+    const runtimeOptions = await resolveRuntimeOptions();
+    return await invokeAttachExport(
+      runtimeOptions.url,
+      runtimeOptions.requestInit,
+      fetchFor(runtimeOptions),
+      body,
+    );
+  };
 
   const clearEventsReconnectTimer = () => {
     if (eventsReconnectTimer) {
@@ -79,35 +115,57 @@ export function createSdkRemoteCapletsClient(
       eventsReconnectTimer = undefined;
     }
   };
+
+  const scheduleEventsReconnect = () => {
+    if (closed || listeners.size === 0) return;
+    clearEventsReconnectTimer();
+    eventsReconnectTimer = setTimeout(() => {
+      eventsReconnectTimer = undefined;
+      startEvents();
+    }, 1_000);
+  };
+
+  const startEventsNow = async () => {
+    try {
+      const runtimeOptions = await resolveRuntimeOptions();
+      if (closed || eventsAbort || listeners.size === 0) return;
+      eventsAbort = startAttachEvents(
+        runtimeOptions.url,
+        runtimeOptions.requestInit,
+        fetchFor(runtimeOptions),
+        listeners,
+        (closedAbort, retry) => {
+          if (eventsAbort !== closedAbort) return;
+          eventsAbort = undefined;
+          if (!retry || closedAbort.signal.aborted || listeners.size === 0) return;
+          scheduleEventsReconnect();
+        },
+      );
+    } catch {
+      scheduleEventsReconnect();
+    }
+  };
+
   const startEvents = () => {
-    if (eventsAbort || listeners.size === 0) return;
-    eventsAbort = startAttachEvents(
-      options.url,
-      options.requestInit,
-      fetchImpl,
-      listeners,
-      (closedAbort, retry) => {
-        if (eventsAbort !== closedAbort) return;
-        eventsAbort = undefined;
-        if (!retry || closedAbort.signal.aborted || listeners.size === 0) return;
-        clearEventsReconnectTimer();
-        eventsReconnectTimer = setTimeout(() => {
-          eventsReconnectTimer = undefined;
-          startEvents();
-        }, 1_000);
-      },
-    );
+    if (closed || eventsAbort || eventsStartInFlight || listeners.size === 0) return;
+    const start = startEventsNow();
+    eventsStartInFlight = start;
+    void start.finally(() => {
+      if (eventsStartInFlight === start) {
+        eventsStartInFlight = undefined;
+      }
+    });
   };
 
   return {
     async listTools() {
-      manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
+      manifest = await fetchCurrentManifest();
       exportByName = exportMapFor(manifest);
       return toolsFromManifest(manifest);
     },
     async callTool(name, args) {
       if (!manifest) {
-        manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
+        manifest = await fetchCurrentManifest();
         exportByName = exportMapFor(manifest);
       }
       const invokeWithStaleRetry = async (
@@ -115,7 +173,7 @@ export function createSdkRemoteCapletsClient(
         input: unknown,
       ): Promise<unknown> => {
         try {
-          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+          return await invokeCurrentExport({
             revision: manifest!.revision,
             kind: entry.kind,
             exportId: entry.exportId,
@@ -123,11 +181,7 @@ export function createSdkRemoteCapletsClient(
           });
         } catch (error) {
           if (!isAttachManifestStale(error)) throw error;
-          const nextManifest = await fetchAttachManifest(
-            options.url,
-            options.requestInit,
-            fetchImpl,
-          );
+          const nextManifest = await fetchCurrentManifest();
           const nextEntry = compatibleExport(nextManifest, entry);
           manifest = nextManifest;
           exportByName = exportMapFor(nextManifest);
@@ -137,7 +191,7 @@ export function createSdkRemoteCapletsClient(
               "Attach export changed after manifest refresh; refetch the manifest before retrying.",
             );
           }
-          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+          return await invokeCurrentExport({
             revision: nextManifest.revision,
             kind: nextEntry.kind,
             exportId: nextEntry.exportId,
@@ -168,6 +222,7 @@ export function createSdkRemoteCapletsClient(
       };
     },
     async close() {
+      closed = true;
       clearEventsReconnectTimer();
       eventsAbort?.abort();
       eventsAbort = undefined;
