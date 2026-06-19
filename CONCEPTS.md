@@ -56,6 +56,12 @@ The Caplets exposure mode where agents discover and call backend operations thro
 
 ## Remote Attach
 
+### Remote Attach
+
+The process where a local agent-facing Caplets runtime connects to a trusted Caplets host and exposes that host's capabilities through local or native agent integrations.
+
+Remote Attach uses Remote Profiles for trust and credentials. Long-lived attach traffic treats credentials as refreshable runtime state rather than fixed startup state.
+
 ### Remote Login
 
 The provider-neutral flow that trusts a local Caplets client to a Caplets host, whether the host is self-hosted or Caplets Cloud.
@@ -71,3 +77,5 @@ Pairing Codes are bootstrap material only. They are not reusable client credenti
 ### Remote Profile
 
 The stored local record for a trusted Caplets host, including the normalized host URL, host kind, selected workspace when applicable, and redacted credential status.
+
+Remote Profiles are the source of truth for request credentials. Long-lived clients resolve current profile state when sending remote traffic instead of copying credentials into agent config or one-time startup state.
