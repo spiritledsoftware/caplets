@@ -8,6 +8,7 @@ export const cliCommands = {
   daemon: "daemon",
   serve: "serve",
   attach: "attach",
+  remote: "remote",
   cloud: "cloud",
   init: "init",
   setup: "setup",
@@ -38,6 +39,7 @@ export const topLevelCommandNames = [
   cliCommands.daemon,
   cliCommands.codeMode,
   cliCommands.attach,
+  cliCommands.remote,
   cliCommands.cloud,
   cliCommands.init,
   cliCommands.setup,
@@ -68,12 +70,19 @@ export const cliSubcommands = {
   [cliCommands.add]: ["cli", "mcp", "openapi", "google-discovery", "graphql", "http"],
   [cliCommands.auth]: ["login", "logout", "list", "refresh"],
   [cliCommands.cloud]: ["auth"],
+  [cliCommands.remote]: ["login", "status", "logout", "host"],
   [cliCommands.codeMode]: ["types"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
 } as const satisfies Record<string, readonly string[]>;
+
+export const cliNestedSubcommands = {
+  [cliCommands.remote]: {
+    host: ["pair", "clients", "revoke"],
+  },
+} as const satisfies Record<string, Record<string, readonly string[]>>;
 
 export const capletIdCommands = new Set<string>([
   cliCommands.inspect,
