@@ -305,7 +305,6 @@ describe("@caplets/opencode", () => {
         mode: "remote",
         remote: {
           url: "https://caplets.example.com",
-          user: "caplets",
           pollIntervalMs: 5_000,
         },
       } as never,
@@ -315,7 +314,6 @@ describe("@caplets/opencode", () => {
       mode: "remote",
       remote: {
         url: "https://caplets.example.com",
-        user: "caplets",
         pollIntervalMs: 5_000,
       },
     });

@@ -289,7 +289,7 @@ function parsePiNativeOptions(
   }
   if (remote) {
     const parsedRemote: NonNullable<PiNativeCapletsOptions["remote"]> = {};
-    for (const key of ["url", "user", "password", "token", "workspace"] as const) {
+    for (const key of ["url", "workspace"] as const) {
       const field = remote[key];
       if (field !== undefined) {
         if (typeof field !== "string") return undefined;

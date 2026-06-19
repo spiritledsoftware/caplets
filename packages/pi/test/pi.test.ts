@@ -728,7 +728,7 @@ describe("@caplets/pi", () => {
     const service = mockService([]);
     const args = {
       mode: "remote",
-      remote: { url: "https://caplets.example.com", user: "pi-user" },
+      remote: { url: "https://caplets.example.com" },
     } satisfies Pick<NativeCapletsServiceOptions, "mode" | "remote">;
     nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
 
@@ -1051,7 +1051,7 @@ describe("@caplets/pi", () => {
     });
   });
 
-  it("loads remote URL fields from Pi settings", async () => {
+  it("loads non-secret remote URL fields from Pi settings", async () => {
     const writeWarning = vi.fn();
     fsMocks.readFile.mockResolvedValueOnce(
       JSON.stringify({
@@ -1060,8 +1060,6 @@ describe("@caplets/pi", () => {
           mode: "remote",
           remote: {
             url: "https://caplets.example.com",
-            user: "ian",
-            password: "test-password",
             pollIntervalMs: 1_000,
           },
         },
@@ -1075,8 +1073,6 @@ describe("@caplets/pi", () => {
       mode: "remote",
       remote: {
         url: "https://caplets.example.com",
-        user: "ian",
-        password: "test-password",
         pollIntervalMs: 1_000,
       },
     });
@@ -1148,7 +1144,6 @@ describe("@caplets/pi", () => {
           mode: "remote",
           remote: {
             url: "https://caplets.example.com",
-            user: "ian",
             pollIntervalMs: 1_000,
           },
         },
@@ -1163,7 +1158,6 @@ describe("@caplets/pi", () => {
       mode: "remote",
       remote: {
         url: "https://caplets.example.com",
-        user: "ian",
         pollIntervalMs: 1_000,
       },
     });
