@@ -279,7 +279,6 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
     ...(options.validate !== undefined ? { validate: options.validate } : {}),
     ...(options.start !== undefined ? { start: options.start } : {}),
     ...(options.restart === true ? { restart: true } : {}),
-    ...(options.restart === false ? { noRestart: true } : {}),
     ...(options.noRestart !== undefined ? { noRestart: options.noRestart } : {}),
   };
 }

@@ -1,3 +1,4 @@
+import { CapletsError } from "../errors";
 import type { DaemonConfig, DaemonDescriptor } from "./types";
 import { escapeXml } from "./xml";
 import { serviceCommand } from "./shell";
@@ -12,7 +13,7 @@ export function buildWindowsTaskDescriptor(config: DaemonConfig): DaemonDescript
     contents: `@echo off\r
 cd /d ${windowsArg(config.command.workingDirectory)}\r
 ${Object.entries(config.command.env)
-  .map(([key, value]) => `set "${key}=${value.replaceAll('"', '""')}"\r`)
+  .map(([key, value]) => `set "${key}=${windowsEnvValue(value)}"\r`)
   .join(
     "",
   )}${command} >> ${windowsArg(config.paths.stdoutLog)} 2>> ${windowsArg(config.paths.stderrLog)}\r
@@ -40,4 +41,14 @@ ${Object.entries(config.command.env)
 
 function windowsArg(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function windowsEnvValue(value: string): string {
+  if (/[\r\n%]/u.test(value)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Windows daemon environment values cannot contain CR, LF, or % characters.",
+    );
+  }
+  return value.replaceAll('"', '""');
 }

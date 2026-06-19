@@ -200,6 +200,43 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("retries temporary validation ports when an update validation fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-retry-"));
+    try {
+      const options = {
+        env: testEnv(dir),
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner({ active: true }),
+      };
+      await installDaemon({ port: "5480", validate: false }, options);
+
+      const validatedPorts: number[] = [];
+      await installDaemon(
+        {
+          port: "5480",
+          noRestart: true,
+        },
+        {
+          ...options,
+          validateCommand: async (config) => {
+            validatedPorts.push(config.serve.port);
+            return validatedPorts.length === 1
+              ? { ok: false, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` }
+              : { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+          },
+        },
+      );
+
+      expect(validatedPorts).toHaveLength(2);
+      expect(validatedPorts[0]).not.toBe(5480);
+      expect(validatedPorts[1]).not.toBe(5480);
+      expect(validatedPorts[1]).not.toBe(validatedPorts[0]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("renders native daemon identities for launchd, systemd, and Windows tasks", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-descriptor-"));
     try {
@@ -259,6 +296,70 @@ describe("daemon paths and config", () => {
       expect(windows.descriptor.wrapper.contents).toContain(">> ");
       expect(windows.descriptor.wrapper.contents).toContain("2>> ");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsafe Windows wrapper environment values", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-env-"));
+    try {
+      await expect(
+        installDaemon(
+          { env: ["TOKEN=abc\r\nwhoami"], validate: false, dryRun: true },
+          {
+            env: {
+              APPDATA: join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/cannot contain CR, LF, or %/u);
+
+      await expect(
+        installDaemon(
+          { env: ["TOKEN=%PATH%"], validate: false, dryRun: true },
+          {
+            env: {
+              APPDATA: join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/cannot contain CR, LF, or %/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects temporary CLI runner paths for daemon installs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-runner-"));
+    const originalArgv = process.argv[1];
+    try {
+      const transientCli = join(dir, "dlx-12345", "node_modules", ".bin", "caplets");
+      mkdirSync(join(dir, "dlx-12345", "node_modules", ".bin"), { recursive: true });
+      writeFileSync(transientCli, "#!/usr/bin/env node\n");
+      process.argv[1] = transientCli;
+
+      await expect(
+        installDaemon(
+          { validate: false, dryRun: true },
+          {
+            env: testEnv(dir),
+            home: "/home/alice",
+            platform: "linux",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/temporary runner/u);
+    } finally {
+      if (originalArgv === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = originalArgv;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -437,6 +538,12 @@ describe("daemon lifecycle and logs", () => {
       writeFileSync(paths.stdoutLog, "out1\nout2\n");
       writeFileSync(paths.stderrLog, "err1\nerr2\n");
 
+      expect(daemonLogs({ env: testEnv(dir), platform: "linux", tail: 10 }).entries).toEqual([
+        { stream: "stdout", line: "out1" },
+        { stream: "stderr", line: "err1" },
+        { stream: "stdout", line: "out2" },
+        { stream: "stderr", line: "err2" },
+      ]);
       expect(daemonLogs({ env: testEnv(dir), platform: "linux", tail: 1 }).entries).toEqual([
         { stream: "stdout", line: "out2" },
         { stream: "stderr", line: "err2" },
@@ -472,6 +579,27 @@ describe("daemon lifecycle and logs", () => {
       expect(existsSync(installed.config.paths.stateFile)).toBe(false);
       expect(existsSync(installed.config.paths.stdoutLog)).toBe(false);
       expect(existsSync(installed.config.paths.stderrLog)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sorts timestamped daemon logs across streams", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-timestamp-logs-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(paths.logDir, { recursive: true });
+      writeFileSync(
+        paths.stdoutLog,
+        "2026-06-19T10:00:00.000Z out1\n2026-06-19T10:00:02.000Z out2\n",
+      );
+      writeFileSync(paths.stderrLog, "2026-06-19T10:00:01.000Z err1\n");
+
+      expect(daemonLogs({ env: testEnv(dir), platform: "linux", tail: 10 }).entries).toEqual([
+        { stream: "stdout", line: "2026-06-19T10:00:00.000Z out1" },
+        { stream: "stderr", line: "2026-06-19T10:00:01.000Z err1" },
+        { stream: "stdout", line: "2026-06-19T10:00:02.000Z out2" },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

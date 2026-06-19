@@ -5,9 +5,8 @@ import type { DaemonConfig, DaemonDescriptor } from "./types";
 export const LAUNCHD_LABEL = "dev.caplets.daemon.default";
 
 export function buildLaunchdDescriptor(config: DaemonConfig): DaemonDescriptor {
-  const command = [serviceCommand(config).executable, ...serviceCommand(config).args].map(
-    escapeXml,
-  );
+  const planned = serviceCommand(config);
+  const command = [planned.executable, ...planned.args].map(escapeXml);
   return {
     kind: "launchd-user-agent",
     label: LAUNCHD_LABEL,

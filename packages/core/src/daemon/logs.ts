@@ -8,12 +8,13 @@ export function readDaemonLogs(
 ): DaemonLogsResult {
   const stream = options.stream ?? "all";
   const tail = options.tail ?? 10;
-  const entries = selectedStreams(stream).flatMap((selected) =>
+  const streamEntries = selectedStreams(stream).map((selected) =>
     tailLines(paths[selected === "stdout" ? "stdoutLog" : "stderrLog"], tail).map((line) => ({
       stream: selected,
       line,
     })),
   );
+  const entries = stream === "all" ? interleaveLogEntries(streamEntries) : streamEntries.flat();
   return { paths: { stdoutLog: paths.stdoutLog, stderrLog: paths.stderrLog }, entries };
 }
 
@@ -72,6 +73,38 @@ function tailLines(path: string, count: number): string[] {
   const lines = readFileSync(path, "utf8").split(/\r?\n/u);
   if (lines.at(-1) === "") lines.pop();
   return count < 0 ? lines : lines.slice(-count);
+}
+
+function interleaveLogEntries(streamEntries: DaemonLogEntry[][]): DaemonLogEntry[] {
+  const timestamps = streamEntries.flat().map((entry) => logTimestamp(entry.line));
+  if (timestamps.length > 0 && timestamps.every((timestamp) => timestamp !== undefined)) {
+    return streamEntries
+      .flat()
+      .map((entry, index) => ({ entry, index, timestamp: timestamps[index]! }))
+      .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index)
+      .map(({ entry }) => entry);
+  }
+
+  const entries: DaemonLogEntry[] = [];
+  const maxLength = Math.max(
+    0,
+    ...streamEntries.map((entriesForStream) => entriesForStream.length),
+  );
+  for (let index = 0; index < maxLength; index += 1) {
+    for (const entriesForStream of streamEntries) {
+      const entry = entriesForStream[index];
+      if (entry) entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+function logTimestamp(line: string): number | undefined {
+  const match = /^(?:\[(?<bracket>[^\]]+)\]|(?<plain>\S+))/u.exec(line);
+  const value = match?.groups?.bracket ?? match?.groups?.plain;
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? undefined : timestamp;
 }
 
 function ensureLogFile(path: string): void {

@@ -21,6 +21,7 @@ import {
 } from "./validation";
 import type {
   DaemonConfig,
+  DaemonHealthResult,
   DaemonInstallOptions,
   DaemonInstallResult,
   DaemonLifecycleResult,
@@ -76,16 +77,12 @@ export async function installDaemon(
   const existingNative = existing ? await manager.status(existing, paths) : undefined;
   let validation = undefined;
   if (install.validate !== false) {
-    const validationConfig =
-      existing && existingNative?.running && existing.serve.port === config.serve.port
-        ? await temporaryValidationConfig(config, options)
-        : config;
-    validation = options.validateCommand
-      ? await options.validateCommand(validationConfig)
-      : await validateDaemonCommand(
-          validationConfig,
-          options.fetch ? { fetch: options.fetch } : {},
-        );
+    validation = await validateInstallCommand({
+      config,
+      existing,
+      existingNativeRunning: existingNative?.running === true,
+      options,
+    });
     assertDaemonHealth(validation, "Daemon install validation");
   }
 
@@ -162,6 +159,39 @@ async function temporaryValidationConfig(
       inheritEnv: config.env.inherit,
     }),
   };
+}
+
+async function validateInstallCommand(input: {
+  config: DaemonConfig;
+  existing: DaemonConfig | undefined;
+  existingNativeRunning: boolean;
+  options: DaemonOperationOptions;
+}): Promise<DaemonHealthResult> {
+  const useTemporaryPort =
+    input.existing &&
+    input.existingNativeRunning &&
+    input.existing.serve.port === input.config.serve.port;
+  const attempts = useTemporaryPort ? 3 : 1;
+  let last: DaemonHealthResult | undefined;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const validationConfig = useTemporaryPort
+      ? await temporaryValidationConfig(input.config, input.options)
+      : input.config;
+    last = input.options.validateCommand
+      ? await input.options.validateCommand(validationConfig)
+      : await validateDaemonCommand(
+          validationConfig,
+          input.options.fetch ? { fetch: input.options.fetch } : {},
+        );
+    if (last.ok) return last;
+  }
+  return (
+    last ?? {
+      ok: false,
+      url: "",
+      error: "daemon install validation did not run",
+    }
+  );
 }
 
 export async function uninstallDaemon(
