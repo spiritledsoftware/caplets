@@ -129,9 +129,6 @@ function optionalWorkspace(
 }
 
 function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOptions {
-  if (auth.type === "basic") {
-    return { enabled: true, user: auth.user, password: auth.password };
-  }
   if (auth.type === "none") {
     return { enabled: false, user: auth.user };
   }

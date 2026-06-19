@@ -71,14 +71,14 @@ function recoveryCommandFor(code: ProjectBindingErrorCode): string | undefined {
     case "cloud_auth_expired":
     case "cloud_auth_revoked":
     case "workspace_selection_required":
-      return "caplets cloud auth login";
+      return "caplets remote login <cloud-url>";
     case "workspace_switch_required":
-      return "caplets cloud auth switch <workspace>";
+      return "caplets remote login <cloud-url> --workspace <workspace>";
     case "sync_size_limit_exceeded":
       return "Add exclusions to .capletsignore or upgrade the workspace plan.";
     case "remote_credentials_required":
     case "remote_auth_failed":
-      return "Set CAPLETS_REMOTE_URL and remote credentials.";
+      return "caplets remote login <url>";
     case "endpoint_unavailable":
     case "websocket_upgrade_required":
       return "caplets doctor";
@@ -94,7 +94,7 @@ function defaultProjectBindingMessage(code: ProjectBindingErrorCode): string {
     case "workspace_switch_required":
       return "The requested workspace differs from the saved Selected Workspace.";
     case "cloud_auth_required":
-      return "Hosted Project Binding requires Cloud Auth.";
+      return "Hosted Project Binding requires Remote Login.";
     case "endpoint_unavailable":
     case "websocket_upgrade_required":
       return "Project Binding endpoint is unavailable.";

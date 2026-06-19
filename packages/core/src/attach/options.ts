@@ -36,9 +36,6 @@ export async function resolveAttachServeOptions(
 
 function attachLocalServeOptions(raw: RawAttachServeOptions): RawServeOptions {
   const {
-    user: _user,
-    password: _password,
-    token: _token,
     remoteUrl: _remoteUrl,
     workspace: _workspace,
     fetch: _fetch,

@@ -41,7 +41,7 @@ export class RemoteControlClient {
     if (response.status === 401 || response.status === 403) {
       throw new CapletsError(
         "AUTH_FAILED",
-        "Caplets remote authentication failed. Check CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+        `Caplets remote authentication failed. Run caplets remote login ${safeBaseUrl(this.#baseUrl)}.`,
       );
     }
 

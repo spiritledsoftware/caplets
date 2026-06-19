@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import type { CapletsError } from "../src/errors";
 import {
@@ -84,16 +83,13 @@ describe("resolveRemoteMode", () => {
 });
 
 describe("resolveCapletsRemote", () => {
-  it("derives remote service URLs and Basic Auth from CAPLETS_REMOTE variables", () => {
-    const password = "remote-password";
-    const resolved = resolveCapletsRemote(
-      {},
-      {
-        CAPLETS_REMOTE_URL: "https://example.com/caplets/",
-        CAPLETS_REMOTE_USER: "env-user",
-        CAPLETS_REMOTE_PASSWORD: password,
-      },
-    );
+  it("derives remote service URLs without reading legacy credential env vars", () => {
+    const resolved = resolveCapletsRemote({}, {
+      CAPLETS_REMOTE_URL: "https://example.com/caplets/",
+      CAPLETS_REMOTE_USER: "env-user",
+      CAPLETS_REMOTE_PASSWORD: "remote-password",
+      CAPLETS_REMOTE_TOKEN: "remote-token",
+    } as Record<string, string>);
 
     expect(resolved).toMatchObject({
       baseUrl: new URL("https://example.com/caplets"),
@@ -104,12 +100,10 @@ describe("resolveCapletsRemote", () => {
       projectBindingWebSocketUrl: new URL(
         "wss://example.com/caplets/v1/attach/project-bindings/connect",
       ),
-      auth: { type: "basic", user: "env-user", password },
+      auth: { type: "none", user: "caplets" },
     });
     expect(resolved.workspace).toBeUndefined();
-    expect(new Headers(resolved.requestInit.headers).get("authorization")).toBe(
-      `Basic ${Buffer.from(`env-user:${password}`).toString("base64")}`,
-    );
+    expect(new Headers(resolved.requestInit.headers).get("authorization")).toBeNull();
   });
 
   it("derives attach URL from self-hosted remote base paths", () => {
@@ -118,7 +112,7 @@ describe("resolveCapletsRemote", () => {
     ).toEqual(new URL("https://host.example/base/v1/attach"));
   });
 
-  it("supports bearer token and workspace settings", () => {
+  it("supports issued bearer token and workspace settings from trusted callers", () => {
     const resolved = resolveCapletsRemote(
       { token: "input-token", workspace: "team" },
       { CAPLETS_REMOTE_URL: "https://example.com" },
@@ -129,15 +123,6 @@ describe("resolveCapletsRemote", () => {
     expect(new Headers(resolved.requestInit.headers).get("authorization")).toBe(
       "Bearer input-token",
     );
-  });
-
-  it("references CAPLETS_REMOTE_TOKEN or Basic Auth vars for self-hosted auth failures", () => {
-    expect(() =>
-      resolveCapletsRemote(
-        { user: "caplets" },
-        { CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets" },
-      ),
-    ).toThrow(/CAPLETS_REMOTE_PASSWORD/u);
   });
 });
 

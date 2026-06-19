@@ -19,9 +19,6 @@ import { remoteProfileKey } from "./profiles";
 export type RemoteSelectionInput = {
   mode?: string;
   remoteUrl?: string;
-  user?: string;
-  password?: string;
-  token?: string;
   workspace?: string;
   fetch?: typeof fetch;
   authDir?: string;
@@ -184,7 +181,7 @@ export async function resolveRemoteSelection(
   if (missingScope) {
     throw projectBindingError(
       "cloud_auth_required",
-      `Hosted Cloud attach requires Cloud Auth scope ${missingScope}. Run caplets cloud auth login again.`,
+      `Hosted Cloud attach requires Cloud Auth scope ${missingScope}. Run caplets remote login ${credentials.cloudUrl} again.`,
     );
   }
   const remote = resolveHostedCloudRemote(

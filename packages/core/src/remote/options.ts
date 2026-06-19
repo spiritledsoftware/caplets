@@ -1,17 +1,8 @@
-import { Buffer } from "node:buffer";
 import { CapletsError } from "../errors";
 import { appendBasePath, parseServerBaseUrl } from "../server/options";
 
 export type CapletsRemoteEnv = Partial<
-  Record<
-    | "CAPLETS_MODE"
-    | "CAPLETS_REMOTE_URL"
-    | "CAPLETS_REMOTE_USER"
-    | "CAPLETS_REMOTE_PASSWORD"
-    | "CAPLETS_REMOTE_TOKEN"
-    | "CAPLETS_REMOTE_WORKSPACE",
-    string
-  >
+  Record<"CAPLETS_MODE" | "CAPLETS_REMOTE_URL" | "CAPLETS_REMOTE_WORKSPACE", string>
 >;
 
 export type CapletsRemoteModeInput = {
@@ -23,17 +14,12 @@ export type CapletsRemoteMode = "local" | "remote" | "cloud";
 
 export type CapletsRemoteInput = {
   url?: string;
-  user?: string;
-  password?: string;
   token?: string;
   workspace?: string;
   fetch?: typeof fetch;
 };
 
-export type CapletsRemoteAuth =
-  | { type: "none"; user: string }
-  | { type: "basic"; user: string; password: string }
-  | { type: "bearer"; token: string };
+export type CapletsRemoteAuth = { type: "none"; user: string } | { type: "bearer"; token: string };
 
 export type ResolvedCapletsRemote = {
   baseUrl: URL;
@@ -98,45 +84,16 @@ export function resolveCapletsRemote(
   }
 
   const baseUrl = parseServerBaseUrl(rawUrl);
-  const token =
-    nonEmpty(input.token, "token") ?? nonEmpty(env.CAPLETS_REMOTE_TOKEN, "CAPLETS_REMOTE_TOKEN");
-  const userWasExplicit = input.user !== undefined || hasEnv(env.CAPLETS_REMOTE_USER);
-  const user =
-    nonEmpty(input.user, "user") ??
-    nonEmpty(env.CAPLETS_REMOTE_USER, "CAPLETS_REMOTE_USER") ??
-    DEFAULT_REMOTE_USER;
-  const password =
-    nonEmpty(input.password, "password") ??
-    nonEmpty(env.CAPLETS_REMOTE_PASSWORD, "CAPLETS_REMOTE_PASSWORD");
+  const token = nonEmpty(input.token, "token");
   const workspace =
     nonEmpty(input.workspace, "workspace") ??
     nonEmpty(env.CAPLETS_REMOTE_WORKSPACE, "CAPLETS_REMOTE_WORKSPACE");
 
-  if (token && password) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Use either CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD, not both.",
-    );
-  }
-
-  if (!token && userWasExplicit && password === undefined) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Remote Caplets Basic Auth requires a password; set CAPLETS_REMOTE_PASSWORD or password.",
-    );
-  }
-
   const auth: CapletsRemoteAuth = token
     ? { type: "bearer", token }
-    : password === undefined
-      ? { type: "none", user }
-      : { type: "basic", user, password };
+    : { type: "none", user: DEFAULT_REMOTE_USER };
   const requestInit: RequestInit =
-    auth.type === "bearer"
-      ? { headers: { Authorization: `Bearer ${auth.token}` } }
-      : auth.type === "basic"
-        ? { headers: { Authorization: basicAuthHeader(auth.user, auth.password) } }
-        : {};
+    auth.type === "bearer" ? { headers: { Authorization: `Bearer ${auth.token}` } } : {};
 
   return {
     baseUrl,
@@ -174,8 +131,7 @@ export function resolveHostedCloudRemote(
     );
   }
 
-  const token =
-    nonEmpty(input.token, "token") ?? nonEmpty(env.CAPLETS_REMOTE_TOKEN, "CAPLETS_REMOTE_TOKEN");
+  const token = nonEmpty(input.token, "token");
   const auth: CapletsRemoteAuth = token
     ? { type: "bearer", token }
     : { type: "none", user: DEFAULT_REMOTE_USER };
@@ -273,17 +229,9 @@ function parseCapletsMode(value: string): "auto" | CapletsRemoteMode {
   );
 }
 
-function basicAuthHeader(user: string, password: string): string {
-  return `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
-}
-
 function nonEmpty(value: string | undefined, label: string): string | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
   if (!trimmed) throw new CapletsError("REQUEST_INVALID", `${label} must not be empty`);
   return trimmed;
-}
-
-function hasEnv(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== "";
 }

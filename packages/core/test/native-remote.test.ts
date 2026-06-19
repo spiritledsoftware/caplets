@@ -1042,7 +1042,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("remote", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: "Caplets Cloud authentication failed; run caplets cloud auth login.",
+      message: "Caplets Cloud authentication failed; run caplets remote login <cloud-url>.",
     });
     await service.close();
   });
@@ -1303,7 +1303,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("alpha", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_REMOTE_TOKEN"),
+      message: "Remote Caplets authentication failed; run caplets remote login <url>.",
     } satisfies Partial<CapletsError>);
 
     await service.close();

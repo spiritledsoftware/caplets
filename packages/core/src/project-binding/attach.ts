@@ -11,9 +11,6 @@ import type { ProjectBindingWebSocketFactory } from "./transport";
 
 export type RawAttachOptions = {
   remoteUrl?: string;
-  user?: string;
-  password?: string;
-  token?: string;
   workspace?: string;
   json?: boolean;
   verbose?: boolean;
@@ -46,9 +43,6 @@ export async function resolveAttachOptionsForRun(
 ): Promise<ResolvedAttachOptions> {
   const remoteInput = {
     ...(raw.remoteUrl !== undefined ? { remoteUrl: raw.remoteUrl } : {}),
-    ...(raw.user !== undefined ? { user: raw.user } : {}),
-    ...(raw.password !== undefined ? { password: raw.password } : {}),
-    ...(raw.token !== undefined ? { token: raw.token } : {}),
     ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
     ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),

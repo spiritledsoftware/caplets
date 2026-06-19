@@ -27,6 +27,9 @@ describe("caplets attach CLI", () => {
     expect(out.join("")).toContain("--remote-url <url>");
     expect(out.join("")).toContain("--workspace <workspace>");
     expect(out.join("")).toContain("--once");
+    expect(out.join("")).not.toContain("--user");
+    expect(out.join("")).not.toContain("--password");
+    expect(out.join("")).not.toContain("--token");
   });
 
   it("runs attach as a stdio MCP server by default", async () => {
@@ -51,38 +54,13 @@ describe("caplets attach CLI", () => {
     });
   });
 
-  it("ignores legacy attach Basic Auth flags and uses the stored Remote Profile", async () => {
-    const served: unknown[] = [];
-    const authDir = tempAuthDir();
-    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets", "profile-token");
-    await runCli(
-      [
-        "attach",
-        "--remote-url",
-        "https://caplets.example.com/caplets",
-        "--user",
-        "alice",
-        "--password",
-        "secret",
-      ],
-      {
-        authDir,
+  it("rejects removed attach credential flags", async () => {
+    await expect(
+      runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--user", "alice"], {
         env: { CAPLETS_MODE: "remote" },
-        attachServe: async (options: unknown) => {
-          served.push(options);
-        },
-      } as never,
-    );
-
-    expect(served).toHaveLength(1);
-    expect(served[0]).toMatchObject({
-      transport: "stdio",
-      selection: {
-        remote: {
-          auth: { type: "bearer", token: "profile-token" },
-        },
-      },
-    });
+        attachServe: async () => undefined,
+      } as never),
+    ).rejects.toThrow(/unknown option '--user'/u);
   });
 
   it("passes local overlay config paths into attach serving", async () => {
@@ -346,7 +324,7 @@ describe("caplets attach CLI", () => {
     expect(JSON.parse(out.join(""))).toMatchObject({
       error: {
         code: "cloud_auth_required",
-        recoveryCommand: "caplets cloud auth login",
+        recoveryCommand: "caplets remote login <cloud-url>",
       },
     });
   });
@@ -373,7 +351,7 @@ describe("caplets attach CLI", () => {
     expect(JSON.parse(out[0] ?? "{}")).toMatchObject({
       error: {
         code: "workspace_switch_required",
-        recoveryCommand: "caplets cloud auth switch <workspace>",
+        recoveryCommand: "caplets remote login <cloud-url> --workspace <workspace>",
       },
     });
   });

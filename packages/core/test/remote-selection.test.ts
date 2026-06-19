@@ -219,7 +219,7 @@ describe("resolveRemoteSelection", () => {
       ),
     ).rejects.toMatchObject({
       projectBindingCode: "cloud_auth_required",
-      recoveryCommand: "caplets cloud auth login",
+      recoveryCommand: "caplets remote login <cloud-url>",
     });
   });
 

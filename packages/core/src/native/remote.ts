@@ -953,8 +953,8 @@ function remoteAuthError(kind: "self_hosted_remote" | "hosted_cloud"): CapletsEr
   return new CapletsError(
     "AUTH_FAILED",
     kind === "hosted_cloud"
-      ? "Caplets Cloud authentication failed; run caplets cloud auth login."
-      : "Remote Caplets authentication failed; check CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+      ? "Caplets Cloud authentication failed; run caplets remote login <cloud-url>."
+      : "Remote Caplets authentication failed; run caplets remote login <url>.",
   );
 }
 

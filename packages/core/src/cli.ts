@@ -899,9 +899,6 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
     .option("--remote-url <url>", "remote Caplets service base URL")
-    .option("--user <user>", "remote Basic Auth username")
-    .option("--password <password>", "remote Basic Auth password")
-    .option("--token <token>", "remote bearer token")
     .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
     .option(
       "--allow-unauthenticated-http",
@@ -919,9 +916,6 @@ export function createProgram(io: CliIO = {}): Command {
         host?: string;
         port?: string;
         path?: string;
-        user?: string;
-        password?: string;
-        token?: string;
         workspace?: string;
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;
