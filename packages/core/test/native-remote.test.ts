@@ -17,6 +17,7 @@ import {
   type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
@@ -1361,6 +1362,41 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("loads self-hosted native remote credentials from a saved Remote Profile", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+      },
+    });
+    const authorizationHeaders: Array<string | null> = [];
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (_input, init) => {
+          authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+    });
+
+    await service.reload();
+
+    expect(authorizationHeaders).toContain("Bearer profile-access-token");
+    expect(configuredCapletIds(service.listTools())).toContain("remote");
+    await service.close();
+  });
+
   it("does not create the remote service when local overlay construction fails", () => {
     const fixture = client();
     const remoteClientFactory = vi.fn(() => fixture.api);
@@ -2074,8 +2110,23 @@ describe("createNativeCapletsService remote mode", () => {
       headers.set("host", new URL(request.url).host);
       return app.fetch(new Request(request, { headers }));
     };
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-code-mode-auth-"));
+    dirs.push(authDir);
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387",
+      clientId: "client_123",
+      clientLabel: "Native Code Mode Test",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+      },
+    });
     const service = createNativeCapletsService({
       mode: "remote",
+      authDir,
       remote: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
       configPath: localConfig.configPath,
       projectConfigPath: localConfig.projectConfigPath,

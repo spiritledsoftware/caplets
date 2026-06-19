@@ -1,5 +1,6 @@
 import { CapletsError } from "../errors";
 import {
+  isCapletsCloudUrl,
   resolveCapletsRemote,
   resolveHostedCloudRemote,
   resolveRemoteMode,
@@ -80,7 +81,7 @@ export function resolveNativeCapletsServiceOptions(
   const remoteFetch = input.remote?.fetch;
   const server =
     mode.mode === "cloud"
-      ? resolveNativeHostedCloudRemote(
+      ? resolveNativeHostedCloudRemoteOrPlaceholder(
           input.remote?.url ?? env.CAPLETS_REMOTE_URL ?? "",
           optionalWorkspace(input, env).workspace,
           remoteFetch,
@@ -114,6 +115,18 @@ function resolveNativeHostedCloudRemote(
     ...(workspace ? { workspace } : {}),
     ...(fetch ? { fetch } : {}),
   });
+}
+
+function resolveNativeHostedCloudRemoteOrPlaceholder(
+  url: string,
+  workspace: string | undefined,
+  fetch: typeof globalThis.fetch | undefined,
+): ReturnType<typeof resolveHostedCloudRemote> {
+  if (!isCapletsCloudUrl(url)) {
+    throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
+  }
+  if (workspace) return resolveNativeHostedCloudRemote(url, workspace, fetch);
+  return resolveCapletsRemote({ url, ...(fetch ? { fetch } : {}) }, {});
 }
 
 function optionalWorkspace(

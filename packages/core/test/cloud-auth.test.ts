@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CloudAuthStore,
@@ -9,6 +9,7 @@ import {
   type CloudAuthCredentials,
 } from "../src/cloud-auth/store";
 import { runCli } from "../src/cli";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 
 const tempDirs: string[] = [];
 const credentials: CloudAuthCredentials = {
@@ -55,12 +56,14 @@ describe("caplets cloud auth CLI", () => {
     expect(JSON.parse(out.join(""))).toEqual({
       authenticated: false,
       status: "unauthenticated",
+      hostUrl: "https://cloud.caplets.dev/",
+      kind: "cloud",
     });
   });
 
   it("prints authenticated status and stored workspace as JSON", async () => {
     const path = tempAuthPath();
-    await new CloudAuthStore({ path }).save(credentials);
+    await saveRemoteProfile(path);
     const out: string[] = [];
 
     await runCli(["cloud", "auth", "status", "--json"], {
@@ -68,25 +71,25 @@ describe("caplets cloud auth CLI", () => {
       writeOut: (value) => out.push(value),
     });
 
-    expect(JSON.parse(out.join(""))).toEqual({
+    expect(JSON.parse(out.join(""))).toMatchObject({
       authenticated: true,
-      status: "authenticated",
-      cloudUrl: "https://cloud.caplets.dev",
+      kind: "cloud",
+      hostUrl: "https://cloud.caplets.dev/",
       workspaceId: "ws_123",
       workspaceSlug: "team",
+      selected: true,
+      clientLabel: "Test Device",
       expiresAt: "2099-06-02T12:00:00.000Z",
       scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
       tokenType: "Bearer",
-      credentialFamilyId: "family_123",
-      deviceName: "Test Device",
       createdAt: "2026-06-03T12:00:00.000Z",
-      lastRefreshAt: "2026-06-03T12:00:00.000Z",
+      updatedAt: "2026-06-03T12:00:00.000Z",
     });
   });
 
   it("lists the stored workspace as JSON", async () => {
     const path = tempAuthPath();
-    await new CloudAuthStore({ path }).save(credentials);
+    await saveRemoteProfile(path);
     const out: string[] = [];
 
     await runCli(["cloud", "auth", "workspaces", "--json"], {
@@ -99,21 +102,26 @@ describe("caplets cloud auth CLI", () => {
     });
   });
 
-  it("logs out by deleting stored Cloud Auth credentials", async () => {
+  it("logs out by deleting stored Remote Profile credentials", async () => {
     const path = tempAuthPath();
-    await new CloudAuthStore({ path }).save(credentials);
+    await saveRemoteProfile(path);
 
     await runCli(["cloud", "auth", "logout"], {
       env: { CAPLETS_CLOUD_AUTH_PATH: path },
       writeOut: () => undefined,
     });
 
-    expect(existsSync(path)).toBe(false);
+    const out: string[] = [];
+    await runCli(["cloud", "auth", "status", "--json"], {
+      env: { CAPLETS_CLOUD_AUTH_PATH: path },
+      writeOut: (value) => out.push(value),
+    });
+    expect(JSON.parse(out.join(""))).toMatchObject({ authenticated: false });
   });
 
   it("uploads local caplet-files to the selected Cloud workspace", async () => {
     const authPath = tempAuthPath();
-    await new CloudAuthStore({ path: authPath }).save(credentials);
+    await saveRemoteProfile(authPath);
     const root = tempDir("caplets-cloud-add-");
     mkdirSync(join(root, "search"), { recursive: true });
     writeFileSync(
@@ -223,6 +231,25 @@ describe("CloudAuthStore", () => {
 
 function tempAuthPath(): string {
   return join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+}
+
+async function saveRemoteProfile(cloudAuthPath: string): Promise<void> {
+  await new FileRemoteProfileStore({
+    root: join(dirname(cloudAuthPath), "remote-profiles"),
+  }).saveCloudProfile({
+    hostUrl: credentials.cloudUrl,
+    workspaceId: credentials.workspaceId,
+    ...(credentials.workspaceSlug ? { workspaceSlug: credentials.workspaceSlug } : {}),
+    clientLabel: credentials.deviceName,
+    credentials: {
+      accessToken: credentials.accessToken,
+      refreshToken: credentials.refreshToken,
+      expiresAt: credentials.expiresAt,
+      scope: credentials.scope,
+      tokenType: credentials.tokenType,
+    },
+    now: new Date(credentials.createdAt ?? "2026-06-03T12:00:00.000Z"),
+  });
 }
 
 function tempDir(prefix: string): string {

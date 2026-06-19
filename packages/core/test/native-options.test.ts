@@ -40,15 +40,20 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
-  it("rejects cloud mode without a workspace", () => {
-    expect(() =>
+  it("allows cloud mode without a workspace because Remote Profiles select it", () => {
+    expect(
       resolveNativeCapletsServiceOptions(
         {},
         {
           CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
         },
       ),
-    ).toThrow(/workspace/u);
+    ).toMatchObject({
+      mode: "cloud",
+      remote: {
+        url: new URL("https://cloud.caplets.dev/v1/attach"),
+      },
+    });
   });
 
   it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {

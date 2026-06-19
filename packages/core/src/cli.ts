@@ -2,6 +2,7 @@ import { Command, CommanderError } from "commander";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
 import { version as packageJsonVersion } from "../package.json";
 import {
   addCliCaplet,
@@ -36,11 +37,7 @@ import {
 } from "./cli/completion";
 import { CloudAuthClient } from "./cloud-auth/client";
 import { openBrowserUrl } from "./cloud-auth/open-url";
-import {
-  CloudAuthStore,
-  redactedCloudAuthStatus,
-  type CloudAuthCredentials,
-} from "./cloud-auth/store";
+import { CloudAuthStore, type CloudAuthCredentials } from "./cloud-auth/store";
 import {
   formatCapletList,
   formatConfigPaths,
@@ -79,13 +76,14 @@ import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
 import { FileRemoteProfileStore } from "./remote/profile-store";
 import { RemoteServerCredentialStore } from "./remote/server-credential-store";
+import { resolveRemoteSelection } from "./remote/selection";
 import {
   isCapletsCloudUrl,
   normalizeRemoteProfileHostUrl,
   resolveCapletsRemote,
   resolveRemoteMode,
 } from "./remote/options";
-import type { RemoteProfileStatus } from "./remote/profiles";
+import type { RemoteProfileCredential, RemoteProfileStatus } from "./remote/profiles";
 import {
   daemonLogs,
   daemonStatus,
@@ -237,23 +235,18 @@ function collectValues(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
-function cloudAuthStore(
+function remoteProfileStore(
+  authDir: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-): CloudAuthStore {
-  return new CloudAuthStore({ env });
-}
-
-function cloudAuthStatus(credentials: CloudAuthCredentials | undefined): Record<string, unknown> {
-  return redactedCloudAuthStatus(credentials);
-}
-
-function remoteProfileStore(authDir: string | undefined): FileRemoteProfileStore {
-  const root = join(authDir ?? DEFAULT_AUTH_DIR, "remote-profiles");
+): FileRemoteProfileStore {
+  const authRoot =
+    authDir ?? (env.CAPLETS_CLOUD_AUTH_PATH ? dirname(env.CAPLETS_CLOUD_AUTH_PATH) : undefined);
+  const root = join(authRoot ?? DEFAULT_AUTH_DIR, "remote-profiles");
   return new FileRemoteProfileStore({
     root,
-    legacyCloudAuthStore: new CloudAuthStore({
-      path: join(authDir ?? DEFAULT_AUTH_DIR, "cloud-auth.json"),
-    }),
+    legacyCloudAuthStore: new CloudAuthStore(
+      authDir ? { path: join(authDir, "cloud-auth.json") } : { env },
+    ),
   });
 }
 
@@ -390,17 +383,39 @@ async function pairingCodeFromOptions(
     const code = value.trim();
     if (code) return code;
   }
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  const output = new HiddenPromptOutput(process.stdout);
+  const readline = createInterface({ input: process.stdin, output });
   try {
     const code = (await readline.question("Pairing Code: ")).trim();
     if (code) return code;
   } finally {
     readline.close();
+    process.stdout.write("\n");
   }
   throw new CapletsError(
     "REQUEST_INVALID",
     "Pairing Code is required for self-hosted Remote Login.",
   );
+}
+
+class HiddenPromptOutput extends Writable {
+  private wrotePrompt = false;
+
+  constructor(private readonly output: NodeJS.WriteStream) {
+    super();
+  }
+
+  override _write(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    if (!this.wrotePrompt) {
+      this.output.write(chunk);
+      this.wrotePrompt = true;
+    }
+    callback();
+  }
 }
 
 async function readAllStdin(): Promise<string> {
@@ -468,6 +483,48 @@ function writeRemoteStatus(
     return;
   }
   writeOut(`Not authenticated to ${status.hostUrl}.\n`);
+}
+
+async function loadCloudRemoteProfileCredentials(
+  store: FileRemoteProfileStore,
+  input: { cloudUrl: string; workspace?: string | undefined },
+): Promise<{ status: RemoteProfileStatus; credential: RemoteProfileCredential }> {
+  const status = await store.getCloudProfileStatus({
+    hostUrl: input.cloudUrl,
+    ...(input.workspace ? { workspace: input.workspace } : {}),
+  });
+  const credential = status ? await store.credentials.load(status.key) : undefined;
+  if (!status || !credential?.accessToken) {
+    throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
+  }
+  return { status, credential };
+}
+
+function cloudCredentialsFromRemoteProfile(
+  status: RemoteProfileStatus,
+  credential: RemoteProfileCredential,
+): CloudAuthCredentials {
+  return {
+    version: 2,
+    cloudUrl: status.hostUrl,
+    workspaceId: status.workspaceId ?? "",
+    ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
+    accessToken: credential.accessToken ?? "",
+    refreshToken: credential.refreshToken ?? "",
+    expiresAt: credential.expiresAt ?? new Date(0).toISOString(),
+    scope: credential.scope,
+    tokenType: credential.tokenType,
+    deviceName: status.clientLabel,
+    createdAt: status.createdAt,
+    lastRefreshAt: status.updatedAt,
+  };
+}
+
+function defaultCloudUrl(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  cloudUrl?: string,
+): string {
+  return cloudUrl ?? env.CAPLETS_CLOUD_URL ?? "https://cloud.caplets.dev";
 }
 
 function numberEnv(value: string | undefined, fallback: number): number {
@@ -1018,7 +1075,7 @@ export function createProgram(io: CliIO = {}): Command {
           json?: boolean;
         },
       ) => {
-        const store = remoteProfileStore(io.authDir);
+        const store = remoteProfileStore(io.authDir, env);
         if (isCapletsCloudUrl(url)) {
           const status = await loginCloudRemoteProfile(url, options, store, {
             env,
@@ -1076,7 +1133,7 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut("Pass a Caplets host URL to inspect Remote Login status.\n");
         return;
       }
-      const store = remoteProfileStore(io.authDir);
+      const store = remoteProfileStore(io.authDir, env);
       const normalizedHostUrl = normalizeRemoteProfileHostUrl(url);
       const status = isCapletsCloudUrl(url)
         ? await store.getCloudProfileStatus({ hostUrl: url, workspace: options.workspace })
@@ -1100,7 +1157,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--workspace <workspace>", "Cloud workspace ID or slug")
     .option("--json", "print JSON output")
     .action(async (url: string, options: { workspace?: string; json?: boolean }) => {
-      const store = remoteProfileStore(io.authDir);
+      const store = remoteProfileStore(io.authDir, env);
       const removed = isCapletsCloudUrl(url)
         ? await store.logoutCloudProfile({ hostUrl: url, workspace: options.workspace })
         : await store.logoutSelfHostedProfile({ hostUrl: url });
@@ -1203,93 +1260,95 @@ export function createProgram(io: CliIO = {}): Command {
         open?: boolean;
         json?: boolean;
       }) => {
-        const cloudUrl = options.cloudUrl ?? env.CAPLETS_CLOUD_URL ?? "https://cloud.caplets.dev";
-        const client = new CloudAuthClient({ cloudUrl, ...(io.fetch ? { fetch: io.fetch } : {}) });
-        const started = await client.startLogin({
-          requestedWorkspace: options.workspace,
-          deviceName: options.deviceName ?? env.CAPLETS_DEVICE_NAME ?? "Caplets CLI",
-        });
-        if (options.open !== false) await openBrowserUrl(started.loginUrl);
-        if (!options.json) {
-          writeOut(`Open ${started.loginUrl}\n`);
-          writeOut(`Enter code ${started.userCode} if prompted.\n`);
-        }
-
-        const completed = await waitForCloudLogin(client, started.loginId, env);
-        if (completed.status !== "completed") {
-          throw new CapletsError("AUTH_FAILED", `Cloud Auth login ${completed.status}.`);
-        }
-        const exchanged = await client.exchangeToken({
-          loginId: started.loginId,
-          oneTimeCode: completed.oneTimeCode,
-        });
-        const now = new Date().toISOString();
-        const credentials: CloudAuthCredentials = {
-          version: 2,
-          cloudUrl: exchanged.cloudUrl,
-          workspaceId: exchanged.workspaceId,
-          ...(exchanged.workspaceSlug ? { workspaceSlug: exchanged.workspaceSlug } : {}),
-          accessToken: exchanged.accessToken,
-          refreshToken: exchanged.refreshToken ?? "",
-          expiresAt: exchanged.expiresAt,
-          scope: exchanged.scope,
-          tokenType: exchanged.tokenType,
-          credentialFamilyId: exchanged.credentialFamilyId,
-          deviceName: exchanged.deviceName ?? options.deviceName ?? "Caplets CLI",
-          createdAt: now,
-          lastRefreshAt: now,
-        };
-        await cloudAuthStore(env).save(credentials);
-        const status = cloudAuthStatus(credentials);
-        if (options.json) {
-          writeOut(`${JSON.stringify(status, null, 2)}\n`);
-          return;
-        }
-        writeOut(
-          `Authenticated to ${credentials.cloudUrl} as workspace ${credentials.workspaceSlug ?? credentials.workspaceId}.\n`,
+        const status = await loginCloudRemoteProfile(
+          defaultCloudUrl(env, options.cloudUrl),
+          options,
+          remoteProfileStore(io.authDir, env),
+          {
+            env,
+            ...(io.fetch ? { fetch: io.fetch } : {}),
+            writeOut,
+          },
         );
+        writeRemoteStatus(status, options.json === true, writeOut);
       },
     );
   cloudAuth
     .command("status")
     .description("Show hosted Caplets Cloud authentication status.")
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
+    .option("--workspace <workspace>", "workspace ID or slug")
     .option("--json", "print JSON output")
-    .action(async (options: { json?: boolean }) => {
-      const credentials = await cloudAuthStore(env).load();
-      if (options.json) {
-        writeOut(`${JSON.stringify(cloudAuthStatus(credentials), null, 2)}\n`);
-        return;
-      }
-      writeOut(
-        credentials
-          ? `Authenticated to ${credentials.cloudUrl} as workspace ${credentials.workspaceSlug ?? credentials.workspaceId}.\n`
-          : "Not authenticated to hosted Caplets Cloud.\n",
+    .action(async (options: { cloudUrl?: string; workspace?: string; json?: boolean }) => {
+      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
+      const status = await remoteProfileStore(io.authDir, env).getCloudProfileStatus({
+        hostUrl: cloudUrl,
+        ...(options.workspace ? { workspace: options.workspace } : {}),
+      });
+      writeRemoteStatus(
+        status ?? {
+          authenticated: false,
+          status: "unauthenticated",
+          hostUrl: normalizeRemoteProfileHostUrl(cloudUrl),
+          kind: "cloud",
+        },
+        options.json === true,
+        writeOut,
       );
     });
   cloudAuth
     .command("logout")
     .description("Log out of hosted Caplets Cloud.")
-    .action(async () => {
-      const store = cloudAuthStore(env);
-      const credentials = await store.load();
-      if (credentials?.refreshToken) {
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
+    .option("--workspace <workspace>", "workspace ID or slug")
+    .option("--json", "print JSON output")
+    .action(async (options: { cloudUrl?: string; workspace?: string; json?: boolean }) => {
+      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
+      const store = remoteProfileStore(io.authDir, env);
+      const status = await store.getCloudProfileStatus({
+        hostUrl: cloudUrl,
+        ...(options.workspace ? { workspace: options.workspace } : {}),
+      });
+      const credential = status ? await store.credentials.load(status.key) : undefined;
+      if (credential?.refreshToken) {
         await new CloudAuthClient({
-          cloudUrl: credentials.cloudUrl,
+          cloudUrl,
           ...(io.fetch ? { fetch: io.fetch } : {}),
         })
-          .logout(credentials.refreshToken)
+          .logout(credential.refreshToken)
           .catch(() => undefined);
       }
-      await store.clear();
-      writeOut("Logged out of hosted Caplets Cloud.\n");
+      const removed = await store.logoutCloudProfile({
+        hostUrl: cloudUrl,
+        ...(options.workspace ? { workspace: options.workspace } : {}),
+      });
+      if (options.json) {
+        writeOut(
+          `${JSON.stringify({ loggedOut: removed, hostUrl: normalizeRemoteProfileHostUrl(cloudUrl) }, null, 2)}\n`,
+        );
+        return;
+      }
+      writeOut(
+        removed
+          ? `Logged out of ${normalizeRemoteProfileHostUrl(cloudUrl)}.\n`
+          : `No Remote Login profile found for ${normalizeRemoteProfileHostUrl(cloudUrl)}.\n`,
+      );
     });
   cloudAuth
     .command("workspaces")
     .description("List hosted Caplets Cloud workspaces.")
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
     .option("--json", "print JSON output")
-    .action(async (options: { json?: boolean }) => {
-      const credentials = await cloudAuthStore(env).load();
-      const workspaces = credentials?.accessToken
+    .action(async (options: { cloudUrl?: string; json?: boolean }) => {
+      const store = remoteProfileStore(io.authDir, env);
+      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
+      const loaded = await store.getCloudProfileStatus({ hostUrl: cloudUrl });
+      const credential = loaded ? await store.credentials.load(loaded.key) : undefined;
+      const credentials =
+        loaded && credential?.accessToken
+          ? cloudCredentialsFromRemoteProfile(loaded, credential)
+          : undefined;
+      const workspaces = credentials
         ? (
             await new CloudAuthClient({
               cloudUrl: credentials.cloudUrl,
@@ -1329,13 +1388,13 @@ export function createProgram(io: CliIO = {}): Command {
     .command("switch")
     .description("Switch the hosted Caplets Cloud Selected Workspace.")
     .argument("<workspace>", "workspace ID or slug")
+    .option("--cloud-url <url>", "hosted Caplets Cloud URL")
     .option("--json", "print JSON output")
-    .action(async (workspace: string, options: { json?: boolean }) => {
-      const store = cloudAuthStore(env);
-      const credentials = await store.load();
-      if (!credentials) {
-        throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
-      }
+    .action(async (workspace: string, options: { cloudUrl?: string; json?: boolean }) => {
+      const store = remoteProfileStore(io.authDir, env);
+      const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
+      const loaded = await loadCloudRemoteProfileCredentials(store, { cloudUrl });
+      const credentials = cloudCredentialsFromRemoteProfile(loaded.status, loaded.credential);
       const client = new CloudAuthClient({
         cloudUrl: credentials.cloudUrl,
         ...(io.fetch ? { fetch: io.fetch } : {}),
@@ -1346,26 +1405,20 @@ export function createProgram(io: CliIO = {}): Command {
         workspace,
         deviceName: credentials.deviceName,
       });
-      const now = new Date().toISOString();
-      const next: CloudAuthCredentials = {
-        ...credentials,
+      const status = await store.saveCloudProfile({
+        hostUrl: credentials.cloudUrl,
         workspaceId: switched.workspaceId,
-        workspaceSlug: switched.workspaceSlug,
-        accessToken: switched.accessToken,
-        refreshToken: switched.refreshToken ?? credentials.refreshToken,
-        expiresAt: switched.expiresAt,
-        scope: switched.scope,
-        tokenType: switched.tokenType,
-        credentialFamilyId: switched.credentialFamilyId,
-        lastRefreshAt: now,
-        selectedWorkspaceSwitchedAt: now,
-      };
-      await store.save(next);
-      if (options.json) {
-        writeOut(`${JSON.stringify(cloudAuthStatus(next), null, 2)}\n`);
-        return;
-      }
-      writeOut(`Selected workspace ${next.workspaceSlug ?? next.workspaceId}.\n`);
+        ...(switched.workspaceSlug ? { workspaceSlug: switched.workspaceSlug } : {}),
+        clientLabel: credentials.deviceName,
+        credentials: {
+          accessToken: switched.accessToken,
+          refreshToken: switched.refreshToken ?? credentials.refreshToken,
+          expiresAt: switched.expiresAt,
+          scope: switched.scope,
+          tokenType: switched.tokenType,
+        },
+      });
+      writeRemoteStatus(status, options.json === true, writeOut);
     });
 
   cloud
@@ -1380,18 +1433,27 @@ export function createProgram(io: CliIO = {}): Command {
         pathInput: string,
         options: { cloudUrl?: string; workspace?: string; json?: boolean },
       ) => {
-        const credentials = await cloudAuthStore(env).load();
-        if (!credentials) {
-          throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
+        const cloudUrl = defaultCloudUrl(env, options.cloudUrl);
+        const selection = await resolveRemoteSelection(
+          {
+            mode: "cloud",
+            remoteUrl: cloudUrl,
+            ...(options.workspace ? { workspace: options.workspace } : {}),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+            ...(io.fetch ? { fetch: io.fetch } : {}),
+          },
+          { ...env, CAPLETS_MODE: "cloud", CAPLETS_REMOTE_URL: cloudUrl },
+        );
+        if (selection.kind !== "hosted_cloud") {
+          throw new CapletsError("REQUEST_INVALID", "caplets cloud add requires Caplets Cloud.");
         }
-        const cloudUrl = options.cloudUrl ?? credentials.cloudUrl;
-        const workspace = options.workspace ?? credentials.workspaceSlug ?? credentials.workspaceId;
+        const workspace = selection.selectedWorkspace;
         const bundle = buildCloudCapletBundle(pathInput);
         const result = await new CloudAuthClient({
           cloudUrl,
           ...(io.fetch ? { fetch: io.fetch } : {}),
         }).addCaplets({
-          accessToken: credentials.accessToken,
+          accessToken: selection.credentials.accessToken,
           workspace,
           bundle,
         });

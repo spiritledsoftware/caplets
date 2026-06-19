@@ -99,25 +99,28 @@ export function createNativeCapletsService(
 ): NativeCapletsService {
   const resolved = resolveNativeCapletsServiceOptions(options);
   if (resolved.mode === "remote") {
-    const local = createLocalOverlayService(options);
-    try {
-      return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
-    } catch (error) {
-      if (options.mode !== "remote") {
-        warnRemoteProjectBindingFallback(options);
-        return local;
+    if (options.remoteClientFactory) {
+      const local = createLocalOverlayService(options);
+      try {
+        return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
+      } catch (error) {
+        if (options.mode !== "remote") {
+          warnRemoteProjectBindingFallback(options);
+          return local;
+        }
+        void local.close().catch((closeError) => {
+          writeErr(
+            options,
+            `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
+          );
+        });
+        throw error;
       }
-      void local.close().catch((closeError) => {
-        writeErr(
-          options,
-          `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
-        );
-      });
-      throw error;
     }
+    return new ProfileBackedNativeCapletsService(options, resolved.remote, "self_hosted_remote");
   }
   if (resolved.mode === "cloud") {
-    return new CloudNativeCapletsService(options, resolved.remote);
+    return new ProfileBackedNativeCapletsService(options, resolved.remote, "hosted_cloud");
   }
   return new DefaultNativeCapletsService(options);
 }
@@ -632,7 +635,7 @@ function createCompositeRemoteService(
   return new CompositeNativeCapletsService(remote, local, options, presence);
 }
 
-class CloudNativeCapletsService implements NativeCapletsService {
+class ProfileBackedNativeCapletsService implements NativeCapletsService {
   private readonly local: NativeCapletsService;
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
   private delegate: NativeCapletsService | undefined;
@@ -642,6 +645,7 @@ class CloudNativeCapletsService implements NativeCapletsService {
   constructor(
     private readonly options: NativeCapletsServiceOptions,
     private readonly baseRemote: ResolvedNativeRemoteOptions,
+    private readonly authKind: "self_hosted_remote" | "hosted_cloud",
   ) {
     this.local = createLocalOverlayService(options);
   }
@@ -664,51 +668,63 @@ class CloudNativeCapletsService implements NativeCapletsService {
       try {
         const cloudFetch = this.options.remote?.fetch;
         const remoteUrl =
-          this.options.remote?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
+          this.options.remote?.url ??
+          process.env.CAPLETS_REMOTE_URL ??
+          this.baseRemote.url.toString().replace(/\/v1(?:\/ws\/[^/]+)?\/attach$/u, "");
         const selection = await resolveRemoteSelection(
           {
-            mode: "cloud",
+            mode: this.authKind === "hosted_cloud" ? "cloud" : "remote",
             remoteUrl,
+            ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
             ...(cloudFetch ? { fetch: cloudFetch } : {}),
           },
           {
             ...process.env,
-            CAPLETS_MODE: "cloud",
+            CAPLETS_MODE: this.authKind === "hosted_cloud" ? "cloud" : "remote",
             CAPLETS_REMOTE_URL: remoteUrl,
           },
         );
-        if (selection.kind !== "hosted_cloud") {
+        if (this.authKind === "hosted_cloud" && selection.kind !== "hosted_cloud") {
           throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
         }
-        const cloudPresence = {
-          url: selection.cloudPresence.url,
-          accessToken: selection.cloudPresence.accessToken,
-          workspaceId: selection.cloudPresence.workspaceId,
-          ...(this.options.remote?.cloud?.projectRoot
-            ? { projectRoot: this.options.remote.cloud.projectRoot }
-            : {}),
-          heartbeatIntervalMs:
-            this.options.remote?.cloud?.heartbeatIntervalMs ??
-            this.baseRemote.cloud?.heartbeatIntervalMs ??
-            30_000,
-        } satisfies ResolvedNativeCloudPresenceOptions;
+        if (this.authKind === "self_hosted_remote" && selection.kind !== "self_hosted_remote") {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "CAPLETS_MODE=remote requires self-hosted Caplets.",
+          );
+        }
+        const cloudPresence =
+          selection.kind === "hosted_cloud"
+            ? ({
+                url: selection.cloudPresence.url,
+                accessToken: selection.cloudPresence.accessToken,
+                workspaceId: selection.cloudPresence.workspaceId,
+                ...(this.options.remote?.cloud?.projectRoot
+                  ? { projectRoot: this.options.remote.cloud.projectRoot }
+                  : {}),
+                heartbeatIntervalMs:
+                  this.options.remote?.cloud?.heartbeatIntervalMs ??
+                  this.baseRemote.cloud?.heartbeatIntervalMs ??
+                  30_000,
+              } satisfies ResolvedNativeCloudPresenceOptions)
+            : undefined;
         const remoteOptions = {
           ...this.baseRemote,
           url: selection.remote.attachUrl,
           auth: nativeAuthFromRemoteAuth(selection.remote.auth),
           requestInit: selection.remote.requestInit,
           ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
-          cloud: cloudPresence,
+          ...(cloudPresence ? { cloud: cloudPresence } : {}),
         } satisfies ResolvedNativeRemoteOptions;
         this.delegate = createCompositeRemoteService(
           remoteOptions,
           this.local,
           this.options,
-          "hosted_cloud",
+          this.authKind,
         );
         this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
       } catch (error) {
-        if (this.options.mode === "cloud") throw error;
+        if (this.options.mode === "cloud" || this.options.mode === "remote") throw error;
         warnRemoteProjectBindingFallback(this.options);
         return await this.local.reload();
       }
