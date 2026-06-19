@@ -25,11 +25,12 @@ import { hostedCloudWorkspaceFromRemoteUrl, normalizeRemoteProfileHostUrl } from
 
 type StoredRemoteProfile = {
   version: 1;
-  kind: "cloud";
+  kind: "cloud" | "self-hosted";
   key: string;
   hostUrl: string;
-  workspaceId: string;
+  workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
+  clientId?: string | undefined;
   clientLabel?: string | undefined;
   createdAt: string;
   updatedAt: string;
@@ -57,6 +58,18 @@ export type CloudProfileLookup = {
   workspace?: string | undefined;
 };
 
+export type SaveSelfHostedProfileInput = {
+  hostUrl: string;
+  clientId: string;
+  clientLabel?: string | undefined;
+  credentials: RemoteProfileCredential;
+  now?: Date | undefined;
+};
+
+export type SelfHostedProfileLookup = {
+  hostUrl: string;
+};
+
 export type RemoteProfileStoreOptions = {
   root?: string | undefined;
   credentials?: FileRemoteCredentialStore | undefined;
@@ -74,6 +87,49 @@ export class FileRemoteProfileStore {
       options.credentials ??
       new FileRemoteCredentialStore({ root: join(this.root, "credentials") });
     this.legacyCloudAuthStore = options.legacyCloudAuthStore;
+  }
+
+  async saveSelfHostedProfile(input: SaveSelfHostedProfileInput): Promise<RemoteProfileStatus> {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
+    const now = (input.now ?? new Date()).toISOString();
+    const existing = this.readProfile(key);
+    const profile: StoredRemoteProfile = {
+      version: 1,
+      kind: "self-hosted",
+      key,
+      hostUrl,
+      clientId: input.clientId,
+      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await this.credentials.save(key, input.credentials);
+    this.writeJson(this.profilePath(key), profile);
+    return await this.statusFor(profile, input.credentials, false);
+  }
+
+  async getSelfHostedProfileStatus(
+    input: SelfHostedProfileLookup,
+  ): Promise<RemoteProfileStatus | undefined> {
+    const key = remoteProfileKey({
+      kind: "self-hosted",
+      hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    });
+    return this.statusByKey(key, false);
+  }
+
+  async logoutSelfHostedProfile(input: SelfHostedProfileLookup): Promise<boolean> {
+    const key = remoteProfileKey({
+      kind: "self-hosted",
+      hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    });
+    const profile = this.readProfile(key);
+    if (!profile) return false;
+    await this.credentials.delete(key);
+    rmSync(this.profilePath(key), { force: true });
+    return true;
   }
 
   async saveCloudProfile(input: SaveCloudProfileInput): Promise<RemoteProfileStatus> {
@@ -160,8 +216,8 @@ export class FileRemoteProfileStore {
       );
     }
     if (!key) return false;
-    rmSync(this.profilePath(key), { force: true });
     await this.credentials.delete(key);
+    rmSync(this.profilePath(key), { force: true });
     if (selected?.profileKey === key) rmSync(this.selectedWorkspacePath(hostUrl), { force: true });
     return true;
   }
@@ -221,11 +277,12 @@ export class FileRemoteProfileStore {
   ): Promise<RemoteProfileStatus> {
     const build = (loadedCredential: RemoteProfileCredential | undefined): RemoteProfileStatus =>
       remoteProfileStatus({
-        kind: "cloud",
+        kind: profile.kind,
         key: profile.key,
         hostUrl: profile.hostUrl,
         workspaceId: profile.workspaceId,
         workspaceSlug: profile.workspaceSlug,
+        clientId: profile.clientId,
         clientLabel: profile.clientLabel,
         createdAt: profile.createdAt,
         updatedAt: profile.updatedAt,
@@ -252,13 +309,13 @@ export class FileRemoteProfileStore {
 
   private readProfileFile(path: string): StoredRemoteProfile | undefined {
     if (!existsSync(path)) return undefined;
-    return JSON.parse(readFileSync(path, "utf8")) as StoredRemoteProfile;
+    return parseStoredRemoteProfile(JSON.parse(readFileSync(path, "utf8")));
   }
 
   private readSelectedWorkspace(hostUrl: string): SelectedCloudWorkspace | undefined {
     const path = this.selectedWorkspacePath(hostUrl);
     if (!existsSync(path)) return undefined;
-    return JSON.parse(readFileSync(path, "utf8")) as SelectedCloudWorkspace;
+    return parseSelectedCloudWorkspace(JSON.parse(readFileSync(path, "utf8")), hostUrl);
   }
 
   private profilePath(key: string): string {
@@ -317,4 +374,59 @@ function legacyCredential(credentials: CloudAuthCredentials): RemoteProfileCrede
     ...(credentials.scope ? { scope: credentials.scope } : {}),
     ...(credentials.tokenType ? { tokenType: credentials.tokenType } : {}),
   };
+}
+
+function parseStoredRemoteProfile(value: unknown): StoredRemoteProfile | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.version !== 1) return undefined;
+  if (value.kind !== "cloud" && value.kind !== "self-hosted") return undefined;
+  if (
+    typeof value.key !== "string" ||
+    typeof value.hostUrl !== "string" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    return undefined;
+  }
+  if (value.kind === "cloud" && typeof value.workspaceId !== "string") return undefined;
+  if (value.kind === "self-hosted" && typeof value.clientId !== "string") return undefined;
+  return {
+    version: 1,
+    kind: value.kind,
+    key: value.key,
+    hostUrl: value.hostUrl,
+    ...(typeof value.workspaceId === "string" ? { workspaceId: value.workspaceId } : {}),
+    ...(typeof value.workspaceSlug === "string" ? { workspaceSlug: value.workspaceSlug } : {}),
+    ...(typeof value.clientId === "string" ? { clientId: value.clientId } : {}),
+    ...(typeof value.clientLabel === "string" ? { clientLabel: value.clientLabel } : {}),
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+  };
+}
+
+function parseSelectedCloudWorkspace(
+  value: unknown,
+  expectedHostUrl: string,
+): SelectedCloudWorkspace | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    value.version !== 1 ||
+    value.hostUrl !== expectedHostUrl ||
+    typeof value.workspace !== "string" ||
+    typeof value.profileKey !== "string" ||
+    typeof value.selectedAt !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    hostUrl: value.hostUrl,
+    workspace: value.workspace,
+    profileKey: value.profileKey,
+    selectedAt: value.selectedAt,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

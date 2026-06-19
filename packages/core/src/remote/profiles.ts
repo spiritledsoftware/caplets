@@ -25,6 +25,7 @@ export type RemoteProfileStatusInput = {
   key?: string | undefined;
   workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
+  clientId?: string | undefined;
   selected?: boolean | undefined;
   clientLabel?: string | undefined;
   createdAt?: string | undefined;
@@ -39,6 +40,7 @@ export type RemoteProfileStatus = {
   hostUrl: string;
   workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
+  clientId?: string | undefined;
   selected: boolean;
   clientLabel?: string | undefined;
   createdAt?: string | undefined;
@@ -84,6 +86,7 @@ export function remoteProfileStatus(input: RemoteProfileStatusInput): RemoteProf
     hostUrl,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
+    ...(input.clientId ? { clientId: input.clientId } : {}),
     selected: Boolean(input.selected),
     ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
     ...(input.createdAt ? { createdAt: input.createdAt } : {}),

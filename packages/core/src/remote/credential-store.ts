@@ -29,7 +29,7 @@ export class FileRemoteCredentialStore {
   async load(key: string): Promise<RemoteProfileCredential | undefined> {
     const path = this.pathForKey(key);
     if (!existsSync(path)) return undefined;
-    return JSON.parse(readFileSync(path, "utf8")) as RemoteProfileCredential;
+    return parseRemoteProfileCredential(JSON.parse(readFileSync(path, "utf8")));
   }
 
   async save(key: string, credential: RemoteProfileCredential): Promise<void> {
@@ -56,4 +56,23 @@ export class FileRemoteCredentialStore {
     rmSync(path, { force: true });
     return true;
   }
+}
+
+function parseRemoteProfileCredential(value: unknown): RemoteProfileCredential | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    ...(typeof value.accessToken === "string" ? { accessToken: value.accessToken } : {}),
+    ...(typeof value.refreshToken === "string" ? { refreshToken: value.refreshToken } : {}),
+    ...(typeof value.tokenType === "string" ? { tokenType: value.tokenType } : {}),
+    ...(typeof value.expiresAt === "string" ? { expiresAt: value.expiresAt } : {}),
+    ...(Array.isArray(value.scope)
+      ? { scope: value.scope.filter((entry): entry is string => typeof entry === "string") }
+      : {}),
+    ...(typeof value.clientSecret === "string" ? { clientSecret: value.clientSecret } : {}),
+    ...(typeof value.pairingCode === "string" ? { pairingCode: value.pairingCode } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

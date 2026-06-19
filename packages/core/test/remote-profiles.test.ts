@@ -29,6 +29,83 @@ afterEach(() => {
 });
 
 describe("Remote Profile storage", () => {
+  it("saves a self-hosted profile with redacted status and credential storage", async () => {
+    const store = tempRemoteProfileStore();
+
+    const status = await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets/",
+      clientId: "rcli_123",
+      clientLabel: "Ian's MacBook",
+      credentials: {
+        accessToken: "self_hosted_access_secret",
+        refreshToken: "self_hosted_refresh_secret",
+        tokenType: "Bearer",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+      },
+      now: new Date("2026-06-19T10:00:00.000Z"),
+    });
+
+    expect(status).toEqual({
+      authenticated: true,
+      kind: "self-hosted",
+      key: remoteProfileKey({
+        kind: "self-hosted",
+        hostUrl: "https://caplets.example.com/caplets",
+      }),
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      selected: false,
+      clientLabel: "Ian's MacBook",
+      createdAt: "2026-06-19T10:00:00.000Z",
+      updatedAt: "2026-06-19T10:00:00.000Z",
+      expiresAt: "2099-06-19T12:00:00.000Z",
+      tokenType: "Bearer",
+    });
+    expect(JSON.stringify(status)).not.toContain("self_hosted_access_secret");
+    expect(JSON.stringify(status)).not.toContain("self_hosted_refresh_secret");
+
+    await expect(
+      store.getSelfHostedProfileStatus({ hostUrl: "https://caplets.example.com/caplets" }),
+    ).resolves.toMatchObject({ clientId: "rcli_123", clientLabel: "Ian's MacBook" });
+    await expect(
+      store.credentials.load(
+        remoteProfileKey({
+          kind: "self-hosted",
+          hostUrl: "https://caplets.example.com/caplets",
+        }),
+      ),
+    ).resolves.toMatchObject({ accessToken: "self_hosted_access_secret" });
+  });
+
+  it("logs out a self-hosted profile without touching Cloud profiles", async () => {
+    const store = tempRemoteProfileStore();
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com",
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "self_hosted_access_secret",
+        refreshToken: "self_hosted_refresh_secret",
+      },
+    });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_123",
+      workspaceSlug: "team",
+      credentials: cloudCredentials,
+    });
+
+    await expect(
+      store.logoutSelfHostedProfile({ hostUrl: "https://caplets.example.com" }),
+    ).resolves.toBe(true);
+
+    await expect(
+      store.getSelfHostedProfileStatus({ hostUrl: "https://caplets.example.com" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
+    ).resolves.toMatchObject({ workspaceSlug: "team" });
+  });
+
   it("saves a Cloud profile with redacted status and selected workspace pointer", async () => {
     const store = tempRemoteProfileStore();
 
