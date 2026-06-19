@@ -175,7 +175,7 @@ async function resolveDaemonSection(
   options: DaemonOperationOptions | undefined,
 ) {
   try {
-    const status = await daemonStatus({ env, ...options });
+    const status = await daemonStatus({ ...options, env });
     return {
       installed: status.installed,
       running: status.running,

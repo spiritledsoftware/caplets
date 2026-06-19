@@ -63,6 +63,20 @@ export async function installDaemon(
   const descriptor = manager.descriptor(config);
   const plannedActions = ["write-config", "write-descriptor", "register-service"];
 
+  const existingNative = existing ? await manager.status(existing, paths) : undefined;
+  const restartDecisionRequired =
+    existingNative?.running === true && !install.start && !install.restart && !install.noRestart;
+  if (
+    restartDecisionRequired &&
+    !install.dryRun &&
+    (!options.isInteractive || !options.readPrompt)
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Daemon is already running; rerun with --restart, --start, or --no-restart.",
+    );
+  }
+
   if (install.dryRun) {
     return {
       action: "install",
@@ -74,7 +88,6 @@ export async function installDaemon(
     };
   }
 
-  const existingNative = existing ? await manager.status(existing, paths) : undefined;
   let validation = undefined;
   if (install.validate !== false) {
     validation = await validateInstallCommand({
@@ -100,7 +113,10 @@ export async function installDaemon(
   });
 
   if (install.start || install.restart) {
-    const action = install.restart ? await manager.restart(config) : await manager.start(config);
+    const action =
+      install.restart || (install.start && existingNative?.running)
+        ? await manager.restart(config)
+        : await manager.start(config);
     const health = await probeDaemonHealth(config, options.fetch ? { fetch: options.fetch } : {});
     assertDaemonHealth(health, "Native daemon health check");
     writeDaemonState(paths, {
@@ -111,18 +127,9 @@ export async function installDaemon(
       updatedAt: (options.now ?? new Date()).toISOString(),
       ...(action.native.pid === undefined ? {} : { pid: action.native.pid }),
     });
-  } else if (existing) {
-    const current = existingNative ?? (await manager.status(existing, paths));
-    if (current.running && !install.noRestart) {
-      if (!options.isInteractive || !options.readPrompt) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Daemon is already running; rerun with --restart, --start, or --no-restart.",
-        );
-      }
-      const answer = await options.readPrompt("Restart the running Caplets daemon now? [y/N] ");
-      if (/^y(?:es)?$/iu.test(answer.trim())) await manager.restart(config);
-    }
+  } else if (restartDecisionRequired && options.readPrompt) {
+    const answer = await options.readPrompt("Restart the running Caplets daemon now? [y/N] ");
+    if (/^y(?:es)?$/iu.test(answer.trim())) await manager.restart(config);
   }
 
   return {
@@ -216,8 +223,8 @@ export async function uninstallDaemon(
   const nativeStatus = await manager.status(config, paths);
   if (nativeStatus.running && config) await manager.stop(config);
   const native = await manager.uninstall(config, paths);
-  removeDaemonConfig(paths);
   if (uninstall.purge) {
+    removeDaemonConfig(paths);
     removeDaemonState(paths);
     rmSync(paths.logDir, { recursive: true, force: true });
     rmSync(dirname(paths.configFile), { recursive: true, force: true });
@@ -288,13 +295,37 @@ async function daemonStatusSnapshot(
     running: native.running,
     nativeState: native.state,
     paths,
-    ...(config ? { config } : {}),
+    ...(config ? { config: redactDaemonConfig(config) } : {}),
     native,
   };
   if (config && native.running) {
     status.health = await probeDaemonHealth(config, options.fetch ? { fetch: options.fetch } : {});
   }
   return status;
+}
+
+function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
+  return {
+    ...config,
+    serve: {
+      ...config.serve,
+      auth: config.serve.auth.enabled
+        ? { ...config.serve.auth, password: "[redacted]" }
+        : config.serve.auth,
+    },
+    command: {
+      ...config.command,
+      args: redactPasswordArgs(config.command.args),
+    },
+  };
+}
+
+function redactPasswordArgs(args: string[]): string[] {
+  const redacted = [...args];
+  for (let index = 0; index < redacted.length; index += 1) {
+    if (redacted[index] === "--password" && redacted[index + 1]) redacted[index + 1] = "[redacted]";
+  }
+  return redacted;
 }
 
 export function daemonLogs(

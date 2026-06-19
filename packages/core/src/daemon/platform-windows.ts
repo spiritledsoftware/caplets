@@ -44,11 +44,11 @@ function windowsArg(value: string): string {
 }
 
 function windowsEnvValue(value: string): string {
-  if (/[\r\n%]/u.test(value)) {
+  if (/[\r\n]/u.test(value)) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Windows daemon environment values cannot contain CR, LF, or % characters.",
+      "Windows daemon environment values cannot contain CR or LF characters.",
     );
   }
-  return value.replaceAll('"', '""');
+  return value.replaceAll("%", "%%").replaceAll('"', '""');
 }

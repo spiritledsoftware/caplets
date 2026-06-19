@@ -158,9 +158,14 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
         ["systemctl", "--user", "disable", SYSTEMD_UNIT],
         ["systemctl", "--user", "daemon-reload"],
       ];
-      await runner.exec("systemctl", ["--user", "disable", SYSTEMD_UNIT]);
+      await assertExecUnless(
+        runner,
+        commands[0]!,
+        "systemd unregister failed",
+        /not loaded|not found|No such file|does not exist/iu,
+      );
       rmSync(paths.descriptorFile, { force: true });
-      await runner.exec("systemctl", ["--user", "daemon-reload"]);
+      await assertExec(runner, commands[1]!, "systemd unregister failed");
       return { action: "uninstall", native: notInstalled(), commands };
     },
     start: async () => systemdLifecycle(runner, "start", "start"),
@@ -212,8 +217,14 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
     },
     uninstall: async (_config, paths) => {
       const command = ["schtasks", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"];
-      await runner.exec(command[0]!, command.slice(1));
+      await assertExecUnless(
+        runner,
+        command,
+        "Scheduled Task unregister failed",
+        /cannot find|does not exist|not found/iu,
+      );
       rmSync(paths.descriptorFile, { force: true });
+      rmSync(paths.wrapperFile, { force: true });
       return { action: "uninstall", native: notInstalled(), commands: [command] };
     },
     start: async () => windowsLifecycle(runner, "start", ["/Run", "/TN", WINDOWS_TASK_NAME]),
@@ -326,6 +337,21 @@ async function assertExec(
 ): Promise<void> {
   const result = await runner.exec(command[0]!, command.slice(1));
   if (result.code !== 0) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `${message}: ${result.stderr || result.stdout || result.code}`,
+    );
+  }
+}
+
+async function assertExecUnless(
+  runner: DaemonCommandRunner,
+  command: string[],
+  message: string,
+  tolerated: RegExp,
+): Promise<void> {
+  const result = await runner.exec(command[0]!, command.slice(1));
+  if (result.code !== 0 && !tolerated.test(`${result.stderr}\n${result.stdout}`)) {
     throw new CapletsError(
       "SERVER_UNAVAILABLE",
       `${message}: ${result.stderr || result.stdout || result.code}`,

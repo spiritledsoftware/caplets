@@ -21,6 +21,8 @@ export function buildLaunchdDescriptor(config: DaemonConfig): DaemonDescriptor {
   <array>
 ${command.map((value) => `    <string>${value}</string>`).join("\n")}
   </array>
+  <key>RunAtLoad</key>
+  <true/>
   <key>WorkingDirectory</key>
   <string>${escapeXml(config.command.workingDirectory)}</string>
   <key>StandardOutPath</key>
