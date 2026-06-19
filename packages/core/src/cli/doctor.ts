@@ -79,7 +79,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
       lease: null,
       lastUpgradeError: null,
       recoveryCommand:
-        credentials || remote.configured ? "caplets attach --once" : "caplets cloud auth login",
+        credentials || remote.configured ? "caplets attach --once" : "caplets remote login <url>",
     },
     sync: {
       state: options.syncStatus?.state ?? "idle",

@@ -123,24 +123,18 @@ Expected symptom: remote mode starts, but attach cannot reach the runtime or aut
 Confirm the remote environment:
 
 ```sh
-export CAPLETS_MODE=remote
-export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
-export CAPLETS_REMOTE_TOKEN=...
+caplets remote login https://caplets.example.com/caplets
 caplets doctor
-caplets attach
+caplets attach --remote-url https://caplets.example.com/caplets
 ```
 
-If the remote requires auth, set either `CAPLETS_REMOTE_TOKEN` or
-`CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`. If the URL belongs to Caplets Cloud,
-check whether your environment expects `CAPLETS_REMOTE_*` or `CAPLETS_CLOUD_*` values and
-keep the family consistent for that shell. Cloud-native integrations also need the selected
-workspace:
+If the URL belongs to Caplets Cloud, log in through Remote Login and keep the Cloud URL
+selector consistent for that shell:
 
 ```sh
+caplets remote login https://cloud.caplets.dev
 export CAPLETS_MODE=cloud
 export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
-export CAPLETS_REMOTE_WORKSPACE=...
-export CAPLETS_REMOTE_TOKEN=...
 caplets attach --once
 ```
 

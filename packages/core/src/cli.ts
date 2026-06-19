@@ -1316,7 +1316,9 @@ export function createProgram(io: CliIO = {}): Command {
         return;
       }
       if (workspaces.length === 0) {
-        writeOut("No hosted Caplets Cloud workspaces available. Run caplets cloud auth login.\n");
+        writeOut(
+          "No hosted Caplets Cloud workspaces available. Run caplets remote login <cloud-url>.\n",
+        );
         return;
       }
       for (const workspace of workspaces) {
@@ -1332,7 +1334,7 @@ export function createProgram(io: CliIO = {}): Command {
       const store = cloudAuthStore(env);
       const credentials = await store.load();
       if (!credentials) {
-        throw new CapletsError("AUTH_REQUIRED", "Run caplets cloud auth login first.");
+        throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
       }
       const client = new CloudAuthClient({
         cloudUrl: credentials.cloudUrl,
@@ -1380,7 +1382,7 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         const credentials = await cloudAuthStore(env).load();
         if (!credentials) {
-          throw new CapletsError("AUTH_REQUIRED", "Run caplets cloud auth login first.");
+          throw new CapletsError("AUTH_REQUIRED", "Run caplets remote login <cloud-url> first.");
         }
         const cloudUrl = options.cloudUrl ?? credentials.cloudUrl;
         const workspace = options.workspace ?? credentials.workspaceSlug ?? credentials.workspaceId;

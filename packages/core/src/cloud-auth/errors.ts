@@ -37,10 +37,10 @@ export function redactCloudAuthSecrets(value: unknown): unknown {
 export function cloudAuthRecovery(code: CloudAuthErrorCode, detail?: string): CloudAuthRecovery {
   const recoveryCommand =
     code === "workspace_switch_required"
-      ? "caplets cloud auth switch <workspace>"
+      ? "caplets remote login <cloud-url> --workspace <workspace>"
       : code === "workspace_selection_required"
-        ? "caplets cloud auth login --workspace <workspace>"
-        : "caplets cloud auth login";
+        ? "caplets remote login <cloud-url> --workspace <workspace>"
+        : "caplets remote login <cloud-url>";
   return {
     code,
     message: detail ?? defaultMessage(code),
@@ -69,6 +69,6 @@ function defaultMessage(code: CloudAuthErrorCode): string {
       return "Hosted Caplets Cloud is unavailable.";
     case "cloud_auth_required":
     default:
-      return "Run caplets cloud auth login before using hosted Project Binding.";
+      return "Run caplets remote login <cloud-url> before using hosted Project Binding.";
   }
 }

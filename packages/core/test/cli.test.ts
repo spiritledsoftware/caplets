@@ -2766,7 +2766,7 @@ describe("cli setup", () => {
     );
   });
 
-  it("writes the versioned URL for remote generic MCP client setup", async () => {
+  it("writes attach command config for remote generic MCP client setup", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-setup-"));
     const output = join(dir, "caplets.remote.json");
 
@@ -2785,7 +2785,10 @@ describe("cli setup", () => {
 
       expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
         mcpServers: {
-          caplets: { url: "https://caplets.example.test/caplets/v1/mcp" },
+          caplets: {
+            command: "caplets",
+            args: ["attach", "--remote-url", "https://caplets.example.test/caplets"],
+          },
         },
       });
     } finally {
@@ -2831,10 +2834,12 @@ describe("cli setup", () => {
         },
       ],
       nextSteps: [
+        "Run caplets remote login https://caplets.example.test/caplets before starting OpenCode.",
         "Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=https://caplets.example.test/caplets.",
-        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
       ],
     });
+    expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
+    expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
   });
 
   it("adds remote-backed Caplets to Codex MCP config", async () => {
@@ -2886,7 +2891,13 @@ describe("cli setup", () => {
           status: "completed",
         },
       ],
+      nextSteps: [
+        "Run caplets remote login https://caplets.example.test/caplets before using this MCP config.",
+        "In Codex, run /mcp to confirm the caplets server is connected.",
+      ],
     });
+    expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
+    expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
   });
 
   it("adds remote-backed Caplets to Claude Code MCP config", async () => {

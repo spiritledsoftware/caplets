@@ -159,8 +159,8 @@ export class CloudAuthClient {
         message,
         recoveryCommand:
           code === "workspace_switch_required"
-            ? "caplets cloud auth switch <workspace>"
-            : "caplets cloud auth login",
+            ? "caplets remote login <cloud-url> --workspace <workspace>"
+            : "caplets remote login <cloud-url>",
         requestId,
       };
       throw new CapletsError("AUTH_FAILED", message, redactCloudAuthSecrets(recovery));

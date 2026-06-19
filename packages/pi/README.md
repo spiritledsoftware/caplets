@@ -45,7 +45,7 @@ CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev pi
 ```
 
-Run `caplets cloud auth login` before Cloud mode. For authenticated self-hosted remotes, prefer `CAPLETS_REMOTE_TOKEN`, or `CAPLETS_REMOTE_USER` plus `CAPLETS_REMOTE_PASSWORD`, from your shell or secret manager.
+Run `caplets remote login <url>` before remote or Cloud mode. Native integrations use the saved Remote Profile, so remote credentials do not belong in environment variables or Pi settings.
 
 Pi currently calls extension factories with the Pi API only, so this extension reads its remote
 settings from the top-level `caplets` key in `~/.pi/agent/settings.json` when no programmatic
@@ -58,7 +58,6 @@ options are supplied:
     "mode": "remote",
     "remote": {
       "url": "https://caplets.example.com/caplets",
-      "user": "caplets",
       "pollIntervalMs": 5000
     },
     "statusWidget": true,
@@ -84,13 +83,11 @@ export default createCapletsPiExtension({
     mode: "remote",
     remote: {
       url: "https://caplets.example.com/caplets",
-      user: "caplets",
       pollIntervalMs: 5_000,
     },
   },
 });
 ```
 
-The explicit config shape is `{ mode, remote: { url, user, pollIntervalMs } }`.
-Prefer environment variables for `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` rather than storing passwords in
-settings files or source code.
+The explicit config shape is `{ mode, remote: { url, pollIntervalMs } }`. Credentials come from
+`caplets remote login <url>`, not settings files or source code.

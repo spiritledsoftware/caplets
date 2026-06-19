@@ -8,7 +8,7 @@ Project Binding connects one local project root to a remote Caplets runtime so p
 
 `caplets attach` opens a foreground Binding Session. It reports state events, keeps the Project Binding lease alive, and exits only when interrupted or when the session reaches a terminal state.
 
-Hosted Cloud uses `caplets cloud auth login` and a Selected Workspace. Self-hosted remotes use `CAPLETS_REMOTE_URL` plus `CAPLETS_REMOTE_TOKEN` or Basic Auth credentials. Passing `--workspace` must match the saved Selected Workspace; use `caplets cloud auth switch <workspace>` for an explicit switch.
+Hosted Cloud and self-hosted remotes use `caplets remote login <url>` and a saved Remote Profile. Passing `--workspace` must match the saved Selected Workspace; run `caplets remote login <cloud-url> --workspace <workspace>` to select a different workspace.
 
 The attach client connects to the remote `/v1/attach` API for runtime Caplet discovery and calls. `/v1/mcp` remains the ordinary agent-facing MCP endpoint and continues to honor configured exposure policy.
 
@@ -51,7 +51,7 @@ Hosted defaults are Free 25 MiB per file and 250 MiB per project, Plus 100 MiB a
 
 ## Recovery
 
-- `cloud_auth_required`: `caplets cloud auth login`
-- `workspace_switch_required`: `caplets cloud auth switch <workspace>`
+- `cloud_auth_required`: `caplets remote login <cloud-url>`
+- `workspace_switch_required`: `caplets remote login <cloud-url> --workspace <workspace>`
 - `sync_size_limit_exceeded`: add exclusions to `.capletsignore` or upgrade the workspace plan
 - `endpoint_unavailable`: `caplets doctor`

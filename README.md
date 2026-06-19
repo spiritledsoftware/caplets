@@ -145,15 +145,14 @@ Native integrations expose `caplets__code_mode` for multi-step TypeScript workfl
 generated `caplets.<id>` handles. Progressive exposure adds `caplets__<id>` tools; direct
 exposure adds operation-level tools such as `caplets__<id>__<operation>`.
 
-Remote mode is available with `caplets attach`, self-hosted HTTP service settings, or
-Caplets Cloud auth:
+Remote mode uses Remote Login for both self-hosted Caplets and Caplets Cloud. Trust the
+host once, then launch attach or a native integration with only non-secret selectors:
 
 ```sh
-export CAPLETS_MODE=remote
-export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
-export CAPLETS_REMOTE_TOKEN=...
+caplets remote login https://caplets.example.com/caplets
+caplets attach --remote-url https://caplets.example.com/caplets
 
-caplets cloud auth login
+caplets remote login https://cloud.caplets.dev
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
 

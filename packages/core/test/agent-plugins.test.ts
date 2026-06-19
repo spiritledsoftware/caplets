@@ -35,9 +35,9 @@ describe("Codex and Claude manual MCP setup", () => {
     const readme = await readFile(path.join(repoRoot, "README.md"), "utf8");
     expect(readme).toContain("caplets serve");
     expect(readme).toContain("caplets attach");
+    expect(readme).toContain("caplets remote login https://caplets.example.com/caplets");
     expect(readme).toContain("CAPLETS_MODE=cloud");
     expect(readme).toContain("CAPLETS_REMOTE_URL=https://cloud.caplets.dev");
-    expect(readme).toContain("CAPLETS_MODE=remote");
   });
 
   it("does not keep version-package plugin sync wiring", async () => {
