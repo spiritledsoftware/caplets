@@ -112,11 +112,17 @@ describe("createHttpServeApp", () => {
   });
 
   it("uses issued remote credentials for protected self-hosted route classes", async () => {
-    const { engine } = testEngine();
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
     const store = remoteCredentialStore();
     const credentials = pairedClient(store);
     const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
+      control: context,
       remoteCredentialStore: store,
     });
 
