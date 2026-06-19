@@ -463,6 +463,21 @@ async function parseRemoteLoginCredentials(
   };
 }
 
+async function revokeSelfHostedRemoteClient(
+  remoteUrl: string,
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const revokeUrl = appendBasePath(
+    new URL(normalizeRemoteProfileHostUrl(remoteUrl)),
+    "v1/remote/client",
+  );
+  await fetchImpl(revokeUrl, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
 function writeRemoteStatus(
   status: RemoteProfileStatus | Record<string, unknown>,
   json: boolean,
@@ -1155,9 +1170,28 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .action(async (url: string, options: { workspace?: string; json?: boolean }) => {
       const store = remoteProfileStore(io.authDir, env);
-      const removed = isCapletsCloudUrl(url)
-        ? await store.logoutCloudProfile({ hostUrl: url, workspace: options.workspace })
-        : await store.logoutSelfHostedProfile({ hostUrl: url });
+      const status = isCapletsCloudUrl(url)
+        ? await store.getCloudProfileStatus({ hostUrl: url, workspace: options.workspace })
+        : await store.getSelfHostedProfileStatus({ hostUrl: url });
+      const credential = status ? await store.credentials.load(status.key) : undefined;
+      if (isCapletsCloudUrl(url) && credential?.refreshToken) {
+        await new CloudAuthClient({
+          cloudUrl: url,
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+        })
+          .logout(credential.refreshToken)
+          .catch(() => undefined);
+      }
+      if (!isCapletsCloudUrl(url) && credential?.accessToken) {
+        await revokeSelfHostedRemoteClient(url, credential.accessToken, io.fetch).catch(
+          () => undefined,
+        );
+      }
+      const removed = status
+        ? isCapletsCloudUrl(url)
+          ? await store.logoutCloudProfile({ hostUrl: url, workspace: options.workspace })
+          : await store.logoutSelfHostedProfile({ hostUrl: url })
+        : false;
       if (options.json) {
         writeOut(
           `${JSON.stringify({ loggedOut: removed, hostUrl: normalizeRemoteProfileHostUrl(url) }, null, 2)}\n`,

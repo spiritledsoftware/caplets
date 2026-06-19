@@ -105,6 +105,7 @@ export async function attachProjectSession(
   return await runProjectBindingSession({
     projectRoot: resolved.projectRoot,
     remote: resolved.remote,
+    remoteResolver: async () => (await resolveAttachOptionsForRun(raw, env)).remote,
     fetch: resolved.remote.fetch,
     signal: options.signal,
     heartbeatIntervalMs: options.heartbeatIntervalMs,

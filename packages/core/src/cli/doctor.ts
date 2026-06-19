@@ -74,7 +74,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
         ? remoteLogin.kind === "cloud"
           ? "hosted_cloud"
           : "self_hosted_remote"
-        : remote.configured
+        : remote.configured || remoteLogin.configured
           ? "remote_login_required"
           : "unconfigured",
       selectedWorkspace: remoteLogin.selectedWorkspace ?? remote.workspace ?? null,
@@ -83,7 +83,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
       lastUpgradeError: null,
       recoveryCommand: remoteLogin.authenticated
         ? "caplets attach --once"
-        : remote.configured
+        : remote.configured || remoteLogin.configured
           ? `caplets remote login ${remoteLogin.hostUrl ?? "<url>"}`
           : "caplets remote login <url>",
     },
@@ -301,12 +301,18 @@ async function resolveRemoteLoginSection(
     ...(options.cloudAuthStore ? { legacyCloudAuthStore: options.cloudAuthStore } : {}),
   });
   const hostUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-  const status = isCapletsCloudUrl(remoteUrl)
-    ? await store.getCloudProfileStatus({
-        hostUrl: remoteUrl,
-        workspace: env.CAPLETS_REMOTE_WORKSPACE ?? hostedCloudWorkspaceFromRemoteUrl(remoteUrl),
-      })
-    : await store.getSelfHostedProfileStatus({ hostUrl: remoteUrl });
+  let status: RemoteProfileStatus | undefined;
+  let statusError: string | undefined;
+  try {
+    status = isCapletsCloudUrl(remoteUrl)
+      ? await store.getCloudProfileStatus({
+          hostUrl: remoteUrl,
+          workspace: env.CAPLETS_REMOTE_WORKSPACE ?? hostedCloudWorkspaceFromRemoteUrl(remoteUrl),
+        })
+      : await store.getSelfHostedProfileStatus({ hostUrl: remoteUrl });
+  } catch (error) {
+    statusError = error instanceof Error ? error.message : String(error);
+  }
   const credential = status ? await store.credentials.load(status.key) : undefined;
   const selectedWorkspace = status?.workspaceSlug ?? status?.workspaceId;
   const report = {
@@ -322,6 +328,7 @@ async function resolveRemoteLoginSection(
     ...(status?.expiresAt ? { expiresAt: status.expiresAt } : {}),
     ...(status?.scope ? { scope: status.scope } : {}),
     ...(status?.tokenType ? { tokenType: status.tokenType } : {}),
+    ...(statusError ? { error: statusError } : {}),
   };
   return {
     configured: true,

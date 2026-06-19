@@ -652,6 +652,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
   private unsubscribeDelegate: (() => void) | undefined;
   private remoteSignature: string | undefined;
   private credentialExpiresAt: string | undefined;
+  private ensureDelegateCurrentInFlight: Promise<void> | undefined;
   private closed = false;
 
   constructor(
@@ -703,6 +704,22 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
   }
 
   private async ensureDelegateCurrent(): Promise<void> {
+    if (this.ensureDelegateCurrentInFlight) {
+      await this.ensureDelegateCurrentInFlight;
+      return;
+    }
+    const refresh = this.ensureDelegateCurrentNow();
+    this.ensureDelegateCurrentInFlight = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.ensureDelegateCurrentInFlight === refresh) {
+        this.ensureDelegateCurrentInFlight = undefined;
+      }
+    }
+  }
+
+  private async ensureDelegateCurrentNow(): Promise<void> {
     try {
       const remoteOptions = await this.resolveProfileRemoteOptions();
       const signature = remoteOptionsSignature(remoteOptions);

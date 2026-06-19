@@ -229,7 +229,34 @@ describe("createHttpServeApp", () => {
     const revokedByReplay = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
       headers: { authorization: `Bearer ${nextCredentials.accessToken}` },
     });
-    expect(revokedByReplay.status).toBe(401);
+    expect(revokedByReplay.status).toBe(200);
+
+    await engine.close();
+  });
+
+  it("revokes the authenticated self-hosted remote client", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+    });
+
+    const revoked = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${credentials.accessToken}` },
+    });
+
+    expect(revoked.status).toBe(200);
+    await expect(revoked.json()).resolves.toMatchObject({
+      revoked: true,
+      clientId: credentials.clientId,
+    });
+    const attach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { authorization: `Bearer ${credentials.accessToken}` },
+    });
+    expect(attach.status).toBe(401);
 
     await engine.close();
   });
@@ -1276,6 +1303,7 @@ function pairedClient(
   store: RemoteServerCredentialStore,
   hostUrl = "http://127.0.0.1:5387/",
 ): {
+  clientId: string;
   accessToken: string;
   refreshToken: string;
 } {

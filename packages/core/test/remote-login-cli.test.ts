@@ -84,25 +84,45 @@ describe("caplets remote CLI", () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
     const issued = server.createPairingCode({ hostUrl: "https://caplets.example.com" });
+    let accessToken = "";
 
     await runCli(["remote", "login", "https://caplets.example.com", "--code", issued.code], {
       authDir,
-      fetch: async (_input, init) =>
-        Response.json(
-          server.exchangePairingCode({
-            hostUrl: "https://caplets.example.com/",
-            code: String(JSON.parse(String(init?.body)).code),
-          }),
-        ),
+      fetch: async (_input, init) => {
+        const credentials = server.exchangePairingCode({
+          hostUrl: "https://caplets.example.com/",
+          code: String(JSON.parse(String(init?.body)).code),
+        });
+        accessToken = credentials.accessToken;
+        return Response.json(credentials);
+      },
       writeOut: () => undefined,
     });
 
     const out: string[] = [];
     await runCli(["remote", "logout", "https://caplets.example.com"], {
       authDir,
+      fetch: async (input, init) => {
+        expect(String(input)).toBe("https://caplets.example.com/v1/remote/client");
+        expect(init?.method).toBe("DELETE");
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${accessToken}`);
+        const revoked = server.revokeClient(
+          server.validateAccessToken({
+            hostUrl: "https://caplets.example.com/",
+            accessToken,
+          }).clientId,
+        );
+        return Response.json({ revoked });
+      },
       writeOut: (value) => out.push(value),
     });
     expect(out.join("")).toContain("Logged out");
+    expect(() =>
+      server.validateAccessToken({
+        hostUrl: "https://caplets.example.com/",
+        accessToken,
+      }),
+    ).toThrow(/revoked/u);
 
     const statusOut: string[] = [];
     await runCli(["remote", "status", "https://caplets.example.com", "--json"], {
@@ -115,6 +135,42 @@ describe("caplets remote CLI", () => {
       hostUrl: "https://caplets.example.com/",
       kind: "self-hosted",
     });
+  });
+
+  it("logs out a stored Cloud Remote Profile through Cloud logout", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "cloud-access",
+        refreshToken: "cloud-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+    const requests: Array<{ url: string; body: unknown }> = [];
+
+    await runCli(["remote", "logout", "https://cloud.caplets.dev", "--json"], {
+      authDir,
+      fetch: async (input, init) => {
+        requests.push({
+          url: String(input),
+          body: JSON.parse(String(init?.body)),
+        });
+        return Response.json({});
+      },
+      writeOut: () => undefined,
+    });
+
+    expect(requests).toEqual([
+      {
+        url: "https://cloud.caplets.dev/api/cloud-client/logout",
+        body: { refreshToken: "cloud-refresh" },
+      },
+    ]);
   });
 
   it("prints paired self-hosted client labels without terminal control bytes", async () => {

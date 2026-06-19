@@ -393,6 +393,61 @@ describe("resolveRemoteSelection", () => {
     expect(resolved.remote.auth).toEqual({ type: "bearer", token: "new-access" });
   });
 
+  it("serializes concurrent expired Cloud Remote Profile refreshes", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") }).saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_personal",
+      workspaceSlug: "personal",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        expiresAt: "2026-06-03T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
+    let refreshCalls = 0;
+    const fetchRefresh: typeof fetch = async (_url, init) => {
+      refreshCalls += 1;
+      expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return Response.json({
+        status: "authenticated",
+        cloudUrl: "https://cloud.caplets.dev",
+        workspaceId: "workspace_personal",
+        workspaceSlug: "personal",
+        accessToken: "new-access",
+        refreshToken: "new-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+        credentialFamilyId: "family_123",
+      });
+    };
+
+    const [left, right] = await Promise.all([
+      resolveRemoteSelection(
+        { authDir, fetch: fetchRefresh },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+      resolveRemoteSelection(
+        { authDir, fetch: fetchRefresh },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ]);
+
+    expect(refreshCalls).toBe(1);
+    expect(left.remote.auth).toEqual({ type: "bearer", token: "new-access" });
+    expect(right.remote.auth).toEqual({ type: "bearer", token: "new-access" });
+  });
+
   it("requires Cloud Auth when cloud mode is selected", async () => {
     await expect(
       resolveRemoteSelection(

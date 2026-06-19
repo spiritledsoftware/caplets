@@ -69,11 +69,16 @@ type StoredRemoteClient = {
   accessTokenHash: string;
   accessExpiresAt: string;
   refreshTokenHash: string;
-  supersededRefreshTokenHashes: string[];
+  supersededRefreshTokenHashes: SupersededRefreshToken[];
   refreshFamilyId: string;
   createdAt: string;
   lastUsedAt?: string | undefined;
   revokedAt?: string | undefined;
+};
+
+type SupersededRefreshToken = {
+  hash: string;
+  supersededAt: string;
 };
 
 type RemoteServerCredentialState = {
@@ -85,6 +90,7 @@ type RemoteServerCredentialState = {
 const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60_000;
 const DEFAULT_PAIRING_CODE_MAX_ATTEMPTS = 5;
 const DEFAULT_ACCESS_TOKEN_TTL_MS = 15 * 60_000;
+const STALE_REFRESH_REVOKE_GRACE_MS = 30_000;
 const STATE_FILE = "remote-server-credentials.json";
 const LOCK_DIR = "remote-server-credentials.lock";
 const LOCK_TIMEOUT_MS = 2_000;
@@ -226,12 +232,21 @@ export class RemoteServerCredentialStore {
       );
       if (!client) {
         const replayedClient = state.clients.find((candidate) =>
-          candidate.supersededRefreshTokenHashes.some((supersededHash) =>
-            safeHashEqual(refreshTokenHash, supersededHash),
+          candidate.supersededRefreshTokenHashes.some((superseded) =>
+            safeHashEqual(refreshTokenHash, superseded.hash),
           ),
         );
         if (replayedClient) {
-          replayedClient.revokedAt = now.toISOString();
+          const superseded = replayedClient.supersededRefreshTokenHashes.find((entry) =>
+            safeHashEqual(refreshTokenHash, entry.hash),
+          );
+          const supersededAt = superseded ? Date.parse(superseded.supersededAt) : Number.NaN;
+          if (
+            Number.isFinite(supersededAt) &&
+            now.getTime() - supersededAt >= STALE_REFRESH_REVOKE_GRACE_MS
+          ) {
+            replayedClient.revokedAt = now.toISOString();
+          }
           this.saveState(state);
           throw new CapletsError("AUTH_FAILED", "Remote refresh credential is stale.");
         }
@@ -245,7 +260,10 @@ export class RemoteServerCredentialStore {
       const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
       client.accessTokenHash = hashSecret(accessToken);
       client.accessExpiresAt = new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString();
-      client.supersededRefreshTokenHashes.push(client.refreshTokenHash);
+      client.supersededRefreshTokenHashes.push({
+        hash: client.refreshTokenHash,
+        supersededAt: now.toISOString(),
+      });
       client.refreshTokenHash = hashSecret(refreshToken);
       client.lastUsedAt = now.toISOString();
       this.saveState(state);
@@ -266,7 +284,9 @@ export class RemoteServerCredentialStore {
       pairingCodes: parsed.pairingCodes ?? [],
       clients: (parsed.clients ?? []).map((client) => ({
         ...client,
-        supersededRefreshTokenHashes: client.supersededRefreshTokenHashes ?? [],
+        supersededRefreshTokenHashes: parseSupersededRefreshTokens(
+          client.supersededRefreshTokenHashes,
+        ),
       })),
     };
   }
@@ -393,4 +413,27 @@ function safeHashEqual(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseSupersededRefreshTokens(value: unknown): SupersededRefreshToken[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (typeof entry === "string") {
+      return [{ hash: entry, supersededAt: new Date(0).toISOString() }];
+    }
+    if (
+      entry &&
+      typeof entry === "object" &&
+      typeof (entry as { hash?: unknown }).hash === "string" &&
+      typeof (entry as { supersededAt?: unknown }).supersededAt === "string"
+    ) {
+      return [
+        {
+          hash: (entry as { hash: string }).hash,
+          supersededAt: (entry as { supersededAt: string }).supersededAt,
+        },
+      ];
+    }
+    return [];
+  });
 }

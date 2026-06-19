@@ -139,7 +139,7 @@ describe("self-hosted remote pairing", () => {
     ).toThrow(/revoked/u);
   });
 
-  it("rotates refresh tokens once and invalidates the family on stale reuse", () => {
+  it("rotates refresh tokens once and invalidates the family on delayed stale reuse", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const issued = store.createPairingCode({
       hostUrl: "https://caplets.example.com",
@@ -172,6 +172,40 @@ describe("self-hosted remote pairing", () => {
         now: new Date("2026-06-19T12:04:00.000Z"),
       }),
     ).toThrow(/revoked/u);
+  });
+
+  it("does not revoke a client on immediate stale refresh retry", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const issued = store.createPairingCode({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    const credentials = store.exchangePairingCode({
+      hostUrl: "https://caplets.example.com",
+      code: issued.code,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    const refreshed = store.refreshClientCredentials({
+      hostUrl: "https://caplets.example.com",
+      refreshToken: credentials.refreshToken,
+      now: new Date("2026-06-19T12:02:00.000Z"),
+    });
+
+    expect(() =>
+      store.refreshClientCredentials({
+        hostUrl: "https://caplets.example.com",
+        refreshToken: credentials.refreshToken,
+        now: new Date("2026-06-19T12:02:05.000Z"),
+      }),
+    ).toThrow(/stale/u);
+    expect(
+      store.validateAccessToken({
+        hostUrl: "https://caplets.example.com",
+        accessToken: refreshed.accessToken,
+        now: new Date("2026-06-19T12:02:10.000Z"),
+      }),
+    ).toMatchObject({ clientId: credentials.clientId });
   });
 
   it("validates access tokens without rewriting server credential state", () => {

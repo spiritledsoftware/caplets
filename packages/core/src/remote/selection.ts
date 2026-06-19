@@ -153,34 +153,52 @@ export async function resolveRemoteSelection(
   let credentials: CloudAuthCredentials = cloudCredentialsFromRemoteProfile(status, credential);
 
   if (credentialsNeedRefresh(credentials)) {
-    if (!credentials.refreshToken) {
-      throw projectBindingError("cloud_auth_required");
-    }
-    const refreshed = await new CloudAuthClient({
-      cloudUrl: credentials.cloudUrl,
-      ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
-    }).refresh({ refreshToken: credentials.refreshToken });
-    credentials = {
-      ...credentials,
-      ...refreshed,
-      refreshToken: refreshed.refreshToken ?? credentials.refreshToken,
-      createdAt: credentials.createdAt,
-      lastRefreshAt: new Date().toISOString(),
-    };
-    status = await store.saveCloudProfile({
-      hostUrl: credentials.cloudUrl,
-      workspaceId: credentials.workspaceId,
-      ...(credentials.workspaceSlug ? { workspaceSlug: credentials.workspaceSlug } : {}),
-      clientLabel: credentials.deviceName,
-      credentials: {
-        accessToken: credentials.accessToken,
-        refreshToken: credentials.refreshToken,
-        expiresAt: credentials.expiresAt,
-        scope: credentials.scope,
-        tokenType: credentials.tokenType,
+    const refreshed = await store.refreshCloudProfileIfNeeded({
+      hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
+      workspace: workspaceFromRemoteUrl,
+      needsRefresh: (candidate) => credentialsNeedRefresh({ expiresAt: candidate.expiresAt ?? "" }),
+      refresh: async (candidateStatus, candidateCredential) => {
+        const candidateCredentials = cloudCredentialsFromRemoteProfile(
+          candidateStatus,
+          candidateCredential,
+        );
+        if (!candidateCredentials.refreshToken) {
+          throw projectBindingError("cloud_auth_required");
+        }
+        const refreshedCredentials = await new CloudAuthClient({
+          cloudUrl: candidateCredentials.cloudUrl,
+          ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+        }).refresh({ refreshToken: candidateCredentials.refreshToken });
+        const nextCredentials = {
+          ...candidateCredentials,
+          ...refreshedCredentials,
+          refreshToken: refreshedCredentials.refreshToken ?? candidateCredentials.refreshToken,
+          createdAt: candidateCredentials.createdAt,
+          lastRefreshAt: new Date().toISOString(),
+        };
+        return {
+          hostUrl: nextCredentials.cloudUrl,
+          workspaceId: nextCredentials.workspaceId,
+          ...(nextCredentials.workspaceSlug
+            ? { workspaceSlug: nextCredentials.workspaceSlug }
+            : {}),
+          clientLabel: nextCredentials.deviceName,
+          credentials: {
+            accessToken: nextCredentials.accessToken,
+            refreshToken: nextCredentials.refreshToken,
+            expiresAt: nextCredentials.expiresAt,
+            scope: nextCredentials.scope,
+            tokenType: nextCredentials.tokenType,
+          },
+        };
       },
     });
-    credential = await store.credentials.load(status.key);
+    if (!refreshed?.credential?.accessToken) {
+      throw projectBindingError("cloud_auth_required");
+    }
+    status = refreshed.status;
+    credential = refreshed.credential;
+    credentials = cloudCredentialsFromRemoteProfile(status, credential);
   }
 
   const selectedWorkspace = credentials.workspaceSlug ?? credentials.workspaceId;

@@ -147,6 +147,25 @@ export function createHttpServeApp(
         return remoteCredentialErrorResponse(error);
       }
     });
+
+    app.delete(paths.remoteClient, protectedRouteAuth, (c) => {
+      try {
+        const client = validatedRemoteClient(
+          c.req.header("authorization") ?? "",
+          remoteCredentialStore,
+          c.req.url,
+          paths.base,
+          options,
+          (name) => c.req.header(name),
+        );
+        return c.json({
+          revoked: remoteCredentialStore.revokeClient(client.clientId),
+          clientId: client.clientId,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
   }
 
   app.all(paths.mcp, protectedRouteAuth, async (c) => {
@@ -613,6 +632,7 @@ export function servicePaths(base: string): {
   projectBindings: string;
   pairingExchange: string;
   remoteRefresh: string;
+  remoteClient: string;
   health: string;
 } {
   const version = routePath(base, "v1");
@@ -629,6 +649,7 @@ export function servicePaths(base: string): {
     projectBindings: routePath(attach, "project-bindings"),
     pairingExchange: routePath(remote, "pairing/exchange"),
     remoteRefresh: routePath(remote, "refresh"),
+    remoteClient: routePath(remote, "client"),
     health: routePath(version, "healthz"),
   };
 }
@@ -687,6 +708,30 @@ function routeAuth(
     }
     await next();
   };
+}
+
+function validatedRemoteClient(
+  authorizationHeader: string,
+  remoteCredentialStore: RemoteServerCredentialStore,
+  requestUrl: string,
+  basePath: string,
+  options: HttpServeOptions,
+  header: (name: string) => string | undefined,
+) {
+  const token = bearerToken(authorizationHeader);
+  if (!token) {
+    throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
+  }
+  return remoteCredentialStore.validateAccessToken({
+    hostUrl: remoteCredentialHostUrl(
+      requestUrl,
+      basePath,
+      options.publicOrigin,
+      options.trustProxy,
+      header,
+    ),
+    accessToken: token,
+  });
 }
 
 function remoteCredentialStoreForOptions(
