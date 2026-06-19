@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 
 import type { CapletsError } from "../src/errors";
@@ -54,9 +53,14 @@ describe("resolveCapletsMode", () => {
 });
 
 describe("resolveCapletsServer", () => {
-  it("normalizes a base path URL and derives service URLs with Basic Auth", () => {
-    const password = ["server", "password"].join("-");
-    const resolved = resolveCapletsServer({ url: "https://example.com/caplets/", password }, {});
+  it("normalizes a base path URL and derives service URLs without legacy server auth", () => {
+    const resolved = resolveCapletsServer(
+      { url: "https://example.com/caplets/" } as never,
+      {
+        CAPLETS_SERVER_USER: "env-user",
+        CAPLETS_SERVER_PASSWORD: ["server", "password"].join("-"),
+      } as Record<string, string>,
+    );
 
     expect(resolved).toMatchObject({
       baseUrl: new URL("https://example.com/caplets"),
@@ -64,12 +68,8 @@ describe("resolveCapletsServer", () => {
       attachUrl: new URL("https://example.com/caplets/v1/attach"),
       controlUrl: new URL("https://example.com/caplets/v1/admin"),
       healthUrl: new URL("https://example.com/caplets/v1/healthz"),
-      auth: { enabled: true, user: "caplets", password },
-      requestInit: {
-        headers: {
-          Authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
-        },
-      },
+      auth: { type: "none" },
+      requestInit: {},
     });
   });
 
@@ -110,31 +110,24 @@ describe("resolveCapletsServer", () => {
     }
   });
 
-  it("requires a password when user is explicit", () => {
-    expect(() =>
-      resolveCapletsServer({ url: "https://example.com/caplets", user: "alice" }, {}),
-    ).toThrow(/requires a password/u);
-  });
-
-  it("resolves Basic Auth from CAPLETS_SERVER_USER and CAPLETS_SERVER_PASSWORD", () => {
-    const password = ["env", "password"].join("-");
-
+  it("ignores removed server Basic Auth fields", () => {
     expect(
       resolveCapletsServer(
-        {},
+        {
+          url: "https://input.example.com/caplets",
+          user: "input-user",
+          password: "input-password",
+        } as never,
         {
           CAPLETS_SERVER_URL: "https://example.com/caplets",
           CAPLETS_SERVER_USER: "env-user",
-          CAPLETS_SERVER_PASSWORD: password,
-        },
+          CAPLETS_SERVER_PASSWORD: "env-password",
+        } as Record<string, string>,
       ),
     ).toMatchObject({
-      auth: { enabled: true, user: "env-user", password },
-      requestInit: {
-        headers: {
-          Authorization: `Basic ${Buffer.from(`env-user:${password}`).toString("base64")}`,
-        },
-      },
+      baseUrl: new URL("https://input.example.com/caplets"),
+      auth: { type: "none" },
+      requestInit: {},
     });
   });
 });

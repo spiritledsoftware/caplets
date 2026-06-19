@@ -254,7 +254,7 @@ function resolveServerSection(env: NodeJS.ProcessEnv | Record<string, string | u
       mcpUrl: server.mcpUrl.href,
       controlUrl: server.controlUrl.href,
       healthUrl: server.healthUrl.href,
-      auth: server.auth.enabled ? "basic" : "none",
+      auth: server.auth.type,
     };
   } catch {
     return { configured: false };

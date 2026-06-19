@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-
 import { CapletsError } from "../errors";
 
 export type CapletsMode = "auto" | "local" | "remote";
@@ -8,8 +6,6 @@ export type CapletsServerEnv = Partial<
   Record<
     | "CAPLETS_MODE"
     | "CAPLETS_SERVER_URL"
-    | "CAPLETS_SERVER_USER"
-    | "CAPLETS_SERVER_PASSWORD"
     | "CAPLETS_CLOUD_URL"
     | "CAPLETS_CLOUD_TOKEN"
     | "CAPLETS_CLOUD_WORKSPACE_ID"
@@ -25,14 +21,10 @@ export type CapletsModeInput = {
 
 export type CapletsServerInput = {
   url?: string;
-  user?: string;
-  password?: string;
   fetch?: typeof fetch;
 };
 
-export type CapletsServerAuth =
-  | { enabled: false; user: string }
-  | { enabled: true; user: string; password: string };
+export type CapletsServerAuth = { type: "none" };
 
 export type ResolvedCapletsServer = {
   baseUrl: URL;
@@ -44,8 +36,6 @@ export type ResolvedCapletsServer = {
   requestInit: RequestInit;
   fetch?: typeof fetch;
 };
-
-const DEFAULT_SERVER_USER = "caplets";
 
 export function resolveCapletsMode(
   input: CapletsModeInput = {},
@@ -83,27 +73,7 @@ export function resolveCapletsServer(
   }
 
   const baseUrl = parseServerBaseUrl(rawUrl);
-  const userWasExplicit = input.user !== undefined || hasEnv(env.CAPLETS_SERVER_USER);
-  const user =
-    nonEmpty(input.user, "user") ??
-    nonEmpty(env.CAPLETS_SERVER_USER, "CAPLETS_SERVER_USER") ??
-    DEFAULT_SERVER_USER;
-  const password =
-    nonEmpty(input.password, "password") ??
-    nonEmpty(env.CAPLETS_SERVER_PASSWORD, "CAPLETS_SERVER_PASSWORD");
-
-  if (userWasExplicit && password === undefined) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Caplets server Basic Auth requires a password; set CAPLETS_SERVER_PASSWORD or password.",
-    );
-  }
-
-  const auth: CapletsServerAuth =
-    password === undefined ? { enabled: false, user } : { enabled: true, user, password };
-  const requestInit: RequestInit = auth.enabled
-    ? { headers: { Authorization: basicAuthHeader(auth.user, auth.password) } }
-    : {};
+  const auth: CapletsServerAuth = { type: "none" };
 
   return {
     baseUrl,
@@ -112,7 +82,7 @@ export function resolveCapletsServer(
     controlUrl: controlUrlForBase(baseUrl),
     healthUrl: healthUrlForBase(baseUrl),
     auth,
-    requestInit,
+    requestInit: {},
     ...(input.fetch ? { fetch: input.fetch } : {}),
   };
 }
@@ -185,10 +155,6 @@ function parseCapletsMode(value: string): CapletsMode {
   );
 }
 
-function basicAuthHeader(user: string, password: string): string {
-  return `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
-}
-
 function nonEmpty(value: string | undefined, label: string): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -198,8 +164,4 @@ function nonEmpty(value: string | undefined, label: string): string | undefined 
     throw new CapletsError("REQUEST_INVALID", `${label} must not be empty`);
   }
   return trimmed;
-}
-
-function hasEnv(value: string | undefined): boolean {
-  return value !== undefined && value.trim() !== "";
 }
