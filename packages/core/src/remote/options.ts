@@ -207,6 +207,14 @@ export function hostedCloudWorkspaceFromRemoteUrl(value: string): string | undef
   }
 }
 
+export function normalizeRemoteProfileHostUrl(value: string): string {
+  const url = parseServerBaseUrl(value);
+  if (isCapletsCloudUrl(url.toString())) {
+    return `${url.origin}/`;
+  }
+  return url.toString();
+}
+
 export function projectBindingWebSocketUrlForBase(baseUrl: URL): URL {
   return webSocketUrl(appendBasePath(baseUrl, "v1/attach/project-bindings/connect"));
 }

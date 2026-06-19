@@ -1,0 +1,320 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { CloudAuthStore } from "../cloud-auth/store";
+import type { CloudAuthCredentials } from "../cloud-auth/store";
+import { DEFAULT_AUTH_DIR } from "../config/paths";
+import { CapletsError } from "../errors";
+import { FileRemoteCredentialStore } from "./credential-store";
+import {
+  remoteProfileKey,
+  remoteProfileStatus,
+  selectedWorkspaceKey,
+  type RemoteProfileCredential,
+  type RemoteProfileStatus,
+} from "./profiles";
+import { hostedCloudWorkspaceFromRemoteUrl, normalizeRemoteProfileHostUrl } from "./options";
+
+type StoredRemoteProfile = {
+  version: 1;
+  kind: "cloud";
+  key: string;
+  hostUrl: string;
+  workspaceId: string;
+  workspaceSlug?: string | undefined;
+  clientLabel?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type SelectedCloudWorkspace = {
+  version: 1;
+  hostUrl: string;
+  workspace: string;
+  profileKey: string;
+  selectedAt: string;
+};
+
+export type SaveCloudProfileInput = {
+  hostUrl: string;
+  workspaceId: string;
+  workspaceSlug?: string | undefined;
+  clientLabel?: string | undefined;
+  credentials: RemoteProfileCredential;
+  now?: Date | undefined;
+};
+
+export type CloudProfileLookup = {
+  hostUrl: string;
+  workspace?: string | undefined;
+};
+
+export type RemoteProfileStoreOptions = {
+  root?: string | undefined;
+  credentials?: FileRemoteCredentialStore | undefined;
+  legacyCloudAuthStore?: CloudAuthStore | undefined;
+};
+
+export class FileRemoteProfileStore {
+  readonly root: string;
+  readonly credentials: FileRemoteCredentialStore;
+  readonly legacyCloudAuthStore?: CloudAuthStore | undefined;
+
+  constructor(options: RemoteProfileStoreOptions = {}) {
+    this.root = options.root ?? join(DEFAULT_AUTH_DIR, "remote-profiles");
+    this.credentials =
+      options.credentials ??
+      new FileRemoteCredentialStore({ root: join(this.root, "credentials") });
+    this.legacyCloudAuthStore = options.legacyCloudAuthStore;
+  }
+
+  async saveCloudProfile(input: SaveCloudProfileInput): Promise<RemoteProfileStatus> {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const workspace = cloudWorkspace(input);
+    const key = remoteProfileKey({ kind: "cloud", hostUrl, workspace });
+    const now = (input.now ?? new Date()).toISOString();
+    const existing = this.readProfile(key);
+    const profile: StoredRemoteProfile = {
+      version: 1,
+      kind: "cloud",
+      key,
+      hostUrl,
+      workspaceId: input.workspaceId,
+      ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
+      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await this.credentials.save(key, input.credentials);
+    this.writeJson(this.profilePath(key), profile);
+    this.writeJson(this.selectedWorkspacePath(hostUrl), {
+      version: 1,
+      hostUrl,
+      workspace,
+      profileKey: key,
+      selectedAt: now,
+    } satisfies SelectedCloudWorkspace);
+
+    return await this.statusFor(profile, input.credentials, true);
+  }
+
+  async getCloudProfileStatus(input: CloudProfileLookup): Promise<RemoteProfileStatus | undefined> {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
+    if (workspace) {
+      const found = await this.findCloudStatus(hostUrl, workspace);
+      if (found) return found;
+      return this.migrateLegacyCloudProfile(hostUrl, workspace);
+    }
+
+    const selected = this.readSelectedWorkspace(hostUrl);
+    if (selected) return this.statusByKey(selected.profileKey, true);
+    if (this.listProfilesForHost(hostUrl).length > 0) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Cloud Remote Profile requires a selected or explicit workspace.",
+      );
+    }
+    return this.migrateLegacyCloudProfile(hostUrl);
+  }
+
+  async listCloudProfileStatuses(hostUrlInput: string): Promise<RemoteProfileStatus[]> {
+    const hostUrl = normalizeRemoteProfileHostUrl(hostUrlInput);
+    const selected = this.readSelectedWorkspace(hostUrl)?.profileKey;
+    const statuses = await Promise.all(
+      this.listProfilesForHost(hostUrl).map(async (profile) =>
+        this.statusFor(profile, undefined, profile.key === selected),
+      ),
+    );
+    return statuses.sort((left, right) =>
+      (left.workspaceSlug ?? left.workspaceId ?? "").localeCompare(
+        right.workspaceSlug ?? right.workspaceId ?? "",
+      ),
+    );
+  }
+
+  async logoutCloudProfile(input: CloudProfileLookup): Promise<boolean> {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
+    const selected = this.readSelectedWorkspace(hostUrl);
+    let key: string | undefined;
+    if (workspace) {
+      key = this.listProfilesForHost(hostUrl).find((profile) =>
+        profileMatchesWorkspace(profile, workspace),
+      )?.key;
+    } else if (selected) {
+      key = selected.profileKey;
+    } else if (this.listProfilesForHost(hostUrl).length > 0) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Cloud Remote Profile requires a selected or explicit workspace.",
+      );
+    }
+    if (!key) return false;
+    rmSync(this.profilePath(key), { force: true });
+    await this.credentials.delete(key);
+    if (selected?.profileKey === key) rmSync(this.selectedWorkspacePath(hostUrl), { force: true });
+    return true;
+  }
+
+  async clearSelectedCloudWorkspace(hostUrlInput: string): Promise<boolean> {
+    const path = this.selectedWorkspacePath(normalizeRemoteProfileHostUrl(hostUrlInput));
+    if (!existsSync(path)) return false;
+    rmSync(path, { force: true });
+    return true;
+  }
+
+  private async findCloudStatus(
+    hostUrl: string,
+    workspace: string,
+  ): Promise<RemoteProfileStatus | undefined> {
+    const selected = this.readSelectedWorkspace(hostUrl)?.profileKey;
+    const profile = this.listProfilesForHost(hostUrl).find((candidate) =>
+      profileMatchesWorkspace(candidate, workspace),
+    );
+    if (!profile) return undefined;
+    return this.statusFor(profile, undefined, profile.key === selected);
+  }
+
+  private async migrateLegacyCloudProfile(
+    hostUrl: string,
+    workspace?: string,
+  ): Promise<RemoteProfileStatus | undefined> {
+    const legacy = await this.legacyCloudAuthStore?.load();
+    if (!legacy) return undefined;
+    if (normalizeRemoteProfileHostUrl(legacy.cloudUrl) !== hostUrl) return undefined;
+    if (workspace && workspace !== legacy.workspaceSlug && workspace !== legacy.workspaceId) {
+      return undefined;
+    }
+    return this.saveCloudProfile({
+      hostUrl,
+      workspaceId: legacy.workspaceId,
+      ...(legacy.workspaceSlug ? { workspaceSlug: legacy.workspaceSlug } : {}),
+      clientLabel: legacy.deviceName,
+      credentials: legacyCredential(legacy),
+      now: legacy.createdAt ? new Date(legacy.createdAt) : undefined,
+    });
+  }
+
+  private async statusByKey(
+    key: string,
+    selected: boolean,
+  ): Promise<RemoteProfileStatus | undefined> {
+    const profile = this.readProfile(key);
+    if (!profile) return undefined;
+    return this.statusFor(profile, undefined, selected);
+  }
+
+  private async statusFor(
+    profile: StoredRemoteProfile,
+    credential: RemoteProfileCredential | undefined,
+    selected: boolean,
+  ): Promise<RemoteProfileStatus> {
+    const build = (loadedCredential: RemoteProfileCredential | undefined): RemoteProfileStatus =>
+      remoteProfileStatus({
+        kind: "cloud",
+        key: profile.key,
+        hostUrl: profile.hostUrl,
+        workspaceId: profile.workspaceId,
+        workspaceSlug: profile.workspaceSlug,
+        clientLabel: profile.clientLabel,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+        selected,
+        credential: loadedCredential,
+      });
+    if (credential !== undefined) return build(credential);
+    return build(await this.credentials.load(profile.key));
+  }
+
+  private listProfilesForHost(hostUrl: string): StoredRemoteProfile[] {
+    const dir = this.profilesDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => this.readProfileFile(join(dir, entry.name)))
+      .filter((profile): profile is StoredRemoteProfile => Boolean(profile))
+      .filter((profile) => profile.kind === "cloud" && profile.hostUrl === hostUrl);
+  }
+
+  private readProfile(key: string): StoredRemoteProfile | undefined {
+    return this.readProfileFile(this.profilePath(key));
+  }
+
+  private readProfileFile(path: string): StoredRemoteProfile | undefined {
+    if (!existsSync(path)) return undefined;
+    return JSON.parse(readFileSync(path, "utf8")) as StoredRemoteProfile;
+  }
+
+  private readSelectedWorkspace(hostUrl: string): SelectedCloudWorkspace | undefined {
+    const path = this.selectedWorkspacePath(hostUrl);
+    if (!existsSync(path)) return undefined;
+    return JSON.parse(readFileSync(path, "utf8")) as SelectedCloudWorkspace;
+  }
+
+  private profilePath(key: string): string {
+    return join(this.profilesDir(), `${encodeURIComponent(key)}.json`);
+  }
+
+  private selectedWorkspacePath(hostUrl: string): string {
+    return join(this.selectionsDir(), `${encodeURIComponent(selectedWorkspaceKey(hostUrl))}.json`);
+  }
+
+  private profilesDir(): string {
+    return join(this.root, "profiles");
+  }
+
+  private selectionsDir(): string {
+    return join(this.root, "selections");
+  }
+
+  private writeJson(path: string, value: unknown): void {
+    const directory = dirname(path);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(directory, 0o700);
+    } catch {
+      // Best effort on platforms without POSIX permissions.
+    }
+    const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    try {
+      chmodSync(tempPath, 0o600);
+    } catch {
+      // Best effort on platforms without POSIX permissions.
+    }
+    renameSync(tempPath, path);
+  }
+}
+
+function cloudWorkspace(input: SaveCloudProfileInput): string {
+  return (
+    input.workspaceSlug ??
+    input.workspaceId ??
+    hostedCloudWorkspaceFromRemoteUrl(input.hostUrl) ??
+    ""
+  );
+}
+
+function profileMatchesWorkspace(profile: StoredRemoteProfile, workspace: string): boolean {
+  return profile.workspaceSlug === workspace || profile.workspaceId === workspace;
+}
+
+function legacyCredential(credentials: CloudAuthCredentials): RemoteProfileCredential {
+  return {
+    accessToken: credentials.accessToken,
+    refreshToken: credentials.refreshToken,
+    expiresAt: credentials.expiresAt,
+    ...(credentials.scope ? { scope: credentials.scope } : {}),
+    ...(credentials.tokenType ? { tokenType: credentials.tokenType } : {}),
+  };
+}
