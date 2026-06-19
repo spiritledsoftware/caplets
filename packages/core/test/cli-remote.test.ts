@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
 import { CapletsEngine } from "../src/engine";
+import { normalizeRemoteProfileHostUrl } from "../src/remote/options";
+import { remoteProfileKey } from "../src/remote/profiles";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 
@@ -29,10 +31,8 @@ describe("remote CLI routing", () => {
 
     await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
       env: {
-        CAPLETS_MODE: "remote",
-        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+        ...remoteEnv(context),
         CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
-        CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
       },
       fetch,
       writeOut: (value) => out.push(value),
@@ -149,15 +149,13 @@ describe("remote CLI routing", () => {
   });
 
   it("keeps hidden remote completion quiet when remote control fails", async () => {
+    const context = testContext("caplets-cli-remote-complete-fail-quiet-");
     const out: string[] = [];
     const err: string[] = [];
     const fetch = vi.fn(async () => Response.json({ ok: false, error: "server unavailable" }));
 
     await runCli(["__complete", "--shell", "bash", "--", "inspect", ""], {
-      env: {
-        CAPLETS_MODE: "remote",
-        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
-      },
+      env: remoteEnv(context),
       fetch,
       writeOut: (value) => out.push(value),
       writeErr: (value) => err.push(value),
@@ -190,7 +188,11 @@ describe("remote CLI routing", () => {
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-      requests.push({ url: String(url), body: init?.body });
+      requests.push({
+        url: String(url),
+        authorization: new Headers(init?.headers).get("authorization"),
+        body: init?.body,
+      });
       return Response.json({
         ok: true,
         result: [
@@ -211,10 +213,8 @@ describe("remote CLI routing", () => {
 
     await runCli(["list", "--json"], {
       env: {
-        CAPLETS_MODE: "remote",
-        CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+        ...remoteEnv(context),
         CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
-        CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
       },
       fetch,
       writeOut: (value) => out.push(value),
@@ -223,6 +223,7 @@ describe("remote CLI routing", () => {
     expect(requests).toEqual([
       {
         url: "http://127.0.0.1:5387/caplets/v1/admin",
+        authorization: "Bearer remote-profile-access-token",
         body: JSON.stringify({ command: "list", arguments: { includeDisabled: false } }),
       },
     ]);
@@ -411,10 +412,8 @@ describe("remote CLI routing", () => {
       ["call-tool", "github.search", "--args", '{"query":"caplets"}', "--format", "json"],
       {
         env: {
-          CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+          ...remoteEnv(context),
           CAPLETS_CONFIG: join(dirname(context.configPath), "missing-config.json"),
-          CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
         },
         fetch,
         writeOut: (value) => out.push(value),
@@ -600,8 +599,9 @@ describe("remote CLI routing", () => {
       });
     });
 
+    const context = testContext("caplets-cli-remote-resources-");
     const io = {
-      env: { CAPLETS_MODE: "remote", CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets" },
+      env: remoteEnv(context),
       fetch,
       writeOut: (value: string) => out.push(value),
     };
@@ -729,6 +729,7 @@ describe("remote CLI routing", () => {
   });
 
   it("routes add mcp through remote control with --remote and labels the remote path", async () => {
+    const context = testContext("caplets-cli-remote-add-control-");
     const out: string[] = [];
     const fetchMock = vi.fn(
       async () =>
@@ -759,7 +760,7 @@ describe("remote CLI routing", () => {
       ],
       {
         env: {
-          CAPLETS_MODE: "remote",
+          ...remoteEnv(context),
           CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
         },
         fetch: fetchMock as typeof fetch,
@@ -799,8 +800,7 @@ describe("remote CLI routing", () => {
         ["add", "mcp", "remote-tools", "--url", "https://mcp.example.com/mcp", "--remote"],
         {
           env: {
-            CAPLETS_MODE: "remote",
-            CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+            ...remoteEnv(local),
             CAPLETS_CONFIG: local.configPath,
           },
           fetch: async (input, init) => remote.app.fetch(new Request(input, init)),
@@ -1004,6 +1004,7 @@ describe("remote CLI routing", () => {
   });
 
   it("routes install through remote control with --remote", async () => {
+    const context = testContext("caplets-cli-remote-install-control-");
     const out: string[] = [];
     const fetchMock = vi.fn(
       async () =>
@@ -1028,7 +1029,7 @@ describe("remote CLI routing", () => {
 
     await runCli(["install", "spiritledsoftware/caplets", "github", "--remote"], {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1104,6 +1105,7 @@ describe("remote CLI routing", () => {
   });
 
   it("routes init through remote control with --remote", async () => {
+    const context = testContext("caplets-cli-remote-init-control-");
     const out: string[] = [];
     const fetchMock = vi.fn(
       async () =>
@@ -1115,7 +1117,7 @@ describe("remote CLI routing", () => {
 
     await runCli(["init", "--force", "--remote"], {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1160,6 +1162,7 @@ describe("remote CLI routing", () => {
   });
 
   it("routes auth list and logout through remote control", async () => {
+    const context = testContext("caplets-cli-remote-auth-list-control-");
     const out: string[] = [];
     const fetchMock = vi
       .fn()
@@ -1190,7 +1193,7 @@ describe("remote CLI routing", () => {
 
     const io = {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1284,6 +1287,7 @@ describe("remote CLI routing", () => {
   });
 
   it("uses explicit --remote for auth login, refresh, and logout remote requests", async () => {
+    const context = testContext("caplets-cli-remote-auth-control-");
     const out: string[] = [];
     const fetchMock = vi
       .fn()
@@ -1297,7 +1301,7 @@ describe("remote CLI routing", () => {
 
     const io = {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1333,6 +1337,7 @@ describe("remote CLI routing", () => {
   });
 
   it("does not print or open an auth URL when remote auth is already complete", async () => {
+    const context = testContext("caplets-cli-remote-auth-complete-");
     const out: string[] = [];
     const fetchMock = vi.fn(async () =>
       Response.json({ ok: true, result: { server: "remote", authenticated: true } }),
@@ -1340,7 +1345,7 @@ describe("remote CLI routing", () => {
 
     await runCli(["auth", "login", "remote"], {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1351,6 +1356,7 @@ describe("remote CLI routing", () => {
   });
 
   it("prints pending instructions instead of authenticated when remote auth needs browser completion", async () => {
+    const context = testContext("caplets-cli-remote-auth-pending-");
     const out: string[] = [];
     const fetchMock = vi.fn(async () =>
       Response.json({
@@ -1365,7 +1371,7 @@ describe("remote CLI routing", () => {
 
     await runCli(["auth", "login", "remote", "--no-open"], {
       env: {
-        CAPLETS_MODE: "remote",
+        ...remoteEnv(context),
         CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
       },
       fetch: fetchMock as typeof fetch,
@@ -1381,6 +1387,7 @@ describe("remote CLI routing", () => {
 });
 
 async function runRemoteAdd(args: string[]): Promise<unknown> {
+  const context = testContext("caplets-cli-remote-add-request-");
   const requests: unknown[] = [];
   const fetchMock = vi.fn(
     async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
@@ -1398,7 +1405,7 @@ async function runRemoteAdd(args: string[]): Promise<unknown> {
 
   await runCli(["add", ...args], {
     env: {
-      CAPLETS_MODE: "remote",
+      ...remoteEnv(context),
       CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
     },
     fetch: fetchMock as typeof fetch,
@@ -1443,20 +1450,34 @@ function remoteServerFixture(): {
   return { app, engine, projectCapletsRoot: context.projectCapletsRoot };
 }
 
-function clientFixture(): { configPath: string; projectCapletsRoot: string } {
+function clientFixture(): {
+  configPath: string;
+  projectConfigPath: string;
+  projectCapletsRoot: string;
+  authDir: string;
+} {
   const context = testContext("caplets-cli-remote-client-");
-  return { configPath: context.configPath, projectCapletsRoot: context.projectCapletsRoot };
+  return {
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    projectCapletsRoot: context.projectCapletsRoot,
+    authDir: context.authDir,
+  };
 }
 
 function remoteEnv(context: {
   configPath: string;
   projectConfigPath: string;
+  authDir?: string;
 }): Record<string, string> {
   return {
     CAPLETS_MODE: "remote",
     CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
     CAPLETS_CONFIG: context.configPath,
     CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
+    ...(context.authDir
+      ? { CAPLETS_CLOUD_AUTH_PATH: join(context.authDir, "cloud-auth.json") }
+      : {}),
   };
 }
 
@@ -1579,11 +1600,13 @@ function testContext(prefix: string): {
   configPath: string;
   projectConfigPath: string;
   projectCapletsRoot: string;
+  authDir: string;
   watch: false;
 } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   const userRoot = join(dir, "user");
+  const authDir = join(dir, "auth");
   const projectCapletsRoot = join(dir, "project", ".caplets");
   mkdirSync(userRoot, { recursive: true });
   mkdirSync(projectCapletsRoot, { recursive: true });
@@ -1603,5 +1626,49 @@ function testContext(prefix: string): {
       },
     }),
   );
-  return { configPath, projectConfigPath, projectCapletsRoot, watch: false };
+  writeSelfHostedRemoteProfile(authDir);
+  return { configPath, projectConfigPath, projectCapletsRoot, authDir, watch: false };
+}
+
+function writeSelfHostedRemoteProfile(authDir: string): void {
+  writeSelfHostedRemoteProfileForHost(authDir, "http://127.0.0.1:5387");
+  writeSelfHostedRemoteProfileForHost(authDir, "http://127.0.0.1:5387/caplets");
+}
+
+function writeSelfHostedRemoteProfileForHost(authDir: string, inputHostUrl: string): void {
+  const hostUrl = normalizeRemoteProfileHostUrl(inputHostUrl);
+  const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
+  const root = join(authDir, "remote-profiles");
+  mkdirSync(join(root, "profiles"), { recursive: true });
+  mkdirSync(join(root, "credentials"), { recursive: true });
+  writeFileSync(
+    join(root, "profiles", `${encodeURIComponent(key)}.json`),
+    `${JSON.stringify(
+      {
+        version: 1,
+        kind: "self-hosted",
+        key,
+        hostUrl,
+        clientId: "rcli_test",
+        clientLabel: "Remote CLI Test",
+        createdAt: "2026-06-19T12:00:00.000Z",
+        updatedAt: "2026-06-19T12:00:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(root, "credentials", `${encodeURIComponent(key)}.json`),
+    `${JSON.stringify(
+      {
+        accessToken: "remote-profile-access-token",
+        refreshToken: "remote-profile-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        tokenType: "Bearer",
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }

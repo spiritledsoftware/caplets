@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -87,7 +87,7 @@ describe("self-hosted remote pairing", () => {
         store.exchangePairingCode({
           hostUrl: "https://caplets.example.com",
           code: badCode,
-          now: new Date("2026-06-19T12:00:00.000Z"),
+          now: new Date("2026-06-19T12:01:00.000Z"),
         }),
       ).toThrow(CapletsError);
     }
@@ -95,7 +95,7 @@ describe("self-hosted remote pairing", () => {
       store.exchangePairingCode({
         hostUrl: "https://caplets.example.com",
         code: exhausted.code,
-        now: new Date("2026-06-19T12:00:00.000Z"),
+        now: new Date("2026-06-19T12:01:00.000Z"),
       }),
     ).toThrow(/attempts/u);
   });
@@ -172,6 +172,35 @@ describe("self-hosted remote pairing", () => {
         now: new Date("2026-06-19T12:04:00.000Z"),
       }),
     ).toThrow(/revoked/u);
+  });
+
+  it("validates access tokens without rewriting server credential state", () => {
+    const dir = tempDir();
+    const store = new RemoteServerCredentialStore({ dir });
+    const issued = store.createPairingCode({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    const credentials = store.exchangePairingCode({
+      hostUrl: "https://caplets.example.com",
+      code: issued.code,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+    const statePath = join(dir, "remote-server-credentials.json");
+    const before = readFileSync(statePath, "utf8");
+
+    expect(
+      store.validateAccessToken({
+        hostUrl: "https://caplets.example.com",
+        accessToken: credentials.accessToken,
+        now: new Date("2026-06-19T12:02:00.000Z"),
+      }),
+    ).toMatchObject({
+      clientId: credentials.clientId,
+      tokenType: "Bearer",
+    });
+
+    expect(readFileSync(statePath, "utf8")).toBe(before);
   });
 
   it("creates private server-owned state files where supported", () => {

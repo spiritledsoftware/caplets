@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { Buffer } from "node:buffer";
 import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -78,6 +86,8 @@ const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60_000;
 const DEFAULT_PAIRING_CODE_MAX_ATTEMPTS = 5;
 const DEFAULT_ACCESS_TOKEN_TTL_MS = 15 * 60_000;
 const STATE_FILE = "remote-server-credentials.json";
+const LOCK_DIR = "remote-server-credentials.lock";
+const LOCK_TIMEOUT_MS = 2_000;
 
 export class RemoteServerCredentialStore {
   readonly dir: string;
@@ -91,82 +101,88 @@ export class RemoteServerCredentialStore {
     code: string;
     expiresAt: string;
   } {
-    const now = input.now ?? new Date();
-    const issued = createPairingCode();
-    const state = this.loadState();
-    state.pairingCodes.push({
-      codeId: issued.codeId,
-      hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
-      secretHash: hashSecret(issued.secret),
-      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
-      createdAt: now.toISOString(),
-      expiresAt: new Date(
-        now.getTime() + (input.ttlMs ?? DEFAULT_PAIRING_CODE_TTL_MS),
-      ).toISOString(),
-      attempts: 0,
-      maxAttempts: input.maxAttempts ?? DEFAULT_PAIRING_CODE_MAX_ATTEMPTS,
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const issued = createPairingCode();
+      const state = this.loadState();
+      state.pairingCodes.push({
+        codeId: issued.codeId,
+        hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+        secretHash: hashSecret(issued.secret),
+        ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
+        createdAt: now.toISOString(),
+        expiresAt: new Date(
+          now.getTime() + (input.ttlMs ?? DEFAULT_PAIRING_CODE_TTL_MS),
+        ).toISOString(),
+        attempts: 0,
+        maxAttempts: input.maxAttempts ?? DEFAULT_PAIRING_CODE_MAX_ATTEMPTS,
+      });
+      this.saveState(state);
+      return {
+        codeId: issued.codeId,
+        code: issued.code,
+        expiresAt: state.pairingCodes.at(-1)!.expiresAt,
+      };
     });
-    this.saveState(state);
-    return {
-      codeId: issued.codeId,
-      code: issued.code,
-      expiresAt: state.pairingCodes.at(-1)!.expiresAt,
-    };
   }
 
   exchangePairingCode(input: ExchangePairingCodeInput): IssuedRemoteClientCredentials {
-    const now = input.now ?? new Date();
-    const parsed = parsePairingCode(input.code);
-    if (!parsed) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code format is invalid.");
-    }
-    const state = this.loadState();
-    const pairingCode = state.pairingCodes.find((candidate) => candidate.codeId === parsed.codeId);
-    if (!pairingCode) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code is unknown.");
-    }
-    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-    if (pairingCode.hostUrl !== hostUrl) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code belongs to a different host.");
-    }
-    if (pairingCode.usedAt) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code has already been used.");
-    }
-    if (Date.parse(pairingCode.expiresAt) <= now.getTime()) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code has expired.");
-    }
-    if (pairingCode.attempts >= pairingCode.maxAttempts) {
-      throw new CapletsError("AUTH_FAILED", "Pairing Code attempts exhausted.");
-    }
-    if (!safeHashEqual(hashSecret(parsed.secret), pairingCode.secretHash)) {
-      pairingCode.attempts += 1;
-      this.saveState(state);
-      throw new CapletsError(
-        "AUTH_FAILED",
-        pairingCode.attempts >= pairingCode.maxAttempts
-          ? "Pairing Code attempts exhausted."
-          : "Pairing Code is invalid.",
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const parsed = parsePairingCode(input.code);
+      if (!parsed) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code format is invalid.");
+      }
+      const state = this.loadState();
+      const pairingCode = state.pairingCodes.find(
+        (candidate) => candidate.codeId === parsed.codeId,
       );
-    }
+      if (!pairingCode) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code is unknown.");
+      }
+      const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+      if (pairingCode.hostUrl !== hostUrl) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code belongs to a different host.");
+      }
+      if (pairingCode.usedAt) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code has already been used.");
+      }
+      if (Date.parse(pairingCode.expiresAt) <= now.getTime()) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code has expired.");
+      }
+      if (pairingCode.attempts >= pairingCode.maxAttempts) {
+        throw new CapletsError("AUTH_FAILED", "Pairing Code attempts exhausted.");
+      }
+      if (!safeHashEqual(hashSecret(parsed.secret), pairingCode.secretHash)) {
+        pairingCode.attempts += 1;
+        this.saveState(state);
+        throw new CapletsError(
+          "AUTH_FAILED",
+          pairingCode.attempts >= pairingCode.maxAttempts
+            ? "Pairing Code attempts exhausted."
+            : "Pairing Code is invalid.",
+        );
+      }
 
-    pairingCode.usedAt = now.toISOString();
-    const clientId = `rcli_${randomToken(12)}`;
-    const accessToken = `cap_remote_access_${randomToken(32)}`;
-    const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
-    const client: StoredRemoteClient = {
-      clientId,
-      clientLabel: input.clientLabel ?? pairingCode.clientLabel ?? "Caplets Remote Client",
-      hostUrl,
-      accessTokenHash: hashSecret(accessToken),
-      accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),
-      refreshTokenHash: hashSecret(refreshToken),
-      supersededRefreshTokenHashes: [],
-      refreshFamilyId: randomUUID(),
-      createdAt: now.toISOString(),
-    };
-    state.clients.push(client);
-    this.saveState(state);
-    return credentialsFromClient(client, accessToken, refreshToken);
+      pairingCode.usedAt = now.toISOString();
+      const clientId = `rcli_${randomToken(12)}`;
+      const accessToken = `cap_remote_access_${randomToken(32)}`;
+      const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
+      const client: StoredRemoteClient = {
+        clientId,
+        clientLabel: input.clientLabel ?? pairingCode.clientLabel ?? "Caplets Remote Client",
+        hostUrl,
+        accessTokenHash: hashSecret(accessToken),
+        accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),
+        refreshTokenHash: hashSecret(refreshToken),
+        supersededRefreshTokenHashes: [],
+        refreshFamilyId: randomUUID(),
+        createdAt: now.toISOString(),
+      };
+      state.clients.push(client);
+      this.saveState(state);
+      return credentialsFromClient(client, accessToken, refreshToken);
+    });
   }
 
   listClients(): RemoteClientStatus[] {
@@ -176,62 +192,65 @@ export class RemoteServerCredentialStore {
   }
 
   revokeClient(clientId: string, now = new Date()): boolean {
-    const state = this.loadState();
-    const client = state.clients.find((candidate) => candidate.clientId === clientId);
-    if (!client) return false;
-    client.revokedAt = client.revokedAt ?? now.toISOString();
-    this.saveState(state);
-    return true;
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      const client = state.clients.find((candidate) => candidate.clientId === clientId);
+      if (!client) return false;
+      client.revokedAt = client.revokedAt ?? now.toISOString();
+      this.saveState(state);
+      return true;
+    });
   }
 
   validateAccessToken(input: ValidateAccessTokenInput): ValidatedRemoteClient {
     const now = input.now ?? new Date();
     const state = this.loadState();
+    const accessTokenHash = hashSecret(input.accessToken);
     const client = state.clients.find((candidate) =>
-      safeHashEqual(hashSecret(input.accessToken), candidate.accessTokenHash),
+      safeHashEqual(accessTokenHash, candidate.accessTokenHash),
     );
     if (!client) {
       throw new CapletsError("AUTH_FAILED", "Remote client credential is invalid.");
     }
     validateClient(client, normalizeRemoteProfileHostUrl(input.hostUrl), now);
-    client.lastUsedAt = now.toISOString();
-    this.saveState(state);
     return { ...clientStatus(client), tokenType: "Bearer" };
   }
 
   refreshClientCredentials(input: RefreshClientCredentialsInput): IssuedRemoteClientCredentials {
-    const now = input.now ?? new Date();
-    const state = this.loadState();
-    const refreshTokenHash = hashSecret(input.refreshToken);
-    const client = state.clients.find((candidate) =>
-      safeHashEqual(refreshTokenHash, candidate.refreshTokenHash),
-    );
-    if (!client) {
-      const replayedClient = state.clients.find((candidate) =>
-        candidate.supersededRefreshTokenHashes.some((supersededHash) =>
-          safeHashEqual(refreshTokenHash, supersededHash),
-        ),
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const refreshTokenHash = hashSecret(input.refreshToken);
+      const client = state.clients.find((candidate) =>
+        safeHashEqual(refreshTokenHash, candidate.refreshTokenHash),
       );
-      if (replayedClient) {
-        replayedClient.revokedAt = now.toISOString();
-        this.saveState(state);
-        throw new CapletsError("AUTH_FAILED", "Remote refresh credential is stale.");
+      if (!client) {
+        const replayedClient = state.clients.find((candidate) =>
+          candidate.supersededRefreshTokenHashes.some((supersededHash) =>
+            safeHashEqual(refreshTokenHash, supersededHash),
+          ),
+        );
+        if (replayedClient) {
+          replayedClient.revokedAt = now.toISOString();
+          this.saveState(state);
+          throw new CapletsError("AUTH_FAILED", "Remote refresh credential is stale.");
+        }
+        throw new CapletsError("AUTH_FAILED", "Remote refresh credential is invalid.");
       }
-      throw new CapletsError("AUTH_FAILED", "Remote refresh credential is invalid.");
-    }
-    validateClient(client, normalizeRemoteProfileHostUrl(input.hostUrl), now, {
-      allowExpiredAccess: true,
-    });
+      validateClient(client, normalizeRemoteProfileHostUrl(input.hostUrl), now, {
+        allowExpiredAccess: true,
+      });
 
-    const accessToken = `cap_remote_access_${randomToken(32)}`;
-    const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
-    client.accessTokenHash = hashSecret(accessToken);
-    client.accessExpiresAt = new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString();
-    client.supersededRefreshTokenHashes.push(client.refreshTokenHash);
-    client.refreshTokenHash = hashSecret(refreshToken);
-    client.lastUsedAt = now.toISOString();
-    this.saveState(state);
-    return credentialsFromClient(client, accessToken, refreshToken);
+      const accessToken = `cap_remote_access_${randomToken(32)}`;
+      const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
+      client.accessTokenHash = hashSecret(accessToken);
+      client.accessExpiresAt = new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString();
+      client.supersededRefreshTokenHashes.push(client.refreshTokenHash);
+      client.refreshTokenHash = hashSecret(refreshToken);
+      client.lastUsedAt = now.toISOString();
+      this.saveState(state);
+      return credentialsFromClient(client, accessToken, refreshToken);
+    });
   }
 
   dumpForTest(): RemoteServerCredentialState {
@@ -273,6 +292,52 @@ export class RemoteServerCredentialStore {
   private statePath(): string {
     return join(this.dir, STATE_FILE);
   }
+
+  private lockPath(): string {
+    return join(this.dir, LOCK_DIR);
+  }
+
+  private withStateLock<T>(operation: () => T): T {
+    this.acquireLock();
+    try {
+      return operation();
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  private acquireLock(): void {
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    const started = Date.now();
+    while (true) {
+      try {
+        mkdirSync(this.lockPath(), { mode: 0o700 });
+        return;
+      } catch (error) {
+        if (!isFileExistsError(error) || Date.now() - started >= LOCK_TIMEOUT_MS) {
+          throw new CapletsError("SERVER_UNAVAILABLE", "Remote credential state is locked.");
+        }
+        sleepSync(10);
+      }
+    }
+  }
+
+  private releaseLock(): void {
+    rmSync(this.lockPath(), { recursive: true, force: true });
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST"
+  );
 }
 
 function validateClient(

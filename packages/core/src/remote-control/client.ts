@@ -9,31 +9,43 @@ export type RemoteControlClientOptions = {
   fetch?: typeof fetch;
 };
 
-export class RemoteControlClient {
-  readonly #baseUrl: URL;
-  readonly #requestInit: RequestInit;
-  readonly #fetch: typeof fetch;
+export type ResolvedRemoteControlClientOptions = RemoteControlClientOptions;
 
-  constructor(options: RemoteControlClientOptions) {
-    this.#baseUrl = options.baseUrl;
-    this.#requestInit = options.requestInit;
-    this.#fetch = options.fetch ?? fetch;
+export class RemoteControlClient {
+  readonly #resolve: () => Promise<ResolvedRemoteControlClientOptions>;
+
+  constructor(
+    options:
+      | RemoteControlClientOptions
+      | { resolve: () => Promise<ResolvedRemoteControlClientOptions> },
+  ) {
+    this.#resolve =
+      "resolve" in options
+        ? options.resolve
+        : async () => ({
+            baseUrl: options.baseUrl,
+            requestInit: options.requestInit,
+            ...(options.fetch ? { fetch: options.fetch } : {}),
+          });
   }
 
   async request(command: RemoteCliCommand, args: RemoteCliRequest["arguments"]): Promise<unknown> {
-    const controlUrl = controlUrlForBase(this.#baseUrl);
+    const resolved = await this.#resolve();
+    const controlUrl = controlUrlForBase(resolved.baseUrl);
+    const requestInit = resolved.requestInit;
+    const fetchImpl = resolved.fetch ?? fetch;
     let response: Response;
     try {
-      response = await this.#fetch(controlUrl, {
-        ...this.#requestInit,
+      response = await fetchImpl(controlUrl, {
+        ...requestInit,
         method: "POST",
-        headers: mergeJsonHeaders(this.#requestInit.headers),
+        headers: mergeJsonHeaders(requestInit.headers),
         body: JSON.stringify({ command, arguments: args }),
       });
     } catch (error) {
       throw new CapletsError(
         "SERVER_UNAVAILABLE",
-        `Could not connect to Caplets server at ${safeBaseUrl(this.#baseUrl)}.`,
+        `Could not connect to Caplets server at ${safeBaseUrl(resolved.baseUrl)}.`,
         toSafeError(error, "SERVER_UNAVAILABLE"),
       );
     }
@@ -41,14 +53,14 @@ export class RemoteControlClient {
     if (response.status === 401 || response.status === 403) {
       throw new CapletsError(
         "AUTH_FAILED",
-        `Caplets remote authentication failed. Run caplets remote login ${safeBaseUrl(this.#baseUrl)}.`,
+        `Caplets remote authentication failed. Run caplets remote login ${safeBaseUrl(resolved.baseUrl)}.`,
       );
     }
 
     if (!response.ok) {
       throw new CapletsError(
         "SERVER_UNAVAILABLE",
-        `Caplets server at ${safeBaseUrl(this.#baseUrl)} returned HTTP ${response.status}.`,
+        `Caplets server at ${safeBaseUrl(resolved.baseUrl)} returned HTTP ${response.status}.`,
       );
     }
 

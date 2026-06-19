@@ -15,6 +15,7 @@ export type AttachServeOptions = ServeOptions & {
   configPath: string;
   projectRoot: string;
   projectConfigPath: string;
+  authDir?: string | undefined;
   selection: ResolvedRemoteSelection;
 };
 
@@ -30,6 +31,7 @@ export async function resolveAttachServeOptions(
     configPath: resolveConfigPath(env.CAPLETS_CONFIG?.trim() || undefined),
     projectRoot,
     projectConfigPath: env.CAPLETS_PROJECT_CONFIG?.trim() || resolveProjectConfigPath(projectRoot),
+    ...(raw.authDir ? { authDir: raw.authDir } : {}),
     selection,
   };
 }

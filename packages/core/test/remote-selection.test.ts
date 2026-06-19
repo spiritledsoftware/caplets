@@ -57,6 +57,113 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("refreshes expired self-hosted credentials before returning the upstream", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        tokenType: "Bearer",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    const resolved = await resolveRemoteSelection(
+      {
+        authDir,
+        fetch: async (url, init) => {
+          expect(String(url)).toBe("https://caplets.example.com/caplets/v1/remote/refresh");
+          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
+          return Response.json({
+            clientId: "rcli_123",
+            clientLabel: "Test Device",
+            accessToken: "new-access",
+            refreshToken: "new-refresh",
+            tokenType: "Bearer",
+            expiresAt: "2999-01-01T00:00:00.000Z",
+          });
+        },
+      },
+      {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "self_hosted_remote",
+      remote: { auth: { type: "bearer", token: "new-access" } },
+    });
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    const status = await store.getSelfHostedProfileStatus({
+      hostUrl: "https://caplets.example.com/caplets",
+    });
+    expect(status).toMatchObject({
+      clientLabel: "Test Device",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+    await expect(store.credentials.load(status!.key)).resolves.toMatchObject({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("serializes concurrent expired self-hosted credential refreshes", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+    let refreshCalls = 0;
+    const fetchRefresh: typeof fetch = async (_url, init) => {
+      refreshCalls += 1;
+      expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-refresh" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return Response.json({
+        clientId: "rcli_123",
+        clientLabel: "Test Device",
+        accessToken: "new-access",
+        refreshToken: "new-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      });
+    };
+
+    const [left, right] = await Promise.all([
+      resolveRemoteSelection(
+        { authDir, fetch: fetchRefresh },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+      resolveRemoteSelection(
+        { authDir, fetch: fetchRefresh },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ]);
+
+    expect(refreshCalls).toBe(1);
+    expect(left).toMatchObject({ remote: { auth: { type: "bearer", token: "new-access" } } });
+    expect(right).toMatchObject({ remote: { auth: { type: "bearer", token: "new-access" } } });
+  });
+
   it("fails closed when self-hosted attach has only legacy env-token state", async () => {
     await expect(
       resolveRemoteSelection(

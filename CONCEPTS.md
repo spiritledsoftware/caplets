@@ -53,3 +53,21 @@ Recovery References are separate from session handles. Possessing a session hand
 ### Progressive Exposure
 
 The Caplets exposure mode where agents discover and call backend operations through a small set of wrapper tools instead of receiving every downstream operation as a separate top-level tool.
+
+## Remote Attach
+
+### Remote Login
+
+The provider-neutral flow that trusts a local Caplets client to a Caplets host, whether the host is self-hosted or Caplets Cloud.
+
+Remote Login stores host credentials in Caplets-owned credential storage so agent configs can launch `caplets attach --remote-url ...` without carrying remote secrets.
+
+### Pairing Code
+
+A short-lived, one-time code minted by a self-hosted Caplets host and exchanged by a client during Remote Login.
+
+Pairing Codes are bootstrap material only. They are not reusable client credentials.
+
+### Remote Profile
+
+The stored local record for a trusted Caplets host, including the normalized host URL, host kind, selected workspace when applicable, and redacted credential status.

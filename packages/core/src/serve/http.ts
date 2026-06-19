@@ -98,7 +98,7 @@ export function createHttpServeApp(
         const code = stringField(parsed, "code");
         const clientLabel = optionalStringField(parsed, "clientLabel");
         const credentials = remoteCredentialStore.exchangePairingCode({
-          hostUrl: publicHostUrl(
+          hostUrl: remoteCredentialHostUrl(
             c.req.url,
             paths.base,
             options.publicOrigin,
@@ -126,7 +126,7 @@ export function createHttpServeApp(
         const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
         const refreshToken = stringField(parsed, "refreshToken");
         const credentials = remoteCredentialStore.refreshClientCredentials({
-          hostUrl: publicHostUrl(
+          hostUrl: remoteCredentialHostUrl(
             c.req.url,
             paths.base,
             options.publicOrigin,
@@ -350,7 +350,7 @@ function controlContext(
     authFlowStore,
     controlCallbackBaseUrl: new URL(
       controlPath,
-      publicOrigin ?? publicRequestOrigin(requestUrl, "/", trustProxy, header),
+      publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
     ).toString(),
     writeErr,
   };
@@ -358,7 +358,6 @@ function controlContext(
 
 function publicRequestOrigin(
   requestUrl: string,
-  basePath: string,
   trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): string {
@@ -385,8 +384,24 @@ function publicHostUrl(
 ): string {
   return new URL(
     basePath,
-    publicOrigin ?? publicRequestOrigin(requestUrl, basePath, trustProxy, header),
+    publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
   ).toString();
+}
+
+function remoteCredentialHostUrl(
+  requestUrl: string,
+  basePath: string,
+  publicOrigin: string | undefined,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): string {
+  if (trustProxy && !publicOrigin) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth with --trust-proxy requires CAPLETS_SERVER_URL.",
+    );
+  }
+  return publicHostUrl(requestUrl, basePath, publicOrigin, trustProxy, header);
 }
 
 function firstForwardedValue(value: string | undefined): string | undefined {
@@ -523,13 +538,6 @@ export async function serveHttp(
   const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
-    ...(options.remoteCredentialStateDir
-      ? {
-          remoteCredentialStore: new RemoteServerCredentialStore({
-            dir: options.remoteCredentialStateDir,
-          }),
-        }
-      : {}),
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
@@ -560,13 +568,6 @@ export async function serveHttpWithSessionFactory(
   const app = createHttpServeApp(options, engine, {
     writeErr,
     exposeAttach: false,
-    ...(options.remoteCredentialStateDir
-      ? {
-          remoteCredentialStore: new RemoteServerCredentialStore({
-            dir: options.remoteCredentialStateDir,
-          }),
-        }
-      : {}),
     sessionFactory: createSession,
     control: {
       ...resolvedEngineOptions,
@@ -672,7 +673,7 @@ function routeAuth(
     }
     try {
       remoteCredentialStore.validateAccessToken({
-        hostUrl: publicHostUrl(
+        hostUrl: remoteCredentialHostUrl(
           c.req.url,
           basePath,
           options.publicOrigin,

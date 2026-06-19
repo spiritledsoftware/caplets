@@ -23,6 +23,9 @@ import {
 } from "./profiles";
 import { hostedCloudWorkspaceFromRemoteUrl, normalizeRemoteProfileHostUrl } from "./options";
 
+const PROFILE_LOCK_DIR = "remote-profiles.lock";
+const PROFILE_LOCK_TIMEOUT_MS = 2_000;
+
 type StoredRemoteProfile = {
   version: 1;
   kind: "cloud" | "self-hosted";
@@ -70,11 +73,62 @@ export type SelfHostedProfileLookup = {
   hostUrl: string;
 };
 
+export type RefreshSelfHostedProfileInput = SelfHostedProfileLookup & {
+  needsRefresh: (credential: RemoteProfileCredential) => boolean;
+  refresh: (
+    status: RemoteProfileStatus,
+    credential: RemoteProfileCredential,
+  ) => Promise<SaveSelfHostedProfileInput>;
+};
+
 export type RemoteProfileStoreOptions = {
   root?: string | undefined;
   credentials?: FileRemoteCredentialStore | undefined;
   legacyCloudAuthStore?: CloudAuthStore | undefined;
 };
+
+export type CreateRemoteProfileStoreOptions = {
+  authDir?: string | undefined;
+  env?: NodeJS.ProcessEnv | Record<string, string | undefined> | undefined;
+  legacyCloudAuthStore?: CloudAuthStore | undefined;
+};
+
+export function createRemoteProfileStore(
+  options: CreateRemoteProfileStoreOptions = {},
+): FileRemoteProfileStore {
+  const env = options.env ?? process.env;
+  const authRoot =
+    options.authDir ??
+    (env.CAPLETS_CLOUD_AUTH_PATH ? dirname(env.CAPLETS_CLOUD_AUTH_PATH) : undefined);
+  return new FileRemoteProfileStore({
+    root: join(authRoot ?? DEFAULT_AUTH_DIR, "remote-profiles"),
+    legacyCloudAuthStore:
+      options.legacyCloudAuthStore ??
+      new CloudAuthStore(
+        options.authDir ? { path: join(options.authDir, "cloud-auth.json") } : { env },
+      ),
+  });
+}
+
+export function cloudCredentialsFromRemoteProfile(
+  status: RemoteProfileStatus,
+  credential: RemoteProfileCredential,
+): CloudAuthCredentials {
+  return {
+    version: 2,
+    cloudUrl: status.hostUrl,
+    workspaceId: status.workspaceId ?? "",
+    ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
+    accessToken: credential.accessToken ?? "",
+    refreshToken: credential.refreshToken ?? "",
+    expiresAt: credential.expiresAt ?? new Date(0).toISOString(),
+    scope: credential.scope,
+    tokenType: credential.tokenType,
+    deviceName: status.clientLabel,
+    createdAt: status.createdAt,
+    lastRefreshAt: status.updatedAt,
+  };
+}
 
 export class FileRemoteProfileStore {
   readonly root: string;
@@ -90,24 +144,7 @@ export class FileRemoteProfileStore {
   }
 
   async saveSelfHostedProfile(input: SaveSelfHostedProfileInput): Promise<RemoteProfileStatus> {
-    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-    const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
-    const now = (input.now ?? new Date()).toISOString();
-    const existing = this.readProfile(key);
-    const profile: StoredRemoteProfile = {
-      version: 1,
-      kind: "self-hosted",
-      key,
-      hostUrl,
-      clientId: input.clientId,
-      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-
-    await this.credentials.save(key, input.credentials);
-    this.writeJson(this.profilePath(key), profile);
-    return await this.statusFor(profile, input.credentials, false);
+    return await this.withMutationLock(async () => await this.writeSelfHostedProfile(input));
   }
 
   async getSelfHostedProfileStatus(
@@ -121,46 +158,72 @@ export class FileRemoteProfileStore {
   }
 
   async logoutSelfHostedProfile(input: SelfHostedProfileLookup): Promise<boolean> {
-    const key = remoteProfileKey({
-      kind: "self-hosted",
-      hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    return await this.withMutationLock(async () => {
+      const key = remoteProfileKey({
+        kind: "self-hosted",
+        hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+      });
+      const profile = this.readProfile(key);
+      if (!profile) return false;
+      await this.credentials.delete(key);
+      rmSync(this.profilePath(key), { force: true });
+      return true;
     });
-    const profile = this.readProfile(key);
-    if (!profile) return false;
-    await this.credentials.delete(key);
-    rmSync(this.profilePath(key), { force: true });
-    return true;
+  }
+
+  async refreshSelfHostedProfileIfNeeded(
+    input: RefreshSelfHostedProfileInput,
+  ): Promise<{ status: RemoteProfileStatus; credential: RemoteProfileCredential } | undefined> {
+    return await this.withMutationLock(async () => {
+      const key = remoteProfileKey({
+        kind: "self-hosted",
+        hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+      });
+      const profile = this.readProfile(key);
+      if (!profile) return undefined;
+      const credential = await this.credentials.load(key);
+      if (!credential?.accessToken) return undefined;
+      const status = await this.statusFor(profile, credential, false);
+      if (!input.needsRefresh(credential)) return { status, credential };
+      const refreshed = await input.refresh(status, credential);
+      const refreshedStatus = await this.writeSelfHostedProfile(refreshed);
+      const refreshedCredential = await this.credentials.load(refreshedStatus.key);
+      if (!refreshedCredential?.accessToken) return undefined;
+      return { status: refreshedStatus, credential: refreshedCredential };
+    });
   }
 
   async saveCloudProfile(input: SaveCloudProfileInput): Promise<RemoteProfileStatus> {
-    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-    const workspace = cloudWorkspace(input);
-    const key = remoteProfileKey({ kind: "cloud", hostUrl, workspace });
-    const now = (input.now ?? new Date()).toISOString();
-    const existing = this.readProfile(key);
-    const profile: StoredRemoteProfile = {
-      version: 1,
-      kind: "cloud",
-      key,
-      hostUrl,
-      workspaceId: input.workspaceId,
-      ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
-      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
+    return await this.withMutationLock(async () => {
+      const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+      const workspace = cloudWorkspace(input);
+      const key = remoteProfileKey({ kind: "cloud", hostUrl, workspace });
+      const now = (input.now ?? new Date()).toISOString();
+      const existing = this.readProfile(key);
+      const profile: StoredRemoteProfile = {
+        version: 1,
+        kind: "cloud",
+        key,
+        hostUrl,
+        workspaceId: input.workspaceId,
+        ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
+        ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
 
-    await this.credentials.save(key, input.credentials);
-    this.writeJson(this.profilePath(key), profile);
-    this.writeJson(this.selectedWorkspacePath(hostUrl), {
-      version: 1,
-      hostUrl,
-      workspace,
-      profileKey: key,
-      selectedAt: now,
-    } satisfies SelectedCloudWorkspace);
+      await this.credentials.save(key, input.credentials);
+      this.writeJson(this.profilePath(key), profile);
+      this.writeJson(this.selectedWorkspacePath(hostUrl), {
+        version: 1,
+        hostUrl,
+        workspace,
+        profileKey: key,
+        selectedAt: now,
+      } satisfies SelectedCloudWorkspace);
 
-    return await this.statusFor(profile, input.credentials, true);
+      return await this.statusFor(profile, input.credentials, true);
+    });
   }
 
   async getCloudProfileStatus(input: CloudProfileLookup): Promise<RemoteProfileStatus | undefined> {
@@ -198,28 +261,58 @@ export class FileRemoteProfileStore {
     );
   }
 
-  async logoutCloudProfile(input: CloudProfileLookup): Promise<boolean> {
-    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-    const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
-    const selected = this.readSelectedWorkspace(hostUrl);
-    let key: string | undefined;
-    if (workspace) {
-      key = this.listProfilesForHost(hostUrl).find((profile) =>
-        profileMatchesWorkspace(profile, workspace),
-      )?.key;
-    } else if (selected) {
-      key = selected.profileKey;
-    } else if (this.listProfilesForHost(hostUrl).length > 0) {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "Cloud Remote Profile requires a selected or explicit workspace.",
+  async listProfileStatuses(): Promise<RemoteProfileStatus[]> {
+    const dir = this.profilesDir();
+    if (!existsSync(dir)) return [];
+    const statuses = await Promise.all(
+      readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => this.readProfileFile(join(dir, entry.name)))
+        .filter((profile): profile is StoredRemoteProfile => Boolean(profile))
+        .map(async (profile) => {
+          const selected =
+            profile.kind === "cloud"
+              ? this.readSelectedWorkspace(profile.hostUrl)?.profileKey === profile.key
+              : false;
+          return await this.statusFor(profile, undefined, selected);
+        }),
+    );
+    return statuses.sort((left, right) => {
+      const host = left.hostUrl.localeCompare(right.hostUrl);
+      if (host !== 0) return host;
+      return (left.workspaceSlug ?? left.workspaceId ?? "").localeCompare(
+        right.workspaceSlug ?? right.workspaceId ?? "",
       );
-    }
-    if (!key) return false;
-    await this.credentials.delete(key);
-    rmSync(this.profilePath(key), { force: true });
-    if (selected?.profileKey === key) rmSync(this.selectedWorkspacePath(hostUrl), { force: true });
-    return true;
+    });
+  }
+
+  async logoutCloudProfile(input: CloudProfileLookup): Promise<boolean> {
+    return await this.withMutationLock(async () => {
+      const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+      const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
+      const selected = this.readSelectedWorkspace(hostUrl);
+      let key: string | undefined;
+      if (workspace) {
+        key = this.listProfilesForHost(hostUrl).find((profile) =>
+          profileMatchesWorkspace(profile, workspace),
+        )?.key;
+      } else if (selected) {
+        key = selected.profileKey;
+      } else if (this.listProfilesForHost(hostUrl).length > 0) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Cloud Remote Profile requires a selected or explicit workspace.",
+        );
+      }
+      if (!key) return false;
+      const profile = this.readProfile(key);
+      await this.credentials.delete(key);
+      rmSync(this.profilePath(key), { force: true });
+      if (selected?.profileKey === key)
+        rmSync(this.selectedWorkspacePath(hostUrl), { force: true });
+      await this.clearMatchingLegacyCloudAuth(hostUrl, profile);
+      return true;
+    });
   }
 
   async clearSelectedCloudWorkspace(hostUrlInput: string): Promise<boolean> {
@@ -261,6 +354,23 @@ export class FileRemoteProfileStore {
     });
   }
 
+  private async clearMatchingLegacyCloudAuth(
+    hostUrl: string,
+    profile: StoredRemoteProfile | undefined,
+  ): Promise<void> {
+    const legacy = await this.legacyCloudAuthStore?.load();
+    if (!legacy) return;
+    if (normalizeRemoteProfileHostUrl(legacy.cloudUrl) !== hostUrl) return;
+    if (
+      profile?.workspaceId &&
+      legacy.workspaceId !== profile.workspaceId &&
+      legacy.workspaceSlug !== profile.workspaceSlug
+    ) {
+      return;
+    }
+    await this.legacyCloudAuthStore?.clear();
+  }
+
   private async statusByKey(
     key: string,
     selected: boolean,
@@ -291,6 +401,29 @@ export class FileRemoteProfileStore {
       });
     if (credential !== undefined) return build(credential);
     return build(await this.credentials.load(profile.key));
+  }
+
+  private async writeSelfHostedProfile(
+    input: SaveSelfHostedProfileInput,
+  ): Promise<RemoteProfileStatus> {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
+    const now = (input.now ?? new Date()).toISOString();
+    const existing = this.readProfile(key);
+    const profile: StoredRemoteProfile = {
+      version: 1,
+      kind: "self-hosted",
+      key,
+      hostUrl,
+      clientId: input.clientId,
+      ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await this.credentials.save(key, input.credentials);
+    this.writeJson(this.profilePath(key), profile);
+    return await this.statusFor(profile, input.credentials, false);
   }
 
   private listProfilesForHost(hostUrl: string): StoredRemoteProfile[] {
@@ -351,6 +484,52 @@ export class FileRemoteProfileStore {
     }
     renameSync(tempPath, path);
   }
+
+  private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    await this.acquireMutationLock();
+    try {
+      return await operation();
+    } finally {
+      this.releaseMutationLock();
+    }
+  }
+
+  private async acquireMutationLock(): Promise<void> {
+    mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    const started = Date.now();
+    while (true) {
+      try {
+        mkdirSync(this.lockPath(), { mode: 0o700 });
+        return;
+      } catch (error) {
+        if (!isFileExistsError(error) || Date.now() - started >= PROFILE_LOCK_TIMEOUT_MS) {
+          throw new CapletsError("SERVER_UNAVAILABLE", "Remote Profile store is locked.");
+        }
+        await sleep(10);
+      }
+    }
+  }
+
+  private releaseMutationLock(): void {
+    rmSync(this.lockPath(), { recursive: true, force: true });
+  }
+
+  private lockPath(): string {
+    return join(this.root, PROFILE_LOCK_DIR);
+  }
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST"
+  );
 }
 
 function cloudWorkspace(input: SaveCloudProfileInput): string {

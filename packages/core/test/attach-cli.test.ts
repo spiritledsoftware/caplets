@@ -50,6 +50,7 @@ describe("caplets attach CLI", () => {
     expect(served).toHaveLength(1);
     expect(served[0]).toMatchObject({
       transport: "stdio",
+      authDir,
       selection: { kind: "self_hosted_remote" },
     });
   });

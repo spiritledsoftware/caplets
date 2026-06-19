@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 
 const dirs: string[] = [];
@@ -19,6 +20,7 @@ describe("caplets remote CLI", () => {
     const issued = server.createPairingCode({ hostUrl: "https://caplets.example.com/caplets" });
     const requests: Array<{ url: string; body: unknown }> = [];
     const out: string[] = [];
+    const err: string[] = [];
 
     await runCli(
       [
@@ -44,6 +46,7 @@ describe("caplets remote CLI", () => {
           return Response.json(credentials);
         },
         writeOut: (value) => out.push(value),
+        writeErr: (value) => err.push(value),
       },
     );
 
@@ -61,6 +64,8 @@ describe("caplets remote CLI", () => {
       clientLabel: "Test Device",
     });
     expect(out.join("")).not.toContain(issued.code);
+    expect(err.join("")).toContain("--code may store the Pairing Code in shell history");
+    expect(err.join("")).not.toContain(issued.code);
 
     const statusOut: string[] = [];
     await runCli(["remote", "status", "https://caplets.example.com/caplets", "--json"], {
@@ -110,6 +115,26 @@ describe("caplets remote CLI", () => {
       hostUrl: "https://caplets.example.com/",
       kind: "self-hosted",
     });
+  });
+
+  it("prints paired self-hosted client labels without terminal control bytes", async () => {
+    const serverStateDir = tempDir("caplets-remote-cli-server-");
+    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
+    const issued = server.createPairingCode({ hostUrl: "https://caplets.example.com" });
+    server.exchangePairingCode({
+      hostUrl: "https://caplets.example.com",
+      code: issued.code,
+      clientLabel: `Bad${String.fromCharCode(0x1b)}[31mName${String.fromCharCode(0x07)}`,
+    });
+    const out: string[] = [];
+
+    await runCli(["remote", "host", "clients", "--state-path", serverStateDir], {
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).not.toContain(String.fromCharCode(0x1b));
+    expect(out.join("")).not.toContain(String.fromCharCode(0x07));
+    expect(out.join("")).toContain("Bad?[31mName?");
   });
 
   it("routes Cloud login through Remote Profiles instead of legacy Cloud Auth", async () => {
@@ -181,6 +206,41 @@ describe("caplets remote CLI", () => {
       kind: "cloud",
       workspaceSlug: "team",
     });
+  });
+
+  it("lists saved Remote Profiles without requiring a host URL", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "self-hosted-access",
+        refreshToken: "self-hosted-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+    const out: string[] = [];
+
+    await runCli(["remote", "status", "--json"], {
+      authDir,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      profiles: [
+        {
+          authenticated: true,
+          kind: "self-hosted",
+          hostUrl: "https://caplets.example.com/caplets",
+          clientLabel: "Test Device",
+        },
+      ],
+    });
+    expect(out.join("")).not.toContain("self-hosted-access");
+    expect(out.join("")).not.toContain("self-hosted-refresh");
   });
 });
 

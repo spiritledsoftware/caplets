@@ -37,7 +37,6 @@ import {
 } from "./cli/completion";
 import { CloudAuthClient } from "./cloud-auth/client";
 import { openBrowserUrl } from "./cloud-auth/open-url";
-import { CloudAuthStore, type CloudAuthCredentials } from "./cloud-auth/store";
 import {
   formatCapletList,
   formatConfigPaths,
@@ -74,13 +73,16 @@ import { ProjectBindingError } from "./project-binding/errors";
 import type { ProjectBindingWebSocketFactory } from "./project-binding/transport";
 import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
-import { FileRemoteProfileStore } from "./remote/profile-store";
+import {
+  cloudCredentialsFromRemoteProfile,
+  createRemoteProfileStore,
+  type FileRemoteProfileStore,
+} from "./remote/profile-store";
 import { RemoteServerCredentialStore } from "./remote/server-credential-store";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
   isCapletsCloudUrl,
   normalizeRemoteProfileHostUrl,
-  resolveCapletsRemote,
   resolveRemoteMode,
 } from "./remote/options";
 import type { RemoteProfileCredential, RemoteProfileStatus } from "./remote/profiles";
@@ -239,15 +241,7 @@ function remoteProfileStore(
   authDir: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): FileRemoteProfileStore {
-  const authRoot =
-    authDir ?? (env.CAPLETS_CLOUD_AUTH_PATH ? dirname(env.CAPLETS_CLOUD_AUTH_PATH) : undefined);
-  const root = join(authRoot ?? DEFAULT_AUTH_DIR, "remote-profiles");
-  return new FileRemoteProfileStore({
-    root,
-    legacyCloudAuthStore: new CloudAuthStore(
-      authDir ? { path: join(authDir, "cloud-auth.json") } : { env },
-    ),
-  });
+  return createRemoteProfileStore({ authDir, env });
 }
 
 function remoteServerCredentialStore(
@@ -376,8 +370,14 @@ async function loginCloudRemoteProfile(
 async function pairingCodeFromOptions(
   options: { code?: string; codeStdin?: boolean },
   readStdin: (() => Promise<string>) | undefined,
+  writeErr: (value: string) => void,
 ): Promise<string> {
-  if (options.code?.trim()) return options.code.trim();
+  if (options.code?.trim()) {
+    writeErr(
+      "Warning: --code may store the Pairing Code in shell history; prefer the hidden prompt or --code-stdin for automation.\n",
+    );
+    return options.code.trim();
+  }
   if (options.codeStdin) {
     const value = readStdin ? await readStdin() : await readAllStdin();
     const code = value.trim();
@@ -500,31 +500,20 @@ async function loadCloudRemoteProfileCredentials(
   return { status, credential };
 }
 
-function cloudCredentialsFromRemoteProfile(
-  status: RemoteProfileStatus,
-  credential: RemoteProfileCredential,
-): CloudAuthCredentials {
-  return {
-    version: 2,
-    cloudUrl: status.hostUrl,
-    workspaceId: status.workspaceId ?? "",
-    ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
-    accessToken: credential.accessToken ?? "",
-    refreshToken: credential.refreshToken ?? "",
-    expiresAt: credential.expiresAt ?? new Date(0).toISOString(),
-    scope: credential.scope,
-    tokenType: credential.tokenType,
-    deviceName: status.clientLabel,
-    createdAt: status.createdAt,
-    lastRefreshAt: status.updatedAt,
-  };
-}
-
 function defaultCloudUrl(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
   cloudUrl?: string,
 ): string {
   return cloudUrl ?? env.CAPLETS_CLOUD_URL ?? "https://cloud.caplets.dev";
+}
+
+function terminalSafeText(value: string): string {
+  let safe = "";
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    safe += code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? "?" : char;
+  }
+  return safe;
 }
 
 function numberEnv(value: string | undefined, fallback: number): number {
@@ -1086,7 +1075,7 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
 
-        const code = await pairingCodeFromOptions(options, io.readStdin);
+        const code = await pairingCodeFromOptions(options, io.readStdin, writeErr);
         const exchangeUrl = appendBasePath(
           new URL(normalizeRemoteProfileHostUrl(url)),
           "v1/remote/pairing/exchange",
@@ -1126,11 +1115,19 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .action(async (url: string | undefined, options: { workspace?: string; json?: boolean }) => {
       if (!url) {
+        const store = remoteProfileStore(io.authDir, env);
+        const profiles = await store.listProfileStatuses();
         if (options.json) {
-          writeOut(`${JSON.stringify({ profiles: [] }, null, 2)}\n`);
+          writeOut(`${JSON.stringify({ profiles }, null, 2)}\n`);
           return;
         }
-        writeOut("Pass a Caplets host URL to inspect Remote Login status.\n");
+        if (profiles.length === 0) {
+          writeOut("No saved Remote Login profiles.\n");
+          return;
+        }
+        for (const profile of profiles) {
+          writeRemoteStatus(profile, false, writeOut);
+        }
         return;
       }
       const store = remoteProfileStore(io.authDir, env);
@@ -1221,7 +1218,7 @@ export function createProgram(io: CliIO = {}): Command {
       }
       for (const client of clients) {
         writeOut(
-          `${client.clientId}\t${client.clientLabel}\t${client.hostUrl}\t${client.revokedAt ? "revoked" : "active"}\n`,
+          `${client.clientId}\t${terminalSafeText(client.clientLabel)}\t${client.hostUrl}\t${client.revokedAt ? "revoked" : "active"}\n`,
         );
       }
     });
@@ -2463,8 +2460,29 @@ function remoteClientForCli(io: CliIO): RemoteControlClient | undefined {
   if (resolveRemoteMode({}, env).mode !== "remote") {
     return undefined;
   }
-  const server = resolveCapletsRemote(io.fetch ? { fetch: io.fetch } : {}, env);
-  return new RemoteControlClient(server);
+  return new RemoteControlClient({
+    resolve: async () => {
+      const selection = await resolveRemoteSelection(
+        {
+          mode: "remote",
+          ...(io.authDir ? { authDir: io.authDir } : {}),
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+        },
+        env,
+      );
+      if (selection.kind !== "self_hosted_remote") {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "--remote requires CAPLETS_MODE=remote and a self-hosted CAPLETS_REMOTE_URL",
+        );
+      }
+      return {
+        baseUrl: selection.remote.baseUrl,
+        requestInit: selection.remote.requestInit,
+        ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
+      };
+    },
+  });
 }
 
 async function openBrowser(url: string): Promise<void> {

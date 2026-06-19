@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { CapletsError } from "../errors";
+import { isCapletsCloudUrl } from "../remote/options";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
 
@@ -315,6 +316,7 @@ function remoteSetupDefinition(
     nonEmpty(options.serverUrl) ??
     nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
     "https://caplets.example.com/caplets";
+  const mode = isCapletsCloudUrl(serverUrl) ? "cloud" : "remote";
 
   if (id === "opencode") {
     return {
@@ -329,7 +331,7 @@ function remoteSetupDefinition(
       ],
       nextSteps: [
         `Run caplets remote login ${serverUrl} before starting OpenCode.`,
-        `Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        `Run OpenCode with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }
@@ -347,7 +349,7 @@ function remoteSetupDefinition(
       ],
       nextSteps: [
         `Run caplets remote login ${serverUrl} before starting Pi.`,
-        `Start Pi with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
+        `Start Pi with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }

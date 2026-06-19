@@ -6,14 +6,16 @@ import {
   resolveRemoteMode,
   type CapletsRemoteAuth,
   type CapletsRemoteEnv,
-  type CapletsRemoteInput,
 } from "../remote/options";
 
 type CapletsMode = "auto" | "local" | "remote" | "cloud";
 
 export type NativeCapletsMode = CapletsMode;
 
-export type NativeRemoteCapletsOptions = CapletsRemoteInput & {
+export type NativeRemoteCapletsOptions = {
+  url?: string;
+  workspace?: string;
+  fetch?: typeof fetch;
   pollIntervalMs?: number;
   cloud?: NativeCloudPresenceInput;
 };
@@ -86,7 +88,14 @@ export function resolveNativeCapletsServiceOptions(
           optionalWorkspace(input, env).workspace,
           remoteFetch,
         )
-      : resolveCapletsRemote(input.remote, env);
+      : resolveCapletsRemote(
+          {
+            ...(input.remote?.url ? { url: input.remote.url } : {}),
+            ...(input.remote?.workspace ? { workspace: input.remote.workspace } : {}),
+            ...(remoteFetch ? { fetch: remoteFetch } : {}),
+          },
+          env,
+        );
 
   const cloud = resolveNativeCloudPresence(input.remote?.cloud, env);
   return {

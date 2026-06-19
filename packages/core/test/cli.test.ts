@@ -16,6 +16,7 @@ import { initConfig, installCaplets, normalizeGitRepo, runCli } from "../src/cli
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
@@ -711,6 +712,7 @@ describe("cli init", () => {
 
   it("gets an MCP prompt with split caplet and prompt arguments", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-remote-prompt-"));
+    const authDir = join(dir, "auth");
     const requests: unknown[] = [];
     const out: string[] = [];
     const fetchMock = vi.fn(
@@ -730,6 +732,19 @@ describe("cli init", () => {
     );
 
     try {
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: "http://127.0.0.1:5387",
+        clientId: "rcli_test",
+        clientLabel: "Remote Prompt Test",
+        credentials: {
+          accessToken: "remote-profile-access-token",
+          refreshToken: "remote-profile-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
       await runCli(
         [
           "get-prompt",
@@ -747,6 +762,7 @@ describe("cli init", () => {
             CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
             CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
           },
+          authDir,
           fetch: fetchMock,
           writeOut: (value) => out.push(value),
         },
@@ -2840,6 +2856,36 @@ describe("cli setup", () => {
     });
     expect(out.join("")).not.toContain("CAPLETS_REMOTE_TOKEN");
     expect(out.join("")).not.toContain("CAPLETS_REMOTE_PASSWORD");
+  });
+
+  it("uses cloud mode for Cloud OpenCode and Pi setup", async () => {
+    const openCodeOut: string[] = [];
+    const piOut: string[] = [];
+
+    await runCli(
+      ["setup", "opencode", "--remote-url", "https://cloud.caplets.dev", "--format", "json"],
+      {
+        writeOut: (value) => openCodeOut.push(value),
+        runSetupCommand: async () => ({ stdout: "", stderr: "" }),
+      },
+    );
+    await runCli(["setup", "pi", "--remote-url", "https://cloud.caplets.dev", "--format", "json"], {
+      writeOut: (value) => piOut.push(value),
+      runSetupCommand: async () => ({ stdout: "", stderr: "" }),
+    });
+
+    expect(JSON.parse(openCodeOut.join(""))).toMatchObject({
+      nextSteps: [
+        "Run caplets remote login https://cloud.caplets.dev before starting OpenCode.",
+        "Run OpenCode with CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
+      ],
+    });
+    expect(JSON.parse(piOut.join(""))).toMatchObject({
+      nextSteps: [
+        "Run caplets remote login https://cloud.caplets.dev before starting Pi.",
+        "Start Pi with CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL=https://cloud.caplets.dev.",
+      ],
+    });
   });
 
   it("adds remote-backed Caplets to Codex MCP config", async () => {

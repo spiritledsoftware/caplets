@@ -234,6 +234,104 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("requires explicit public origin before trusted proxy headers select remote credential audiences", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const issued = store.createPairingCode({ hostUrl: "https://caplets.example.com/" });
+    const app = createHttpServeApp(
+      httpOptions({ auth: { type: "remote_credentials" }, trustProxy: true }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: store,
+      },
+    );
+
+    const exchanged = await app.request("http://10.0.0.5:5387/v1/remote/pairing/exchange", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "caplets.example.com",
+      },
+      body: JSON.stringify({ code: issued.code }),
+    });
+
+    expect(exchanged.status).toBe(400);
+    await expect(exchanged.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID" },
+    });
+
+    const refreshed = await app.request("http://10.0.0.5:5387/v1/remote/refresh", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "caplets.example.com",
+      },
+      body: JSON.stringify({ refreshToken: "unused-refresh-token" }),
+    });
+    expect(refreshed.status).toBe(400);
+    await expect(refreshed.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REQUEST_INVALID" },
+    });
+    await engine.close();
+  });
+
+  it("uses explicit public origin for remote credential audiences behind trusted proxies", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const issued = store.createPairingCode({ hostUrl: "https://caplets.example.com/" });
+    const app = createHttpServeApp(
+      httpOptions({
+        auth: { type: "remote_credentials" },
+        publicOrigin: "https://caplets.example.com",
+        trustProxy: true,
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: store,
+      },
+    );
+
+    const exchanged = await app.request("http://10.0.0.5:5387/v1/remote/pairing/exchange", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "attacker.example.com",
+      },
+      body: JSON.stringify({ code: issued.code }),
+    });
+    expect(exchanged.status).toBe(200);
+    const credentials = (await exchanged.json()) as { accessToken: string; refreshToken: string };
+
+    const refreshed = await app.request("http://10.0.0.5:5387/v1/remote/refresh", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "attacker.example.com",
+      },
+      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+    });
+    expect(refreshed.status).toBe(200);
+    const nextCredentials = (await refreshed.json()) as { accessToken: string };
+
+    const attach = await app.request("http://10.0.0.5:5387/v1/attach/manifest", {
+      headers: {
+        authorization: `Bearer ${nextCredentials.accessToken}`,
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "attacker.example.com",
+      },
+    });
+    expect(attach.status).toBe(200);
+    await engine.close();
+  });
+
   it("rejects Basic Auth on attach manifest when remote credentials are required", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(

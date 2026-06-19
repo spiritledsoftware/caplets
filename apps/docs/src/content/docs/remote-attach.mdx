@@ -24,7 +24,7 @@ Codex:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach"]
+args = ["attach", "--remote-url", "https://caplets.example.com/caplets"]
 ```
 
 Generic MCP JSON:
@@ -34,7 +34,7 @@ Generic MCP JSON:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach"]
+      "args": ["attach", "--remote-url", "https://caplets.example.com/caplets"]
     }
   }
 }
@@ -42,12 +42,24 @@ Generic MCP JSON:
 
 ## Remote Login
 
-For a self-hosted remote, log in once and then configure the agent to launch attach:
+For a self-hosted remote, first create a short-lived Pairing Code on the server:
+
+```sh
+caplets remote host pair --host-url https://caplets.example.com/caplets
+```
+
+If the server uses a non-default credential state directory, pass the same directory with
+`--state-path` that the server uses for `caplets serve --remote-state-path`.
+
+Then log in once on the client and configure the agent to launch attach:
 
 ```sh
 caplets remote login https://caplets.example.com/caplets
 caplets attach --remote-url https://caplets.example.com/caplets
 ```
+
+Enter the Pairing Code at the hidden prompt from `caplets remote login`. Use
+`--code-stdin` for automation instead of putting Pairing Codes in shell history.
 
 For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
 

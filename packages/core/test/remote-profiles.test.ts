@@ -263,6 +263,54 @@ describe("Remote Profile storage", () => {
       ),
     ).resolves.toMatchObject({ accessToken: "legacy_access", refreshToken: "legacy_refresh" });
   });
+
+  it("clears matching legacy Cloud Auth when logging out a migrated Cloud Remote Profile", async () => {
+    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+    const legacy = new CloudAuthStore({ path: legacyPath });
+    await legacy.save({
+      ...legacyCloudCredentials,
+      cloudUrl: "https://cloud.caplets.dev",
+      workspaceSlug: "team",
+    });
+    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
+    await store.getCloudProfileStatus({
+      hostUrl: "https://cloud.caplets.dev",
+      workspace: "team",
+    });
+
+    await expect(
+      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
+    ).resolves.toBe(true);
+
+    expect(existsSync(legacyPath)).toBe(false);
+    await expect(
+      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("keeps mismatched legacy Cloud Auth when logging out a different workspace profile", async () => {
+    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+    const legacy = new CloudAuthStore({ path: legacyPath });
+    await legacy.save({
+      ...legacyCloudCredentials,
+      cloudUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_other",
+      workspaceSlug: "other",
+    });
+    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_123",
+      workspaceSlug: "team",
+      credentials: cloudCredentials,
+    });
+
+    await expect(
+      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
+    ).resolves.toBe(true);
+
+    expect(existsSync(legacyPath)).toBe(true);
+  });
 });
 
 describe("Remote Profile helpers", () => {

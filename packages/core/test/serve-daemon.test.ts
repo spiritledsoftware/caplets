@@ -421,11 +421,14 @@ describe("daemon paths and config", () => {
     }
   });
 
-  it("does not emit auth flags for default unauthenticated loopback serve", () => {
+  it("emits remote credential state and no Basic Auth flags for default daemon serve", () => {
     const serve = resolveDaemonHttpServeOptions({});
 
-    expect(daemonServeArgs(serve)).not.toContain("--user");
-    expect(daemonServeArgs(serve)).not.toContain("--password");
+    const args = daemonServeArgs(serve);
+    expect(args).toContain("--remote-state-path");
+    expect(args).toContain(serve.remoteCredentialStateDir);
+    expect(args).not.toContain("--user");
+    expect(args).not.toContain("--password");
   });
 
   it("validates updates to running daemons on a temporary loopback port", async () => {

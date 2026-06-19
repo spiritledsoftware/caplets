@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { createNativeCapletsService } from "../native/service";
 import { findProjectRoot, fingerprintProjectRoot } from "../cloud/project-root";
 import { CloudAuthStore } from "../cloud-auth/store";
@@ -13,7 +13,7 @@ import {
   resolveHostedCloudRemote,
   resolveRemoteMode,
 } from "../remote/options";
-import { FileRemoteProfileStore } from "../remote/profile-store";
+import { createRemoteProfileStore } from "../remote/profile-store";
 import type { RemoteProfileCredential, RemoteProfileStatus } from "../remote/profiles";
 import { resolveCapletsServer } from "../server/options";
 import type { MutagenProjectSyncDoctorData } from "../project-binding/mutagen";
@@ -24,7 +24,6 @@ import { runCodeMode } from "../code-mode/runner";
 import { listCodeModeCallableCaplets } from "../code-mode/api";
 import {
   DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR,
-  DEFAULT_AUTH_DIR,
   resolveConfigPath,
   resolveProjectConfigPath,
 } from "../config/paths";
@@ -296,13 +295,10 @@ async function resolveRemoteLoginSection(
       report: { configured: false, authenticated: false },
     };
   }
-  const store = new FileRemoteProfileStore({
-    root: join(
-      options.authDir ??
-        (env.CAPLETS_CLOUD_AUTH_PATH ? dirname(env.CAPLETS_CLOUD_AUTH_PATH) : DEFAULT_AUTH_DIR),
-      "remote-profiles",
-    ),
-    legacyCloudAuthStore: options.cloudAuthStore ?? new CloudAuthStore({ env }),
+  const store = createRemoteProfileStore({
+    authDir: options.authDir,
+    env,
+    ...(options.cloudAuthStore ? { legacyCloudAuthStore: options.cloudAuthStore } : {}),
   });
   const hostUrl = normalizeRemoteProfileHostUrl(remoteUrl);
   const status = isCapletsCloudUrl(remoteUrl)

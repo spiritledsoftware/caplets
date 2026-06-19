@@ -1,5 +1,5 @@
 import { CapletsError } from "../errors";
-import { parseServerBaseUrl } from "../server/options";
+import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { DEFAULT_AUTH_DIR } from "../config/paths";
 import { join } from "node:path";
 
@@ -84,16 +84,6 @@ export function resolveServeOptions(
     raw.allowUnauthenticatedHttp === true
       ? { type: "development_unauthenticated" }
       : { type: "remote_credentials" };
-  if (
-    !loopback &&
-    auth.type === "development_unauthenticated" &&
-    raw.allowUnauthenticatedHttp !== true
-  ) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Unauthenticated HTTP serving on non-loopback hosts requires --allow-unauthenticated-http.",
-    );
-  }
   return {
     transport,
     host,
@@ -107,11 +97,6 @@ export function resolveServeOptions(
     loopback,
     trustProxy: raw.trustProxy === true,
   };
-}
-
-export function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLocaleLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function parseServeServerUrl(value: string): URL {
