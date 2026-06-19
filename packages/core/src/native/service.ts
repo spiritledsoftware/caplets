@@ -795,6 +795,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
       {
         mode: this.authKind === "hosted_cloud" ? "cloud" : "remote",
         remoteUrl,
+        ...(this.options.remote?.workspace ? { workspace: this.options.remote.workspace } : {}),
         ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
         ...(cloudFetch ? { fetch: cloudFetch } : {}),
       },

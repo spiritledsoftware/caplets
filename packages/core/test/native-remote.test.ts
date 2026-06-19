@@ -1482,6 +1482,48 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("preserves configured Cloud workspace when resolving profile-backed native remotes", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-cloud-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "cloud-access-token",
+        refreshToken: "cloud-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
+    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
+    const manifestUrls: string[] = [];
+    const service = createNativeCapletsService({
+      mode: "cloud",
+      authDir,
+      remote: {
+        url: "https://cloud.caplets.dev",
+        workspace: "team",
+        fetch: (async (input, init) => {
+          manifestUrls.push(String(input));
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cloud-access-token");
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+    });
+
+    try {
+      await service.reload();
+
+      expect(manifestUrls).toContain("https://cloud.caplets.dev/v1/ws/team/attach/manifest");
+      expect(configuredCapletIds(service.listTools())).toContain("remote");
+    } finally {
+      await service.close();
+    }
+  });
+
   it("refreshes saved self-hosted native remote credentials before reloading", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);

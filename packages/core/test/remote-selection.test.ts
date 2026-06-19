@@ -214,6 +214,59 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("honors an explicit Cloud workspace with a bare Cloud URL", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "old-cloud-access",
+        refreshToken: "old-cloud-refresh",
+        expiresAt: "2026-06-03T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
+    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
+
+    const resolved = await resolveRemoteSelection(
+      {
+        authDir,
+        remoteUrl: "https://cloud.caplets.dev",
+        workspace: "team",
+        fetch: async (url, init) => {
+          expect(String(url)).toBe("https://cloud.caplets.dev/api/cloud-client/refresh");
+          expect(JSON.parse(String(init?.body))).toEqual({ refreshToken: "old-cloud-refresh" });
+          return Response.json({
+            status: "authenticated",
+            cloudUrl: "https://cloud.caplets.dev",
+            workspaceId: "workspace_team",
+            workspaceSlug: "team",
+            accessToken: "new-cloud-access",
+            refreshToken: "new-cloud-refresh",
+            expiresAt: "2999-01-01T00:00:00.000Z",
+            scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+            tokenType: "Bearer",
+          });
+        },
+      },
+      {
+        CAPLETS_MODE: "cloud",
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "hosted_cloud",
+      selectedWorkspace: "team",
+      remote: {
+        mcpUrl: new URL("https://cloud.caplets.dev/v1/ws/team/mcp"),
+        auth: { type: "bearer", token: "new-cloud-access" },
+      },
+    });
+  });
+
   it("derives Cloud MCP and Project Binding URLs from the selected workspace", async () => {
     const path = tempCloudAuthPath();
     await new CloudAuthStore({ path }).save(

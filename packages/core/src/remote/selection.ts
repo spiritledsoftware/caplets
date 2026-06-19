@@ -104,21 +104,12 @@ export async function resolveRemoteSelection(
         recoveryCommand: `caplets remote login ${normalizedUrl}`,
       });
     }
-    const accessToken = credential.accessToken;
-    if (!accessToken) {
-      const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-      throw new ProjectBindingError({
-        code: "remote_credentials_required",
-        message: `Remote Login required for ${normalizedUrl}.`,
-        recoveryCommand: `caplets remote login ${normalizedUrl}`,
-      });
-    }
     return {
       kind: "self_hosted_remote",
       remote: resolveCapletsRemote(
         {
           url: remoteUrl,
-          token: accessToken,
+          token: credential.accessToken,
           ...(input.workspace !== undefined ? { workspace: input.workspace } : {}),
           ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
         },
@@ -137,13 +128,17 @@ export async function resolveRemoteSelection(
     );
   }
   const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
+  const explicitWorkspace =
+    input.workspace ?? (workspaceFromRemoteUrl ? undefined : env.CAPLETS_REMOTE_WORKSPACE);
+  const profileWorkspace = workspaceFromRemoteUrl ?? explicitWorkspace;
+  const normalizedRemoteUrl = normalizeRemoteProfileHostUrl(remoteUrl);
   let status = await store.getCloudProfileStatus({
-    hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
-    workspace: workspaceFromRemoteUrl,
+    hostUrl: normalizedRemoteUrl,
+    workspace: profileWorkspace,
   });
-  if (!status && workspaceFromRemoteUrl) {
+  if (!status && profileWorkspace) {
     status = await store.getCloudProfileStatus({
-      hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
+      hostUrl: normalizedRemoteUrl,
     });
   }
   let credential = status ? await store.credentials.load(status.key) : undefined;
@@ -154,8 +149,8 @@ export async function resolveRemoteSelection(
 
   if (credentialsNeedRefresh(credentials)) {
     const refreshed = await store.refreshCloudProfileIfNeeded({
-      hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
-      workspace: workspaceFromRemoteUrl,
+      hostUrl: normalizedRemoteUrl,
+      workspace: profileWorkspace,
       needsRefresh: (candidate) => credentialsNeedRefresh({ expiresAt: candidate.expiresAt ?? "" }),
       refresh: async (candidateStatus, candidateCredential) => {
         const candidateCredentials = cloudCredentialsFromRemoteProfile(
@@ -203,13 +198,13 @@ export async function resolveRemoteSelection(
 
   const selectedWorkspace = credentials.workspaceSlug ?? credentials.workspaceId;
   if (
-    input.workspace &&
-    input.workspace !== credentials.workspaceId &&
-    input.workspace !== credentials.workspaceSlug
+    explicitWorkspace &&
+    explicitWorkspace !== credentials.workspaceId &&
+    explicitWorkspace !== credentials.workspaceSlug
   ) {
     throw projectBindingError(
       "workspace_switch_required",
-      `Requested workspace ${input.workspace} differs from saved Selected Workspace ${selectedWorkspace}.`,
+      `Requested workspace ${explicitWorkspace} differs from saved Selected Workspace ${selectedWorkspace}.`,
     );
   }
 

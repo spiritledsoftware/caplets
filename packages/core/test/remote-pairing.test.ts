@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -235,6 +235,48 @@ describe("self-hosted remote pairing", () => {
     });
 
     expect(readFileSync(statePath, "utf8")).toBe(before);
+  });
+
+  it("prunes superseded refresh token hashes after the retention window", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const issued = store.createPairingCode({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    const credentials = store.exchangePairingCode({
+      hostUrl: "https://caplets.example.com",
+      code: issued.code,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+    const firstRefresh = store.refreshClientCredentials({
+      hostUrl: "https://caplets.example.com",
+      refreshToken: credentials.refreshToken,
+      now: new Date("2026-06-19T12:02:00.000Z"),
+    });
+
+    store.refreshClientCredentials({
+      hostUrl: "https://caplets.example.com",
+      refreshToken: firstRefresh.refreshToken,
+      now: new Date("2026-06-20T13:02:00.000Z"),
+    });
+
+    const client = store.dumpForTest().clients[0] as {
+      supersededRefreshTokenHashes: unknown[];
+    };
+    expect(client.supersededRefreshTokenHashes).toHaveLength(1);
+  });
+
+  it("recovers stale server credential locks left by crashed processes", () => {
+    const dir = tempDir();
+    const lockPath = join(dir, "remote-server-credentials.lock");
+    mkdirSync(lockPath, { recursive: true });
+    const staleTime = new Date(Date.now() - 60_000);
+    utimesSync(lockPath, staleTime, staleTime);
+    const store = new RemoteServerCredentialStore({ dir });
+
+    expect(store.createPairingCode({ hostUrl: "https://caplets.example.com" })).toMatchObject({
+      codeId: expect.any(String),
+    });
   });
 
   it("creates private server-owned state files where supported", () => {

@@ -79,8 +79,9 @@ export function remoteProfileStatus(input: RemoteProfileStatusInput): RemoteProf
   const expired = Number.isFinite(Date.parse(expiresAt ?? ""))
     ? Date.parse(expiresAt ?? "") <= Date.now()
     : false;
+  const hasAccessToken = Boolean(input.credential?.accessToken);
   return {
-    authenticated: Boolean(input.credential) && !expired,
+    authenticated: hasAccessToken && !expired,
     kind: input.kind,
     key,
     hostUrl,

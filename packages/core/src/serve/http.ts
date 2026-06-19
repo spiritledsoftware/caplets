@@ -792,7 +792,8 @@ function remoteCredentialErrorResponse(error: unknown): Response {
     error instanceof CapletsError
       ? toSafeError(error, error.code)
       : toSafeError(error, "AUTH_FAILED");
-  const status = safe.code === "REQUEST_INVALID" ? 400 : 401;
+  const status =
+    safe.code === "REQUEST_INVALID" ? 400 : safe.code === "SERVER_UNAVAILABLE" ? 503 : 401;
   return Response.json({ ok: false, error: safe }, { status });
 }
 

@@ -5,6 +5,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { Buffer } from "node:buffer";
@@ -91,9 +92,11 @@ const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60_000;
 const DEFAULT_PAIRING_CODE_MAX_ATTEMPTS = 5;
 const DEFAULT_ACCESS_TOKEN_TTL_MS = 15 * 60_000;
 const STALE_REFRESH_REVOKE_GRACE_MS = 30_000;
+const SUPERSEDED_REFRESH_TOKEN_RETENTION_MS = 24 * 60 * 60_000;
 const STATE_FILE = "remote-server-credentials.json";
 const LOCK_DIR = "remote-server-credentials.lock";
 const LOCK_TIMEOUT_MS = 2_000;
+const LOCK_STALE_MS = 30_000;
 
 export class RemoteServerCredentialStore {
   readonly dir: string;
@@ -260,6 +263,10 @@ export class RemoteServerCredentialStore {
       const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
       client.accessTokenHash = hashSecret(accessToken);
       client.accessExpiresAt = new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString();
+      client.supersededRefreshTokenHashes = pruneSupersededRefreshTokens(
+        client.supersededRefreshTokenHashes,
+        now,
+      );
       client.supersededRefreshTokenHashes.push({
         hash: client.refreshTokenHash,
         supersededAt: now.toISOString(),
@@ -334,6 +341,9 @@ export class RemoteServerCredentialStore {
         mkdirSync(this.lockPath(), { mode: 0o700 });
         return;
       } catch (error) {
+        if (isFileExistsError(error) && this.clearStaleLock()) {
+          continue;
+        }
         if (!isFileExistsError(error) || Date.now() - started >= LOCK_TIMEOUT_MS) {
           throw new CapletsError("SERVER_UNAVAILABLE", "Remote credential state is locked.");
         }
@@ -344,6 +354,16 @@ export class RemoteServerCredentialStore {
 
   private releaseLock(): void {
     rmSync(this.lockPath(), { recursive: true, force: true });
+  }
+
+  private clearStaleLock(): boolean {
+    try {
+      if (Date.now() - statSync(this.lockPath()).mtimeMs < LOCK_STALE_MS) return false;
+      rmSync(this.lockPath(), { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -358,6 +378,19 @@ function isFileExistsError(error: unknown): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === "EEXIST"
   );
+}
+
+function pruneSupersededRefreshTokens(
+  entries: SupersededRefreshToken[],
+  now: Date,
+): SupersededRefreshToken[] {
+  return entries.filter((entry) => {
+    const supersededAt = Date.parse(entry.supersededAt);
+    return (
+      Number.isFinite(supersededAt) &&
+      now.getTime() - supersededAt < SUPERSEDED_REFRESH_TOKEN_RETENTION_MS
+    );
+  });
 }
 
 function validateClient(

@@ -127,6 +127,27 @@ describe("caplets doctor", () => {
     });
   });
 
+  it("reports malformed Remote Login URLs instead of throwing", async () => {
+    const out: string[] = [];
+
+    await runCli(["doctor", "--json"], {
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "http://example.com",
+      },
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      remoteLogin: {
+        configured: true,
+        authenticated: false,
+        kind: "self-hosted",
+        error: expect.any(String),
+      },
+    });
+  });
+
   it("emits JSON diagnostics with separate server, remote, binding, sync, daemon, and auth sections", async () => {
     const out: string[] = [];
 

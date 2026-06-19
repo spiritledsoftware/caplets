@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletsEngine } from "../src/engine";
+import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
@@ -236,6 +237,32 @@ describe("createHttpServeApp", () => {
       headers: { authorization: `Bearer ${nextCredentials.accessToken}` },
     });
     expect(revokedByReplay.status).toBe(200);
+
+    await engine.close();
+  });
+
+  it("returns a retryable status when remote credential refresh state is unavailable", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: {
+        refreshClientCredentials: () => {
+          throw new CapletsError("SERVER_UNAVAILABLE", "Remote credential state is locked.");
+        },
+      } as unknown as RemoteServerCredentialStore,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: "refresh-token" }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "SERVER_UNAVAILABLE" },
+    });
 
     await engine.close();
   });

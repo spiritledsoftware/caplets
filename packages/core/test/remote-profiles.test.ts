@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -200,6 +208,24 @@ describe("Remote Profile storage", () => {
     ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
+  it("recovers stale mutation locks left by crashed processes", async () => {
+    const root = tempDir("caplets-remote-profiles-");
+    const lockPath = join(root, "remote-profiles.lock");
+    mkdirSync(lockPath, { recursive: true });
+    const staleTime = new Date(Date.now() - 60_000);
+    utimesSync(lockPath, staleTime, staleTime);
+    const store = new FileRemoteProfileStore({ root });
+
+    await expect(
+      store.saveSelfHostedProfile({
+        hostUrl: "https://caplets.example.com",
+        clientId: "rcli_123",
+        credentials: { accessToken: "access", refreshToken: "refresh" },
+      }),
+    ).resolves.toMatchObject({ authenticated: true });
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
   it("rejects credential-bearing remote URLs before persisting profile data", async () => {
     const root = tempDir("caplets-remote-profiles-");
     const store = new FileRemoteProfileStore({ root });
@@ -340,6 +366,17 @@ describe("Remote Profile helpers", () => {
         }),
       ),
     ).not.toMatch(/access_secret|refresh_secret|client_secret|pairing_code/u);
+  });
+
+  it("does not report partial credentials without access tokens as authenticated", () => {
+    expect(
+      remoteProfileStatus({
+        kind: "self-hosted",
+        hostUrl: "https://caplets.example.com",
+        clientId: "rcli_123",
+        credential: { refreshToken: "refresh_secret" },
+      }),
+    ).toMatchObject({ authenticated: false });
   });
 });
 

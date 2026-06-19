@@ -6,6 +6,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,6 +25,7 @@ import {
 import { hostedCloudWorkspaceFromRemoteUrl, normalizeRemoteProfileHostUrl } from "./options";
 
 const PROFILE_LOCK_DIR = "remote-profiles.lock";
+const PROFILE_REFRESH_LOCK_DIR = "remote-profile-refresh-locks";
 const PROFILE_LOCK_TIMEOUT_MS = 20_000;
 
 type StoredRemoteProfile = {
@@ -182,53 +184,52 @@ export class FileRemoteProfileStore {
   async refreshSelfHostedProfileIfNeeded(
     input: RefreshSelfHostedProfileInput,
   ): Promise<{ status: RemoteProfileStatus; credential: RemoteProfileCredential } | undefined> {
-    return await this.withMutationLock(async () => {
-      const key = remoteProfileKey({
-        kind: "self-hosted",
-        hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    const key = remoteProfileKey({
+      kind: "self-hosted",
+      hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+    });
+    return await this.withRefreshLock(key, async () => {
+      const snapshot = await this.withMutationLock(async () =>
+        this.selfHostedRefreshSnapshot(key, input),
+      );
+      if (!snapshot || !snapshot.needsRefresh) return snapshot?.result;
+
+      const refreshed = await input.refresh(snapshot.result.status, snapshot.result.credential);
+      return await this.withMutationLock(async () => {
+        const current = await this.selfHostedRefreshSnapshot(key, input);
+        if (!current || !current.needsRefresh) return current?.result;
+        const refreshedStatus = await this.writeSelfHostedProfile(refreshed);
+        const refreshedCredential = await this.credentials.load(refreshedStatus.key);
+        if (!refreshedCredential?.accessToken) return undefined;
+        return { status: refreshedStatus, credential: refreshedCredential };
       });
-      const profile = this.readProfile(key);
-      if (!profile) return undefined;
-      const credential = await this.credentials.load(key);
-      if (!credential?.accessToken) return undefined;
-      const status = await this.statusFor(profile, credential, false);
-      if (!input.needsRefresh(credential)) return { status, credential };
-      const refreshed = await input.refresh(status, credential);
-      const refreshedStatus = await this.writeSelfHostedProfile(refreshed);
-      const refreshedCredential = await this.credentials.load(refreshedStatus.key);
-      if (!refreshedCredential?.accessToken) return undefined;
-      return { status: refreshedStatus, credential: refreshedCredential };
     });
   }
 
   async refreshCloudProfileIfNeeded(
     input: RefreshCloudProfileInput,
   ): Promise<{ status: RemoteProfileStatus; credential: RemoteProfileCredential } | undefined> {
-    return await this.withMutationLock(async () => {
-      const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
-      const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
-      let status: RemoteProfileStatus | undefined;
-      if (workspace) {
-        status = await this.findCloudStatus(hostUrl, workspace);
-      } else {
-        const selected = this.readSelectedWorkspace(hostUrl);
-        if (selected) status = await this.statusByKey(selected.profileKey, true);
-        else if (this.listProfilesForHost(hostUrl).length > 0) {
-          throw new CapletsError(
-            "REQUEST_INVALID",
-            "Cloud Remote Profile requires a selected or explicit workspace.",
-          );
-        }
-      }
-      if (!status) return undefined;
-      const credential = await this.credentials.load(status.key);
-      if (!credential?.accessToken) return undefined;
-      if (!input.needsRefresh(credential)) return { status, credential };
-      const refreshed = await input.refresh(status, credential);
-      const refreshedStatus = await this.writeCloudProfile(refreshed);
-      const refreshedCredential = await this.credentials.load(refreshedStatus.key);
-      if (!refreshedCredential?.accessToken) return undefined;
-      return { status: refreshedStatus, credential: refreshedCredential };
+    const snapshot = await this.withMutationLock(async () => this.cloudRefreshSnapshot(input));
+    if (!snapshot || !snapshot.needsRefresh) return snapshot?.result;
+
+    return await this.withRefreshLock(snapshot.result.status.key, async () => {
+      const lockedSnapshot = await this.withMutationLock(async () =>
+        this.cloudRefreshSnapshot(input),
+      );
+      if (!lockedSnapshot || !lockedSnapshot.needsRefresh) return lockedSnapshot?.result;
+
+      const refreshed = await input.refresh(
+        lockedSnapshot.result.status,
+        lockedSnapshot.result.credential,
+      );
+      return await this.withMutationLock(async () => {
+        const current = await this.cloudRefreshSnapshot(input);
+        if (!current || !current.needsRefresh) return current?.result;
+        const refreshedStatus = await this.writeCloudProfile(refreshed);
+        const refreshedCredential = await this.credentials.load(refreshedStatus.key);
+        if (!refreshedCredential?.accessToken) return undefined;
+        return { status: refreshedStatus, credential: refreshedCredential };
+      });
     });
   }
 
@@ -326,10 +327,58 @@ export class FileRemoteProfileStore {
   }
 
   async clearSelectedCloudWorkspace(hostUrlInput: string): Promise<boolean> {
-    const path = this.selectedWorkspacePath(normalizeRemoteProfileHostUrl(hostUrlInput));
-    if (!existsSync(path)) return false;
-    rmSync(path, { force: true });
-    return true;
+    return await this.withMutationLock(async () => {
+      const path = this.selectedWorkspacePath(normalizeRemoteProfileHostUrl(hostUrlInput));
+      if (!existsSync(path)) return false;
+      rmSync(path, { force: true });
+      return true;
+    });
+  }
+
+  private async selfHostedRefreshSnapshot(
+    key: string,
+    input: RefreshSelfHostedProfileInput,
+  ): Promise<
+    | {
+        needsRefresh: boolean;
+        result: { status: RemoteProfileStatus; credential: RemoteProfileCredential };
+      }
+    | undefined
+  > {
+    const profile = this.readProfile(key);
+    if (!profile) return undefined;
+    const credential = await this.credentials.load(key);
+    if (!credential?.accessToken) return undefined;
+    const status = await this.statusFor(profile, credential, false);
+    return { needsRefresh: input.needsRefresh(credential), result: { status, credential } };
+  }
+
+  private async cloudRefreshSnapshot(input: RefreshCloudProfileInput): Promise<
+    | {
+        needsRefresh: boolean;
+        result: { status: RemoteProfileStatus; credential: RemoteProfileCredential };
+      }
+    | undefined
+  > {
+    const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
+    const workspace = input.workspace ?? hostedCloudWorkspaceFromRemoteUrl(input.hostUrl);
+    let status: RemoteProfileStatus | undefined;
+    if (workspace) {
+      status = await this.findCloudStatus(hostUrl, workspace);
+    } else {
+      const selected = this.readSelectedWorkspace(hostUrl);
+      if (selected) status = await this.statusByKey(selected.profileKey, true);
+      else if (this.listProfilesForHost(hostUrl).length > 0) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Cloud Remote Profile requires a selected or explicit workspace.",
+        );
+      }
+    }
+    if (!status) return undefined;
+    const credential = await this.credentials.load(status.key);
+    if (!credential?.accessToken) return undefined;
+    return { needsRefresh: input.needsRefresh(credential), result: { status, credential } };
   }
 
   private async findCloudStatus(
@@ -527,36 +576,64 @@ export class FileRemoteProfileStore {
   }
 
   private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
-    await this.acquireMutationLock();
+    await this.acquireLock(this.lockPath(), "Remote Profile store is locked.");
     try {
       return await operation();
     } finally {
-      this.releaseMutationLock();
+      this.releaseLock(this.lockPath());
     }
   }
 
-  private async acquireMutationLock(): Promise<void> {
+  private async withRefreshLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const lockPath = this.refreshLockPath(key);
+    await this.acquireLock(lockPath, "Remote Profile refresh is locked.");
+    try {
+      return await operation();
+    } finally {
+      this.releaseLock(lockPath);
+    }
+  }
+
+  private async acquireLock(lockPath: string, message: string): Promise<void> {
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
     const started = Date.now();
     while (true) {
       try {
-        mkdirSync(this.lockPath(), { mode: 0o700 });
+        mkdirSync(lockPath, { recursive: false, mode: 0o700 });
         return;
       } catch (error) {
+        if (isFileExistsError(error) && this.clearStaleLock(lockPath)) {
+          continue;
+        }
         if (!isFileExistsError(error) || Date.now() - started >= PROFILE_LOCK_TIMEOUT_MS) {
-          throw new CapletsError("SERVER_UNAVAILABLE", "Remote Profile store is locked.");
+          throw new CapletsError("SERVER_UNAVAILABLE", message);
         }
         await sleep(10);
       }
     }
   }
 
-  private releaseMutationLock(): void {
-    rmSync(this.lockPath(), { recursive: true, force: true });
+  private releaseLock(lockPath: string): void {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
+
+  private clearStaleLock(lockPath: string): boolean {
+    try {
+      if (Date.now() - statSync(lockPath).mtimeMs < PROFILE_LOCK_TIMEOUT_MS) return false;
+      rmSync(lockPath, { recursive: true, force: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private lockPath(): string {
     return join(this.root, PROFILE_LOCK_DIR);
+  }
+
+  private refreshLockPath(key: string): string {
+    return join(this.root, PROFILE_REFRESH_LOCK_DIR, `${encodeURIComponent(key)}.lock`);
   }
 }
 

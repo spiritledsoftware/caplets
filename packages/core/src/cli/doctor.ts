@@ -300,16 +300,17 @@ async function resolveRemoteLoginSection(
     env,
     ...(options.cloudAuthStore ? { legacyCloudAuthStore: options.cloudAuthStore } : {}),
   });
-  const hostUrl = normalizeRemoteProfileHostUrl(remoteUrl);
+  let hostUrl: string | undefined;
   let status: RemoteProfileStatus | undefined;
   let statusError: string | undefined;
   try {
+    hostUrl = normalizeRemoteProfileHostUrl(remoteUrl);
     status = isCapletsCloudUrl(remoteUrl)
       ? await store.getCloudProfileStatus({
-          hostUrl: remoteUrl,
+          hostUrl,
           workspace: env.CAPLETS_REMOTE_WORKSPACE ?? hostedCloudWorkspaceFromRemoteUrl(remoteUrl),
         })
-      : await store.getSelfHostedProfileStatus({ hostUrl: remoteUrl });
+      : await store.getSelfHostedProfileStatus({ hostUrl });
   } catch (error) {
     statusError = error instanceof Error ? error.message : String(error);
   }
@@ -318,8 +319,8 @@ async function resolveRemoteLoginSection(
   const report = {
     configured: true,
     authenticated: Boolean(status?.authenticated && credential?.accessToken),
-    hostUrl,
     kind: isCapletsCloudUrl(remoteUrl) ? "cloud" : "self-hosted",
+    ...(hostUrl ? { hostUrl } : {}),
     ...(status?.key ? { key: status.key } : {}),
     ...(status?.workspaceId ? { workspaceId: status.workspaceId } : {}),
     ...(status?.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
