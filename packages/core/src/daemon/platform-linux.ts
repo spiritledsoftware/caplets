@@ -38,5 +38,6 @@ function systemdEscape(value: string): string {
     .replaceAll("\\", "\\\\")
     .replaceAll('"', '\\"')
     .replaceAll("%", "%%")
+    .replaceAll("$", "$$$$")
     .replaceAll("\n", "\\n");
 }

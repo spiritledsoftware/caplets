@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
 import {
@@ -25,6 +33,7 @@ import type {
   DaemonInstallOptions,
   DaemonInstallResult,
   DaemonLifecycleResult,
+  DaemonManager,
   DaemonLogStream,
   DaemonLogsResult,
   DaemonOperationOptions,
@@ -45,7 +54,11 @@ export async function installDaemon(
   const persisted = readDaemonConfig(paths);
   const existing = install.reset ? undefined : persisted;
   const daemonEnv = mergeDaemonEnv(existing?.env, install);
-  const serve = resolveDaemonHttpServeOptions(mergeServeOptions(existing, install), env);
+  const serveEnv =
+    existing?.serve.publicOrigin && env.CAPLETS_SERVER_URL === undefined
+      ? { ...env, CAPLETS_SERVER_URL: existing.serve.publicOrigin }
+      : env;
+  const serve = resolveDaemonHttpServeOptions(mergeServeOptions(existing, install), serveEnv);
   const command = buildDaemonCommandPlan({
     serve,
     paths,
@@ -105,16 +118,25 @@ export async function installDaemon(
 
   mkdirSync(paths.logDir, { recursive: true, mode: 0o700 });
   ensureDaemonLogFiles(paths);
-  const native = await manager.install(config);
-  writeDaemonConfig(paths, config);
-  writeDaemonState(paths, {
-    instance: "default",
-    installed: true,
-    running: native.native.running,
-    nativeState: native.native.state,
-    updatedAt: (options.now ?? new Date()).toISOString(),
-    ...(native.native.pid === undefined ? {} : { pid: native.native.pid }),
-  });
+  const persistenceBackups = backupPersistenceFiles([paths.configFile, paths.stateFile]);
+  const hadExistingDescriptor = existsSync(paths.descriptorFile);
+  let native: Awaited<ReturnType<DaemonManager["install"]>> | undefined;
+  try {
+    writeDaemonConfig(paths, config);
+    native = await manager.install(config);
+    writeDaemonState(paths, {
+      instance: "default",
+      installed: true,
+      running: native.native.running,
+      nativeState: native.native.state,
+      updatedAt: (options.now ?? new Date()).toISOString(),
+      ...(native.native.pid === undefined ? {} : { pid: native.native.pid }),
+    });
+  } catch (error) {
+    if (native) await rollbackNativeInstall(manager, persisted, paths, hadExistingDescriptor);
+    restorePersistenceFiles(persistenceBackups);
+    throw error;
+  }
 
   if (install.start || install.restart) {
     const action =
@@ -395,7 +417,7 @@ function redactNativeStatus(
 }
 
 function collectDaemonSecrets(config: DaemonConfig): string[] {
-  return Array.from(
+  const secrets = Array.from(
     new Set(
       [
         config.serve.auth.enabled ? config.serve.auth.password : undefined,
@@ -403,6 +425,9 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
         ...Object.values(config.command.env),
       ].filter((value): value is string => value !== undefined && value.length > 0),
     ),
+  );
+  return Array.from(new Set(secrets.flatMap(secretRedactionVariants))).sort(
+    (left, right) => right.length - left.length,
   );
 }
 
@@ -427,6 +452,52 @@ function redactEnv(env: Record<string, string>): Record<string, string> {
 
 function redactSecrets(value: string, secrets: string[]): string {
   return secrets.reduce((redacted, secret) => redacted.replaceAll(secret, "[redacted]"), value);
+}
+
+function secretRedactionVariants(secret: string): string[] {
+  return [
+    secret,
+    jsonEscapedSecret(secret),
+    systemdEscapedSecret(secret),
+    xmlEscapedSecret(secret),
+    cmdEscapedSecret(secret),
+    powershellSingleQuotedSecret(secret),
+    posixSingleQuotedSecret(secret),
+  ].filter((value) => value.length > 0);
+}
+
+function jsonEscapedSecret(secret: string): string {
+  return JSON.stringify(secret).slice(1, -1);
+}
+
+function systemdEscapedSecret(secret: string): string {
+  return secret
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')
+    .replaceAll("%", "%%")
+    .replaceAll("$", "$$$$")
+    .replaceAll("\n", "\\n");
+}
+
+function xmlEscapedSecret(secret: string): string {
+  return secret
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function cmdEscapedSecret(secret: string): string {
+  return secret.replaceAll("%", "%%");
+}
+
+function powershellSingleQuotedSecret(secret: string): string {
+  return secret.replaceAll("'", "''");
+}
+
+function posixSingleQuotedSecret(secret: string): string {
+  return secret.replaceAll("'", "'\"'\"'");
 }
 
 function redactPasswordString(value: string): string {
@@ -527,7 +598,53 @@ function mergeServeOptions(
       : existing
         ? { trustProxy: existing.serve.trustProxy }
         : {}),
+    ...(existing &&
+    !existing.serve.auth.enabled &&
+    install.user === undefined &&
+    install.password === undefined
+      ? { preserveUnauthenticatedAuth: true }
+      : {}),
   };
+}
+
+type PersistenceBackup = { path: string; existed: boolean; contents?: Buffer; mode?: number };
+
+function backupPersistenceFiles(paths: string[]): PersistenceBackup[] {
+  return paths.map((path) => ({
+    path,
+    existed: existsSync(path),
+    ...(existsSync(path) ? { contents: readFileSync(path) } : {}),
+    ...(existsSync(path) ? { mode: statSync(path).mode & 0o777 } : {}),
+  }));
+}
+
+function restorePersistenceFiles(backups: PersistenceBackup[]): void {
+  for (const backup of backups) {
+    if (backup.existed && backup.contents) {
+      mkdirSync(dirname(backup.path), { recursive: true, mode: 0o700 });
+      writeFileSync(backup.path, backup.contents, { mode: backup.mode ?? 0o600 });
+      chmodSync(backup.path, backup.mode ?? 0o600);
+    } else {
+      rmSync(backup.path, { recursive: true, force: true });
+    }
+  }
+}
+
+async function rollbackNativeInstall(
+  manager: DaemonManager,
+  persisted: DaemonConfig | undefined,
+  paths: DaemonConfig["paths"],
+  hadExistingDescriptor: boolean,
+): Promise<void> {
+  try {
+    if (persisted && hadExistingDescriptor) {
+      await manager.install(persisted);
+    } else {
+      await manager.uninstall(persisted, paths);
+    }
+  } catch {
+    // Preserve the local persistence failure as the actionable error.
+  }
 }
 
 function assertRestartDecision(options: DaemonInstallOptions): void {

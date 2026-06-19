@@ -2,7 +2,9 @@ import type { HttpServeOptions, RawServeOptions } from "../serve/options";
 
 export type DaemonInstance = "default";
 
-export type RawDaemonServeOptions = Omit<RawServeOptions, "transport">;
+export type RawDaemonServeOptions = Omit<RawServeOptions, "transport"> & {
+  preserveUnauthenticatedAuth?: boolean;
+};
 
 export type DaemonPaths = {
   instance: DaemonInstance;

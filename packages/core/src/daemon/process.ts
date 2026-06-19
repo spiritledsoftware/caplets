@@ -21,7 +21,11 @@ export function resolveDaemonHttpServeOptions(
       "caplets daemon install does not accept --transport.",
     );
   }
-  return resolveServeOptions({ ...raw, transport: "http" }, env) as HttpServeOptions;
+  const { preserveUnauthenticatedAuth, ...serveRaw } = raw;
+  const serveEnv = preserveUnauthenticatedAuth
+    ? { ...env, CAPLETS_SERVER_USER: undefined, CAPLETS_SERVER_PASSWORD: undefined }
+    : env;
+  return resolveServeOptions({ ...serveRaw, transport: "http" }, serveEnv) as HttpServeOptions;
 }
 
 export function daemonServeArgs(options: HttpServeOptions): string[] {

@@ -24,6 +24,7 @@ import {
   startDaemon,
   uninstallDaemon,
   type DaemonCommandRunner,
+  type DaemonManager,
 } from "../src/daemon";
 import { serviceCommand } from "../src/daemon/shell";
 import { allocateLoopbackPort, validateDaemonCommand } from "../src/daemon/validation";
@@ -143,9 +144,9 @@ describe("caplets daemon CLI", () => {
           "--user",
           "alice",
           "--password",
-          "secret",
+          'pa"$USER',
           "--env",
-          "TOKEN=abc123",
+          'TOKEN=a&b"c',
         ],
         {
           env: testEnv(dir),
@@ -156,9 +157,14 @@ describe("caplets daemon CLI", () => {
       );
 
       const serialized = out.join("");
+      const parsed = JSON.parse(serialized) as {
+        descriptor?: { contents?: string };
+      };
       expect(serialized).toContain("[redacted]");
-      expect(serialized).not.toContain("secret");
-      expect(serialized).not.toContain("abc123");
+      expect(serialized).not.toContain('pa"$USER');
+      expect(serialized).not.toContain('a&b"c');
+      expect(parsed.descriptor?.contents).not.toContain('pa\\"$$USER');
+      expect(parsed.descriptor?.contents).not.toContain('a&b\\"c');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -367,6 +373,18 @@ describe("daemon paths and config", () => {
         'Environment="MULTI=line\\nExecStartPre=/bin/false"',
       );
       expect(systemd.descriptor.contents).not.toContain("\nExecStartPre=/bin/false");
+      const systemdWithDollar = await installDaemon(
+        { ...common, password: "pa$USER", allowUnauthenticatedHttp: false },
+        {
+          env: testEnv(join(dir, "dollar")),
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(systemdWithDollar.descriptor.kind).toBe("systemd-user");
+      if (systemdWithDollar.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
+      expect(systemdWithDollar.descriptor.contents).toContain("pa$$USER");
 
       const windows = await installDaemon(common, {
         env: {
@@ -535,6 +553,63 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("preserves public origins across daemon config updates", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-update-origin-"));
+    try {
+      const options = {
+        env: { ...testEnv(dir), CAPLETS_SERVER_URL: "https://caplets.example.com/daemon" },
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner(),
+      };
+      await installDaemon({ validate: false, allowUnauthenticatedHttp: true }, options);
+
+      const updated = await installDaemon(
+        { validate: false, env: ["FOO=bar"], noRestart: true },
+        {
+          ...options,
+          env: testEnv(dir),
+        },
+      );
+
+      expect(updated.config.serve.publicOrigin).toBe("https://caplets.example.com");
+      expect(updated.config.command.env.CAPLETS_SERVER_URL).toBe("https://caplets.example.com");
+      expect(updated.config.env.values.FOO).toBe("bar");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves disabled auth across daemon config updates", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-update-no-auth-"));
+    try {
+      const options = {
+        env: testEnv(dir),
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner(),
+      };
+      await installDaemon({ validate: false }, options);
+
+      const updated = await installDaemon(
+        { validate: false, env: ["FOO=bar"], noRestart: true },
+        {
+          ...options,
+          env: {
+            ...testEnv(dir),
+            CAPLETS_SERVER_USER: "alice",
+            CAPLETS_SERVER_PASSWORD: "secret",
+          },
+        },
+      );
+
+      expect(updated.config.serve.auth.enabled).toBe(false);
+      expect(updated.config.command.args).not.toContain("--password");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uses non-login inherited shell mode for /bin/sh", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-sh-"));
     try {
@@ -687,6 +762,64 @@ describe("daemon paths and config", () => {
       expect(runner.commands.filter((command) => command.includes("daemon-reload"))).toHaveLength(
         2,
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rolls back native installs when daemon state persistence fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-state-rollback-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      let uninstalled = false;
+      const manager: DaemonManager = {
+        descriptor: (config) => ({
+          kind: "systemd-user",
+          unitName: "caplets-daemon-default.service",
+          path: config.paths.descriptorFile,
+          contents: "new descriptor\n",
+        }),
+        status: async () => ({ state: "not_installed", installed: false, running: false }),
+        install: async (config) => {
+          mkdirSync(dirname(config.paths.descriptorFile), { recursive: true });
+          writeFileSync(config.paths.descriptorFile, "new descriptor\n");
+          mkdirSync(config.paths.stateFile, { recursive: true });
+          return {
+            action: "install",
+            native: { state: "installed_stopped", installed: true, running: false },
+            descriptor: manager.descriptor(config),
+          };
+        },
+        uninstall: async (_config, rollbackPaths) => {
+          uninstalled = true;
+          rmSync(rollbackPaths.descriptorFile, { force: true });
+          return {
+            action: "uninstall",
+            native: { state: "not_installed", installed: false, running: false },
+          };
+        },
+        start: async () => ({
+          action: "start",
+          native: { state: "running", installed: true, running: true },
+        }),
+        restart: async () => ({
+          action: "restart",
+          native: { state: "running", installed: true, running: true },
+        }),
+        stop: async () => ({
+          action: "stop",
+          native: { state: "installed_stopped", installed: true, running: false },
+        }),
+      };
+
+      await expect(
+        installDaemon({ validate: false }, { env: testEnv(dir), manager }),
+      ).rejects.toThrow();
+
+      expect(uninstalled).toBe(true);
+      expect(existsSync(paths.descriptorFile)).toBe(false);
+      expect(existsSync(paths.configFile)).toBe(false);
+      expect(existsSync(paths.stateFile)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1122,6 +1255,90 @@ describe("daemon lifecycle and logs", () => {
         "gui/501/dev.caplets.daemon.default",
       ]);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats repeated launchd uninstall with preserved config as not installed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-repeat-uninstall-"));
+    try {
+      const runner = fakeRunner();
+      const options = {
+        env: testEnv(dir),
+        home: dir,
+        platform: "darwin" as const,
+        uid: 501,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+
+      await uninstallDaemon({}, options);
+      runner.commands.length = 0;
+      const repeated = await uninstallDaemon({}, options);
+
+      expect(repeated.native?.native.state).toBe("not_installed");
+      expect(runner.commands).not.toContainEqual([
+        "launchctl",
+        "bootout",
+        "gui/501",
+        installed.config.paths.descriptorFile,
+      ]);
+      expect(existsSync(installed.config.paths.configFile)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails Windows restart when stopping the running task fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-restart-end-"));
+    let paths: ReturnType<typeof resolveDaemonPaths> | undefined;
+    try {
+      const runner: DaemonCommandRunner & { commands: string[][] } = {
+        commands: [],
+        async exec(command, args) {
+          runner.commands.push([command, ...args]);
+          if (command === "schtasks" && args.includes("/Query")) {
+            return { stdout: "Status: Running\nLast Run Result: 0\n", stderr: "", code: 0 };
+          }
+          if (command === "schtasks" && args.includes("/End")) {
+            return { stdout: "", stderr: "Access is denied.", code: 1 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: {
+          APPDATA: join(dir, "AppData", "Roaming"),
+          LOCALAPPDATA: join(dir, "AppData", "Local"),
+        },
+        home: "C:\\Users\\Alice",
+        platform: "win32" as const,
+        commandRunner: runner,
+      };
+      paths = resolveDaemonPaths(options);
+      await installDaemon({ validate: false }, options);
+
+      await expect(restartDaemon(options)).rejects.toThrow(/Scheduled Task restart failed/u);
+
+      expect(runner.commands).not.toContainEqual([
+        "schtasks",
+        "/Run",
+        "/TN",
+        "\\Caplets\\daemon-default",
+      ]);
+    } finally {
+      if (paths) {
+        for (const path of [
+          paths.descriptorFile,
+          paths.wrapperFile,
+          paths.configFile,
+          paths.stateFile,
+          paths.stdoutLog,
+          paths.stderrLog,
+        ]) {
+          rmSync(path, { force: true });
+        }
+      }
       rmSync(dir, { recursive: true, force: true });
     }
   });

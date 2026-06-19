@@ -62,11 +62,20 @@ function launchdManager(
       };
     },
     uninstall: async (_config, paths) => {
+      if (!existsSync(paths.descriptorFile)) {
+        return {
+          action: "uninstall",
+          native: notInstalled(),
+          commands: [],
+        };
+      }
       const commands = [["launchctl", "bootout", domain, paths.descriptorFile]];
       const result = await runner.exec(commands[0]![0]!, commands[0]!.slice(1));
       if (
         result.code !== 0 &&
-        !/No such process|not found|Could not find service/iu.test(result.stderr)
+        !/No such process|not found|Could not find service|No such file or directory/iu.test(
+          result.stderr,
+        )
       ) {
         throw new CapletsError(
           "SERVER_UNAVAILABLE",
@@ -242,8 +251,15 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
     },
     start: async () => windowsLifecycle(runner, "start", ["/Run", "/TN", WINDOWS_TASK_NAME]),
     restart: async () => {
-      await runner.exec("schtasks", ["/End", "/TN", WINDOWS_TASK_NAME]);
-      return windowsLifecycle(runner, "restart", ["/Run", "/TN", WINDOWS_TASK_NAME]);
+      const end = ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME];
+      await assertExecUnless(
+        runner,
+        end,
+        "Scheduled Task restart failed",
+        /not currently running|cannot be stopped|not running/iu,
+      );
+      const restart = await windowsLifecycle(runner, "restart", ["/Run", "/TN", WINDOWS_TASK_NAME]);
+      return { ...restart, commands: [end, ...(restart.commands ?? [])] };
     },
     stop: async () => {
       const command = ["schtasks", "/End", "/TN", WINDOWS_TASK_NAME];
