@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { userInfo } from "node:os";
 import { CapletsError } from "../errors";
 import type { DaemonOperationOptions, DaemonShellPlan } from "./types";
 
@@ -7,8 +8,6 @@ export function resolveDaemonShell(
 ): DaemonShellPlan {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  const shell = nonEmpty(env.SHELL);
-  if (shell) return shellPlan(platform, shell, "SHELL");
 
   if (platform === "win32") {
     const powerShell = firstExisting([
@@ -20,7 +19,10 @@ export function resolveDaemonShell(
     return shellPlan(platform, comSpec, "fallback");
   }
 
-  const accountShell = nonEmpty(options.accountShell);
+  const shell = nonEmpty(env.SHELL);
+  if (shell) return shellPlan(platform, shell, "SHELL");
+
+  const accountShell = nonEmpty(options.accountShell) ?? discoverAccountShell();
   if (accountShell) return shellPlan(platform, accountShell, "account");
   if (existsSync("/bin/sh")) return shellPlan(platform, "/bin/sh", "fallback");
   throw new CapletsError(
@@ -47,6 +49,14 @@ function shellPlan(
 
 function firstExisting(paths: string[]): string | undefined {
   return paths.find((path) => existsSync(path));
+}
+
+function discoverAccountShell(): string | undefined {
+  try {
+    return nonEmpty(userInfo().shell ?? undefined);
+  } catch {
+    return undefined;
+  }
 }
 
 function nonEmpty(value: string | undefined): string | undefined {

@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
 import type { CapletsError } from "../src/errors";
@@ -26,6 +26,7 @@ import {
   type DaemonCommandRunner,
 } from "../src/daemon";
 import { serviceCommand } from "../src/daemon/shell";
+import { allocateLoopbackPort, validateDaemonCommand } from "../src/daemon/validation";
 
 describe("caplets daemon CLI", () => {
   it("shows daemon help and removes daemon lifecycle from serve help", async () => {
@@ -93,6 +94,36 @@ describe("caplets daemon CLI", () => {
           writeErr: () => {},
         }),
       ).rejects.toThrow(/--start, --restart, and --no-restart are mutually exclusive/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps daemon install --json noninteractive", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-json-"));
+    try {
+      const out: string[] = [];
+      const runner = fakeRunner({ active: true });
+      await installDaemon(
+        { validate: false },
+        {
+          env: testEnv(dir),
+          platform: "linux",
+          commandRunner: runner,
+        },
+      );
+
+      await expect(
+        runCli(["daemon", "install", "--json"], {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          writeErr: () => {},
+          readStdin: async () => "y\n",
+          daemon: { platform: "linux", commandRunner: runner },
+        }),
+      ).rejects.toThrow(/rerun with --restart, --start, or --no-restart/u);
+
+      expect(out.join("")).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -425,6 +456,56 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("ignores POSIX SHELL values for Windows inheritance", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-shell-"));
+    try {
+      const result = await installDaemon(
+        { inheritEnv: true, validate: false, dryRun: true },
+        {
+          env: {
+            APPDATA: join(dir, "AppData", "Roaming"),
+            LOCALAPPDATA: join(dir, "AppData", "Local"),
+            SHELL: "/usr/bin/bash",
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.shell).toMatchObject({
+        executable: "cmd.exe",
+        args: ["/d", "/s", "/c"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers the POSIX account shell before falling back to sh", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-account-shell-"));
+    try {
+      const result = await installDaemon(
+        { inheritEnv: true, validate: false, dryRun: true },
+        {
+          env: testEnv(dir),
+          accountShell: "/bin/zsh",
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.shell).toMatchObject({
+        executable: "/bin/zsh",
+        args: ["-lc"],
+        source: "account",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects temporary CLI runner paths for daemon installs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-runner-"));
     const originalArgv = process.argv[1];
@@ -480,6 +561,39 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("reloads systemd after restoring a failed install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-rollback-reload-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(dirname(paths.descriptorFile), { recursive: true });
+      writeFileSync(paths.descriptorFile, "old descriptor\n");
+      const runner: DaemonCommandRunner & { commands: string[][] } = {
+        commands: [],
+        async exec(command, args) {
+          runner.commands.push([command, ...args]);
+          if (command === "systemctl" && args.includes("enable")) {
+            return { stdout: "", stderr: "boom", code: 1 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+
+      await expect(
+        installDaemon(
+          { validate: false },
+          { env: testEnv(dir), home: "/home/alice", platform: "linux", commandRunner: runner },
+        ),
+      ).rejects.toThrow(/systemd registration failed/u);
+
+      expect(readFileSync(paths.descriptorFile, "utf8")).toBe("old descriptor\n");
+      expect(runner.commands.filter((command) => command.includes("daemon-reload"))).toHaveLength(
+        2,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("ignores old serve/default artifacts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-ignore-"));
     try {
@@ -510,6 +624,34 @@ describe("daemon lifecycle and logs", () => {
       expect(status.installed).toBe(false);
       expect(status.running).toBe(false);
       expect(status.nativeState).toBe("not_installed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports systemd command failures as unavailable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-systemd-unavailable-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(dirname(paths.descriptorFile), { recursive: true });
+      writeFileSync(paths.descriptorFile, "unit\n");
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "systemctl" && args.includes("show")) {
+            return { stdout: "", stderr: "Failed to connect to bus", code: 1 };
+          }
+          return { stdout: "", stderr: "", code: 1 };
+        },
+      };
+
+      const status = await daemonStatus({
+        env: testEnv(dir),
+        platform: "linux",
+        commandRunner: runner,
+      });
+
+      expect(status.nativeState).toBe("unavailable");
+      expect(status.native.message).toContain("systemd --user is not available");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -876,6 +1018,32 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("stops running native services during uninstall when config is missing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-uninstall-stale-config-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      rmSync(installed.config.paths.configFile, { force: true });
+      runner.commands.length = 0;
+
+      await uninstallDaemon({}, options);
+
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "stop",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sorts timestamped daemon logs across streams", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-timestamp-logs-"));
     try {
@@ -1009,23 +1177,124 @@ describe("daemon lifecycle and logs", () => {
   it("redacts daemon auth secrets from status config", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-status-redaction-"));
     try {
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "systemctl" && args.includes("show")) {
+            return {
+              stdout:
+                "ExecStart={ path=/node ; argv[]=/node /cli serve --password secret ; }\nEnvironment=TOKEN=abc123\n",
+              stderr: "",
+              code: 0,
+            };
+          }
+          if (command === "systemctl" && args.includes("is-active")) {
+            return { stdout: "inactive\n", stderr: "", code: 3 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
       const options = {
         env: testEnv(dir),
         platform: "linux" as const,
-        commandRunner: fakeRunner(),
+        commandRunner: runner,
       };
       await installDaemon(
-        { user: "alice", password: "secret", allowUnauthenticatedHttp: false, validate: false },
+        {
+          user: "alice",
+          password: "secret",
+          allowUnauthenticatedHttp: false,
+          env: ["TOKEN=abc123"],
+          validate: false,
+        },
         options,
       );
 
       const status = await daemonStatus(options);
+      const serialized = JSON.stringify(status);
 
       expect(status.config?.serve.auth.enabled).toBe(true);
       if (!status.config?.serve.auth.enabled) throw new Error("expected daemon auth");
       expect(status.config.serve.auth.password).toBe("[redacted]");
+      expect(status.config.env.values.TOKEN).toBe("[redacted]");
+      expect(status.config.command.env.TOKEN).toBe("[redacted]");
       expect(status.config?.command.args).toContain("--password");
       expect(status.config?.command.args).not.toContain("secret");
+      expect(serialized).not.toContain("secret");
+      expect(serialized).not.toContain("abc123");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("daemon validation", () => {
+  it("returns a failed health result for spawn errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-spawn-"));
+    try {
+      const result = await installDaemon(
+        { validate: false, dryRun: true, inheritEnv: true },
+        {
+          env: testEnv(dir),
+          accountShell: join(dir, "missing-shell"),
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      await expect(validateDaemonCommand(result.config, { timeoutMs: 20 })).resolves.toMatchObject({
+        ok: false,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates with only the configured service environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-env-"));
+    try {
+      const port = await allocateLoopbackPort();
+      const envFile = join(dir, "child-env.json");
+      const serverFile = join(dir, "server.mjs");
+      writeFileSync(
+        serverFile,
+        `import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(envFile)}, JSON.stringify(process.env));
+createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.0.1");
+`,
+      );
+      const result = await installDaemon(
+        {
+          validate: false,
+          dryRun: true,
+          host: "127.0.0.1",
+          port: String(port),
+          env: ["SERVICE_ONLY=1"],
+        },
+        {
+          env: { ...testEnv(dir), INSTALLER_ONLY: "1" },
+          home: dir,
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      const config = {
+        ...result.config,
+        command: {
+          ...result.config.command,
+          executable: serverFile,
+          args: [],
+        },
+      };
+
+      await expect(validateDaemonCommand(config, { timeoutMs: 1_000 })).resolves.toMatchObject({
+        ok: true,
+      });
+      const childEnv = JSON.parse(readFileSync(envFile, "utf8")) as Record<string, string>;
+
+      expect(childEnv.SERVICE_ONLY).toBe("1");
+      expect(childEnv.INSTALLER_ONLY).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -249,7 +249,7 @@ export async function uninstallDaemon(
     };
   }
   const nativeStatus = await manager.status(config, paths);
-  if (nativeStatus.running && config) await manager.stop(config);
+  if (nativeStatus.running) await manager.stop(config);
   const native = await manager.uninstall(config, paths);
   if (uninstall.purge) {
     removeDaemonConfig(paths);
@@ -324,7 +324,7 @@ async function daemonStatusSnapshot(
     nativeState: native.state,
     paths,
     ...(config ? { config: redactDaemonConfig(config) } : {}),
-    native,
+    native: redactNativeStatus(native, config),
   };
   if (config && native.running) {
     status.health = await probeDaemonHealth(config, options.fetch ? { fetch: options.fetch } : {});
@@ -333,8 +333,13 @@ async function daemonStatusSnapshot(
 }
 
 function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
+  const env = redactEnv(config.env.values);
   return {
     ...config,
+    env: {
+      ...config.env,
+      values: env,
+    },
     serve: {
       ...config.serve,
       auth: config.serve.auth.enabled
@@ -344,8 +349,52 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
     command: {
       ...config.command,
       args: redactPasswordArgs(config.command.args),
+      env: redactEnv(config.command.env),
     },
   };
+}
+
+function redactNativeStatus(
+  native: DaemonStatus["native"],
+  config: DaemonConfig | undefined,
+): DaemonStatus["native"] {
+  if (!config) return native;
+  return redactNativeValue(native, collectDaemonSecrets(config)) as DaemonStatus["native"];
+}
+
+function collectDaemonSecrets(config: DaemonConfig): string[] {
+  return Array.from(
+    new Set(
+      [
+        config.serve.auth.enabled ? config.serve.auth.password : undefined,
+        ...Object.values(config.env.values),
+        ...Object.values(config.command.env),
+      ].filter((value): value is string => value !== undefined && value.length > 0),
+    ),
+  );
+}
+
+function redactNativeValue(value: unknown, secrets: string[]): unknown {
+  if (typeof value === "string") return redactSecrets(redactPasswordString(value), secrets);
+  if (Array.isArray(value)) return value.map((item) => redactNativeValue(item, secrets));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactNativeValue(item, secrets)]),
+    );
+  }
+  return value;
+}
+
+function redactEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.keys(env).map((key) => [key, "[redacted]"]));
+}
+
+function redactSecrets(value: string, secrets: string[]): string {
+  return secrets.reduce((redacted, secret) => redacted.replaceAll(secret, "[redacted]"), value);
+}
+
+function redactPasswordString(value: string): string {
+  return value.replace(/(--password(?:=|\s+))("[^"]*"|'[^']*'|\S+)/giu, "$1[redacted]");
 }
 
 function redactPasswordArgs(args: string[]): string[] {

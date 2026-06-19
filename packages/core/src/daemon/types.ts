@@ -121,7 +121,7 @@ export type DaemonManager = {
   uninstall(config: DaemonConfig | undefined, paths: DaemonPaths): Promise<DaemonManagerAction>;
   start(config: DaemonConfig): Promise<DaemonManagerAction>;
   restart(config: DaemonConfig): Promise<DaemonManagerAction>;
-  stop(config: DaemonConfig): Promise<DaemonManagerAction>;
+  stop(config?: DaemonConfig): Promise<DaemonManagerAction>;
 };
 
 export type DaemonManagerAction = {

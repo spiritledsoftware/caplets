@@ -108,9 +108,17 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
       if (!serviceAvailable) return unavailable("systemd --user is not available.");
       if (!existsSync(paths.descriptorFile) && !config) return notInstalled();
       const show = await runner.exec("systemctl", ["--user", "show", SYSTEMD_UNIT]);
+      if (show.code !== 0) {
+        const message = show.stderr || show.stdout || String(show.code);
+        if (isSystemdUnavailable(message))
+          return unavailable(`systemd --user is not available: ${message}`);
+        return existsSync(paths.descriptorFile)
+          ? stopped({ stderr: show.stderr, stdout: show.stdout })
+          : notInstalled({ stderr: show.stderr });
+      }
       const active = await runner.exec("systemctl", ["--user", "is-active", SYSTEMD_UNIT]);
-      if (show.code !== 0 && !existsSync(paths.descriptorFile))
-        return notInstalled({ stderr: show.stderr });
+      if (active.code !== 0 && isSystemdUnavailable(active.stderr || active.stdout))
+        return unavailable(`systemd --user is not available: ${active.stderr || active.stdout}`);
       if (active.stdout.trim() === "active")
         return {
           state: "running",
@@ -141,10 +149,16 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", SYSTEMD_UNIT],
       ];
-      await writeDescriptorForInstall(descriptor, async () => {
-        for (const command of commands)
-          await assertExec(runner, command, "systemd registration failed");
-      });
+      await writeDescriptorForInstall(
+        descriptor,
+        async () => {
+          for (const command of commands)
+            await assertExec(runner, command, "systemd registration failed");
+        },
+        async () => {
+          await runner.exec("systemctl", ["--user", "daemon-reload"]);
+        },
+      );
       return { action: "install", native: stopped(), commands, descriptor };
     },
     uninstall: async (_config, paths) => {
@@ -290,6 +304,7 @@ function writeDescriptor(descriptor: DaemonDescriptor): void {
 async function writeDescriptorForInstall<T>(
   descriptor: DaemonDescriptor,
   register: () => Promise<T>,
+  afterRestore?: () => Promise<void>,
 ): Promise<T> {
   const backups = backupDescriptorFiles(descriptor);
   writeDescriptor(descriptor);
@@ -297,6 +312,13 @@ async function writeDescriptorForInstall<T>(
     return await register();
   } catch (error) {
     restoreDescriptorFiles(backups);
+    if (afterRestore) {
+      try {
+        await afterRestore();
+      } catch {
+        // Keep the original native registration failure as the actionable error.
+      }
+    }
     throw error;
   }
 }
@@ -501,6 +523,12 @@ function parseSystemdShow(value: string): Record<string, string> {
         const index = line.indexOf("=");
         return [line.slice(0, index), line.slice(index + 1)];
       }),
+  );
+}
+
+function isSystemdUnavailable(message: string): boolean {
+  return /failed to connect|no medium found|host is down|no such file or directory|bus|systemd.*not available/iu.test(
+    message,
   );
 }
 

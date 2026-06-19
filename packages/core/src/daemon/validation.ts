@@ -14,30 +14,43 @@ export async function validateDaemonCommand(
   const command = validationSpawnCommand(config);
   const child = spawn(command.command, command.args, {
     cwd: config.command.workingDirectory,
-    env: { ...process.env, ...config.command.env },
+    env: config.command.env,
     stdio: ["ignore", "ignore", "ignore"],
+  });
+  let spawnError: Error | undefined;
+  const spawnFailure = new Promise<DaemonHealthResult>((resolve) => {
+    child.once("error", (error) => {
+      spawnError = error;
+      resolve({ ok: false, url: healthUrl(config), error: error.message });
+    });
   });
   try {
     const deadline = Date.now() + (options.timeoutMs ?? 5_000);
     let last: DaemonHealthResult | undefined;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) break;
-      last = await probeDaemonHealth(config, {
-        ...(options.fetch ? { fetch: options.fetch } : {}),
-        timeoutMs: 750,
-      });
+      if (child.exitCode !== null || spawnError) break;
+      last = await Promise.race([
+        probeDaemonHealth(config, {
+          ...(options.fetch ? { fetch: options.fetch } : {}),
+          timeoutMs: 750,
+        }),
+        spawnFailure,
+      ]);
       if (last.ok) return last;
+      if (spawnError) break;
       await sleep(150);
     }
     return (
       last ?? {
         ok: false,
         url: healthUrl(config),
-        error: child.exitCode === null ? "health probe timed out" : "validation process exited",
+        error:
+          spawnError?.message ??
+          (child.exitCode === null ? "health probe timed out" : "validation process exited"),
       }
     );
   } finally {
-    if (child.exitCode === null) {
+    if (child.exitCode === null && !spawnError) {
       const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
       child.kill("SIGTERM");
       await Promise.race([closed, sleep(2_000)]);

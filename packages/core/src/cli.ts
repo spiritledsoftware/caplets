@@ -586,7 +586,7 @@ export function createProgram(io: CliIO = {}): Command {
   addDaemonInstallOptions(
     daemon.command("install").description("Install or update the default Caplets daemon."),
   ).action(async (options: DaemonInstallCommandOptions) => {
-    const prompt = createSetupPromptHandle(io, writeOut);
+    const prompt = options.json ? undefined : createSetupPromptHandle(io, writeOut);
     try {
       const result = await installDaemon(daemonInstallOptions(options), {
         ...daemonOptions(),
