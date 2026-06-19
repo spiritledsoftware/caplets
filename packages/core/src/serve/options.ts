@@ -1,5 +1,7 @@
 import { CapletsError } from "../errors";
 import { parseServerBaseUrl } from "../server/options";
+import { DEFAULT_AUTH_DIR } from "../config/paths";
+import { join } from "node:path";
 
 export type ServeTransport = "stdio" | "http";
 
@@ -10,6 +12,7 @@ export type RawServeOptions = {
   path?: string;
   user?: string;
   password?: string;
+  remoteStatePath?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
 };
@@ -25,6 +28,7 @@ export type HttpServeOptions = {
   path: string;
   publicOrigin?: string | undefined;
   auth: HttpBasicAuthOptions;
+  remoteCredentialStateDir?: string | undefined;
   allowUnauthenticatedHttp: boolean;
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
@@ -38,7 +42,13 @@ export type HttpBasicAuthOptions =
 export type ServeOptions = StdioServeOptions | HttpServeOptions;
 
 export type ServeEnv = Partial<
-  Record<"CAPLETS_SERVER_URL" | "CAPLETS_SERVER_USER" | "CAPLETS_SERVER_PASSWORD", string>
+  Record<
+    | "CAPLETS_SERVER_URL"
+    | "CAPLETS_SERVER_USER"
+    | "CAPLETS_SERVER_PASSWORD"
+    | "CAPLETS_REMOTE_SERVER_STATE_DIR",
+    string
+  >
 >;
 
 const HTTP_ONLY_OPTIONS = [
@@ -47,6 +57,7 @@ const HTTP_ONLY_OPTIONS = [
   "path",
   "user",
   "password",
+  "remoteStatePath",
   "allowUnauthenticatedHttp",
   "trustProxy",
 ] as const;
@@ -81,6 +92,10 @@ export function resolveServeOptions(
   const password =
     nonEmpty(raw.password, "--password") ??
     nonEmpty(env.CAPLETS_SERVER_PASSWORD, "CAPLETS_SERVER_PASSWORD");
+  const remoteCredentialStateDir =
+    nonEmpty(raw.remoteStatePath, "--remote-state-path") ??
+    nonEmpty(env.CAPLETS_REMOTE_SERVER_STATE_DIR, "CAPLETS_REMOTE_SERVER_STATE_DIR") ??
+    join(DEFAULT_AUTH_DIR, "remote-server");
 
   if (userWasExplicit && password === undefined) {
     throw new CapletsError(
@@ -107,6 +122,7 @@ export function resolveServeOptions(
     path,
     ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
     auth,
+    remoteCredentialStateDir,
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp === true,
     warnUnauthenticatedNetwork: !loopback && !auth.enabled,
     loopback,

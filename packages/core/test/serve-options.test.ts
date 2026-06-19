@@ -157,6 +157,28 @@ describe("resolveServeOptions", () => {
     });
   });
 
+  it("resolves the server-owned remote credential state directory", () => {
+    expect(resolveServeOptions({ transport: "http" }, {})).toMatchObject({
+      remoteCredentialStateDir: expect.stringContaining("remote-server"),
+    });
+    expect(
+      resolveServeOptions(
+        { transport: "http", remoteStatePath: "/var/lib/caplets/remote-auth" },
+        { CAPLETS_REMOTE_SERVER_STATE_DIR: "/env/remote-auth" },
+      ),
+    ).toMatchObject({
+      remoteCredentialStateDir: "/var/lib/caplets/remote-auth",
+    });
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_REMOTE_SERVER_STATE_DIR: "/env/remote-auth" },
+      ),
+    ).toMatchObject({
+      remoteCredentialStateDir: "/env/remote-auth",
+    });
+  });
+
   it("allows unauthenticated non-loopback HTTP serving with explicit opt-in", () => {
     expect(
       resolveServeOptions(

@@ -155,6 +155,7 @@ type DaemonInstallCommandOptions = {
   path?: string;
   user?: string;
   password?: string;
+  remoteStatePath?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
   json?: boolean;
@@ -190,6 +191,7 @@ function addDaemonInstallOptions(command: Command): Command {
     .option("--path <path>", "HTTP service base path")
     .option("--user <user>", "HTTP Basic Auth username")
     .option("--password <password>", "HTTP Basic Auth password")
+    .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--allow-unauthenticated-http",
       "allow unauthenticated HTTP serving on non-loopback hosts",
@@ -268,6 +270,7 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
     ...(options.path !== undefined ? { path: options.path } : {}),
     ...(options.user !== undefined ? { user: options.user } : {}),
     ...(options.password !== undefined ? { password: options.password } : {}),
+    ...(options.remoteStatePath !== undefined ? { remoteStatePath: options.remoteStatePath } : {}),
     ...(options.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
       : {}),
@@ -531,6 +534,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--path <path>", "HTTP service base path")
     .option("--user <user>", "HTTP Basic Auth username")
     .option("--password <password>", "HTTP Basic Auth password")
+    .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
       "--allow-unauthenticated-http",
       "allow unauthenticated HTTP serving on non-loopback hosts",
@@ -544,6 +548,7 @@ export function createProgram(io: CliIO = {}): Command {
         path?: string;
         user?: string;
         password?: string;
+        remoteStatePath?: string;
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;
       }) => {

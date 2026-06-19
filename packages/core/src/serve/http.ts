@@ -19,6 +19,7 @@ import {
 } from "../remote-control/dispatch";
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
+import { RemoteServerCredentialStore } from "../remote/server-credential-store";
 import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
@@ -28,6 +29,7 @@ type HttpServeIo = {
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
   exposeAttach?: boolean;
+  remoteCredentialStore?: RemoteServerCredentialStore;
 };
 
 type HttpMcpSession = {
@@ -62,6 +64,7 @@ export function createHttpServeApp(
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
+  const protectedRouteAuth = routeAuth(options, io.remoteCredentialStore, paths.base);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -75,7 +78,9 @@ export function createHttpServeApp(
       transport: "http",
       base: paths.base,
       versions: [versionDiscovery(paths, exposeAttach)],
-      auth: { type: "basic", enabled: options.auth.enabled },
+      auth: io.remoteCredentialStore
+        ? { type: "remote_credentials", enabled: true }
+        : { type: "basic", enabled: options.auth.enabled },
     }),
   );
 
@@ -87,7 +92,65 @@ export function createHttpServeApp(
     }),
   );
 
-  app.all(paths.mcp, basicAuth(options.auth), async (c) => {
+  if (io.remoteCredentialStore) {
+    app.post(paths.pairingExchange, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
+        const code = stringField(parsed, "code");
+        const clientLabel = optionalStringField(parsed, "clientLabel");
+        const credentials = io.remoteCredentialStore!.exchangePairingCode({
+          hostUrl: publicHostUrl(
+            c.req.url,
+            paths.base,
+            options.publicOrigin,
+            options.trustProxy,
+            (name) => c.req.header(name),
+          ),
+          code,
+          ...(clientLabel ? { clientLabel } : {}),
+        });
+        return c.json({
+          clientId: credentials.clientId,
+          clientLabel: credentials.clientLabel,
+          accessToken: credentials.accessToken,
+          refreshToken: credentials.refreshToken,
+          tokenType: credentials.tokenType,
+          expiresAt: credentials.expiresAt,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteRefresh, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
+        const refreshToken = stringField(parsed, "refreshToken");
+        const credentials = io.remoteCredentialStore!.refreshClientCredentials({
+          hostUrl: publicHostUrl(
+            c.req.url,
+            paths.base,
+            options.publicOrigin,
+            options.trustProxy,
+            (name) => c.req.header(name),
+          ),
+          refreshToken,
+        });
+        return c.json({
+          clientId: credentials.clientId,
+          clientLabel: credentials.clientLabel,
+          accessToken: credentials.accessToken,
+          refreshToken: credentials.refreshToken,
+          tokenType: credentials.tokenType,
+          expiresAt: credentials.expiresAt,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+  }
+
+  app.all(paths.mcp, protectedRouteAuth, async (c) => {
     const sessionId = c.req.header("mcp-session-id");
     if (sessionId) {
       const existing = sessions.get(sessionId);
@@ -135,16 +198,16 @@ export function createHttpServeApp(
   const attachHostProtection = dnsRebindingProtection(options);
 
   if (exposeAttach) {
-    app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
+    app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
       const attachProjection = await buildAttachProjection(engine);
       return c.json(attachProjection.manifest);
     });
 
-    app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
+    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, () =>
       attachEventsResponse(engine, attachEventStreams),
     );
 
-    app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
+    app.post(paths.attachInvoke, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
         const attachProjection = await buildAttachProjection(engine);
@@ -157,7 +220,7 @@ export function createHttpServeApp(
     });
   }
 
-  app.post(paths.control, basicAuth(options.auth), async (c) => {
+  app.post(paths.control, protectedRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
       const parsed = await c.req.json();
@@ -190,18 +253,18 @@ export function createHttpServeApp(
     );
   });
 
-  app.get(routePath(paths.projectBindings, "connect"), basicAuth(options.auth), (c) =>
+  app.get(routePath(paths.projectBindings, "connect"), protectedRouteAuth, (c) =>
     c.json({ error: "websocket_upgrade_required" }, 426),
   );
 
-  app.get(routePath(paths.projectBindings, ":bindingId/status"), basicAuth(options.auth), (c) =>
+  app.get(routePath(paths.projectBindings, ":bindingId/status"), protectedRouteAuth, (c) =>
     c.json({
       bindingId: c.req.param("bindingId"),
       state: "not_attached",
     }),
   );
 
-  app.post(routePath(paths.projectBindings, "sessions"), basicAuth(options.auth), (c) => {
+  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, (c) => {
     const bindingId = randomUUID();
     return c.json(
       {
@@ -212,14 +275,14 @@ export function createHttpServeApp(
     );
   });
 
-  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), basicAuth(options.auth), (c) =>
+  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), protectedRouteAuth, (c) =>
     c.json({
       ok: true,
       binding: { bindingId: c.req.param("bindingId"), state: "ready" },
     }),
   );
 
-  app.delete(routePath(paths.projectBindings, ":bindingId/session"), basicAuth(options.auth), (c) =>
+  app.delete(routePath(paths.projectBindings, ":bindingId/session"), protectedRouteAuth, (c) =>
     c.json({
       ok: true,
       binding: { bindingId: c.req.param("bindingId"), state: "ended" },
@@ -288,7 +351,7 @@ function controlContext(
     authFlowStore,
     controlCallbackBaseUrl: new URL(
       controlPath,
-      publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
+      publicOrigin ?? publicRequestOrigin(requestUrl, "/", trustProxy, header),
     ).toString(),
     writeErr,
   };
@@ -296,12 +359,13 @@ function controlContext(
 
 function publicRequestOrigin(
   requestUrl: string,
+  basePath: string,
   trustProxy: boolean,
   header: (name: string) => string | undefined,
 ): string {
   const url = new URL(requestUrl);
   if (!trustProxy) {
-    return `${url.protocol.slice(0, -1)}://${header("host") ?? url.host}`;
+    return `${url.protocol.slice(0, -1)}://${url.host}`;
   }
   const forwardedProto = firstForwardedValue(header("x-forwarded-proto"));
   const forwardedHost = firstForwardedValue(header("x-forwarded-host"));
@@ -311,6 +375,19 @@ function publicRequestOrigin(
       : url.protocol.slice(0, -1);
   const host = forwardedHost ?? header("host") ?? url.host;
   return `${proto}://${host}`;
+}
+
+function publicHostUrl(
+  requestUrl: string,
+  basePath: string,
+  publicOrigin: string | undefined,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): string {
+  return new URL(
+    basePath,
+    publicOrigin ?? publicRequestOrigin(requestUrl, basePath, trustProxy, header),
+  ).toString();
 }
 
 function firstForwardedValue(value: string | undefined): string | undefined {
@@ -447,6 +524,13 @@ export async function serveHttp(
   const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
+    ...(options.remoteCredentialStateDir
+      ? {
+          remoteCredentialStore: new RemoteServerCredentialStore({
+            dir: options.remoteCredentialStateDir,
+          }),
+        }
+      : {}),
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
@@ -479,6 +563,13 @@ export async function serveHttpWithSessionFactory(
   const app = createHttpServeApp(options, engine, {
     writeErr,
     exposeAttach: false,
+    ...(options.remoteCredentialStateDir
+      ? {
+          remoteCredentialStore: new RemoteServerCredentialStore({
+            dir: options.remoteCredentialStateDir,
+          }),
+        }
+      : {}),
     sessionFactory: createSession,
     control: {
       ...resolvedEngineOptions,
@@ -524,10 +615,13 @@ export function servicePaths(base: string): {
   attachEvents: string;
   attachInvoke: string;
   projectBindings: string;
+  pairingExchange: string;
+  remoteRefresh: string;
   health: string;
 } {
   const version = routePath(base, "v1");
   const attach = routePath(version, "attach");
+  const remote = routePath(version, "remote");
   return {
     base,
     version,
@@ -537,6 +631,8 @@ export function servicePaths(base: string): {
     attachEvents: routePath(attach, "events"),
     attachInvoke: routePath(attach, "invoke"),
     projectBindings: routePath(attach, "project-bindings"),
+    pairingExchange: routePath(remote, "pairing/exchange"),
+    remoteRefresh: routePath(remote, "refresh"),
     health: routePath(version, "healthz"),
   };
 }
@@ -575,6 +671,83 @@ function basicAuth(auth: HttpBasicAuthOptions): MiddlewareHandler {
     }
     await next();
   };
+}
+
+function routeAuth(
+  options: HttpServeOptions,
+  remoteCredentialStore: RemoteServerCredentialStore | undefined,
+  basePath: string,
+): MiddlewareHandler {
+  if (!remoteCredentialStore) return basicAuth(options.auth);
+  return async (c, next) => {
+    const header = c.req.header("authorization") ?? "";
+    const token = bearerToken(header);
+    if (!token) {
+      return c.text("Unauthorized", 401);
+    }
+    try {
+      remoteCredentialStore.validateAccessToken({
+        hostUrl: publicHostUrl(
+          c.req.url,
+          basePath,
+          options.publicOrigin,
+          options.trustProxy,
+          (name) => c.req.header(name),
+        ),
+        accessToken: token,
+      });
+    } catch {
+      return c.text("Unauthorized", 401);
+    }
+    await next();
+  };
+}
+
+function bearerToken(header: string): string | undefined {
+  const [scheme, token] = header.split(" ");
+  return scheme?.toLowerCase() === "bearer" && token ? token : undefined;
+}
+
+async function parseJsonObject(
+  input: Promise<unknown>,
+  label: string,
+): Promise<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = await input;
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", `${label} body must be valid JSON.`, error);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", `${label} JSON must be an object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function stringField(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function optionalStringField(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function remoteCredentialErrorResponse(error: unknown): Response {
+  const safe =
+    error instanceof CapletsError
+      ? toSafeError(error, error.code)
+      : toSafeError(error, "AUTH_FAILED");
+  const status = safe.code === "REQUEST_INVALID" ? 400 : 401;
+  return Response.json({ ok: false, error: safe }, { status });
 }
 
 function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
