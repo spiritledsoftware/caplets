@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { attachProjectOnce, resolveAttachOptions } from "../src/project-binding/attach";
 import { runCli } from "../src/cli";
 import { CloudAuthStore } from "../src/cloud-auth/store";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 const tempDirs: string[] = [];
@@ -30,7 +31,10 @@ describe("caplets attach CLI", () => {
 
   it("runs attach as a stdio MCP server by default", async () => {
     const served: unknown[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
     await runCli(["attach"], {
+      authDir,
       env: {
         CAPLETS_MODE: "remote",
         CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
@@ -47,8 +51,10 @@ describe("caplets attach CLI", () => {
     });
   });
 
-  it("treats attach --user and --password as remote Basic Auth for stdio serving", async () => {
+  it("ignores legacy attach Basic Auth flags and uses the stored Remote Profile", async () => {
     const served: unknown[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets", "profile-token");
     await runCli(
       [
         "attach",
@@ -60,6 +66,7 @@ describe("caplets attach CLI", () => {
         "secret",
       ],
       {
+        authDir,
         env: { CAPLETS_MODE: "remote" },
         attachServe: async (options: unknown) => {
           served.push(options);
@@ -72,7 +79,7 @@ describe("caplets attach CLI", () => {
       transport: "stdio",
       selection: {
         remote: {
-          auth: { type: "basic", user: "alice", password: "secret" },
+          auth: { type: "bearer", token: "profile-token" },
         },
       },
     });
@@ -84,8 +91,11 @@ describe("caplets attach CLI", () => {
     const configPath = join(dir, "local.json");
     const projectConfigPath = join(dir, "project.json");
     const served: unknown[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
 
     await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets"], {
+      authDir,
       env: {
         CAPLETS_MODE: "remote",
         CAPLETS_CONFIG: configPath,
@@ -109,6 +119,8 @@ describe("caplets attach CLI", () => {
     const projectRoot = join(dir, "checkout");
     const configPath = join(dir, "local.json");
     const served: unknown[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
 
     await runCli(
       [
@@ -119,6 +131,7 @@ describe("caplets attach CLI", () => {
         projectRoot,
       ],
       {
+        authDir,
         env: {
           CAPLETS_MODE: "remote",
           CAPLETS_CONFIG: configPath,
@@ -147,13 +160,15 @@ describe("caplets attach CLI", () => {
   });
 
   it("resolves attach options from flags, env, and the caller cwd", async () => {
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets", "profile-token");
     const resolved = await resolveAttachOptions(
       {
         remoteUrl: "https://caplets.example.com/caplets",
-        token: "token",
         workspace: "workspace",
         once: true,
         projectRoot: "/repo",
+        authDir,
       },
       { CAPLETS_REMOTE_URL: "https://env.example.com" },
     );
@@ -164,16 +179,19 @@ describe("caplets attach CLI", () => {
       remote: {
         baseUrl: new URL("https://caplets.example.com/caplets"),
         workspace: "workspace",
-        auth: { type: "bearer", token: "token" },
+        auth: { type: "bearer", token: "profile-token" },
       },
     });
   });
 
   it("reports WebSocket upgrade failures clearly in once mode", async () => {
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
     await expect(
       attachProjectOnce({
         projectRoot: "/repo",
         remoteUrl: "https://caplets.example.com/caplets",
+        authDir,
         fetch: async () => new Response("upgrade blocked", { status: 426 }),
       }),
     ).rejects.toMatchObject({
@@ -184,11 +202,14 @@ describe("caplets attach CLI", () => {
 
   it("probes the HTTP equivalent of the Project Binding WebSocket URL", async () => {
     let requestedUrl: string | undefined;
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "http://127.0.0.1:8787/caplets");
 
     await expect(
       attachProjectOnce({
         projectRoot: "/repo",
         remoteUrl: "http://127.0.0.1:8787/caplets",
+        authDir,
         fetch: async (url) => {
           requestedUrl = String(url);
           return Response.json({ error: "websocket_upgrade_required" }, { status: 426 });
@@ -244,8 +265,11 @@ describe("caplets attach CLI", () => {
 
     try {
       process.chdir(projectRoot);
+      const authDir = tempAuthDir();
+      await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
 
       await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--once"], {
+        authDir,
         fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
         writeOut: (value) => out.push(value),
       });
@@ -260,7 +284,10 @@ describe("caplets attach CLI", () => {
 
   it("keeps attach --once as the finite Project Binding smoke path", async () => {
     const out: string[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
     await runCli(["attach", "--once", "--remote-url", "https://caplets.example.com/caplets"], {
+      authDir,
       fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
       writeOut: (value) => out.push(value),
     });
@@ -275,10 +302,13 @@ describe("caplets attach CLI", () => {
 
     try {
       process.chdir(projectRoot);
+      const authDir = tempAuthDir();
+      await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
 
       await runCli(
         ["attach", "--remote-url", "https://caplets.example.com/caplets", "--once", "--json"],
         {
+          authDir,
           fetch: async () => new Response("upgrade blocked", { status: 426 }),
           writeOut: (value) => out.push(value),
           setExitCode: (code) => {
@@ -371,4 +401,30 @@ function tempProjectRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "caplets-attach-cli-"));
   tempDirs.push(root);
   return root;
+}
+
+function tempAuthDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-attach-auth-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+async function saveSelfHostedProfile(
+  authDir: string,
+  hostUrl: string,
+  accessToken = "profile-access-token",
+): Promise<void> {
+  await new FileRemoteProfileStore({
+    root: join(authDir, "remote-profiles"),
+  }).saveSelfHostedProfile({
+    hostUrl,
+    clientId: "rcli_123",
+    clientLabel: "Test Device",
+    credentials: {
+      accessToken,
+      refreshToken: "profile-refresh-token",
+      tokenType: "Bearer",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    },
+  });
 }

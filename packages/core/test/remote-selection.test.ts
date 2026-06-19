@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { CloudAuthStore } from "../src/cloud-auth/store";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { resolveRemoteSelection } from "../src/remote/selection";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 describe("resolveRemoteSelection", () => {
   it("rejects attach selection in local mode", async () => {
@@ -14,7 +24,40 @@ describe("resolveRemoteSelection", () => {
     await expect(resolveRemoteSelection({}, {})).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
   });
 
-  it("resolves self-hosted remote auth from CAPLETS_REMOTE variables", async () => {
+  it("resolves self-hosted remote auth from a stored Remote Profile", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).resolves.toMatchObject({
+      kind: "self_hosted_remote",
+      remote: {
+        baseUrl: new URL("https://caplets.example.com/caplets"),
+        auth: { type: "bearer", token: "profile-access-token" },
+      },
+    });
+  });
+
+  it("fails closed when self-hosted attach has only legacy env-token state", async () => {
     await expect(
       resolveRemoteSelection(
         {},
@@ -24,26 +67,33 @@ describe("resolveRemoteSelection", () => {
           CAPLETS_REMOTE_TOKEN: "remote-token",
         },
       ),
-    ).resolves.toMatchObject({
-      kind: "self_hosted_remote",
-      remote: {
-        baseUrl: new URL("https://caplets.example.com/caplets"),
-        auth: { type: "bearer", token: "remote-token" },
-      },
+    ).rejects.toMatchObject({
+      projectBindingCode: "remote_credentials_required",
+      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
     });
   });
 
-  it("uses saved Cloud Auth in cloud mode and ignores self-hosted token vars", async () => {
-    const path = tempCloudAuthPath();
-    await new CloudAuthStore({ path }).save(hostedCredentials({ accessToken: "cloud-access" }));
+  it("uses saved Cloud Remote Profiles in cloud mode and ignores self-hosted token vars", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") }).saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_personal",
+      workspaceSlug: "personal",
+      credentials: {
+        accessToken: "cloud-access",
+        refreshToken: "cloud-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
 
     const resolved = await resolveRemoteSelection(
-      {},
+      { authDir },
       {
         CAPLETS_MODE: "cloud",
         CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
         CAPLETS_REMOTE_TOKEN: "self-hosted-token",
-        CAPLETS_CLOUD_AUTH_PATH: path,
       },
     );
 
@@ -251,3 +301,9 @@ describe("resolveRemoteSelection", () => {
     });
   });
 });
+
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}

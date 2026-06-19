@@ -20,6 +20,7 @@ export type RawAttachOptions = {
   once?: boolean;
   projectRoot?: string;
   fetch?: typeof fetch;
+  authDir?: string;
 };
 
 export type ResolvedAttachOptions = {
@@ -50,6 +51,7 @@ export async function resolveAttachOptionsForRun(
     ...(raw.token !== undefined ? { token: raw.token } : {}),
     ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
+    ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),
   };
   const selection = await resolveRemoteSelection(remoteInput, env);
   return {

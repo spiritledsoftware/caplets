@@ -931,7 +931,11 @@ export function createProgram(io: CliIO = {}): Command {
         projectRoot?: string;
       }) => {
         try {
-          const attachOptions = { ...options, ...(io.fetch ? { fetch: io.fetch } : {}) };
+          const attachOptions = {
+            ...options,
+            ...(io.fetch ? { fetch: io.fetch } : {}),
+            ...(io.authDir ? { authDir: io.authDir } : {}),
+          };
           if (!options.once) {
             const resolved = await resolveAttachServeOptions(attachOptions, env);
             await (

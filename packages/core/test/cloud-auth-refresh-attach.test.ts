@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { attachProjectOnce } from "../src/project-binding/attach";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 describe("hosted Cloud Auth refresh before attach", () => {
@@ -49,6 +51,21 @@ describe("hosted Cloud Auth refresh before attach", () => {
     ).resolves.toMatchObject({ ok: true });
 
     await expect(store.load()).resolves.toMatchObject({
+      accessToken: "old_access",
+      refreshToken: "old_refresh",
+      expiresAt: "2026-06-03T00:00:00.000Z",
+    });
+    const profileStore = new FileRemoteProfileStore({
+      root: join(dirname(path), "remote-profiles"),
+    });
+    const status = await profileStore.getCloudProfileStatus({
+      hostUrl: "https://cloud.caplets.dev",
+    });
+    expect(status).toMatchObject({
+      hostUrl: "https://cloud.caplets.dev/",
+      workspaceSlug: "personal",
+    });
+    await expect(profileStore.credentials.load(status?.key ?? "")).resolves.toMatchObject({
       accessToken: "new_access",
       refreshToken: "new_refresh",
       expiresAt: "2999-01-01T00:00:00.000Z",

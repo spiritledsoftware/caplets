@@ -1,15 +1,20 @@
+import { dirname, join } from "node:path";
 import { CloudAuthClient } from "../cloud-auth/client";
 import { CloudAuthStore, type CloudAuthCredentials } from "../cloud-auth/store";
 import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
+import { DEFAULT_AUTH_DIR } from "../config/paths";
 import { CapletsError } from "../errors";
-import { projectBindingError } from "../project-binding/errors";
+import { ProjectBindingError, projectBindingError } from "../project-binding/errors";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
+  normalizeRemoteProfileHostUrl,
   resolveCapletsRemote,
   resolveHostedCloudRemote,
   resolveRemoteMode,
   type ResolvedCapletsRemote,
 } from "./options";
+import { FileRemoteProfileStore } from "./profile-store";
+import { remoteProfileKey } from "./profiles";
 
 export type RemoteSelectionInput = {
   mode?: string;
@@ -19,6 +24,7 @@ export type RemoteSelectionInput = {
   token?: string;
   workspace?: string;
   fetch?: typeof fetch;
+  authDir?: string;
 };
 
 export type ResolvedRemoteSelection =
@@ -59,27 +65,65 @@ export async function resolveRemoteSelection(
   }
 
   if (mode.mode === "remote") {
+    const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
+    if (!remoteUrl) {
+      throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
+    }
+    const store = remoteProfileStore(input.authDir, env);
+    const status = await store.getSelfHostedProfileStatus({ hostUrl: remoteUrl });
+    const credential = status
+      ? await store.credentials.load(
+          remoteProfileKey({
+            kind: "self-hosted",
+            hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
+          }),
+        )
+      : undefined;
+    if (!status || !credential?.accessToken) {
+      const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
+      throw new ProjectBindingError({
+        code: "remote_credentials_required",
+        message: `Remote Login required for ${normalizedUrl}.`,
+        recoveryCommand: `caplets remote login ${normalizedUrl}`,
+      });
+    }
     return {
       kind: "self_hosted_remote",
       remote: resolveCapletsRemote(
         {
-          ...(input.remoteUrl !== undefined ? { url: input.remoteUrl } : {}),
-          ...(input.user !== undefined ? { user: input.user } : {}),
-          ...(input.password !== undefined ? { password: input.password } : {}),
-          ...(input.token !== undefined ? { token: input.token } : {}),
+          url: remoteUrl,
+          token: credential.accessToken,
           ...(input.workspace !== undefined ? { workspace: input.workspace } : {}),
           ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
         },
-        env,
+        {},
       ),
     };
   }
 
-  const store = new CloudAuthStore({ env });
-  let credentials = await store.load();
-  if (!credentials?.accessToken) {
+  const store = remoteProfileStore(input.authDir, env);
+  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
+  if (!remoteUrl) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL or remoteUrl.",
+    );
+  }
+  const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
+  let status = await store.getCloudProfileStatus({
+    hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
+    workspace: workspaceFromRemoteUrl,
+  });
+  if (!status && workspaceFromRemoteUrl) {
+    status = await store.getCloudProfileStatus({
+      hostUrl: normalizeRemoteProfileHostUrl(remoteUrl),
+    });
+  }
+  let credential = status ? await store.credentials.load(status.key) : undefined;
+  if (!status || !credential?.accessToken) {
     throw projectBindingError("cloud_auth_required");
   }
+  let credentials: CloudAuthCredentials = cloudCredentialsFromProfile(status, credential);
 
   if (credentialsNeedRefresh(credentials)) {
     if (!credentials.refreshToken) {
@@ -96,7 +140,20 @@ export async function resolveRemoteSelection(
       createdAt: credentials.createdAt,
       lastRefreshAt: new Date().toISOString(),
     };
-    await store.save(credentials);
+    status = await store.saveCloudProfile({
+      hostUrl: credentials.cloudUrl,
+      workspaceId: credentials.workspaceId,
+      ...(credentials.workspaceSlug ? { workspaceSlug: credentials.workspaceSlug } : {}),
+      clientLabel: credentials.deviceName,
+      credentials: {
+        accessToken: credentials.accessToken,
+        refreshToken: credentials.refreshToken,
+        expiresAt: credentials.expiresAt,
+        scope: credentials.scope,
+        tokenType: credentials.tokenType,
+      },
+    });
+    credential = await store.credentials.load(status.key);
   }
 
   const selectedWorkspace = credentials.workspaceSlug ?? credentials.workspaceId;
@@ -111,14 +168,6 @@ export async function resolveRemoteSelection(
     );
   }
 
-  const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
-  if (!remoteUrl) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL or remoteUrl.",
-    );
-  }
-  const workspaceFromRemoteUrl = hostedCloudWorkspaceFromRemoteUrl(remoteUrl);
   if (
     workspaceFromRemoteUrl &&
     workspaceFromRemoteUrl !== credentials.workspaceSlug &&
@@ -158,6 +207,50 @@ export async function resolveRemoteSelection(
       accessToken: credentials.accessToken,
       workspaceId: credentials.workspaceId,
     },
+  };
+}
+
+function remoteProfileStore(
+  authDir: string | undefined,
+  env: Record<string, string | undefined>,
+): FileRemoteProfileStore {
+  const root = join(
+    authDir ??
+      (env.CAPLETS_CLOUD_AUTH_PATH ? dirname(env.CAPLETS_CLOUD_AUTH_PATH) : DEFAULT_AUTH_DIR),
+    "remote-profiles",
+  );
+  return new FileRemoteProfileStore({
+    root,
+    legacyCloudAuthStore: new CloudAuthStore({ env }),
+  });
+}
+
+function cloudCredentialsFromProfile(
+  status: {
+    hostUrl: string;
+    workspaceId?: string | undefined;
+    workspaceSlug?: string | undefined;
+    clientLabel?: string | undefined;
+  },
+  credential: {
+    accessToken?: string | undefined;
+    refreshToken?: string | undefined;
+    expiresAt?: string | undefined;
+    scope?: string[] | undefined;
+    tokenType?: string | undefined;
+  },
+): CloudAuthCredentials {
+  return {
+    version: 2,
+    cloudUrl: status.hostUrl,
+    workspaceId: status.workspaceId ?? "",
+    ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
+    accessToken: credential.accessToken ?? "",
+    refreshToken: credential.refreshToken ?? "",
+    expiresAt: credential.expiresAt ?? new Date(0).toISOString(),
+    scope: credential.scope,
+    tokenType: credential.tokenType,
+    deviceName: status.clientLabel,
   };
 }
 

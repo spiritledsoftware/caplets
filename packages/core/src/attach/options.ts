@@ -42,6 +42,7 @@ function attachLocalServeOptions(raw: RawAttachServeOptions): RawServeOptions {
     remoteUrl: _remoteUrl,
     workspace: _workspace,
     fetch: _fetch,
+    authDir: _authDir,
     projectRoot: _projectRoot,
     ...serve
   } = raw;
