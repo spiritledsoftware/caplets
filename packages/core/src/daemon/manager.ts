@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
 import { buildLaunchdDescriptor, LAUNCHD_LABEL } from "./platform-darwin";
@@ -305,7 +313,7 @@ async function writeDescriptorForInstall<T>(
   }
 }
 
-type DescriptorBackup = { path: string; existed: boolean; contents?: Buffer };
+type DescriptorBackup = { path: string; existed: boolean; contents?: Buffer; mode?: number };
 
 function backupDescriptorFiles(descriptor: DaemonDescriptor): DescriptorBackup[] {
   const paths =
@@ -316,6 +324,7 @@ function backupDescriptorFiles(descriptor: DaemonDescriptor): DescriptorBackup[]
     path,
     existed: existsSync(path),
     ...(existsSync(path) ? { contents: readFileSync(path) } : {}),
+    ...(existsSync(path) ? { mode: statSync(path).mode & 0o777 } : {}),
   }));
 }
 
@@ -323,7 +332,8 @@ function restoreDescriptorFiles(backups: DescriptorBackup[]): void {
   for (const backup of backups) {
     if (backup.existed && backup.contents) {
       mkdirSync(dirname(backup.path), { recursive: true, mode: 0o700 });
-      writeFileSync(backup.path, backup.contents);
+      writeFileSync(backup.path, backup.contents, { mode: backup.mode ?? 0o600 });
+      chmodSync(backup.path, backup.mode ?? 0o600);
     } else {
       rmSync(backup.path, { force: true });
     }

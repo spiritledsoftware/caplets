@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -399,6 +408,7 @@ describe("daemon paths and config", () => {
       const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
       mkdirSync(join(dir, "config", "systemd", "user"), { recursive: true });
       writeFileSync(paths.descriptorFile, "old descriptor\n");
+      chmodSync(paths.descriptorFile, 0o600);
       const runner: DaemonCommandRunner = {
         async exec() {
           return { stdout: "", stderr: "boom", code: 1 };
@@ -413,6 +423,7 @@ describe("daemon paths and config", () => {
       ).rejects.toThrow(/systemd registration failed/u);
 
       expect(readFileSync(paths.descriptorFile, "utf8")).toBe("old descriptor\n");
+      expect(statSync(paths.descriptorFile).mode & 0o777).toBe(0o600);
       expect(existsSync(paths.configFile)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
