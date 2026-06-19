@@ -83,6 +83,20 @@ describe("caplets daemon CLI", () => {
       expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
     );
   });
+
+  it("maps --no-restart through daemon install option validation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-no-restart-"));
+    try {
+      await expect(
+        runCli(["daemon", "install", "--start", "--no-restart", "--dry-run"], {
+          env: testEnv(dir),
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(/--start, --restart, and --no-restart are mutually exclusive/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("daemon paths and config", () => {
@@ -302,6 +316,8 @@ describe("daemon paths and config", () => {
       expect(windows.descriptor.taskName).toBe("\\Caplets\\daemon-default");
       expect(windows.descriptor.xml).toContain(windows.descriptor.wrapper.path);
       expect(windows.descriptor.xml).toContain("<LogonTrigger>");
+      expect(windows.descriptor.xml).toContain('<Principal id="Author">');
+      expect(windows.descriptor.xml).toContain("<LogonType>InteractiveToken</LogonType>");
       expect(windows.descriptor.xml).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
       expect(windows.descriptor.xml).toContain("<WorkingDirectory>");
       expect(windows.descriptor.wrapper.contents).toContain(">> ");
@@ -354,9 +370,11 @@ describe("daemon paths and config", () => {
       command: {
         executable: "C:\\Program Files\\Caplets\\cli.js",
         args: ["serve", "--password", "pa ss"],
+        env: { PATH: "C:\\Tools" },
         shell: { executable: "cmd.exe", args: ["/d", "/s", "/c"] },
       },
     });
+    expect(cmd.args.at(-1)).toContain('set "PATH=C:\\Tools"&& ');
     expect(cmd.args.at(-1)).toContain('"C:\\Program Files\\Caplets\\cli.js"');
     expect(cmd.args.at(-1)).toContain('"pa ss"');
     expect(cmd.args.at(-1)).not.toContain("'C:\\Program Files");
@@ -365,14 +383,46 @@ describe("daemon paths and config", () => {
       command: {
         executable: "C:\\Program Files\\Caplets\\cli.js",
         args: ["serve", "--password", "pa ss"],
+        env: { PATH: "C:\\Tools" },
         shell: {
           executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
           args: ["-NoProfile", "-Command"],
         },
       },
     });
+    expect(powerShell.args.at(-1)).toContain("$env:PATH = 'C:\\Tools'; & ");
     expect(powerShell.args.at(-1)).toContain("& ");
     expect(powerShell.args.at(-1)).toContain("'C:\\Program Files\\Caplets\\cli.js'");
+
+    const bash = serviceCommand({
+      command: {
+        executable: "/usr/local/bin/caplets",
+        args: ["serve"],
+        env: { PATH: "/custom/bin" },
+        shell: { executable: "/bin/bash", args: ["-lc"] },
+      },
+    });
+    expect(bash.args.at(-1)).toContain("export PATH=/custom/bin; exec ");
+    expect(bash.args.at(-1)).toContain(" /usr/local/bin/caplets serve");
+  });
+
+  it("uses non-login inherited shell mode for /bin/sh", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-sh-"));
+    try {
+      const result = await installDaemon(
+        { inheritEnv: true, validate: false, dryRun: true },
+        {
+          env: { ...testEnv(dir), SHELL: "/bin/sh" },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.shell).toMatchObject({ executable: "/bin/sh", args: ["-c"] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects temporary CLI runner paths for daemon installs", async () => {
@@ -560,6 +610,37 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("fails reset updates to running daemons before writing service changes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-reset-restart-decision-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ port: "5480", validate: false }, options);
+      const previousConfig = readFileSync(installed.config.paths.configFile, "utf8");
+      const previousDescriptor = readFileSync(installed.config.paths.descriptorFile, "utf8");
+      runner.commands.length = 0;
+
+      await expect(
+        installDaemon({ reset: true, validate: false, env: ["NAME=new"] }, options),
+      ).rejects.toThrow(/rerun with --restart, --start, or --no-restart/u);
+
+      expect(readFileSync(installed.config.paths.configFile, "utf8")).toBe(previousConfig);
+      expect(readFileSync(installed.config.paths.descriptorFile, "utf8")).toBe(previousDescriptor);
+      expect(runner.commands).not.toContainEqual([
+        "systemctl",
+        "--user",
+        "enable",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails start when the native service does not pass HTTP health", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-health-"));
     try {
@@ -569,10 +650,124 @@ describe("daemon lifecycle and logs", () => {
         platform: "linux" as const,
         commandRunner: runner,
         fetch: async () => new Response("nope", { status: 503 }),
+        healthTimeoutMs: 10,
+        healthIntervalMs: 1,
       };
       await installDaemon({ validate: false }, options);
 
       await expect(startDaemon(options)).rejects.toThrow(/Native daemon health check failed/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for native health to become ready after start", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-health-retry-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      let healthCalls = 0;
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        fetch: async () => {
+          healthCalls += 1;
+          return new Response(healthCalls < 3 ? "nope" : "ok", {
+            status: healthCalls < 3 ? 503 : 200,
+          });
+        },
+        healthTimeoutMs: 1_000,
+        healthIntervalMs: 1,
+      };
+      await installDaemon({ validate: false }, options);
+
+      await startDaemon(options);
+
+      expect(healthCalls).toBeGreaterThanOrEqual(3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not bootstrap launchd during plain install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-install-"));
+    try {
+      const runner = fakeRunner();
+      await installDaemon(
+        { validate: false },
+        {
+          env: testEnv(dir),
+          home: dir,
+          platform: "darwin",
+          uid: 501,
+          commandRunner: runner,
+        },
+      );
+
+      expect(runner.commands).not.toContainEqual([
+        "launchctl",
+        "bootstrap",
+        "gui/501",
+        resolveDaemonPaths({ env: testEnv(dir), platform: "darwin" }).descriptorFile,
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reloads already bootstrapped launchd descriptors before start", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-start-"));
+    try {
+      let bootstrapAttempts = 0;
+      let running = false;
+      const runner: DaemonCommandRunner & { commands: string[][] } = {
+        commands: [],
+        async exec(command, args) {
+          runner.commands.push([command, ...args]);
+          if (command === "launchctl" && args[0] === "bootstrap") {
+            bootstrapAttempts += 1;
+            return bootstrapAttempts === 1
+              ? { stdout: "", stderr: "service already loaded", code: 37 }
+              : { stdout: "", stderr: "", code: 0 };
+          }
+          if (command === "launchctl" && args[0] === "print") {
+            return running
+              ? { stdout: "pid = 4242\n", stderr: "", code: 0 }
+              : { stdout: "", stderr: "not found", code: 113 };
+          }
+          if (command === "launchctl" && args[0] === "kickstart") {
+            running = true;
+            return { stdout: "", stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: testEnv(dir),
+        home: dir,
+        platform: "darwin" as const,
+        uid: 501,
+        commandRunner: runner,
+        fetch: async () => new Response("ok"),
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      await startDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "bootout",
+        "gui/501",
+        installed.config.paths.descriptorFile,
+      ]);
+      expect(runner.commands.filter((command) => command[1] === "bootstrap")).toHaveLength(2);
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "kickstart",
+        "-k",
+        "gui/501/dev.caplets.daemon.default",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

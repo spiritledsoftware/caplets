@@ -149,6 +149,8 @@ export type DaemonOperationOptions = {
   now?: Date;
   readPrompt?: (prompt: string) => Promise<string>;
   isInteractive?: boolean;
+  healthTimeoutMs?: number;
+  healthIntervalMs?: number;
 };
 
 export type DaemonInstallOptions = RawDaemonServeOptions & {

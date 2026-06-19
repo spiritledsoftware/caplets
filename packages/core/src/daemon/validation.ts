@@ -1,7 +1,7 @@
 import { CapletsError } from "../errors";
 import { servicePaths } from "../serve/http";
 import type { DaemonConfig, DaemonHealthResult } from "./types";
-import { shellQuote } from "./shell";
+import { serviceCommand } from "./shell";
 
 export async function validateDaemonCommand(
   config: DaemonConfig,
@@ -37,7 +37,11 @@ export async function validateDaemonCommand(
       }
     );
   } finally {
-    if (child.exitCode === null) child.kill("SIGTERM");
+    if (child.exitCode === null) {
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      child.kill("SIGTERM");
+      await Promise.race([closed, sleep(2_000)]);
+    }
   }
 }
 
@@ -100,15 +104,8 @@ function healthUrl(config: DaemonConfig, port = config.serve.port): string {
 }
 
 function validationSpawnCommand(config: DaemonConfig): { command: string; args: string[] } {
-  const argv = [config.command.executable, ...config.command.args];
-  if (!config.command.shell) return { command: process.execPath, args: argv };
-  return {
-    command: config.command.shell.executable,
-    args: [
-      ...config.command.shell.args,
-      `${shellQuote(process.execPath)} ${argv.map(shellQuote).join(" ")}`,
-    ],
-  };
+  const planned = serviceCommand(config);
+  return { command: planned.executable, args: planned.args };
 }
 
 async function sleep(ms: number): Promise<void> {

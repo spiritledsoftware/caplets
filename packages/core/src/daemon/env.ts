@@ -40,6 +40,8 @@ function shellPlan(
       ? { executable, args: ["-NoProfile", "-Command"], source }
       : { executable, args: ["/d", "/s", "/c"], source };
   }
+  if (executable.endsWith("/sh") || executable === "sh")
+    return { executable, args: ["-c"], source };
   return { executable, args: ["-lc"], source };
 }
 

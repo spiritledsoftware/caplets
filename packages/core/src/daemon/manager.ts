@@ -53,24 +53,11 @@ function launchdManager(
     },
     install: async (config) => {
       const descriptor = buildLaunchdDescriptor(config);
-      const commands = [["launchctl", "bootstrap", domain, descriptor.path]];
-      const result = await writeDescriptorForInstall(descriptor, async () => {
-        const bootstrap = await runner.exec(commands[0]![0]!, commands[0]!.slice(1));
-        if (
-          bootstrap.code !== 0 &&
-          !/already bootstrapped|service already loaded/iu.test(bootstrap.stderr)
-        ) {
-          throw new CapletsError(
-            "SERVER_UNAVAILABLE",
-            `launchd registration failed: ${bootstrap.stderr || bootstrap.stdout || bootstrap.code}`,
-          );
-        }
-        return bootstrap;
-      });
+      writeDescriptor(descriptor);
       return {
         action: "install",
-        native: stopped({ stdout: result.stdout, stderr: result.stderr }),
-        commands,
+        native: stopped(),
+        commands: [],
         descriptor,
       };
     },
@@ -93,7 +80,8 @@ function launchdManager(
         commands,
       };
     },
-    start: async () => launchdLifecycle(runner, "start", ["launchctl", "kickstart", "-k", target]),
+    start: async (config) =>
+      launchdStartLifecycle(runner, domain, target, config.paths.descriptorFile),
     restart: async (config) =>
       launchdRestartLifecycle(runner, domain, target, config.paths.descriptorFile),
     stop: async () => {
@@ -369,17 +357,48 @@ async function assertExecUnless(
   }
 }
 
-async function launchdLifecycle(
+async function launchdStartLifecycle(
   runner: DaemonCommandRunner,
-  action: string,
-  command: string[],
-  running = true,
+  domain: string,
+  target: string,
+  descriptorPath: string,
 ): Promise<DaemonManagerAction> {
-  await assertExec(runner, command, `launchd ${action} failed`);
+  const commands: string[][] = [];
+  const bootstrap = ["launchctl", "bootstrap", domain, descriptorPath];
+  const bootstrapResult = await runner.exec(bootstrap[0]!, bootstrap.slice(1));
+  commands.push(bootstrap);
+  if (
+    bootstrapResult.code !== 0 &&
+    !/already bootstrapped|service already loaded/iu.test(bootstrapResult.stderr)
+  ) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `launchd start failed: ${bootstrapResult.stderr || bootstrapResult.stdout || bootstrapResult.code}`,
+    );
+  }
+  if (bootstrapResult.code !== 0) {
+    const bootout = ["launchctl", "bootout", domain, descriptorPath];
+    const bootoutResult = await runner.exec(bootout[0]!, bootout.slice(1));
+    commands.push(bootout);
+    if (
+      bootoutResult.code !== 0 &&
+      !/No such process|not found|Could not find service/iu.test(bootoutResult.stderr)
+    ) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        `launchd start failed: ${bootoutResult.stderr || bootoutResult.stdout || bootoutResult.code}`,
+      );
+    }
+    await assertExec(runner, bootstrap, "launchd start failed");
+    commands.push(bootstrap);
+  }
+  const kickstart = ["launchctl", "kickstart", "-k", target];
+  await assertExec(runner, kickstart, "launchd start failed");
+  commands.push(kickstart);
   return {
-    action,
-    native: running ? { state: "running", installed: true, running: true } : stopped(),
-    commands: [command],
+    action: "start",
+    native: { state: "running", installed: true, running: true },
+    commands,
   };
 }
 

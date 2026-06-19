@@ -42,7 +42,8 @@ export async function installDaemon(
   const env = options.env ?? process.env;
   const paths = resolveDaemonPaths(options);
   const manager = options.manager ?? createNativeDaemonManager(options);
-  const existing = install.reset ? undefined : readDaemonConfig(paths);
+  const persisted = readDaemonConfig(paths);
+  const existing = install.reset ? undefined : persisted;
   const daemonEnv = mergeDaemonEnv(existing?.env, install);
   const serve = resolveDaemonHttpServeOptions(mergeServeOptions(existing, install), env);
   const command = buildDaemonCommandPlan({
@@ -63,7 +64,10 @@ export async function installDaemon(
   const descriptor = manager.descriptor(config);
   const plannedActions = ["write-config", "write-descriptor", "register-service"];
 
-  const existingNative = existing ? await manager.status(existing, paths) : undefined;
+  const existingNative =
+    persisted || existsSync(paths.descriptorFile)
+      ? await manager.status(persisted, paths)
+      : undefined;
   const restartDecisionRequired =
     existingNative?.running === true && !install.start && !install.restart && !install.noRestart;
   if (
@@ -92,7 +96,7 @@ export async function installDaemon(
   if (install.validate !== false) {
     validation = await validateInstallCommand({
       config,
-      existing,
+      existing: persisted,
       existingNativeRunning: existingNative?.running === true,
       options,
     });
@@ -117,7 +121,7 @@ export async function installDaemon(
       install.restart || (install.start && existingNative?.running)
         ? await manager.restart(config)
         : await manager.start(config);
-    const health = await probeDaemonHealth(config, options.fetch ? { fetch: options.fetch } : {});
+    const health = await waitForDaemonHealth(config, options);
     assertDaemonHealth(health, "Native daemon health check");
     writeDaemonState(paths, {
       instance: "default",
@@ -197,6 +201,30 @@ async function validateInstallCommand(input: {
       ok: false,
       url: "",
       error: "daemon install validation did not run",
+    }
+  );
+}
+
+async function waitForDaemonHealth(
+  config: DaemonConfig,
+  options: DaemonOperationOptions,
+): Promise<DaemonHealthResult> {
+  const deadline = Date.now() + (options.healthTimeoutMs ?? 10_000);
+  const intervalMs = options.healthIntervalMs ?? 200;
+  let last: DaemonHealthResult | undefined;
+  while (Date.now() < deadline) {
+    last = await probeDaemonHealth(config, {
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      timeoutMs: 1_000,
+    });
+    if (last.ok) return last;
+    await sleep(intervalMs);
+  }
+  return (
+    last ?? {
+      ok: false,
+      url: "",
+      error: "native daemon health probe timed out",
     }
   );
 }
@@ -363,17 +391,14 @@ async function daemonLifecycle(
     updatedAt: (options.now ?? new Date()).toISOString(),
     ...(native.native.pid === undefined ? {} : { pid: native.native.pid }),
   });
-  const status = await daemonStatus({ ...options, manager });
   if (effectiveAction === "start" || effectiveAction === "restart") {
-    assertDaemonHealth(
-      status.health ?? {
-        ok: false,
-        url: "",
-        error: "native daemon did not report a running service",
-      },
-      "Native daemon health check",
-    );
+    const health = await waitForDaemonHealth(config, options);
+    assertDaemonHealth(health, "Native daemon health check");
+    const status = await daemonStatus({ ...options, manager });
+    status.health = health;
+    return { action: effectiveAction, native, status };
   }
+  const status = await daemonStatus({ ...options, manager });
   return { action: effectiveAction, native, status };
 }
 
@@ -451,3 +476,7 @@ export type {
   NativeDaemonStatus,
   RawDaemonServeOptions,
 } from "./types";
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
