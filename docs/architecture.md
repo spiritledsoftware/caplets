@@ -52,6 +52,12 @@ The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, atta
 
 `/v1/attach` is the Caplets runtime attach API. Attached clients read `/v1/attach/manifest`, subscribe to `/v1/attach/events`, and invoke revision-scoped exports through `/v1/attach/invoke` before merging remote projections with local/project overlays.
 
+### Caplets Daemon
+
+`packages/core/src/daemon/` owns the default per-user daemon lifecycle. `caplets daemon install` persists HTTP `caplets serve` configuration, explicit service environment variables, optional shell inheritance intent, user-only log paths, and native service descriptors under the `daemon/default` identity. Runtime lifecycle commands (`start`, `restart`, `stop`, `status`, `logs`, and `uninstall`) read that installed service state instead of accepting serve flags.
+
+The daemon uses the native per-user service manager for the host platform: launchd UserAgents on macOS, `systemd --user` services on Linux, and current-user Windows Scheduled Tasks on Windows. There is no detached-process fallback when a native manager is unavailable. Foreground `caplets serve` remains stdio/HTTP serving only.
+
 ### Code Mode
 
 Code Mode is implemented under `packages/core/src/code-mode/`.

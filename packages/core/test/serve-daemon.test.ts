@@ -1,119 +1,102 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
 import type { CapletsError } from "../src/errors";
 import {
-  buildDaemonPlatformDescriptor,
+  daemonServeArgs,
+  daemonLogs,
   daemonStatus,
-  disableDaemon,
-  enableDaemon,
-  resolveServeDaemonPaths,
+  installDaemon,
+  resolveDaemonHttpServeOptions,
+  resolveDaemonPaths,
   restartDaemon,
   startDaemon,
-  stopDaemon,
-  type DaemonProcessRunner,
-} from "../src/serve";
+  uninstallDaemon,
+  type DaemonCommandRunner,
+} from "../src/daemon";
 
-describe("caplets serve daemon CLI", () => {
-  it("shows daemon subcommand help", async () => {
-    const out: string[] = [];
+describe("caplets daemon CLI", () => {
+  it("shows daemon help and removes daemon lifecycle from serve help", async () => {
+    const daemonOut: string[] = [];
+    const serveOut: string[] = [];
 
-    await runCli(["serve", "start", "--help"], { writeOut: (value) => out.push(value) });
-    await runCli(["serve", "status", "--help"], { writeOut: (value) => out.push(value) });
+    await runCli(["daemon", "--help"], { writeOut: (value) => daemonOut.push(value) });
+    await runCli(["serve", "--help"], { writeOut: (value) => serveOut.push(value) });
 
-    const text = out.join("");
-    expect(text).toContain("Start the default Caplets HTTP daemon.");
-    expect(text).toContain("Show the default Caplets HTTP daemon status.");
-    expect(text).toContain("--transport <transport>");
+    const daemonHelp = daemonOut.join("");
+    expect(daemonHelp).toContain("install");
+    expect(daemonHelp).toContain("uninstall");
+    expect(daemonHelp).toContain("start");
+    expect(daemonHelp).toContain("restart");
+    expect(daemonHelp).toContain("stop");
+    expect(daemonHelp).toContain("status");
+    expect(daemonHelp).toContain("logs");
+
+    const serveHelp = serveOut.join("");
+    expect(serveHelp).not.toContain("enable");
+    expect(serveHelp).not.toContain("disable");
+    expect(serveHelp).not.toContain("Start the default Caplets HTTP daemon");
   });
 
-  it("rejects stdio daemon start", async () => {
-    await expect(
-      runCli(["serve", "start", "--transport", "stdio"], { writeErr: () => {} }),
-    ).rejects.toThrow(
-      expect.objectContaining({
-        code: "REQUEST_INVALID",
-        message: "Daemonized serve requires --transport http.",
-      }) as CapletsError,
+  it("rejects daemon install transport before writing artifacts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-"));
+    try {
+      await expect(
+        runCli(["daemon", "install", "--transport", "http"], {
+          env: testEnv(dir),
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+
+      expect(existsSync(join(dir, "config", "caplets", "daemon", "default.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("moves removed serve daemon subcommands to daemon guidance", async () => {
+    await expect(runCli(["serve", "start"], { writeErr: () => {} })).rejects.toThrow(
+      /Use caplets daemon start/u,
+    );
+    await expect(runCli(["serve", "enable"], { writeErr: () => {} })).rejects.toThrow(
+      /Use caplets daemon install/u,
     );
   });
 
-  it("defaults daemon start to HTTP", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-"));
-    const out: string[] = [];
-    try {
-      await runCli(["serve", "start"], {
-        env: { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") },
-        writeOut: (value) => out.push(value),
-        daemon: {
-          process: fakeProcessRunner({ running: false, pid: 1200 }),
-        },
-      });
-
-      expect(out.join("")).toContain("Started Caplets HTTP daemon on 127.0.0.1:5387.");
-      const config = JSON.parse(
-        readFileSync(join(dir, "config", "caplets", "serve", "default.json"), "utf8"),
-      ) as { serve: { transport: string } };
-      expect(config.serve.transport).toBe("http");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("prints redacted JSON status", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-"));
-    const out: string[] = [];
-    try {
-      await startDaemon(
-        { password: "super-secret-password" },
-        {
-          env: { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") },
-          process: fakeProcessRunner({ running: false, pid: 1300 }),
-        },
-      );
-
-      await runCli(["serve", "status", "--json"], {
-        env: { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") },
-        writeOut: (value) => out.push(value),
-        daemon: {
-          process: fakeProcessRunner({ running: true, pid: 1300 }),
-        },
-      });
-
-      const status = JSON.parse(out.join("")) as {
-        config: { serve: { auth: { password: string } } };
-      };
-      expect(status.config.serve.auth.password).toBe("[REDACTED]");
-      expect(out.join("")).not.toContain("super-secret-password");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it("does not expose enable or disable aliases", async () => {
+    await expect(runCli(["daemon", "enable"], { writeErr: () => {} })).rejects.toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
+    await expect(runCli(["daemon", "disable"], { writeErr: () => {} })).rejects.toThrow(
+      expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
+    );
   });
 });
 
-describe("serve daemon paths", () => {
-  it("uses XDG state and config roots for macOS and Linux", () => {
-    const paths = resolveServeDaemonPaths({
+describe("daemon paths and config", () => {
+  it("uses daemon/default paths on macOS and Linux", () => {
+    const paths = resolveDaemonPaths({
       env: { XDG_CONFIG_HOME: "/config", XDG_STATE_HOME: "/state" },
       home: "/home/alice",
       platform: "linux",
     });
 
-    expect(paths.stateFile).toBe(posix.join("/state", "caplets", "serve", "default", "state.json"));
-    expect(paths.pidFile).toBe(posix.join("/state", "caplets", "serve", "default", "server.pid"));
+    expect(paths.stateFile).toBe(
+      posix.join("/state", "caplets", "daemon", "default", "state.json"),
+    );
     expect(paths.stdoutLog).toBe(
-      posix.join("/state", "caplets", "serve", "default", "logs", "stdout.log"),
+      posix.join("/state", "caplets", "daemon", "default", "logs", "stdout.log"),
     );
-    expect(paths.stderrLog).toBe(
-      posix.join("/state", "caplets", "serve", "default", "logs", "stderr.log"),
+    expect(paths.configFile).toBe(posix.join("/config", "caplets", "daemon", "default.json"));
+    expect(paths.descriptorFile).toBe(
+      posix.join("/config", "systemd", "user", "caplets-daemon-default.service"),
     );
-    expect(paths.configFile).toBe(posix.join("/config", "caplets", "serve", "default.json"));
   });
 
-  it("uses LOCALAPPDATA state and APPDATA config roots for Windows", () => {
-    const paths = resolveServeDaemonPaths({
+  it("uses daemon/default paths on Windows", () => {
+    const paths = resolveDaemonPaths({
       env: {
         APPDATA: "C:\\Users\\Alice\\AppData\\Roaming",
         LOCALAPPDATA: "C:\\Users\\Alice\\AppData\\Local",
@@ -127,249 +110,395 @@ describe("serve daemon paths", () => {
         "C:\\Users\\Alice\\AppData\\Local",
         "Caplets",
         "State",
-        "serve",
+        "daemon",
         "default",
         "state.json",
       ),
     );
-    expect(paths.pidFile).toBe(
-      win32.join(
-        "C:\\Users\\Alice\\AppData\\Local",
-        "Caplets",
-        "State",
-        "serve",
-        "default",
-        "server.pid",
-      ),
-    );
-    expect(paths.stdoutLog).toBe(
-      win32.join(
-        "C:\\Users\\Alice\\AppData\\Local",
-        "Caplets",
-        "State",
-        "serve",
-        "default",
-        "logs",
-        "stdout.log",
-      ),
-    );
     expect(paths.configFile).toBe(
-      win32.join("C:\\Users\\Alice\\AppData\\Roaming", "Caplets", "serve", "default.json"),
+      win32.join("C:\\Users\\Alice\\AppData\\Roaming", "Caplets", "daemon", "default.json"),
     );
   });
-});
 
-describe("serve daemon lifecycle", () => {
-  it("starts, reports status, and stops the default instance", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-"));
-    const process = fakeProcessRunner({ running: false, pid: 1400 });
+  it("installs with HTTP serve config, env overrides, and home working directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-install-"));
+    try {
+      const runner = fakeRunner();
+      const result = await installDaemon(
+        {
+          host: "127.0.0.1",
+          port: "5480",
+          path: "/caplets",
+          env: ["NAME=value=with=equals", "EMPTY="],
+          inheritEnv: true,
+          validate: false,
+        },
+        {
+          env: testEnv(dir),
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: runner,
+        },
+      );
+
+      expect(result.config.serve.transport).toBe("http");
+      expect(result.config.serve.port).toBe(5480);
+      expect(result.config.command.workingDirectory).toBe("/home/alice");
+      expect(result.config.env.values).toMatchObject({ NAME: "value=with=equals", EMPTY: "" });
+      expect(result.config.env.inherit).toBe(true);
+      expect(result.descriptor.kind).toBe("systemd-user");
+      expect(readFileSync(result.config.paths.configFile, "utf8")).toContain(
+        '"instance": "default"',
+      );
+      expect(runner.commands.slice(0, 2)).toEqual([
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "caplets-daemon-default.service"],
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not emit auth flags for default unauthenticated loopback serve", () => {
+    const serve = resolveDaemonHttpServeOptions({});
+
+    expect(daemonServeArgs(serve)).not.toContain("--user");
+    expect(daemonServeArgs(serve)).not.toContain("--password");
+  });
+
+  it("validates updates to running daemons on a temporary loopback port", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-"));
     try {
       const options = {
-        env: { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") },
-        process,
+        env: testEnv(dir),
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner({ active: true }),
       };
+      await installDaemon({ port: "5480", validate: false }, options);
 
-      const started = await startDaemon({ port: "5480", password: "secret-password" }, options);
-      expect(started.status.running).toBe(true);
-      expect(started.status.pid).toBe(1400);
-      expect(process.starts[0]?.args).toEqual([
-        "serve",
-        "--transport",
-        "http",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "5480",
-        "--path",
-        "/",
-        "--user",
-        "caplets",
-        "--password",
-        "secret-password",
-      ]);
-
-      const status = await daemonStatus({
-        ...options,
-        process: fakeProcessRunner({ running: true, pid: 1400 }),
-      });
-      expect(status.running).toBe(true);
-      expect(status.config?.serve.port).toBe(5480);
-
-      const stopped = await stopDaemon({
-        ...options,
-        process: fakeProcessRunner({ running: true, pid: 1400 }),
-      });
-      expect(stopped.status.running).toBe(false);
-      expect(stopped.status.pid).toBeUndefined();
-
-      const afterStop = await daemonStatus({
-        ...options,
-        process: fakeProcessRunner({ running: true, pid: 1400 }),
-      });
-      expect(afterStop.running).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("fails start when already running and lets restart apply config changes", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-"));
-    try {
-      const env = { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") };
-      await startDaemon(
-        { port: "5480" },
-        { env, process: fakeProcessRunner({ running: false, pid: 1400 }) },
+      const validatedPorts: number[] = [];
+      await installDaemon(
+        {
+          port: "5480",
+          noRestart: true,
+        },
+        {
+          ...options,
+          validateCommand: async (config) => {
+            validatedPorts.push(config.serve.port);
+            expect(config.serve.host).toBe("127.0.0.1");
+            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+          },
+        },
       );
 
-      await expect(
-        startDaemon(
-          { port: "5481" },
-          { env, process: fakeProcessRunner({ running: true, pid: 1400 }) },
-        ),
-      ).rejects.toThrow("Caplets HTTP daemon is already running.");
-
-      const process = fakeProcessRunner({ running: true, pid: 1400, nextPid: 1401 });
-      const restarted = await restartDaemon({ port: "5481" }, { env, process });
-
-      expect(restarted.status.running).toBe(true);
-      expect(restarted.status.pid).toBe(1401);
-      expect(process.stops).toEqual([1400]);
-      expect(process.starts[0]?.args).toContain("5481");
+      expect(validatedPorts).toHaveLength(1);
+      expect(validatedPorts[0]).not.toBe(5480);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("enables and disables the platform service without installing in tests", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-"));
+  it("renders native daemon identities for launchd, systemd, and Windows tasks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-descriptor-"));
     try {
-      const env = { XDG_CONFIG_HOME: join(dir, "config"), XDG_STATE_HOME: join(dir, "state") };
-      await startDaemon(
-        { port: "5482" },
-        { env, process: fakeProcessRunner({ running: false, pid: 1400 }) },
-      );
-
-      const enabled = await enableDaemon({ env, platform: "linux", serviceAvailable: true });
-      expect(enabled.enabled).toBe(true);
-      expect(enabled.descriptor.kind).toBe("systemd-user");
-
-      const disabled = await disableDaemon({ env, platform: "linux", serviceAvailable: true });
-      expect(disabled.enabled).toBe(false);
-      expect(disabled.descriptor.kind).toBe("systemd-user");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("serve daemon platform descriptors", () => {
-  it("describes a macOS launchd user agent", () => {
-    const descriptor = buildDaemonPlatformDescriptor({
-      platform: "darwin",
-      paths: resolveServeDaemonPaths({
-        env: { XDG_CONFIG_HOME: "/config", XDG_STATE_HOME: "/state" },
+      const common = {
+        host: "127.0.0.1",
+        port: "5480",
+        validate: false,
+        dryRun: true,
+      };
+      const launchd = await installDaemon(common, {
+        env: testEnv(dir),
         home: "/Users/alice",
         platform: "darwin",
-      }),
-      command: { executable: "/usr/local/bin/caplets", args: ["serve", "--transport", "http"] },
-    });
+        commandRunner: fakeRunner(),
+      });
+      expect(launchd.descriptor.kind).toBe("launchd-user-agent");
+      expect(launchd.descriptor.path).toContain("dev.caplets.daemon.default.plist");
+      if (launchd.descriptor.kind !== "launchd-user-agent") throw new Error("expected launchd");
+      expect(launchd.descriptor.contents).toContain("dev.caplets.daemon.default");
+      expect(launchd.descriptor.contents).toContain("<key>WorkingDirectory</key>");
 
-    expect(descriptor.kind).toBe("launchd-user-agent");
-    if (descriptor.kind !== "launchd-user-agent") throw new Error("expected launchd descriptor");
-    expect(descriptor.label).toBe("dev.caplets.serve.default");
-    expect(descriptor.plist).toContain("<key>Label</key>");
-    expect(descriptor.plist).toContain("dev.caplets.serve.default");
-    expect(descriptor.plist).toContain("/usr/local/bin/caplets");
-  });
+      const systemd = await installDaemon(
+        { ...common, env: ["PATH=/custom/bin", "MULTI=line\nExecStartPre=/bin/false"] },
+        {
+          env: testEnv(dir),
+          home: "/home/alice with space",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(systemd.descriptor.kind).toBe("systemd-user");
+      if (systemd.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
+      expect(systemd.descriptor.unitName).toBe("caplets-daemon-default.service");
+      expect(systemd.descriptor.contents).toContain('WorkingDirectory="/home/alice with space"');
+      expect(systemd.descriptor.contents).toContain('Environment="PATH=/custom/bin"');
+      expect(systemd.descriptor.contents).toContain(
+        'Environment="MULTI=line\\nExecStartPre=/bin/false"',
+      );
+      expect(systemd.descriptor.contents).not.toContain("\nExecStartPre=/bin/false");
 
-  it("describes a Linux systemd user service when available", () => {
-    const descriptor = buildDaemonPlatformDescriptor({
-      platform: "linux",
-      serviceAvailable: true,
-      paths: resolveServeDaemonPaths({
-        env: { XDG_CONFIG_HOME: "/config", XDG_STATE_HOME: "/state" },
-        home: "/home/alice",
-        platform: "linux",
-      }),
-      command: { executable: "/usr/bin/caplets", args: ["serve", "--transport", "http"] },
-    });
-
-    expect(descriptor.kind).toBe("systemd-user");
-    if (descriptor.kind !== "systemd-user") throw new Error("expected systemd descriptor");
-    expect(descriptor.unitName).toBe("caplets-serve-default.service");
-    expect(descriptor.unit).toContain("[Service]");
-    expect(descriptor.unit).toContain("ExecStart=/usr/bin/caplets serve --transport http");
-  });
-
-  it("describes a Linux fallback when systemd user services are unavailable", () => {
-    const descriptor = buildDaemonPlatformDescriptor({
-      platform: "linux",
-      serviceAvailable: false,
-      paths: resolveServeDaemonPaths({
-        env: { XDG_CONFIG_HOME: "/config", XDG_STATE_HOME: "/state" },
-        home: "/home/alice",
-        platform: "linux",
-      }),
-      command: { executable: "/usr/bin/caplets", args: ["serve", "--transport", "http"] },
-    });
-
-    expect(descriptor.kind).toBe("manual");
-    if (descriptor.kind !== "manual") throw new Error("expected manual descriptor");
-    expect(descriptor.reason).toContain("systemd user service is not available");
-  });
-
-  it("describes a Windows per-user Scheduled Task command plan", () => {
-    const descriptor = buildDaemonPlatformDescriptor({
-      platform: "win32",
-      paths: resolveServeDaemonPaths({
+      const windows = await installDaemon(common, {
         env: {
-          APPDATA: "C:\\Users\\Alice\\AppData\\Roaming",
-          LOCALAPPDATA: "C:\\Users\\Alice\\AppData\\Local",
+          APPDATA: join(dir, "AppData", "Roaming"),
+          LOCALAPPDATA: join(dir, "AppData", "Local"),
         },
         home: "C:\\Users\\Alice",
         platform: "win32",
-      }),
-      command: {
-        executable: "C:\\Program Files\\nodejs\\caplets.cmd",
-        args: ["serve", "--transport", "http"],
-      },
-    });
+        commandRunner: fakeRunner(),
+      });
+      expect(windows.descriptor.kind).toBe("windows-scheduled-task");
+      if (windows.descriptor.kind !== "windows-scheduled-task") throw new Error("expected task");
+      expect(windows.descriptor.taskName).toBe("\\Caplets\\daemon-default");
+      expect(windows.descriptor.xml).toContain(windows.descriptor.wrapper.path);
+      expect(windows.descriptor.xml).toContain("<LogonTrigger>");
+      expect(windows.descriptor.xml).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
+      expect(windows.descriptor.xml).toContain("<WorkingDirectory>");
+      expect(windows.descriptor.wrapper.contents).toContain(">> ");
+      expect(windows.descriptor.wrapper.contents).toContain("2>> ");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
-    expect(descriptor.kind).toBe("windows-scheduled-task");
-    if (descriptor.kind !== "windows-scheduled-task")
-      throw new Error("expected scheduled task descriptor");
-    expect(descriptor.taskName).toBe("Caplets Serve Default");
-    expect(descriptor.commands.register).toContain("schtasks");
-    expect(descriptor.commands.register).toContain("/SC ONLOGON");
-    expect(descriptor.commands.register).toContain("caplets.cmd");
+  it("rolls back descriptor files when native registration fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-rollback-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(join(dir, "config", "systemd", "user"), { recursive: true });
+      writeFileSync(paths.descriptorFile, "old descriptor\n");
+      const runner: DaemonCommandRunner = {
+        async exec() {
+          return { stdout: "", stderr: "boom", code: 1 };
+        },
+      };
+
+      await expect(
+        installDaemon(
+          { validate: false },
+          { env: testEnv(dir), home: "/home/alice", platform: "linux", commandRunner: runner },
+        ),
+      ).rejects.toThrow(/systemd registration failed/u);
+
+      expect(readFileSync(paths.descriptorFile, "utf8")).toBe("old descriptor\n");
+      expect(existsSync(paths.configFile)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores old serve/default artifacts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-ignore-"));
+    try {
+      const oldConfig = join(dir, "config", "caplets", "serve", "default.json");
+      mkdirSync(join(dir, "config", "caplets", "serve"), { recursive: true });
+      writeFileSync(oldConfig, "{}\n");
+      const status = await daemonStatus({
+        env: testEnv(dir),
+        platform: "linux",
+        commandRunner: fakeRunner(),
+      });
+      expect(status.installed).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
-function fakeProcessRunner(initial: {
-  running: boolean;
-  pid: number;
-  nextPid?: number;
-}): DaemonProcessRunner & {
-  starts: Array<{ args: string[]; stdoutLog: string; stderrLog: string }>;
-  stops: number[];
-} {
-  let running = initial.running;
-  let pid = initial.pid;
-  const starts: Array<{ args: string[]; stdoutLog: string; stderrLog: string }> = [];
-  const stops: number[] = [];
+describe("daemon lifecycle and logs", () => {
+  it("status succeeds before install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-status-"));
+    try {
+      const status = await daemonStatus({
+        env: testEnv(dir),
+        platform: "linux",
+        commandRunner: fakeRunner(),
+      });
+      expect(status.installed).toBe(false);
+      expect(status.running).toBe(false);
+      expect(status.nativeState).toBe("not_installed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runtime start fails before install with install guidance", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-start-"));
+    try {
+      await expect(
+        startDaemon({ env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() }),
+      ).rejects.toThrow(/caplets daemon install --start/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("start restarts when the installed daemon is already running", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-restart-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        fetch: async () => new Response("ok"),
+      };
+      await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      const result = await startDaemon(options);
+
+      expect(result.action).toBe("restart");
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "restart",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails start when the native service does not pass HTTP health", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-health-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        fetch: async () => new Response("nope", { status: 503 }),
+      };
+      await installDaemon({ validate: false }, options);
+
+      await expect(startDaemon(options)).rejects.toThrow(/Native daemon health check failed/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reloads launchd descriptors before restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-restart-"));
+    try {
+      const runner: DaemonCommandRunner & { commands: string[][] } = {
+        commands: [],
+        async exec(command, args) {
+          runner.commands.push([command, ...args]);
+          if (command === "launchctl" && args[0] === "print") {
+            return { stdout: "pid = 4242\n", stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: testEnv(dir),
+        home: dir,
+        platform: "darwin" as const,
+        uid: 501,
+        commandRunner: runner,
+        fetch: async () => new Response("ok"),
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      await restartDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "bootout",
+        "gui/501",
+        installed.config.paths.descriptorFile,
+      ]);
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "bootstrap",
+        "gui/501",
+        installed.config.paths.descriptorFile,
+      ]);
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "kickstart",
+        "-k",
+        "gui/501/dev.caplets.daemon.default",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads file-backed logs with stream labels", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-logs-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(paths.logDir, { recursive: true });
+      writeFileSync(paths.stdoutLog, "out1\nout2\n");
+      writeFileSync(paths.stderrLog, "err1\nerr2\n");
+
+      expect(daemonLogs({ env: testEnv(dir), platform: "linux", tail: 1 }).entries).toEqual([
+        { stream: "stdout", line: "out2" },
+        { stream: "stderr", line: "err2" },
+      ]);
+      expect(
+        daemonLogs({ env: testEnv(dir), platform: "linux", stream: "stdout", tail: 10 }).entries,
+      ).toEqual([
+        { stream: "stdout", line: "out1" },
+        { stream: "stdout", line: "out2" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uninstall purge removes descriptor, config, state, and logs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-purge-"));
+    try {
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: fakeRunner(),
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      writeFileSync(installed.config.paths.stdoutLog, "out\n");
+      writeFileSync(installed.config.paths.stderrLog, "err\n");
+
+      const result = await uninstallDaemon({ purge: true }, options);
+
+      expect(result.purge).toBe(true);
+      expect(existsSync(installed.config.paths.descriptorFile)).toBe(false);
+      expect(existsSync(installed.config.paths.configFile)).toBe(false);
+      expect(existsSync(installed.config.paths.stateFile)).toBe(false);
+      expect(existsSync(installed.config.paths.stdoutLog)).toBe(false);
+      expect(existsSync(installed.config.paths.stderrLog)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function testEnv(dir: string): NodeJS.ProcessEnv {
   return {
-    starts,
-    stops,
-    isRunning: async (candidate) => running && candidate === pid,
-    start: async (command) => {
-      pid = initial.nextPid ?? pid;
-      running = true;
-      starts.push(command);
-      return pid;
-    },
-    stop: async (candidate) => {
-      stops.push(candidate);
-      running = false;
+    XDG_CONFIG_HOME: join(dir, "config"),
+    XDG_STATE_HOME: join(dir, "state"),
+  };
+}
+
+function fakeRunner(
+  options: { active?: boolean } = {},
+): DaemonCommandRunner & { commands: string[][] } {
+  const commands: string[][] = [];
+  return {
+    commands,
+    async exec(command, args) {
+      commands.push([command, ...args]);
+      if (args.includes("is-active")) {
+        return options.active
+          ? { stdout: "active\n", stderr: "", code: 0 }
+          : { stdout: "inactive\n", stderr: "", code: 3 };
+      }
+      return { stdout: "", stderr: "", code: 0 };
     },
   };
 }

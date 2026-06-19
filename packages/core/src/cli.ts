@@ -78,17 +78,20 @@ import { RemoteControlClient } from "./remote-control/client";
 import type { RemoteCliCommand } from "./remote-control/types";
 import { resolveCapletsRemote, resolveRemoteMode } from "./remote/options";
 import {
+  daemonLogs,
   daemonStatus,
-  disableDaemon,
-  enableDaemon,
-  resolveServeOptions,
+  followDaemonLogs,
+  installDaemon,
+  resolveDaemonPaths,
   restartDaemon,
-  serveResolvedCaplets,
   startDaemon,
   stopDaemon,
-  type ServeDaemonOperationOptions,
-  type ServeOptions,
-} from "./serve";
+  uninstallDaemon,
+  type DaemonInstallOptions,
+  type DaemonLogStream,
+  type DaemonOperationOptions,
+} from "./daemon";
+import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -113,7 +116,7 @@ type CliIO = {
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
   attachServe?: (options: AttachServeOptions) => Promise<void>;
-  daemon?: ServeDaemonOperationOptions;
+  daemon?: DaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
   readStdin?: () => Promise<string>;
 };
@@ -145,8 +148,7 @@ function normalizeCompletionWords(words: string[]): string[] {
   return words.map((word) => (word === trailingSpaceCompletionToken ? "" : word));
 }
 
-type ServeDaemonCommandOptions = {
-  transport?: string;
+type DaemonInstallCommandOptions = {
   host?: string;
   port?: string;
   path?: string;
@@ -155,18 +157,33 @@ type ServeDaemonCommandOptions = {
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
   json?: boolean;
+  reset?: boolean;
+  env?: string[];
+  unsetEnv?: string[];
+  inheritEnv?: boolean;
+  dryRun?: boolean;
+  validate?: boolean;
+  start?: boolean;
+  restart?: boolean;
+  noRestart?: boolean;
 };
 
-function addServeDaemonCommand(
-  parent: Command,
-  name: string,
-  description: string,
-  action: (options: ServeDaemonCommandOptions) => Promise<void>,
-): void {
-  parent
-    .command(name)
-    .description(description)
-    .option("--transport <transport>", "server transport: http")
+type DaemonCommandOptions = {
+  json?: boolean;
+};
+
+type DaemonLogsCommandOptions = DaemonCommandOptions & {
+  follow?: boolean;
+  tail?: string;
+  stream?: DaemonLogStream;
+};
+
+function addJsonOption(command: Command): Command {
+  return command.option("--json", "print JSON output");
+}
+
+function addDaemonInstallOptions(command: Command): Command {
+  return addJsonOption(command)
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
@@ -177,10 +194,37 @@ function addServeDaemonCommand(
       "allow unauthenticated HTTP serving on non-loopback hosts",
     )
     .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
-    .option("--json", "print JSON output")
-    .action(function (this: Command, options: ServeDaemonCommandOptions) {
-      return action({ ...this.parent?.opts(), ...options });
+    .option("--reset", "rebuild daemon configuration from defaults")
+    .option("--env <KEY=VALUE>", "set an environment variable for the service", collectValues, [])
+    .option(
+      "--unset-env <KEY>",
+      "remove an environment variable from the service",
+      collectValues,
+      [],
+    )
+    .option("--inherit-env", "run the service through the user's shell environment")
+    .option("--no-inherit-env", "disable shell environment inheritance")
+    .option("--dry-run", "preview actions without writing files or registering a service")
+    .option("--no-validate", "skip temporary service command validation")
+    .option("--start", "start the service after install")
+    .option("--restart", "restart the service after install")
+    .option("--no-restart", "do not restart a running service after updating config");
+}
+
+function addServeMigrationCommand(parent: Command, name: string, replacement: string): void {
+  parent
+    .command(name, { hidden: true })
+    .allowUnknownOption(true)
+    .action(() => {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        `caplets serve ${name} has moved. Use ${replacement}.`,
+      );
     });
+}
+
+function collectValues(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 function cloudAuthStore(
@@ -216,9 +260,8 @@ function isProjectBindingCliError(error: unknown): error is ProjectBindingError 
   return error instanceof ProjectBindingError;
 }
 
-function serveRawOptions(options: ServeDaemonCommandOptions) {
+function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInstallOptions {
   return {
-    ...(options.transport !== undefined ? { transport: options.transport } : {}),
     ...(options.host !== undefined ? { host: options.host } : {}),
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.path !== undefined ? { path: options.path } : {}),
@@ -228,6 +271,16 @@ function serveRawOptions(options: ServeDaemonCommandOptions) {
       ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
       : {}),
     ...(options.trustProxy !== undefined ? { trustProxy: options.trustProxy } : {}),
+    ...(options.reset !== undefined ? { reset: options.reset } : {}),
+    ...(options.env !== undefined ? { env: options.env } : {}),
+    ...(options.unsetEnv !== undefined ? { unsetEnv: options.unsetEnv } : {}),
+    ...(options.inheritEnv !== undefined ? { inheritEnv: options.inheritEnv } : {}),
+    ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+    ...(options.validate !== undefined ? { validate: options.validate } : {}),
+    ...(options.start !== undefined ? { start: options.start } : {}),
+    ...(options.restart === true ? { restart: true } : {}),
+    ...(options.restart === false ? { noRestart: true } : {}),
+    ...(options.noRestart !== undefined ? { noRestart: options.noRestart } : {}),
   };
 }
 
@@ -510,91 +563,159 @@ export function createProgram(io: CliIO = {}): Command {
       },
     );
 
-  const daemonOptions = (): ServeDaemonOperationOptions => ({
+  const daemonOptions = (): DaemonOperationOptions => ({
     env,
     ...io.daemon,
   });
 
-  addServeDaemonCommand(
-    serve,
-    "start",
-    "Start the default Caplets HTTP daemon.",
-    async (options) => {
-      const result = await startDaemon(serveRawOptions(options), daemonOptions());
-      const serveConfig = result.status.config?.serve;
-      writeOut(
-        `Started Caplets HTTP daemon on ${serveConfig?.host ?? "127.0.0.1"}:${serveConfig?.port ?? 5387}.\n`,
-      );
-      if (options.json) writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
-    },
-  );
-  addServeDaemonCommand(serve, "stop", "Stop the default Caplets HTTP daemon.", async (options) => {
-    const result = await stopDaemon(daemonOptions());
+  for (const [name, replacement] of Object.entries({
+    start: "caplets daemon start",
+    stop: "caplets daemon stop",
+    status: "caplets daemon status",
+    restart: "caplets daemon restart",
+    enable: "caplets daemon install",
+    disable: "caplets daemon uninstall",
+  })) {
+    addServeMigrationCommand(serve, name, replacement);
+  }
+
+  const daemon = program
+    .command(cliCommands.daemon)
+    .description("Install and manage the default Caplets daemon.");
+
+  addDaemonInstallOptions(
+    daemon.command("install").description("Install or update the default Caplets daemon."),
+  ).action(async (options: DaemonInstallCommandOptions) => {
+    const prompt = createSetupPromptHandle(io, writeOut);
+    try {
+      const result = await installDaemon(daemonInstallOptions(options), {
+        ...daemonOptions(),
+        ...(prompt
+          ? { readPrompt: prompt.readPrompt, isInteractive: true }
+          : { isInteractive: false }),
+      });
+      if (options.json) {
+        writeOut(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+      }
+      if (result.dryRun) {
+        writeOut(`Would install Caplets daemon using ${result.descriptor.kind}.\n`);
+        return;
+      }
+      writeOut(`Installed Caplets daemon using ${result.descriptor.kind}.\n`);
+    } finally {
+      prompt?.close();
+    }
+  });
+
+  addJsonOption(
+    daemon
+      .command("uninstall")
+      .description("Uninstall the default Caplets daemon.")
+      .option("--purge", "remove daemon config, state, and logs")
+      .option("--dry-run", "preview uninstall actions without mutation"),
+  ).action(async (options: { json?: boolean; purge?: boolean; dryRun?: boolean }) => {
+    const result = await uninstallDaemon(
+      { purge: options.purge === true, dryRun: options.dryRun === true },
+      daemonOptions(),
+    );
     if (options.json) {
-      writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
+      writeOut(`${JSON.stringify(result, null, 2)}\n`);
       return;
     }
-    writeOut("Stopped Caplets HTTP daemon.\n");
+    writeOut(result.dryRun ? "Would uninstall Caplets daemon.\n" : "Uninstalled Caplets daemon.\n");
   });
-  addServeDaemonCommand(
-    serve,
-    "status",
-    "Show the default Caplets HTTP daemon status.",
-    async (options) => {
-      const status = await daemonStatus(daemonOptions());
-      if (options.json) {
-        writeOut(`${JSON.stringify(status, null, 2)}\n`);
-        return;
-      }
-      writeOut(
-        status.running
-          ? `Caplets HTTP daemon is running${status.pid ? ` (pid ${status.pid})` : ""}.\n`
-          : "Caplets HTTP daemon is stopped.\n",
-      );
-    },
-  );
-  addServeDaemonCommand(
-    serve,
-    "restart",
-    "Restart the default Caplets HTTP daemon.",
-    async (options) => {
-      const result = await restartDaemon(serveRawOptions(options), daemonOptions());
-      if (options.json) {
-        writeOut(`${JSON.stringify(result.status, null, 2)}\n`);
-        return;
-      }
-      const serveConfig = result.status.config?.serve;
-      writeOut(
-        `Restarted Caplets HTTP daemon on ${serveConfig?.host ?? "127.0.0.1"}:${serveConfig?.port ?? 5387}.\n`,
-      );
-    },
-  );
-  addServeDaemonCommand(
-    serve,
-    "enable",
-    "Enable the default Caplets HTTP daemon at login.",
-    async (options) => {
-      const result = await enableDaemon(daemonOptions());
+
+  addJsonOption(daemon.command("start").description("Start the default Caplets daemon.")).action(
+    async (options: DaemonCommandOptions) => {
+      const result = await startDaemon(daemonOptions());
       if (options.json) {
         writeOut(`${JSON.stringify(result, null, 2)}\n`);
         return;
       }
-      writeOut(`Enabled Caplets HTTP daemon at login (${result.descriptor.kind}).\n`);
+      writeOut("Started Caplets daemon.\n");
     },
   );
-  addServeDaemonCommand(
-    serve,
-    "disable",
-    "Disable the default Caplets HTTP daemon at login.",
-    async (options) => {
-      const result = await disableDaemon(daemonOptions());
+
+  addJsonOption(
+    daemon.command("restart").description("Restart the default Caplets daemon."),
+  ).action(async (options: DaemonCommandOptions) => {
+    const result = await restartDaemon(daemonOptions());
+    if (options.json) {
+      writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    writeOut("Restarted Caplets daemon.\n");
+  });
+
+  addJsonOption(daemon.command("stop").description("Stop the default Caplets daemon.")).action(
+    async (options: DaemonCommandOptions) => {
+      const result = await stopDaemon(daemonOptions());
       if (options.json) {
         writeOut(`${JSON.stringify(result, null, 2)}\n`);
         return;
       }
-      writeOut(`Disabled Caplets HTTP daemon at login (${result.descriptor.kind}).\n`);
+      writeOut("Stopped Caplets daemon.\n");
     },
   );
+
+  addJsonOption(
+    daemon.command("status").description("Show the default Caplets daemon status."),
+  ).action(async (options: DaemonCommandOptions) => {
+    const status = await daemonStatus(daemonOptions());
+    if (options.json) {
+      writeOut(`${JSON.stringify(status, null, 2)}\n`);
+      return;
+    }
+    writeOut(
+      status.installed
+        ? `Caplets daemon is ${status.running ? "running" : "stopped"} (${status.nativeState}).\n`
+        : "Caplets daemon is not installed.\n",
+    );
+  });
+
+  addJsonOption(
+    daemon
+      .command("logs")
+      .description("Show Caplets daemon logs.")
+      .option("--follow", "follow appended log lines")
+      .option("--tail <lines>", "show the last number of lines")
+      .option("--stream <stream>", "log stream: stdout, stderr, or all"),
+  ).action(async (options: DaemonLogsCommandOptions) => {
+    const tail = options.tail === undefined ? 10 : parseNonNegativeInteger(options.tail, "--tail");
+    const stream = parseLogStream(options.stream);
+    if (options.follow) {
+      const controller = new AbortController();
+      await followDaemonLogs(resolveDaemonPaths(daemonOptions()), {
+        stream,
+        tail,
+        signal: io.signal ?? controller.signal,
+        write: (entry) => {
+          if (options.json) {
+            writeOut(`${JSON.stringify(entry)}\n`);
+            return;
+          }
+          if ("type" in entry) return;
+          writeOut(stream === "all" ? `[${entry.stream}] ${entry.line}\n` : `${entry.line}\n`);
+        },
+      });
+      return;
+    }
+    const result = daemonLogs({ ...daemonOptions(), stream, tail });
+    if (options.json) {
+      writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      return;
+    }
+    if (result.entries.length === 0) {
+      writeOut(
+        `No Caplets daemon logs found. Expected stdout at ${result.paths.stdoutLog} and stderr at ${result.paths.stderrLog}.\n`,
+      );
+      return;
+    }
+    for (const entry of result.entries) {
+      writeOut(stream === "all" ? `[${entry.stream}] ${entry.line}\n` : `${entry.line}\n`);
+    }
+  });
 
   program
     .command(cliCommands.attach)
@@ -1012,10 +1133,16 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--json", "print JSON output")
     .action(async (options: { json?: boolean }) => {
       if (options.json) {
-        writeOut(`${JSON.stringify(await doctorJsonReport({ env }), null, 2)}\n`);
+        writeOut(
+          `${JSON.stringify(
+            await doctorJsonReport({ env, ...(io.daemon ? { daemon: io.daemon } : {}) }),
+            null,
+            2,
+          )}\n`,
+        );
         return;
       }
-      writeOut(await formatDoctorReport({ env }));
+      writeOut(await formatDoctorReport({ env, ...(io.daemon ? { daemon: io.daemon } : {}) }));
     });
 
   program
@@ -2140,6 +2267,21 @@ function parsePositiveInteger(value: string): number {
     throw new CapletsError("REQUEST_INVALID", `Expected a positive integer, got ${value}`);
   }
   return parsed;
+}
+
+function parseNonNegativeInteger(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new CapletsError("REQUEST_INVALID", `${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function parseLogStream(value: string | undefined): DaemonLogStream {
+  if (value === undefined || value === "all" || value === "stdout" || value === "stderr") {
+    return value ?? "all";
+  }
+  throw new CapletsError("REQUEST_INVALID", "--stream must be stdout, stderr, or all");
 }
 
 type CliOutputFormat = "markdown" | "plain" | "json";

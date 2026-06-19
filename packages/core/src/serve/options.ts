@@ -114,16 +114,6 @@ export function resolveServeOptions(
   };
 }
 
-export function resolveDaemonServeOptions(
-  raw: RawServeOptions,
-  env: ServeEnv = process.env,
-): HttpServeOptions {
-  if (raw.transport !== undefined && raw.transport !== "http") {
-    throw new CapletsError("REQUEST_INVALID", "Daemonized serve requires --transport http.");
-  }
-  return resolveServeOptions({ ...raw, transport: "http" }, env) as HttpServeOptions;
-}
-
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.toLocaleLowerCase();
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";

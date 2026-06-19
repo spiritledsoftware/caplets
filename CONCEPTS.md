@@ -2,11 +2,31 @@
 
 Shared domain vocabulary for this project -- entities, named processes, and status concepts with project-specific meaning. Seeded with core domain vocabulary, then accretes as ce-compound and ce-compound-refresh process learnings; direct edits are fine. Glossary only, not a spec or catch-all.
 
-## Code Mode
+## Caplets Runtime
 
 ### Caplet
 
 A configured capability surface that exposes a backend to agents through a stable handle, progressive wrapper tools, or direct tool operations.
+
+### Caplets Daemon
+
+A per-user native service managed by `caplets daemon` that runs local HTTP `caplets serve` through the operating system service manager.
+
+The Caplets Daemon is installed and updated through an install-time service contract. Runtime lifecycle commands operate on the installed service rather than changing its persisted serve or environment configuration.
+
+### Install-Time Service Contract
+
+The persisted daemon agreement that defines what command runs, which environment model applies, which native service identity owns it, and how updates become active.
+
+### Native Service Manager
+
+The operating system facility that owns per-user service registration and lifecycle for the Caplets Daemon.
+
+### Service Descriptor
+
+The native service-manager artifact that declares how the Caplets Daemon should be launched and supervised.
+
+## Code Mode
 
 ### Code Mode
 
