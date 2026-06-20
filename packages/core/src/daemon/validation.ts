@@ -7,6 +7,7 @@ export async function validateDaemonCommand(
   config: DaemonConfig,
   options: {
     fetch?: typeof fetch;
+    successSettleMs?: number;
     timeoutMs?: number;
   } = {},
 ): Promise<DaemonHealthResult> {
@@ -44,7 +45,10 @@ export async function validateDaemonCommand(
         processFailure,
       ]);
       if (last.ok) {
-        const settled = await Promise.race([processFailure, sleep(250).then(() => undefined)]);
+        const settled = await Promise.race([
+          processFailure,
+          sleep(options.successSettleMs ?? 1_000).then(() => undefined),
+        ]);
         return settled ?? last;
       }
       if (processDone) break;
