@@ -2312,8 +2312,8 @@ describe("daemon validation", () => {
         ...result.config,
         command: {
           ...result.config.command,
-          executable: process.execPath,
-          args: [candidate],
+          executable: candidate,
+          args: [],
         },
       };
 
