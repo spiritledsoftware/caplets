@@ -670,11 +670,7 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(`${JSON.stringify(status, null, 2)}\n`);
       return;
     }
-    writeOut(
-      status.installed
-        ? `Caplets daemon is ${status.running ? "running" : "stopped"} (${status.nativeState}).\n`
-        : "Caplets daemon is not installed.\n",
-    );
+    writeOut(formatDaemonStatus(status));
   });
 
   addJsonOption(
@@ -2024,6 +2020,19 @@ export function createProgram(io: CliIO = {}): Command {
     });
 
   return program;
+}
+
+function formatDaemonStatus(status: Awaited<ReturnType<typeof daemonStatus>>): string {
+  if (!status.installed) return "Caplets daemon is not installed.\n";
+  const lines = [
+    `Caplets daemon is ${status.running ? "running" : "stopped"} (${status.nativeState}).`,
+  ];
+  if (status.health && !status.health.ok) {
+    lines.push(
+      `Health check failed for ${status.health.url}${status.health.status ? ` with HTTP ${status.health.status}` : ""}${status.health.error ? `: ${status.health.error}` : ""}.`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function envConfigPath(

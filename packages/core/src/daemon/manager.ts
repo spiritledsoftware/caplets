@@ -202,6 +202,7 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
         await assertExec(runner, commands[1]!, "systemd unregister failed");
       } catch (error) {
         restoreDescriptorFiles([descriptorBackup]);
+        await restoreSystemdEnabledState(runner);
         throw error;
       }
       return { action: "uninstall", native: notInstalled(), commands };
@@ -225,10 +226,7 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
         "LIST",
         "/V",
       ]);
-      if (result.code !== 0)
-        return existsSync(paths.descriptorFile)
-          ? stopped({ stderr: result.stderr })
-          : notInstalled({ stderr: result.stderr });
+      if (result.code !== 0) return notInstalled({ stdout: result.stdout, stderr: result.stderr });
       const raw = parseWindowsList(result.stdout);
       const status = String(raw.Status ?? "");
       const lastRun = String(raw["Last Run Result"] ?? "");
@@ -419,6 +417,14 @@ async function assertExecUnless(
       "SERVER_UNAVAILABLE",
       `${message}: ${result.stderr || result.stdout || result.code}`,
     );
+  }
+}
+
+async function restoreSystemdEnabledState(runner: DaemonCommandRunner): Promise<void> {
+  try {
+    await runner.exec("systemctl", ["--user", "enable", SYSTEMD_UNIT]);
+  } catch {
+    // Preserve the original uninstall error; this is a best-effort rollback of login autostart.
   }
 }
 

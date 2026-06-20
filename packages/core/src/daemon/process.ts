@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import { defaultConfigPath } from "../config/paths";
 import { CapletsError } from "../errors";
 import { resolveServeOptions, type HttpServeOptions, type RawServeOptions } from "../serve/options";
 import { resolveDaemonShell } from "./env";
@@ -59,10 +60,13 @@ export function buildDaemonCommandPlan(options: {
   const args = daemonServeArgs(options.serve);
   const workingDirectory = options.operation.home ?? homedir();
   const explicitEnv = options.explicitEnv ?? {};
-  const serviceEnv =
-    options.serve.publicOrigin && explicitEnv.CAPLETS_SERVER_URL === undefined
-      ? { ...explicitEnv, CAPLETS_SERVER_URL: options.serve.publicOrigin }
-      : explicitEnv;
+  const serviceEnv = daemonServiceEnv({
+    explicitEnv,
+    operation: options.operation,
+    platform,
+    serve: options.serve,
+    workingDirectory,
+  });
   const base = {
     executable,
     args,
@@ -81,6 +85,49 @@ export function buildDaemonCommandPlan(options: {
       ...(options.operation.accountShell ? { accountShell: options.operation.accountShell } : {}),
     }),
   };
+}
+
+function daemonServiceEnv(options: {
+  explicitEnv: Record<string, string>;
+  operation: Pick<DaemonOperationOptions, "env" | "home" | "platform">;
+  platform: NodeJS.Platform;
+  serve: HttpServeOptions;
+  workingDirectory: string;
+}): Record<string, string> {
+  const env = options.operation.env ?? process.env;
+  const selectedConfigEnv = configSelectionEnv(env, options.workingDirectory, options.platform);
+  const serviceEnv = { ...selectedConfigEnv, ...options.explicitEnv };
+  if (options.serve.publicOrigin && serviceEnv.CAPLETS_SERVER_URL === undefined) {
+    serviceEnv.CAPLETS_SERVER_URL = options.serve.publicOrigin;
+  }
+  return serviceEnv;
+}
+
+function configSelectionEnv(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  home: string,
+  platform: NodeJS.Platform,
+): Record<string, string> {
+  const selected: Record<string, string> = {};
+  const configPath = env.CAPLETS_CONFIG?.trim();
+  if (configPath) {
+    selected.CAPLETS_CONFIG = configPath;
+  } else if (env.XDG_CONFIG_HOME?.trim() || (platform === "win32" && env.APPDATA?.trim())) {
+    selected.CAPLETS_CONFIG = defaultConfigPath(env, home, platform);
+  }
+  const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim();
+  if (projectConfigPath) selected.CAPLETS_PROJECT_CONFIG = projectConfigPath;
+  for (const key of configSelectionEnvKeys(platform)) {
+    const value = env[key]?.trim();
+    if (value) selected[key] = value;
+  }
+  return selected;
+}
+
+function configSelectionEnvKeys(platform: NodeJS.Platform): string[] {
+  return platform === "win32"
+    ? ["APPDATA", "LOCALAPPDATA"]
+    : ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"];
 }
 
 function resolveDaemonExecutable(scriptPath: string | undefined): string {

@@ -293,6 +293,105 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("surfaces failed health checks in plain daemon status", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-status-health-"));
+    try {
+      const out: string[] = [];
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        fetch: async () => new Response("nope", { status: 503 }),
+      };
+      await installDaemon({ validate: false }, options);
+
+      await runCli(["daemon", "status"], {
+        env: testEnv(dir),
+        writeOut: (value) => out.push(value),
+        daemon: options,
+      });
+
+      expect(out.join("")).toMatch(
+        /^Caplets daemon is running \(running\)\.\nHealth check failed for http:\/\/127\.0\.0\.1:\d+\/v1\/healthz with HTTP 503\.\n$/u,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves selected config paths in the daemon service environment", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-config-env-"));
+    try {
+      const configPath = join(dir, "selected", "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+
+      const explicit = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: {
+            ...testEnv(dir),
+            CAPLETS_CONFIG: configPath,
+            CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(explicit.config.command.env).toMatchObject({
+        CAPLETS_CONFIG: configPath,
+        CAPLETS_PROJECT_CONFIG: projectConfigPath,
+      });
+
+      const xdg = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: testEnv(join(dir, "xdg")),
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(xdg.config.command.env.CAPLETS_CONFIG).toBe(
+        join(dir, "xdg", "config", "caplets", "config.json"),
+      );
+      expect(xdg.config.command.env.XDG_CONFIG_HOME).toBe(join(dir, "xdg", "config"));
+      expect(xdg.config.command.env.XDG_STATE_HOME).toBe(join(dir, "xdg", "state"));
+
+      const windows = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: {
+            APPDATA: win32.join(dir, "AppData", "Roaming"),
+            LOCALAPPDATA: win32.join(dir, "AppData", "Local"),
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(windows.config.command.env.CAPLETS_CONFIG).toBe(
+        win32.join(dir, "AppData", "Roaming", "caplets", "config.json"),
+      );
+      expect(windows.config.command.env.APPDATA).toBe(win32.join(dir, "AppData", "Roaming"));
+      expect(windows.config.command.env.LOCALAPPDATA).toBe(win32.join(dir, "AppData", "Local"));
+
+      const overridden = await installDaemon(
+        { validate: false, dryRun: true, env: ["CAPLETS_CONFIG=/explicit/service.json"] },
+        {
+          env: { ...testEnv(dir), CAPLETS_CONFIG: configPath },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(overridden.config.command.env.CAPLETS_CONFIG).toBe("/explicit/service.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not emit auth flags for default unauthenticated loopback serve", () => {
     const serve = resolveDaemonHttpServeOptions({});
 
@@ -1690,6 +1789,29 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("tails daemon logs from the end of large files", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-large-logs-"));
+    try {
+      const paths = resolveDaemonPaths({ env: testEnv(dir), platform: "linux" });
+      mkdirSync(paths.logDir, { recursive: true });
+      writeFileSync(
+        paths.stdoutLog,
+        `${Array.from({ length: 7_000 }, (_value, index) => `out${index}`).join("\n")}\nout-last\n`,
+      );
+      writeFileSync(
+        paths.stderrLog,
+        `${Array.from({ length: 7_000 }, (_value, index) => `err${index}`).join("\n")}\nerr-last\n`,
+      );
+
+      expect(daemonLogs({ env: testEnv(dir), platform: "linux", tail: 1 }).entries).toEqual([
+        { stream: "stdout", line: "out-last" },
+        { stream: "stderr", line: "err-last" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uninstall purge removes descriptor, config, state, and logs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-purge-"));
     try {
@@ -1854,10 +1976,18 @@ describe("daemon lifecycle and logs", () => {
       };
       const installed = await installDaemon({ validate: false }, options);
       failReload = true;
+      runner.commands.length = 0;
 
       await expect(uninstallDaemon({}, options)).rejects.toThrow(/systemd unregister failed/u);
 
       expect(existsSync(installed.config.paths.descriptorFile)).toBe(true);
+      expect(runner.commands).toEqual([
+        ["systemctl", "--user", "show", "caplets-daemon-default.service"],
+        ["systemctl", "--user", "is-active", "caplets-daemon-default.service"],
+        ["systemctl", "--user", "disable", "caplets-daemon-default.service"],
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "caplets-daemon-default.service"],
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1891,6 +2021,56 @@ describe("daemon lifecycle and logs", () => {
 
       expect(status.nativeState).toBe("installed_stopped");
       expect(status.running).toBe(false);
+    } finally {
+      if (paths) {
+        for (const path of [
+          paths.descriptorFile,
+          paths.wrapperFile,
+          paths.configFile,
+          paths.stateFile,
+          paths.stdoutLog,
+          paths.stderrLog,
+        ]) {
+          rmSync(path, { force: true });
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats stale Windows XML descriptors as uninstalled when schtasks cannot query the task", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-stale-xml-"));
+    let paths: ReturnType<typeof resolveDaemonPaths> | undefined;
+    try {
+      const options = {
+        env: {
+          APPDATA: join(dir, "AppData", "Roaming"),
+          LOCALAPPDATA: join(dir, "AppData", "Local"),
+        },
+        home: "C:\\Users\\Alice",
+        platform: "win32" as const,
+        commandRunner: fakeRunner(),
+      };
+      paths = resolveDaemonPaths(options);
+      await installDaemon({ validate: false }, options);
+      const status = await daemonStatus({
+        ...options,
+        commandRunner: {
+          async exec(command, args) {
+            if (command === "schtasks" && args.includes("/Query")) {
+              return {
+                stdout: "",
+                stderr: "ERROR: The system cannot find the file specified.",
+                code: 1,
+              };
+            }
+            return { stdout: "", stderr: "", code: 0 };
+          },
+        },
+      });
+
+      expect(status.installed).toBe(false);
+      expect(status.nativeState).toBe("not_installed");
     } finally {
       if (paths) {
         for (const path of [

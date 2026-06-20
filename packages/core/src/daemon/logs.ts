@@ -1,6 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, watch } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync,
+  writeFileSync,
+  watch,
+} from "node:fs";
 import { dirname } from "node:path";
 import type { DaemonLogEntry, DaemonLogStream, DaemonLogsResult, DaemonPaths } from "./types";
+
+const TAIL_CHUNK_BYTES = 64 * 1024;
 
 export function readDaemonLogs(
   paths: DaemonPaths,
@@ -44,12 +57,11 @@ export async function followDaemonLogs(
   const watchers = selectedStreams(options.stream ?? "all").map((stream) => {
     const file = paths[stream === "stdout" ? "stdoutLog" : "stderrLog"];
     ensureLogFile(file);
-    let offset = existsSync(file) ? readFileSync(file, "utf8").length : 0;
+    let offset = existsSync(file) ? statSync(file).size : 0;
     return watch(file, { persistent: true }, () => {
-      const content = existsSync(file) ? readFileSync(file, "utf8") : "";
-      const appended = content.slice(offset);
-      offset = content.length;
-      for (const line of appended.split(/\r?\n/u).filter(Boolean)) options.write({ stream, line });
+      const { content, nextOffset } = readFromOffset(file, offset);
+      offset = nextOffset;
+      for (const line of content.split(/\r?\n/u).filter(Boolean)) options.write({ stream, line });
     });
   });
   await new Promise<void>((resolve) => {
@@ -70,9 +82,49 @@ function selectedStreams(stream: DaemonLogStream): Array<"stdout" | "stderr"> {
 
 function tailLines(path: string, count: number): string[] {
   if (count === 0 || !existsSync(path)) return [];
-  const lines = readFileSync(path, "utf8").split(/\r?\n/u);
+  const lines =
+    count < 0 ? readFileSync(path, "utf8").split(/\r?\n/u) : readTailContent(path, count);
   if (lines.at(-1) === "") lines.pop();
   return count < 0 ? lines : lines.slice(-count);
+}
+
+function readTailContent(path: string, count: number): string[] {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const chunks: Buffer[] = [];
+    let position = size;
+    let newlineCount = 0;
+    while (position > 0 && newlineCount <= count) {
+      const readSize = Math.min(TAIL_CHUNK_BYTES, position);
+      position -= readSize;
+      const buffer = Buffer.allocUnsafe(readSize);
+      const bytesRead = readSync(fd, buffer, 0, readSize, position);
+      const chunk = buffer.subarray(0, bytesRead);
+      chunks.unshift(chunk);
+      for (const byte of chunk) {
+        if (byte === 10) newlineCount += 1;
+      }
+    }
+    return Buffer.concat(chunks).toString("utf8").split(/\r?\n/u);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function readFromOffset(path: string, offset: number): { content: string; nextOffset: number } {
+  if (!existsSync(path)) return { content: "", nextOffset: 0 };
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size <= offset) return { content: "", nextOffset: size };
+    const length = size - offset;
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, offset);
+    return { content: buffer.subarray(0, bytesRead).toString("utf8"), nextOffset: size };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function interleaveLogEntries(streamEntries: DaemonLogEntry[][]): DaemonLogEntry[] {
