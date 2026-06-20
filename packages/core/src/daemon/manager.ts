@@ -98,12 +98,15 @@ function launchdManager(
       launchdStartLifecycle(runner, domain, target, config.paths.descriptorFile),
     restart: async (config) =>
       launchdRestartLifecycle(runner, domain, target, config.paths.descriptorFile),
-    stop: async () => {
-      const command = ["launchctl", "kill", "TERM", target];
+    stop: async (config) => {
+      const command =
+        config && existsSync(config.paths.descriptorFile)
+          ? ["launchctl", "bootout", domain, config.paths.descriptorFile]
+          : ["launchctl", "bootout", target];
       const result = await runner.exec(command[0]!, command.slice(1));
       if (
         result.code !== 0 &&
-        !/No such process|not running|Could not find service/iu.test(result.stderr)
+        !/No such process|not found|not running|Could not find service/iu.test(result.stderr)
       ) {
         throw new CapletsError(
           "SERVER_UNAVAILABLE",
@@ -337,8 +340,8 @@ async function writeDescriptorForInstall<T>(
   afterRestore?: () => Promise<void>,
 ): Promise<T> {
   const backups = backupDescriptorFiles(descriptor);
-  writeDescriptor(descriptor);
   try {
+    writeDescriptor(descriptor);
     return await register();
   } catch (error) {
     restoreDescriptorFiles(backups);

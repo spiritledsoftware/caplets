@@ -542,7 +542,7 @@ async function daemonLifecycle(
 ): Promise<DaemonLifecycleResult> {
   const paths = resolveDaemonPaths(options);
   const config = readDaemonConfig(paths);
-  if (!config || !existsSync(paths.descriptorFile)) {
+  if (!config) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `Caplets daemon is not installed. Run caplets daemon install${action === "start" || action === "restart" ? " --start" : ""} first.`,
@@ -550,6 +550,12 @@ async function daemonLifecycle(
   }
   const manager = options.manager ?? createNativeDaemonManager(options);
   const before = await manager.status(config, paths);
+  if (before.state === "not_installed") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Caplets daemon is not installed. Run caplets daemon install${action === "start" || action === "restart" ? " --start" : ""} first.`,
+    );
+  }
   const effectiveAction = action === "start" && before.running ? "restart" : action;
   const native =
     effectiveAction === "start"

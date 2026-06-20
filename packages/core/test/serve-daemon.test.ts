@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
 import type { CapletsError } from "../src/errors";
 import {
+  createNativeDaemonManager,
   daemonServeArgs,
   daemonLogs,
   daemonStatus,
@@ -22,6 +23,7 @@ import {
   resolveDaemonPaths,
   restartDaemon,
   startDaemon,
+  stopDaemon,
   uninstallDaemon,
   type DaemonCommandRunner,
   type DaemonManager,
@@ -884,6 +886,43 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("rolls back descriptor files when descriptor writing fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-write-rollback-"));
+    const runner = fakeRunner();
+    const manager = createNativeDaemonManager({ platform: "win32", commandRunner: runner });
+    const options = {
+      env: testEnv(dir),
+      platform: "linux" as const,
+      manager,
+    };
+    const paths = resolveDaemonPaths(options);
+    try {
+      mkdirSync(dirname(paths.descriptorFile), { recursive: true });
+      mkdirSync(paths.logDir, { recursive: true });
+      writeFileSync(paths.descriptorFile, "old descriptor\n");
+      writeFileSync(paths.stdoutLog, "");
+      writeFileSync(paths.stderrLog, "");
+      chmodSync(paths.stateDir, 0o500);
+
+      await expect(installDaemon({ validate: false }, options)).rejects.toThrow();
+
+      expect(readFileSync(paths.descriptorFile, "utf8")).toBe("old descriptor\n");
+      expect(existsSync(paths.configFile)).toBe(false);
+      expect(runner.commands).not.toContainEqual([
+        "schtasks",
+        "/Create",
+        "/TN",
+        "\\Caplets\\daemon-default",
+        "/XML",
+        paths.descriptorFile,
+        "/F",
+      ]);
+    } finally {
+      chmodSync(paths.stateDir, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reloads systemd after restoring a failed install", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-rollback-reload-"));
     try {
@@ -1077,6 +1116,32 @@ describe("daemon lifecycle and logs", () => {
       await expect(
         startDaemon({ env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() }),
       ).rejects.toThrow(/caplets daemon install --start/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops native services when the local descriptor is missing but config remains", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-stale-descriptor-stop-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      rmSync(installed.config.paths.descriptorFile, { force: true });
+      runner.commands.length = 0;
+
+      await stopDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "stop",
+        "caplets-daemon-default.service",
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1402,6 +1467,39 @@ describe("daemon lifecycle and logs", () => {
         "launchctl",
         "kickstart",
         "-k",
+        "gui/501/dev.caplets.daemon.default",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("boots out launchd jobs on stop so KeepAlive does not relaunch them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-stop-"));
+    try {
+      const runner = fakeRunner();
+      const options = {
+        env: testEnv(dir),
+        home: dir,
+        platform: "darwin" as const,
+        uid: 501,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      await stopDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "launchctl",
+        "bootout",
+        "gui/501",
+        installed.config.paths.descriptorFile,
+      ]);
+      expect(runner.commands).not.toContainEqual([
+        "launchctl",
+        "kill",
+        "TERM",
         "gui/501/dev.caplets.daemon.default",
       ]);
     } finally {
