@@ -46,6 +46,8 @@ function launchdManager(
           ? stopped({ stderr: result.stderr })
           : notInstalled({ stderr: result.stderr });
       const pid = parseNumberMatch(result.stdout, /\bpid\s*=\s*(\d+)/u);
+      if (pid !== undefined)
+        return runningOrStopped(pid, { stdout: result.stdout, stderr: result.stderr });
       const failed = /\b(?:last exit code|LastExitStatus)\s*=\s*(?!0\b)(\d+)/iu.test(result.stdout);
       return failed
         ? failedStatus({ stdout: result.stdout, stderr: result.stderr, pid })
@@ -328,9 +330,11 @@ function writeDescriptor(descriptor: DaemonDescriptor): void {
     descriptor.kind === "windows-scheduled-task" ? descriptor.xml : descriptor.contents,
     { mode: 0o600 },
   );
+  chmodSync(descriptor.path, 0o600);
   if (descriptor.kind === "windows-scheduled-task") {
     mkdirSync(dirname(descriptor.wrapper.path), { recursive: true, mode: 0o700 });
     writeFileSync(descriptor.wrapper.path, descriptor.wrapper.contents, { mode: 0o700 });
+    chmodSync(descriptor.wrapper.path, 0o700);
   }
 }
 

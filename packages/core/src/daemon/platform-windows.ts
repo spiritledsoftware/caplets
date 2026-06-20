@@ -51,6 +51,9 @@ function windowsArg(value: string): string {
 }
 
 function windowsEnvValue(value: string): string {
+  if (value === "") {
+    throw new CapletsError("REQUEST_INVALID", "Windows daemon environment values cannot be empty.");
+  }
   if (/["\r\n]/u.test(value)) {
     throw new CapletsError(
       "REQUEST_INVALID",

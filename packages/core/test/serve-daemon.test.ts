@@ -462,7 +462,12 @@ describe("daemon paths and config", () => {
         'Environment="MULTI=line\\rExecStartPre=/bin/false"',
       );
       const systemdWithDollar = await installDaemon(
-        { ...common, password: "pa$USER", allowUnauthenticatedHttp: false },
+        {
+          ...common,
+          password: "pa$USER",
+          allowUnauthenticatedHttp: false,
+          env: ["TOKEN=pa$USER"],
+        },
         {
           env: testEnv(join(dir, "dollar")),
           home: "/home/alice",
@@ -473,6 +478,8 @@ describe("daemon paths and config", () => {
       expect(systemdWithDollar.descriptor.kind).toBe("systemd-user");
       if (systemdWithDollar.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
       expect(systemdWithDollar.descriptor.contents).toContain("pa$$USER");
+      expect(systemdWithDollar.descriptor.contents).toContain('Environment="TOKEN=pa$USER"');
+      expect(systemdWithDollar.descriptor.contents).not.toContain('Environment="TOKEN=pa$$USER"');
 
       const windows = await installDaemon(common, {
         env: {
@@ -511,6 +518,21 @@ describe("daemon paths and config", () => {
       if (escapedWindows.descriptor.kind !== "windows-scheduled-task")
         throw new Error("expected task");
       expect(escapedWindows.descriptor.wrapper.contents).toContain("pa%%USERNAME%%ss");
+
+      await expect(
+        installDaemon(
+          { ...common, env: ["EMPTY="] },
+          {
+            env: {
+              APPDATA: win32.join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: win32.join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/environment values cannot be empty/u);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -923,6 +945,25 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("enforces private descriptor modes when rewriting existing descriptors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-descriptor-mode-"));
+    try {
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: fakeRunner(),
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      chmodSync(installed.config.paths.descriptorFile, 0o644);
+
+      await installDaemon({ validate: false, env: ["TOKEN=secret"] }, options);
+
+      expect(statSync(installed.config.paths.descriptorFile).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reloads systemd after restoring a failed install", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-rollback-reload-"));
     try {
@@ -1072,6 +1113,36 @@ describe("daemon lifecycle and logs", () => {
 
       expect(status.nativeState).toBe("unavailable");
       expect(status.native.message).toContain("systemd --user is not available");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports launchd jobs with a current pid as running despite stale exit status", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-running-after-crash-"));
+    try {
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "launchctl" && args[0] === "print") {
+            return { stdout: "pid = 4242\nLastExitStatus = 1\n", stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: testEnv(dir),
+        home: dir,
+        platform: "darwin" as const,
+        uid: 501,
+        commandRunner: runner,
+      };
+      await installDaemon({ validate: false }, options);
+
+      const status = await daemonStatus(options);
+
+      expect(status.nativeState).toBe("running");
+      expect(status.running).toBe(true);
+      expect(status.native.pid).toBe(4242);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2011,6 +2082,43 @@ describe("daemon validation", () => {
 
       await expect(validateDaemonCommand(result.config, { timeoutMs: 20 })).resolves.toMatchObject({
         ok: false,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not accept health checks from an existing server after the candidate exits", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-existing-server-"));
+    try {
+      const candidate = join(dir, "candidate-exits.mjs");
+      writeFileSync(candidate, "process.exit(1);\n");
+      const result = await installDaemon(
+        { validate: false, dryRun: true, host: "127.0.0.1", port: "5480" },
+        {
+          env: testEnv(dir),
+          home: dir,
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      const config = {
+        ...result.config,
+        command: {
+          ...result.config.command,
+          executable: process.execPath,
+          args: [candidate],
+        },
+      };
+
+      await expect(
+        validateDaemonCommand(config, {
+          timeoutMs: 1_000,
+          fetch: async () => new Response("ok"),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("validation process exited"),
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -17,27 +17,37 @@ export async function validateDaemonCommand(
     env: config.command.env,
     stdio: ["ignore", "ignore", "ignore"],
   });
-  let spawnError: Error | undefined;
-  const spawnFailure = new Promise<DaemonHealthResult>((resolve) => {
+  let processDone = false;
+  let processError: string | undefined;
+  const processFailure = new Promise<DaemonHealthResult>((resolve) => {
     child.once("error", (error) => {
-      spawnError = error;
-      resolve({ ok: false, url: healthUrl(config), error: error.message });
+      processDone = true;
+      processError = error.message;
+      resolve({ ok: false, url: healthUrl(config), error: processError });
+    });
+    child.once("exit", (code, signal) => {
+      processDone = true;
+      processError = `validation process exited${code === null ? "" : ` with code ${code}`}${signal ? ` due to ${signal}` : ""}`;
+      resolve({ ok: false, url: healthUrl(config), error: processError });
     });
   });
   try {
     const deadline = Date.now() + (options.timeoutMs ?? 5_000);
     let last: DaemonHealthResult | undefined;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null || spawnError) break;
+      if (processDone) break;
       last = await Promise.race([
         probeDaemonHealth(config, {
           ...(options.fetch ? { fetch: options.fetch } : {}),
           timeoutMs: 750,
         }),
-        spawnFailure,
+        processFailure,
       ]);
-      if (last.ok) return last;
-      if (spawnError) break;
+      if (last.ok) {
+        const settled = await Promise.race([processFailure, sleep(250).then(() => undefined)]);
+        return settled ?? last;
+      }
+      if (processDone) break;
       await sleep(150);
     }
     return (
@@ -45,12 +55,11 @@ export async function validateDaemonCommand(
         ok: false,
         url: healthUrl(config),
         error:
-          spawnError?.message ??
-          (child.exitCode === null ? "health probe timed out" : "validation process exited"),
+          processError ?? (processDone ? "validation process exited" : "health probe timed out"),
       }
     );
   } finally {
-    if (child.exitCode === null && !spawnError) {
+    if (!processDone) {
       const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
       child.kill("SIGTERM");
       await Promise.race([closed, sleep(2_000)]);
