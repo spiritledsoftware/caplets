@@ -403,9 +403,7 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
     },
     serve: {
       ...config.serve,
-      ...(config.serve.remoteCredentialStateDir
-        ? { remoteCredentialStateDir: "[REDACTED]" }
-        : {}),
+      ...(config.serve.remoteCredentialStateDir ? { remoteCredentialStateDir: "[REDACTED]" } : {}),
     },
     command: {
       ...config.command,

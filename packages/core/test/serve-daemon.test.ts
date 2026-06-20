@@ -2212,12 +2212,13 @@ describe("daemon lifecycle and logs", () => {
       const status = await daemonStatus(options);
       const serialized = JSON.stringify(status);
 
-      expect(status.config?.serve.auth.type).toBe("remote_credentials");
-      expect(status.config?.serve.remoteCredentialStateDir).toBe("[REDACTED]");
+      if (!status.config) throw new Error("expected daemon config");
+      expect(status.config.serve.auth.type).toBe("remote_credentials");
+      expect(status.config.serve.remoteCredentialStateDir).toBe("[REDACTED]");
       expect(status.config.env.values.TOKEN).toBe("[redacted]");
       expect(status.config.command.env.TOKEN).toBe("[redacted]");
-      expect(status.config?.command.args).toContain("--remote-state-path");
-      expect(status.config?.command.args).not.toContain("/secret/state");
+      expect(status.config.command.args).toContain("--remote-state-path");
+      expect(status.config.command.args).not.toContain("/secret/state");
       expect(serialized).not.toContain("secret");
       expect(serialized).not.toContain("abc123");
     } finally {
