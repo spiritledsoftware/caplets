@@ -384,7 +384,7 @@ async function pairingCodeFromOptions(
     if (code) return code;
   }
   const output = new HiddenPromptOutput(process.stdout);
-  const readline = createInterface({ input: process.stdin, output });
+  const readline = createInterface({ input: process.stdin, output, terminal: true });
   try {
     const code = (await readline.question("Pairing Code: ")).trim();
     if (code) return code;

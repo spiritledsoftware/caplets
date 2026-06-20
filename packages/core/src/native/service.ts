@@ -766,6 +766,10 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
         this.authKind,
         () => this.resolveProfileRemoteOptions(),
       );
+      if (!(await remote.reload())) {
+        await Promise.all([remote.close(), presence?.close()]);
+        return;
+      }
       await this.delegate.replaceRemote(remote, presence);
       this.remoteSignature = signature;
       this.credentialExpiresAt = remoteOptions.credentialExpiresAt;

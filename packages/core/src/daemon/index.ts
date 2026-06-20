@@ -395,6 +395,7 @@ export function redactDaemonInstallResult(result: DaemonInstallResult): DaemonIn
 
 function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
   const env = redactEnv(config.env.values);
+  const serve = redactLegacyDaemonServeAuth(config.serve);
   return {
     ...config,
     env: {
@@ -402,7 +403,7 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
       values: env,
     },
     serve: {
-      ...config.serve,
+      ...serve,
       ...(config.serve.remoteCredentialStateDir ? { remoteCredentialStateDir: "[REDACTED]" } : {}),
     },
     command: {
@@ -411,6 +412,18 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
       env: redactEnv(config.command.env),
     },
   };
+}
+
+function redactLegacyDaemonServeAuth(serve: DaemonConfig["serve"]): DaemonConfig["serve"] {
+  const legacyAuth = legacyDaemonServeAuth(serve);
+  if (!legacyAuth?.password) return serve;
+  return {
+    ...serve,
+    auth: {
+      ...legacyAuth,
+      password: "[redacted]",
+    },
+  } as unknown as DaemonConfig["serve"];
 }
 
 function redactNativeStatus(
@@ -428,6 +441,7 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
     new Set(
       [
         config.serve.remoteCredentialStateDir,
+        legacyDaemonServeAuth(config.serve)?.password,
         ...Object.values(config.env.values),
         ...Object.values(config.command.env),
       ].filter((value): value is string => value !== undefined && value.length > 0),
@@ -436,6 +450,18 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
   return Array.from(new Set(secrets.flatMap(secretRedactionVariants))).sort(
     (left, right) => right.length - left.length,
   );
+}
+
+function legacyDaemonServeAuth(
+  serve: DaemonConfig["serve"],
+): ({ password?: string | undefined } & Record<string, unknown>) | undefined {
+  const auth = (serve as { auth?: unknown }).auth;
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) return undefined;
+  const record = auth as Record<string, unknown>;
+  return {
+    ...record,
+    ...(typeof record.password === "string" ? { password: record.password } : {}),
+  };
 }
 
 function redactNativeValue(value: unknown, secrets: string[]): unknown {

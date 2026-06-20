@@ -163,6 +163,45 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("redacts legacy daemon Basic Auth passwords from JSON status", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-legacy-auth-redaction-"));
+    try {
+      const runner = fakeRunner();
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      await installDaemon({ validate: false }, options);
+      const paths = resolveDaemonPaths(options);
+      const config = JSON.parse(readFileSync(paths.configFile, "utf8")) as {
+        serve: { auth: unknown };
+      };
+      config.serve.auth = {
+        enabled: true,
+        user: "caplets",
+        password: "legacy-password-secret",
+      };
+      writeFileSync(paths.configFile, `${JSON.stringify(config, null, 2)}\n`);
+      const out: string[] = [];
+
+      await runCli(["daemon", "status", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => out.push(value),
+        daemon: options,
+      });
+
+      const serialized = out.join("");
+      const status = JSON.parse(serialized) as {
+        config: { serve: { auth: { password?: string } } };
+      };
+      expect(status.config.serve.auth.password).toBe("[redacted]");
+      expect(serialized).not.toContain("legacy-password-secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports daemon start as a restart when the service is already running", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-start-restart-"));
     try {

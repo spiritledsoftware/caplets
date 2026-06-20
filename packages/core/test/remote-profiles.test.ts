@@ -208,6 +208,47 @@ describe("Remote Profile storage", () => {
     ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
   });
 
+  it("refreshes explicit Cloud workspaces without changing the selected workspace", async () => {
+    const store = tempRemoteProfileStore();
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_alpha",
+      workspaceSlug: "alpha",
+      credentials: { ...cloudCredentials, accessToken: "alpha_access" },
+    });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_beta",
+      workspaceSlug: "beta",
+      credentials: { ...cloudCredentials, accessToken: "beta_access" },
+    });
+
+    const refreshed = await store.refreshCloudProfileIfNeeded({
+      hostUrl: "https://cloud.caplets.dev/v1/ws/alpha/mcp",
+      needsRefresh: () => true,
+      refresh: async (status) => ({
+        hostUrl: status.hostUrl,
+        workspaceId: status.workspaceId ?? "",
+        ...(status.workspaceSlug ? { workspaceSlug: status.workspaceSlug } : {}),
+        credentials: { ...cloudCredentials, accessToken: "alpha_refreshed" },
+      }),
+    });
+
+    expect(refreshed?.status).toMatchObject({ workspaceSlug: "alpha", selected: false });
+    await expect(
+      store.getCloudProfileStatus({ hostUrl: "https://cloud.caplets.dev" }),
+    ).resolves.toMatchObject({ workspaceSlug: "beta", selected: true });
+    await expect(
+      store.credentials.load(
+        remoteProfileKey({
+          kind: "cloud",
+          hostUrl: "https://cloud.caplets.dev/",
+          workspace: "alpha",
+        }),
+      ),
+    ).resolves.toMatchObject({ accessToken: "alpha_refreshed" });
+  });
+
   it("recovers stale mutation locks left by crashed processes", async () => {
     const root = tempDir("caplets-remote-profiles-");
     const lockPath = join(root, "remote-profiles.lock");
@@ -333,6 +374,29 @@ describe("Remote Profile storage", () => {
 
     await expect(
       store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "team" }),
+    ).resolves.toBe(true);
+
+    expect(existsSync(legacyPath)).toBe(true);
+  });
+
+  it("keeps no-slug legacy Cloud Auth when logging out a different no-slug workspace", async () => {
+    const legacyPath = join(tempDir("caplets-cloud-auth-"), "cloud-auth.json");
+    const legacy = new CloudAuthStore({ path: legacyPath });
+    const { workspaceSlug: _workspaceSlug, ...legacyWithoutSlug } = legacyCloudCredentials;
+    await legacy.save({
+      ...legacyWithoutSlug,
+      cloudUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_legacy",
+    });
+    const store = tempRemoteProfileStore({ legacyCloudAuthStore: legacy });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_profile",
+      credentials: cloudCredentials,
+    });
+
+    await expect(
+      store.logoutCloudProfile({ hostUrl: "https://cloud.caplets.dev", workspace: "ws_profile" }),
     ).resolves.toBe(true);
 
     expect(existsSync(legacyPath)).toBe(true);

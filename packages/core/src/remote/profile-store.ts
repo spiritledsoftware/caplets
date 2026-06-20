@@ -225,7 +225,9 @@ export class FileRemoteProfileStore {
       return await this.withMutationLock(async () => {
         const current = await this.cloudRefreshSnapshot(input);
         if (!current || !current.needsRefresh) return current?.result;
-        const refreshedStatus = await this.writeCloudProfile(refreshed);
+        const refreshedStatus = await this.writeCloudProfile(refreshed, {
+          select: current.result.status.selected,
+        });
         const refreshedCredential = await this.credentials.load(refreshedStatus.key);
         if (!refreshedCredential?.accessToken) return undefined;
         return { status: refreshedStatus, credential: refreshedCredential };
@@ -420,13 +422,14 @@ export class FileRemoteProfileStore {
     const legacy = await this.legacyCloudAuthStore?.load();
     if (!legacy) return;
     if (normalizeRemoteProfileHostUrl(legacy.cloudUrl) !== hostUrl) return;
-    if (
-      profile?.workspaceId &&
-      legacy.workspaceId !== profile.workspaceId &&
-      legacy.workspaceSlug !== profile.workspaceSlug
-    ) {
-      return;
-    }
+    if (!profile) return;
+    const workspaceIdMatches = legacy.workspaceId === profile.workspaceId;
+    const workspaceSlugMatches = Boolean(
+      legacy.workspaceSlug &&
+      profile.workspaceSlug &&
+      legacy.workspaceSlug === profile.workspaceSlug,
+    );
+    if (!workspaceIdMatches && !workspaceSlugMatches) return;
     await this.legacyCloudAuthStore?.clear();
   }
 
@@ -485,12 +488,16 @@ export class FileRemoteProfileStore {
     return await this.statusFor(profile, input.credentials, false);
   }
 
-  private async writeCloudProfile(input: SaveCloudProfileInput): Promise<RemoteProfileStatus> {
+  private async writeCloudProfile(
+    input: SaveCloudProfileInput,
+    options: { select?: boolean } = {},
+  ): Promise<RemoteProfileStatus> {
     const hostUrl = normalizeRemoteProfileHostUrl(input.hostUrl);
     const workspace = cloudWorkspace(input);
     const key = remoteProfileKey({ kind: "cloud", hostUrl, workspace });
     const now = (input.now ?? new Date()).toISOString();
     const existing = this.readProfile(key);
+    const select = options.select ?? true;
     const profile: StoredRemoteProfile = {
       version: 1,
       kind: "cloud",
@@ -505,15 +512,17 @@ export class FileRemoteProfileStore {
 
     await this.credentials.save(key, input.credentials);
     this.writeJson(this.profilePath(key), profile);
-    this.writeJson(this.selectedWorkspacePath(hostUrl), {
-      version: 1,
-      hostUrl,
-      workspace,
-      profileKey: key,
-      selectedAt: now,
-    } satisfies SelectedCloudWorkspace);
+    if (select) {
+      this.writeJson(this.selectedWorkspacePath(hostUrl), {
+        version: 1,
+        hostUrl,
+        workspace,
+        profileKey: key,
+        selectedAt: now,
+      } satisfies SelectedCloudWorkspace);
+    }
 
-    return await this.statusFor(profile, input.credentials, true);
+    return await this.statusFor(profile, input.credentials, select);
   }
 
   private listProfilesForHost(hostUrl: string): StoredRemoteProfile[] {

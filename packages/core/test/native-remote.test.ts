@@ -1578,6 +1578,67 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("loads refreshed profile-backed remote tools before replacing the active delegate", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("/v1/remote/refresh")) {
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          const auth = new Headers(init?.headers).get("authorization");
+          const manifest = attachManifest(
+            auth === "Bearer new-access-token" ? "rev-2" : "rev-1",
+            auth === "Bearer new-access-token" ? "export-2" : "export-1",
+          );
+          manifest.caplets[0]!.title =
+            auth === "Bearer new-access-token" ? "Remote Updated" : "Remote";
+          return Response.json(manifest);
+        }) as typeof fetch,
+      },
+    });
+    await service.reload();
+    const emitted = new Array<string[][]>();
+    service.onToolsChanged((tools) => emitted.push(configuredCapletTitles(tools)));
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await service.reload();
+
+    expect(emitted).toEqual([[["remote", "Remote Updated"]]]);
+    await service.close();
+  });
+
   it("refreshes saved self-hosted native remote credentials before executing", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);
