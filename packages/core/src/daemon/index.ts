@@ -213,9 +213,8 @@ async function validateInstallCommand(input: {
   options: DaemonOperationOptions;
 }): Promise<DaemonHealthResult> {
   const useTemporaryPort =
-    input.existing &&
     input.existingNativeRunning &&
-    input.existing.serve.port === input.config.serve.port;
+    (!input.existing || input.existing.serve.port === input.config.serve.port);
   const attempts = useTemporaryPort ? 3 : 1;
   let last: DaemonHealthResult | undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -420,8 +419,10 @@ function redactNativeStatus(
   native: DaemonStatus["native"],
   config: DaemonConfig | undefined,
 ): DaemonStatus["native"] {
-  if (!config) return native;
-  return redactNativeValue(native, collectDaemonSecrets(config)) as DaemonStatus["native"];
+  return redactNativeValue(
+    native,
+    config ? collectDaemonSecrets(config) : [],
+  ) as DaemonStatus["native"];
 }
 
 function collectDaemonSecrets(config: DaemonConfig): string[] {
@@ -463,14 +464,19 @@ function redactSecrets(value: string, secrets: string[]): string {
 }
 
 function secretRedactionVariants(secret: string): string[] {
+  const posixShellEscaped = posixShellEscapedSecret(secret);
+  const posixShellQuoted = posixShellQuotedSecret(secret);
   return [
     secret,
     jsonEscapedSecret(secret),
     systemdEscapedSecret(secret),
+    systemdEscapedSecret(posixShellEscaped),
+    systemdEscapedSecret(posixShellQuoted),
     xmlEscapedSecret(secret),
     cmdEscapedSecret(secret),
     powershellSingleQuotedSecret(secret),
-    posixSingleQuotedSecret(secret),
+    posixShellEscaped,
+    posixShellQuoted,
   ].filter((value) => value.length > 0);
 }
 
@@ -504,8 +510,12 @@ function powershellSingleQuotedSecret(secret: string): string {
   return secret.replaceAll("'", "''");
 }
 
-function posixSingleQuotedSecret(secret: string): string {
-  return secret.replaceAll("'", "'\"'\"'");
+function posixShellEscapedSecret(secret: string): string {
+  return secret.replaceAll("'", "'\\''");
+}
+
+function posixShellQuotedSecret(secret: string): string {
+  return `'${posixShellEscapedSecret(secret)}'`;
 }
 
 function redactPasswordString(value: string): string {

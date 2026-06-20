@@ -39,7 +39,7 @@ function shellPlan(
   if (platform === "win32") {
     const lower = executable.toLocaleLowerCase();
     return lower.endsWith("powershell.exe") || lower.endsWith("pwsh.exe")
-      ? { executable, args: ["-NoProfile", "-Command"], source }
+      ? { executable, args: ["-Command"], source }
       : { executable, args: ["/d", "/s", "/c"], source };
   }
   if (executable.endsWith("/sh") || executable === "sh")

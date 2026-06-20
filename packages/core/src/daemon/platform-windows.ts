@@ -41,6 +41,12 @@ ${Object.entries(config.command.env)
 }
 
 function windowsArg(value: string): string {
+  if (/[\r\n]/u.test(value)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Windows daemon wrapper arguments cannot contain CR or LF characters.",
+    );
+  }
   return `"${value.replaceAll("%", "%%").replaceAll('"', '""')}"`;
 }
 

@@ -61,15 +61,20 @@ function launchdManager(
         descriptor,
       };
     },
-    uninstall: async (_config, paths) => {
-      if (!existsSync(paths.descriptorFile)) {
+    uninstall: async (config, paths) => {
+      const hasDescriptor = existsSync(paths.descriptorFile);
+      if (!hasDescriptor && !config) {
         return {
           action: "uninstall",
           native: notInstalled(),
           commands: [],
         };
       }
-      const commands = [["launchctl", "bootout", domain, paths.descriptorFile]];
+      const commands = [
+        hasDescriptor
+          ? ["launchctl", "bootout", domain, paths.descriptorFile]
+          : ["launchctl", "bootout", target],
+      ];
       const result = await runner.exec(commands[0]![0]!, commands[0]!.slice(1));
       if (
         result.code !== 0 &&
@@ -186,8 +191,14 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
         "systemd unregister failed",
         /not loaded|not found|No such file|does not exist/iu,
       );
+      const descriptorBackup = backupPath(paths.descriptorFile);
       rmSync(paths.descriptorFile, { force: true });
-      await assertExec(runner, commands[1]!, "systemd unregister failed");
+      try {
+        await assertExec(runner, commands[1]!, "systemd unregister failed");
+      } catch (error) {
+        restoreDescriptorFiles([descriptorBackup]);
+        throw error;
+      }
       return { action: "uninstall", native: notInstalled(), commands };
     },
     start: async () => systemdLifecycle(runner, "start", "start"),
@@ -218,7 +229,7 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
       const lastRun = String(raw["Last Run Result"] ?? "");
       if (/running/iu.test(status))
         return { state: "running", installed: true, running: true, raw };
-      if (lastRun && !/0x0|\b0\b/iu.test(lastRun)) return failedStatus(raw);
+      if (lastRun && !isSuccessfulWindowsLastRunResult(lastRun)) return failedStatus(raw);
       return stopped(raw);
     },
     install: async (config) => {
@@ -349,12 +360,17 @@ function backupDescriptorFiles(descriptor: DaemonDescriptor): DescriptorBackup[]
     descriptor.kind === "windows-scheduled-task"
       ? [descriptor.path, descriptor.wrapper.path]
       : [descriptor.path];
-  return paths.map((path) => ({
+  return paths.map(backupPath);
+}
+
+function backupPath(path: string): DescriptorBackup {
+  const existed = existsSync(path);
+  return {
     path,
-    existed: existsSync(path),
-    ...(existsSync(path) ? { contents: readFileSync(path) } : {}),
-    ...(existsSync(path) ? { mode: statSync(path).mode & 0o777 } : {}),
-  }));
+    existed,
+    ...(existed ? { contents: readFileSync(path) } : {}),
+    ...(existed ? { mode: statSync(path).mode & 0o777 } : {}),
+  };
 }
 
 function restoreDescriptorFiles(backups: DescriptorBackup[]): void {
@@ -560,6 +576,10 @@ function parseWindowsList(value: string): Record<string, string> {
       .filter((match): match is RegExpMatchArray => match !== null)
       .map((match) => [match[1]!.trim(), match[2]!.trim()]),
   );
+}
+
+function isSuccessfulWindowsLastRunResult(value: string): boolean {
+  return /\b(?:0|0x0+|0x0*41303)\b/iu.test(value);
 }
 
 function nodeCommandRunner(): DaemonCommandRunner {

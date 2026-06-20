@@ -179,9 +179,12 @@ describe("caplets daemon CLI", () => {
           'pa"$USER',
           "--env",
           'TOKEN=a&b"c',
+          "--env",
+          "QUOTE=a'b",
+          "--inherit-env",
         ],
         {
-          env: testEnv(dir),
+          env: { ...testEnv(dir), SHELL: "/bin/bash" },
           writeOut: (value) => out.push(value),
           writeErr: () => {},
           daemon: { platform: "linux", commandRunner: fakeRunner() },
@@ -197,6 +200,7 @@ describe("caplets daemon CLI", () => {
       expect(serialized).not.toContain('a&b"c');
       expect(parsed.descriptor?.contents).not.toContain('pa\\"$$USER');
       expect(parsed.descriptor?.contents).not.toContain('a&b\\"c');
+      expect(parsed.descriptor?.contents).not.toContain("a'\\\\''b");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -365,6 +369,40 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("validates stale-config recovery installs on a temporary loopback port", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-stale-config-"));
+    try {
+      const options = {
+        env: testEnv(dir),
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner({ active: true }),
+      };
+      const installed = await installDaemon({ port: "5480", validate: false }, options);
+      rmSync(installed.config.paths.configFile, { force: true });
+
+      const validatedPorts: number[] = [];
+      await installDaemon(
+        {
+          port: "5480",
+          noRestart: true,
+        },
+        {
+          ...options,
+          validateCommand: async (config) => {
+            validatedPorts.push(config.serve.port);
+            return { ok: true, url: `http://127.0.0.1:${config.serve.port}/v1/healthz` };
+          },
+        },
+      );
+
+      expect(validatedPorts).toHaveLength(1);
+      expect(validatedPorts[0]).not.toBe(5480);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("renders native daemon identities for launchd, systemd, and Windows tasks", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-descriptor-"));
     try {
@@ -385,6 +423,7 @@ describe("daemon paths and config", () => {
       if (launchd.descriptor.kind !== "launchd-user-agent") throw new Error("expected launchd");
       expect(launchd.descriptor.contents).toContain("dev.caplets.daemon.default");
       expect(launchd.descriptor.contents).toContain("<key>RunAtLoad</key>");
+      expect(launchd.descriptor.contents).toContain("<key>KeepAlive</key>");
       expect(launchd.descriptor.contents).toContain("<key>WorkingDirectory</key>");
 
       const systemd = await installDaemon(
@@ -528,6 +567,33 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("rejects unsafe Windows wrapper command arguments", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-args-"));
+    try {
+      await expect(
+        installDaemon(
+          {
+            password: "secret\r\nwhoami",
+            allowUnauthenticatedHttp: false,
+            validate: false,
+            dryRun: true,
+          },
+          {
+            env: {
+              APPDATA: join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        ),
+      ).rejects.toThrow(/wrapper arguments cannot contain/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("quotes inherited Windows shell commands for cmd and PowerShell", () => {
     const cmd = serviceCommand({
       command: {
@@ -589,6 +655,32 @@ describe("daemon paths and config", () => {
         },
       }),
     ).toThrow(/cannot contain/u);
+  });
+
+  it("loads PowerShell profiles when using Windows inherited env fallback", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-powershell-"));
+    try {
+      const result = await installDaemon(
+        { inheritEnv: true, validate: false, dryRun: true },
+        {
+          env: {
+            APPDATA: join(dir, "AppData", "Roaming"),
+            LOCALAPPDATA: join(dir, "AppData", "Local"),
+            ComSpec: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.shell).toMatchObject({
+        executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        args: ["-Command"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("preserves env-derived public origins in the service environment", async () => {
@@ -1317,7 +1409,7 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
-  it("treats repeated launchd uninstall with preserved config as not installed", async () => {
+  it("boots out launchd by label when the plist is missing but config remains", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-launchd-repeat-uninstall-"));
     try {
       const runner = fakeRunner();
@@ -1335,11 +1427,10 @@ describe("daemon lifecycle and logs", () => {
       const repeated = await uninstallDaemon({}, options);
 
       expect(repeated.native?.native.state).toBe("not_installed");
-      expect(runner.commands).not.toContainEqual([
+      expect(runner.commands).toContainEqual([
         "launchctl",
         "bootout",
-        "gui/501",
-        installed.config.paths.descriptorFile,
+        "gui/501/dev.caplets.daemon.default",
       ]);
       expect(existsSync(installed.config.paths.configFile)).toBe(true);
     } finally {
@@ -1572,6 +1663,82 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("restores the systemd descriptor when unregister reload fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-linux-uninstall-reload-fail-"));
+    try {
+      let failReload = false;
+      const runner: DaemonCommandRunner & { commands: string[][] } = {
+        commands: [],
+        async exec(command, args) {
+          runner.commands.push([command, ...args]);
+          if (failReload && command === "systemctl" && args.includes("daemon-reload")) {
+            return { stdout: "", stderr: "reload failed", code: 1 };
+          }
+          if (args.includes("is-active")) return { stdout: "inactive\n", stderr: "", code: 3 };
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      failReload = true;
+
+      await expect(uninstallDaemon({}, options)).rejects.toThrow(/systemd unregister failed/u);
+
+      expect(existsSync(installed.config.paths.descriptorFile)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats Windows tasks that have not run as installed and stopped", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-ready-"));
+    let paths: ReturnType<typeof resolveDaemonPaths> | undefined;
+    try {
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "schtasks" && args.includes("/Query")) {
+            return { stdout: "Status: Ready\nLast Run Result: 0x41303\n", stderr: "", code: 0 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: {
+          APPDATA: join(dir, "AppData", "Roaming"),
+          LOCALAPPDATA: join(dir, "AppData", "Local"),
+        },
+        home: "C:\\Users\\Alice",
+        platform: "win32" as const,
+        commandRunner: runner,
+      };
+      paths = resolveDaemonPaths(options);
+      await installDaemon({ validate: false }, options);
+
+      const status = await daemonStatus(options);
+
+      expect(status.nativeState).toBe("installed_stopped");
+      expect(status.running).toBe(false);
+    } finally {
+      if (paths) {
+        for (const path of [
+          paths.descriptorFile,
+          paths.wrapperFile,
+          paths.configFile,
+          paths.stateFile,
+          paths.stdoutLog,
+          paths.stderrLog,
+        ]) {
+          rmSync(path, { force: true });
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("removes Windows wrapper files and checks unregister failures", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-uninstall-"));
     let paths: ReturnType<typeof resolveDaemonPaths> | undefined;
@@ -1678,6 +1845,51 @@ describe("daemon lifecycle and logs", () => {
       expect(status.config?.command.args).not.toContain("secret");
       expect(serialized).not.toContain("secret");
       expect(serialized).not.toContain("abc123");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts password arguments from native status when config is missing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-status-stale-redaction-"));
+    try {
+      const runner: DaemonCommandRunner = {
+        async exec(command, args) {
+          if (command === "systemctl" && args.includes("show")) {
+            return {
+              stdout: "ExecStart={ path=/node ; argv[]=/node /cli serve --password secret ; }\n",
+              stderr: "",
+              code: 0,
+            };
+          }
+          if (command === "systemctl" && args.includes("is-active")) {
+            return { stdout: "inactive\n", stderr: "", code: 3 };
+          }
+          return { stdout: "", stderr: "", code: 0 };
+        },
+      };
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon(
+        {
+          user: "alice",
+          password: "secret",
+          allowUnauthenticatedHttp: false,
+          validate: false,
+        },
+        options,
+      );
+      rmSync(installed.config.paths.configFile, { force: true });
+
+      const status = await daemonStatus(options);
+      const serialized = JSON.stringify(status);
+
+      expect(status.config).toBeUndefined();
+      expect(serialized).toContain("[redacted]");
+      expect(serialized).not.toContain("--password secret");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
