@@ -57,6 +57,8 @@ export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
 
 export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"] & {
   resolveRuntimeOptions?: () => Promise<RemoteCapletsClientOptions["remote"]>;
+  authKind?: "self_hosted_remote" | "hosted_cloud";
+  writeErr?: (value: string) => void;
 };
 
 export type RemoteNativeCapletsServiceOptions = {
@@ -141,7 +143,13 @@ export function createSdkRemoteCapletsClient(
           scheduleEventsReconnect();
         },
       );
-    } catch {
+    } catch (error) {
+      if (isPermanentRemoteCredentialsError(error)) {
+        options.writeErr?.(
+          `${remoteAuthError(options.authKind ?? "self_hosted_remote").message}\n`,
+        );
+        return;
+      }
       scheduleEventsReconnect();
     }
   };
@@ -1046,4 +1054,24 @@ function isAuthFailure(error: unknown): boolean {
     return true;
   }
   return /\b(401|403|unauthorized|forbidden)\b/iu.test(errorMessage(error));
+}
+
+function isPermanentRemoteCredentialsError(error: unknown): boolean {
+  const candidate = error as {
+    projectBindingCode?: unknown;
+    details?: unknown;
+  };
+  if (
+    candidate?.projectBindingCode === "remote_credentials_required" ||
+    candidate?.projectBindingCode === "remote_auth_failed"
+  ) {
+    return true;
+  }
+  if (isPlainObject(candidate?.details)) {
+    const code = candidate.details.code;
+    if (code === "remote_credentials_required" || code === "remote_auth_failed") {
+      return true;
+    }
+  }
+  return isAuthFailure(error);
 }

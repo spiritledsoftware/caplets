@@ -382,6 +382,10 @@ async function pairingCodeFromOptions(
     const value = readStdin ? await readStdin() : await readAllStdin();
     const code = value.trim();
     if (code) return code;
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Pairing Code is required when --code-stdin is used.",
+    );
   }
   const output = new HiddenPromptOutput(process.stdout);
   const readline = createInterface({ input: process.stdin, output, terminal: true });

@@ -154,6 +154,22 @@ describe("cli init", () => {
     );
   });
 
+  it("rejects empty self-hosted remote login code from stdin", async () => {
+    const fetchStub = vi.fn();
+
+    await expect(
+      runCli(["remote", "login", "https://caplets.example.com/caplets", "--code-stdin"], {
+        readStdin: async () => " \n\t",
+        fetch: fetchStub as unknown as typeof fetch,
+        writeErr: () => {},
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Pairing Code is required when --code-stdin is used.",
+    } satisfies Partial<CapletsError>);
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
   it("prints parent command help without throwing", async () => {
     const out: string[] = [];
 

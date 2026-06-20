@@ -634,10 +634,11 @@ function createCompositeRemoteParts(
   authKind: "self_hosted_remote" | "hosted_cloud",
   resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
 ): { remote: NativeCapletsService; presence?: ProjectBindingSessionManager } {
-  const client = createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions);
+  const client = createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions);
   const remote = new RemoteNativeCapletsService({
     client,
-    clientFactory: () => createRemoteClient(remoteOptions, options, resolveRuntimeRemoteOptions),
+    clientFactory: () =>
+      createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions),
     pollIntervalMs: remoteOptions.pollIntervalMs,
     authKind,
     ...(options.writeErr ? { writeErr: options.writeErr } : {}),
@@ -649,6 +650,7 @@ function createCompositeRemoteParts(
 function createRemoteClient(
   remoteOptions: ResolvedNativeRemoteOptions,
   options: NativeCapletsServiceOptions,
+  authKind: "self_hosted_remote" | "hosted_cloud",
   resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
 ): RemoteCapletsClient {
   if (options.remoteClientFactory) {
@@ -656,6 +658,8 @@ function createRemoteClient(
   }
   const sdkOptions: SdkRemoteCapletsClientOptions = {
     ...remoteOptions,
+    authKind,
+    ...(options.writeErr ? { writeErr: options.writeErr } : {}),
     ...(resolveRuntimeRemoteOptions ? { resolveRuntimeOptions: resolveRuntimeRemoteOptions } : {}),
   };
   return createSdkRemoteCapletsClient(sdkOptions);

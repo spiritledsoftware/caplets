@@ -523,6 +523,39 @@ describe("RemoteNativeCapletsService", () => {
     }
   });
 
+  it("does not reconnect attach events after permanent runtime credential failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const writeErr = vi.fn();
+      const resolveRuntimeOptions = vi.fn(async () => {
+        const error = new Error("Remote Login required.");
+        Object.assign(error, { projectBindingCode: "remote_credentials_required" });
+        throw error;
+      });
+      const remote = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: vi.fn(async () => Response.json(attachManifest("rev-1", "export-1"))),
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+        resolveRuntimeOptions,
+        writeErr,
+      });
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(resolveRuntimeOptions).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(resolveRuntimeOptions).toHaveBeenCalledTimes(1);
+      expect(writeErr).toHaveBeenCalledWith(
+        "Remote Caplets authentication failed; run caplets remote login <url>.\n",
+      );
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not reconnect the attach events stream after an HTTP error response", async () => {
     vi.useFakeTimers();
     try {
