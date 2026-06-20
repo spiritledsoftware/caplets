@@ -65,6 +65,16 @@ export function createHttpServeApp(
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  if (
+    options.auth.type === "remote_credentials" &&
+    options.trustProxy === true &&
+    options.publicOrigin === undefined
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth with --trust-proxy requires CAPLETS_SERVER_URL.",
+    );
+  }
   const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
   app.use(
     "*",

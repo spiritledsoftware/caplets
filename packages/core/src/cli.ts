@@ -81,6 +81,7 @@ import {
 import { RemoteServerCredentialStore } from "./remote/server-credential-store";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
+  hostedCloudWorkspaceFromRemoteUrl,
   isCapletsCloudUrl,
   normalizeRemoteProfileHostUrl,
   resolveRemoteMode,
@@ -334,8 +335,9 @@ async function loginCloudRemoteProfile(
   },
 ): Promise<RemoteProfileStatus> {
   const client = new CloudAuthClient({ cloudUrl: url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  const requestedWorkspace = options.workspace ?? hostedCloudWorkspaceFromRemoteUrl(url);
   const started = await client.startLogin({
-    requestedWorkspace: options.workspace,
+    requestedWorkspace,
     deviceName: options.deviceName ?? io.env.CAPLETS_DEVICE_NAME ?? "Caplets CLI",
   });
   if (options.open !== false) await openBrowserUrl(started.loginUrl);

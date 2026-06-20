@@ -170,6 +170,57 @@ describe("cli init", () => {
     expect(fetchStub).not.toHaveBeenCalled();
   });
 
+  it("uses the workspace from a copied Cloud MCP URL when logging in", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-cloud-login-url-workspace-"));
+    const authDir = join(dir, "auth");
+    const startRequests: unknown[] = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/cloud-client/login/start") {
+        startRequests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({
+          loginId: "login_123",
+          loginUrl: "https://cloud.caplets.dev/login/login_123",
+          userCode: "ABCD-EFGH",
+          expiresAt: "2999-06-19T12:00:00.000Z",
+        });
+      }
+      if (url.pathname === "/api/cloud-client/login/login_123") {
+        return Response.json({ status: "completed", oneTimeCode: "one_time_code" });
+      }
+      if (url.pathname === "/api/cloud-client/token") {
+        return Response.json({
+          cloudUrl: "https://cloud.caplets.dev",
+          workspaceId: "workspace_team",
+          workspaceSlug: "team",
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          expiresAt: "2999-06-19T12:00:00.000Z",
+        });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    });
+    try {
+      await runCli(
+        ["remote", "login", "https://cloud.caplets.dev/ws/team/mcp", "--no-open", "--json"],
+        {
+          authDir,
+          fetch: fetchStub,
+          writeOut: () => {},
+        },
+      );
+
+      expect(startRequests).toEqual([
+        expect.objectContaining({
+          requestedWorkspace: "team",
+          deviceName: "Caplets CLI",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prints parent command help without throwing", async () => {
     const out: string[] = [];
 
