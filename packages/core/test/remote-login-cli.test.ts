@@ -137,6 +137,66 @@ describe("caplets remote CLI", () => {
     });
   });
 
+  it("refreshes expired self-hosted credentials before logout revoke", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const issued = server.createPairingCode({ hostUrl: "https://caplets.example.com" });
+    const credentials = server.exchangePairingCode({
+      hostUrl: "https://caplets.example.com/",
+      code: issued.code,
+    });
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com",
+      clientId: credentials.clientId,
+      clientLabel: credentials.clientLabel,
+      credentials: {
+        accessToken: "expired-access-token",
+        refreshToken: credentials.refreshToken,
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+    const requests: Array<{ path: string; authorization?: string | null }> = [];
+
+    await runCli(["remote", "logout", "https://caplets.example.com"], {
+      authDir,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        requests.push({
+          path: url.pathname,
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        if (url.pathname.endsWith("/v1/remote/refresh")) {
+          const body = JSON.parse(String(init?.body)) as { refreshToken: string };
+          return Response.json(
+            server.refreshClientCredentials({
+              hostUrl: "https://caplets.example.com/",
+              refreshToken: body.refreshToken,
+            }),
+          );
+        }
+        const accessToken = new Headers(init?.headers)
+          .get("authorization")
+          ?.replace(/^Bearer /u, "");
+        const clientId = server.validateAccessToken({
+          hostUrl: "https://caplets.example.com/",
+          accessToken: accessToken ?? "",
+        }).clientId;
+        return Response.json({ revoked: server.revokeClient(clientId) });
+      },
+      writeOut: () => undefined,
+    });
+
+    expect(requests).toEqual([
+      { path: "/v1/remote/refresh", authorization: null },
+      {
+        path: "/v1/remote/client",
+        authorization: expect.stringMatching(/^Bearer (?!expired-access-token)/u),
+      },
+    ]);
+  });
+
   it("logs out a stored Cloud Remote Profile through Cloud logout", async () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     await new FileRemoteProfileStore({

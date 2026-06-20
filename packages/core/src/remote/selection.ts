@@ -113,7 +113,7 @@ export async function resolveRemoteSelection(
           ...(input.workspace !== undefined ? { workspace: input.workspace } : {}),
           ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
         },
-        {},
+        env,
       ),
       ...(credential.expiresAt ? { credentialExpiresAt: credential.expiresAt } : {}),
     };
@@ -277,9 +277,43 @@ async function refreshSelfHostedCredentials(
   );
   const response = await fetchSelfHostedRefresh(refreshUrl, refreshToken, options);
   if (!response.ok) {
-    throw remoteLoginRequired(remoteUrl);
+    throw await selfHostedRefreshError(remoteUrl, response);
   }
   return parseSelfHostedRefreshCredentials(response);
+}
+
+async function selfHostedRefreshError(remoteUrl: string, response: Response): Promise<Error> {
+  const summary = await parseSelfHostedRefreshError(response);
+  if (response.status === 401 || summary?.code === "AUTH_FAILED") {
+    return remoteLoginRequired(remoteUrl);
+  }
+  if (response.status === 503 || summary?.code === "SERVER_UNAVAILABLE") {
+    return new CapletsError(
+      "SERVER_UNAVAILABLE",
+      summary?.message ?? "Remote credential refresh is temporarily unavailable.",
+    );
+  }
+  return new CapletsError(
+    "AUTH_REFRESH_FAILED",
+    summary?.message ?? `Remote credential refresh failed with HTTP ${response.status}.`,
+  );
+}
+
+async function parseSelfHostedRefreshError(
+  response: Response,
+): Promise<{ code?: string | undefined; message?: string | undefined } | undefined> {
+  const parsed = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const error = (parsed as Record<string, unknown>).error;
+  if (!error || typeof error !== "object" || Array.isArray(error)) return undefined;
+  const record = error as Record<string, unknown>;
+  return {
+    ...(typeof record.code === "string" ? { code: record.code } : {}),
+    ...(typeof record.message === "string" ? { message: record.message } : {}),
+  };
 }
 
 async function fetchSelfHostedRefresh(

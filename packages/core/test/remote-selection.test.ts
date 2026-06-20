@@ -114,6 +114,80 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("surfaces transient self-hosted refresh failures without requiring login", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        tokenType: "Bearer",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        {
+          authDir,
+          fetch: async () =>
+            Response.json(
+              {
+                ok: false,
+                error: {
+                  code: "SERVER_UNAVAILABLE",
+                  message: "Remote credential state is locked.",
+                },
+              },
+              { status: 503 },
+            ),
+        },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      message: "Remote credential state is locked.",
+    });
+  });
+
+  it("preserves CAPLETS_REMOTE_WORKSPACE for self-hosted remotes", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+
+    const resolved = await resolveRemoteSelection(
+      { authDir },
+      {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        CAPLETS_REMOTE_WORKSPACE: "tenant-a",
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      kind: "self_hosted_remote",
+      remote: { workspace: "tenant-a" },
+    });
+  });
+
   it("serializes concurrent expired self-hosted credential refreshes", async () => {
     const authDir = tempDir("caplets-remote-selection-auth-");
     await new FileRemoteProfileStore({

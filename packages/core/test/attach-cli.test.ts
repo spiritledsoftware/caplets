@@ -2,10 +2,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { attachProjectOnce, resolveAttachOptions } from "../src/project-binding/attach";
+import {
+  attachProjectOnce,
+  attachProjectSession,
+  resolveAttachOptions,
+} from "../src/project-binding/attach";
 import { runCli } from "../src/cli";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
+import type {
+  ProjectBindingSocketEvent,
+  ProjectBindingWebSocket,
+} from "../src/project-binding/transport";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 
 const tempDirs: string[] = [];
@@ -237,6 +245,80 @@ describe("caplets attach CLI", () => {
     );
   });
 
+  it("pins the selected Cloud workspace for active attach session refreshes", async () => {
+    const authDir = tempAuthDir();
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "team-access",
+        refreshToken: "team-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
+    const controller = new AbortController();
+    const requests: Array<{ path: string; body?: unknown }> = [];
+    let switchedSelection = false;
+
+    await attachProjectSession(
+      {
+        authDir,
+        remoteUrl: "https://cloud.caplets.dev",
+        projectRoot: "/repo",
+        fetch: async (url, init) => {
+          const path = new URL(String(url)).pathname;
+          requests.push({
+            path,
+            ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+          });
+          if (path.endsWith("/project-bindings/sessions")) {
+            if (!switchedSelection) {
+              switchedSelection = true;
+              await store.saveCloudProfile({
+                hostUrl: "https://cloud.caplets.dev",
+                workspaceId: "workspace_personal",
+                workspaceSlug: "personal",
+                credentials: {
+                  accessToken: "personal-access",
+                  refreshToken: "personal-refresh",
+                  expiresAt: "2999-01-01T00:00:00.000Z",
+                  scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+                  tokenType: "Bearer",
+                },
+              });
+            }
+            return Response.json(
+              { binding: { bindingId: "binding_1" }, sessionId: "session_1" },
+              { status: 201 },
+            );
+          }
+          return Response.json({ ok: true });
+        },
+      },
+      { CAPLETS_MODE: "cloud" },
+      {
+        signal: controller.signal,
+        heartbeatIntervalMs: 60_000,
+        webSocketFactory: () => new OpenProjectBindingSocket(),
+        onEvent: (event) => {
+          if (event.type === "heartbeat") controller.abort();
+        },
+      },
+    );
+
+    expect(requests.map((request) => request.path)).toEqual(
+      expect.arrayContaining([
+        "/v1/ws/team/attach/project-bindings/sessions",
+        "/v1/ws/team/attach/project-bindings/binding_1/heartbeat",
+      ]),
+    );
+    expect(requests.map((request) => request.path).join("\n")).not.toContain("/ws/personal/");
+  });
+
   it("runs once from the CLI and reports WebSocket availability", async () => {
     const out: string[] = [];
     const cwd = process.cwd();
@@ -406,4 +488,16 @@ async function saveSelfHostedProfile(
       expiresAt: "2999-01-01T00:00:00.000Z",
     },
   });
+}
+
+class OpenProjectBindingSocket implements ProjectBindingWebSocket {
+  readonly readyState = 1;
+  onopen: ((event: ProjectBindingSocketEvent) => void) | null = null;
+  onmessage: ((event: ProjectBindingSocketEvent) => void) | null = null;
+  onclose: ((event: ProjectBindingSocketEvent) => void) | null = null;
+  onerror: ((event: ProjectBindingSocketEvent) => void) | null = null;
+
+  send(): void {}
+
+  close(): void {}
 }

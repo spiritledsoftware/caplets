@@ -100,12 +100,15 @@ export async function attachProjectSession(
   } = {},
 ) {
   const resolved = await resolveAttachOptionsForRun(raw, env);
+  const pinnedRaw = resolved.selectedWorkspace
+    ? { ...raw, workspace: resolved.selectedWorkspace }
+    : raw;
   bootstrapProjectBindingGitignore(resolved.projectRoot);
   preflightProjectSync(resolved.projectRoot, hostedTier(env));
   return await runProjectBindingSession({
     projectRoot: resolved.projectRoot,
     remote: resolved.remote,
-    remoteResolver: async () => (await resolveAttachOptionsForRun(raw, env)).remote,
+    remoteResolver: async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote,
     fetch: resolved.remote.fetch,
     signal: options.signal,
     heartbeatIntervalMs: options.heartbeatIntervalMs,

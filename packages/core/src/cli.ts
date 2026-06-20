@@ -478,6 +478,26 @@ async function revokeSelfHostedRemoteClient(
   });
 }
 
+async function selfHostedLogoutAccessToken(
+  remoteUrl: string,
+  credential: RemoteProfileCredential & { accessToken: string },
+  input: { authDir?: string | undefined; fetch?: typeof fetch | undefined },
+  env: Record<string, string | undefined>,
+): Promise<string> {
+  const selection = await resolveRemoteSelection(
+    {
+      mode: "remote",
+      remoteUrl,
+      ...(input.authDir ? { authDir: input.authDir } : {}),
+      ...(input.fetch ? { fetch: input.fetch } : {}),
+    },
+    env,
+  );
+  return selection.kind === "self_hosted_remote" && selection.remote.auth.type === "bearer"
+    ? selection.remote.auth.token
+    : credential.accessToken;
+}
+
 function writeRemoteStatus(
   status: RemoteProfileStatus | Record<string, unknown>,
   json: boolean,
@@ -1182,10 +1202,15 @@ export function createProgram(io: CliIO = {}): Command {
           .logout(credential.refreshToken)
           .catch(() => undefined);
       }
-      if (!isCapletsCloudUrl(url) && credential?.accessToken) {
-        await revokeSelfHostedRemoteClient(url, credential.accessToken, io.fetch).catch(
-          () => undefined,
-        );
+      const storedAccessToken = credential?.accessToken;
+      if (!isCapletsCloudUrl(url) && storedAccessToken) {
+        const accessToken = await selfHostedLogoutAccessToken(
+          url,
+          { ...credential, accessToken: storedAccessToken },
+          { authDir: io.authDir, ...(io.fetch ? { fetch: io.fetch } : {}) },
+          env,
+        ).catch(() => storedAccessToken);
+        await revokeSelfHostedRemoteClient(url, accessToken, io.fetch).catch(() => undefined);
       }
       const removed = status
         ? isCapletsCloudUrl(url)

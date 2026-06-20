@@ -39,6 +39,9 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
     ...(options.authDir ? { authDir: options.authDir } : {}),
     remote: {
       url: options.selection.remote.baseUrl.toString(),
+      ...(options.selection.kind === "hosted_cloud"
+        ? { workspace: options.selection.selectedWorkspace }
+        : {}),
       ...(options.selection.remote.fetch ? { fetch: options.selection.remote.fetch } : {}),
       ...(options.selection.kind === "hosted_cloud"
         ? {
@@ -55,3 +58,5 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
     ...(io.writeErr ? { writeErr: io.writeErr } : {}),
   });
 }
+
+export const createAttachNativeServiceForTests = createAttachNativeService;
