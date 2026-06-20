@@ -988,6 +988,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.presence = presence;
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     await Promise.all([previousRemote.close(), previousPresence?.close()]);
+    if (this.closed) return;
     this.startPresence();
     this.updateMergedTools();
   }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ProjectBindingSessionManager } from "../src/cloud/presence";
 import type { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
@@ -1637,6 +1638,55 @@ describe("createNativeCapletsService remote mode", () => {
 
     expect(emitted).toEqual([[["remote", "Remote Updated"]]]);
     await service.close();
+  });
+
+  it("does not start replacement presence when closed during remote replacement", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const previousCloseStarted = deferred();
+    const releasePreviousClose = deferred();
+    fixture.api.close = vi.fn(async () => {
+      previousCloseStarted.resolve();
+      await releasePreviousClose.promise;
+    });
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    }) as NativeCapletsService & {
+      replaceRemote(
+        remote: NativeCapletsService,
+        presence?: ProjectBindingSessionManager,
+      ): Promise<void>;
+    };
+    const replacement = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const replacementPresence = {
+      start: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+    } as unknown as ProjectBindingSessionManager;
+
+    const replacing = service.replaceRemote(replacement, replacementPresence);
+    await previousCloseStarted.promise;
+    const closing = service.close();
+    releasePreviousClose.resolve();
+    await Promise.all([replacing, closing]);
+
+    expect(replacementPresence.close).toHaveBeenCalledTimes(1);
+    expect(replacementPresence.start).not.toHaveBeenCalled();
   });
 
   it("refreshes saved self-hosted native remote credentials before executing", async () => {
