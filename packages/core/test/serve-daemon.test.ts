@@ -130,6 +130,38 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("reports daemon start as a restart when the service is already running", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-start-restart-"));
+    try {
+      const out: string[] = [];
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+        fetch: async () => new Response("ok"),
+      };
+      await installDaemon({ validate: false }, options);
+      runner.commands.length = 0;
+
+      await runCli(["daemon", "start"], {
+        env: testEnv(dir),
+        writeOut: (value) => out.push(value),
+        daemon: options,
+      });
+
+      expect(out.join("")).toBe("Restarted Caplets daemon.\n");
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "restart",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("redacts daemon install --json config and descriptors", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-json-redaction-"));
     try {
@@ -373,6 +405,21 @@ describe("daemon paths and config", () => {
         'Environment="MULTI=line\\nExecStartPre=/bin/false"',
       );
       expect(systemd.descriptor.contents).not.toContain("\nExecStartPre=/bin/false");
+      const systemdWithCarriageReturn = await installDaemon(
+        { ...common, env: ["MULTI=line\rExecStartPre=/bin/false"] },
+        {
+          env: testEnv(join(dir, "carriage-return")),
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      expect(systemdWithCarriageReturn.descriptor.kind).toBe("systemd-user");
+      if (systemdWithCarriageReturn.descriptor.kind !== "systemd-user")
+        throw new Error("expected systemd");
+      expect(systemdWithCarriageReturn.descriptor.contents).toContain(
+        'Environment="MULTI=line\\rExecStartPre=/bin/false"',
+      );
       const systemdWithDollar = await installDaemon(
         { ...common, password: "pa$USER", allowUnauthenticatedHttp: false },
         {
@@ -520,6 +567,17 @@ describe("daemon paths and config", () => {
     });
     expect(bash.args.at(-1)).toContain("export PATH=/custom/bin; exec ");
     expect(bash.args.at(-1)).toContain(" /usr/local/bin/caplets serve");
+
+    const shellWithSlashC = serviceCommand({
+      command: {
+        executable: "/usr/local/bin/caplets",
+        args: ["serve", "--password", "pa ss"],
+        env: { TOKEN: "value" },
+        shell: { executable: "/usr/bin/custom-shell", args: ["/c"] },
+      },
+    });
+    expect(shellWithSlashC.args.at(-1)).toContain("export TOKEN=value; exec ");
+    expect(shellWithSlashC.args.at(-1)).toContain("'pa ss'");
 
     expect(() =>
       serviceCommand({
@@ -1387,6 +1445,7 @@ describe("daemon lifecycle and logs", () => {
       const result = await uninstallDaemon({ purge: true }, options);
 
       expect(result.purge).toBe(true);
+      expect(result.removed).not.toContain(installed.config.paths.wrapperFile);
       expect(existsSync(installed.config.paths.descriptorFile)).toBe(false);
       expect(existsSync(installed.config.paths.configFile)).toBe(false);
       expect(existsSync(installed.config.paths.stateFile)).toBe(false);
@@ -1395,6 +1454,25 @@ describe("daemon lifecycle and logs", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("reports Windows wrapper cleanup during purge dry-run", async () => {
+    const result = await uninstallDaemon(
+      { purge: true, dryRun: true },
+      {
+        env: { APPDATA: "C:\\Users\\Alice\\AppData\\Roaming" },
+        home: "C:\\Users\\Alice",
+        platform: "win32",
+        commandRunner: fakeRunner(),
+      },
+    );
+    const paths = resolveDaemonPaths({
+      env: { APPDATA: "C:\\Users\\Alice\\AppData\\Roaming" },
+      home: "C:\\Users\\Alice",
+      platform: "win32",
+    });
+
+    expect(result.removed).toContain(paths.wrapperFile);
   });
 
   it("stops running native services during uninstall when config is missing", async () => {

@@ -634,7 +634,9 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(`${JSON.stringify(result, null, 2)}\n`);
         return;
       }
-      writeOut("Started Caplets daemon.\n");
+      writeOut(
+        result.action === "restart" ? "Restarted Caplets daemon.\n" : "Started Caplets daemon.\n",
+      );
     },
   );
 

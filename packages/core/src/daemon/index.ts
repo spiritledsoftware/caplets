@@ -270,8 +270,16 @@ export async function uninstallDaemon(
   const paths = resolveDaemonPaths(options);
   const manager = options.manager ?? createNativeDaemonManager(options);
   const config = readDaemonConfig(paths);
+  const removesWrapper = (options.platform ?? process.platform) === "win32";
   const removed = uninstall.purge
-    ? [paths.descriptorFile, paths.configFile, paths.stateFile, paths.stdoutLog, paths.stderrLog]
+    ? [
+        paths.descriptorFile,
+        ...(removesWrapper ? [paths.wrapperFile] : []),
+        paths.configFile,
+        paths.stateFile,
+        paths.stdoutLog,
+        paths.stderrLog,
+      ]
     : [paths.descriptorFile];
   if (uninstall.dryRun) {
     return {

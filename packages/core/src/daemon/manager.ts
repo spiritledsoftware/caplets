@@ -362,6 +362,7 @@ function restoreDescriptorFiles(backups: DescriptorBackup[]): void {
     if (backup.existed && backup.contents) {
       mkdirSync(dirname(backup.path), { recursive: true, mode: 0o700 });
       writeFileSync(backup.path, backup.contents, { mode: backup.mode ?? 0o600 });
+      // writeFileSync applies mode through umask; chmod restores the exact saved descriptor mode.
       chmodSync(backup.path, backup.mode ?? 0o600);
     } else {
       rmSync(backup.path, { force: true });

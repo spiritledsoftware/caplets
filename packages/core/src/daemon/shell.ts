@@ -60,7 +60,9 @@ function isPowerShell(shell: { executable: string }): boolean {
 
 function isCmd(shell: { executable: string; args: string[] }): boolean {
   const executable = shell.executable.replaceAll("\\", "/").toLocaleLowerCase();
-  return executable.endsWith("/cmd.exe") || executable === "cmd.exe" || shell.args.includes("/c");
+  const executableName = executable.split("/").at(-1) ?? executable;
+  const isCmdExe = executableName === "cmd.exe" || executableName === "cmd";
+  return isCmdExe && shell.args.some((arg) => arg.toLocaleLowerCase() === "/c");
 }
 
 function powerShellQuote(value: string): string {
