@@ -5,6 +5,7 @@ export const cliCommands = {
   completion: "completion",
   completeHidden: "__complete",
   codeMode: "code-mode",
+  daemon: "daemon",
   serve: "serve",
   attach: "attach",
   cloud: "cloud",
@@ -34,6 +35,7 @@ export const cliCommands = {
 
 export const topLevelCommandNames = [
   cliCommands.serve,
+  cliCommands.daemon,
   cliCommands.codeMode,
   cliCommands.attach,
   cliCommands.cloud,
@@ -69,7 +71,7 @@ export const cliSubcommands = {
   [cliCommands.codeMode]: ["types"],
   [cliCommands.completion]: [...completionShells],
   [cliCommands.config]: ["path", "paths"],
-  [cliCommands.serve]: ["start", "stop", "status", "restart", "enable", "disable"],
+  [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
 } as const satisfies Record<string, readonly string[]>;
 

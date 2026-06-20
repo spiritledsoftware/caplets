@@ -4,30 +4,11 @@ import { resolveServeOptions, type RawServeOptions, type ServeOptions } from "./
 import { serveStdio } from "./stdio";
 
 export { serveHttp } from "./http";
-export { resolveDaemonServeOptions, resolveServeOptions } from "./options";
+export { resolveServeOptions } from "./options";
 export type { HttpServeOptions, RawServeOptions, ServeOptions, StdioServeOptions } from "./options";
 export { NativeCapletsMcpSession } from "./native-session";
 export type { NativeCapletsMcpSessionOptions, NativeToolServer } from "./native-session";
 export { serveStdio } from "./stdio";
-export {
-  buildDaemonPlatformDescriptor,
-  daemonStatus,
-  disableDaemon,
-  enableDaemon,
-  resolveServeDaemonPaths,
-  restartDaemon,
-  startDaemon,
-  stopDaemon,
-} from "./daemon";
-export type {
-  DaemonPlatformDescriptor,
-  DaemonProcessRunner,
-  ServeDaemonConfig,
-  ServeDaemonOperationOptions,
-  ServeDaemonPaths,
-  ServeDaemonState,
-  ServeDaemonStatus,
-} from "./daemon";
 
 export type ServeCapletsOptions = {
   raw: RawServeOptions;

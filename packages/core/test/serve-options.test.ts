@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveDaemonServeOptions, resolveServeOptions } from "../src/serve/options";
+import { resolveDaemonHttpServeOptions } from "../src/daemon";
+import { resolveServeOptions } from "../src/serve/options";
 
 describe("resolveServeOptions", () => {
   it("defaults serve to stdio", () => {
@@ -177,7 +178,7 @@ describe("resolveServeOptions", () => {
   });
 
   it("defaults daemonized serve to HTTP", () => {
-    expect(resolveDaemonServeOptions({}, {})).toMatchObject({
+    expect(resolveDaemonHttpServeOptions({}, {})).toMatchObject({
       transport: "http",
       host: "127.0.0.1",
       port: 5387,
@@ -186,8 +187,8 @@ describe("resolveServeOptions", () => {
   });
 
   it("rejects daemonized stdio serve", () => {
-    expect(() => resolveDaemonServeOptions({ transport: "stdio" }, {})).toThrow(
-      "Daemonized serve requires --transport http.",
+    expect(() => resolveDaemonHttpServeOptions({ transport: "stdio" } as never, {})).toThrow(
+      "caplets daemon install does not accept --transport.",
     );
   });
 

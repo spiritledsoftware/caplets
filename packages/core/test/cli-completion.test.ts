@@ -76,6 +76,15 @@ describe("CLI completion resolver", () => {
       "list",
       "refresh",
     ]);
+    await expect(completeCliWords(["daemon", ""])).resolves.toEqual([
+      "install",
+      "uninstall",
+      "start",
+      "restart",
+      "stop",
+      "status",
+      "logs",
+    ]);
     await expect(completeCliWords(["completion", ""])).resolves.toEqual([
       "bash",
       "zsh",

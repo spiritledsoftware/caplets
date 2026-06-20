@@ -46,7 +46,8 @@ Caplets should make backends usable as capability domains without hiding the exa
 The `caplets` package installs the CLI. Important commands include:
 
 - `caplets setup` for Codex, Claude Code, OpenCode, Pi, or generic MCP client setup.
-- `caplets serve` for a local MCP server.
+- `caplets serve` for foreground stdio or HTTP MCP serving.
+- `caplets daemon` for installing, starting, stopping, inspecting, tailing logs for, and uninstalling the default local HTTP service through the native per-user service manager.
 - `caplets attach` for a remote-backed MCP server and Project Binding session.
 - `caplets install` for shared Caplet files.
 - `caplets add` for MCP, OpenAPI, GraphQL, HTTP, and CLI-backed Caplets.
@@ -56,6 +57,8 @@ The `caplets` package installs the CLI. Important commands include:
 ### MCP Clients
 
 `caplets serve` registers a `code_mode` MCP tool when any configured backend resolves to Code Mode exposure. Progressive wrapper tools and direct tools are registered only for Caplets whose exposure policy enables those surfaces.
+
+`caplets daemon install` is the configuration mutation point for the long-running local HTTP service. It accepts the HTTP serve flags from `caplets serve` except `--transport`, supports explicit `--env` overrides and optional shell inheritance, and writes stdout/stderr logs that remain readable until purged.
 
 ### Native Integrations
 

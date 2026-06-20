@@ -29,6 +29,7 @@ import {
 import { FileObservedOutputShapeStore } from "../observed-output-shapes";
 import { loadConfig, type CapletConfig } from "../config";
 import { resolveExposure } from "../exposure/policy";
+import { daemonStatus, type DaemonOperationOptions } from "../daemon";
 
 export type DoctorOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -36,6 +37,7 @@ export type DoctorOptions = {
   syncStatus?: MutagenProjectSyncDoctorData;
   cloudAuthStore?: CloudAuthStore;
   observedOutputShapeCacheDir?: string;
+  daemon?: DaemonOperationOptions;
 };
 
 export type DoctorJsonReport = {
@@ -86,10 +88,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
       mutagenVersion: options.syncStatus?.mutagenVersion ?? null,
       lastCommand: options.syncStatus?.lastCommand ?? null,
     },
-    daemon: {
-      configured: false,
-      running: false,
-    },
+    daemon: await resolveDaemonSection(env, options.daemon),
     cloudAuth: redactedCloudAuthStatus(credentials),
     exposure: await resolveExposureSection(env),
     codeMode: await resolveCodeModeSection(options, env),
@@ -131,7 +130,10 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
     ...(report.sync.diagnosticCode ? [`  Diagnostic: ${report.sync.diagnosticCode}`] : []),
     "",
     "Daemon",
+    `  Installed: ${yesNo(Boolean(report.daemon.installed))}`,
     `  Running: ${yesNo(Boolean(report.daemon.running))}`,
+    ...(report.daemon.nativeState ? [`  Native state: ${report.daemon.nativeState}`] : []),
+    ...(report.daemon.health ? [`  Health: ${doctorOk(report.daemon.health)}`] : []),
     "",
     "Cloud Auth",
     `  Authenticated: ${yesNo(Boolean(report.cloudAuth.authenticated))}`,
@@ -166,6 +168,33 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
       : []),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+async function resolveDaemonSection(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  options: DaemonOperationOptions | undefined,
+) {
+  try {
+    const status = await daemonStatus({ ...options, env });
+    return {
+      installed: status.installed,
+      running: status.running,
+      nativeState: status.nativeState,
+      health: status.health ? { ok: status.health.ok, url: status.health.url } : null,
+      logs: {
+        stdout: status.paths.stdoutLog,
+        stderr: status.paths.stderrLog,
+      },
+    };
+  } catch (error) {
+    return {
+      installed: false,
+      running: false,
+      nativeState: "unknown",
+      ok: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function resolveExposureSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
