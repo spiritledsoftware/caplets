@@ -1689,6 +1689,66 @@ describe("createNativeCapletsService remote mode", () => {
     expect(replacementPresence.start).not.toHaveBeenCalled();
   });
 
+  it("does not create a profile-backed delegate when closed while resolving credentials", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+    const refreshStarted = deferred();
+    const releaseRefresh = deferred();
+    const manifestRequests: string[] = [];
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input) => {
+          const url = String(input);
+          if (url.endsWith("/v1/remote/refresh")) {
+            refreshStarted.resolve();
+            await releaseRefresh.promise;
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          manifestRequests.push(url);
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    const reload = service.reload();
+    await refreshStarted.promise;
+    const closing = service.close();
+    releaseRefresh.resolve();
+    await Promise.all([reload, closing]);
+
+    expect(localClose).toHaveBeenCalledTimes(1);
+    expect(manifestRequests).toEqual([]);
+  });
+
   it("refreshes saved self-hosted native remote credentials before executing", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);

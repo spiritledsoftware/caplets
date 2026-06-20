@@ -738,6 +738,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
   private async ensureDelegateCurrentNow(): Promise<void> {
     try {
       const remoteOptions = await this.resolveProfileRemoteOptions();
+      if (this.closed) return;
       const signature = remoteOptionsSignature(remoteOptions);
       if (!this.delegate) {
         const { remote, presence } = createCompositeRemoteParts(
