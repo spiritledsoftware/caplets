@@ -1,5 +1,16 @@
 # @caplets/core
 
+## 0.25.0
+
+### Minor Changes
+
+- 40f48b4: Move daemon lifecycle management from `caplets serve ...` to `caplets daemon ...`, with native per-user service manager support, install-time HTTP configuration, environment overrides, status, logs, and uninstall behavior.
+- d4f76bc: Replace self-hosted remote env-token and Basic Auth setup with unified Remote Login profiles. Remote attach, hosted Cloud, OpenCode, and Pi now resolve Caplets-owned credentials from `caplets remote login <url>` and use `CAPLETS_REMOTE_URL` only as a non-secret selector.
+
+### Patch Changes
+
+- d4f76bc: Refresh native remote credentials before background polling, attach event reconnects, tool invokes, and stale-manifest retries so long-lived Remote Profile integrations do not reuse expired authorization headers.
+
 ## 0.24.1
 
 ### Patch Changes

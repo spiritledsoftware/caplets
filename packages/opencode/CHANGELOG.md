@@ -1,5 +1,18 @@
 # @caplets/opencode
 
+## 0.7.0
+
+### Minor Changes
+
+- d4f76bc: Replace self-hosted remote env-token and Basic Auth setup with unified Remote Login profiles. Remote attach, hosted Cloud, OpenCode, and Pi now resolve Caplets-owned credentials from `caplets remote login <url>` and use `CAPLETS_REMOTE_URL` only as a non-secret selector.
+
+### Patch Changes
+
+- Updated dependencies [d4f76bc]
+- Updated dependencies [40f48b4]
+- Updated dependencies [d4f76bc]
+  - @caplets/core@0.25.0
+
 ## 0.6.2
 
 ### Patch Changes
