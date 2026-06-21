@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { CapletsError } from "../errors";
+import { isCapletsCloudUrl } from "../remote/options";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
 
@@ -315,6 +316,7 @@ function remoteSetupDefinition(
     nonEmpty(options.serverUrl) ??
     nonEmpty(options.env?.CAPLETS_REMOTE_URL) ??
     "https://caplets.example.com/caplets";
+  const mode = isCapletsCloudUrl(serverUrl) ? "cloud" : "remote";
 
   if (id === "opencode") {
     return {
@@ -328,8 +330,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
-        `Run OpenCode with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
-        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
+        `Run caplets remote login ${serverUrl} before starting OpenCode.`,
+        `Run OpenCode with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }
@@ -346,8 +348,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
-        `Start Pi with CAPLETS_MODE=remote and CAPLETS_REMOTE_URL=${serverUrl}.`,
-        "Keep CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in your shell or secret manager.",
+        `Run caplets remote login ${serverUrl} before starting Pi.`,
+        `Start Pi with CAPLETS_MODE=${mode} and CAPLETS_REMOTE_URL=${serverUrl}.`,
       ],
     };
   }
@@ -364,8 +366,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
+        `Run caplets remote login ${serverUrl} before using this MCP config.`,
         "In Codex, run /mcp to confirm the caplets server is connected.",
-        "Keep remote credentials in your shell or secret manager; do not hardcode them in config.",
       ],
     };
   }
@@ -382,8 +384,8 @@ function remoteSetupDefinition(
         },
       ],
       nextSteps: [
+        `Run caplets remote login ${serverUrl} before using this MCP config.`,
         "In Claude Code, run /mcp to confirm the caplets server is connected.",
-        "Keep remote credentials in your shell or secret manager; do not hardcode them in config.",
       ],
     };
   }
@@ -403,15 +405,22 @@ function remoteSetupDefinition(
         label: "Write remote MCP config",
         path: options.output,
         content: `${JSON.stringify(
-          { mcpServers: { caplets: { url: `${serverUrl.replace(/\/$/, "")}/v1/mcp` } } },
+          {
+            mcpServers: {
+              caplets: {
+                command: "caplets",
+                args: ["attach", "--remote-url", serverUrl],
+              },
+            },
+          },
           null,
           2,
         )}\n`,
       },
     ],
     nextSteps: [
-      "Add Basic Auth credentials through your agent's secret mechanism.",
-      "Do not hardcode CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_PASSWORD in a committed config file.",
+      `Run caplets remote login ${serverUrl} before using this MCP config.`,
+      "Import the written MCP config into your MCP client.",
     ],
   };
 }

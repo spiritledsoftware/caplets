@@ -1,18 +1,21 @@
 import { CapletsError } from "../errors";
 import {
+  isCapletsCloudUrl,
   resolveCapletsRemote,
   resolveHostedCloudRemote,
   resolveRemoteMode,
   type CapletsRemoteAuth,
   type CapletsRemoteEnv,
-  type CapletsRemoteInput,
 } from "../remote/options";
 
 type CapletsMode = "auto" | "local" | "remote" | "cloud";
 
 export type NativeCapletsMode = CapletsMode;
 
-export type NativeRemoteCapletsOptions = CapletsRemoteInput & {
+export type NativeRemoteCapletsOptions = {
+  url?: string;
+  workspace?: string;
+  fetch?: typeof fetch;
   pollIntervalMs?: number;
   cloud?: NativeCloudPresenceInput;
 };
@@ -80,12 +83,19 @@ export function resolveNativeCapletsServiceOptions(
   const remoteFetch = input.remote?.fetch;
   const server =
     mode.mode === "cloud"
-      ? resolveNativeHostedCloudRemote(
+      ? resolveNativeHostedCloudRemoteOrPlaceholder(
           input.remote?.url ?? env.CAPLETS_REMOTE_URL ?? "",
           optionalWorkspace(input, env).workspace,
           remoteFetch,
         )
-      : resolveCapletsRemote(input.remote, env);
+      : resolveCapletsRemote(
+          {
+            ...(input.remote?.url ? { url: input.remote.url } : {}),
+            ...(input.remote?.workspace ? { workspace: input.remote.workspace } : {}),
+            ...(remoteFetch ? { fetch: remoteFetch } : {}),
+          },
+          env,
+        );
 
   const cloud = resolveNativeCloudPresence(input.remote?.cloud, env);
   return {
@@ -116,6 +126,18 @@ function resolveNativeHostedCloudRemote(
   });
 }
 
+function resolveNativeHostedCloudRemoteOrPlaceholder(
+  url: string,
+  workspace: string | undefined,
+  fetch: typeof globalThis.fetch | undefined,
+): ReturnType<typeof resolveHostedCloudRemote> {
+  if (!isCapletsCloudUrl(url)) {
+    throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
+  }
+  if (workspace) return resolveNativeHostedCloudRemote(url, workspace, fetch);
+  return resolveCapletsRemote({ url, ...(fetch ? { fetch } : {}) }, {});
+}
+
 function optionalWorkspace(
   input: NativeCapletsServiceResolutionInput,
   env: NativeCapletsEnv,
@@ -129,9 +151,6 @@ function optionalWorkspace(
 }
 
 function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOptions {
-  if (auth.type === "basic") {
-    return { enabled: true, user: auth.user, password: auth.password };
-  }
   if (auth.type === "none") {
     return { enabled: false, user: auth.user };
   }

@@ -32,12 +32,12 @@ CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets openc
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
 
-Run `caplets cloud auth login` before Cloud mode. For authenticated self-hosted remotes, keep credentials in the environment:
+Run `caplets remote login <url>` before remote or Cloud mode. Native integrations use the saved Remote Profile, so remote credentials do not belong in the environment:
 
 ```sh
+caplets remote login https://caplets.example.com/caplets
 CAPLETS_MODE=remote \
 CAPLETS_REMOTE_URL=https://caplets.example.com/caplets \
-CAPLETS_REMOTE_TOKEN=... \
 opencode
 ```
 
@@ -52,7 +52,6 @@ export default {
         mode: "remote",
         remote: {
           url: "https://caplets.example.com/caplets",
-          user: "caplets",
           pollIntervalMs: 5_000,
         },
       },
@@ -61,4 +60,4 @@ export default {
 };
 ```
 
-Plugin config overrides environment variables. The explicit config shape is `{ mode, remote: { url, user, pollIntervalMs } }`. Prefer `CAPLETS_REMOTE_TOKEN` or `CAPLETS_REMOTE_PASSWORD` for self-hosted credentials unless your OpenCode setup provides secure secret storage.
+Plugin config overrides environment variables. The explicit config shape is `{ mode, remote: { url, pollIntervalMs } }`; credentials come from `caplets remote login <url>`.

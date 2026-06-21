@@ -1,4 +1,3 @@
-import { Buffer } from "node:buffer";
 import { describe, expect, it } from "vitest";
 
 import type { CapletsError } from "../src/errors";
@@ -41,15 +40,20 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
-  it("rejects cloud mode without a workspace", () => {
-    expect(() =>
+  it("allows cloud mode without a workspace because Remote Profiles select it", () => {
+    expect(
       resolveNativeCapletsServiceOptions(
         {},
         {
           CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
         },
       ),
-    ).toThrow(/workspace/u);
+    ).toMatchObject({
+      mode: "cloud",
+      remote: {
+        url: new URL("https://cloud.caplets.dev/v1/attach"),
+      },
+    });
   });
 
   it("uses cloud mode when CAPLETS_MODE=cloud is explicit", () => {
@@ -125,64 +129,57 @@ describe("resolveNativeCapletsServiceOptions", () => {
     }
   });
 
-  it("lets config override env vars", () => {
-    const configPassword = ["config", "password"].join("-");
+  it("uses the configured remote URL without reading legacy credential env vars", () => {
     expect(
       resolveNativeCapletsServiceOptions(
         {
           remote: {
             url: "https://configured.example.com/caplets",
-            user: "configured",
-            password: configPassword,
           },
         },
         {
           CAPLETS_REMOTE_URL: "https://env.example.com",
           CAPLETS_REMOTE_USER: "env-user",
           CAPLETS_REMOTE_PASSWORD: ["env", "password"].join("-"),
-        },
+          CAPLETS_REMOTE_TOKEN: "env-token",
+        } as Record<string, string>,
       ),
     ).toMatchObject({
       mode: "remote",
       remote: {
         url: new URL("https://configured.example.com/caplets/v1/attach"),
-        auth: { enabled: true, user: "configured", password: configPassword },
+        auth: { enabled: false, user: "caplets" },
       },
     });
   });
 
-  it("defaults Basic Auth user when password exists", () => {
-    const password = ["remote", "password"].join("-");
+  it("ignores removed Basic Auth fields in remote config objects", () => {
     expect(
       resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com", password } },
+        {
+          remote: {
+            url: "https://caplets.example.com",
+            user: "caplets",
+            password: ["remote", "password"].join("-"),
+          },
+        } as never,
         {},
       ),
     ).toMatchObject({
-      remote: { auth: { enabled: true, user: "caplets", password } },
+      remote: { auth: { enabled: false, user: "caplets" } },
     });
   });
 
-  it("rejects user without password", () => {
-    expect(() =>
-      resolveNativeCapletsServiceOptions(
-        { remote: { url: "https://caplets.example.com", user: "caplets" } },
-        {},
-      ),
-    ).toThrow(/requires a password/u);
-  });
-
-  it("builds request headers without logging credentials", () => {
-    const password = ["remote", "password"].join("-");
+  it("does not build Basic Auth request headers from removed credential fields", () => {
     const resolved = resolveNativeCapletsServiceOptions(
       {
         remote: {
           pollIntervalMs: 5_000,
           url: "https://caplets.example.com/caplets",
           user: "caplets",
-          password,
+          password: ["remote", "password"].join("-"),
         },
-      },
+      } as never,
       {},
     );
     expect(resolved.mode).toBe("remote");
@@ -190,9 +187,9 @@ describe("resolveNativeCapletsServiceOptions", () => {
       new URL("https://caplets.example.com/caplets/v1/attach"),
     );
     expect(resolved.mode === "remote" ? resolved.remote.pollIntervalMs : undefined).toBe(5_000);
-    expect(resolved.mode === "remote" ? resolved.remote.requestInit.headers : undefined).toEqual({
-      Authorization: `Basic ${Buffer.from(`caplets:${password}`).toString("base64")}`,
-    });
+    expect(
+      resolved.mode === "remote" ? resolved.remote.requestInit.headers : undefined,
+    ).toBeUndefined();
   });
 
   it("rejects invalid poll intervals", () => {

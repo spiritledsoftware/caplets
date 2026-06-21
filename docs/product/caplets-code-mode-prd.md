@@ -66,7 +66,7 @@ OpenCode and Pi use the native service from `@caplets/core/native`. They expose 
 
 ### Remote And Cloud
 
-Self-hosted remotes use `CAPLETS_MODE=remote` with `CAPLETS_REMOTE_URL` and token or Basic Auth credentials. Hosted Cloud uses `CAPLETS_MODE=cloud`, `CAPLETS_REMOTE_URL`, and saved `caplets cloud auth login` credentials. Project Binding connects a local project root to a remote runtime when Cloud or remote workflows need project-local files.
+Self-hosted remotes and hosted Cloud use `caplets remote login <url>` to create a saved Remote Profile, then use `CAPLETS_MODE` with `CAPLETS_REMOTE_URL` as a non-secret selector. Project Binding connects a local project root to a remote runtime when Cloud or remote workflows need project-local files.
 
 ## Capability Model
 

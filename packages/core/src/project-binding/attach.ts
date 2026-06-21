@@ -11,15 +11,13 @@ import type { ProjectBindingWebSocketFactory } from "./transport";
 
 export type RawAttachOptions = {
   remoteUrl?: string;
-  user?: string;
-  password?: string;
-  token?: string;
   workspace?: string;
   json?: boolean;
   verbose?: boolean;
   once?: boolean;
   projectRoot?: string;
   fetch?: typeof fetch;
+  authDir?: string;
 };
 
 export type ResolvedAttachOptions = {
@@ -45,11 +43,9 @@ export async function resolveAttachOptionsForRun(
 ): Promise<ResolvedAttachOptions> {
   const remoteInput = {
     ...(raw.remoteUrl !== undefined ? { remoteUrl: raw.remoteUrl } : {}),
-    ...(raw.user !== undefined ? { user: raw.user } : {}),
-    ...(raw.password !== undefined ? { password: raw.password } : {}),
-    ...(raw.token !== undefined ? { token: raw.token } : {}),
     ...(raw.workspace !== undefined ? { workspace: raw.workspace } : {}),
     ...(raw.fetch !== undefined ? { fetch: raw.fetch } : {}),
+    ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),
   };
   const selection = await resolveRemoteSelection(remoteInput, env);
   return {
@@ -104,11 +100,15 @@ export async function attachProjectSession(
   } = {},
 ) {
   const resolved = await resolveAttachOptionsForRun(raw, env);
+  const pinnedRaw = resolved.selectedWorkspace
+    ? { ...raw, workspace: resolved.selectedWorkspace }
+    : raw;
   bootstrapProjectBindingGitignore(resolved.projectRoot);
   preflightProjectSync(resolved.projectRoot, hostedTier(env));
   return await runProjectBindingSession({
     projectRoot: resolved.projectRoot,
     remote: resolved.remote,
+    remoteResolver: async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote,
     fetch: resolved.remote.fetch,
     signal: options.signal,
     heartbeatIntervalMs: options.heartbeatIntervalMs,

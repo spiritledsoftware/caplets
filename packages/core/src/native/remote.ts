@@ -55,6 +55,12 @@ export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
   mode: "remote" | "cloud";
 };
 
+export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"] & {
+  resolveRuntimeOptions?: () => Promise<RemoteCapletsClientOptions["remote"]>;
+  authKind?: "self_hosted_remote" | "hosted_cloud";
+  writeErr?: (value: string) => void;
+};
+
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
   clientFactory?: () => RemoteCapletsClient;
@@ -64,14 +70,46 @@ export type RemoteNativeCapletsServiceOptions = {
 };
 
 export function createSdkRemoteCapletsClient(
-  options: RemoteCapletsClientOptions["remote"],
+  options: SdkRemoteCapletsClientOptions,
 ): RemoteCapletsClient {
-  const fetchImpl = options.fetch ?? fetch;
   const listeners = new Set<() => void>();
   let manifest: AttachManifest | undefined;
   let exportByName = new Map<string, AttachManifestExport>();
   let eventsAbort: AbortController | undefined;
+  let eventsStartInFlight: Promise<void> | undefined;
   let eventsReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
+
+  const resolveRuntimeOptions = async (): Promise<RemoteCapletsClientOptions["remote"]> => {
+    return options.resolveRuntimeOptions ? await options.resolveRuntimeOptions() : options;
+  };
+
+  const fetchFor = (runtimeOptions: RemoteCapletsClientOptions["remote"]): typeof fetch =>
+    runtimeOptions.fetch ?? fetch;
+
+  const fetchCurrentManifest = async (): Promise<AttachManifest> => {
+    const runtimeOptions = await resolveRuntimeOptions();
+    return await fetchAttachManifest(
+      runtimeOptions.url,
+      runtimeOptions.requestInit,
+      fetchFor(runtimeOptions),
+    );
+  };
+
+  const invokeCurrentExport = async (body: {
+    revision: string;
+    kind: string;
+    exportId: string;
+    input: unknown;
+  }): Promise<unknown> => {
+    const runtimeOptions = await resolveRuntimeOptions();
+    return await invokeAttachExport(
+      runtimeOptions.url,
+      runtimeOptions.requestInit,
+      fetchFor(runtimeOptions),
+      body,
+    );
+  };
 
   const clearEventsReconnectTimer = () => {
     if (eventsReconnectTimer) {
@@ -79,35 +117,63 @@ export function createSdkRemoteCapletsClient(
       eventsReconnectTimer = undefined;
     }
   };
+
+  const scheduleEventsReconnect = () => {
+    if (closed || listeners.size === 0) return;
+    clearEventsReconnectTimer();
+    eventsReconnectTimer = setTimeout(() => {
+      eventsReconnectTimer = undefined;
+      startEvents();
+    }, 1_000);
+  };
+
+  const startEventsNow = async () => {
+    try {
+      const runtimeOptions = await resolveRuntimeOptions();
+      if (closed || eventsAbort || listeners.size === 0) return;
+      eventsAbort = startAttachEvents(
+        runtimeOptions.url,
+        runtimeOptions.requestInit,
+        fetchFor(runtimeOptions),
+        listeners,
+        (closedAbort, retry) => {
+          if (eventsAbort !== closedAbort) return;
+          eventsAbort = undefined;
+          if (!retry || closedAbort.signal.aborted || listeners.size === 0) return;
+          scheduleEventsReconnect();
+        },
+      );
+    } catch (error) {
+      if (isPermanentRemoteCredentialsError(error)) {
+        options.writeErr?.(
+          `${remoteAuthError(options.authKind ?? "self_hosted_remote").message}\n`,
+        );
+        return;
+      }
+      scheduleEventsReconnect();
+    }
+  };
+
   const startEvents = () => {
-    if (eventsAbort || listeners.size === 0) return;
-    eventsAbort = startAttachEvents(
-      options.url,
-      options.requestInit,
-      fetchImpl,
-      listeners,
-      (closedAbort, retry) => {
-        if (eventsAbort !== closedAbort) return;
-        eventsAbort = undefined;
-        if (!retry || closedAbort.signal.aborted || listeners.size === 0) return;
-        clearEventsReconnectTimer();
-        eventsReconnectTimer = setTimeout(() => {
-          eventsReconnectTimer = undefined;
-          startEvents();
-        }, 1_000);
-      },
-    );
+    if (closed || eventsAbort || eventsStartInFlight || listeners.size === 0) return;
+    const start = startEventsNow();
+    eventsStartInFlight = start;
+    void start.finally(() => {
+      if (eventsStartInFlight === start) {
+        eventsStartInFlight = undefined;
+      }
+    });
   };
 
   return {
     async listTools() {
-      manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
+      manifest = await fetchCurrentManifest();
       exportByName = exportMapFor(manifest);
       return toolsFromManifest(manifest);
     },
     async callTool(name, args) {
       if (!manifest) {
-        manifest = await fetchAttachManifest(options.url, options.requestInit, fetchImpl);
+        manifest = await fetchCurrentManifest();
         exportByName = exportMapFor(manifest);
       }
       const invokeWithStaleRetry = async (
@@ -115,7 +181,7 @@ export function createSdkRemoteCapletsClient(
         input: unknown,
       ): Promise<unknown> => {
         try {
-          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+          return await invokeCurrentExport({
             revision: manifest!.revision,
             kind: entry.kind,
             exportId: entry.exportId,
@@ -123,11 +189,7 @@ export function createSdkRemoteCapletsClient(
           });
         } catch (error) {
           if (!isAttachManifestStale(error)) throw error;
-          const nextManifest = await fetchAttachManifest(
-            options.url,
-            options.requestInit,
-            fetchImpl,
-          );
+          const nextManifest = await fetchCurrentManifest();
           const nextEntry = compatibleExport(nextManifest, entry);
           manifest = nextManifest;
           exportByName = exportMapFor(nextManifest);
@@ -137,7 +199,7 @@ export function createSdkRemoteCapletsClient(
               "Attach export changed after manifest refresh; refetch the manifest before retrying.",
             );
           }
-          return await invokeAttachExport(options.url, options.requestInit, fetchImpl, {
+          return await invokeCurrentExport({
             revision: nextManifest.revision,
             kind: nextEntry.kind,
             exportId: nextEntry.exportId,
@@ -168,6 +230,7 @@ export function createSdkRemoteCapletsClient(
       };
     },
     async close() {
+      closed = true;
       clearEventsReconnectTimer();
       eventsAbort?.abort();
       eventsAbort = undefined;
@@ -953,8 +1016,8 @@ function remoteAuthError(kind: "self_hosted_remote" | "hosted_cloud"): CapletsEr
   return new CapletsError(
     "AUTH_FAILED",
     kind === "hosted_cloud"
-      ? "Caplets Cloud authentication failed; run caplets cloud auth login."
-      : "Remote Caplets authentication failed; check CAPLETS_REMOTE_TOKEN or CAPLETS_REMOTE_USER and CAPLETS_REMOTE_PASSWORD.",
+      ? "Caplets Cloud authentication failed; run caplets remote login <cloud-url>."
+      : "Remote Caplets authentication failed; run caplets remote login <url>.",
   );
 }
 
@@ -991,4 +1054,24 @@ function isAuthFailure(error: unknown): boolean {
     return true;
   }
   return /\b(401|403|unauthorized|forbidden)\b/iu.test(errorMessage(error));
+}
+
+function isPermanentRemoteCredentialsError(error: unknown): boolean {
+  const candidate = error as {
+    projectBindingCode?: unknown;
+    details?: unknown;
+  };
+  if (
+    candidate?.projectBindingCode === "remote_credentials_required" ||
+    candidate?.projectBindingCode === "remote_auth_failed"
+  ) {
+    return true;
+  }
+  if (isPlainObject(candidate?.details)) {
+    const code = candidate.details.code;
+    if (code === "remote_credentials_required" || code === "remote_auth_failed") {
+      return true;
+    }
+  }
+  return isAuthFailure(error);
 }

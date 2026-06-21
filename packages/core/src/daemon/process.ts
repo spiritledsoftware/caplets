@@ -22,11 +22,9 @@ export function resolveDaemonHttpServeOptions(
       "caplets daemon install does not accept --transport.",
     );
   }
-  const { preserveUnauthenticatedAuth, ...serveRaw } = raw;
-  const serveEnv = preserveUnauthenticatedAuth
-    ? { ...env, CAPLETS_SERVER_USER: undefined, CAPLETS_SERVER_PASSWORD: undefined }
-    : env;
-  return resolveServeOptions({ ...serveRaw, transport: "http" }, serveEnv) as HttpServeOptions;
+  const serveRaw = { ...raw };
+  delete serveRaw.preserveUnauthenticatedAuth;
+  return resolveServeOptions({ ...serveRaw, transport: "http" }, env) as HttpServeOptions;
 }
 
 export function daemonServeArgs(options: HttpServeOptions): string[] {
@@ -41,8 +39,9 @@ export function daemonServeArgs(options: HttpServeOptions): string[] {
     "--path",
     options.path,
   ];
-  if (options.auth.enabled)
-    args.push("--user", options.auth.user, "--password", options.auth.password);
+  if (options.auth.type === "remote_credentials" && options.remoteCredentialStateDir) {
+    args.push("--remote-state-path", options.remoteCredentialStateDir);
+  }
   if (options.allowUnauthenticatedHttp) args.push("--allow-unauthenticated-http");
   if (options.trustProxy) args.push("--trust-proxy");
   return args;

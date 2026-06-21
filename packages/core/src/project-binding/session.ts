@@ -63,6 +63,7 @@ export type ProjectBindingSocketClientMessage =
 export type RunProjectBindingSessionInput = {
   projectRoot: string;
   remote: ResolvedCapletsRemote;
+  remoteResolver?: (() => Promise<ResolvedCapletsRemote>) | undefined;
   fetch?: typeof fetch | undefined;
   webSocketFactory?: ProjectBindingWebSocketFactory | undefined;
   signal?: AbortSignal | undefined;
@@ -79,13 +80,19 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
   webSocketUrl: string;
   ended: true;
 }> {
-  const fetchImpl = input.fetch ?? input.remote.fetch ?? fetch;
   const webSocketFactory = input.webSocketFactory ?? defaultProjectBindingWebSocketFactory;
   const heartbeatIntervalMs = input.heartbeatIntervalMs ?? 15_000;
   const projectFingerprint = fingerprintProjectRoot(input.projectRoot);
-  const requestInit = input.remote.requestInit;
+  let remote = input.remote;
+  const refreshRemote = async () => {
+    remote = input.remoteResolver ? await input.remoteResolver() : remote;
+    return remote;
+  };
+  const fetchFor = (resolvedRemote: ResolvedCapletsRemote) =>
+    input.fetch ?? resolvedRemote.fetch ?? fetch;
   input.onEvent?.({ type: "state", state: "attaching" });
 
+  const initialRemote = await refreshRemote();
   const created = await postJson<{
     binding: {
       bindingId: string;
@@ -93,10 +100,10 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
       syncState?: ProjectBindingSyncState;
     };
     sessionId: string;
-  }>(fetchImpl, sessionUrl(input.remote), requestInit, {
+  }>(fetchFor(initialRemote), sessionUrl(initialRemote), initialRemote.requestInit, {
     projectRoot: input.projectRoot,
     projectFingerprint,
-    workspaceId: input.remote.workspace ?? "default",
+    workspaceId: initialRemote.workspace ?? "default",
   });
   const bindingId = created.binding.bindingId;
   const sessionId = created.sessionId;
@@ -104,9 +111,7 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
   let syncState: ProjectBindingSyncState = created.binding.syncState ?? "pending";
   let ended = false;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const publicWebSocketUrl = input.remote.projectBindingWebSocketUrl.toString();
-  const socketUrl = bindingSocketUrl(input.remote, bindingId, sessionId, projectFingerprint);
-  const socketProtocols = bindingSocketProtocols(input.remote);
+  const publicWebSocketUrl = initialRemote.projectBindingWebSocketUrl.toString();
 
   const emitReady = (requestId?: string | undefined) => {
     input.onEvent?.({
@@ -121,6 +126,7 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
   };
 
   const heartbeat = async (socket?: ProjectBindingWebSocket | undefined) => {
+    const heartbeatRemote = await refreshRemote();
     const payload: ProjectBindingSocketClientMessage = {
       type: "heartbeat",
       bindingId,
@@ -131,15 +137,23 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
     if (socket?.readyState === PROJECT_BINDING_SOCKET_OPEN) {
       socket.send(JSON.stringify(payload));
     }
-    await postJson(fetchImpl, heartbeatUrl(input.remote, bindingId), requestInit, {
-      sessionId,
-      state,
-      syncState,
-    }).catch(() => undefined);
+    await postJson(
+      fetchFor(heartbeatRemote),
+      heartbeatUrl(heartbeatRemote, bindingId),
+      heartbeatRemote.requestInit,
+      {
+        sessionId,
+        state,
+        syncState,
+      },
+    );
     input.onEvent?.({ type: "heartbeat", bindingId, sessionId, state });
   };
 
   const connect = async (attempt: number): Promise<void> => {
+    const socketRemote = await refreshRemote();
+    const socketUrl = bindingSocketUrl(socketRemote, bindingId, sessionId, projectFingerprint);
+    const socketProtocols = bindingSocketProtocols(socketRemote);
     const socket = webSocketFactory(socketUrl, socketProtocols);
     await waitForOpen(socket, input.signal);
     if (input.signal?.aborted) {
@@ -187,8 +201,12 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
       });
     });
 
+    let heartbeatFailure: unknown;
     heartbeatTimer = setInterval(() => {
-      void heartbeat(socket);
+      void heartbeat(socket).catch((error) => {
+        heartbeatFailure = error;
+        closeSocket(socket, 1008, "Project Binding heartbeat failed.");
+      });
     }, heartbeatIntervalMs);
     await heartbeat(socket);
 
@@ -198,6 +216,7 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
     closeSocket(socket, 1000, "Binding Session closed.");
 
     if (closed === "abort") return;
+    if (heartbeatFailure) throw heartbeatFailure;
     if (closed.reconnect) {
       input.onEvent?.({
         type: "reconnecting",
@@ -218,7 +237,15 @@ export async function runProjectBindingSession(input: RunProjectBindingSessionIn
     const reason: BindingTerminalReason = input.signal?.aborted
       ? { code: "interrupted", message: "Binding Session ended." }
       : { code: "completed", message: "Binding Session completed." };
-    await endRemoteSession(fetchImpl, input.remote, requestInit, bindingId, sessionId, reason);
+    const endingRemote = await refreshRemote().catch(() => remote);
+    await endRemoteSession(
+      fetchFor(endingRemote),
+      endingRemote,
+      endingRemote.requestInit,
+      bindingId,
+      sessionId,
+      reason,
+    );
     input.onEvent?.({ type: "ended", bindingId, sessionId, reason });
   }
 

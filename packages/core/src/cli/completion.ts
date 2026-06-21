@@ -9,6 +9,7 @@ import { listCaplets } from "./inspection";
 import {
   capletIdCommands,
   cliCommands,
+  cliNestedSubcommands,
   cliSubcommands,
   qualifiedPromptCommands,
   qualifiedToolCommands,
@@ -103,6 +104,11 @@ export async function completeCliWords(
       return prefixFilter(cliSubcommands[command as keyof typeof cliSubcommands], current);
     }
 
+    const nestedStaticSubcommands = nestedSubcommandsFor(command, subcommand);
+    if (normalized.length === 3 && nestedStaticSubcommands) {
+      return prefixFilter(nestedStaticSubcommands, current);
+    }
+
     if (normalized.length === 2 && capletIdCommands.has(command)) {
       const ids = promptResourceCommands.has(command)
         ? configuredCapletIds(options, { backend: "mcp" })
@@ -174,6 +180,11 @@ function suggestionsForOptionValue(
     optionValueSuggestions[command]?.[previous] ??
     optionValueSuggestions["*"]?.[previous]
   );
+}
+
+function nestedSubcommandsFor(command: string, subcommand: string): readonly string[] | undefined {
+  if (command !== cliCommands.remote || subcommand !== "host") return undefined;
+  return cliNestedSubcommands.remote.host;
 }
 
 const promptResourceCommands = new Set<string>([

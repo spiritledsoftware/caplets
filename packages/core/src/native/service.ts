@@ -12,6 +12,7 @@ import {
   createSdkRemoteCapletsClient,
   RemoteNativeCapletsService,
   type RemoteCapletsClient,
+  type SdkRemoteCapletsClientOptions,
 } from "./remote";
 import { CapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
@@ -47,7 +48,7 @@ import {
 } from "../config";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 import type { CapletsRemoteAuth } from "../remote/options";
-import { resolveRemoteSelection } from "../remote/selection";
+import { resolveRemoteSelection, type ResolvedRemoteSelection } from "../remote/selection";
 
 const REMOTE_PROJECT_BINDING_FALLBACK_WARNING =
   "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n";
@@ -99,25 +100,28 @@ export function createNativeCapletsService(
 ): NativeCapletsService {
   const resolved = resolveNativeCapletsServiceOptions(options);
   if (resolved.mode === "remote") {
-    const local = createLocalOverlayService(options);
-    try {
-      return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
-    } catch (error) {
-      if (options.mode !== "remote") {
-        warnRemoteProjectBindingFallback(options);
-        return local;
+    if (options.remoteClientFactory) {
+      const local = createLocalOverlayService(options);
+      try {
+        return createCompositeRemoteService(resolved.remote, local, options, "self_hosted_remote");
+      } catch (error) {
+        if (options.mode !== "remote") {
+          warnRemoteProjectBindingFallback(options);
+          return local;
+        }
+        void local.close().catch((closeError) => {
+          writeErr(
+            options,
+            `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
+          );
+        });
+        throw error;
       }
-      void local.close().catch((closeError) => {
-        writeErr(
-          options,
-          `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
-        );
-      });
-      throw error;
     }
+    return new ProfileBackedNativeCapletsService(options, resolved.remote, "self_hosted_remote");
   }
   if (resolved.mode === "cloud") {
-    return new CloudNativeCapletsService(options, resolved.remote);
+    return new ProfileBackedNativeCapletsService(options, resolved.remote, "hosted_cloud");
   }
   return new DefaultNativeCapletsService(options);
 }
@@ -619,29 +623,62 @@ function createCompositeRemoteService(
   options: NativeCapletsServiceOptions,
   authKind: "self_hosted_remote" | "hosted_cloud",
 ): NativeCapletsService {
-  const client = (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(remoteOptions);
+  const { remote, presence } = createCompositeRemoteParts(remoteOptions, local, options, authKind);
+  return new CompositeNativeCapletsService(remote, local, options, presence);
+}
+
+function createCompositeRemoteParts(
+  remoteOptions: ResolvedNativeRemoteOptions,
+  local: NativeCapletsService,
+  options: NativeCapletsServiceOptions,
+  authKind: "self_hosted_remote" | "hosted_cloud",
+  resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
+): { remote: NativeCapletsService; presence?: ProjectBindingSessionManager } {
+  const client = createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions);
   const remote = new RemoteNativeCapletsService({
     client,
     clientFactory: () =>
-      (options.remoteClientFactory ?? createSdkRemoteCapletsClient)(remoteOptions),
+      createRemoteClient(remoteOptions, options, authKind, resolveRuntimeRemoteOptions),
     pollIntervalMs: remoteOptions.pollIntervalMs,
     authKind,
     ...(options.writeErr ? { writeErr: options.writeErr } : {}),
   });
   const presence = createProjectBindingSessionManager(remoteOptions.cloud, local, options);
-  return new CompositeNativeCapletsService(remote, local, options, presence);
+  return { remote, ...(presence ? { presence } : {}) };
 }
 
-class CloudNativeCapletsService implements NativeCapletsService {
+function createRemoteClient(
+  remoteOptions: ResolvedNativeRemoteOptions,
+  options: NativeCapletsServiceOptions,
+  authKind: "self_hosted_remote" | "hosted_cloud",
+  resolveRuntimeRemoteOptions?: () => Promise<ResolvedNativeRemoteOptions>,
+): RemoteCapletsClient {
+  if (options.remoteClientFactory) {
+    return options.remoteClientFactory(remoteOptions);
+  }
+  const sdkOptions: SdkRemoteCapletsClientOptions = {
+    ...remoteOptions,
+    authKind,
+    ...(options.writeErr ? { writeErr: options.writeErr } : {}),
+    ...(resolveRuntimeRemoteOptions ? { resolveRuntimeOptions: resolveRuntimeRemoteOptions } : {}),
+  };
+  return createSdkRemoteCapletsClient(sdkOptions);
+}
+
+class ProfileBackedNativeCapletsService implements NativeCapletsService {
   private readonly local: NativeCapletsService;
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
-  private delegate: NativeCapletsService | undefined;
+  private delegate: CompositeNativeCapletsService | undefined;
   private unsubscribeDelegate: (() => void) | undefined;
+  private remoteSignature: string | undefined;
+  private credentialExpiresAt: string | undefined;
+  private ensureDelegateCurrentInFlight: Promise<void> | undefined;
   private closed = false;
 
   constructor(
     private readonly options: NativeCapletsServiceOptions,
     private readonly baseRemote: ResolvedNativeRemoteOptions,
+    private readonly authKind: "self_hosted_remote" | "hosted_cloud",
   ) {
     this.local = createLocalOverlayService(options);
   }
@@ -651,6 +688,9 @@ class CloudNativeCapletsService implements NativeCapletsService {
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    if (!this.delegate || nativeCredentialsNeedRefresh(this.credentialExpiresAt)) {
+      await this.ensureDelegateCurrent();
+    }
     return await (this.delegate ?? this.local).execute(capletId, request);
   }
 
@@ -660,60 +700,8 @@ class CloudNativeCapletsService implements NativeCapletsService {
 
   async reload(): Promise<boolean> {
     if (this.closed) return false;
-    if (!this.delegate) {
-      try {
-        const cloudFetch = this.options.remote?.fetch;
-        const remoteUrl =
-          this.options.remote?.url ?? this.baseRemote.url.toString().replace(/\/mcp$/u, "");
-        const selection = await resolveRemoteSelection(
-          {
-            mode: "cloud",
-            remoteUrl,
-            ...(cloudFetch ? { fetch: cloudFetch } : {}),
-          },
-          {
-            ...process.env,
-            CAPLETS_MODE: "cloud",
-            CAPLETS_REMOTE_URL: remoteUrl,
-          },
-        );
-        if (selection.kind !== "hosted_cloud") {
-          throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
-        }
-        const cloudPresence = {
-          url: selection.cloudPresence.url,
-          accessToken: selection.cloudPresence.accessToken,
-          workspaceId: selection.cloudPresence.workspaceId,
-          ...(this.options.remote?.cloud?.projectRoot
-            ? { projectRoot: this.options.remote.cloud.projectRoot }
-            : {}),
-          heartbeatIntervalMs:
-            this.options.remote?.cloud?.heartbeatIntervalMs ??
-            this.baseRemote.cloud?.heartbeatIntervalMs ??
-            30_000,
-        } satisfies ResolvedNativeCloudPresenceOptions;
-        const remoteOptions = {
-          ...this.baseRemote,
-          url: selection.remote.attachUrl,
-          auth: nativeAuthFromRemoteAuth(selection.remote.auth),
-          requestInit: selection.remote.requestInit,
-          ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
-          cloud: cloudPresence,
-        } satisfies ResolvedNativeRemoteOptions;
-        this.delegate = createCompositeRemoteService(
-          remoteOptions,
-          this.local,
-          this.options,
-          "hosted_cloud",
-        );
-        this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
-      } catch (error) {
-        if (this.options.mode === "cloud") throw error;
-        warnRemoteProjectBindingFallback(this.options);
-        return await this.local.reload();
-      }
-    }
-    return await this.delegate.reload();
+    await this.ensureDelegateCurrent();
+    return await (this.delegate ?? this.local).reload();
   }
 
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void {
@@ -734,12 +722,172 @@ class CloudNativeCapletsService implements NativeCapletsService {
       listener(tools);
     }
   }
+
+  private async ensureDelegateCurrent(): Promise<void> {
+    if (this.ensureDelegateCurrentInFlight) {
+      await this.ensureDelegateCurrentInFlight;
+      return;
+    }
+    const refresh = this.ensureDelegateCurrentNow();
+    this.ensureDelegateCurrentInFlight = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.ensureDelegateCurrentInFlight === refresh) {
+        this.ensureDelegateCurrentInFlight = undefined;
+      }
+    }
+  }
+
+  private async ensureDelegateCurrentNow(): Promise<void> {
+    try {
+      const remoteOptions = await this.resolveProfileRemoteOptions();
+      if (this.closed) return;
+      const signature = remoteOptionsSignature(remoteOptions);
+      if (!this.delegate) {
+        const { remote, presence } = createCompositeRemoteParts(
+          remoteOptions,
+          this.local,
+          this.options,
+          this.authKind,
+          () => this.resolveProfileRemoteOptions(),
+        );
+        this.delegate = new CompositeNativeCapletsService(
+          remote,
+          this.local,
+          this.options,
+          presence,
+        );
+        this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
+        this.remoteSignature = signature;
+        this.credentialExpiresAt = remoteOptions.credentialExpiresAt;
+        return;
+      }
+      if (signature === this.remoteSignature) return;
+      const { remote, presence } = createCompositeRemoteParts(
+        remoteOptions,
+        this.local,
+        this.options,
+        this.authKind,
+        () => this.resolveProfileRemoteOptions(),
+      );
+      if (!(await remote.reload())) {
+        await Promise.all([remote.close(), presence?.close()]);
+        return;
+      }
+      await this.delegate.replaceRemote(remote, presence);
+      this.remoteSignature = signature;
+      this.credentialExpiresAt = remoteOptions.credentialExpiresAt;
+    } catch (error) {
+      if (this.options.mode === "cloud" || this.options.mode === "remote") {
+        if (this.delegate) throw error;
+        await this.close().catch((closeError: unknown) => {
+          writeErr(
+            this.options,
+            `Could not close local overlay Caplets service: ${errorMessage(closeError)}\n`,
+          );
+        });
+        throw error;
+      }
+      warnRemoteProjectBindingFallback(this.options);
+      if (!this.delegate) await this.local.reload();
+    }
+  }
+
+  private async resolveProfileRemoteOptions(): Promise<ProfileResolvedNativeRemoteOptions> {
+    const cloudFetch = this.options.remote?.fetch;
+    const remoteUrl =
+      this.options.remote?.url ??
+      process.env.CAPLETS_REMOTE_URL ??
+      this.baseRemote.url.toString().replace(/\/v1(?:\/ws\/[^/]+)?\/attach$/u, "");
+    const selection = await resolveRemoteSelection(
+      {
+        mode: this.authKind === "hosted_cloud" ? "cloud" : "remote",
+        remoteUrl,
+        ...(this.options.remote?.workspace ? { workspace: this.options.remote.workspace } : {}),
+        ...(this.options.authDir ? { authDir: this.options.authDir } : {}),
+        ...(cloudFetch ? { fetch: cloudFetch } : {}),
+      },
+      {
+        ...process.env,
+        CAPLETS_MODE: this.authKind === "hosted_cloud" ? "cloud" : "remote",
+        CAPLETS_REMOTE_URL: remoteUrl,
+      },
+    );
+    if (this.authKind === "hosted_cloud" && selection.kind !== "hosted_cloud") {
+      throw new CapletsError("REQUEST_INVALID", "CAPLETS_MODE=cloud requires Caplets Cloud.");
+    }
+    if (this.authKind === "self_hosted_remote" && selection.kind !== "self_hosted_remote") {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "CAPLETS_MODE=remote requires self-hosted Caplets.",
+      );
+    }
+    const cloudPresence =
+      selection.kind === "hosted_cloud"
+        ? ({
+            url: selection.cloudPresence.url,
+            accessToken: selection.cloudPresence.accessToken,
+            workspaceId: selection.cloudPresence.workspaceId,
+            ...(this.options.remote?.cloud?.projectRoot
+              ? { projectRoot: this.options.remote.cloud.projectRoot }
+              : {}),
+            heartbeatIntervalMs:
+              this.options.remote?.cloud?.heartbeatIntervalMs ??
+              this.baseRemote.cloud?.heartbeatIntervalMs ??
+              30_000,
+          } satisfies ResolvedNativeCloudPresenceOptions)
+        : undefined;
+    return remoteOptionsFromSelection(selection, this.baseRemote, cloudPresence);
+  }
+}
+
+type ProfileResolvedNativeRemoteOptions = ResolvedNativeRemoteOptions & {
+  credentialExpiresAt?: string | undefined;
+};
+
+function remoteOptionsFromSelection(
+  selection: ResolvedRemoteSelection,
+  baseRemote: ResolvedNativeRemoteOptions,
+  cloudPresence: ResolvedNativeCloudPresenceOptions | undefined,
+): ProfileResolvedNativeRemoteOptions {
+  return {
+    ...baseRemote,
+    url: selection.remote.attachUrl,
+    auth: nativeAuthFromRemoteAuth(selection.remote.auth),
+    requestInit: selection.remote.requestInit,
+    ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
+    ...(cloudPresence ? { cloud: cloudPresence } : {}),
+    ...(selection.credentialExpiresAt
+      ? { credentialExpiresAt: selection.credentialExpiresAt }
+      : {}),
+  } satisfies ProfileResolvedNativeRemoteOptions;
+}
+
+function remoteOptionsSignature(remoteOptions: ProfileResolvedNativeRemoteOptions): string {
+  return JSON.stringify({
+    url: remoteOptions.url.toString(),
+    requestInit: remoteOptions.requestInit,
+    credentialExpiresAt: remoteOptions.credentialExpiresAt,
+    cloud: remoteOptions.cloud
+      ? {
+          url: remoteOptions.cloud.url.toString(),
+          accessToken: remoteOptions.cloud.accessToken,
+          workspaceId: remoteOptions.cloud.workspaceId,
+          projectRoot: remoteOptions.cloud.projectRoot,
+          heartbeatIntervalMs: remoteOptions.cloud.heartbeatIntervalMs,
+        }
+      : undefined,
+  });
+}
+
+function nativeCredentialsNeedRefresh(expiresAt: string | undefined): boolean {
+  if (!expiresAt) return false;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) && parsed <= Date.now() + 60_000;
 }
 
 function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOptions {
-  if (auth.type === "basic") {
-    return { enabled: true, user: auth.user, password: auth.password };
-  }
   if (auth.type === "none") {
     return { enabled: false, user: auth.user };
   }
@@ -748,7 +896,8 @@ function nativeAuthFromRemoteAuth(auth: CapletsRemoteAuth): NativeRemoteAuthOpti
 
 class CompositeNativeCapletsService implements NativeCapletsService {
   private readonly listeners = new Set<NativeCapletsToolsChangedListener>();
-  private readonly unsubscribers: Array<() => void>;
+  private unsubscribeRemote: () => void;
+  private readonly unsubscribeLocal: () => void;
   private readonly warnedShadowedLocalCaplets = new Set<string>();
   private tools: NativeCapletTool[] = [];
   private closed = false;
@@ -756,22 +905,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private readonly codeModeSessions = new CodeModeSessionManager();
 
   constructor(
-    private readonly remote: NativeCapletsService,
+    private remote: NativeCapletsService,
     private readonly local: NativeCapletsService,
     private readonly options: NativeCapletsServiceOptions,
-    private readonly presence?: ProjectBindingSessionManager,
+    private presence?: ProjectBindingSessionManager,
   ) {
-    this.unsubscribers = [
-      this.remote.onToolsChanged(() => this.updateMergedTools()),
-      this.local.onToolsChanged(() => this.updateMergedTools()),
-    ];
+    this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
+    this.unsubscribeLocal = this.local.onToolsChanged(() => this.updateMergedTools());
     this.tools = this.mergeTools();
-    void this.presence?.start().catch((error) => {
-      writeErr(
-        options,
-        `Could not register Caplets Cloud Project Binding: ${errorMessage(error)}\n`,
-      );
-    });
+    this.startPresence();
   }
 
   listTools(): NativeCapletTool[] {
@@ -829,12 +971,31 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       return;
     }
     this.closed = true;
-    for (const unsubscribe of this.unsubscribers.splice(0)) {
-      unsubscribe();
-    }
+    this.unsubscribeRemote();
+    this.unsubscribeLocal();
     this.listeners.clear();
     this.codeModeSessions.close();
     await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
+  }
+
+  async replaceRemote(
+    remote: NativeCapletsService,
+    presence?: ProjectBindingSessionManager,
+  ): Promise<void> {
+    if (this.closed) {
+      await Promise.all([remote.close(), presence?.close()]);
+      return;
+    }
+    const previousRemote = this.remote;
+    const previousPresence = this.presence;
+    this.unsubscribeRemote();
+    this.remote = remote;
+    this.presence = presence;
+    this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
+    await Promise.all([previousRemote.close(), previousPresence?.close()]);
+    if (this.closed) return;
+    this.startPresence();
+    this.updateMergedTools();
   }
 
   private updateMergedTools(): void {
@@ -915,6 +1076,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       );
       return undefined;
     }
+  }
+
+  private startPresence(): void {
+    void this.presence?.start().catch((error) => {
+      writeErr(
+        this.options,
+        `Could not register Caplets Cloud Project Binding: ${errorMessage(error)}\n`,
+      );
+    });
   }
 }
 

@@ -109,6 +109,51 @@ describe("runProjectBindingSession", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "reconnecting", attempt: 1 }));
   });
 
+  it("resolves fresh remote credentials for heartbeats", async () => {
+    const controller = new AbortController();
+    const authorizationByPath: Array<{ path: string; authorization: string | null }> = [];
+    let token = "token-session";
+
+    await runProjectBindingSession({
+      projectRoot: "/repo",
+      remote: resolveCapletsRemote({ url: "https://cloud.caplets.dev", token: "token-start" }),
+      remoteResolver: async () => resolveCapletsRemote({ url: "https://cloud.caplets.dev", token }),
+      fetch: async (url, init) => {
+        authorizationByPath.push({
+          path: new URL(String(url)).pathname,
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        if (String(url).endsWith("/sessions")) {
+          token = "token-heartbeat";
+          return Response.json(
+            { binding: { bindingId: "binding_1" }, sessionId: "binding_session_1" },
+            { status: 201 },
+          );
+        }
+        return Response.json({ ok: true });
+      },
+      webSocketFactory: () => new FakeProjectBindingSocket([]),
+      signal: controller.signal,
+      heartbeatIntervalMs: 60_000,
+      onEvent: (event) => {
+        if (event.type === "heartbeat") controller.abort();
+      },
+    });
+
+    expect(authorizationByPath).toEqual(
+      expect.arrayContaining([
+        {
+          path: "/v1/attach/project-bindings/sessions",
+          authorization: "Bearer token-session",
+        },
+        {
+          path: "/v1/attach/project-bindings/binding_1/heartbeat",
+          authorization: "Bearer token-heartbeat",
+        },
+      ]),
+    );
+  });
+
   it("cleans up once listeners in the on-event WebSocket fallback path", async () => {
     const controller = new AbortController();
     const socket = new FallbackProjectBindingSocket();

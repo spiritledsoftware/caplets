@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ProjectBindingSessionManager } from "../src/cloud/presence";
 import type { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
@@ -17,6 +18,7 @@ import {
   type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
@@ -467,6 +469,87 @@ describe("RemoteNativeCapletsService", () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       await vi.waitFor(() => expect(controllers).toHaveLength(2));
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses refreshed runtime options when reconnecting the attach events stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const eventAuthHeaders: Array<string | null> = [];
+      let token = "token-1";
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
+        if (url.endsWith("/events")) {
+          eventAuthHeaders.push(new Headers(init?.headers).get("authorization"));
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        return Response.json({ ok: true });
+      });
+      const remoteOptions = () => ({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" } as const,
+        pollIntervalMs: 60_000,
+      });
+      const remote = createSdkRemoteCapletsClient({
+        ...remoteOptions(),
+        resolveRuntimeOptions: async () => remoteOptions(),
+      });
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(controllers).toHaveLength(1));
+      token = "token-2";
+      controllers[0]!.close();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await vi.waitFor(() => expect(controllers).toHaveLength(2));
+      expect(eventAuthHeaders).toEqual(["Bearer token-1", "Bearer token-2"]);
+      await remote.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not reconnect attach events after permanent runtime credential failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const writeErr = vi.fn();
+      const resolveRuntimeOptions = vi.fn(async () => {
+        const error = new Error("Remote Login required.");
+        Object.assign(error, { projectBindingCode: "remote_credentials_required" });
+        throw error;
+      });
+      const remote = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: vi.fn(async () => Response.json(attachManifest("rev-1", "export-1"))),
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+        resolveRuntimeOptions,
+        writeErr,
+      });
+
+      remote.onToolsChanged(vi.fn());
+      await vi.waitFor(() => expect(resolveRuntimeOptions).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(resolveRuntimeOptions).toHaveBeenCalledTimes(1);
+      expect(writeErr).toHaveBeenCalledWith(
+        "Remote Caplets authentication failed; run caplets remote login <url>.\n",
+      );
       await remote.close();
     } finally {
       vi.useRealTimers();
@@ -1042,7 +1125,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("remote", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: "Caplets Cloud authentication failed; run caplets cloud auth login.",
+      message: "Caplets Cloud authentication failed; run caplets remote login <cloud-url>.",
     });
     await service.close();
   });
@@ -1303,7 +1386,7 @@ describe("RemoteNativeCapletsService", () => {
 
     await expect(service.execute("alpha", {})).rejects.toMatchObject({
       code: "AUTH_FAILED",
-      message: expect.stringContaining("CAPLETS_REMOTE_TOKEN"),
+      message: "Remote Caplets authentication failed; run caplets remote login <url>.",
     } satisfies Partial<CapletsError>);
 
     await service.close();
@@ -1319,6 +1402,43 @@ describe("RemoteNativeCapletsService", () => {
 
     await service.close();
     vi.useRealTimers();
+  });
+
+  it("uses refreshed runtime options when fallback polling the remote service", async () => {
+    vi.useFakeTimers();
+    try {
+      const manifestAuthHeaders: Array<string | null> = [];
+      let token = "token-1";
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        if (String(input).endsWith("/manifest")) {
+          manifestAuthHeaders.push(new Headers(init?.headers).get("authorization"));
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      });
+      const remoteOptions = () => ({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" } as const,
+        pollIntervalMs: 60_000,
+      });
+      const remote = createSdkRemoteCapletsClient({
+        ...remoteOptions(),
+        resolveRuntimeOptions: async () => remoteOptions(),
+      });
+      const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 1_000 });
+
+      await service.reload();
+      token = "token-2";
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await vi.waitFor(() => expect(manifestAuthHeaders).toContain("Bearer token-2"));
+      expect(manifestAuthHeaders[0]).toBe("Bearer token-1");
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("cleans up subscriptions, polling, listeners, and client close idempotently", async () => {
@@ -1358,6 +1478,442 @@ describe("createNativeCapletsService remote mode", () => {
     });
 
     expect(service).not.toBeInstanceOf(RemoteNativeCapletsService);
+    await service.close();
+  });
+
+  it("loads self-hosted native remote credentials from a saved Remote Profile", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+      },
+    });
+    const authorizationHeaders: Array<string | null> = [];
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (_input, init) => {
+          authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+    });
+
+    await service.reload();
+
+    expect(authorizationHeaders).toContain("Bearer profile-access-token");
+    expect(configuredCapletIds(service.listTools())).toContain("remote");
+    await service.close();
+  });
+
+  it("preserves configured Cloud workspace when resolving profile-backed native remotes", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-cloud-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "cloud-access-token",
+        refreshToken: "cloud-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+        tokenType: "Bearer",
+      },
+    });
+    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
+    const manifestUrls: string[] = [];
+    const service = createNativeCapletsService({
+      mode: "cloud",
+      authDir,
+      remote: {
+        url: "https://cloud.caplets.dev",
+        workspace: "team",
+        fetch: (async (input, init) => {
+          manifestUrls.push(String(input));
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer cloud-access-token");
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+    });
+
+    try {
+      await service.reload();
+
+      expect(manifestUrls).toContain("https://cloud.caplets.dev/v1/ws/team/attach/manifest");
+      expect(configuredCapletIds(service.listTools())).toContain("remote");
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("refreshes saved self-hosted native remote credentials before reloading", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    const authorizationHeaders: Array<string | null> = [];
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input, init) => {
+          if (String(input).endsWith("/v1/remote/refresh")) {
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+    });
+
+    await service.reload();
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+    await service.reload();
+
+    expect(authorizationHeaders[0]).toBe("Bearer old-access-token");
+    expect(authorizationHeaders.at(-1)).toBe("Bearer new-access-token");
+    await service.close();
+  });
+
+  it("loads refreshed profile-backed remote tools before replacing the active delegate", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("/v1/remote/refresh")) {
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          const auth = new Headers(init?.headers).get("authorization");
+          const manifest = attachManifest(
+            auth === "Bearer new-access-token" ? "rev-2" : "rev-1",
+            auth === "Bearer new-access-token" ? "export-2" : "export-1",
+          );
+          manifest.caplets[0]!.title =
+            auth === "Bearer new-access-token" ? "Remote Updated" : "Remote";
+          return Response.json(manifest);
+        }) as typeof fetch,
+      },
+    });
+    await service.reload();
+    const emitted = new Array<string[][]>();
+    service.onToolsChanged((tools) => emitted.push(configuredCapletTitles(tools)));
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await service.reload();
+
+    expect(emitted).toEqual([[["remote", "Remote Updated"]]]);
+    await service.close();
+  });
+
+  it("does not start replacement presence when closed during remote replacement", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha" }]);
+    const previousCloseStarted = deferred();
+    const releasePreviousClose = deferred();
+    fixture.api.close = vi.fn(async () => {
+      previousCloseStarted.resolve();
+      await releasePreviousClose.promise;
+    });
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    }) as NativeCapletsService & {
+      replaceRemote(
+        remote: NativeCapletsService,
+        presence?: ProjectBindingSessionManager,
+      ): Promise<void>;
+    };
+    const replacement = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const replacementPresence = {
+      start: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+    } as unknown as ProjectBindingSessionManager;
+
+    const replacing = service.replaceRemote(replacement, replacementPresence);
+    await previousCloseStarted.promise;
+    const closing = service.close();
+    releasePreviousClose.resolve();
+    await Promise.all([replacing, closing]);
+
+    expect(replacementPresence.close).toHaveBeenCalledTimes(1);
+    expect(replacementPresence.start).not.toHaveBeenCalled();
+  });
+
+  it("does not create a profile-backed delegate when closed while resolving credentials", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+    const refreshStarted = deferred();
+    const releaseRefresh = deferred();
+    const manifestRequests: string[] = [];
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input) => {
+          const url = String(input);
+          if (url.endsWith("/v1/remote/refresh")) {
+            refreshStarted.resolve();
+            await releaseRefresh.promise;
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          manifestRequests.push(url);
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    const reload = service.reload();
+    await refreshStarted.promise;
+    const closing = service.close();
+    releaseRefresh.resolve();
+    await Promise.all([reload, closing]);
+
+    expect(localClose).toHaveBeenCalledTimes(1);
+    expect(manifestRequests).toEqual([]);
+  });
+
+  it("refreshes saved self-hosted native remote credentials before executing", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-19T12:00:00.000Z"));
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T12:02:00.000Z",
+      },
+    });
+    const authorizationHeaders: Array<string | null> = [];
+    let refreshCalls = 0;
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("/v1/remote/refresh")) {
+            refreshCalls += 1;
+            return Response.json({
+              clientId: "client_123",
+              clientLabel: "Native Test",
+              accessToken: "new-access-token",
+              refreshToken: "new-refresh-token",
+              expiresAt: "2999-06-19T12:00:00.000Z",
+            });
+          }
+          authorizationHeaders.push(new Headers(init?.headers).get("authorization"));
+          if (url.endsWith("/manifest")) return Response.json(attachManifest("rev-1", "export-1"));
+          return Response.json({ ok: true, data: { invoked: true } });
+        }) as typeof fetch,
+      },
+    });
+
+    try {
+      await service.reload();
+      vi.setSystemTime(new Date("2026-06-19T12:01:30.000Z"));
+
+      await expect(service.execute("remote", { ok: true })).resolves.toEqual({ invoked: true });
+
+      expect(refreshCalls).toBe(1);
+      expect(authorizationHeaders[0]).toBe("Bearer old-access-token");
+      expect(authorizationHeaders.at(-1)).toBe("Bearer new-access-token");
+    } finally {
+      vi.useRealTimers();
+      await service.close();
+    }
+  });
+
+  it("closes the local overlay when explicit profile-backed remote reload fails", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: { url: "https://caplets.example.com/caplets" },
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await expect(service.reload()).rejects.toThrow(/Remote Login required/u);
+
+    expect(localClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an existing explicit profile-backed remote service open after refresh failure", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    const localClose = vi.fn(async () => undefined);
+    const localService = {
+      listTools: vi.fn(() => []),
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: {
+        url: "https://caplets.example.com/caplets",
+        fetch: (async (input) => {
+          if (String(input).endsWith("/v1/remote/refresh")) {
+            return Response.json({ ok: false }, { status: 401 });
+          }
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }) as typeof fetch,
+      },
+      localServiceFactory: vi.fn(() => localService),
+    });
+    await service.reload();
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await expect(service.reload()).rejects.toThrow(/Remote Login required/u);
+
+    expect(localClose).not.toHaveBeenCalled();
+    expect(configuredCapletIds(service.listTools())).toContain("remote");
     await service.close();
   });
 
@@ -2074,8 +2630,23 @@ describe("createNativeCapletsService remote mode", () => {
       headers.set("host", new URL(request.url).host);
       return app.fetch(new Request(request, { headers }));
     };
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-code-mode-auth-"));
+    dirs.push(authDir);
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387",
+      clientId: "client_123",
+      clientLabel: "Native Code Mode Test",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        expiresAt: "2099-06-19T12:00:00.000Z",
+      },
+    });
     const service = createNativeCapletsService({
       mode: "remote",
+      authDir,
       remote: { url: "http://127.0.0.1:5387", fetch: fetchFromApp },
       configPath: localConfig.configPath,
       projectConfigPath: localConfig.projectConfigPath,
@@ -2670,7 +3241,7 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     port: 5387,
     path: "/",
     publicOrigin: undefined,
-    auth: { enabled: false, user: "caplets" },
+    auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: false,
     warnUnauthenticatedNetwork: false,
     loopback: true,

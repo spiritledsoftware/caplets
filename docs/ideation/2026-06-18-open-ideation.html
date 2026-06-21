@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ideation: Caplets Surprise-Me Features</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@450;600;650;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ember: #e0582f;
+        --parchment: #f6e8c8;
+        --charred: #1f2018;
+        --linen: #fbf7ec;
+        --paper: #fff8ea;
+        --ash: #e3d8c0;
+        --olive: #686b4e;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--linen);
+        color: var(--charred);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        font-size: 15px;
+        line-height: 1.55;
+      }
+      .page {
+        width: min(960px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 42px 0 56px;
+      }
+      header,
+      .section {
+        border-bottom: 1px solid var(--ash);
+      }
+      header {
+        padding-bottom: 24px;
+        margin-bottom: 28px;
+      }
+      .eyebrow {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.035em;
+        text-transform: uppercase;
+        color: var(--ember);
+      }
+      h1 {
+        margin: 8px 0 10px;
+        font-size: clamp(2rem, 4.5vw, 3.35rem);
+        line-height: 1.05;
+        letter-spacing: 0;
+        max-width: 13ch;
+      }
+      h2 {
+        font-size: 1.45rem;
+        line-height: 1.15;
+        margin: 34px 0 12px;
+        letter-spacing: 0;
+      }
+      h3 {
+        margin: 0 0 10px;
+        font-size: 1.04rem;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+      p {
+        max-width: 72ch;
+        margin: 0 0 12px;
+      }
+      a {
+        color: var(--charred);
+        text-decoration-color: var(--ember);
+        text-underline-offset: 3px;
+      }
+      code {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.92em;
+        background: rgba(246, 232, 200, 0.75);
+        border: 1px solid rgba(227, 216, 192, 0.85);
+        border-radius: 4px;
+        padding: 0.05rem 0.25rem;
+      }
+      .meta,
+      .stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--ash);
+        border-radius: 14px;
+        padding: 5px 9px;
+        background: var(--parchment);
+        color: var(--charred);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.035em;
+      }
+      .section {
+        padding: 24px 0;
+      }
+      .summary-grid,
+      .idea-nav {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+      }
+      .note,
+      .idea-card,
+      .idea-nav a {
+        background: var(--paper);
+        border: 1px solid var(--ash);
+        border-radius: 10px;
+      }
+      .note {
+        padding: 14px 16px;
+      }
+      .idea-nav {
+        padding: 0;
+        list-style: none;
+        margin-bottom: 20px;
+      }
+      .idea-nav a {
+        display: block;
+        padding: 10px 12px;
+        text-decoration: none;
+        font-weight: 650;
+      }
+      .idea-card {
+        border-radius: 14px;
+        padding: 18px;
+        margin: 14px 0;
+      }
+      .idea-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .rank {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--charred);
+        color: var(--parchment);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-weight: 700;
+      }
+      .idea-title {
+        flex: 1;
+      }
+      .idea-title p {
+        color: var(--olive);
+        margin: 2px 0 0;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: 9rem 1fr;
+        gap: 8px 12px;
+        margin: 14px 0 0;
+      }
+      dt {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.035em;
+        text-transform: uppercase;
+        color: var(--olive);
+      }
+      dd {
+        margin: 0;
+      }
+      .diagram {
+        margin-top: 14px;
+        border: 1px solid var(--ash);
+        border-radius: 10px;
+        background: #fffaf0;
+        padding: 12px;
+        overflow-x: auto;
+      }
+      svg {
+        max-width: 100%;
+        height: auto;
+        display: block;
+      }
+      .svg-label {
+        font:
+          650 13px Inter,
+          system-ui,
+          sans-serif;
+        fill: var(--charred);
+      }
+      .svg-small {
+        font:
+          600 11px Inter,
+          system-ui,
+          sans-serif;
+        fill: var(--olive);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--paper);
+        border: 1px solid var(--ash);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--ash);
+      }
+      th {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.75rem;
+        letter-spacing: 0.035em;
+        text-transform: uppercase;
+        background: var(--parchment);
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      footer {
+        margin-top: 32px;
+        color: var(--olive);
+        font-size: 0.86rem;
+        border-top: 1px solid var(--ash);
+        padding-top: 16px;
+      }
+      @media (max-width: 760px) {
+        .page {
+          width: min(100vw - 24px, 960px);
+          padding-top: 24px;
+        }
+        .summary-grid,
+        .idea-nav {
+          grid-template-columns: 1fr;
+        }
+        .idea-head {
+          flex-direction: column;
+        }
+        dl {
+          grid-template-columns: 1fr;
+          gap: 4px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header>
+        <div class="eyebrow">Ideation</div>
+        <h1>Caplets Surprise-Me Features</h1>
+        <p>
+          Open-ended feature ideation grounded in the current Caplets repo, recent plans, shipped
+          docs, and external MCP platform direction.
+        </p>
+        <div class="meta">
+          <span class="pill">DATE 2026-06-18</span><span class="pill">TOPIC open-ideation</span
+          ><span class="pill">MODE repo-grounded</span>
+        </div>
+        <div class="stats">
+          <span class="pill">20 raw</span><span class="pill">7 ranked</span
+          ><span class="pill">8 cut</span><span class="pill">axes skipped</span>
+        </div>
+      </header>
+
+      <section class="section" id="grounding-context">
+        <div class="eyebrow">Grounding Context</div>
+        <h2>Codebase Context</h2>
+        <p>
+          Caplets gives coding agents a compact Code Mode surface for MCP servers, APIs, and
+          commands. The repo states the core product problem plainly: flat tool lists inflate
+          context, force premature tool choice, add repeated round trips, make agents over-carry raw
+          payloads, and fragment semantics across local, remote, Cloud, and native integrations.
+        </p>
+        <div class="summary-grid">
+          <div class="note">
+            <strong>Product center.</strong> Code Mode is the default surface because it keeps
+            discovery, execution, filtering, and synthesis in one bounded agent call.
+          </div>
+          <div class="note">
+            <strong>Recent momentum.</strong> The current branch has recent work on reusable Code
+            Mode sessions, recovery journals, Google Discovery API backends, media artifacts,
+            Cloud/remote attach, native integration parity, docs, and benchmarks.
+          </div>
+          <div class="note">
+            <strong>Open product questions.</strong> The PRD asks which result-shaping hints should
+            become public contract, how much direct exposure should be default, which Cloud/Project
+            Binding semantics should become product contract, and which benchmark suites should
+            remain long-term guardrails.
+          </div>
+          <div class="note">
+            <strong>External pressure.</strong> MCP hosts are moving toward remote connectors,
+            managed MCP endpoints, Apps SDK surfaces, structured outputs, server-rendered UI,
+            stronger OAuth/authorization, and stateless remote protocol design.
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="topic-axes">
+        <div class="eyebrow">Topic Axes</div>
+        <h2>Topic Axes</h2>
+        <p>
+          <code>Decomposition skipped - surprise-me mode</code>. Different frames were allowed to
+          surface different subjects from the repo and external context.
+        </p>
+      </section>
+
+      <section class="section" id="ranked-ideas">
+        <div class="eyebrow">Ranked Ideas</div>
+        <h2>Ranked Ideas</h2>
+        <ul class="idea-nav">
+          <li><a href="#idea-1">1. Caplet Forge</a></li>
+          <li><a href="#idea-2">2. Trust Ledger</a></li>
+          <li><a href="#idea-3">3. Result Contracts</a></li>
+          <li><a href="#idea-4">4. Interactive Repair</a></li>
+          <li><a href="#idea-5">5. Benchmark Flights</a></li>
+          <li><a href="#idea-6">6. Remote Gateway Packs</a></li>
+          <li><a href="#idea-7">7. Capability Graph Workspace</a></li>
+        </ul>
+
+        <article class="idea-card" id="idea-1">
+          <div class="idea-head">
+            <span class="rank">1</span>
+            <div class="idea-title">
+              <h3>Caplet Forge: Workflow-to-Caplet Promotion</h3>
+              <p>
+                Turn a successful Code Mode session into a reusable, reviewable Caplet file or
+                Caplet-set recipe.
+              </p>
+            </div>
+            <span class="pill">CONF 86% · CX M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> After an agent uses Code Mode to solve a repeated
+            workflow, Caplets can offer a promotion path: extract the handles, search terms,
+            described schemas, result shaping, setup commands, and recovery-safe helper code into a
+            draft Caplet recipe. The output would be a Markdown Caplet file with inferred
+            <code>useWhen</code>, <code>avoidWhen</code>, <code>setup.verify</code>, field-selection
+            defaults, and a deterministic smoke check.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: Code Mode sessions return <code>meta.sessionId</code> for reusable helpers and
+              cached discovery state, while recovery journals help reconstruct setup code manually
+              (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md#code-mode-contract"
+                >docs/product/caplets-code-mode-prd.md lines 104-117</a
+              >). Caplet files already support <code>useWhen</code>, <code>avoidWhen</code>,
+              <code>setup</code>, <code>projectBinding</code>, and runtime metadata (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/apps/docs/src/content/docs/reference/caplet-files.mdx"
+                >apps/docs/src/content/docs/reference/caplet-files.mdx lines 31-73</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              The product already captures enough runtime truth to know what worked. Turning that
+              into a durable capability artifact compounds agent work instead of letting every
+              session rediscover the same workflow.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              Needs careful distinction between reusable setup and side-effecting calls. The first
+              version should create drafts and tests, not silently install generated Caplets.
+            </dd>
+          </dl>
+          <div class="diagram" aria-label="Caplet Forge flow diagram">
+            <svg width="820" height="180" viewBox="0 0 820 180" role="img">
+              <rect x="22" y="48" width="150" height="74" rx="10" fill="#FFF8EA" stroke="#E3D8C0" />
+              <text x="44" y="78" class="svg-label">Live Code Mode</text>
+              <text x="44" y="100" class="svg-small">session + calls</text>
+              <path d="M180 85 H278" stroke="#686B4E" stroke-width="2" marker-end="url(#arrow1)" />
+              <rect
+                x="292"
+                y="35"
+                width="176"
+                height="100"
+                rx="10"
+                fill="#F6E8C8"
+                stroke="#E3D8C0"
+              />
+              <text x="318" y="67" class="svg-label">Extract Evidence</text>
+              <text x="318" y="90" class="svg-small">schemas, result shape, setup</text>
+              <text x="318" y="112" class="svg-small">safe helper candidates</text>
+              <path d="M476 85 H574" stroke="#686B4E" stroke-width="2" marker-end="url(#arrow1)" />
+              <rect
+                x="588"
+                y="48"
+                width="184"
+                height="74"
+                rx="10"
+                fill="#FFF8EA"
+                stroke="#E3D8C0"
+              />
+              <text x="616" y="78" class="svg-label">Draft CAPLET.md</text>
+              <text x="616" y="100" class="svg-small">reviewable + smoke-tested</text>
+              <defs>
+                <marker
+                  id="arrow1"
+                  markerWidth="8"
+                  markerHeight="8"
+                  refX="7"
+                  refY="4"
+                  orient="auto"
+                >
+                  <path d="M0,0 L8,4 L0,8 Z" fill="#686B4E" />
+                </marker>
+              </defs>
+            </svg>
+          </div>
+        </article>
+
+        <article class="idea-card" id="idea-2">
+          <div class="idea-head">
+            <span class="rank">2</span>
+            <div class="idea-title">
+              <h3>Trust Ledger: Capability Risk, Scope, and Action Preview</h3>
+              <p>
+                An inspectable ledger that tells users and agents what a Caplet can read, mutate,
+                sync, retain, and ask for before it is used.
+              </p>
+            </div>
+            <span class="pill">CONF 84% · CX M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Add a trust ledger to <code>inspect()</code>,
+            <code>doctor</code>, native metadata, and Cloud UI surfaces. For each Caplet, it would
+            summarize auth posture, inferred OAuth scopes, destructive/read-only hints, Project
+            Binding sync footprint, media artifact behavior, retained logs/recovery, and
+            remote/local execution mode.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: Caplets already treats trust details as product requirements: keep secrets
+              redacted, expose enough auth/status detail, validate schemas, bound responses, deny
+              unsafe Project Binding sync paths, and route I/O through Caplet handles (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md#trust-and-safety"
+                >docs/product/caplets-code-mode-prd.md lines 23-31 and 133-142</a
+              >). external: MCP guidance says tool UIs should make exposed tools and invocations
+              clear and keep a human in the loop for operations (<a
+                href="https://modelcontextprotocol.io/specification/draft/server/tools"
+                >MCP Tools specification</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              Caplets' main value is reducing surface area without hiding capability truth. A ledger
+              makes that promise legible for humans, agents, and enterprise reviewers.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              The ledger can become noisy if it prints every field. It should be a compact summary
+              with drill-down links, and it must avoid implying Code Mode is a sandbox boundary.
+            </dd>
+          </dl>
+        </article>
+
+        <article class="idea-card" id="idea-3">
+          <div class="idea-head">
+            <span class="rank">3</span>
+            <div class="idea-title">
+              <h3>Result Contracts: Self-Training Output Shapers</h3>
+              <p>
+                Promote observed downstream output shapes into typed, reusable result shapers that
+                agents can call directly inside Code Mode.
+              </p>
+            </div>
+            <span class="pill">CONF 82% · CX M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Caplets already stores observed output shapes and has
+            schema-aware field selection. Build a layer that suggests reusable result shapers:
+            <code>tool.describeResult()</code>, <code>tool.pickFields()</code>, or generated helper
+            snippets that return compact evidence for common tasks.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: The PRD names generic outputs as a problem and asks which result-shaping hints
+              should become stable public contract (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md#problem"
+                >docs/product/caplets-code-mode-prd.md lines 18 and 152-157</a
+              >). The code already stores observed shapes with type signatures, sample counts, TTLs,
+              and hashes (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/packages/core/src/observed-output-shapes/types.ts"
+                >packages/core/src/observed-output-shapes/types.ts lines 30-51</a
+              >), and field selection validates paths against output schema (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/packages/core/src/field-selection.ts"
+                >packages/core/src/field-selection.ts lines 11-40</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              This turns one of Caplets' deepest advantages into a public contract: not just smaller
+              tool lists, but smaller and more reliable answers.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              Observed shapes can drift. The contract needs confidence and invalidation semantics.
+            </dd>
+          </dl>
+        </article>
+
+        <article class="idea-card" id="idea-4">
+          <div class="idea-head">
+            <span class="rank">4</span>
+            <div class="idea-title">
+              <h3>Interactive Repair: Elicitation-Aware Recovery</h3>
+              <p>
+                Convert auth, setup, schema, and Project Binding failures into structured repair
+                prompts that agents can route through their host UI.
+              </p>
+            </div>
+            <span class="pill">CONF 76% · CX H</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Many failures already have stable diagnostic codes and
+            recovery commands. Turn those into a portable "repair needed" result shape: missing env
+            var, Cloud login required, workspace switch required, sync size exceeded, operation
+            scope changed, unknown session with recovery available.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: Project Binding terminal states carry stable codes and recovery commands (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/project-binding.md#states"
+                >docs/project-binding.md lines 23-57</a
+              >), and <code>doctor</code> reports remote, binding, sync, auth, exposure, Code Mode,
+              log storage, and observed output shape health (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/packages/core/src/cli/doctor.ts"
+                >packages/core/src/cli/doctor.ts lines 41-96 and 99-168</a
+              >). external: current MCP tool docs include input-required tool results, and Apps SDK
+              surfaces emphasize app UX, metadata, authentication, and state management.
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              Agents are good at following structured next steps when the tool gives them exact
+              repair options. This would make Caplets feel less like a config parser and more like a
+              cooperative runtime.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              Host support will vary. The fallback must remain plain structured JSON plus recovery
+              commands; never request secrets through elicitation.
+            </dd>
+          </dl>
+        </article>
+
+        <article class="idea-card" id="idea-5">
+          <div class="idea-head">
+            <span class="rank">5</span>
+            <div class="idea-title">
+              <h3>Benchmark Flights: Per-Caplet Agent Evals</h3>
+              <p>
+                Let every serious Caplet ship with a tiny repeatable eval flight, not just docs and
+                setup commands.
+              </p>
+            </div>
+            <span class="pill">CONF 80% · CX M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Add a <code>caplets eval init</code> and Caplet-file eval
+            metadata that creates small, deterministic or opt-in live scenarios for a capability. A
+            Caplet author could specify task prompts, expected evidence fields, safe fixtures, and
+            competitor modes.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: The benchmark report already measures initial tool-surface reduction, Code
+              Mode round-trip reduction, session reuse, and live failure classes (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md"
+                >docs/benchmarks/coding-agent.md lines 14-23, 46-75, and 94-155</a
+              >). The PRD requires reproducible benchmark claims and marks live benchmarks as
+              directional rather than deterministic (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md#evidence"
+                >docs/product/caplets-code-mode-prd.md lines 144-150</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              The best way to prove a capability works for agents is to run agent-shaped tasks
+              against it. This makes Caplet quality visible and comparable at the configured
+              capability level.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              Eval authoring can be a burden. Start with generated scaffolds from recent successful
+              Code Mode calls and a small deterministic fixture path.
+            </dd>
+          </dl>
+        </article>
+
+        <article class="idea-card" id="idea-6">
+          <div class="idea-head">
+            <span class="rank">6</span>
+            <div class="idea-title">
+              <h3>Remote Capability Gateway Packs</h3>
+              <p>
+                Curated hosted/managed MCP and API packs that add Caplets policy, result shaping,
+                Project Binding, and trust metadata on top of vendor endpoints.
+              </p>
+            </div>
+            <span class="pill">CONF 72% · CX H</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Create pack definitions for popular managed MCP or remote
+            API services: Google Cloud, GitHub, Linear, docs/search, package security, and internal
+            platform tools. A pack would define the remote endpoint, operation filters, auth/scopes,
+            result contracts, media artifact policy, runtime needs, eval flight, and trust ledger.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: Caplets supports local, self-hosted remote, Cloud, Project Binding,
+              config/Caplet files, nested sets, and multiple backend families (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/architecture.md"
+                >docs/architecture.md lines 9-24 and 93-127</a
+              >). external: Google announced 50+ managed MCP servers with Agent Registry, IAM, Model
+              Armor, audit logs, and interoperability across Gemini CLI, Claude, ChatGPT, VS Code,
+              LangChain, ADK, and CrewAI (<a
+                href="https://cloud.google.com/blog/products/ai-machine-learning/google-managed-mcp-servers-are-available-for-everyone"
+                >Google Cloud blog</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              The market is moving from local MCP tinkering to managed remote tool ecosystems.
+              Caplets can be the layer that makes those endpoints agent-usable, policy-aware, and
+              benchmarked.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              This can drift into marketplace work. Keep the first version as repo-owned packs with
+              hard quality bars, not a broad public directory.
+            </dd>
+          </dl>
+        </article>
+
+        <article class="idea-card" id="idea-7">
+          <div class="idea-head">
+            <span class="rank">7</span>
+            <div class="idea-title">
+              <h3>Capability Graph Workspace</h3>
+              <p>
+                A machine-readable and human-readable map of capabilities, operations, resources,
+                prompts, auth, artifacts, and runtime requirements.
+              </p>
+            </div>
+            <span class="pill">CONF 74% · CX M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Add a graph export and docs/Cloud view that shows each
+            Caplet as a region: backend kind, available tools/resources/prompts, auth scopes, setup
+            state, Project Binding needs, result contracts, and likely next actions.
+          </p>
+          <dl>
+            <dt>Basis</dt>
+            <dd>
+              direct: The architecture already has a common manager shape for listing, searching,
+              describing, calling, checking, and exposing MCP resources/prompts/completion, while
+              Caplet files include source, setup, binding, runtime, and backend metadata (<a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/docs/architecture.md#engine"
+                >docs/architecture.md lines 25-53 and 103-121</a
+              >;
+              <a
+                href="https://github.com/spiritledsoftware/caplets/blob/main/apps/docs/src/content/docs/reference/code-mode-api.mdx"
+                >apps/docs/src/content/docs/reference/code-mode-api.mdx lines 130-160</a
+              >).
+            </dd>
+            <dt>Rationale</dt>
+            <dd>
+              The product metaphor is capability cards for sprawling tool stacks. A graph makes the
+              capability space inspectable without flattening it into a giant tool wall.
+            </dd>
+            <dt>Downsides</dt>
+            <dd>
+              Visual polish is secondary. The graph must first be useful as a stable JSON export
+              that agents and tests can consume.
+            </dd>
+          </dl>
+        </article>
+      </section>
+
+      <section class="section" id="rejection-summary">
+        <div class="eyebrow">Rejection Summary</div>
+        <h2>Rejection Summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Idea</th>
+              <th>Reason Rejected</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Durable Heap Snapshots</td>
+              <td>
+                Rejected because current Code Mode deliberately uses live sessions plus recovery
+                journals, not durable heap persistence.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Auto-Confirm Destructive Actions</td>
+              <td>
+                Rejected because Caplets exposes safety hints; clients and agents decide
+                confirmation.
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Inline Media Everywhere</td>
+              <td>
+                Rejected because media artifacts are already the accepted non-inline result
+                contract.
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>Direct Fetch Escape Hatch</td>
+              <td>Rejected because Code Mode intentionally routes I/O through Caplet handles.</td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>Global MCP Marketplace Clone</td>
+              <td>
+                Rejected as too broad and less differentiated than quality-gated Gateway Packs.
+              </td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Caplet Pairing Mode</td>
+              <td>
+                Interesting, but weaker than workflow promotion and evals as a near-term product
+                direction.
+              </td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>Landing Playground</td>
+              <td>
+                Useful demo work, but less product-leveraged than core capability workflow features.
+              </td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td>Agent Memory Handoff Bundle</td>
+              <td>
+                Folded into Caplet Forge and Trust Ledger; not strong enough as a separate feature.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="composition-signal">
+        Composed 2026-06-18T00:00:00-04:00 by ce-ideate from open-ended surprise-me prompt.
+      </footer>
+    </main>
+  </body>
+</html>

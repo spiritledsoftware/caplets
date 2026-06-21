@@ -14,7 +14,7 @@ Caplets native integrations use the same mode names as `caplets attach`:
 | -------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `local`  | The agent should start Caplets against local user and project config.                                                     |
 | `remote` | The agent should connect to a self-hosted Caplets service.                                                                |
-| `cloud`  | The agent should connect to Caplets Cloud with explicit `CAPLETS_REMOTE_*` or `CAPLETS_CLOUD_*` environment values.       |
+| `cloud`  | The agent should connect to Caplets Cloud through a saved Remote Profile.                                                 |
 | `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, and local mode when no remote URL is set. |
 
 ## MCP client config
@@ -24,7 +24,7 @@ Codex:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach"]
+args = ["attach", "--remote-url", "https://caplets.example.com/caplets"]
 ```
 
 Generic MCP JSON:
@@ -34,40 +34,45 @@ Generic MCP JSON:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach"]
+      "args": ["attach", "--remote-url", "https://caplets.example.com/caplets"]
     }
   }
 }
 ```
 
-## Environment
+## Remote Login
 
-For a self-hosted remote:
+For a self-hosted remote, first create a short-lived Pairing Code on the server:
 
 ```sh
-export CAPLETS_MODE=remote
-export CAPLETS_REMOTE_URL=https://caplets.example.com/caplets
-export CAPLETS_REMOTE_TOKEN=...
-
-caplets attach
+caplets remote host pair --host-url https://caplets.example.com/caplets
 ```
 
-Use `CAPLETS_REMOTE_USER` and `CAPLETS_REMOTE_PASSWORD` instead of
-`CAPLETS_REMOTE_TOKEN` when the remote uses Basic Auth.
+If the server uses a non-default credential state directory, pass the same directory with
+`--state-path` that the server uses for `caplets serve --remote-state-path`.
 
-For Caplets Cloud native integrations, set the Cloud URL plus a workspace and token:
+Then log in once on the client and configure the agent to launch attach:
 
 ```sh
+caplets remote login https://caplets.example.com/caplets
+caplets attach --remote-url https://caplets.example.com/caplets
+```
+
+Enter the Pairing Code at the hidden prompt from `caplets remote login`. Use
+`--code-stdin` for automation instead of putting Pairing Codes in shell history.
+
+For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
+
+```sh
+caplets remote login https://cloud.caplets.dev
 export CAPLETS_MODE=cloud
 export CAPLETS_REMOTE_URL=https://cloud.caplets.dev
-export CAPLETS_REMOTE_WORKSPACE=...
-export CAPLETS_REMOTE_TOKEN=...
 
 opencode
 ```
 
-Saved Cloud auth from `caplets cloud auth login` is used by the `caplets attach` CLI path.
-Native integrations do not read the saved auth store directly.
+Saved Remote Profiles are used by `caplets attach` and native integrations. Agent configs
+should not contain Caplets remote tokens or passwords.
 
 Run a finite Project Binding smoke path before wiring an agent:
 

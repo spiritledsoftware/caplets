@@ -12,7 +12,7 @@ OpenCode and Pi use the same resolver as `caplets attach`.
 
 - `CAPLETS_MODE=local` exposes local/user/project Caplets only.
 - `CAPLETS_MODE=remote` requires `CAPLETS_REMOTE_URL` and connects to a self-hosted Caplets service.
-- `CAPLETS_MODE=cloud` requires `CAPLETS_REMOTE_URL` pointing at Caplets Cloud and uses saved `caplets cloud auth login` credentials.
+- `CAPLETS_MODE=cloud` requires `CAPLETS_REMOTE_URL` pointing at Caplets Cloud and uses the saved Remote Profile from `caplets remote login <cloud-url>`.
 - `CAPLETS_MODE=auto` treats Cloud URLs as Cloud, non-Cloud remote URLs as self-hosted, and no remote URL as local.
 
 Cloud mode starts Project Binding automatically for the current project and overlays local/project Caplets over the remote workspace.

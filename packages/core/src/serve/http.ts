@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
@@ -19,7 +19,8 @@ import {
 } from "../remote-control/dispatch";
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
-import type { HttpBasicAuthOptions, HttpServeOptions } from "./options";
+import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
 type HttpServeIo = {
@@ -28,6 +29,7 @@ type HttpServeIo = {
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
   exposeAttach?: boolean;
+  remoteCredentialStore?: RemoteServerCredentialStore;
 };
 
 type HttpMcpSession = {
@@ -62,6 +64,18 @@ export function createHttpServeApp(
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
+  const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  if (
+    options.auth.type === "remote_credentials" &&
+    options.trustProxy === true &&
+    options.publicOrigin === undefined
+  ) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth with --trust-proxy requires CAPLETS_SERVER_URL.",
+    );
+  }
+  const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -75,7 +89,7 @@ export function createHttpServeApp(
       transport: "http",
       base: paths.base,
       versions: [versionDiscovery(paths, exposeAttach)],
-      auth: { type: "basic", enabled: options.auth.enabled },
+      auth: { type: options.auth.type },
     }),
   );
 
@@ -87,7 +101,84 @@ export function createHttpServeApp(
     }),
   );
 
-  app.all(paths.mcp, basicAuth(options.auth), async (c) => {
+  if (remoteCredentialStore) {
+    app.post(paths.pairingExchange, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
+        const code = stringField(parsed, "code");
+        const clientLabel = optionalStringField(parsed, "clientLabel");
+        const credentials = remoteCredentialStore.exchangePairingCode({
+          hostUrl: remoteCredentialHostUrl(
+            c.req.url,
+            paths.base,
+            options.publicOrigin,
+            options.trustProxy,
+            (name) => c.req.header(name),
+          ),
+          code,
+          ...(clientLabel ? { clientLabel } : {}),
+        });
+        return c.json({
+          clientId: credentials.clientId,
+          clientLabel: credentials.clientLabel,
+          accessToken: credentials.accessToken,
+          refreshToken: credentials.refreshToken,
+          tokenType: credentials.tokenType,
+          expiresAt: credentials.expiresAt,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteRefresh, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
+        const refreshToken = stringField(parsed, "refreshToken");
+        const credentials = remoteCredentialStore.refreshClientCredentials({
+          hostUrl: remoteCredentialHostUrl(
+            c.req.url,
+            paths.base,
+            options.publicOrigin,
+            options.trustProxy,
+            (name) => c.req.header(name),
+          ),
+          refreshToken,
+        });
+        return c.json({
+          clientId: credentials.clientId,
+          clientLabel: credentials.clientLabel,
+          accessToken: credentials.accessToken,
+          refreshToken: credentials.refreshToken,
+          tokenType: credentials.tokenType,
+          expiresAt: credentials.expiresAt,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.delete(paths.remoteClient, protectedRouteAuth, (c) => {
+      try {
+        const client = validatedRemoteClient(
+          c.req.header("authorization") ?? "",
+          remoteCredentialStore,
+          c.req.url,
+          paths.base,
+          options,
+          (name) => c.req.header(name),
+        );
+        return c.json({
+          revoked: remoteCredentialStore.revokeClient(client.clientId),
+          clientId: client.clientId,
+        });
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+  }
+
+  app.all(paths.mcp, protectedRouteAuth, async (c) => {
     const sessionId = c.req.header("mcp-session-id");
     if (sessionId) {
       const existing = sessions.get(sessionId);
@@ -135,16 +226,16 @@ export function createHttpServeApp(
   const attachHostProtection = dnsRebindingProtection(options);
 
   if (exposeAttach) {
-    app.get(paths.attachManifest, attachHostProtection, basicAuth(options.auth), async (c) => {
+    app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
       const attachProjection = await buildAttachProjection(engine);
       return c.json(attachProjection.manifest);
     });
 
-    app.get(paths.attachEvents, attachHostProtection, basicAuth(options.auth), () =>
+    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, () =>
       attachEventsResponse(engine, attachEventStreams),
     );
 
-    app.post(paths.attachInvoke, attachHostProtection, basicAuth(options.auth), async (c) => {
+    app.post(paths.attachInvoke, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
         const attachProjection = await buildAttachProjection(engine);
@@ -157,7 +248,7 @@ export function createHttpServeApp(
     });
   }
 
-  app.post(paths.control, basicAuth(options.auth), async (c) => {
+  app.post(paths.control, protectedRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
       const parsed = await c.req.json();
@@ -190,18 +281,18 @@ export function createHttpServeApp(
     );
   });
 
-  app.get(routePath(paths.projectBindings, "connect"), basicAuth(options.auth), (c) =>
+  app.get(routePath(paths.projectBindings, "connect"), protectedRouteAuth, (c) =>
     c.json({ error: "websocket_upgrade_required" }, 426),
   );
 
-  app.get(routePath(paths.projectBindings, ":bindingId/status"), basicAuth(options.auth), (c) =>
+  app.get(routePath(paths.projectBindings, ":bindingId/status"), protectedRouteAuth, (c) =>
     c.json({
       bindingId: c.req.param("bindingId"),
       state: "not_attached",
     }),
   );
 
-  app.post(routePath(paths.projectBindings, "sessions"), basicAuth(options.auth), (c) => {
+  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, (c) => {
     const bindingId = randomUUID();
     return c.json(
       {
@@ -212,14 +303,14 @@ export function createHttpServeApp(
     );
   });
 
-  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), basicAuth(options.auth), (c) =>
+  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), protectedRouteAuth, (c) =>
     c.json({
       ok: true,
       binding: { bindingId: c.req.param("bindingId"), state: "ready" },
     }),
   );
 
-  app.delete(routePath(paths.projectBindings, ":bindingId/session"), basicAuth(options.auth), (c) =>
+  app.delete(routePath(paths.projectBindings, ":bindingId/session"), protectedRouteAuth, (c) =>
     c.json({
       ok: true,
       binding: { bindingId: c.req.param("bindingId"), state: "ended" },
@@ -301,7 +392,7 @@ function publicRequestOrigin(
 ): string {
   const url = new URL(requestUrl);
   if (!trustProxy) {
-    return `${url.protocol.slice(0, -1)}://${header("host") ?? url.host}`;
+    return `${url.protocol.slice(0, -1)}://${url.host}`;
   }
   const forwardedProto = firstForwardedValue(header("x-forwarded-proto"));
   const forwardedHost = firstForwardedValue(header("x-forwarded-host"));
@@ -311,6 +402,35 @@ function publicRequestOrigin(
       : url.protocol.slice(0, -1);
   const host = forwardedHost ?? header("host") ?? url.host;
   return `${proto}://${host}`;
+}
+
+function publicHostUrl(
+  requestUrl: string,
+  basePath: string,
+  publicOrigin: string | undefined,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): string {
+  return new URL(
+    basePath,
+    publicOrigin ?? publicRequestOrigin(requestUrl, trustProxy, header),
+  ).toString();
+}
+
+function remoteCredentialHostUrl(
+  requestUrl: string,
+  basePath: string,
+  publicOrigin: string | undefined,
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): string {
+  if (trustProxy && !publicOrigin) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth with --trust-proxy requires CAPLETS_SERVER_URL.",
+    );
+  }
+  return publicHostUrl(requestUrl, basePath, publicOrigin, trustProxy, header);
 }
 
 function firstForwardedValue(value: string | undefined): string | undefined {
@@ -461,9 +581,7 @@ export async function serveHttp(
     writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(
-      `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
-    );
+    writeErr(`Auth: ${authDescription(options)}\n`);
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
@@ -493,9 +611,7 @@ export async function serveHttpWithSessionFactory(
     writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
     writeErr(`Control endpoint: ${origin}${paths.control}\n`);
     writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(
-      `Basic Auth: ${options.auth.enabled ? `enabled (user: ${options.auth.user})` : "disabled"}\n`,
-    );
+    writeErr(`Auth: ${authDescription(options)}\n`);
   });
 
   installHttpSignalHandlers(server, app, engine, writeErr);
@@ -524,10 +640,14 @@ export function servicePaths(base: string): {
   attachEvents: string;
   attachInvoke: string;
   projectBindings: string;
+  pairingExchange: string;
+  remoteRefresh: string;
+  remoteClient: string;
   health: string;
 } {
   const version = routePath(base, "v1");
   const attach = routePath(version, "attach");
+  const remote = routePath(version, "remote");
   return {
     base,
     version,
@@ -537,6 +657,9 @@ export function servicePaths(base: string): {
     attachEvents: routePath(attach, "events"),
     attachInvoke: routePath(attach, "invoke"),
     projectBindings: routePath(attach, "project-bindings"),
+    pairingExchange: routePath(remote, "pairing/exchange"),
+    remoteRefresh: routePath(remote, "refresh"),
+    remoteClient: routePath(remote, "client"),
     health: routePath(version, "healthz"),
   };
 }
@@ -557,24 +680,131 @@ async function createHttpSession(
   return { server, transport };
 }
 
-function basicAuth(auth: HttpBasicAuthOptions): MiddlewareHandler {
-  return async (c, next) => {
-    if (!auth.enabled) {
+function routeAuth(
+  options: HttpServeOptions,
+  remoteCredentialStore: RemoteServerCredentialStore | undefined,
+  basePath: string,
+): MiddlewareHandler {
+  if (options.auth.type === "development_unauthenticated") {
+    return async (_c, next) => {
       await next();
-      return;
-    }
+    };
+  }
+  if (!remoteCredentialStore) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth requires a server credential store.",
+    );
+  }
+  return async (c, next) => {
     const header = c.req.header("authorization") ?? "";
-    const credentials = parseBasicAuth(header);
-    if (
-      !credentials ||
-      !safeEqual(credentials.user, auth.user) ||
-      !safeEqual(credentials.password, auth.password)
-    ) {
-      c.header("www-authenticate", 'Basic realm="caplets"');
+    const token = bearerToken(header);
+    if (!token) {
+      return c.text("Unauthorized", 401);
+    }
+    try {
+      remoteCredentialStore.validateAccessToken({
+        hostUrl: remoteCredentialHostUrl(
+          c.req.url,
+          basePath,
+          options.publicOrigin,
+          options.trustProxy,
+          (name) => c.req.header(name),
+        ),
+        accessToken: token,
+      });
+    } catch {
       return c.text("Unauthorized", 401);
     }
     await next();
   };
+}
+
+function validatedRemoteClient(
+  authorizationHeader: string,
+  remoteCredentialStore: RemoteServerCredentialStore,
+  requestUrl: string,
+  basePath: string,
+  options: HttpServeOptions,
+  header: (name: string) => string | undefined,
+) {
+  const token = bearerToken(authorizationHeader);
+  if (!token) {
+    throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
+  }
+  return remoteCredentialStore.validateAccessToken({
+    hostUrl: remoteCredentialHostUrl(
+      requestUrl,
+      basePath,
+      options.publicOrigin,
+      options.trustProxy,
+      header,
+    ),
+    accessToken: token,
+  });
+}
+
+function remoteCredentialStoreForOptions(
+  options: HttpServeOptions,
+  store: RemoteServerCredentialStore | undefined,
+): RemoteServerCredentialStore | undefined {
+  if (options.auth.type !== "remote_credentials") return undefined;
+  if (store) return store;
+  if (!options.remoteCredentialStateDir) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Remote credential auth requires a server credential state directory.",
+    );
+  }
+  return new RemoteServerCredentialStore({ dir: options.remoteCredentialStateDir });
+}
+
+function bearerToken(header: string): string | undefined {
+  const [scheme, token] = header.split(" ");
+  return scheme?.toLowerCase() === "bearer" && token ? token : undefined;
+}
+
+async function parseJsonObject(
+  input: Promise<unknown>,
+  label: string,
+): Promise<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = await input;
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", `${label} body must be valid JSON.`, error);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError("REQUEST_INVALID", `${label} JSON must be an object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function stringField(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function optionalStringField(input: Record<string, unknown>, key: string): string | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function remoteCredentialErrorResponse(error: unknown): Response {
+  const safe =
+    error instanceof CapletsError
+      ? toSafeError(error, error.code)
+      : toSafeError(error, "AUTH_FAILED");
+  const status =
+    safe.code === "REQUEST_INVALID" ? 400 : safe.code === "SERVER_UNAVAILABLE" ? 503 : 401;
+  return Response.json({ ok: false, error: safe }, { status });
 }
 
 function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
@@ -593,25 +823,6 @@ function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
   };
 }
 
-function parseBasicAuth(header: string): { user: string; password: string } | undefined {
-  const [scheme, encoded] = header.split(" ");
-  if (scheme?.toLocaleLowerCase() !== "basic" || !encoded) {
-    return undefined;
-  }
-  const decoded = Buffer.from(encoded, "base64").toString("utf8");
-  const separator = decoded.indexOf(":");
-  if (separator < 0) {
-    return undefined;
-  }
-  return { user: decoded.slice(0, separator), password: decoded.slice(separator + 1) };
-}
-
-function safeEqual(left: string, right: string): boolean {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
-}
-
 type DnsRebindingOptions = {
   enableDnsRebindingProtection: true;
   allowedHosts: string[];
@@ -621,7 +832,7 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
   const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
   const publicHosts =
-    publicUrl && (options.auth.enabled || options.allowUnauthenticatedHttp)
+    publicUrl && (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
       ? [publicUrl.hostname, publicUrl.host]
       : [];
   return {
@@ -634,6 +845,12 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
       ...publicHosts,
     ],
   };
+}
+
+function authDescription(options: HttpServeOptions): string {
+  return options.auth.type === "remote_credentials"
+    ? "remote credentials"
+    : "development unauthenticated";
 }
 
 function installHttpSignalHandlers(

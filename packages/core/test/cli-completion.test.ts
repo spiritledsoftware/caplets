@@ -85,6 +85,17 @@ describe("CLI completion resolver", () => {
       "status",
       "logs",
     ]);
+    await expect(completeCliWords(["remote", ""])).resolves.toEqual([
+      "login",
+      "status",
+      "logout",
+      "host",
+    ]);
+    await expect(completeCliWords(["remote", "host", ""])).resolves.toEqual([
+      "pair",
+      "clients",
+      "revoke",
+    ]);
     await expect(completeCliWords(["completion", ""])).resolves.toEqual([
       "bash",
       "zsh",

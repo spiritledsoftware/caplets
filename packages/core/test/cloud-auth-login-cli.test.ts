@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli";
@@ -59,13 +59,25 @@ describe("caplets cloud auth login", () => {
 
     expect(JSON.parse(out.join(""))).toMatchObject({
       authenticated: true,
-      status: "authenticated",
-      cloudUrl: "https://cloud.caplets.dev",
+      kind: "cloud",
+      hostUrl: "https://cloud.caplets.dev/",
       workspaceId: "workspace_team",
       workspaceSlug: "team",
+      selected: true,
     });
     assertNoSecrets(out.join(""));
-    expect(readFileSync(path, "utf8")).toContain("cap_refresh_secret");
+    expect(existsSync(path)).toBe(false);
+
+    const statusOut: string[] = [];
+    await runCli(["remote", "status", "https://cloud.caplets.dev", "--json"], {
+      env: { CAPLETS_CLOUD_AUTH_PATH: path },
+      writeOut: (value) => statusOut.push(value),
+    });
+    expect(JSON.parse(statusOut.join(""))).toMatchObject({
+      authenticated: true,
+      kind: "cloud",
+      workspaceSlug: "team",
+    });
   });
 
   it("continues polling while browser workspace selection is required", async () => {
@@ -120,6 +132,16 @@ describe("caplets cloud auth login", () => {
     expect(
       requests.filter((url) => url.endsWith("/api/cloud-client/login/login_123")),
     ).toHaveLength(2);
-    expect(readFileSync(path, "utf8")).toContain("workspace_team");
+    expect(existsSync(path)).toBe(false);
+
+    const statusOut: string[] = [];
+    await runCli(["remote", "status", "https://cloud.caplets.dev", "--json"], {
+      env: { CAPLETS_CLOUD_AUTH_PATH: path },
+      writeOut: (value) => statusOut.push(value),
+    });
+    expect(JSON.parse(statusOut.join(""))).toMatchObject({
+      authenticated: true,
+      workspaceId: "workspace_team",
+    });
   });
 });

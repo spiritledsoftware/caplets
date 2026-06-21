@@ -132,6 +132,76 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("prints JSON status with remote credential auth config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-"));
+    const out: string[] = [];
+    try {
+      const runner = fakeRunner();
+      await installDaemon(
+        { remoteStatePath: join(dir, "remote-state"), validate: false },
+        {
+          env: testEnv(dir),
+          platform: "linux",
+          commandRunner: runner,
+        },
+      );
+
+      await runCli(["daemon", "status", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => out.push(value),
+        daemon: { platform: "linux", commandRunner: runner },
+      });
+
+      const status = JSON.parse(out.join("")) as {
+        config: { serve: { auth: { type: string }; remoteCredentialStateDir: string } };
+      };
+      expect(status.config.serve.auth.type).toBe("remote_credentials");
+      expect(status.config.serve.remoteCredentialStateDir).toBe("[REDACTED]");
+      expect(out.join("")).not.toContain(join(dir, "remote-state"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts legacy daemon Basic Auth passwords from JSON status", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-legacy-auth-redaction-"));
+    try {
+      const runner = fakeRunner();
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      await installDaemon({ validate: false }, options);
+      const paths = resolveDaemonPaths(options);
+      const config = JSON.parse(readFileSync(paths.configFile, "utf8")) as {
+        serve: { auth: unknown };
+      };
+      config.serve.auth = {
+        enabled: true,
+        user: "caplets",
+        password: "legacy-password-secret",
+      };
+      writeFileSync(paths.configFile, `${JSON.stringify(config, null, 2)}\n`);
+      const out: string[] = [];
+
+      await runCli(["daemon", "status", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => out.push(value),
+        daemon: options,
+      });
+
+      const serialized = out.join("");
+      const status = JSON.parse(serialized) as {
+        config: { serve: { auth: { password?: string } } };
+      };
+      expect(status.config.serve.auth.password).toBe("[redacted]");
+      expect(serialized).not.toContain("legacy-password-secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports daemon start as a restart when the service is already running", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-start-restart-"));
     try {
@@ -175,10 +245,8 @@ describe("caplets daemon CLI", () => {
           "install",
           "--json",
           "--dry-run",
-          "--user",
-          "alice",
-          "--password",
-          'pa"$USER',
+          "--remote-state-path",
+          join(dir, 'remote "state'),
           "--env",
           'TOKEN=a&b"c',
           "--env",
@@ -198,9 +266,9 @@ describe("caplets daemon CLI", () => {
         descriptor?: { contents?: string };
       };
       expect(serialized).toContain("[redacted]");
-      expect(serialized).not.toContain('pa"$USER');
+      expect(serialized).not.toContain(join(dir, 'remote "state'));
       expect(serialized).not.toContain('a&b"c');
-      expect(parsed.descriptor?.contents).not.toContain('pa\\"$$USER');
+      expect(parsed.descriptor?.contents).not.toContain('remote \\"state');
       expect(parsed.descriptor?.contents).not.toContain('a&b\\"c');
       expect(parsed.descriptor?.contents).not.toContain("a'\\\\''b");
     } finally {
@@ -392,11 +460,14 @@ describe("daemon paths and config", () => {
     }
   });
 
-  it("does not emit auth flags for default unauthenticated loopback serve", () => {
+  it("emits remote credential state and no Basic Auth flags for default daemon serve", () => {
     const serve = resolveDaemonHttpServeOptions({});
 
-    expect(daemonServeArgs(serve)).not.toContain("--user");
-    expect(daemonServeArgs(serve)).not.toContain("--password");
+    const args = daemonServeArgs(serve);
+    expect(args).toContain("--remote-state-path");
+    expect(args).toContain(serve.remoteCredentialStateDir);
+    expect(args).not.toContain("--user");
+    expect(args).not.toContain("--password");
   });
 
   it("validates updates to running daemons on a temporary loopback port", async () => {
@@ -563,8 +634,7 @@ describe("daemon paths and config", () => {
       const systemdWithDollar = await installDaemon(
         {
           ...common,
-          password: "pa$USER",
-          allowUnauthenticatedHttp: false,
+          remoteStatePath: join(dir, "pa$USER"),
           env: ["TOKEN=pa$USER"],
         },
         {
@@ -602,7 +672,7 @@ describe("daemon paths and config", () => {
       expect(windows.descriptor.wrapper.contents).toContain("2>> ");
 
       const escapedWindows = await installDaemon(
-        { ...common, password: "pa%USERNAME%ss", allowUnauthenticatedHttp: false },
+        { ...common, remoteStatePath: join(dir, "pa%USERNAME%ss") },
         {
           env: {
             APPDATA: join(dir, "Escaped", "Roaming"),
@@ -696,8 +766,7 @@ describe("daemon paths and config", () => {
       await expect(
         installDaemon(
           {
-            password: "secret\r\nwhoami",
-            allowUnauthenticatedHttp: false,
+            remoteStatePath: `secret\r\nwhoami`,
             validate: false,
             dryRun: true,
           },
@@ -721,7 +790,7 @@ describe("daemon paths and config", () => {
     const cmd = serviceCommand({
       command: {
         executable: "C:\\Program Files\\Caplets\\cli.js",
-        args: ["serve", "--password", "pa ss"],
+        args: ["serve", "--remote-state-path", "pa ss"],
         env: { PATH: "C:\\Tools" },
         shell: { executable: "cmd.exe", args: ["/d", "/s", "/c"] },
       },
@@ -734,7 +803,7 @@ describe("daemon paths and config", () => {
     const powerShell = serviceCommand({
       command: {
         executable: "C:\\Program Files\\Caplets\\cli.js",
-        args: ["serve", "--password", "pa ss"],
+        args: ["serve", "--remote-state-path", "pa ss"],
         env: { PATH: "C:\\Tools" },
         shell: {
           executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
@@ -760,7 +829,7 @@ describe("daemon paths and config", () => {
     const shellWithSlashC = serviceCommand({
       command: {
         executable: "/usr/local/bin/caplets",
-        args: ["serve", "--password", "pa ss"],
+        args: ["serve", "--remote-state-path", "pa ss"],
         env: { TOKEN: "value" },
         shell: { executable: "/usr/bin/custom-shell", args: ["/c"] },
       },
@@ -853,7 +922,7 @@ describe("daemon paths and config", () => {
     }
   });
 
-  it("preserves disabled auth across daemon config updates", async () => {
+  it("preserves unauthenticated auth across daemon config updates", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-update-no-auth-"));
     try {
       const options = {
@@ -862,7 +931,7 @@ describe("daemon paths and config", () => {
         platform: "linux" as const,
         commandRunner: fakeRunner(),
       };
-      await installDaemon({ validate: false }, options);
+      await installDaemon({ validate: false, allowUnauthenticatedHttp: true }, options);
 
       const updated = await installDaemon(
         { validate: false, env: ["FOO=bar"], noRestart: true },
@@ -870,14 +939,13 @@ describe("daemon paths and config", () => {
           ...options,
           env: {
             ...testEnv(dir),
-            CAPLETS_SERVER_USER: "alice",
-            CAPLETS_SERVER_PASSWORD: "secret",
+            CAPLETS_REMOTE_SERVER_STATE_DIR: join(dir, "remote-state"),
           },
         },
       );
 
-      expect(updated.config.serve.auth.enabled).toBe(false);
-      expect(updated.config.command.args).not.toContain("--password");
+      expect(updated.config.serve.auth.type).toBe("development_unauthenticated");
+      expect(updated.config.command.args).not.toContain("--remote-state-path");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2147,7 +2215,7 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
-  it("redacts daemon auth secrets from status config", async () => {
+  it("redacts daemon remote credential state from status config", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-status-redaction-"));
     try {
       const runner: DaemonCommandRunner = {
@@ -2155,7 +2223,7 @@ describe("daemon lifecycle and logs", () => {
           if (command === "systemctl" && args.includes("show")) {
             return {
               stdout:
-                "ExecStart={ path=/node ; argv[]=/node /cli serve --password secret ; }\nEnvironment=TOKEN=abc123\n",
+                "ExecStart={ path=/node ; argv[]=/node /cli serve --remote-state-path /secret/state ; }\nEnvironment=TOKEN=abc123\n",
               stderr: "",
               code: 0,
             };
@@ -2173,9 +2241,7 @@ describe("daemon lifecycle and logs", () => {
       };
       await installDaemon(
         {
-          user: "alice",
-          password: "secret",
-          allowUnauthenticatedHttp: false,
+          remoteStatePath: "/secret/state",
           env: ["TOKEN=abc123"],
           validate: false,
         },
@@ -2185,13 +2251,13 @@ describe("daemon lifecycle and logs", () => {
       const status = await daemonStatus(options);
       const serialized = JSON.stringify(status);
 
-      expect(status.config?.serve.auth.enabled).toBe(true);
-      if (!status.config?.serve.auth.enabled) throw new Error("expected daemon auth");
-      expect(status.config.serve.auth.password).toBe("[redacted]");
+      if (!status.config) throw new Error("expected daemon config");
+      expect(status.config.serve.auth.type).toBe("remote_credentials");
+      expect(status.config.serve.remoteCredentialStateDir).toBe("[REDACTED]");
       expect(status.config.env.values.TOKEN).toBe("[redacted]");
       expect(status.config.command.env.TOKEN).toBe("[redacted]");
-      expect(status.config?.command.args).toContain("--password");
-      expect(status.config?.command.args).not.toContain("secret");
+      expect(status.config.command.args).toContain("--remote-state-path");
+      expect(status.config.command.args).not.toContain("/secret/state");
       expect(serialized).not.toContain("secret");
       expect(serialized).not.toContain("abc123");
     } finally {
@@ -2199,14 +2265,15 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
-  it("redacts password arguments from native status when config is missing", async () => {
+  it("redacts remote state path arguments from native status when config is missing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-status-stale-redaction-"));
     try {
       const runner: DaemonCommandRunner = {
         async exec(command, args) {
           if (command === "systemctl" && args.includes("show")) {
             return {
-              stdout: "ExecStart={ path=/node ; argv[]=/node /cli serve --password secret ; }\n",
+              stdout:
+                "ExecStart={ path=/node ; argv[]=/node /cli serve --remote-state-path /secret/state ; }\n",
               stderr: "",
               code: 0,
             };
@@ -2224,9 +2291,7 @@ describe("daemon lifecycle and logs", () => {
       };
       const installed = await installDaemon(
         {
-          user: "alice",
-          password: "secret",
-          allowUnauthenticatedHttp: false,
+          remoteStatePath: "/secret/state",
           validate: false,
         },
         options,
@@ -2238,7 +2303,7 @@ describe("daemon lifecycle and logs", () => {
 
       expect(status.config).toBeUndefined();
       expect(serialized).toContain("[redacted]");
-      expect(serialized).not.toContain("--password secret");
+      expect(serialized).not.toContain("--remote-state-path /secret/state");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2286,8 +2351,8 @@ describe("daemon validation", () => {
         ...result.config,
         command: {
           ...result.config.command,
-          executable: process.execPath,
-          args: [candidate],
+          executable: candidate,
+          args: [],
         },
       };
 
