@@ -214,7 +214,7 @@ async function validateInstallCommand(input: {
 }): Promise<DaemonHealthResult> {
   const useTemporaryPort =
     input.existingNativeRunning &&
-    (!input.existing || input.existing.serve.port === input.config.serve.port);
+    runningDaemonMayOccupyRequestedAddress(input.existing, input.config);
   const attempts = useTemporaryPort ? 3 : 1;
   let last: DaemonHealthResult | undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -236,6 +236,26 @@ async function validateInstallCommand(input: {
       error: "daemon install validation did not run",
     }
   );
+}
+
+function runningDaemonMayOccupyRequestedAddress(
+  existing: DaemonConfig | undefined,
+  config: DaemonConfig,
+): boolean {
+  if (!existing) return true;
+  return (
+    existing.serve.port === config.serve.port &&
+    bindHostsMayOverlap(existing.serve.host, config.serve.host)
+  );
+}
+
+function bindHostsMayOverlap(left: string, right: string): boolean {
+  return left === right || isWildcardBindHost(left) || isWildcardBindHost(right);
+}
+
+function isWildcardBindHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]";
 }
 
 async function waitForDaemonHealth(
