@@ -11,6 +11,8 @@ export async function validateDaemonCommand(
     timeoutMs?: number;
   } = {},
 ): Promise<DaemonHealthResult> {
+  const bindHost = await validateBindHost(config);
+  if (!bindHost.ok) return bindHost;
   const { spawn } = await import("node:child_process");
   const command = validationSpawnCommand(config);
   const child = spawn(command.command, command.args, {
@@ -40,6 +42,7 @@ export async function validateDaemonCommand(
       last = await Promise.race([
         probeDaemonHealth(config, {
           ...(options.fetch ? { fetch: options.fetch } : {}),
+          skipBindHostValidation: true,
           timeoutMs: 750,
         }),
         processFailure,
@@ -71,14 +74,43 @@ export async function validateDaemonCommand(
   }
 }
 
+async function validateBindHost(config: DaemonConfig): Promise<DaemonHealthResult> {
+  const { createServer } = await import("node:net");
+  const server = createServer();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, config.serve.host, () => resolve());
+    });
+    return { ok: true, url: healthUrl(config) };
+  } catch (error) {
+    return {
+      ok: false,
+      url: healthUrl(config),
+      error: `bind host validation failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  }
+}
+
 export async function probeDaemonHealth(
   config: DaemonConfig,
   options: {
     fetch?: typeof fetch;
     port?: number;
+    skipBindHostValidation?: boolean;
     timeoutMs?: number;
   } = {},
 ): Promise<DaemonHealthResult> {
+  if (options.skipBindHostValidation !== true) {
+    const bindHost = await validateBindHost(config);
+    if (!bindHost.ok) return bindHost;
+  }
   const fetchImpl = options.fetch ?? fetch;
   const url = healthUrl(config, options.port);
   try {

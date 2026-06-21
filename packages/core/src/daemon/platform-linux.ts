@@ -17,7 +17,7 @@ Description=Caplets daemon
 
 [Service]
 Type=simple
-WorkingDirectory=${systemdQuote(config.command.workingDirectory)}
+WorkingDirectory=${systemdEscape(config.command.workingDirectory, true)}
 ${env ? `${env}\n` : ""}ExecStart=${[command.executable, ...command.args].map((value) => systemdQuote(value)).join(" ")}
 Restart=on-failure
 StandardOutput=append:${systemdEscape(config.paths.stdoutLog, true)}

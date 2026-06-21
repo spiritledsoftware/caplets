@@ -91,11 +91,10 @@ export const whyCapletsProblems = [
 ] as const;
 
 export const remoteCommands = {
-  server: `export CAPLETS_SERVER_URL=https://caplets.example.com/caplets
-export CAPLETS_SERVER_PASSWORD=...
-caplets serve --transport http`,
-  client: `export CAPLETS_REMOTE_PASSWORD=...
-caplets attach --remote-url https://caplets.example.com/caplets`,
+  server: `caplets daemon install --start
+caplets remote host pair --host-url <url>`,
+  client: `caplets remote login <url> --code <pairing-code>
+caplets attach --remote-url <url>`,
 } as const;
 
 export const remoteEndpoints = [

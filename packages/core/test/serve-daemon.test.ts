@@ -504,6 +504,41 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("validates the requested bind host when a running daemon update changes host", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-host-change-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const initialEnv = testEnv(dir);
+      const options = {
+        env: initialEnv,
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      await installDaemon({ host: "127.0.0.1", port: "5480", validate: false }, options);
+
+      const validated: Array<{ host: string; port: number }> = [];
+      await installDaemon(
+        {
+          reset: true,
+          noRestart: true,
+        },
+        {
+          ...options,
+          env: { ...initialEnv, CAPLETS_SERVER_URL: "https://caplets.example.com:5480" },
+          validateCommand: async (config) => {
+            validated.push({ host: config.serve.host, port: config.serve.port });
+            return { ok: true, url: `http://${config.serve.host}:${config.serve.port}/v1/healthz` };
+          },
+        },
+      );
+
+      expect(validated).toEqual([{ host: "caplets.example.com", port: 5480 }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("retries temporary validation ports when an update validation fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-retry-"));
     try {
@@ -610,7 +645,7 @@ describe("daemon paths and config", () => {
       expect(systemd.descriptor.kind).toBe("systemd-user");
       if (systemd.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
       expect(systemd.descriptor.unitName).toBe("caplets-daemon-default.service");
-      expect(systemd.descriptor.contents).toContain('WorkingDirectory="/home/alice with space"');
+      expect(systemd.descriptor.contents).toContain("WorkingDirectory=/home/alice with space");
       expect(systemd.descriptor.contents).toContain('Environment="PATH=/custom/bin"');
       expect(systemd.descriptor.contents).toContain(
         'Environment="MULTI=line\\nExecStartPre=/bin/false"',
@@ -2364,6 +2399,41 @@ describe("daemon validation", () => {
       ).resolves.toMatchObject({
         ok: false,
         error: expect.stringContaining("validation process exited"),
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unavailable local bind hosts even when the health URL responds", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-bind-host-"));
+    try {
+      const result = await installDaemon(
+        { validate: false, dryRun: true, host: "192.0.2.1", port: "5480" },
+        {
+          env: testEnv(dir),
+          home: dir,
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+      const config = {
+        ...result.config,
+        command: {
+          ...result.config.command,
+          executable: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000);"],
+        },
+      };
+
+      await expect(
+        validateDaemonCommand(config, {
+          timeoutMs: 1_000,
+          fetch: async () => new Response("ok"),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("bind host validation failed"),
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
