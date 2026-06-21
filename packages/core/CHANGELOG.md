@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.25.1
+
+### Patch Changes
+
+- d812d42: Fix Linux daemon service unit generation so systemd accepts the daemon working directory path, and make daemon install/start health checks reject bind hosts that are not available on the local machine.
+
 ## 0.25.0
 
 ### Minor Changes
