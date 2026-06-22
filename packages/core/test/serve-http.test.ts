@@ -281,6 +281,88 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("starts, polls, and completes pending remote login over HTTP without remote approval routes", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+    });
+
+    const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientLabel: "Test Client",
+        clientFingerprint: "fp_test",
+      }),
+    });
+    expect(started.status).toBe(200);
+    const pending = (await started.json()) as {
+      flowId: string;
+      operatorCode: string;
+      pendingRefreshSecret: string;
+      pendingCompletionSecret: string;
+      codeExpiresAt: string;
+      flowExpiresAt: string;
+      intervalSeconds: number;
+    };
+    expect(pending.operatorCode).toMatch(/^cap_login_/u);
+    expect(pending.pendingRefreshSecret).toMatch(/^cap_pending_refresh_/u);
+    expect(pending.pendingCompletionSecret).toMatch(/^cap_pending_complete_/u);
+
+    const waiting = await app.request("http://127.0.0.1:5387/v1/remote/login/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    });
+    expect(waiting.status).toBe(200);
+    await expect(waiting.json()).resolves.toMatchObject({ status: "pending" });
+
+    expect(await app.request("http://127.0.0.1:5387/v1/remote/login/approve")).toMatchObject({
+      status: 404,
+    });
+    store.approvePendingLogin({ operatorCode: pending.operatorCode });
+
+    const approved = await app.request("http://127.0.0.1:5387/v1/remote/login/poll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    });
+    expect(approved.status).toBe(200);
+    await expect(approved.json()).resolves.toMatchObject({ status: "approved" });
+
+    const completed = await app.request("http://127.0.0.1:5387/v1/remote/login/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    });
+    expect(completed.status).toBe(200);
+    const credentials = (await completed.json()) as {
+      accessToken: string;
+      refreshToken: string;
+      clientId: string;
+    };
+    expect(credentials.accessToken).not.toBe(pending.pendingRefreshSecret);
+    expect(credentials.refreshToken).not.toBe(pending.pendingCompletionSecret);
+
+    const attach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { authorization: `Bearer ${credentials.accessToken}` },
+    });
+    expect(attach.status).toBe(200);
+
+    await engine.close();
+  });
+
   it("returns a retryable status when remote credential refresh state is unavailable", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {

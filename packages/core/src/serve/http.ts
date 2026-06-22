@@ -111,6 +111,93 @@ export function createHttpServeApp(
   );
 
   if (remoteCredentialStore) {
+    app.post(paths.remoteLoginStart, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
+        const clientLabel = optionalStringField(parsed, "clientLabel");
+        const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
+        const hostUrl = remoteCredentialHostUrl(
+          c.req.url,
+          paths.base,
+          options.publicOrigin,
+          options.trustProxy,
+          (name) => c.req.header(name),
+        );
+        const pending = remoteCredentialStore.createPendingLogin({
+          hostUrl,
+          hostIdentity: hostUrl,
+          ...(clientLabel ? { clientLabel } : {}),
+          ...(clientFingerprint ? { clientFingerprint } : {}),
+        });
+        return c.json(pending);
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginPoll, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
+        return c.json(
+          remoteCredentialStore.pollPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginRefresh, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
+        return c.json(
+          remoteCredentialStore.refreshPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingRefreshSecret: stringField(parsed, "pendingRefreshSecret"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginComplete, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
+        const credentials = remoteCredentialStore.completePendingLogin({
+          hostUrl: remoteCredentialHostUrl(
+            c.req.url,
+            paths.base,
+            options.publicOrigin,
+            options.trustProxy,
+            (name) => c.req.header(name),
+          ),
+          flowId: stringField(parsed, "flowId"),
+          pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+        });
+        return c.json(credentials);
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginCancel, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
+        return c.json(
+          remoteCredentialStore.cancelPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
     app.post(paths.pairingExchange, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
@@ -677,6 +764,11 @@ export function servicePaths(base: string): {
   attachInvoke: string;
   projectBindings: string;
   pairingExchange: string;
+  remoteLoginStart: string;
+  remoteLoginPoll: string;
+  remoteLoginRefresh: string;
+  remoteLoginComplete: string;
+  remoteLoginCancel: string;
   remoteRefresh: string;
   remoteClient: string;
   health: string;
@@ -694,6 +786,11 @@ export function servicePaths(base: string): {
     attachInvoke: routePath(attach, "invoke"),
     projectBindings: routePath(attach, "project-bindings"),
     pairingExchange: routePath(remote, "pairing/exchange"),
+    remoteLoginStart: routePath(remote, "login/start"),
+    remoteLoginPoll: routePath(remote, "login/poll"),
+    remoteLoginRefresh: routePath(remote, "login/refresh"),
+    remoteLoginComplete: routePath(remote, "login/complete"),
+    remoteLoginCancel: routePath(remote, "login/cancel"),
     remoteRefresh: routePath(remote, "refresh"),
     remoteClient: routePath(remote, "client"),
     health: routePath(version, "healthz"),
