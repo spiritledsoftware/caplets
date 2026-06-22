@@ -250,6 +250,13 @@ function collectValues(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+const HIDDEN_INPUT_PROMPT_LABELS = {
+  pairingCode: "Pairing Code: ",
+  vaultValue: "Value: ",
+} as const;
+
+export const readHiddenInputForTest = readHiddenInput;
+
 function remoteProfileStore(
   authDir: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
@@ -381,10 +388,33 @@ async function loginCloudRemoteProfile(
   });
 }
 
+async function readHiddenInput(
+  label: string,
+  options: {
+    input?: NodeJS.ReadableStream;
+    output?: Pick<NodeJS.WriteStream, "write">;
+  } = {},
+): Promise<string> {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  output.write(label);
+  const hiddenOutput = new HiddenPromptOutput(output, { echoFirstChunk: false });
+  const readline = createInterface({ input, output: hiddenOutput, terminal: true });
+  try {
+    return await readline.question("");
+  } finally {
+    readline.close();
+    output.write("\n");
+  }
+}
+
 class HiddenPromptOutput extends Writable {
   private wrotePrompt = false;
 
-  constructor(private readonly output: NodeJS.WriteStream) {
+  constructor(
+    private readonly output: Pick<NodeJS.WriteStream, "write">,
+    private readonly options: { echoFirstChunk?: boolean } = { echoFirstChunk: true },
+  ) {
     super();
   }
 
@@ -393,7 +423,7 @@ class HiddenPromptOutput extends Writable {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    if (!this.wrotePrompt) {
+    if (this.options.echoFirstChunk !== false && !this.wrotePrompt) {
       this.output.write(chunk);
       this.wrotePrompt = true;
     }
@@ -3325,14 +3355,7 @@ async function readVaultValue(io: CliIO): Promise<string> {
       "Vault value input is required. Run interactively or provide stdin.",
     );
   } else {
-    const output = new HiddenPromptOutput(process.stdout);
-    const readline = createInterface({ input: process.stdin, output, terminal: true });
-    try {
-      value = await readline.question("Vault value: ");
-    } finally {
-      readline.close();
-      process.stdout.write("\n");
-    }
+    value = await readHiddenInput(HIDDEN_INPUT_PROMPT_LABELS.vaultValue);
   }
   if (value.length === 0) {
     throw new CapletsError("REQUEST_INVALID", "Vault value input is required.");

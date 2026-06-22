@@ -11,8 +11,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable, Writable } from "node:stream";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, installCaplets, normalizeGitRepo, runCli } from "../src/cli";
+import {
+  initConfig,
+  installCaplets,
+  normalizeGitRepo,
+  readHiddenInputForTest,
+  runCli,
+} from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
@@ -201,6 +208,26 @@ describe("cli init", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("labels hidden input prompts without echoing entered secrets", async () => {
+    const writes: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+        callback();
+      },
+    });
+
+    await expect(
+      readHiddenInputForTest("Value: ", {
+        input: Readable.from(["super_secret\n"]),
+        output,
+      }),
+    ).resolves.toBe("super_secret");
+
+    expect(writes.join("")).toBe("Value: \n");
+    expect(writes.join("")).not.toContain("super_secret");
   });
 
   it("rejects local Vault set without non-argv input in noninteractive execution", async () => {

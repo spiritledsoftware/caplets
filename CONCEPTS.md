@@ -88,9 +88,9 @@ Remote Login stores host credentials in Caplets-owned credential storage so agen
 
 ### Pairing Code
 
-A short-lived, one-time code minted by a self-hosted Caplets host and exchanged by a client during Remote Login.
+A short-lived, operator-visible approval code for a pending self-hosted Remote Login flow.
 
-Pairing Codes are bootstrap material only. They are not reusable client credentials.
+Pairing Codes prove that a server-local operator approved a specific pending login. They are not reusable client credentials, attach bearer credentials, or the flow's longer-lived pre-login refresh material.
 
 ### Remote Profile
 
