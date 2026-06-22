@@ -284,7 +284,11 @@ async function refreshSelfHostedCredentials(
 
 async function selfHostedRefreshError(remoteUrl: string, response: Response): Promise<Error> {
   const summary = await parseSelfHostedRefreshError(response);
-  if (response.status === 401 || summary?.code === "AUTH_FAILED") {
+  if (
+    response.status === 401 ||
+    summary?.code === "AUTH_FAILED" ||
+    summary?.code === "REMOTE_CREDENTIALS_REVOKED"
+  ) {
     return selfHostedRefreshLooksRevoked(summary)
       ? remoteLoginRevoked(remoteUrl)
       : remoteLoginRequired(remoteUrl);
@@ -367,7 +371,8 @@ function remoteLoginRevoked(remoteUrl: string): ProjectBindingError {
 function selfHostedRefreshLooksRevoked(
   summary: { code?: string | undefined; message?: string | undefined } | undefined,
 ): boolean {
-  return /revoked|rejected/iu.test(summary?.message ?? "");
+  if (summary?.code === "REMOTE_CREDENTIALS_REVOKED") return true;
+  return /revoked|rejected|stale/iu.test(summary?.message ?? "");
 }
 
 async function getCloudProfileStatusForSelection(

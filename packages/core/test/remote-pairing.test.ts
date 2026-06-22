@@ -182,6 +182,28 @@ describe("self-hosted remote pairing", () => {
     ).toThrow(/denied/u);
   });
 
+  it("does not rewrite terminal pending login states after the flow expiry", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.denyPendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toThrow(/already denied/u);
+    expect(store.listPendingLogins(new Date("2026-06-20T12:00:02.000Z"))).toEqual([
+      expect.objectContaining({ flowId: pending.flowId, status: "denied" }),
+    ]);
+  });
+
   it("rejects expired operator codes while allowing the client to refresh the flow", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const pending = store.createPendingLogin({

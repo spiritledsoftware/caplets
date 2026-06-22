@@ -179,7 +179,7 @@ describe("resolveRemoteSelection", () => {
           authDir,
           fetch: async () =>
             Response.json(
-              { error: { code: "AUTH_FAILED", message: "Remote client was revoked." } },
+              { error: { code: "REMOTE_CREDENTIALS_REVOKED", message: "Access denied." } },
               { status: 401 },
             ),
         },
@@ -192,6 +192,42 @@ describe("resolveRemoteSelection", () => {
       projectBindingCode: "remote_credentials_revoked",
       recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
       message: expect.stringContaining("server operator"),
+    });
+  });
+
+  it("treats stale self-hosted refresh responses as revoked credentials", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        tokenType: "Bearer",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        {
+          authDir,
+          fetch: async () =>
+            Response.json(
+              { error: { code: "AUTH_FAILED", message: "Remote refresh credential is stale." } },
+              { status: 401 },
+            ),
+        },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "remote_credentials_revoked",
+      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
     });
   });
 

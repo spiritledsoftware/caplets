@@ -19,6 +19,7 @@ import type {
   IssuedRemoteClientCredentials,
   RemoteClientStatus,
   RemotePendingLoginStatus,
+  RemotePendingLoginState,
   ValidatedRemoteClient,
 } from "./server-credentials";
 
@@ -107,7 +108,7 @@ type StoredRemoteClient = {
   revokedAt?: string | undefined;
 };
 
-type PendingLoginStatus = "pending" | "approved" | "denied" | "cancelled" | "expired" | "exchanged";
+type PendingLoginStatus = RemotePendingLoginState;
 
 type StoredPendingLogin = {
   flowId: string;
@@ -384,13 +385,13 @@ export class RemoteServerCredentialStore {
         safeHashEqual(operatorCodeHash, candidate.operatorCodeHash),
       );
       if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
+      if (flow.status !== "pending") {
+        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+      }
       if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
         flow.status = "expired";
         this.saveState(state);
         throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
-      }
-      if (flow.status !== "pending") {
-        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       }
       assertPendingOperatorCodeFresh(flow, now);
       flow.status = "approved";
@@ -612,7 +613,10 @@ export class RemoteServerCredentialStore {
             replayedClient.revokedAt = now.toISOString();
           }
           this.saveState(state);
-          throw new CapletsError("AUTH_FAILED", "Remote refresh credential is stale.");
+          throw new CapletsError(
+            "REMOTE_CREDENTIALS_REVOKED",
+            "Remote refresh credential is stale.",
+          );
         }
         throw new CapletsError("AUTH_FAILED", "Remote refresh credential is invalid.");
       }
@@ -944,7 +948,10 @@ function validateClient(
     throw new CapletsError("AUTH_FAILED", "Remote client credential is for a different host.");
   }
   if (client.revokedAt) {
-    throw new CapletsError("AUTH_FAILED", "Remote client credential has been revoked.");
+    throw new CapletsError(
+      "REMOTE_CREDENTIALS_REVOKED",
+      "Remote client credential has been revoked.",
+    );
   }
   if (!options.allowExpiredAccess && Date.parse(client.accessExpiresAt) <= now.getTime()) {
     throw new CapletsError("AUTH_FAILED", "Remote client credential has expired.");

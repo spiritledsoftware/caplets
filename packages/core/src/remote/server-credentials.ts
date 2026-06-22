@@ -18,11 +18,19 @@ export type RemoteClientStatus = {
   revokedAt?: string | undefined;
 };
 
+export type RemotePendingLoginState =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "cancelled"
+  | "expired"
+  | "exchanged";
+
 export type RemotePendingLoginStatus = {
   flowId: string;
   hostUrl: string;
   hostIdentity?: string | undefined;
-  status: string;
+  status: RemotePendingLoginState;
   clientLabel: string;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;

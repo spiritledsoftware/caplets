@@ -251,7 +251,6 @@ function collectValues(value: string, previous: string[]): string[] {
 }
 
 const HIDDEN_INPUT_PROMPT_LABELS = {
-  pairingCode: "Pairing Code: ",
   vaultValue: "Value: ",
 } as const;
 
@@ -583,7 +582,7 @@ async function selfHostedPendingRemoteLogin(
   } else {
     input.writeOut(`Remote Login Code: ${pending.operatorCode}\n`);
     input.writeOut(
-      `Approve from the host with caplets remote host approve ${pending.operatorCode}\n`,
+      `Approve from the host with caplets remote host approve ${pending.operatorCode} --yes\n`,
     );
   }
 

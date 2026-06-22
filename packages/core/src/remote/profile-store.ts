@@ -478,12 +478,13 @@ export class FileRemoteProfileStore {
     const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
     const now = (input.now ?? new Date()).toISOString();
     const existing = this.readProfile(key);
+    const hostIdentity = input.hostIdentity ?? existing?.hostIdentity;
     const profile: StoredRemoteProfile = {
       version: 1,
       kind: "self-hosted",
       key,
       hostUrl,
-      ...(input.hostIdentity ? { hostIdentity: input.hostIdentity } : {}),
+      ...(hostIdentity ? { hostIdentity } : {}),
       clientId: input.clientId,
       ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
       createdAt: existing?.createdAt ?? now,

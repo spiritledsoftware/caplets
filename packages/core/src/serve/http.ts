@@ -128,6 +128,7 @@ export function createHttpServeApp(
           hostIdentity: hostUrl,
           ...(clientLabel ? { clientLabel } : {}),
           ...(clientFingerprint ? { clientFingerprint } : {}),
+          ...remoteCredentialSourceHint(options.trustProxy, (name) => c.req.header(name)),
         });
         return c.json(pending);
       } catch (error) {
@@ -502,6 +503,18 @@ function remoteCredentialHostUrl(
     );
   }
   return publicHostUrl(requestUrl, basePath, publicOrigin, trustProxy, header);
+}
+
+function remoteCredentialSourceHint(
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): { sourceHint?: string | undefined } {
+  if (!trustProxy) return {};
+  const sourceHint =
+    firstForwardedValue(header("x-forwarded-for")) ??
+    firstForwardedValue(header("x-real-ip")) ??
+    firstForwardedValue(header("cf-connecting-ip"));
+  return sourceHint ? { sourceHint } : {};
 }
 
 function firstForwardedValue(value: string | undefined): string | undefined {

@@ -114,6 +114,42 @@ describe("Remote Profile storage", () => {
     ).rejects.toThrow(expect.objectContaining({ code: "AUTH_FAILED" }) as CapletsError);
   });
 
+  it("preserves self-hosted profile identity when refreshing stored credentials", async () => {
+    const store = tempRemoteProfileStore();
+    await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com",
+      hostIdentity: "host_original",
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "old_access",
+        refreshToken: "old_refresh",
+      },
+      now: new Date("2026-06-19T10:00:00.000Z"),
+    });
+
+    const refreshed = await store.saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com",
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "new_access",
+        refreshToken: "new_refresh",
+      },
+      now: new Date("2026-06-19T10:05:00.000Z"),
+    });
+
+    expect(refreshed).toMatchObject({
+      hostIdentity: "host_original",
+      createdAt: "2026-06-19T10:00:00.000Z",
+      updatedAt: "2026-06-19T10:05:00.000Z",
+    });
+    await expect(
+      store.getSelfHostedProfileStatus({
+        hostUrl: "https://caplets.example.com",
+        hostIdentity: "host_replaced",
+      }),
+    ).rejects.toThrow(expect.objectContaining({ code: "AUTH_FAILED" }) as CapletsError);
+  });
+
   it("logs out a self-hosted profile without touching Cloud profiles", async () => {
     const store = tempRemoteProfileStore();
     await store.saveSelfHostedProfile({

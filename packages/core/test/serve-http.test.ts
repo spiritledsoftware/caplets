@@ -270,6 +270,55 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("applies pending login quotas per trusted forwarded source", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(
+      httpOptions({
+        auth: { type: "remote_credentials" },
+        publicOrigin: "https://caplets.example.com",
+        trustProxy: true,
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: store,
+      },
+    );
+    const headers = {
+      "content-type": "application/json",
+      "x-forwarded-for": "203.0.113.7, 10.0.0.1",
+    };
+
+    for (let index = 0; index < 8; index += 1) {
+      const started = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ clientLabel: `Client ${index}` }),
+      });
+      expect(started.status).toBe(200);
+    }
+
+    const blocked = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ clientLabel: "Blocked client" }),
+    });
+    expect(blocked.status).toBe(401);
+    await expect(blocked.json()).resolves.toMatchObject({
+      error: { message: "Too many active pending logins for this source." },
+    });
+
+    const otherSource = await app.request("http://10.0.0.5:5387/v1/remote/login/start", {
+      method: "POST",
+      headers: { ...headers, "x-forwarded-for": "203.0.113.8" },
+      body: JSON.stringify({ clientLabel: "Other source" }),
+    });
+    expect(otherSource.status).toBe(200);
+
+    await engine.close();
+  });
+
   it("starts, polls, and completes pending remote login over HTTP without remote approval routes", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
@@ -373,6 +422,35 @@ describe("createHttpServeApp", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
       error: { code: "SERVER_UNAVAILABLE" },
+    });
+
+    await engine.close();
+  });
+
+  it("returns a structured revoked status for stale remote credential refreshes", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: {
+        refreshClientCredentials: () => {
+          throw new CapletsError(
+            "REMOTE_CREDENTIALS_REVOKED",
+            "Remote refresh credential is stale.",
+          );
+        },
+      } as unknown as RemoteServerCredentialStore,
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: "refresh-token" }),
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "REMOTE_CREDENTIALS_REVOKED" },
     });
 
     await engine.close();
