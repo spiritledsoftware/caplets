@@ -453,6 +453,16 @@ type RemoteLoginCredentialsResponse = {
   expiresAt?: string | undefined;
 };
 
+type PendingRemoteLoginStartResponse = {
+  flowId: string;
+  operatorCode: string;
+  pendingRefreshSecret: string;
+  pendingCompletionSecret: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  intervalSeconds: number;
+};
+
 async function parseRemoteLoginCredentials(
   response: Response,
 ): Promise<RemoteLoginCredentialsResponse> {
@@ -479,6 +489,120 @@ async function parseRemoteLoginCredentials(
     ...(typeof record.tokenType === "string" ? { tokenType: record.tokenType } : {}),
     ...(typeof record.expiresAt === "string" ? { expiresAt: record.expiresAt } : {}),
   };
+}
+
+async function parsePendingRemoteLoginStart(
+  response: Response,
+): Promise<PendingRemoteLoginStartResponse> {
+  const parsed = await response.json();
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response must be an object.",
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record.flowId !== "string" ||
+    typeof record.operatorCode !== "string" ||
+    typeof record.pendingRefreshSecret !== "string" ||
+    typeof record.pendingCompletionSecret !== "string" ||
+    typeof record.codeExpiresAt !== "string" ||
+    typeof record.flowExpiresAt !== "string"
+  ) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response is missing pending material.",
+    );
+  }
+  return {
+    flowId: record.flowId,
+    operatorCode: record.operatorCode,
+    pendingRefreshSecret: record.pendingRefreshSecret,
+    pendingCompletionSecret: record.pendingCompletionSecret,
+    codeExpiresAt: record.codeExpiresAt,
+    flowExpiresAt: record.flowExpiresAt,
+    intervalSeconds: typeof record.intervalSeconds === "number" ? record.intervalSeconds : 5,
+  };
+}
+
+async function parsePendingRemoteLoginStatus(response: Response): Promise<string> {
+  const parsed = await response.json();
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login status response must be an object.",
+    );
+  }
+  const status = (parsed as Record<string, unknown>).status;
+  if (typeof status !== "string") {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login status response is missing status.",
+    );
+  }
+  return status;
+}
+
+async function selfHostedPendingRemoteLogin(
+  url: string,
+  input: {
+    clientLabel?: string | undefined;
+    json?: boolean | undefined;
+    fetch?: typeof fetch | undefined;
+    writeOut: (value: string) => void;
+    env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  },
+): Promise<RemoteLoginCredentialsResponse> {
+  const fetchImpl = input.fetch ?? fetch;
+  const baseUrl = new URL(normalizeRemoteProfileHostUrl(url));
+  const startBody = input.clientLabel ? { clientLabel: input.clientLabel } : {};
+  const start = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/start"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(startBody),
+  });
+  if (!start.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending start failed.");
+  const pending = await parsePendingRemoteLoginStart(start);
+  if (!input.json) {
+    input.writeOut(`Remote Login Code: ${pending.operatorCode}\n`);
+    input.writeOut(
+      `Approve from the host with caplets remote host approve ${pending.operatorCode}\n`,
+    );
+  }
+
+  const intervalMs = numberEnv(
+    input.env.CAPLETS_REMOTE_LOGIN_POLL_INTERVAL_MS,
+    pending.intervalSeconds * 1_000,
+  );
+  while (true) {
+    const poll = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    });
+    if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
+    const status = await parsePendingRemoteLoginStatus(poll);
+    if (status === "approved") break;
+    if (status !== "pending") {
+      throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
+    }
+    await sleep(intervalMs);
+  }
+
+  const complete = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/complete"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+  });
+  if (!complete.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
+  return parseRemoteLoginCredentials(complete);
 }
 
 async function revokeSelfHostedRemoteClient(
@@ -1128,25 +1252,37 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
 
-        const code = await pairingCodeFromOptions(options, io.readStdin, writeErr);
-        const exchangeUrl = appendBasePath(
-          new URL(normalizeRemoteProfileHostUrl(url)),
-          "v1/remote/pairing/exchange",
-        );
-        const response = await (io.fetch ?? fetch)(exchangeUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            code,
-            ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-          }),
-        });
-        if (!response.ok) {
-          throw new CapletsError("AUTH_FAILED", "Remote Login pairing exchange failed.");
-        }
-        const credentials = await parseRemoteLoginCredentials(response);
+        const credentials =
+          options.code?.trim() || options.codeStdin
+            ? await (async () => {
+                const code = await pairingCodeFromOptions(options, io.readStdin, writeErr);
+                const exchangeUrl = appendBasePath(
+                  new URL(normalizeRemoteProfileHostUrl(url)),
+                  "v1/remote/pairing/exchange",
+                );
+                const response = await (io.fetch ?? fetch)(exchangeUrl, {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    code,
+                    ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+                  }),
+                });
+                if (!response.ok) {
+                  throw new CapletsError("AUTH_FAILED", "Remote Login pairing exchange failed.");
+                }
+                return parseRemoteLoginCredentials(response);
+              })()
+            : await selfHostedPendingRemoteLogin(url, {
+                ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+                json: options.json,
+                ...(io.fetch ? { fetch: io.fetch } : {}),
+                writeOut,
+                env,
+              });
         const status = await store.saveSelfHostedProfile({
           hostUrl: url,
+          hostIdentity: normalizeRemoteProfileHostUrl(url),
           clientId: credentials.clientId,
           clientLabel: credentials.clientLabel,
           credentials: {
