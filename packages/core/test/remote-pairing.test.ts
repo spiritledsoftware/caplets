@@ -97,6 +97,7 @@ describe("self-hosted remote pairing", () => {
         hostUrl: "https://caplets.example.com/caplets",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:03:30.000Z"),
       }),
     ).toThrow(/exchanged/u);
   });
@@ -159,6 +160,7 @@ describe("self-hosted remote pairing", () => {
         hostUrl: "https://caplets.example.com",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:12:30.000Z"),
       }),
     ).toThrow(/denied/u);
   });
@@ -182,6 +184,7 @@ describe("self-hosted remote pairing", () => {
         hostUrl: "https://caplets.example.com",
         flowId: cancelled.flowId,
         pendingCompletionSecret: cancelled.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
       }),
     ).toThrow(/cancelled/u);
 
@@ -203,6 +206,53 @@ describe("self-hosted remote pairing", () => {
       }),
     ).toThrow(/expired/u);
     expect(store.listClients()).toHaveLength(0);
+  });
+
+  it("cleans up expired pending login records before listing and creating new flows", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(store.listPendingLogins(new Date("2026-06-22T12:00:00.000Z"))).toEqual([]);
+
+    const fresh = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-22T12:00:00.000Z"),
+    });
+
+    expect(store.listPendingLogins(new Date("2026-06-22T12:01:00.000Z"))).toEqual([
+      expect.objectContaining({ flowId: fresh.flowId, status: "pending" }),
+    ]);
+  });
+
+  it("bounds active pending login flows per observed source", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+
+    for (let index = 0; index < 8; index += 1) {
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.7",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      });
+    }
+
+    expect(() =>
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.7",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toThrow(/Too many active pending logins for this source/u);
+
+    expect(
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.8",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toMatchObject({ operatorCode: expect.stringMatching(/^cap_login_/u) });
   });
 
   it("issues one-time Pairing Codes that exchange for client credentials", () => {

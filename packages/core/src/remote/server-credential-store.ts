@@ -147,6 +147,9 @@ const DEFAULT_ACCESS_TOKEN_TTL_MS = 15 * 60_000;
 const DEFAULT_PENDING_OPERATOR_CODE_TTL_MS = 10 * 60_000;
 const DEFAULT_PENDING_FLOW_TTL_MS = 24 * 60 * 60_000;
 const DEFAULT_PENDING_POLL_INTERVAL_SECONDS = 5;
+const DEFAULT_PENDING_MAX_ACTIVE_FLOWS = 64;
+const DEFAULT_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE = 8;
+const PENDING_TERMINAL_RETENTION_MS = 24 * 60 * 60_000;
 const STALE_REFRESH_REVOKE_GRACE_MS = 30_000;
 const SUPERSEDED_REFRESH_TOKEN_RETENTION_MS = 24 * 60 * 60_000;
 const STATE_FILE = "remote-server-credentials.json";
@@ -181,6 +184,8 @@ export class RemoteServerCredentialStore {
       ).toISOString();
       const flowExpiresAt = new Date(now.getTime() + DEFAULT_PENDING_FLOW_TTL_MS).toISOString();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
+      enforcePendingLoginQuota(state, input.sourceHint);
       state.pendingLogins.push({
         flowId,
         hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
@@ -230,6 +235,7 @@ export class RemoteServerCredentialStore {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
       const flow = this.pendingLoginForCompletion(
         input.flowId,
         input.pendingCompletionSecret,
@@ -286,8 +292,10 @@ export class RemoteServerCredentialStore {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
+      const operatorCodeHash = hashSecret(input.operatorCode);
       const flow = state.pendingLogins.find((candidate) =>
-        safeHashEqual(hashSecret(input.operatorCode), candidate.operatorCodeHash),
+        safeHashEqual(operatorCodeHash, candidate.operatorCodeHash),
       );
       if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
       if (flow.status !== "pending") {
@@ -312,6 +320,7 @@ export class RemoteServerCredentialStore {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
       const flow = this.pendingLoginForCompletion(
         input.flowId,
         input.pendingCompletionSecret,
@@ -338,8 +347,10 @@ export class RemoteServerCredentialStore {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
+      const operatorCodeHash = hashSecret(input.operatorCode);
       const flow = state.pendingLogins.find((candidate) =>
-        safeHashEqual(hashSecret(input.operatorCode), candidate.operatorCodeHash),
+        safeHashEqual(operatorCodeHash, candidate.operatorCodeHash),
       );
       if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
       if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
@@ -361,6 +372,7 @@ export class RemoteServerCredentialStore {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
+      cleanupPendingLogins(state, now);
       const flow = this.pendingLoginForCompletion(
         input.flowId,
         input.pendingCompletionSecret,
@@ -495,10 +507,14 @@ export class RemoteServerCredentialStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  listPendingLogins(): RemotePendingLoginStatus[] {
-    return this.loadState()
-      .pendingLogins.map(pendingLoginStatus)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  listPendingLogins(now = new Date()): RemotePendingLoginStatus[] {
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      if (cleanupPendingLogins(state, now)) this.saveState(state);
+      return state.pendingLogins
+        .map(pendingLoginStatus)
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    });
   }
 
   revokeClient(clientId: string, now = new Date()): boolean {
@@ -715,6 +731,60 @@ function pruneSupersededRefreshTokens(
       now.getTime() - supersededAt < SUPERSEDED_REFRESH_TOKEN_RETENTION_MS
     );
   });
+}
+
+function cleanupPendingLogins(state: RemoteServerCredentialState, now: Date): boolean {
+  let changed = false;
+  for (const flow of state.pendingLogins) {
+    if (isActivePendingLogin(flow) && Date.parse(flow.flowExpiresAt) <= now.getTime()) {
+      flow.status = "expired";
+      changed = true;
+    }
+  }
+  const retained = state.pendingLogins.filter((flow) => shouldRetainPendingLogin(flow, now));
+  if (retained.length !== state.pendingLogins.length) changed = true;
+  state.pendingLogins = retained;
+  return changed;
+}
+
+function enforcePendingLoginQuota(
+  state: RemoteServerCredentialState,
+  sourceHint: string | undefined,
+): void {
+  const active = state.pendingLogins.filter(isActivePendingLogin);
+  if (active.length >= DEFAULT_PENDING_MAX_ACTIVE_FLOWS) {
+    throw new CapletsError("AUTH_FAILED", "Too many active pending logins.");
+  }
+  const sourceKey = sourceHint ?? "";
+  const activeForSource = active.filter((flow) => (flow.sourceHint ?? "") === sourceKey);
+  if (activeForSource.length >= DEFAULT_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE) {
+    throw new CapletsError("AUTH_FAILED", "Too many active pending logins for this source.");
+  }
+}
+
+function isActivePendingLogin(flow: StoredPendingLogin): boolean {
+  return flow.status === "pending" || flow.status === "approved";
+}
+
+function shouldRetainPendingLogin(flow: StoredPendingLogin, now: Date): boolean {
+  if (isActivePendingLogin(flow)) return true;
+  const terminalAt = pendingLoginTerminalTime(flow);
+  return Number.isFinite(terminalAt) && now.getTime() - terminalAt < PENDING_TERMINAL_RETENTION_MS;
+}
+
+function pendingLoginTerminalTime(flow: StoredPendingLogin): number {
+  switch (flow.status) {
+    case "denied":
+      return Date.parse(flow.deniedAt ?? flow.flowExpiresAt);
+    case "cancelled":
+      return Date.parse(flow.cancelledAt ?? flow.flowExpiresAt);
+    case "exchanged":
+      return Date.parse(flow.exchangedAt ?? flow.flowExpiresAt);
+    case "expired":
+      return Date.parse(flow.flowExpiresAt);
+    default:
+      return Number.NaN;
+  }
 }
 
 function validateClient(
