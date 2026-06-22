@@ -135,6 +135,33 @@ describe("RemoteControlClient", () => {
     }
   });
 
+  it("redacts operation-scoped Vault values from remote errors", async () => {
+    const client = new RemoteControlClient({
+      baseUrl: new URL("https://example.com/caplets"),
+      requestInit: {},
+      fetch: async () =>
+        Response.json({
+          ok: false,
+          error: {
+            code: "DOWNSTREAM_TOOL_ERROR",
+            message: "runtime echoed exact value unlabeled_remote_secret_123",
+          },
+        }),
+    });
+
+    try {
+      await client.request("vault_set", {
+        name: "GH_TOKEN",
+        value: "unlabeled_remote_secret_123",
+      });
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CapletsError);
+      expect((error as CapletsError).message).not.toContain("unlabeled_remote_secret_123");
+      expect((error as CapletsError).message).toContain("[REDACTED]");
+    }
+  });
+
   it("redacts password, client secret, and api key forms from remote error messages", async () => {
     const client = new RemoteControlClient({
       baseUrl: new URL("https://example.com/caplets"),

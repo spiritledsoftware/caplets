@@ -17,6 +17,7 @@ import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
+import { FileVaultStore } from "../src/vault";
 
 describe("cli init", () => {
   const originalMode = process.env.CAPLETS_MODE;
@@ -152,6 +153,206 @@ describe("cli init", () => {
     await expect(runCli(["auth", "remote"], { writeErr: () => {} })).rejects.toThrow(
       expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError,
     );
+  });
+
+  it("sets, gets, updates, lists, and deletes local Vault values without accidental reveal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-"));
+    const env = { ...process.env, XDG_STATE_HOME: join(dir, "state") };
+    const out: string[] = [];
+    try {
+      await runCli(["vault", "set", "GH_TOKEN"], {
+        env,
+        readStdin: async () => "vault_cli_secret\n",
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["vault", "get", "GH_TOKEN"], { env, writeOut: (value) => out.push(value) });
+      await runCli(["vault", "list", "--json"], { env, writeOut: (value) => out.push(value) });
+
+      expect(out.join("")).toContain("Set Vault key GH_TOKEN.");
+      expect(out.join("")).toContain("GH_TOKEN");
+      expect(out.join("")).not.toContain("vault_cli_secret");
+
+      await expect(
+        runCli(["vault", "set", "GH_TOKEN"], {
+          env,
+          readStdin: async () => "updated_secret\n",
+          writeOut: () => {},
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_EXISTS" } satisfies Partial<CapletsError>);
+
+      await runCli(["vault", "set", "GH_TOKEN", "--force"], {
+        env,
+        readStdin: async () => "updated_secret\n",
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["vault", "get", "GH_TOKEN", "--show"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(["vault", "delete", "GH_TOKEN"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(out.join("")).toContain("updated_secret");
+      expect(out.join("")).toContain("Deleted Vault key GH_TOKEN.");
+      const afterDeleteOutput = out.at(-1) ?? "";
+      expect(afterDeleteOutput).not.toContain("updated_secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects local Vault set without non-argv input in noninteractive execution", async () => {
+    await expect(
+      runCli(["vault", "set", "GH_TOKEN"], {
+        env: { ...process.env, XDG_STATE_HOME: mkdtempSync(join(tmpdir(), "caplets-vault-cli-")) },
+        writeOut: () => {},
+        writeErr: () => {},
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
+  });
+
+  it("rolls back a new local Vault value when set-and-grant fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-grant-fail-"));
+    const configPath = join(dir, "config.json");
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      XDG_STATE_HOME: join(dir, "state"),
+    };
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub access.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      await expect(
+        runCli(["vault", "set", "GH_TOKEN", "--grant", "missing-caplet"], {
+          env,
+          readStdin: async () => "orphaned_secret\n",
+          writeOut: () => {},
+        }),
+      ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
+
+      expect(new FileVaultStore({ env }).getStatus("GH_TOKEN")).toEqual({
+        key: "GH_TOKEN",
+        present: false,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the previous local Vault value when force set-and-grant fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-grant-force-fail-"));
+    const configPath = join(dir, "config.json");
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      XDG_STATE_HOME: join(dir, "state"),
+    };
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub access.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+      const store = new FileVaultStore({ env });
+      store.set("GH_TOKEN", "original_secret");
+
+      await expect(
+        runCli(["vault", "set", "GH_TOKEN", "--force", "--grant", "missing-caplet"], {
+          env,
+          readStdin: async () => "replacement_secret\n",
+          writeOut: () => {},
+        }),
+      ).rejects.toMatchObject({ code: "SERVER_NOT_FOUND" } satisfies Partial<CapletsError>);
+
+      expect(store.resolveValue("GH_TOKEN")).toBe("original_secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("manages local Vault access grants against the active config source", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-"));
+    const configPath = join(dir, "config.json");
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      XDG_STATE_HOME: join(dir, "state"),
+    };
+    const out: string[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            "github-personal": {
+              name: "GitHub Personal",
+              description: "Personal GitHub access.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      await runCli(
+        ["vault", "set", "GH_TOKEN_PERSONAL", "--grant", "github-personal", "--as", "GH_TOKEN"],
+        {
+          env,
+          readStdin: async () => "personal_secret\n",
+          writeOut: (value) => out.push(value),
+        },
+      );
+      await runCli(["vault", "access", "list", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      await runCli(
+        ["vault", "access", "revoke", "GH_TOKEN_PERSONAL", "github-personal", "--as", "GH_TOKEN"],
+        {
+          env,
+          writeOut: (value) => out.push(value),
+        },
+      );
+
+      const store = new FileVaultStore({ env });
+      expect(
+        store.resolveGrantedValue({
+          referenceName: "GH_TOKEN",
+          capletId: "github-personal",
+          origin: { kind: "global-config", path: configPath },
+        }),
+      ).toMatchObject({ reason: "ungranted" });
+      expect(out.join("")).toContain(
+        "Granted Vault key GH_TOKEN_PERSONAL to github-personal as GH_TOKEN.",
+      );
+      expect(out.join("")).toContain('"referenceName": "GH_TOKEN"');
+      expect(out.join("")).not.toContain("personal_secret");
+      expect(out.join("")).toContain("Revoked 1 Vault access grant.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects empty self-hosted remote login code from stdin", async () => {

@@ -101,4 +101,116 @@ describe("CapletsCloudClient", () => {
       }),
     );
   });
+
+  it("sends Vault set requests to the selected workspace contract without redacting the request body", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({ key: "GH_TOKEN", present: true, valueBytes: 12 }),
+    );
+    const client = new CapletsCloudClient({
+      baseUrl: new URL("https://cloud.caplets.dev"),
+      accessToken: "token",
+      fetch,
+    });
+
+    await expect(
+      client.setVaultValue({
+        workspace: "team",
+        name: "GH_TOKEN",
+        value: "cloud_secret",
+        force: true,
+        grant: "github",
+        referenceName: "GH_TOKEN",
+      }),
+    ).resolves.toEqual({ key: "GH_TOKEN", present: true, valueBytes: 12 });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://cloud.caplets.dev/api/workspaces/team/vault/values/GH_TOKEN"),
+      expect.objectContaining({
+        method: "PUT",
+        headers: expect.any(Headers),
+        body: JSON.stringify({
+          value: "cloud_secret",
+          force: true,
+          grant: "github",
+          referenceName: "GH_TOKEN",
+        }),
+      }),
+    );
+  });
+
+  it("sends explicit human context for Cloud Vault reveal requests", async () => {
+    const fetch = vi.fn(async () => Response.json({ key: "GH_TOKEN", value: "cloud_secret" }));
+    const client = new CapletsCloudClient({
+      baseUrl: new URL("https://cloud.caplets.dev"),
+      accessToken: "token",
+      fetch,
+    });
+
+    await expect(
+      client.getVaultValue({ workspace: "team", name: "GH_TOKEN", reveal: true }),
+    ).resolves.toEqual({ key: "GH_TOKEN", value: "cloud_secret" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL(
+        "https://cloud.caplets.dev/api/workspaces/team/vault/values/GH_TOKEN?reveal=true&revealContext=human-cli",
+      ),
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("sends Vault access management requests to the selected workspace contract", async () => {
+    const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0]) => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname.endsWith("/vault/access")) {
+        return Response.json([{ storedKey: "GH_TOKEN", capletId: "github" }]);
+      }
+      return Response.json({
+        storedKey: "GH_TOKEN",
+        referenceName: "GH_TOKEN",
+        capletId: "github",
+      });
+    });
+    const client = new CapletsCloudClient({
+      baseUrl: new URL("https://cloud.caplets.dev/ws/ian"),
+      accessToken: "token",
+      fetch,
+    });
+
+    await client.grantVaultAccess({
+      workspace: "team",
+      name: "GH_TOKEN",
+      capletId: "github",
+      referenceName: "GH_TOKEN",
+    });
+    await client.listVaultAccess({ workspace: "team", name: "GH_TOKEN", capletId: "github" });
+    await client.revokeVaultAccess({
+      workspace: "team",
+      name: "GH_TOKEN",
+      capletId: "github",
+      referenceName: "GH_TOKEN",
+    });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      new URL("https://cloud.caplets.dev/ws/ian/api/workspaces/team/vault/access/GH_TOKEN/github"),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ referenceName: "GH_TOKEN" }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      new URL(
+        "https://cloud.caplets.dev/ws/ian/api/workspaces/team/vault/access?name=GH_TOKEN&capletId=github",
+      ),
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      new URL(
+        "https://cloud.caplets.dev/ws/ian/api/workspaces/team/vault/access/GH_TOKEN/github?referenceName=GH_TOKEN",
+      ),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 });

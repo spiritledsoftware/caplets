@@ -81,6 +81,25 @@ describe("Code Mode Caplets API", () => {
     });
   });
 
+  it("does not expose Vault reveal operations on Code Mode caplet handles", () => {
+    const api = createCodeModeCapletsApi({
+      service: service([
+        {
+          caplet: "github",
+          toolName: "caplets__github",
+          title: "GitHub",
+          description: "GitHub repo operations.",
+          promptGuidance: [],
+        },
+      ]),
+    });
+    const github = api.github as CodeModeCapletHandle & Record<string, unknown>;
+
+    expect(Object.keys(github).filter((key) => key.toLowerCase().includes("vault"))).toEqual([]);
+    expect(github.getVault).toBeUndefined();
+    expect(github.revealVault).toBeUndefined();
+  });
+
   it("treats unavailable backend checks as expected readiness failures", async () => {
     const native = service([
       {

@@ -9,6 +9,7 @@ import {
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
 } from "../src/native";
+import { FileVaultStore } from "../src/vault";
 
 const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
@@ -16,6 +17,7 @@ const tsxImport = import.meta.resolve("tsx");
 describe("native Caplets service", () => {
   const dirs: string[] = [];
   const originalMode = process.env.CAPLETS_MODE;
+  const originalStateHome = process.env.XDG_STATE_HOME;
 
   beforeEach(() => {
     process.env.CAPLETS_MODE = "local";
@@ -26,6 +28,11 @@ describe("native Caplets service", () => {
       delete process.env.CAPLETS_MODE;
     } else {
       process.env.CAPLETS_MODE = originalMode;
+    }
+    if (originalStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalStateHome;
     }
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
@@ -123,6 +130,51 @@ describe("native Caplets service", () => {
       expect(JSON.stringify(result)).not.toContain("super-secret");
     } finally {
       await service.close();
+    }
+  });
+
+  it("quarantines Vault-backed Caplets until the configured access grant exists", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "Inspect GitHub repository work.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+
+    const ungranted = createNativeCapletsService({ configPath, projectConfigPath });
+    try {
+      expect(ungranted.listTools().map((tool) => tool.caplet)).not.toContain("github");
+    } finally {
+      await ungranted.close();
+    }
+
+    const store = new FileVaultStore();
+    store.set("GH_TOKEN", "resolved_vault_secret");
+    store.grantAccess({
+      storedKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      capletId: "github",
+      origin: { kind: "global-config", path: configPath },
+    });
+
+    const granted = createNativeCapletsService({ configPath, projectConfigPath });
+    try {
+      expect(granted.listTools()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            caplet: "github",
+            toolName: "caplets__github",
+          }),
+        ]),
+      );
+    } finally {
+      await granted.close();
     }
   });
 

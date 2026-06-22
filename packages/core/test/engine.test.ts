@@ -3,16 +3,82 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
+import { FileVaultStore } from "../src/vault";
 
 describe("CapletsEngine", () => {
   const dirs: string[] = [];
   const engines: CapletsEngine[] = [];
+  const originalStateHome = process.env.XDG_STATE_HOME;
 
   afterEach(async () => {
     await Promise.all(engines.splice(0).map((engine) => engine.close()));
+    if (originalStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalStateHome;
+    }
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("uses the Vault-aware runtime loader by default", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "GitHub access.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    const store = new FileVaultStore();
+    store.set("GH_TOKEN", "resolved_vault_secret");
+    store.grantAccess({
+      storedKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      capletId: "github",
+      origin: { kind: "global-config", path: configPath },
+    });
+
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+
+    expect(engine.currentConfig().mcpServers.github?.env).toEqual({
+      GH_TOKEN: "resolved_vault_secret",
+    });
+  });
+
+  it("prints recoverable Vault quarantine warnings during startup", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "GitHub access.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    const errors: string[] = [];
+
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    engines.push(engine);
+
+    expect(engine.currentConfig().mcpServers.github).toBeUndefined();
+    expect(errors.join("")).toContain("Caplet github references");
+    expect(errors.join("")).toContain("caplets vault access grant GH_TOKEN github");
+    expect(errors.join("")).not.toContain("resolved_vault_secret");
   });
 
   it("adds, updates, and removes enabled Caplets across successful reloads", async () => {

@@ -76,7 +76,6 @@ const outputs = new Map<string, string>([
     ),
   ],
   ["apps/docs/src/content/docs/reference/code-mode-api.mdx", formatMdx(codeModeApiPage())],
-  ["apps/docs/src/content/docs/changelog.mdx", formatMdx(changelogPage())],
 ]);
 
 if (process.argv.includes("--check")) {
@@ -129,6 +128,7 @@ function schemaPage({
       "options",
       "mcpServers",
       "openapiEndpoints",
+      "googleDiscoveryApis",
       "graphqlEndpoints",
       "httpApis",
       "cliTools",
@@ -138,6 +138,7 @@ function schemaPage({
       "runtime",
       "mcpServer",
       "openapiEndpoint",
+      "googleDiscoveryApi",
       "graphqlEndpoint",
       "httpApi",
       "capletSet",
@@ -218,9 +219,9 @@ function commonSchemaRecipes(sourcePath: string): string {
       "```",
       "",
       "Keep `options.exposure` at the default `code_mode` unless your client cannot run Code",
-      "Mode. Add backend maps such as `mcpServers`, `openapiEndpoints`, `graphqlEndpoints`,",
-      "`httpApis`, `cliTools`, or `capletSets` only for the capability sources you actually",
-      "want agents to see.",
+      "Mode. Add backend maps such as `mcpServers`, `openapiEndpoints`,",
+      "`googleDiscoveryApis`, `graphqlEndpoints`, `httpApis`, `cliTools`, or `capletSets` only",
+      "for the capability sources you actually want agents to see.",
       "",
       "Stdio MCP server:",
       "",
@@ -474,19 +475,6 @@ ${codeModeApiRecipes()}
 ## Runtime handles
 
 ${blocks.map((block) => `\`\`\`ts\n${block}\n\`\`\``).join("\n\n")}
-`;
-}
-
-function changelogPage(): string {
-  const changelog = readFileSync(join(repoRoot, "CHANGELOG.md"), "utf8").trim();
-  const body = changelog.replace(/^# caplets\s*/u, "").trim();
-
-  return `${frontmatter("Changelog", "Public release notes for Caplets.")}
-${generatedMarkerComment}
-
-GitHub releases: [github.com/spiritledsoftware/caplets/releases](https://github.com/spiritledsoftware/caplets/releases)
-
-${body}
 `;
 }
 

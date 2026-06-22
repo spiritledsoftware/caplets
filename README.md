@@ -156,6 +156,28 @@ caplets remote login https://cloud.caplets.dev
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
 
+## Caplets Vault
+
+Caplets Vault stores secret-like string values in the runtime that uses them, encrypted at rest for
+local/global Caplets and owned by the selected remote runtime for `--remote` operations. Reference
+Vault values in config with `$vault:NAME` or `${vault:NAME}`.
+
+```sh
+caplets vault set GH_TOKEN --grant github
+caplets vault get GH_TOKEN
+caplets vault get GH_TOKEN --show
+```
+
+Use `--remote` when the Caplet runs in a self-hosted remote or hosted Cloud runtime:
+
+```sh
+caplets vault set GH_TOKEN --remote --grant github
+caplets vault access grant GH_TOKEN github --remote
+```
+
+Vault values are not exposed through Code Mode, progressive tools, or native agent APIs. Unset or
+ungranted Vault references quarantine only the affected Caplet and appear in `caplets doctor`.
+
 ## Benchmark
 
 The deterministic benchmark compares flat MCP exposure with Caplets over the same mock
@@ -209,6 +231,7 @@ Package map:
 Long-lived docs:
 
 - [Code Mode PRD](https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md)
+- [Caplets Vault](https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-vault.md)
 - [Architecture](https://github.com/spiritledsoftware/caplets/blob/main/docs/architecture.md)
 - [ADR 0001: Code Mode default exposure](https://github.com/spiritledsoftware/caplets/blob/main/docs/adr/0001-code-mode-default-exposure.md)
 - [Benchmark methodology](https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md)

@@ -19,6 +19,7 @@ import {
 } from "./config/validation";
 import { CapletsError, redactSecrets } from "./errors";
 import { nestedSchema, schemaPath } from "./schema-utils";
+import { FileVaultStore, validateVaultKeyName, type VaultConfigOrigin } from "./vault";
 
 export {
   DEFAULT_AUTH_DIR,
@@ -364,6 +365,30 @@ export type LocalOverlayConfigWarning = {
 
 export type LocalOverlayConfigWithSources = ConfigWithSources & {
   warnings: LocalOverlayConfigWarning[];
+};
+
+export type ConfigVaultReference = {
+  referenceName: string;
+  capletId: string;
+  origin: VaultConfigOrigin;
+  path: string;
+};
+
+export type ConfigVaultResolution =
+  | { storedKey: string; value: string }
+  | {
+      reason: "missing" | "ungranted" | "unavailable" | "invalid-key-source";
+      storedKey?: string | undefined;
+      referenceName: string;
+      capletId: string;
+      origin: VaultConfigOrigin;
+    };
+
+export type ConfigVaultResolver = (reference: ConfigVaultReference) => ConfigVaultResolution;
+
+export type ConfigParseOptions = {
+  sources?: Record<string, ConfigSource> | undefined;
+  vaultResolver?: ConfigVaultResolver | undefined;
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
@@ -1690,20 +1715,31 @@ function buildConfigWithSources(
 export function loadLocalOverlayConfigWithSources(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): LocalOverlayConfigWithSources {
+  const parseOptions = { vaultResolver: options.vaultResolver ?? defaultVaultResolver() };
   const warnings: LocalOverlayConfigWarning[] = [];
   const userConfig = existsSync(path)
-    ? readBestEffortConfigInput(path, "global-config", warnings)
+    ? readBestEffortConfigInput(path, "global-config", warnings, undefined, parseOptions)
     : undefined;
-  const userCaplets = loadBestEffortCapletFiles(resolveCapletsRoot(path), "global-file", warnings);
+  const userCaplets = loadBestEffortCapletFiles(
+    resolveCapletsRoot(path),
+    "global-file",
+    warnings,
+    parseOptions,
+  );
   const projectConfig = existsSync(projectPath)
-    ? readBestEffortConfigInput(projectPath, "project-config", warnings, (input) =>
-        rejectProjectConfigExecutableBackendMaps(input, projectPath),
+    ? readBestEffortConfigInput(
+        projectPath,
+        "project-config",
+        warnings,
+        (input) => rejectProjectConfigExecutableBackendMaps(input, projectPath),
+        parseOptions,
       )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
-    ? loadBestEffortCapletFiles(projectCapletsRoot, "project-file", warnings)
+    ? loadBestEffortCapletFiles(projectCapletsRoot, "project-file", warnings, parseOptions)
     : undefined;
 
   const { input, sources, shadows } = mergeConfigInputsWithSources(
@@ -1720,7 +1756,32 @@ export function loadLocalOverlayConfigWithSources(
       : undefined,
   );
 
-  return { config: parseConfig(input), sources, shadows, warnings };
+  return {
+    config: parseConfig(input, { sources, vaultResolver: parseOptions.vaultResolver }),
+    sources,
+    shadows,
+    warnings,
+  };
+}
+
+export function loadLocalRuntimeConfig(
+  path = resolveConfigPath(),
+  projectPath = resolveProjectConfigPath(),
+  options: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined } = {},
+): CapletsConfig {
+  const overlay = loadLocalOverlayConfigWithSources(path, projectPath);
+  for (const warning of overlay.warnings) {
+    options.writeWarning?.(warning);
+  }
+  const blockingWarning = overlay.warnings.find(
+    (warning) =>
+      !warning.recoverable &&
+      (warning.kind === "global-config" || warning.kind === "project-config"),
+  );
+  if (blockingWarning) {
+    throw new CapletsError("CONFIG_INVALID", blockingWarning.message);
+  }
+  return overlay.config;
 }
 
 function readBestEffortConfigInput(
@@ -1728,13 +1789,26 @@ function readBestEffortConfigInput(
   kind: ConfigSourceKind,
   warnings: LocalOverlayConfigWarning[],
   transform?: (input: ConfigInput) => ConfigInput,
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigInput | undefined {
   try {
     const input = readBestEffortJsonConfigInput(path);
     const normalized = normalizeLocalPaths(input, dirname(path));
     const transformed = transform ? transform(normalized) : normalized;
-    const filtered = quarantineMissingEnvCaplets(transformed, kind, path, warnings);
-    const parsed = configFileSchema.safeParse(interpolateConfig(filtered));
+    const filtered = quarantineUnresolvedReferenceCaplets(
+      transformed,
+      kind,
+      path,
+      warnings,
+      options,
+    );
+    const validationOptions = {
+      ...options,
+      sources: Object.fromEntries(
+        capletIds(filtered).map((id) => [id, { kind, path } satisfies ConfigSource]),
+      ),
+    };
+    const parsed = configFileSchema.safeParse(interpolateConfig(filtered, [], validationOptions));
     if (!parsed.success) {
       throw new CapletsError(
         "CONFIG_INVALID",
@@ -1761,11 +1835,12 @@ function readBestEffortJsonConfigInput(path: string): ConfigInput {
   }
 }
 
-function quarantineMissingEnvCaplets(
+function quarantineUnresolvedReferenceCaplets(
   input: ConfigInput,
   kind: ConfigSourceKind,
   sourcePath: string | ((id: string) => string),
   warnings: LocalOverlayConfigWarning[],
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigInput {
   let filtered = input;
 
@@ -1776,18 +1851,38 @@ function quarantineMissingEnvCaplets(
     }
 
     for (const [id, caplet] of Object.entries(caplets)) {
-      const missing = missingEnvReferences(caplet, [backend, id]);
-      if (missing.length === 0) {
+      const envMissing = missingEnvReferences(caplet, [backend, id]);
+      const capletSourcePath = typeof sourcePath === "function" ? sourcePath(id) : sourcePath;
+      const vaultIssues = unresolvedVaultReferences(
+        caplet,
+        [backend, id],
+        {
+          capletId: id,
+          origin: { kind, path: capletSourcePath },
+        },
+        options,
+      );
+      if (envMissing.length === 0 && vaultIssues.length === 0) {
         continue;
       }
 
       filtered = removeCapletBackendId(filtered, backend, id);
-      warnings.push({
-        kind,
-        path: typeof sourcePath === "function" ? sourcePath(id) : sourcePath,
-        message: formatMissingEnvWarning(id, missing),
-        recoverable: true,
-      });
+      for (const missing of groupMissingEnvReferences(envMissing)) {
+        warnings.push({
+          kind,
+          path: capletSourcePath,
+          message: formatMissingEnvWarning(id, missing),
+          recoverable: true,
+        });
+      }
+      for (const issue of vaultIssues) {
+        warnings.push({
+          kind,
+          path: capletSourcePath,
+          message: formatVaultReferenceWarning(id, issue),
+          recoverable: true,
+        });
+      }
     }
   }
 
@@ -1831,10 +1926,100 @@ function formatMissingEnvWarning(id: string, missing: MissingEnvReference[]): st
   return `Caplet ${id} references missing ${variableLabel} ${names.join(", ")} at ${paths.join(", ")}; skipping Caplet ${id}.`;
 }
 
+function groupMissingEnvReferences(missing: MissingEnvReference[]): MissingEnvReference[][] {
+  return missing.length === 0 ? [] : [missing];
+}
+
+type VaultReferenceIssue = {
+  name: string;
+  path: string;
+  reason: Exclude<ConfigVaultResolution, { value: string }>["reason"];
+};
+
+function unresolvedVaultReferences(
+  value: unknown,
+  path: string[],
+  context: Pick<ConfigVaultReference, "capletId" | "origin">,
+  options: Pick<ConfigParseOptions, "vaultResolver">,
+): VaultReferenceIssue[] {
+  if (isPublicMetadataPath(path)) {
+    return [];
+  }
+  if (typeof value === "string") {
+    return unresolvedVaultReferencesInString(value, path.join("."), context, options);
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      unresolvedVaultReferences(item, [...path, String(index)], context, options),
+    );
+  }
+  if (isPlainObject(value)) {
+    return Object.entries(value).flatMap(([key, nested]) =>
+      unresolvedVaultReferences(nested, [...path, key], context, options),
+    );
+  }
+  return [];
+}
+
+function unresolvedVaultReferencesInString(
+  value: string,
+  path: string,
+  context: Pick<ConfigVaultReference, "capletId" | "origin">,
+  options: Pick<ConfigParseOptions, "vaultResolver">,
+): VaultReferenceIssue[] {
+  const issues: VaultReferenceIssue[] = [];
+  for (const match of value.matchAll(VAULT_REFERENCE_PATTERN)) {
+    const name = match[1] ?? match[2];
+    if (!name) continue;
+    try {
+      validateVaultKeyName(name);
+    } catch {
+      issues.push({ name, path, reason: "invalid-key-source" });
+      continue;
+    }
+    const resolution = options.vaultResolver?.({
+      referenceName: name,
+      capletId: context.capletId,
+      origin: context.origin,
+      path,
+    });
+    if (!resolution || !("value" in resolution)) {
+      const reason = resolution && "reason" in resolution ? resolution.reason : "unavailable";
+      issues.push({
+        name,
+        path,
+        reason,
+      });
+    }
+  }
+  return issues;
+}
+
+function formatVaultReferenceWarning(id: string, issue: VaultReferenceIssue): string {
+  const grantCommand = `caplets vault access grant ${issue.name} ${id}`;
+  return `Caplet ${id} references ${issue.reason} Vault key ${issue.name} at ${issue.path}; run \`${grantCommand}\` after setting the value, then reload Caplets; skipping Caplet ${id}.`;
+}
+
+export function defaultVaultResolver(store = new FileVaultStore()): ConfigVaultResolver {
+  return (reference) => {
+    try {
+      return store.resolveGrantedValue(reference);
+    } catch (error) {
+      return {
+        reason: error instanceof CapletsError ? "unavailable" : "invalid-key-source",
+        referenceName: reference.referenceName,
+        capletId: reference.capletId,
+        origin: reference.origin,
+      };
+    }
+  };
+}
+
 function loadBestEffortCapletFiles(
   root: string,
   kind: ConfigSourceKind,
   warnings: LocalOverlayConfigWarning[],
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): { config: ConfigInput; paths: Record<string, string> } | undefined {
   const result = loadCapletFilesWithPathsBestEffort(root);
   if (!result) {
@@ -1843,11 +2028,12 @@ function loadBestEffortCapletFiles(
   for (const warning of result.warnings) {
     warnings.push({ kind, path: warning.path ?? root, message: warning.message });
   }
-  const config = quarantineMissingEnvCaplets(
+  const config = quarantineUnresolvedReferenceCaplets(
     result.config,
     kind,
     (id) => result.paths[id] ?? root,
     warnings,
+    options,
   );
   const retainedIds = new Set(capletIds(config));
   const paths = Object.fromEntries(
@@ -2223,8 +2409,8 @@ function sourceForId(source: ConfigSourceInput, id: string): ConfigSource {
   };
 }
 
-export function parseConfig(input: unknown): CapletsConfig {
-  const parsed = normalizedConfigFileSchema.safeParse(interpolateConfig(input));
+export function parseConfig(input: unknown, options: ConfigParseOptions = {}): CapletsConfig {
+  const parsed = normalizedConfigFileSchema.safeParse(interpolateConfig(input, [], options));
   if (!parsed.success) {
     throw new CapletsError("CONFIG_INVALID", "Caplets config is invalid", parsed.error.issues);
   }
@@ -2346,21 +2532,23 @@ function stripUndefined<T extends Record<string, unknown>>(value: T): T {
   ) as T;
 }
 
-function interpolateConfig<T>(value: T, path: string[] = []): T {
+function interpolateConfig<T>(value: T, path: string[] = [], options: ConfigParseOptions = {}): T {
   if (isPublicMetadataPath(path)) {
     return value;
   }
   if (typeof value === "string") {
-    return interpolateEnv(value) as T;
+    return interpolateVault(interpolateEnv(value), path, options) as T;
   }
   if (Array.isArray(value)) {
-    return value.map((item, index) => interpolateConfig(item, [...path, String(index)])) as T;
+    return value.map((item, index) =>
+      interpolateConfig(item, [...path, String(index)], options),
+    ) as T;
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map(([nestedKey, nested]) => [
         nestedKey,
-        interpolateConfig(nested, [...path, nestedKey]),
+        interpolateConfig(nested, [...path, nestedKey], options),
       ]),
     ) as T;
   }
@@ -2379,7 +2567,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function hasEnvReference(value: string): boolean {
-  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
+  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{vault:[^}]+\}|\$vault:[^\s"',`\]}]+/.test(
+    value,
+  );
+}
+
+const VAULT_REFERENCE_PATTERN = /\$\{vault:([^}]+)\}|\$vault:([^\s"',`\]}]+)/g;
+
+function interpolateVault(value: string, path: string[], options: ConfigParseOptions): string {
+  if (!options.vaultResolver) return value;
+  const backend = path[0];
+  const capletId = path[1];
+  if (!backend || !capletId || !CAPLET_BACKEND_KEY_SET.has(backend)) return value;
+  const origin = options.sources?.[capletId];
+  if (!origin) return value;
+  return value.replace(VAULT_REFERENCE_PATTERN, (_match, braced: string, bare: string) => {
+    const referenceName = validateVaultKeyName(braced ?? bare);
+    const resolution = options.vaultResolver?.({
+      referenceName,
+      capletId,
+      origin,
+      path: path.join("."),
+    });
+    if (!resolution || !("value" in resolution)) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Vault key ${referenceName} is unresolved for Caplet ${capletId}`,
+      );
+    }
+    return resolution.value;
+  });
 }
 
 function patchConfigJsonSchema<T>(schema: T): T {

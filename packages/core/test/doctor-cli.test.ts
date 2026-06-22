@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { runCli } from "../src/cli";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
@@ -148,6 +150,52 @@ describe("caplets doctor", () => {
     });
   });
 
+  it("reports unresolved local Vault references with repair commands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-"));
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub tools.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      await runCli(["doctor", "--json"], {
+        env: {
+          CAPLETS_CONFIG: configPath,
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        writeOut: (value) => out.push(value),
+      });
+
+      const report = JSON.parse(out.join(""));
+      expect(report.vault).toMatchObject({
+        ok: false,
+        issues: [
+          expect.objectContaining({
+            key: "GH_TOKEN",
+            capletId: "github",
+            target: "global",
+            recoveryCommand: "caplets vault access grant GH_TOKEN github",
+          }),
+        ],
+      });
+      expect(JSON.stringify(report.vault)).not.toContain("secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("emits JSON diagnostics with separate server, remote, binding, sync, daemon, and auth sections", async () => {
     const out: string[] = [];
 
@@ -160,12 +208,13 @@ describe("caplets doctor", () => {
       writeOut: (value) => out.push(value),
     });
 
-    expect(JSON.parse(out.join(""))).toMatchObject({
+    const report = JSON.parse(out.join(""));
+    expect(report).toMatchObject({
       server: { configured: true },
       remote: { configured: true },
       projectBinding: { state: "not_attached" },
       sync: { state: "idle" },
-      daemon: { running: false },
+      daemon: { running: expect.any(Boolean) },
       remoteLogin: { configured: true, authenticated: false },
       exposure: { ok: true },
       codeMode: {

@@ -1,0 +1,216 @@
+---
+title: Caplets Vault
+description: Store secret config values in Caplets instead of agent environment variables.
+---
+
+Caplets Vault stores secret-like string values in the runtime that uses them. Use it when
+a Caplet needs a token, API key, URL, or other private config value and you do not want to
+depend on the agent harness passing environment variables through to Caplets.
+
+Vault values are encrypted on disk. Config references stay in your Caplets config, while
+the raw value stays in the local, self-hosted remote, or Cloud runtime that executes the
+Caplet.
+
+## When to use Vault
+
+Use Vault for values that would otherwise appear in `env`, auth tokens, backend URLs, or
+headers:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "mcpServers": {
+    "github": {
+      "name": "GitHub",
+      "description": "GitHub tools",
+      "command": "github-mcp",
+      "env": {
+        "GH_TOKEN": "$vault:GH_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Both forms are supported:
+
+```text
+$vault:GH_TOKEN
+${vault:GH_TOKEN}
+```
+
+Vault interpolation applies where runtime config values are resolved. Public metadata such
+as Caplet names, descriptions, tags, and Markdown body text keeps the literal reference
+text instead of resolving to a secret.
+
+## Set a local value
+
+The local/global Vault is the default target. Run `set` in an interactive shell to enter
+the value at a hidden prompt:
+
+```sh
+caplets vault set GH_TOKEN
+```
+
+Or pipe the value from another command:
+
+```sh
+printf '%s\n' "$GH_TOKEN" | caplets vault set GH_TOKEN
+```
+
+Vault key names must match `^[A-Z_][A-Z0-9_]{0,127}$`. Values are strings and must be 64
+KiB or smaller.
+
+`set` does not overwrite an existing key unless you pass `--force`:
+
+```sh
+caplets vault set GH_TOKEN --force
+```
+
+## Grant access
+
+A Vault value is not automatically available to every Caplet. Grant the key to the Caplet
+that references it:
+
+```sh
+caplets vault access grant GH_TOKEN github
+```
+
+For a one-key setup, set and grant in one command:
+
+```sh
+caplets vault set GH_TOKEN --grant github
+```
+
+If the stored Vault key and the config reference differ, use `--as` for the reference name
+used in config:
+
+```sh
+caplets vault access grant GH_TOKEN_PERSONAL github-personal --as GH_TOKEN
+caplets vault access grant GH_TOKEN_WORK github-work --as GH_TOKEN
+```
+
+Those grants let both Caplets use config that references `$vault:GH_TOKEN`, while each
+Caplet resolves to a different stored value.
+
+Grants are scoped to the configured Caplet and the config file it came from. If the same
+Caplet ID is shadowed across multiple config sources, resolve the active config before
+granting access.
+
+## Inspect values and grants
+
+Vault commands show metadata by default and do not print raw values:
+
+```sh
+caplets vault list
+caplets vault get GH_TOKEN
+caplets vault access list
+```
+
+Use `--json` when scripting:
+
+```sh
+caplets vault access list --json
+```
+
+To reveal a raw value, pass `--show` explicitly:
+
+```sh
+caplets vault get GH_TOKEN --show
+```
+
+Use raw reveal only in a human shell. Agent-facing Caplets surfaces resolve values into
+runtime config but do not expose Vault management or raw reveal handles to agents.
+
+## Revoke and delete
+
+Revoke access for one Caplet reference:
+
+```sh
+caplets vault access revoke GH_TOKEN github
+```
+
+If the Caplet referenced the key under a different name, pass the same `--as` value used
+when granting:
+
+```sh
+caplets vault access revoke GH_TOKEN_PERSONAL github-personal --as GH_TOKEN
+```
+
+Delete a stored value without revealing it:
+
+```sh
+caplets vault delete GH_TOKEN
+```
+
+Deleting a value does not delete retained grants. If you set the value again later, the
+existing grant can resolve again.
+
+## Remote and Cloud Vault
+
+Use `--remote` when the Caplet executes in a self-hosted remote runtime or Caplets Cloud:
+
+```sh
+caplets vault set GH_TOKEN --remote
+caplets vault access grant GH_TOKEN github --remote
+```
+
+The selected remote target uses the same Remote Profile and environment selection as
+[Remote Attach](/remote-attach/). Log in first:
+
+```sh
+caplets remote login https://caplets.example.com/caplets
+CAPLETS_REMOTE_URL=https://caplets.example.com/caplets caplets vault list --remote
+```
+
+For Caplets Cloud:
+
+```sh
+caplets remote login https://cloud.caplets.dev
+CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev caplets vault list --remote
+```
+
+Remote Vault values belong to the selected runtime. Local Caplets do not read, mirror, or
+forward remote or Cloud Vault values.
+
+## Encryption key
+
+For local and self-hosted stores, Caplets writes encrypted values under the Caplets state
+directory. On Linux and macOS the default local path is:
+
+```text
+~/.local/state/caplets/vault
+```
+
+The Vault encryption key is minted automatically on first write and stored as a private
+file with `0600` permissions where the platform supports POSIX permissions. You can
+instead provide a 32-byte base64url key with `CAPLETS_ENCRYPTION_KEY`:
+
+```sh
+CAPLETS_ENCRYPTION_KEY=... caplets vault list
+```
+
+Use the environment key only when you need to provide the same key from another secret
+manager or deployment system. If the encryption key is unavailable or has the wrong
+permissions, Vault-backed Caplets are quarantined until the key source is fixed.
+
+## Diagnostics
+
+Run `doctor` after adding Vault references:
+
+```sh
+caplets doctor
+```
+
+Unset, missing, invalid, or ungranted Vault references quarantine only the affected
+Caplet. `doctor` reports the key, Caplet, target, config path, and a repair command
+without printing raw values.
+
+Example repair command:
+
+```sh
+caplets vault access grant GH_TOKEN github
+```
+
+If the Caplet starts through an agent harness, restart the agent after setting or granting
+Vault values so the Caplets runtime reloads clean config.

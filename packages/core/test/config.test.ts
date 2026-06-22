@@ -22,6 +22,7 @@ import {
   loadLocalOverlayConfigWithSources,
   loadConfigWithSources,
   parseConfig,
+  type ConfigVaultResolver,
 } from "../src/config";
 import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
@@ -1075,6 +1076,175 @@ describe("config", () => {
     }
   });
 
+  it("resolves Vault refs through an explicit parse resolver while preserving public metadata", () => {
+    const calls: Parameters<ConfigVaultResolver>[0][] = [];
+    const resolver: ConfigVaultResolver = (reference) => {
+      calls.push(reference);
+      return { storedKey: reference.referenceName, value: "resolved_vault_secret" };
+    };
+    const origin = {
+      kind: "global-file" as const,
+      path: "/home/ian/.config/caplets/github/CAPLET.md",
+    };
+
+    const config = parseConfig(
+      {
+        mcpServers: {
+          github: {
+            name: "GitHub $vault:GH_TOKEN",
+            description: "Literal ${vault:GH_TOKEN}",
+            tags: ["$vault:GH_TOKEN"],
+            command: "github-mcp",
+            env: {
+              GH_TOKEN: "$vault:GH_TOKEN",
+              GH_TOKEN_BRACED: "${vault:GH_TOKEN}",
+            },
+          },
+        },
+      },
+      {
+        sources: { github: origin },
+        vaultResolver: resolver,
+      },
+    );
+
+    expect(config.mcpServers.github?.name).toBe("GitHub $vault:GH_TOKEN");
+    expect(config.mcpServers.github?.description).toBe("Literal ${vault:GH_TOKEN}");
+    expect(config.mcpServers.github?.tags).toEqual(["$vault:GH_TOKEN"]);
+    expect(config.mcpServers.github?.env).toEqual({
+      GH_TOKEN: "resolved_vault_secret",
+      GH_TOKEN_BRACED: "resolved_vault_secret",
+    });
+    expect(calls).toEqual([
+      {
+        referenceName: "GH_TOKEN",
+        capletId: "github",
+        origin,
+        path: "mcpServers.github.env.GH_TOKEN",
+      },
+      {
+        referenceName: "GH_TOKEN",
+        capletId: "github",
+        origin,
+        path: "mcpServers.github.env.GH_TOKEN_BRACED",
+      },
+    ]);
+  });
+
+  it("leaves Vault refs literal when bare parseConfig has no resolver", () => {
+    const config = parseConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "Uses a Vault ref.",
+          command: "github-mcp",
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+
+    expect(config.mcpServers.github?.env).toEqual({ GH_TOKEN: "$vault:GH_TOKEN" });
+  });
+
+  it("validates local overlay config after resolving Vault refs in URL fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-vault-url-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            remote: {
+              name: "Remote",
+              description: "Uses a Vault-backed URL.",
+              transport: "http",
+              url: "$vault:REMOTE_URL",
+            },
+          },
+        }),
+      );
+
+      const { config, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+        {
+          vaultResolver: (reference) => ({
+            storedKey: reference.referenceName,
+            value: "https://example.com/mcp",
+          }),
+        },
+      );
+
+      expect(config.mcpServers.remote?.url).toBe("https://example.com/mcp");
+      expect(warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines ungranted Vault refs in local overlays without dropping valid siblings", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-vault-ungranted-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "Uses a Vault token.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+            healthy: {
+              name: "Healthy Local",
+              description: "A useful healthy downstream server.",
+              command: "healthy-server",
+            },
+          },
+        }),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+        {
+          vaultResolver: (reference) => ({
+            reason: "ungranted",
+            referenceName: reference.referenceName,
+            capletId: reference.capletId,
+            origin: reference.origin,
+          }),
+        },
+      );
+
+      expect(config.mcpServers.healthy?.command).toBe("healthy-server");
+      expect(config.mcpServers.github).toBeUndefined();
+      expect(sources.healthy).toEqual({ kind: "global-config", path: userConfigPath });
+      expect(sources.github).toBeUndefined();
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          kind: "global-config",
+          path: userConfigPath,
+          recoverable: true,
+          message: expect.stringContaining("Vault key GH_TOKEN"),
+        }),
+      ]);
+      expect(warnings[0]?.message).toContain("ungranted");
+      expect(warnings[0]?.message).toContain("mcpServers.github.env.GH_TOKEN");
+      expect(warnings[0]?.message).toContain("caplets vault access grant GH_TOKEN github");
+      expect(warnings[0]?.message).not.toContain("resolved_vault_secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves local overlay source and shadow metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-shadows-"));
     try {
@@ -1149,142 +1319,143 @@ describe("config", () => {
   });
 
   it("keeps repository example Caplets loadable", () => {
-    const originalGithubToken = process.env.GH_TOKEN;
-    process.env.GH_TOKEN = "test-github-token";
-    try {
-      const examples = loadCapletFiles(join(import.meta.dirname, "../../..", "caplets"));
+    const examples = loadCapletFiles(join(import.meta.dirname, "../../..", "caplets"));
 
-      const config = parseConfig(examples);
+    const config = parseConfig(examples, {
+      sources: {
+        github: {
+          kind: "global-file",
+          path: join(import.meta.dirname, "../../..", "caplets", "github", "CAPLET.md"),
+        },
+      },
+      vaultResolver: (reference) => ({
+        storedKey: reference.referenceName,
+        value: reference.referenceName === "GH_TOKEN" ? "test-github-token" : "",
+      }),
+    });
 
-      expect(config.mcpServers.context7).toMatchObject({
-        server: "context7",
-        name: "Context7 Documentation",
-        command: "context7-mcp",
-        setup: {
-          commands: [
-            {
-              label: "Install Context7 MCP",
-              command: "npm",
-              args: ["install", "-g", "@upstash/context7-mcp"],
-            },
-          ],
-        },
-      });
-      expect(config.mcpServers.github).toMatchObject({
-        server: "github",
-        name: "GitHub",
-        transport: "http",
-        url: "https://api.githubcopilot.com/mcp",
-        auth: { type: "bearer", token: "test-github-token" },
-      });
-      expect(config.mcpServers.linear).toMatchObject({
-        server: "linear",
-        name: "Linear",
-        transport: "http",
-        url: "https://mcp.linear.app/mcp",
-        auth: { type: "oauth2" },
-      });
-      expect(config.mcpServers["ast-grep"]).toMatchObject({
-        server: "ast-grep",
-        name: "ast-grep",
-        command: "ast-grep-mcp",
-        setup: {
-          verify: [
-            {
-              label: "Check ast-grep MCP",
-              command: "ast-grep-mcp",
-              args: ["--help"],
-            },
-          ],
-        },
-      });
-      expect(config.httpApis.osv).toMatchObject({
-        server: "osv",
-        name: "OSV Vulnerabilities",
-        baseUrl: "https://api.osv.dev",
-        auth: { type: "none" },
-        actions: {
-          query_package_version: {
-            method: "POST",
-            path: "/v1/query",
-            jsonBody: {
-              package: {
-                name: "$input.name",
-                ecosystem: "$input.ecosystem",
-              },
-              version: "$input.version",
-            },
+    expect(config.mcpServers.context7).toMatchObject({
+      server: "context7",
+      name: "Context7 Documentation",
+      command: "context7-mcp",
+      setup: {
+        commands: [
+          {
+            label: "Install Context7 MCP",
+            command: "npm",
+            args: ["install", "-g", "@upstash/context7-mcp"],
           },
-          get_vulnerability: {
-            method: "GET",
-            path: "/v1/vulns/{id}",
+        ],
+      },
+    });
+    expect(config.mcpServers.github).toMatchObject({
+      server: "github",
+      name: "GitHub",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp",
+      auth: { type: "bearer", token: "test-github-token" },
+    });
+    expect(config.mcpServers.linear).toMatchObject({
+      server: "linear",
+      name: "Linear",
+      transport: "http",
+      url: "https://mcp.linear.app/mcp",
+      auth: { type: "oauth2" },
+    });
+    expect(config.mcpServers["ast-grep"]).toMatchObject({
+      server: "ast-grep",
+      name: "ast-grep",
+      command: "ast-grep-mcp",
+      setup: {
+        verify: [
+          {
+            label: "Check ast-grep MCP",
+            command: "ast-grep-mcp",
+            args: ["--help"],
+          },
+        ],
+      },
+    });
+    expect(config.httpApis.osv).toMatchObject({
+      server: "osv",
+      name: "OSV Vulnerabilities",
+      baseUrl: "https://api.osv.dev",
+      auth: { type: "none" },
+      actions: {
+        query_package_version: {
+          method: "POST",
+          path: "/v1/query",
+          jsonBody: {
+            package: {
+              name: "$input.name",
+              ecosystem: "$input.ecosystem",
+            },
+            version: "$input.version",
           },
         },
-      });
-      expect(config.openapiEndpoints.npm).toMatchObject({
-        server: "npm",
-        name: "npm Registry",
-        specUrl: "https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml",
-        auth: { type: "none" },
-      });
-      expect(config.openapiEndpoints.pypi).toMatchObject({
-        server: "pypi",
-        name: "PyPI",
-        specPath: expect.stringMatching(/caplets[/\\]pypi[/\\]pypi\.openapi\.yaml$/),
-        auth: { type: "none" },
-      });
-      expect(config.mcpServers.deepwiki).toMatchObject({
-        server: "deepwiki",
-        name: "DeepWiki",
-        transport: "http",
-        url: "https://mcp.deepwiki.com/mcp",
-        auth: { type: "none" },
-      });
-      expect(config.mcpServers.sourcegraph).toMatchObject({
-        server: "sourcegraph",
-        name: "Sourcegraph",
-        transport: "http",
-        url: "https://sourcegraph.com/.api/mcp",
-        auth: { type: "oauth2" },
-      });
-      expect(config.mcpServers.playwright).toMatchObject({
-        server: "playwright",
-        name: "Playwright",
-        command: "playwright-mcp",
-        args: ["--headless"],
-        setup: {
-          commands: [
-            {
-              label: "Install Playwright MCP",
-              command: "npm",
-              args: ["install", "-g", "@playwright/mcp@0.0.75"],
-            },
-            {
-              label: "Install Chromium browser",
-              command: "npx",
-              args: ["playwright", "install", "chromium"],
-            },
-          ],
+        get_vulnerability: {
+          method: "GET",
+          path: "/v1/vulns/{id}",
         },
-      });
-      expect(config.mcpServers.lsp).toMatchObject({
-        server: "lsp",
-        name: "LSP",
-        command: "npx",
-        args: ["-y", "language-server-mcp"],
-      });
-      expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
-        server: "coding-agent-toolkit",
-        name: "Coding Agent Toolkit",
-        capletsRoot: expect.stringMatching(/caplets[/\\]coding-agent-toolkit[/\\]caplets$/),
-      });
-    } finally {
-      if (originalGithubToken === undefined) {
-        delete process.env.GH_TOKEN;
-      } else {
-        process.env.GH_TOKEN = originalGithubToken;
-      }
-    }
+      },
+    });
+    expect(config.openapiEndpoints.npm).toMatchObject({
+      server: "npm",
+      name: "npm Registry",
+      specUrl: "https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml",
+      auth: { type: "none" },
+    });
+    expect(config.openapiEndpoints.pypi).toMatchObject({
+      server: "pypi",
+      name: "PyPI",
+      specPath: expect.stringMatching(/caplets[/\\]pypi[/\\]pypi\.openapi\.yaml$/),
+      auth: { type: "none" },
+    });
+    expect(config.mcpServers.deepwiki).toMatchObject({
+      server: "deepwiki",
+      name: "DeepWiki",
+      transport: "http",
+      url: "https://mcp.deepwiki.com/mcp",
+      auth: { type: "none" },
+    });
+    expect(config.mcpServers.sourcegraph).toMatchObject({
+      server: "sourcegraph",
+      name: "Sourcegraph",
+      transport: "http",
+      url: "https://sourcegraph.com/.api/mcp",
+      auth: { type: "oauth2" },
+    });
+    expect(config.mcpServers.playwright).toMatchObject({
+      server: "playwright",
+      name: "Playwright",
+      command: "playwright-mcp",
+      args: ["--headless"],
+      setup: {
+        commands: [
+          {
+            label: "Install Playwright MCP",
+            command: "npm",
+            args: ["install", "-g", "@playwright/mcp@0.0.75"],
+          },
+          {
+            label: "Install Chromium browser",
+            command: "npx",
+            args: ["playwright", "install", "chromium"],
+          },
+        ],
+      },
+    });
+    expect(config.mcpServers.lsp).toMatchObject({
+      server: "lsp",
+      name: "LSP",
+      command: "npx",
+      args: ["-y", "language-server-mcp"],
+    });
+    expect(config.capletSets["coding-agent-toolkit"]).toMatchObject({
+      server: "coding-agent-toolkit",
+      name: "Coding Agent Toolkit",
+      capletsRoot: expect.stringMatching(/caplets[/\\]coding-agent-toolkit[/\\]caplets$/),
+    });
   });
 
   it("keeps repository Caplet reference files linked from CAPLET.md", () => {

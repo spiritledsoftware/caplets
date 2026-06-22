@@ -3,8 +3,14 @@
 This Caplet wraps GitHub's hosted MCP endpoint:
 
 ```sh
-export GH_TOKEN=github_pat_...
+caplets vault set GH_TOKEN --grant github
 caplets serve
+```
+
+For self-hosted remote or hosted Cloud-backed runtime use:
+
+```sh
+caplets vault set GH_TOKEN --remote --grant github
 ```
 
 Install it from this repo:
