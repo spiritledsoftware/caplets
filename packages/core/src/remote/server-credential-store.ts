@@ -17,6 +17,7 @@ import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
 import type {
   IssuedRemoteClientCredentials,
   RemoteClientStatus,
+  RemotePendingLoginStatus,
   ValidatedRemoteClient,
 } from "./server-credentials";
 
@@ -494,6 +495,12 @@ export class RemoteServerCredentialStore {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
+  listPendingLogins(): RemotePendingLoginStatus[] {
+    return this.loadState()
+      .pendingLogins.map(pendingLoginStatus)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
   revokeClient(clientId: string, now = new Date()): boolean {
     return this.withStateLock(() => {
       const state = this.loadState();
@@ -752,6 +759,25 @@ function clientStatus(client: StoredRemoteClient): RemoteClientStatus {
     createdAt: client.createdAt,
     ...(client.lastUsedAt ? { lastUsedAt: client.lastUsedAt } : {}),
     ...(client.revokedAt ? { revokedAt: client.revokedAt } : {}),
+  };
+}
+
+function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus {
+  return {
+    flowId: flow.flowId,
+    hostUrl: flow.hostUrl,
+    ...(flow.hostIdentity ? { hostIdentity: flow.hostIdentity } : {}),
+    status: flow.status,
+    clientLabel: flow.clientLabel,
+    ...(flow.clientFingerprint ? { clientFingerprint: flow.clientFingerprint } : {}),
+    ...(flow.sourceHint ? { sourceHint: flow.sourceHint } : {}),
+    createdAt: flow.createdAt,
+    codeExpiresAt: flow.codeExpiresAt,
+    flowExpiresAt: flow.flowExpiresAt,
+    ...(flow.approvedAt ? { approvedAt: flow.approvedAt } : {}),
+    ...(flow.deniedAt ? { deniedAt: flow.deniedAt } : {}),
+    ...(flow.cancelledAt ? { cancelledAt: flow.cancelledAt } : {}),
+    ...(flow.exchangedAt ? { exchangedAt: flow.exchangedAt } : {}),
   };
 }
 

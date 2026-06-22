@@ -253,6 +253,64 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).toContain("Bad?[31mName?");
   });
 
+  it("lists and approves pending self-hosted logins from server state", async () => {
+    const serverStateDir = tempDir("caplets-remote-cli-server-");
+    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
+    const pending = server.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
+      clientFingerprint: "fp_test",
+      sourceHint: "127.0.0.1",
+    });
+    const listOut: string[] = [];
+
+    await runCli(["remote", "host", "logins", "--state-path", serverStateDir, "--json"], {
+      writeOut: (value) => listOut.push(value),
+    });
+
+    expect(JSON.parse(listOut.join(""))).toMatchObject({
+      pendingLogins: [
+        {
+          flowId: pending.flowId,
+          status: "pending",
+          clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
+          clientFingerprint: "fp_test",
+          sourceHint: "127.0.0.1",
+        },
+      ],
+    });
+    expect(listOut.join("")).not.toContain(pending.pendingRefreshSecret);
+    expect(listOut.join("")).not.toContain(pending.pendingCompletionSecret);
+
+    const approveOut: string[] = [];
+    await runCli(
+      [
+        "remote",
+        "host",
+        "approve",
+        pending.operatorCode,
+        "--state-path",
+        serverStateDir,
+        "--yes",
+        "--json",
+      ],
+      { writeOut: (value) => approveOut.push(value) },
+    );
+
+    expect(JSON.parse(approveOut.join(""))).toMatchObject({
+      flowId: pending.flowId,
+      status: "approved",
+      clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
+    });
+    expect(
+      server.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    ).toMatchObject({ clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice` });
+  });
+
   it("routes Cloud login through Remote Profiles instead of legacy Cloud Auth", async () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     const responses = [

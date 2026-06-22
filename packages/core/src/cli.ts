@@ -1300,6 +1300,63 @@ export function createProgram(io: CliIO = {}): Command {
       }
     });
   remoteHost
+    .command("logins")
+    .description("List pending self-hosted Remote Login approvals from server state.")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--json", "print JSON output")
+    .action((options: { statePath?: string; json?: boolean }) => {
+      const pendingLogins = remoteServerCredentialStore(options.statePath, env).listPendingLogins();
+      if (options.json) {
+        writeOut(`${JSON.stringify({ pendingLogins }, null, 2)}\n`);
+        return;
+      }
+      if (pendingLogins.length === 0) {
+        writeOut("No pending Remote Login approvals.\n");
+        return;
+      }
+      for (const pending of pendingLogins) {
+        writeOut(
+          `${pending.flowId}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
+        );
+      }
+    });
+  remoteHost
+    .command("approve")
+    .description("Approve one pending self-hosted Remote Login code from server state.")
+    .argument("<code>", "operator-visible Remote Login code")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--yes", "approve without an interactive confirmation prompt")
+    .option("--json", "print JSON output")
+    .action((code: string, options: { statePath?: string; yes?: boolean; json?: boolean }) => {
+      if (!options.yes && !options.json) {
+        throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
+      }
+      const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
+        operatorCode: code,
+      });
+      if (options.json) {
+        writeOut(`${JSON.stringify(approved, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Approved pending Remote Login ${approved.flowId}.\n`);
+    });
+  remoteHost
+    .command("deny")
+    .description("Deny one pending self-hosted Remote Login code from server state.")
+    .argument("<code>", "operator-visible Remote Login code")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--json", "print JSON output")
+    .action((code: string, options: { statePath?: string; json?: boolean }) => {
+      const denied = remoteServerCredentialStore(options.statePath, env).denyPendingLogin({
+        operatorCode: code,
+      });
+      if (options.json) {
+        writeOut(`${JSON.stringify(denied, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Denied pending Remote Login ${denied.flowId}.\n`);
+    });
+  remoteHost
     .command("revoke")
     .description("Revoke one paired self-hosted remote client from server state.")
     .argument("<client-id>", "remote client ID")

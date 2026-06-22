@@ -18,6 +18,23 @@ export type RemoteClientStatus = {
   revokedAt?: string | undefined;
 };
 
+export type RemotePendingLoginStatus = {
+  flowId: string;
+  hostUrl: string;
+  hostIdentity?: string | undefined;
+  status: string;
+  clientLabel: string;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+  createdAt: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  approvedAt?: string | undefined;
+  deniedAt?: string | undefined;
+  cancelledAt?: string | undefined;
+  exchangedAt?: string | undefined;
+};
+
 export type ValidatedRemoteClient = RemoteClientStatus & {
   tokenType: "Bearer";
 };
