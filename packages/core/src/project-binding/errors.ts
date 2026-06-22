@@ -21,6 +21,7 @@ export const PROJECT_BINDING_ERROR_CODES = [
   "subscription_past_due",
   "email_verification_required",
   "remote_credentials_required",
+  "remote_credentials_revoked",
   "remote_auth_failed",
 ] as const;
 
@@ -77,6 +78,7 @@ function recoveryCommandFor(code: ProjectBindingErrorCode): string | undefined {
     case "sync_size_limit_exceeded":
       return "Add exclusions to .capletsignore or upgrade the workspace plan.";
     case "remote_credentials_required":
+    case "remote_credentials_revoked":
     case "remote_auth_failed":
       return "caplets remote login <url>";
     case "endpoint_unavailable":

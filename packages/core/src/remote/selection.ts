@@ -285,7 +285,9 @@ async function refreshSelfHostedCredentials(
 async function selfHostedRefreshError(remoteUrl: string, response: Response): Promise<Error> {
   const summary = await parseSelfHostedRefreshError(response);
   if (response.status === 401 || summary?.code === "AUTH_FAILED") {
-    return remoteLoginRequired(remoteUrl);
+    return selfHostedRefreshLooksRevoked(summary)
+      ? remoteLoginRevoked(remoteUrl)
+      : remoteLoginRequired(remoteUrl);
   }
   if (response.status === 503 || summary?.code === "SERVER_UNAVAILABLE") {
     return new CapletsError(
@@ -351,6 +353,21 @@ function remoteLoginRequired(remoteUrl: string): ProjectBindingError {
     message: `Remote Login required for ${normalizeRemoteProfileHostUrl(remoteUrl)}.`,
     recoveryCommand: `caplets remote login ${normalizeRemoteProfileHostUrl(remoteUrl)}`,
   });
+}
+
+function remoteLoginRevoked(remoteUrl: string): ProjectBindingError {
+  const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
+  return new ProjectBindingError({
+    code: "remote_credentials_revoked",
+    message: `Remote credentials for ${normalizedUrl} were revoked or rejected. Run Remote Login again and ask the server operator to approve the pending login.`,
+    recoveryCommand: `caplets remote login ${normalizedUrl}`,
+  });
+}
+
+function selfHostedRefreshLooksRevoked(
+  summary: { code?: string | undefined; message?: string | undefined } | undefined,
+): boolean {
+  return /revoked|rejected/iu.test(summary?.message ?? "");
 }
 
 async function parseSelfHostedRefreshCredentials(

@@ -412,6 +412,49 @@ describe("caplets attach CLI", () => {
     });
   });
 
+  it("prints JSON recovery for revoked self-hosted credentials", async () => {
+    const authDir = tempAuthDir();
+    const out: string[] = [];
+    let exitCode = 0;
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await runCli(["attach", "--once", "--json"], {
+      authDir,
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+      },
+      fetch: async () =>
+        Response.json(
+          { error: { code: "AUTH_FAILED", message: "Remote client credential has been revoked." } },
+          { status: 401 },
+        ),
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      error: {
+        code: "remote_credentials_revoked",
+        recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
+      },
+    });
+  });
+
   it("rejects attach --workspace when it differs from the saved Selected Workspace", async () => {
     const path = tempCloudAuthPath();
     const out: string[] = [];
