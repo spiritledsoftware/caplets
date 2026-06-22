@@ -93,7 +93,7 @@
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
-    "@babel/parser": "^7.29.7",
+    "@babel/parser": "^8.0.0",
     "@exodus/bytes": "^1.15.1",
     "@hono/mcp": "^0.3.0",
     "@hono/node-server": "^2.0.4",
@@ -102,7 +102,7 @@
     "ajv": "^8.20.0",
     "commander": "^15.0.0",
     "formdata-node": "^6.0.3",
-    "graphql": "^16.14.2",
+    "graphql": "^17.0.1",
     "headers-polyfill": "^5.0.1",
     "hono": "^4.12.25",
     "quickjs-emscripten": "^0.32.0",
