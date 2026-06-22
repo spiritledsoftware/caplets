@@ -92,8 +92,8 @@ export const whyCapletsProblems = [
 
 export const remoteCommands = {
   server: `caplets daemon install --start
-caplets remote host pair --host-url <url>`,
-  client: `caplets remote login <url> --code <pairing-code>
+caplets remote host approve <code>`,
+  client: `caplets remote login <url>
 caplets attach --remote-url <url>`,
 } as const;
 

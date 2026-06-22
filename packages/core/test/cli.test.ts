@@ -3303,6 +3303,33 @@ describe("cli setup", () => {
     );
   });
 
+  it("keeps supported remote setup docs on pending login and secret-free attach", () => {
+    const repoRoot = join(import.meta.dirname, "../../..");
+    const supportedDocs = [
+      "README.md",
+      "apps/docs/src/content/docs/remote-attach.mdx",
+      "apps/docs/src/content/docs/troubleshooting.mdx",
+      "apps/docs/src/content/docs/install.mdx",
+      "apps/docs/src/content/docs/agent-integrations.mdx",
+      "apps/docs/src/content/docs/vault.mdx",
+      "apps/landing/src/data/landing.ts",
+      "docs/project-binding.md",
+      "docs/native-integrations.md",
+      "packages/opencode/README.md",
+      "packages/pi/README.md",
+    ];
+
+    for (const relativePath of supportedDocs) {
+      const text = readFileSync(join(repoRoot, relativePath), "utf8");
+      expect(text, relativePath).not.toMatch(/remote host pair/u);
+      expect(text, relativePath).not.toMatch(/remote login[^\n]*--code/u);
+      expect(text, relativePath).not.toMatch(/Pairing Code/u);
+      expect(text, relativePath).not.toMatch(/CAPLETS_REMOTE_(TOKEN|USER|PASSWORD)/u);
+      expect(text, relativePath).not.toMatch(/Basic Auth/u);
+      expect(text, relativePath).not.toMatch(/add-mcp --env/u);
+    }
+  });
+
   it("keeps --server-url as a remote setup alias", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
