@@ -1,4 +1,4 @@
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -1267,8 +1267,8 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--workspace <workspace>", "Cloud workspace ID or slug to select")
     .option("--client-label <label>", "client label for this machine")
     .option("--device-name <name>", "Cloud device label for this machine")
-    .option("--code <code>", "Pairing Code for explicit noninteractive self-hosted login")
-    .option("--code-stdin", "read the Pairing Code from stdin")
+    .addOption(new Option("--code <code>", "legacy Pairing Code input").hideHelp())
+    .addOption(new Option("--code-stdin", "legacy Pairing Code stdin input").hideHelp())
     .option("--no-open", "print the Cloud login URL without opening a browser")
     .option("--json", "print JSON output")
     .action(
@@ -1419,34 +1419,32 @@ export function createProgram(io: CliIO = {}): Command {
 
   const remoteHost = remote.command("host").description("Manage self-hosted remote credentials.");
   remoteHost
-    .command("pair")
-    .description("Create a short-lived self-hosted Pairing Code from the server environment.")
-    .requiredOption("--host-url <url>", "public Caplets host URL")
+    .command("pair", { hidden: true })
+    .description("Deprecated. Pairing Code bootstrap is no longer supported.")
+    .option("--host-url <url>", "public Caplets host URL; defaults to CAPLETS_SERVER_URL")
     .option("--state-path <path>", "server-owned remote credential state directory")
-    .option("--client-label <label>", "suggested client label")
     .option("--json", "print JSON output")
-    .action(
-      async (options: {
-        hostUrl: string;
-        statePath?: string;
-        clientLabel?: string;
-        json?: boolean;
-      }) => {
-        const issued = remoteServerCredentialStore(options.statePath, env).createPairingCode({
-          hostUrl: options.hostUrl,
-          ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-        });
-        if (options.json) {
-          writeOut(`${JSON.stringify(issued, null, 2)}\n`);
-          return;
-        }
-        writeOut(`Pairing Code: ${issued.code}\n`);
-        writeOut(`Expires At: ${issued.expiresAt}\n`);
+    .action(async (options: { hostUrl?: string; statePath?: string; json?: boolean }) => {
+      const hostUrl = options.hostUrl ?? env.CAPLETS_SERVER_URL;
+      const guidance =
+        "Self-hosted Pairing Code bootstrap is no longer supported. Run caplets remote login <url> from the client, then approve the pending login with caplets remote host logins and caplets remote host approve <code> from the host.";
+      if (options.json) {
         writeOut(
-          `Run caplets remote login ${normalizeRemoteProfileHostUrl(options.hostUrl)} and enter the Pairing Code when prompted.\n`,
+          `${JSON.stringify(
+            {
+              supported: false,
+              deprecated: true,
+              ...(hostUrl ? { hostUrl: normalizeRemoteProfileHostUrl(hostUrl) } : {}),
+              message: guidance,
+            },
+            null,
+            2,
+          )}\n`,
         );
-      },
-    );
+        return;
+      }
+      writeOut(`${guidance}\n`);
+    });
   remoteHost
     .command("clients")
     .description("List paired self-hosted remote clients from server state.")

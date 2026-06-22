@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +13,45 @@ afterEach(() => {
 });
 
 describe("caplets remote CLI", () => {
+  it("reports migration guidance instead of minting Pairing Codes", async () => {
+    const serverStateDir = tempDir("caplets-remote-cli-server-");
+    const out: string[] = [];
+
+    await runCli(
+      [
+        "remote",
+        "host",
+        "pair",
+        "--host-url",
+        "https://caplets.example.com/caplets",
+        "--state-path",
+        serverStateDir,
+        "--json",
+      ],
+      { writeOut: (value) => out.push(value) },
+    );
+
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      supported: false,
+      deprecated: true,
+      hostUrl: "https://caplets.example.com/caplets",
+      message: expect.stringContaining("Pairing Code bootstrap is no longer supported"),
+    });
+    expect(out.join("")).not.toContain("cap_pair_");
+    expect(existsSync(join(serverStateDir, "remote-server-credentials.json"))).toBe(false);
+  });
+
+  it("hides legacy Pairing Code login flags from help", async () => {
+    const out: string[] = [];
+
+    await runCli(["remote", "login", "--help"], {
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).not.toContain("--code");
+    expect(out.join("")).not.toContain("Pairing Code");
+  });
+
   it("rejects legacy Pairing Code argv login with migration guidance", async () => {
     const issued = new RemoteServerCredentialStore({
       dir: tempDir("caplets-remote-cli-server-"),

@@ -306,6 +306,7 @@ export class RemoteServerCredentialStore {
         this.saveState(state);
         throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
       }
+      assertPendingOperatorCodeFresh(flow, now);
       flow.status = "denied";
       flow.deniedAt = now.toISOString();
       this.saveState(state);
@@ -361,6 +362,7 @@ export class RemoteServerCredentialStore {
       if (flow.status !== "pending") {
         throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       }
+      assertPendingOperatorCodeFresh(flow, now);
       flow.status = "approved";
       flow.approvedAt = now.toISOString();
       this.saveState(state);
@@ -755,7 +757,8 @@ function enforcePendingLoginQuota(
   if (active.length >= DEFAULT_PENDING_MAX_ACTIVE_FLOWS) {
     throw new CapletsError("AUTH_FAILED", "Too many active pending logins.");
   }
-  const sourceKey = sourceHint ?? "";
+  if (!sourceHint) return;
+  const sourceKey = sourceHint;
   const activeForSource = active.filter((flow) => (flow.sourceHint ?? "") === sourceKey);
   if (activeForSource.length >= DEFAULT_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE) {
     throw new CapletsError("AUTH_FAILED", "Too many active pending logins for this source.");
@@ -784,6 +787,15 @@ function pendingLoginTerminalTime(flow: StoredPendingLogin): number {
       return Date.parse(flow.flowExpiresAt);
     default:
       return Number.NaN;
+  }
+}
+
+function assertPendingOperatorCodeFresh(flow: StoredPendingLogin, now: Date): void {
+  if (Date.parse(flow.codeExpiresAt) <= now.getTime()) {
+    throw new CapletsError(
+      "AUTH_FAILED",
+      "Pending login code has expired. Refresh the pending login for a new code.",
+    );
   }
 }
 

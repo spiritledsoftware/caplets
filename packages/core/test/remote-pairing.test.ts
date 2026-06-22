@@ -165,6 +165,41 @@ describe("self-hosted remote pairing", () => {
     ).toThrow(/denied/u);
   });
 
+  it("rejects expired operator codes while allowing the client to refresh the flow", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-19T12:10:01.000Z"),
+      }),
+    ).toThrow(/code has expired/u);
+    expect(() =>
+      store.denyPendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-19T12:10:01.000Z"),
+      }),
+    ).toThrow(/code has expired/u);
+
+    const refreshed = store.refreshPendingLogin({
+      flowId: pending.flowId,
+      pendingRefreshSecret: pending.pendingRefreshSecret,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:10:02.000Z"),
+    });
+
+    expect(
+      store.approvePendingLogin({
+        operatorCode: refreshed.operatorCode,
+        now: new Date("2026-06-19T12:10:03.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "approved" });
+  });
+
   it("cancels and expires pending login flows without issuing credentials", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const cancelled = store.createPendingLogin({

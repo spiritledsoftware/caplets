@@ -227,7 +227,7 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
-  it("exchanges Pairing Codes and rotates refresh credentials without accepting the copied code", async () => {
+  it("rejects legacy Pairing Code exchange over HTTP", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const issued = store.createPairingCode({ hostUrl: "http://127.0.0.1:5387/" });
@@ -241,42 +241,31 @@ describe("createHttpServeApp", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ code: issued.code, clientLabel: "Test Client" }),
     });
-    expect(exchanged.status).toBe(200);
-    const credentials = (await exchanged.json()) as {
-      accessToken: string;
-      refreshToken: string;
-    };
-    expect(credentials.accessToken).not.toBe(issued.code);
-    expect(credentials.refreshToken).not.toBe(issued.code);
 
-    const copiedCodeAttach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
-      headers: { authorization: `Bearer ${issued.code}` },
+    expect(exchanged.status).toBe(400);
+    await expect(exchanged.json()).resolves.toMatchObject({
+      error: { code: "REQUEST_INVALID", message: expect.stringContaining("no longer supported") },
     });
-    expect(copiedCodeAttach.status).toBe(401);
 
-    const refreshed = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
-    });
-    expect(refreshed.status).toBe(200);
-    const nextCredentials = (await refreshed.json()) as {
-      accessToken: string;
-      refreshToken: string;
-    };
-    expect(nextCredentials.refreshToken).not.toBe(credentials.refreshToken);
+    await engine.close();
+  });
 
-    const stale = await app.request("http://127.0.0.1:5387/v1/remote/refresh", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refreshToken: credentials.refreshToken }),
+  it("does not collapse HTTP pending login starts into an eight-flow empty-source quota", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
     });
-    expect(stale.status).toBe(401);
 
-    const revokedByReplay = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
-      headers: { authorization: `Bearer ${nextCredentials.accessToken}` },
-    });
-    expect(revokedByReplay.status).toBe(200);
+    for (let index = 0; index < 9; index += 1) {
+      const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientLabel: `Client ${index}` }),
+      });
+      expect(started.status).toBe(200);
+    }
 
     await engine.close();
   });
@@ -444,6 +433,10 @@ describe("createHttpServeApp", () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
     const issued = store.createPairingCode({ hostUrl: "https://caplets.example.com/" });
+    const credentials = store.exchangePairingCode({
+      hostUrl: "https://caplets.example.com/",
+      code: issued.code,
+    });
     const app = createHttpServeApp(
       httpOptions({
         auth: { type: "remote_credentials" },
@@ -456,18 +449,6 @@ describe("createHttpServeApp", () => {
         remoteCredentialStore: store,
       },
     );
-
-    const exchanged = await app.request("http://10.0.0.5:5387/v1/remote/pairing/exchange", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": "attacker.example.com",
-      },
-      body: JSON.stringify({ code: issued.code }),
-    });
-    expect(exchanged.status).toBe(200);
-    const credentials = (await exchanged.json()) as { accessToken: string; refreshToken: string };
 
     const refreshed = await app.request("http://10.0.0.5:5387/v1/remote/refresh", {
       method: "POST",

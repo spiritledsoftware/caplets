@@ -198,33 +198,8 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.pairingExchange, async (c) => {
-      try {
-        const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
-        const code = stringField(parsed, "code");
-        const clientLabel = optionalStringField(parsed, "clientLabel");
-        const credentials = remoteCredentialStore.exchangePairingCode({
-          hostUrl: remoteCredentialHostUrl(
-            c.req.url,
-            paths.base,
-            options.publicOrigin,
-            options.trustProxy,
-            (name) => c.req.header(name),
-          ),
-          code,
-          ...(clientLabel ? { clientLabel } : {}),
-        });
-        return c.json({
-          clientId: credentials.clientId,
-          clientLabel: credentials.clientLabel,
-          accessToken: credentials.accessToken,
-          refreshToken: credentials.refreshToken,
-          tokenType: credentials.tokenType,
-          expiresAt: credentials.expiresAt,
-        });
-      } catch (error) {
-        return remoteCredentialErrorResponse(error);
-      }
+    app.post(paths.pairingExchange, async (_c) => {
+      return remoteCredentialErrorResponse(legacyPairingCodeUnsupportedError());
     });
 
     app.post(paths.remoteRefresh, async (c) => {
@@ -938,6 +913,13 @@ function remoteCredentialErrorResponse(error: unknown): Response {
   const status =
     safe.code === "REQUEST_INVALID" ? 400 : safe.code === "SERVER_UNAVAILABLE" ? 503 : 401;
   return Response.json({ ok: false, error: safe }, { status });
+}
+
+function legacyPairingCodeUnsupportedError(): CapletsError {
+  return new CapletsError(
+    "REQUEST_INVALID",
+    "Self-hosted Pairing Code exchange is no longer supported. Run caplets remote login <url> and approve the pending login from the host.",
+  );
 }
 
 function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
