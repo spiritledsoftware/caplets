@@ -51,6 +51,34 @@ export type RefreshClientCredentialsInput = {
   now?: Date | undefined;
 };
 
+export type CreatePendingLoginInput = {
+  hostUrl: string;
+  hostIdentity?: string | undefined;
+  clientLabel?: string | undefined;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+  now?: Date | undefined;
+};
+
+export type PendingLoginPossessionInput = {
+  flowId: string;
+  pendingCompletionSecret: string;
+  now?: Date | undefined;
+};
+
+export type RefreshPendingLoginInput = PendingLoginPossessionInput & {
+  pendingRefreshSecret: string;
+};
+
+export type ApprovePendingLoginInput = {
+  operatorCode: string;
+  now?: Date | undefined;
+};
+
+export type CompletePendingLoginInput = PendingLoginPossessionInput & {
+  hostUrl: string;
+};
+
 type StoredPairingCode = {
   codeId: string;
   hostUrl: string;
@@ -77,6 +105,29 @@ type StoredRemoteClient = {
   revokedAt?: string | undefined;
 };
 
+type PendingLoginStatus = "pending" | "approved" | "denied" | "cancelled" | "expired" | "exchanged";
+
+type StoredPendingLogin = {
+  flowId: string;
+  hostUrl: string;
+  hostIdentity?: string | undefined;
+  operatorCodeHash: string;
+  pendingRefreshHash: string;
+  supersededPendingRefreshHashes: SupersededRefreshToken[];
+  pendingCompletionHash: string;
+  clientLabel: string;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+  createdAt: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  status: PendingLoginStatus;
+  approvedAt?: string | undefined;
+  deniedAt?: string | undefined;
+  cancelledAt?: string | undefined;
+  exchangedAt?: string | undefined;
+};
+
 type SupersededRefreshToken = {
   hash: string;
   supersededAt: string;
@@ -85,12 +136,16 @@ type SupersededRefreshToken = {
 type RemoteServerCredentialState = {
   version: 1;
   pairingCodes: StoredPairingCode[];
+  pendingLogins: StoredPendingLogin[];
   clients: StoredRemoteClient[];
 };
 
 const DEFAULT_PAIRING_CODE_TTL_MS = 10 * 60_000;
 const DEFAULT_PAIRING_CODE_MAX_ATTEMPTS = 5;
 const DEFAULT_ACCESS_TOKEN_TTL_MS = 15 * 60_000;
+const DEFAULT_PENDING_OPERATOR_CODE_TTL_MS = 10 * 60_000;
+const DEFAULT_PENDING_FLOW_TTL_MS = 24 * 60 * 60_000;
+const DEFAULT_PENDING_POLL_INTERVAL_SECONDS = 5;
 const STALE_REFRESH_REVOKE_GRACE_MS = 30_000;
 const SUPERSEDED_REFRESH_TOKEN_RETENTION_MS = 24 * 60 * 60_000;
 const STATE_FILE = "remote-server-credentials.json";
@@ -103,6 +158,245 @@ export class RemoteServerCredentialStore {
 
   constructor(options: RemoteServerCredentialStoreOptions) {
     this.dir = options.dir;
+  }
+
+  createPendingLogin(input: CreatePendingLoginInput): {
+    flowId: string;
+    operatorCode: string;
+    pendingRefreshSecret: string;
+    pendingCompletionSecret: string;
+    codeExpiresAt: string;
+    flowExpiresAt: string;
+    intervalSeconds: number;
+  } {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const flowId = `rlogin_${randomToken(12)}`;
+      const operatorCode = `cap_login_${randomToken(5)}`;
+      const pendingRefreshSecret = `cap_pending_refresh_${randomToken(32)}`;
+      const pendingCompletionSecret = `cap_pending_complete_${randomToken(32)}`;
+      const codeExpiresAt = new Date(
+        now.getTime() + DEFAULT_PENDING_OPERATOR_CODE_TTL_MS,
+      ).toISOString();
+      const flowExpiresAt = new Date(now.getTime() + DEFAULT_PENDING_FLOW_TTL_MS).toISOString();
+      const state = this.loadState();
+      state.pendingLogins.push({
+        flowId,
+        hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+        ...(input.hostIdentity ? { hostIdentity: input.hostIdentity } : {}),
+        operatorCodeHash: hashSecret(operatorCode),
+        pendingRefreshHash: hashSecret(pendingRefreshSecret),
+        supersededPendingRefreshHashes: [],
+        pendingCompletionHash: hashSecret(pendingCompletionSecret),
+        clientLabel: input.clientLabel ?? "Caplets Remote Client",
+        ...(input.clientFingerprint ? { clientFingerprint: input.clientFingerprint } : {}),
+        ...(input.sourceHint ? { sourceHint: input.sourceHint } : {}),
+        createdAt: now.toISOString(),
+        codeExpiresAt,
+        flowExpiresAt,
+        status: "pending",
+      });
+      this.saveState(state);
+      return {
+        flowId,
+        operatorCode,
+        pendingRefreshSecret,
+        pendingCompletionSecret,
+        codeExpiresAt,
+        flowExpiresAt,
+        intervalSeconds: DEFAULT_PENDING_POLL_INTERVAL_SECONDS,
+      };
+    });
+  }
+
+  pollPendingLogin(input: PendingLoginPossessionInput): {
+    flowId: string;
+    status: PendingLoginStatus;
+  } {
+    const now = input.now ?? new Date();
+    const flow = this.pendingLoginForCompletion(input.flowId, input.pendingCompletionSecret, now);
+    return { flowId: flow.flowId, status: flow.status };
+  }
+
+  refreshPendingLogin(input: RefreshPendingLoginInput): {
+    flowId: string;
+    operatorCode: string;
+    pendingRefreshSecret: string;
+    codeExpiresAt: string;
+    flowExpiresAt: string;
+    intervalSeconds: number;
+  } {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const flow = this.pendingLoginForCompletion(
+        input.flowId,
+        input.pendingCompletionSecret,
+        now,
+        state,
+      );
+      if (flow.status !== "pending") {
+        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+      }
+      const refreshHash = hashSecret(input.pendingRefreshSecret);
+      if (!safeHashEqual(refreshHash, flow.pendingRefreshHash)) {
+        if (
+          flow.supersededPendingRefreshHashes.some((entry) =>
+            safeHashEqual(refreshHash, entry.hash),
+          )
+        ) {
+          throw new CapletsError("AUTH_FAILED", "Pending login refresh material is stale.");
+        }
+        throw new CapletsError("AUTH_FAILED", "Pending login refresh material is invalid.");
+      }
+
+      const operatorCode = `cap_login_${randomToken(5)}`;
+      const pendingRefreshSecret = `cap_pending_refresh_${randomToken(32)}`;
+      const codeExpiresAt = new Date(
+        now.getTime() + DEFAULT_PENDING_OPERATOR_CODE_TTL_MS,
+      ).toISOString();
+      flow.operatorCodeHash = hashSecret(operatorCode);
+      flow.supersededPendingRefreshHashes = pruneSupersededRefreshTokens(
+        flow.supersededPendingRefreshHashes,
+        now,
+      );
+      flow.supersededPendingRefreshHashes.push({
+        hash: flow.pendingRefreshHash,
+        supersededAt: now.toISOString(),
+      });
+      flow.pendingRefreshHash = hashSecret(pendingRefreshSecret);
+      flow.codeExpiresAt = codeExpiresAt;
+      this.saveState(state);
+      return {
+        flowId: flow.flowId,
+        operatorCode,
+        pendingRefreshSecret,
+        codeExpiresAt,
+        flowExpiresAt: flow.flowExpiresAt,
+        intervalSeconds: DEFAULT_PENDING_POLL_INTERVAL_SECONDS,
+      };
+    });
+  }
+
+  denyPendingLogin(input: ApprovePendingLoginInput): {
+    flowId: string;
+    status: "denied";
+  } {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const flow = state.pendingLogins.find((candidate) =>
+        safeHashEqual(hashSecret(input.operatorCode), candidate.operatorCodeHash),
+      );
+      if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
+      if (flow.status !== "pending") {
+        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+      }
+      if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
+        flow.status = "expired";
+        this.saveState(state);
+        throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
+      }
+      flow.status = "denied";
+      flow.deniedAt = now.toISOString();
+      this.saveState(state);
+      return { flowId: flow.flowId, status: "denied" };
+    });
+  }
+
+  cancelPendingLogin(input: PendingLoginPossessionInput): {
+    flowId: string;
+    status: "cancelled";
+  } {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const flow = this.pendingLoginForCompletion(
+        input.flowId,
+        input.pendingCompletionSecret,
+        now,
+        state,
+      );
+      if (flow.status !== "pending") {
+        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+      }
+      flow.status = "cancelled";
+      flow.cancelledAt = now.toISOString();
+      this.saveState(state);
+      return { flowId: flow.flowId, status: "cancelled" };
+    });
+  }
+
+  approvePendingLogin(input: ApprovePendingLoginInput): {
+    flowId: string;
+    status: "approved";
+    clientLabel: string;
+    clientFingerprint?: string | undefined;
+    sourceHint?: string | undefined;
+  } {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const flow = state.pendingLogins.find((candidate) =>
+        safeHashEqual(hashSecret(input.operatorCode), candidate.operatorCodeHash),
+      );
+      if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
+      if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
+        flow.status = "expired";
+        this.saveState(state);
+        throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
+      }
+      if (flow.status !== "pending") {
+        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+      }
+      flow.status = "approved";
+      flow.approvedAt = now.toISOString();
+      this.saveState(state);
+      return pendingApprovalStatus(flow);
+    });
+  }
+
+  completePendingLogin(input: CompletePendingLoginInput): IssuedRemoteClientCredentials {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      const flow = this.pendingLoginForCompletion(
+        input.flowId,
+        input.pendingCompletionSecret,
+        now,
+        state,
+      );
+      if (flow.hostUrl !== normalizeRemoteProfileHostUrl(input.hostUrl)) {
+        throw new CapletsError("AUTH_FAILED", "Pending login belongs to a different host.");
+      }
+      if (flow.status !== "approved") {
+        throw new CapletsError(
+          "AUTH_FAILED",
+          flow.status === "exchanged"
+            ? "Pending login has already been exchanged."
+            : `Pending login is ${flow.status}, not approved.`,
+        );
+      }
+
+      const accessToken = `cap_remote_access_${randomToken(32)}`;
+      const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
+      const client: StoredRemoteClient = {
+        clientId: `rcli_${randomToken(12)}`,
+        clientLabel: flow.clientLabel,
+        hostUrl: flow.hostUrl,
+        accessTokenHash: hashSecret(accessToken),
+        accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),
+        refreshTokenHash: hashSecret(refreshToken),
+        supersededRefreshTokenHashes: [],
+        refreshFamilyId: randomUUID(),
+        createdAt: now.toISOString(),
+      };
+      state.clients.push(client);
+      flow.status = "exchanged";
+      flow.exchangedAt = now.toISOString();
+      this.saveState(state);
+      return credentialsFromClient(client, accessToken, refreshToken);
+    });
   }
 
   createPairingCode(input: CreatePairingCodeInput): {
@@ -284,11 +578,17 @@ export class RemoteServerCredentialStore {
 
   private loadState(): RemoteServerCredentialState {
     const path = this.statePath();
-    if (!existsSync(path)) return { version: 1, pairingCodes: [], clients: [] };
+    if (!existsSync(path)) return { version: 1, pairingCodes: [], pendingLogins: [], clients: [] };
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<RemoteServerCredentialState>;
     return {
       version: 1,
       pairingCodes: parsed.pairingCodes ?? [],
+      pendingLogins: (parsed.pendingLogins ?? []).map((pending) => ({
+        ...pending,
+        supersededPendingRefreshHashes: parseSupersededRefreshTokens(
+          pending.supersededPendingRefreshHashes,
+        ),
+      })),
       clients: (parsed.clients ?? []).map((client) => ({
         ...client,
         supersededRefreshTokenHashes: parseSupersededRefreshTokens(
@@ -365,6 +665,23 @@ export class RemoteServerCredentialStore {
       return false;
     }
   }
+
+  private pendingLoginForCompletion(
+    flowId: string,
+    pendingCompletionSecret: string,
+    now: Date,
+    state = this.loadState(),
+  ): StoredPendingLogin {
+    const flow = state.pendingLogins.find((candidate) => candidate.flowId === flowId);
+    if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login is unknown.");
+    if (!safeHashEqual(hashSecret(pendingCompletionSecret), flow.pendingCompletionHash)) {
+      throw new CapletsError("AUTH_FAILED", "Pending login possession material is invalid.");
+    }
+    if (Date.parse(flow.flowExpiresAt) <= now.getTime() && flow.status === "pending") {
+      flow.status = "expired";
+    }
+    return flow;
+  }
 }
 
 function sleepSync(ms: number): void {
@@ -435,6 +752,22 @@ function clientStatus(client: StoredRemoteClient): RemoteClientStatus {
     createdAt: client.createdAt,
     ...(client.lastUsedAt ? { lastUsedAt: client.lastUsedAt } : {}),
     ...(client.revokedAt ? { revokedAt: client.revokedAt } : {}),
+  };
+}
+
+function pendingApprovalStatus(flow: StoredPendingLogin): {
+  flowId: string;
+  status: "approved";
+  clientLabel: string;
+  clientFingerprint?: string | undefined;
+  sourceHint?: string | undefined;
+} {
+  return {
+    flowId: flow.flowId,
+    status: "approved",
+    clientLabel: flow.clientLabel,
+    ...(flow.clientFingerprint ? { clientFingerprint: flow.clientFingerprint } : {}),
+    ...(flow.sourceHint ? { sourceHint: flow.sourceHint } : {}),
   };
 }
 
