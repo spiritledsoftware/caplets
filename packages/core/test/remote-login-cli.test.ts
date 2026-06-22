@@ -678,6 +678,56 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).not.toContain("self-hosted-access");
     expect(out.join("")).not.toContain("self-hosted-refresh");
   });
+
+  it("lists multiple Cloud workspace profiles through remote status", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_alpha",
+      workspaceSlug: "alpha",
+      credentials: {
+        accessToken: "alpha-access",
+        refreshToken: "alpha-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_beta",
+      workspaceSlug: "beta",
+      credentials: {
+        accessToken: "beta-access",
+        refreshToken: "beta-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+    const out: string[] = [];
+
+    await runCli(["remote", "status", "--json"], {
+      authDir,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      profiles: [
+        {
+          kind: "cloud",
+          hostUrl: "https://cloud.caplets.dev/",
+          workspaceSlug: "alpha",
+          selected: false,
+        },
+        {
+          kind: "cloud",
+          hostUrl: "https://cloud.caplets.dev/",
+          workspaceSlug: "beta",
+          selected: true,
+        },
+      ],
+    });
+    expect(out.join("")).not.toContain("alpha-access");
+    expect(out.join("")).not.toContain("beta-refresh");
+  });
 });
 
 function tempDir(prefix: string): string {

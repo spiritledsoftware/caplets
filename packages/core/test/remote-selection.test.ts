@@ -379,6 +379,36 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("fails with workspace-specific recovery when a Cloud host has profiles but no selected workspace", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "cloud-access",
+        refreshToken: "cloud-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+      },
+    });
+    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "workspace_switch_required",
+      recoveryCommand: "caplets remote login <cloud-url> --workspace <workspace>",
+    });
+  });
+
   it("derives Cloud MCP and Project Binding URLs from the selected workspace", async () => {
     const path = tempCloudAuthPath();
     await new CloudAuthStore({ path }).save(

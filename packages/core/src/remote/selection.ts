@@ -132,12 +132,12 @@ export async function resolveRemoteSelection(
     input.workspace ?? (workspaceFromRemoteUrl ? undefined : env.CAPLETS_REMOTE_WORKSPACE);
   const profileWorkspace = workspaceFromRemoteUrl ?? explicitWorkspace;
   const normalizedRemoteUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-  let status = await store.getCloudProfileStatus({
+  let status = await getCloudProfileStatusForSelection(store, {
     hostUrl: normalizedRemoteUrl,
     workspace: profileWorkspace,
   });
   if (!status && profileWorkspace) {
-    status = await store.getCloudProfileStatus({
+    status = await getCloudProfileStatusForSelection(store, {
       hostUrl: normalizedRemoteUrl,
     });
   }
@@ -368,6 +368,33 @@ function selfHostedRefreshLooksRevoked(
   summary: { code?: string | undefined; message?: string | undefined } | undefined,
 ): boolean {
   return /revoked|rejected/iu.test(summary?.message ?? "");
+}
+
+async function getCloudProfileStatusForSelection(
+  store: ReturnType<typeof createRemoteProfileStore>,
+  input: { hostUrl: string; workspace?: string | undefined },
+): Promise<
+  Awaited<ReturnType<ReturnType<typeof createRemoteProfileStore>["getCloudProfileStatus"]>>
+> {
+  try {
+    return await store.getCloudProfileStatus(input);
+  } catch (error) {
+    if (isCloudWorkspaceAmbiguity(error)) {
+      throw projectBindingError(
+        "workspace_switch_required",
+        "Cloud Remote Profile requires a selected or explicit workspace.",
+      );
+    }
+    throw error;
+  }
+}
+
+function isCloudWorkspaceAmbiguity(error: unknown): boolean {
+  return (
+    error instanceof CapletsError &&
+    error.code === "REQUEST_INVALID" &&
+    /Cloud Remote Profile requires a selected or explicit workspace/u.test(error.message)
+  );
 }
 
 async function parseSelfHostedRefreshCredentials(
