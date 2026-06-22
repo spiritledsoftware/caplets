@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { runCli } from "../src/cli";
+import { doctorJsonReport } from "../src/cli/doctor";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 
@@ -154,6 +155,7 @@ describe("caplets doctor", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-"));
     const configPath = join(dir, "config.json");
     const out: string[] = [];
+    const plainOut: string[] = [];
     try {
       mkdirSync(dir, { recursive: true });
       writeFileSync(
@@ -191,6 +193,67 @@ describe("caplets doctor", () => {
         ],
       });
       expect(JSON.stringify(report.vault)).not.toContain("secret");
+
+      await runCli(["doctor"], {
+        env: {
+          CAPLETS_CONFIG: configPath,
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        writeOut: (value) => plainOut.push(value),
+      });
+      expect(plainOut.join("")).toContain(
+        "github: ungranted GH_TOKEN (caplets vault access grant GH_TOKEN github)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("honors DoctorOptions.cwd when checking project Vault references", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-cwd-"));
+    const configPath = join(dir, "config.json");
+    const projectRoot = join(dir, "project");
+    const projectCapletDir = join(projectRoot, ".caplets", "github");
+    try {
+      mkdirSync(projectCapletDir, { recursive: true });
+      writeFileSync(configPath, "{}");
+      writeFileSync(
+        join(projectCapletDir, "CAPLET.md"),
+        [
+          "---",
+          "name: GitHub",
+          "description: GitHub tools.",
+          "mcpServer:",
+          "  transport: http",
+          "  url: https://api.githubcopilot.com/mcp",
+          "  auth:",
+          "    type: bearer",
+          "    token: $vault:GH_TOKEN",
+          "---",
+          "",
+          "# GitHub",
+          "",
+        ].join("\n"),
+      );
+
+      const report = await doctorJsonReport({
+        cwd: projectRoot,
+        env: {
+          CAPLETS_CONFIG: configPath,
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+      });
+
+      expect(report.vault).toMatchObject({
+        ok: false,
+        issues: [
+          expect.objectContaining({
+            capletId: "github",
+            key: "GH_TOKEN",
+            recoveryCommand: "caplets vault access grant GH_TOKEN github",
+          }),
+        ],
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

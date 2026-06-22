@@ -1767,9 +1767,13 @@ export function loadLocalOverlayConfigWithSources(
 export function loadLocalRuntimeConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
-  options: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined } = {},
+  options: Pick<ConfigParseOptions, "vaultResolver"> & {
+    writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined;
+  } = {},
 ): CapletsConfig {
-  const overlay = loadLocalOverlayConfigWithSources(path, projectPath);
+  const overlay = loadLocalOverlayConfigWithSources(path, projectPath, {
+    vaultResolver: options.vaultResolver,
+  });
   for (const warning of overlay.warnings) {
     options.writeWarning?.(warning);
   }
@@ -2241,7 +2245,12 @@ function normalizeCapletSetPaths(
 }
 
 function normalizeLocalPath(value: unknown, baseDir: string): unknown {
-  if (typeof value !== "string" || !value || isAbsolute(value) || hasEnvReference(value)) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    isAbsolute(value) ||
+    hasInterpolationReference(value)
+  ) {
     return value;
   }
   return join(baseDir, value);
@@ -2566,7 +2575,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasEnvReference(value: string): boolean {
+function hasInterpolationReference(value: string): boolean {
   return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{vault:[^}]+\}|\$vault:[^\s"',`\]}]+/.test(
     value,
   );

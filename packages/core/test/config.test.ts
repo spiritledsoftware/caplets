@@ -1328,10 +1328,14 @@ describe("config", () => {
           path: join(import.meta.dirname, "../../..", "caplets", "github", "CAPLET.md"),
         },
       },
-      vaultResolver: (reference) => ({
-        storedKey: reference.referenceName,
-        value: reference.referenceName === "GH_TOKEN" ? "test-github-token" : "",
-      }),
+      vaultResolver: (reference) => {
+        if (reference.referenceName !== "GH_TOKEN") {
+          throw new Error(
+            `Unexpected Vault reference in repository fixture: ${reference.referenceName}`,
+          );
+        }
+        return { storedKey: reference.referenceName, value: "test-github-token" };
+      },
     });
 
     expect(config.mcpServers.context7).toMatchObject({

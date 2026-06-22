@@ -117,6 +117,37 @@ describe("Caplets Vault local store", () => {
     );
   });
 
+  it("reports malformed Vault metadata through CapletsError", () => {
+    const dir = tempDir();
+    const store = new FileVaultStore({ root: dir });
+    store.set("GH_TOKEN", "secret");
+
+    writeFileSync(store.valuePath("GH_TOKEN"), "{");
+    expect(() => store.getStatus("GH_TOKEN")).toThrow(
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: "Vault value record for GH_TOKEN is not valid JSON.",
+      }) as CapletsError,
+    );
+
+    const grantsStore = new FileVaultStore({ root: tempDir() });
+    writeFileSync(grantsStore.paths.grantsFile, "{}\n");
+    expect(() => grantsStore.listAccess()).toThrow(
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: "Vault access grants file must contain an array.",
+      }) as CapletsError,
+    );
+
+    writeFileSync(grantsStore.paths.grantsFile, "{");
+    expect(() => grantsStore.listAccess()).toThrow(
+      expect.objectContaining({
+        code: "CONFIG_INVALID",
+        message: "Vault access grants file is not valid JSON.",
+      }) as CapletsError,
+    );
+  });
+
   it("rejects overly broad minted key-file permissions on POSIX platforms", () => {
     if (process.platform === "win32") return;
     const dir = tempDir();

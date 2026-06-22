@@ -97,7 +97,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
     },
     daemon: await resolveDaemonSection(env, options.daemon),
     remoteLogin: remoteLogin.report,
-    vault: resolveVaultSection(env),
+    vault: resolveVaultSection(env, root),
     exposure: await resolveExposureSection(env),
     codeMode: await resolveCodeModeSection(options, env),
   };
@@ -157,6 +157,9 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
     "",
     "Vault",
     `  OK: ${yesNo(Boolean(report.vault.ok))}`,
+    ...(!report.vault.ok && typeof report.vault.message === "string"
+      ? [`  Error: ${report.vault.message}`]
+      : []),
     ...(Array.isArray(report.vault.issues)
       ? (report.vault.issues as Array<Record<string, unknown>>).map(
           (issue) => `  ${issue.capletId}: ${issue.reason} ${issue.key} (${issue.recoveryCommand})`,
@@ -191,11 +194,14 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
   return `${lines.join("\n")}\n`;
 }
 
-function resolveVaultSection(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+function resolveVaultSection(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  cwd: string = process.cwd(),
+) {
   const configPath = env.CAPLETS_CONFIG?.trim() ? env.CAPLETS_CONFIG.trim() : resolveConfigPath();
   const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim()
     ? env.CAPLETS_PROJECT_CONFIG.trim()
-    : resolveProjectConfigPath();
+    : resolveProjectConfigPath(cwd);
   try {
     const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
     const issues = overlay.warnings

@@ -201,7 +201,13 @@ export class FileVaultStore {
   private loadValueRecord(key: string): VaultEncryptedRecord | undefined {
     const path = this.valuePath(key);
     if (!existsSync(path)) return undefined;
-    return parseEncryptedRecord(readJsonFile<unknown>(path, {}));
+    let raw: unknown;
+    try {
+      raw = readJsonFile<unknown>(path, {});
+    } catch {
+      throw new CapletsError("CONFIG_INVALID", `Vault value record for ${key} is not valid JSON.`);
+    }
+    return parseEncryptedRecord(raw);
   }
 
   private statusForRecord(key: string, record: VaultEncryptedRecord): VaultValueStatus {
@@ -215,7 +221,16 @@ export class FileVaultStore {
   }
 
   private loadAccessGrants(): VaultAccessGrant[] {
-    return readJsonFile<unknown[]>(this.paths.grantsFile, []).map(parseStoredGrant);
+    let raw: unknown;
+    try {
+      raw = readJsonFile<unknown>(this.paths.grantsFile, []);
+    } catch {
+      throw new CapletsError("CONFIG_INVALID", "Vault access grants file is not valid JSON.");
+    }
+    if (!Array.isArray(raw)) {
+      throw new CapletsError("CONFIG_INVALID", "Vault access grants file must contain an array.");
+    }
+    return raw.map(parseStoredGrant);
   }
 
   private saveAccessGrants(grants: VaultAccessGrant[]): void {

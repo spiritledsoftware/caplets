@@ -72,7 +72,13 @@ export function vaultKeySourceStatus(input: {
   if (!existsSync(input.keyFile)) {
     return { available: false, source: "file", reason: "missing", keyFile: input.keyFile };
   }
-  if (process.platform !== "win32" && (statSync(input.keyFile).mode & 0o077) !== 0) {
+  let mode: number;
+  try {
+    mode = statSync(input.keyFile).mode;
+  } catch (error) {
+    return unavailableKeyFileStatus(input.keyFile, error);
+  }
+  if (process.platform !== "win32" && (mode & 0o077) !== 0) {
     return {
       available: false,
       source: "file",
@@ -80,8 +86,14 @@ export function vaultKeySourceStatus(input: {
       keyFile: input.keyFile,
     };
   }
+  let contents: string;
   try {
-    parseKeyFile(readFileSync(input.keyFile, "utf8"));
+    contents = readFileSync(input.keyFile, "utf8");
+  } catch (error) {
+    return unavailableKeyFileStatus(input.keyFile, error);
+  }
+  try {
+    parseKeyFile(contents);
     return { available: true, source: "file", keyFile: input.keyFile };
   } catch (error) {
     const reason =
@@ -90,6 +102,19 @@ export function vaultKeySourceStatus(input: {
         : "invalid";
     return { available: false, source: "file", reason, keyFile: input.keyFile };
   }
+}
+
+function unavailableKeyFileStatus(keyFile: string, error: unknown): VaultKeySourceStatus {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+  return {
+    available: false,
+    source: "file",
+    reason: code === "ENOENT" ? "missing" : "unreadable",
+    keyFile,
+  };
 }
 
 function parseKeyFile(contents: string): Buffer {

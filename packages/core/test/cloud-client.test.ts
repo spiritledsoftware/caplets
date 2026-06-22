@@ -150,12 +150,12 @@ describe("CapletsCloudClient", () => {
       client.getVaultValue({ workspace: "team", name: "GH_TOKEN", reveal: true }),
     ).resolves.toEqual({ key: "GH_TOKEN", value: "cloud_secret" });
 
-    expect(fetch).toHaveBeenCalledWith(
-      new URL(
-        "https://cloud.caplets.dev/api/workspaces/team/vault/values/GH_TOKEN?reveal=true&revealContext=human-cli",
-      ),
-      expect.objectContaining({ method: "GET" }),
-    );
+    expect(fetch).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ method: "GET" }));
+    const revealCalls = fetch.mock.calls as unknown as Array<[URL, RequestInit?]>;
+    const revealUrl = new URL(String(revealCalls[0]?.[0]));
+    expect(revealUrl.pathname).toBe("/api/workspaces/team/vault/values/GH_TOKEN");
+    expect(revealUrl.searchParams.get("reveal")).toBe("true");
+    expect(revealUrl.searchParams.get("revealContext")).toBe("human-cli");
   });
 
   it("sends Vault access management requests to the selected workspace contract", async () => {
@@ -200,17 +200,21 @@ describe("CapletsCloudClient", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL(
-        "https://cloud.caplets.dev/ws/ian/api/workspaces/team/vault/access?name=GH_TOKEN&capletId=github",
-      ),
+      expect.any(URL),
       expect.objectContaining({ method: "GET" }),
     );
+    const accessCalls = fetch.mock.calls as unknown as Array<[URL, RequestInit?]>;
+    const listUrl = new URL(String(accessCalls[1]?.[0]));
+    expect(listUrl.pathname).toBe("/ws/ian/api/workspaces/team/vault/access");
+    expect(listUrl.searchParams.get("name")).toBe("GH_TOKEN");
+    expect(listUrl.searchParams.get("capletId")).toBe("github");
     expect(fetch).toHaveBeenNthCalledWith(
       3,
-      new URL(
-        "https://cloud.caplets.dev/ws/ian/api/workspaces/team/vault/access/GH_TOKEN/github?referenceName=GH_TOKEN",
-      ),
+      expect.any(URL),
       expect.objectContaining({ method: "DELETE" }),
     );
+    const revokeUrl = new URL(String(accessCalls[2]?.[0]));
+    expect(revokeUrl.pathname).toBe("/ws/ian/api/workspaces/team/vault/access/GH_TOKEN/github");
+    expect(revokeUrl.searchParams.get("referenceName")).toBe("GH_TOKEN");
   });
 });

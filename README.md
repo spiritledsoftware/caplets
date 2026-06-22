@@ -195,7 +195,7 @@ tokens than direct vanilla MCP. Live runs are model- and environment-dependent; 
 deterministic benchmark is the reproducible claim.
 
 See [docs/benchmarks/coding-agent.md](https://github.com/spiritledsoftware/caplets/blob/main/docs/benchmarks/coding-agent.md) for methodology and reproduction commands.
-See [docs.caplets.dev/changelog](https://docs.caplets.dev/changelog/) for public release notes.
+See [GitHub Releases](https://github.com/spiritledsoftware/caplets/releases) for public release notes.
 
 ## Repository
 

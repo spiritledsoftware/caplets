@@ -188,6 +188,13 @@ describe("dispatchRemoteCliRequest", () => {
       { command: "vault_access_list", arguments: {} },
       { ...context, authDir },
     );
+    const inspect = await dispatchRemoteCliRequest(
+      {
+        command: "inspect",
+        arguments: { caplet: "github", request: { operation: "inspect" } },
+      },
+      { ...context, authDir },
+    );
 
     const store = new FileVaultStore({ root: join(authDir, "vault") });
     expect(set).toMatchObject({ ok: true, result: { key: "GH_TOKEN_REMOTE", present: true } });
@@ -204,6 +211,14 @@ describe("dispatchRemoteCliRequest", () => {
       ],
     });
     expect(JSON.stringify(list)).not.toContain("remote_dispatch_secret");
+    expect(inspect).toMatchObject({
+      ok: true,
+      result: {
+        structuredContent: {
+          result: { id: "github", backend: { type: "mcp" }, name: "GitHub" },
+        },
+      },
+    });
   });
 
   it("does not retain a remote Vault value when set-and-grant fails", async () => {
