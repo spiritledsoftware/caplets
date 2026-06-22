@@ -187,6 +187,46 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("reports remote credential host identity metadata from the public origin", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.example.com",
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      { writeErr: () => {}, remoteCredentialStore: remoteCredentialStore() },
+    );
+
+    const root = await app.request("http://127.0.0.1:5387/");
+    expect(root.status).toBe(200);
+    await expect(root.json()).resolves.toMatchObject({
+      remote: {
+        hostIdentity: "https://caplets.example.com/",
+        audience: "https://caplets.example.com/",
+      },
+      versions: [
+        expect.objectContaining({
+          remote: {
+            hostIdentity: "https://caplets.example.com/",
+            audience: "https://caplets.example.com/",
+          },
+        }),
+      ],
+    });
+
+    const version = await app.request("http://127.0.0.1:5387/v1");
+    expect(version.status).toBe(200);
+    await expect(version.json()).resolves.toMatchObject({
+      remote: {
+        hostIdentity: "https://caplets.example.com/",
+        audience: "https://caplets.example.com/",
+      },
+    });
+
+    await engine.close();
+  });
+
   it("exchanges Pairing Codes and rotates refresh credentials without accepting the copied code", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();

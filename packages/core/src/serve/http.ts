@@ -83,17 +83,26 @@ export function createHttpServeApp(
     }),
   );
 
-  app.get(paths.base, (c) =>
-    c.json({
+  app.get(paths.base, (c) => {
+    const remote = remoteCredentialStore
+      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
+      : undefined;
+    return c.json({
       name: "caplets",
       transport: "http",
       base: paths.base,
-      versions: [versionDiscovery(paths, exposeAttach)],
+      versions: [versionDiscovery(paths, exposeAttach, remote)],
       auth: { type: options.auth.type },
-    }),
-  );
+      ...(remote ? { remote } : {}),
+    });
+  });
 
-  app.get(paths.version, (c) => c.json(versionDiscovery(paths, exposeAttach)));
+  app.get(paths.version, (c) => {
+    const remote = remoteCredentialStore
+      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
+      : undefined;
+    return c.json(versionDiscovery(paths, exposeAttach, remote));
+  });
 
   app.get(paths.health, (c) =>
     c.json({
@@ -437,10 +446,36 @@ function firstForwardedValue(value: string | undefined): string | undefined {
   return value?.split(",", 1)[0]?.trim() || undefined;
 }
 
-function versionDiscovery(paths: ReturnType<typeof servicePaths>, exposeAttach = true) {
+type RemoteHostMetadata = {
+  hostIdentity: string;
+  audience: string;
+};
+
+function remoteHostMetadata(
+  requestUrl: string,
+  basePath: string,
+  options: HttpServeOptions,
+  header: (name: string) => string | undefined,
+): RemoteHostMetadata {
+  const audience = remoteCredentialHostUrl(
+    requestUrl,
+    basePath,
+    options.publicOrigin,
+    options.trustProxy,
+    header,
+  );
+  return { hostIdentity: audience, audience };
+}
+
+function versionDiscovery(
+  paths: ReturnType<typeof servicePaths>,
+  exposeAttach = true,
+  remote?: RemoteHostMetadata | undefined,
+) {
   return {
     version: 1,
     path: paths.version,
+    ...(remote ? { remote } : {}),
     links: {
       mcp: paths.mcp,
       admin: paths.control,
