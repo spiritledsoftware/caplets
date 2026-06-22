@@ -49,6 +49,7 @@ export type CapletsEngineOptions = {
   observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
   observedOutputShapeCacheDir?: string | undefined;
   projectFingerprint?: string | undefined;
+  vaultRecoveryTarget?: "global" | "remote" | undefined;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -99,7 +100,8 @@ export class CapletsEngine {
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
-    this.configLoader = options.configLoader ?? runtimeConfigLoader(options.authDir);
+    this.configLoader =
+      options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
     const config = this.loadConfigWithWarnings();
     this.registry = new ServerRegistry(config);
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
@@ -580,12 +582,14 @@ export class CapletsEngine {
 
 function runtimeConfigLoader(
   authDir: string | undefined,
+  vaultRecoveryTarget: CapletsEngineOptions["vaultRecoveryTarget"],
 ): NonNullable<CapletsEngineOptions["configLoader"]> {
   const vaultResolver = vaultResolverForAuthDir(authDir);
   return (configPath, projectConfigPath, options) =>
     loadLocalRuntimeConfig(configPath, projectConfigPath, {
       ...options,
       vaultResolver,
+      vaultRecoveryTarget,
     });
 }
 

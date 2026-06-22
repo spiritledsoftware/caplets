@@ -1854,18 +1854,26 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("[capletId]", "optional configured Caplet ID")
     .option("-g, --global", "target the local/global Vault")
     .option("--remote", "target the selected remote Vault")
+    .option("--caplet <capletId>", "filter by configured Caplet ID")
     .option("--json", "print JSON output")
     .action(
       async (
         name: string | undefined,
         capletId: string | undefined,
-        options: VaultTargetOptions & { json?: boolean },
+        options: VaultTargetOptions & { caplet?: string; json?: boolean },
       ) => {
+        if (options.caplet && capletId && options.caplet !== capletId) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "Use either positional capletId or --caplet, not both.",
+          );
+        }
+        const capletFilter = options.caplet ?? capletId;
         const target = parseVaultTarget(options);
         if (target === "remote") {
           const grants = await remoteVaultAccessList(io, {
             ...(name ? { name } : {}),
-            ...(capletId ? { capletId } : {}),
+            ...(capletFilter ? { capletId: capletFilter } : {}),
           });
           writeOut(
             formatVaultAccessList(
@@ -1877,7 +1885,7 @@ export function createProgram(io: CliIO = {}): Command {
         }
         writeOut(
           formatVaultAccessList(
-            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletId)),
+            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletFilter)),
             Boolean(options.json),
           ),
         );

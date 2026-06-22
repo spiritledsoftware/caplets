@@ -329,6 +329,10 @@ describe("cli init", () => {
         env,
         writeOut: (value) => out.push(value),
       });
+      await runCli(["vault", "access", "list", "--caplet", "github-personal", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
       await runCli(
         ["vault", "access", "revoke", "GH_TOKEN_PERSONAL", "github-personal", "--as", "GH_TOKEN"],
         {
@@ -349,6 +353,7 @@ describe("cli init", () => {
         "Granted Vault key GH_TOKEN_PERSONAL to github-personal as GH_TOKEN.",
       );
       expect(out.join("")).toContain('"referenceName": "GH_TOKEN"');
+      expect(out.join("")).toContain('"capletId": "github-personal"');
       expect(out.join("")).not.toContain("personal_secret");
       expect(out.join("")).toContain("Revoked 1 Vault access grant.");
     } finally {

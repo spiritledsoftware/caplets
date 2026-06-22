@@ -223,14 +223,15 @@ function vaultIssueFromWarning(message: string, path: string) {
     /^Caplet ([^ ]+) references ([^ ]+) Vault key ([^ ]+) at ([^;]+); run `([^`]+)`/u,
   );
   if (!match) return undefined;
+  const recoveryCommand = match[5] ?? "";
   return {
     capletId: match[1],
     reason: match[2],
     key: match[3],
     configPath: path,
     referencePath: match[4],
-    target: "global",
-    recoveryCommand: match[5],
+    target: recoveryCommand.includes("--remote") ? "remote" : "global",
+    recoveryCommand,
   };
 }
 

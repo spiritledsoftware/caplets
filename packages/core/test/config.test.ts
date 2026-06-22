@@ -1245,6 +1245,149 @@ describe("config", () => {
     }
   });
 
+  it("reports remapped missing Vault keys with the stored key repair command", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-remap-warning-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub tools.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      const { warnings } = loadLocalOverlayConfigWithSources(userConfigPath, projectConfigPath, {
+        vaultResolver: (reference) => ({
+          reason: "missing",
+          storedKey: "GH_TOKEN_PERSONAL",
+          referenceName: reference.referenceName,
+          capletId: reference.capletId,
+          origin: reference.origin,
+        }),
+      });
+
+      expect(warnings[0]?.message).toContain("Vault key GH_TOKEN_PERSONAL");
+      expect(warnings[0]?.message).toContain("caplets vault set GH_TOKEN_PERSONAL");
+      expect(warnings[0]?.message).not.toContain("caplets vault set GH_TOKEN ");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("targets remote Vault recovery commands when requested", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-remote-warning-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub tools.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      const { warnings } = loadLocalOverlayConfigWithSources(userConfigPath, projectConfigPath, {
+        vaultRecoveryTarget: "remote",
+        vaultResolver: (reference) => ({
+          reason: "ungranted",
+          referenceName: reference.referenceName,
+          capletId: reference.capletId,
+          origin: reference.origin,
+        }),
+      });
+
+      expect(warnings[0]?.message).toContain("caplets vault access grant GH_TOKEN github --remote");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports invalid Vault key sources without suggesting set or grant", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-key-source-warning-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub tools.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+            },
+          },
+        }),
+      );
+
+      const { warnings } = loadLocalOverlayConfigWithSources(userConfigPath, projectConfigPath, {
+        vaultResolver: (reference) => ({
+          reason: "invalid-key-source",
+          referenceName: reference.referenceName,
+          capletId: reference.capletId,
+          origin: reference.origin,
+        }),
+      });
+
+      expect(warnings[0]?.message).toContain("invalid-key-source");
+      expect(warnings[0]?.message).toContain("caplets doctor");
+      expect(warnings[0]?.message).not.toContain("caplets vault set");
+      expect(warnings[0]?.message).not.toContain("caplets vault access grant");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows strict inspection loaders to read Vault-backed URL fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-strict-loader-"));
+    try {
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            remote: {
+              name: "Remote",
+              description: "Remote MCP server.",
+              transport: "http",
+              url: "$vault:REMOTE_URL",
+            },
+          },
+        }),
+      );
+
+      const { config } = loadConfigWithSources(userConfigPath, projectConfigPath);
+
+      expect(config.mcpServers.remote?.url).toBe("https://caplets.local/vault-placeholder");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves local overlay source and shadow metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-shadows-"));
     try {

@@ -562,6 +562,7 @@ export async function serveHttp(
 ): Promise<void> {
   const resolvedEngineOptions = {
     exposeLocalArtifactPaths: false,
+    vaultRecoveryTarget: "remote" as const,
     ...engineOptions,
   };
   const engine = new CapletsEngine(resolvedEngineOptions);
