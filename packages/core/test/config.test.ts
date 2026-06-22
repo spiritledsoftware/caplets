@@ -20,13 +20,16 @@ import {
   defaultCompletionCacheDir,
   loadConfig,
   loadLocalOverlayConfigWithSources,
+  loadLocalRuntimeConfig,
   loadConfigWithSources,
   parseConfig,
+  vaultBootstrapResolver,
   type ConfigVaultResolver,
 } from "../src/config";
 import { listCaplets } from "../src/cli/inspection";
 import { CapletsError } from "../src/errors";
 import { ServerRegistry } from "../src/registry";
+import { FileVaultStore } from "../src/vault";
 
 describe("config", () => {
   const originalEnv = process.env.EXAMPLE_TOKEN;
@@ -1146,6 +1149,93 @@ describe("config", () => {
     expect(config.mcpServers.github?.env).toEqual({ GH_TOKEN: "$vault:GH_TOKEN" });
   });
 
+  it("stops bare Vault references at key-name boundaries", () => {
+    const config = parseConfig(
+      {
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "Uses Vault refs inside longer strings.",
+            command: "github-mcp",
+            env: {
+              API_URL: "$vault:BASE_URL/v1",
+              QUERY: "token=$vault:TOKEN&x=1",
+            },
+          },
+        },
+      },
+      {
+        sources: {
+          github: {
+            kind: "global-config",
+            path: "/tmp/caplets/config.json",
+          },
+        },
+        vaultResolver: (reference) => ({
+          storedKey: reference.referenceName,
+          value: reference.referenceName === "BASE_URL" ? "https://api.example.com" : "secret",
+        }),
+      },
+    );
+
+    expect(config.mcpServers.github?.env).toEqual({
+      API_URL: "https://api.example.com/v1",
+      QUERY: "token=secret&x=1",
+    });
+  });
+
+  it("resolves strict loader Vault refs with the configured Vault store by default", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-strict-resolve-"));
+    const originalStateHome = process.env.XDG_STATE_HOME;
+    try {
+      process.env.XDG_STATE_HOME = join(dir, "state");
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            oauth: {
+              name: "OAuth",
+              description: "Remote OAuth downstream server.",
+              transport: "http",
+              url: "https://example.com/mcp",
+              auth: {
+                type: "oauth2",
+                tokenUrl: "https://example.com/token",
+                clientId: "client",
+                clientSecret: "$vault:CLIENT_SECRET",
+              },
+            },
+          },
+        }),
+      );
+      const store = new FileVaultStore();
+      store.set("CLIENT_SECRET", "resolved-client-secret");
+      store.grantAccess({
+        storedKey: "CLIENT_SECRET",
+        referenceName: "CLIENT_SECRET",
+        capletId: "oauth",
+        origin: { kind: "global-config", path: userConfigPath },
+      });
+
+      const config = loadConfig(userConfigPath, projectConfigPath);
+
+      expect(config.mcpServers.oauth?.auth).toMatchObject({
+        type: "oauth2",
+        clientSecret: "resolved-client-secret",
+      });
+    } finally {
+      if (originalStateHome === undefined) {
+        delete process.env.XDG_STATE_HOME;
+      } else {
+        process.env.XDG_STATE_HOME = originalStateHome;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("validates local overlay config after resolving Vault refs in URL fields", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-overlay-vault-url-"));
     try {
@@ -1180,6 +1270,47 @@ describe("config", () => {
 
       expect(config.mcpServers.remote?.url).toBe("https://example.com/mcp");
       expect(warnings).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines Markdown Caplet files with unresolved Vault-backed URL fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-markdown-vault-url-"));
+    try {
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "remote.md"),
+        [
+          "---",
+          "name: Remote",
+          "description: Uses a Vault backed remote URL.",
+          "mcpServer:",
+          "  transport: http",
+          "  url: $vault:REMOTE_URL",
+          "---",
+          "# Remote",
+        ].join("\n"),
+      );
+
+      const { config, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+        {
+          vaultResolver: (reference) => ({
+            reason: "ungranted",
+            referenceName: reference.referenceName,
+            capletId: reference.capletId,
+            origin: reference.origin,
+          }),
+        },
+      );
+
+      expect(config.mcpServers.remote).toBeUndefined();
+      expect(warnings[0]?.message).toContain("caplets vault access grant REMOTE_URL remote");
+      expect(warnings[0]?.message).not.toContain("invalid frontmatter");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1360,7 +1491,7 @@ describe("config", () => {
     }
   });
 
-  it("allows strict inspection loaders to read Vault-backed URL fields", () => {
+  it("allows strict inspection loaders to read Vault-backed URL fields with bootstrap values", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-strict-loader-"));
     try {
       const userConfigPath = join(dir, "config.json");
@@ -1380,9 +1511,30 @@ describe("config", () => {
         }),
       );
 
-      const { config } = loadConfigWithSources(userConfigPath, projectConfigPath);
+      const { config } = loadConfigWithSources(userConfigPath, projectConfigPath, {
+        vaultResolver: vaultBootstrapResolver,
+      });
 
       expect(config.mcpServers.remote?.url).toBe("https://caplets.local/vault-placeholder");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports invalid runtime config sources before falling back to missing config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-runtime-invalid-source-"));
+    try {
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(userConfigPath, "{");
+
+      expect(() => loadLocalRuntimeConfig(userConfigPath, projectConfigPath)).toThrow(
+        expect.objectContaining({
+          code: "CONFIG_INVALID",
+          message: expect.stringContaining("not valid JSON"),
+        }),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

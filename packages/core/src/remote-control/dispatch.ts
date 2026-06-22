@@ -22,6 +22,7 @@ import {
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
   vaultBootstrapResolver,
+  vaultResolverForAuthDir,
   vaultStoreForAuthDir,
 } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
@@ -89,7 +90,9 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   assertObject(request.arguments, "remote control request arguments");
 
   if (request.command === "list") {
-    const config = loadConfigWithSources(context.configPath, context.projectConfigPath);
+    const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
+      vaultResolver: vaultBootstrapResolver,
+    });
     return listCaplets(config, {
       includeDisabled: optionalBoolean(request.arguments, "includeDisabled") ?? false,
     });
@@ -286,7 +289,9 @@ async function startRemoteAuthLogin(serverId: string, context: RemoteControlDisp
   if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
-  const config = loadConfigWithSources(context.configPath, context.projectConfigPath).config;
+  const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
+    vaultResolver: vaultResolverForAuthDir(context.authDir),
+  }).config;
   const target = await resolveAuthTarget(serverId, config, context.authDir);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();

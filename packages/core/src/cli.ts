@@ -1951,7 +1951,9 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(formatCapletList(rows, options.format ?? "plain"));
         return;
       }
-      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env));
+      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env), {
+        vaultResolver: vaultBootstrapResolver,
+      });
       const rows = listCaplets(config, { includeDisabled });
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
@@ -2707,6 +2709,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(projectConfigPath ? { projectConfigPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,
@@ -2743,6 +2746,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(configPath ? { configPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,
@@ -2773,6 +2777,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(configPath ? { configPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,

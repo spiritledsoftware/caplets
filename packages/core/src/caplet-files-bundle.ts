@@ -242,7 +242,7 @@ const capletMcpServerSchema = z
       });
     }
 
-    if (server.url && !hasEnvReference(server.url) && !isAllowedRemoteUrl(server.url)) {
+    if (server.url && !hasInterpolationReference(server.url) && !isAllowedRemoteUrl(server.url)) {
       ctx.addIssue({
         code: "custom",
         path: ["url"],
@@ -259,7 +259,7 @@ const capletMcpServerSchema = z
         "redirectUri",
       ] as const) {
         const value = server.auth[field];
-        if (value && !hasEnvReference(value) && !isUrl(value)) {
+        if (value && !hasInterpolationReference(value) && !isUrl(value)) {
           ctx.addIssue({
             code: "custom",
             path: ["auth", field],
@@ -319,7 +319,7 @@ const capletOpenApiEndpointSchema = z
     }
     if (
       endpoint.specUrl &&
-      !hasEnvReference(endpoint.specUrl) &&
+      !hasInterpolationReference(endpoint.specUrl) &&
       !isAllowedRemoteUrl(endpoint.specUrl)
     ) {
       ctx.addIssue({
@@ -330,7 +330,7 @@ const capletOpenApiEndpointSchema = z
     }
     if (
       endpoint.baseUrl &&
-      !hasEnvReference(endpoint.baseUrl) &&
+      !hasInterpolationReference(endpoint.baseUrl) &&
       !isAllowedRemoteUrl(endpoint.baseUrl)
     ) {
       ctx.addIssue({
@@ -383,7 +383,7 @@ const capletGoogleDiscoveryApiSchema = z
     }
     if (
       api.discoveryUrl &&
-      !hasEnvReference(api.discoveryUrl) &&
+      !hasInterpolationReference(api.discoveryUrl) &&
       !isAllowedRemoteUrl(api.discoveryUrl)
     ) {
       ctx.addIssue({
@@ -392,7 +392,11 @@ const capletGoogleDiscoveryApiSchema = z
         message: "Google Discovery discoveryUrl must use https except loopback development urls",
       });
     }
-    if (api.baseUrl && !hasEnvReference(api.baseUrl) && !isAllowedHttpBaseUrl(api.baseUrl)) {
+    if (
+      api.baseUrl &&
+      !hasInterpolationReference(api.baseUrl) &&
+      !isAllowedHttpBaseUrl(api.baseUrl)
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["baseUrl"],
@@ -478,7 +482,7 @@ const capletGraphQlEndpointSchema = z
     }
     if (
       endpoint.endpointUrl &&
-      !hasEnvReference(endpoint.endpointUrl) &&
+      !hasInterpolationReference(endpoint.endpointUrl) &&
       !isAllowedRemoteUrl(endpoint.endpointUrl)
     ) {
       ctx.addIssue({
@@ -489,7 +493,7 @@ const capletGraphQlEndpointSchema = z
     }
     if (
       endpoint.schemaUrl &&
-      !hasEnvReference(endpoint.schemaUrl) &&
+      !hasInterpolationReference(endpoint.schemaUrl) &&
       !isAllowedRemoteUrl(endpoint.schemaUrl)
     ) {
       ctx.addIssue({
@@ -577,7 +581,11 @@ const capletHttpApiSchema = z
   })
   .strict()
   .superRefine((api, ctx) => {
-    if (api.baseUrl && !hasEnvReference(api.baseUrl) && !isAllowedHttpBaseUrl(api.baseUrl)) {
+    if (
+      api.baseUrl &&
+      !hasInterpolationReference(api.baseUrl) &&
+      !isAllowedHttpBaseUrl(api.baseUrl)
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["baseUrl"],
@@ -1116,7 +1124,7 @@ export function normalizeBundleLocalPath(
   value: string | undefined,
   baseDir: string,
 ): string | undefined {
-  if (!value || isMapAbsolutePath(value) || hasEnvReference(value)) {
+  if (!value || isMapAbsolutePath(value) || hasInterpolationReference(value)) {
     return value;
   }
   const parts = [...(baseDir ? baseDir.split("/") : []), ...value.split("/")];
@@ -1242,8 +1250,10 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function hasEnvReference(value: string): boolean {
-  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
+function hasInterpolationReference(value: string): boolean {
+  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{vault:[A-Z_][A-Z0-9_]{0,127}\}|\$vault:[A-Z_][A-Z0-9_]{0,127}/.test(
+    value,
+  );
 }
 
 function patchCapletJsonSchema<T>(schema: T): T {

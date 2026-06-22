@@ -390,6 +390,7 @@ export type ConfigParseOptions = {
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
+const VAULT_KEY_REFERENCE = "[A-Z_][A-Z0-9_]{0,127}";
 
 const remoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -1594,13 +1595,15 @@ export function configJsonSchema(): unknown {
 export function loadConfig(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): CapletsConfig {
-  return loadConfigWithSources(path, projectPath).config;
+  return loadConfigWithSources(path, projectPath, options).config;
 }
 
 export function loadConfigWithSources(
   path = resolveConfigPath(),
   projectPath = resolveProjectConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigWithSources {
   const hasUserConfig = existsSync(path);
   const hasProjectConfig = existsSync(projectPath);
@@ -1630,10 +1633,14 @@ export function loadConfigWithSources(
     ],
     `Caplets config not found at ${path} or ${projectPath}`,
     "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+    options,
   );
 }
 
-export function loadGlobalConfig(path = resolveConfigPath()): CapletsConfig {
+export function loadGlobalConfig(
+  path = resolveConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
+): CapletsConfig {
   const userConfig = existsSync(path) ? readPublicConfigInput(path) : undefined;
   const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
 
@@ -1646,10 +1653,14 @@ export function loadGlobalConfig(path = resolveConfigPath()): CapletsConfig {
     ],
     `Caplets user config not found at ${path}`,
     undefined,
+    options,
   ).config;
 }
 
-export function loadProjectConfig(projectPath = resolveProjectConfigPath()): CapletsConfig {
+export function loadProjectConfig(
+  projectPath = resolveProjectConfigPath(),
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
+): CapletsConfig {
   const projectConfig = existsSync(projectPath)
     ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
     : undefined;
@@ -1670,6 +1681,7 @@ export function loadProjectConfig(projectPath = resolveProjectConfigPath()): Cap
     ],
     `Caplets project config not found at ${projectPath}`,
     undefined,
+    options,
   ).config;
 }
 
@@ -1677,6 +1689,7 @@ function buildConfigWithSources(
   inputs: Array<ConfigInputWithSource | undefined>,
   notFoundMessage: string,
   emptyMessage: string | undefined,
+  options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): ConfigWithSources {
   if (!inputs.some((entry) => entry?.input !== undefined)) {
     throw new CapletsError("CONFIG_NOT_FOUND", notFoundMessage);
@@ -1684,7 +1697,10 @@ function buildConfigWithSources(
 
   try {
     const { input, sources, shadows } = mergeConfigInputsWithSources(...inputs);
-    const config = parseConfig(input, { sources, vaultResolver: vaultBootstrapResolver });
+    const config = parseConfig(input, {
+      sources,
+      vaultResolver: options.vaultResolver ?? defaultVaultResolver(),
+    });
     if (
       emptyMessage &&
       Object.keys(config.mcpServers).length === 0 &&
@@ -1778,12 +1794,6 @@ export function loadLocalRuntimeConfig(
     vaultResolver: options.vaultResolver,
     vaultRecoveryTarget: options.vaultRecoveryTarget,
   });
-  if (!overlay.sourceFound) {
-    throw new CapletsError(
-      "CONFIG_NOT_FOUND",
-      `Caplets config not found at ${path} or ${projectPath}`,
-    );
-  }
   for (const warning of overlay.warnings) {
     options.writeWarning?.(warning);
   }
@@ -1794,6 +1804,12 @@ export function loadLocalRuntimeConfig(
   );
   if (blockingWarning) {
     throw new CapletsError("CONFIG_INVALID", blockingWarning.message);
+  }
+  if (!overlay.sourceFound) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplets config not found at ${path} or ${projectPath}`,
+    );
   }
   if (
     !configHasAnyCaplets(overlay.config) &&
@@ -2684,12 +2700,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function hasInterpolationReference(value: string): boolean {
-  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{vault:[^}]+\}|\$vault:[^\s"',`\]}]+/.test(
-    value,
-  );
+  return new RegExp(
+    `\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$env:[A-Za-z_][A-Za-z0-9_]*|\\$\\{vault:${VAULT_KEY_REFERENCE}\\}|\\$vault:${VAULT_KEY_REFERENCE}`,
+  ).test(value);
 }
 
-const VAULT_REFERENCE_PATTERN = /\$\{vault:([^}]+)\}|\$vault:([^\s"',`\]}]+)/g;
+const VAULT_REFERENCE_PATTERN = new RegExp(
+  `\\$\\{vault:(${VAULT_KEY_REFERENCE})\\}|\\$vault:(${VAULT_KEY_REFERENCE})`,
+  "g",
+);
 
 function interpolateVault(value: string, path: string[], options: ConfigParseOptions): string {
   if (!options.vaultResolver) return value;

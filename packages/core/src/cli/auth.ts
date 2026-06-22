@@ -13,6 +13,8 @@ import {
   loadConfig,
   loadGlobalConfig,
   loadProjectConfig,
+  vaultBootstrapResolver,
+  vaultResolverForAuthDir,
   type CapletsConfig,
   type GoogleDiscoveryApiConfig,
   type GraphQlEndpointConfig,
@@ -45,7 +47,7 @@ export async function loginAuth(
     config?: CapletsConfig;
   },
 ): Promise<void> {
-  const config = options.config ?? loadConfig(options.configPath);
+  const config = options.config ?? loadAuthResolvedConfig(options);
   const server = await resolveAuthTarget(serverId, config, options.authDir);
   assertLoginTarget(server, serverId);
 
@@ -89,7 +91,11 @@ export function logoutAuthResult(
   serverId: string,
   options: { authDir?: string; configPath?: string; config?: CapletsConfig },
 ): { server: string; deleted: boolean } {
-  const target = findAuthTarget(serverId, options.config ?? loadConfig(options.configPath));
+  const target = findAuthTarget(
+    serverId,
+    options.config ??
+      loadConfig(options.configPath, undefined, { vaultResolver: vaultBootstrapResolver }),
+  );
   assertLoginTarget(target, serverId);
   return { server: serverId, deleted: deleteTokenBundle(serverId, options.authDir) };
 }
@@ -113,7 +119,7 @@ export async function refreshAuthResult(
 ): Promise<{ server: string }> {
   const target = await resolveAuthTarget(
     serverId,
-    options.config ?? loadConfig(options.configPath),
+    options.config ?? loadAuthResolvedConfig(options),
     options.authDir,
   );
   assertLoginTarget(target, serverId);
@@ -137,8 +143,19 @@ export function listAuth(options: {
 }
 
 export function listAuthRows(options: { authDir?: string; configPath?: string }): AuthStatusRow[] {
-  const config = loadConfig(options.configPath);
+  const config = loadConfig(options.configPath, undefined, {
+    vaultResolver: vaultBootstrapResolver,
+  });
   return authRowsForTargets(authTargets(config), options.authDir);
+}
+
+function loadAuthResolvedConfig(options: {
+  authDir?: string | undefined;
+  configPath?: string | undefined;
+}): CapletsConfig {
+  return loadConfig(options.configPath, undefined, {
+    vaultResolver: vaultResolverForAuthDir(options.authDir),
+  });
 }
 
 export function listLocalAuthRows(options: {
@@ -163,6 +180,7 @@ export function localAuthTargets(options: {
 
 export function localAuthConfigForTarget(options: {
   serverId: string;
+  authDir?: string | undefined;
   configPath?: string;
   projectConfigPath?: string;
   source: Exclude<AuthSource, "remote">;
@@ -171,7 +189,9 @@ export function localAuthConfigForTarget(options: {
     (candidate) => candidate.server === options.serverId,
   );
   assertLoginTarget(target, options.serverId);
-  return loadConfigForSource(options.source, options);
+  return loadConfigForSource(options.source, options, {
+    vaultResolver: vaultResolverForAuthDir(options.authDir),
+  });
 }
 
 function authTargetsForSource(
@@ -194,11 +214,12 @@ function authTargetsForSource(
 function loadConfigForSource(
   source: Exclude<AuthSource, "remote">,
   options: { configPath?: string; projectConfigPath?: string },
+  loadOptions: Parameters<typeof loadGlobalConfig>[1] = { vaultResolver: vaultBootstrapResolver },
 ): CapletsConfig {
   if (source === "global") {
-    return loadGlobalConfig(options.configPath);
+    return loadGlobalConfig(options.configPath, loadOptions);
   }
-  return loadProjectConfig(options.projectConfigPath);
+  return loadProjectConfig(options.projectConfigPath, loadOptions);
 }
 
 function authRowsForTargets(
