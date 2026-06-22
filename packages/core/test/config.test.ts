@@ -1184,6 +1184,41 @@ describe("config", () => {
     });
   });
 
+  it("quarantines malformed Vault-looking references", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-invalid-ref-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "Uses a malformed Vault ref.",
+              command: "github-mcp",
+              env: { GH_TOKEN: "$vault:gh_token" },
+            },
+          },
+        }),
+      );
+
+      const { config, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config.mcpServers.github).toBeUndefined();
+      expect(warnings[0]?.message).toContain("invalid-key-source");
+      expect(warnings[0]?.message).toContain("gh_token");
+      expect(warnings[0]?.message).toContain("caplets doctor");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves strict loader Vault refs with the configured Vault store by default", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-strict-resolve-"));
     const originalStateHome = process.env.XDG_STATE_HOME;
@@ -1232,6 +1267,46 @@ describe("config", () => {
       } else {
         process.env.XDG_STATE_HOME = originalStateHome;
       }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows bootstrap inspection loaders to read Vault-backed URI auth fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-strict-uri-loader-"));
+    try {
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            oauth: {
+              name: "OAuth",
+              description: "Remote OAuth downstream server.",
+              transport: "http",
+              url: "https://example.com/mcp",
+              auth: {
+                type: "oidc",
+                issuer: "$vault:ISSUER",
+                redirectUri: "$vault:REDIRECT_URI",
+                clientId: "client",
+              },
+            },
+          },
+        }),
+      );
+
+      const { config } = loadConfigWithSources(userConfigPath, projectConfigPath, {
+        vaultResolver: vaultBootstrapResolver,
+      });
+
+      expect(config.mcpServers.oauth?.auth).toMatchObject({
+        type: "oidc",
+        issuer: "https://caplets.local/vault-placeholder",
+        redirectUri: "https://caplets.local/vault-placeholder",
+      });
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

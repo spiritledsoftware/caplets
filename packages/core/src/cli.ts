@@ -3133,16 +3133,16 @@ function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
   const env = io.env ?? process.env;
   const configPath = envConfigPath(env);
   const projectConfigPath = envProjectConfigPath(env);
-  const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath, {
+  const config = loadConfigWithSources(configPath, projectConfigPath, {
     vaultResolver: vaultBootstrapResolver,
   });
-  if (overlay.shadows[capletId]?.length) {
+  if (config.shadows[capletId]?.length) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
     );
   }
-  const origin = overlay.sources[capletId];
+  const origin = config.sources[capletId];
   if (!origin) {
     throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
   }

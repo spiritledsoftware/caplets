@@ -390,7 +390,7 @@ export type ConfigParseOptions = {
 };
 
 const NON_INTERPOLATED_SERVER_FIELDS = new Set(["name", "description", "tags", "body"]);
-const VAULT_KEY_REFERENCE = "[A-Z_][A-Z0-9_]{0,127}";
+const VAULT_BARE_REFERENCE = "[A-Za-z0-9_-]+";
 
 const remoteAuthSchema = z
   .discriminatedUnion("type", [
@@ -2098,7 +2098,7 @@ export const vaultBootstrapResolver: ConfigVaultResolver = (reference) => ({
 
 function vaultBootstrapPlaceholderValue(path: string): string {
   const leaf = path.split(".").at(-1)?.toLowerCase() ?? "";
-  if (leaf.endsWith("url")) {
+  if (leaf.endsWith("url") || leaf.endsWith("uri") || leaf === "issuer") {
     return "https://caplets.local/vault-placeholder";
   }
   return "caplets-vault-placeholder";
@@ -2701,12 +2701,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function hasInterpolationReference(value: string): boolean {
   return new RegExp(
-    `\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$env:[A-Za-z_][A-Za-z0-9_]*|\\$\\{vault:${VAULT_KEY_REFERENCE}\\}|\\$vault:${VAULT_KEY_REFERENCE}`,
+    `\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|\\$env:[A-Za-z_][A-Za-z0-9_]*|\\$\\{vault:[^}]+\\}|\\$vault:${VAULT_BARE_REFERENCE}`,
   ).test(value);
 }
 
 const VAULT_REFERENCE_PATTERN = new RegExp(
-  `\\$\\{vault:(${VAULT_KEY_REFERENCE})\\}|\\$vault:(${VAULT_KEY_REFERENCE})`,
+  `\\$\\{vault:([^}]+)\\}|\\$vault:(${VAULT_BARE_REFERENCE})`,
   "g",
 );
 

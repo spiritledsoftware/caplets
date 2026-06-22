@@ -361,6 +361,53 @@ describe("cli init", () => {
     }
   });
 
+  it("grants Vault access when unrelated missing env refs would quarantine the Caplet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-cli-access-env-"));
+    const configPath = join(dir, "config.json");
+    const missingEnvName = "CAPLETS_TEST_MISSING_GRANT_ENV";
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      XDG_STATE_HOME: join(dir, "state"),
+      [missingEnvName]: undefined,
+    };
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub access with missing runtime env.",
+              command: "github-mcp",
+              env: {
+                GH_TOKEN: "$vault:GH_TOKEN",
+                OTHER: `$env:${missingEnvName}`,
+              },
+            },
+          },
+        }),
+      );
+
+      await runCli(["vault", "access", "grant", "GH_TOKEN", "github"], {
+        env,
+        writeOut: () => undefined,
+      });
+
+      const store = new FileVaultStore({ env });
+      expect(store.listAccess({ storedKey: "GH_TOKEN", capletId: "github" })).toEqual([
+        expect.objectContaining({
+          storedKey: "GH_TOKEN",
+          referenceName: "GH_TOKEN",
+          capletId: "github",
+          origin: { kind: "global-config", path: configPath },
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects empty self-hosted remote login code from stdin", async () => {
     const fetchStub = vi.fn();
 
