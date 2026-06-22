@@ -1,7 +1,12 @@
 import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { resolve } from "node:path";
 import { CliToolsManager } from "./cli-tools";
-import { type CapletConfig, type CapletSetConfig, loadIsolatedConfig } from "./config";
+import {
+  type CapletConfig,
+  type CapletSetConfig,
+  loadIsolatedConfig,
+  vaultResolverForAuthDir,
+} from "./config";
 import {
   compactToolSafetyHints,
   compactToolSchemaHints,
@@ -218,6 +223,7 @@ export class CapletSetManager {
         ...(config.capletsRoot ? { capletsRoot: config.capletsRoot } : {}),
         defaultSearchLimit: config.defaultSearchLimit,
         maxSearchLimit: config.maxSearchLimit,
+        vaultResolver: vaultResolverForAuthDir(this.options.authDir),
       });
       const registry = new ServerRegistry(childConfig);
       const sharedOptions = {

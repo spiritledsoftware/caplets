@@ -41,7 +41,6 @@ import {
 } from "../code-mode/tool";
 import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
-  loadLocalRuntimeConfig,
   loadLocalOverlayConfigWithSources,
   parseConfig,
   type CapletsConfig,
@@ -151,7 +150,6 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.engine = new CapletsEngine({
       ...options,
       writeErr: this.writeErr,
-      configLoader: options.configLoader ?? loadLocalRuntimeConfig,
     });
     this.postReloadRefresh = this.refreshExposureSnapshot({
       emitToolsChanged: this.hasSnapshotBackedDirectExposure(),

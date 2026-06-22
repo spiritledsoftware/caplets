@@ -309,8 +309,9 @@ describe("cli init", () => {
             "github-personal": {
               name: "GitHub Personal",
               description: "Personal GitHub access.",
-              command: "github-mcp",
-              env: { GH_TOKEN: "$vault:GH_TOKEN" },
+              transport: "http",
+              url: "https://api.githubcopilot.com/mcp",
+              auth: { type: "bearer", token: "$vault:GH_TOKEN" },
             },
           },
         }),

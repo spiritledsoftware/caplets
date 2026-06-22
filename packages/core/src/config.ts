@@ -1,11 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import {
-  loadCapletFiles,
-  loadCapletFilesWithPaths,
-  loadCapletFilesWithPathsBestEffort,
-} from "./caplet-files";
+import { loadCapletFilesWithPaths, loadCapletFilesWithPathsBestEffort } from "./caplet-files";
 import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths";
 import {
   FORBIDDEN_HEADERS,
@@ -365,6 +361,7 @@ export type LocalOverlayConfigWarning = {
 
 export type LocalOverlayConfigWithSources = ConfigWithSources & {
   warnings: LocalOverlayConfigWarning[];
+  sourceFound: boolean;
 };
 
 export type ConfigVaultReference = {
@@ -1741,6 +1738,7 @@ export function loadLocalOverlayConfigWithSources(
   const projectCaplets = projectCapletsRoot
     ? loadBestEffortCapletFiles(projectCapletsRoot, "project-file", warnings, parseOptions)
     : undefined;
+  const sourceFound = Boolean(userConfig || userCaplets || projectConfig || projectCaplets);
 
   const { input, sources, shadows } = mergeConfigInputsWithSources(
     { input: userConfig, source: { kind: "global-config", path } },
@@ -1761,6 +1759,7 @@ export function loadLocalOverlayConfigWithSources(
     sources,
     shadows,
     warnings,
+    sourceFound,
   };
 }
 
@@ -1774,6 +1773,12 @@ export function loadLocalRuntimeConfig(
   const overlay = loadLocalOverlayConfigWithSources(path, projectPath, {
     vaultResolver: options.vaultResolver,
   });
+  if (!overlay.sourceFound) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplets config not found at ${path} or ${projectPath}`,
+    );
+  }
   for (const warning of overlay.warnings) {
     options.writeWarning?.(warning);
   }
@@ -1784,6 +1789,15 @@ export function loadLocalRuntimeConfig(
   );
   if (blockingWarning) {
     throw new CapletsError("CONFIG_INVALID", blockingWarning.message);
+  }
+  if (
+    !configHasAnyCaplets(overlay.config) &&
+    !overlay.warnings.some((warning) => warning.recoverable)
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Caplets config must define at least one MCP server, OpenAPI endpoint, Google Discovery API, GraphQL endpoint, HTTP API, CLI tools backend, or Caplet set",
+    );
   }
   return overlay.config;
 }
@@ -1934,6 +1948,18 @@ function groupMissingEnvReferences(missing: MissingEnvReference[]): MissingEnvRe
   return missing.length === 0 ? [] : [missing];
 }
 
+function configHasAnyCaplets(config: CapletsConfig): boolean {
+  return (
+    Object.keys(config.mcpServers).length > 0 ||
+    Object.keys(config.openapiEndpoints).length > 0 ||
+    Object.keys(config.googleDiscoveryApis).length > 0 ||
+    Object.keys(config.graphqlEndpoints).length > 0 ||
+    Object.keys(config.httpApis).length > 0 ||
+    Object.keys(config.cliTools).length > 0 ||
+    Object.keys(config.capletSets).length > 0
+  );
+}
+
 type VaultReferenceIssue = {
   name: string;
   path: string;
@@ -2019,6 +2045,27 @@ export function defaultVaultResolver(store = new FileVaultStore()): ConfigVaultR
   };
 }
 
+export function vaultStoreForAuthDir(authDir: string | undefined): FileVaultStore {
+  return new FileVaultStore(authDir ? { root: join(authDir, "vault") } : {});
+}
+
+export function vaultResolverForAuthDir(authDir: string | undefined): ConfigVaultResolver {
+  return defaultVaultResolver(vaultStoreForAuthDir(authDir));
+}
+
+export const vaultBootstrapResolver: ConfigVaultResolver = (reference) => ({
+  storedKey: reference.referenceName,
+  value: vaultBootstrapPlaceholderValue(reference.path),
+});
+
+function vaultBootstrapPlaceholderValue(path: string): string {
+  const leaf = path.split(".").at(-1)?.toLowerCase() ?? "";
+  if (leaf.endsWith("url")) {
+    return "https://caplets.local/vault-placeholder";
+  }
+  return "caplets-vault-placeholder";
+}
+
 function loadBestEffortCapletFiles(
   root: string,
   kind: ConfigSourceKind,
@@ -2064,6 +2111,7 @@ export function loadIsolatedConfig(options: {
   capletsRoot?: string;
   defaultSearchLimit: number;
   maxSearchLimit: number;
+  vaultResolver?: ConfigVaultResolver | undefined;
 }): CapletsConfig {
   if (!options.configPath && !options.capletsRoot) {
     throw new CapletsError(
@@ -2072,22 +2120,47 @@ export function loadIsolatedConfig(options: {
     );
   }
 
-  const configInput = options.configPath ? readPublicConfigInput(options.configPath) : undefined;
-  const capletInput = options.capletsRoot ? loadCapletFiles(options.capletsRoot) : undefined;
-  if (!configInput && !capletInput) {
+  const warnings: LocalOverlayConfigWarning[] = [];
+  const parseOptions = { vaultResolver: options.vaultResolver ?? defaultVaultResolver() };
+  const configExists = Boolean(options.configPath && existsSync(options.configPath));
+  const configInput = configExists
+    ? readBestEffortConfigInput(
+        options.configPath!,
+        "global-config",
+        warnings,
+        undefined,
+        parseOptions,
+      )
+    : undefined;
+  const capletInput = options.capletsRoot
+    ? loadBestEffortCapletFiles(options.capletsRoot, "global-file", warnings, parseOptions)
+    : undefined;
+  if (!configExists && !capletInput) {
     throw new CapletsError(
       "CONFIG_NOT_FOUND",
       `Nested Caplet set sources not found: ${[options.configPath, options.capletsRoot].filter(Boolean).join(", ")}`,
     );
   }
+  const blockingWarning = warnings.find((warning) => !warning.recoverable);
+  if (blockingWarning) {
+    throw new CapletsError("CONFIG_INVALID", blockingWarning.message);
+  }
 
-  const config = parseConfig(
-    mergeConfigInputs(configInput, capletInput, {
-      version: 1,
-      defaultSearchLimit: options.defaultSearchLimit,
-      maxSearchLimit: options.maxSearchLimit,
-    }),
+  const { input, sources } = mergeConfigInputsWithSources(
+    { input: configInput, source: { kind: "global-config", path: options.configPath ?? "" } },
+    capletInput
+      ? { input: capletInput.config, source: { kind: "global-file", path: capletInput.paths } }
+      : undefined,
+    {
+      input: {
+        version: 1,
+        defaultSearchLimit: options.defaultSearchLimit,
+        maxSearchLimit: options.maxSearchLimit,
+      },
+      source: { kind: "global-config", path: options.configPath ?? "" },
+    },
   );
+  const config = parseConfig(input, { sources, vaultResolver: parseOptions.vaultResolver });
   if (
     Object.keys(config.mcpServers).length === 0 &&
     Object.keys(config.openapiEndpoints).length === 0 &&

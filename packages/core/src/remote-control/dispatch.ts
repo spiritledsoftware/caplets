@@ -18,11 +18,15 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
-import { defaultVaultResolver, loadConfigWithSources, loadLocalRuntimeConfig } from "../config";
+import {
+  loadConfigWithSources,
+  loadLocalOverlayConfigWithSources,
+  vaultBootstrapResolver,
+  vaultStoreForAuthDir,
+} from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
-import { join } from "node:path";
 import { FileVaultStore, validateVaultKeyName, type VaultAccessGrantInput } from "../vault";
 import type { RemoteAuthFlowStore } from "./auth-flow";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
@@ -94,7 +98,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   if (ENGINE_COMMANDS.has(request.command)) {
     const caplet = requiredString(request.arguments, "caplet");
     const toolRequest = requiredEngineRequest(request.arguments, request.command);
-    const engine = new CapletsEngine(remoteEngineContext(context));
+    const engine = new CapletsEngine(context);
     try {
       return await engine.execute(caplet, toolRequest);
     } finally {
@@ -130,7 +134,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   if (request.command === "complete_cli") {
     const shell = optionalString(request.arguments, "shell") ?? "bash";
     if (!completionShells.includes(shell as CompletionShell)) return [];
-    const engine = new CapletsEngine(remoteEngineContext(context));
+    const engine = new CapletsEngine(context);
     try {
       return await engine.completeCliWords(optionalStringArray(request.arguments, "words") ?? [""]);
     } finally {
@@ -260,24 +264,13 @@ function dispatchVault(request: RemoteCliRequest, context: RemoteControlDispatch
 }
 
 function remoteVaultStore(context: RemoteControlDispatchContext): FileVaultStore {
-  return new FileVaultStore(context.authDir ? { root: join(context.authDir, "vault") } : {});
-}
-
-function remoteEngineContext(context: RemoteControlDispatchContext): CapletsEngineOptions {
-  if (!context.authDir || context.configLoader) return context;
-  const store = remoteVaultStore(context);
-  return {
-    ...context,
-    configLoader: (configPath, projectConfigPath, options) =>
-      loadLocalRuntimeConfig(configPath, projectConfigPath, {
-        ...options,
-        vaultResolver: defaultVaultResolver(store),
-      }),
-  };
+  return vaultStoreForAuthDir(context.authDir);
 }
 
 function remoteVaultAccessOrigin(capletId: string, context: RemoteControlDispatchContext) {
-  const overlay = loadConfigWithSources(context.configPath, context.projectConfigPath);
+  const overlay = loadLocalOverlayConfigWithSources(context.configPath, context.projectConfigPath, {
+    vaultResolver: vaultBootstrapResolver,
+  });
   const origin = overlay.sources[capletId];
   if (!origin) throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
   if (overlay.shadows[capletId]?.length) {

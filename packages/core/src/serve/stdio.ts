@@ -1,5 +1,4 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
-import { loadLocalRuntimeConfig } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsMcpSession } from "./session";
 
@@ -8,10 +7,7 @@ export type ServeStdioOptions = CapletsEngineOptions & {
 };
 
 export async function serveStdio(options: ServeStdioOptions = {}): Promise<void> {
-  const engine = new CapletsEngine({
-    ...options,
-    configLoader: options.configLoader ?? loadLocalRuntimeConfig,
-  });
+  const engine = new CapletsEngine(options);
   const session = new CapletsMcpSession(engine);
   let closing = false;
 

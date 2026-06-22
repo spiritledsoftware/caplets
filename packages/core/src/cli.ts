@@ -72,6 +72,7 @@ import {
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
+  vaultBootstrapResolver,
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
@@ -3120,7 +3121,7 @@ function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
   const configPath = envConfigPath(env);
   const projectConfigPath = envProjectConfigPath(env);
   const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath, {
-    vaultResolver: (reference) => ({ storedKey: reference.referenceName, value: "" }),
+    vaultResolver: vaultBootstrapResolver,
   });
   if (overlay.shadows[capletId]?.length) {
     throw new CapletsError(
@@ -3603,6 +3604,7 @@ function mergePartialLocalOverlays(
     sources,
     shadows,
     warnings: [...globalOverlay.warnings, ...projectOverlay.warnings],
+    sourceFound: globalOverlay.sourceFound || projectOverlay.sourceFound,
   };
 }
 

@@ -4,7 +4,7 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
-import { loadLocalRuntimeConfig, resolveProjectCapletsRoot } from "../config";
+import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import {
@@ -563,7 +563,6 @@ export async function serveHttp(
   const resolvedEngineOptions = {
     exposeLocalArtifactPaths: false,
     ...engineOptions,
-    configLoader: engineOptions.configLoader ?? loadLocalRuntimeConfig,
   };
   const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {

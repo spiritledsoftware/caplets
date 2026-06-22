@@ -11,6 +11,7 @@ import {
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
+  vaultResolverForAuthDir,
 } from "./config";
 import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
 import { DownstreamManager } from "./downstream";
@@ -98,7 +99,7 @@ export class CapletsEngine {
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
     this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
-    this.configLoader = options.configLoader ?? loadLocalRuntimeConfig;
+    this.configLoader = options.configLoader ?? runtimeConfigLoader(options.authDir);
     const config = this.loadConfigWithWarnings();
     this.registry = new ServerRegistry(config);
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
@@ -575,6 +576,17 @@ export class CapletsEngine {
       }
     }, this.watchDebounceMs);
   }
+}
+
+function runtimeConfigLoader(
+  authDir: string | undefined,
+): NonNullable<CapletsEngineOptions["configLoader"]> {
+  const vaultResolver = vaultResolverForAuthDir(authDir);
+  return (configPath, projectConfigPath, options) =>
+    loadLocalRuntimeConfig(configPath, projectConfigPath, {
+      ...options,
+      vaultResolver,
+    });
 }
 
 function selectAuthOptions(authDir: string | undefined): { authDir?: string } {
