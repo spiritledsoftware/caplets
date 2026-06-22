@@ -381,41 +381,6 @@ async function loginCloudRemoteProfile(
   });
 }
 
-async function pairingCodeFromOptions(
-  options: { code?: string; codeStdin?: boolean },
-  readStdin: (() => Promise<string>) | undefined,
-  writeErr: (value: string) => void,
-): Promise<string> {
-  if (options.code?.trim()) {
-    writeErr(
-      "Warning: --code may store the Pairing Code in shell history; prefer the hidden prompt or --code-stdin for automation.\n",
-    );
-    return options.code.trim();
-  }
-  if (options.codeStdin) {
-    const value = readStdin ? await readStdin() : await readAllStdin();
-    const code = value.trim();
-    if (code) return code;
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Pairing Code is required when --code-stdin is used.",
-    );
-  }
-  const output = new HiddenPromptOutput(process.stdout);
-  const readline = createInterface({ input: process.stdin, output, terminal: true });
-  try {
-    const code = (await readline.question("Pairing Code: ")).trim();
-    if (code) return code;
-  } finally {
-    readline.close();
-    process.stdout.write("\n");
-  }
-  throw new CapletsError(
-    "REQUEST_INVALID",
-    "Pairing Code is required for self-hosted Remote Login.",
-  );
-}
-
 class HiddenPromptOutput extends Writable {
   private wrotePrompt = false;
 
@@ -493,6 +458,7 @@ async function parseRemoteLoginCredentials(
 
 async function parsePendingRemoteLoginStart(
   response: Response,
+  options: { pendingCompletionSecret?: string | undefined } = {},
 ): Promise<PendingRemoteLoginStartResponse> {
   const parsed = await response.json();
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -506,7 +472,6 @@ async function parsePendingRemoteLoginStart(
     typeof record.flowId !== "string" ||
     typeof record.operatorCode !== "string" ||
     typeof record.pendingRefreshSecret !== "string" ||
-    typeof record.pendingCompletionSecret !== "string" ||
     typeof record.codeExpiresAt !== "string" ||
     typeof record.flowExpiresAt !== "string"
   ) {
@@ -515,11 +480,21 @@ async function parsePendingRemoteLoginStart(
       "Pending Remote Login response is missing pending material.",
     );
   }
+  const pendingCompletionSecret =
+    typeof record.pendingCompletionSecret === "string"
+      ? record.pendingCompletionSecret
+      : options.pendingCompletionSecret;
+  if (!pendingCompletionSecret) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response is missing completion material.",
+    );
+  }
   return {
     flowId: record.flowId,
     operatorCode: record.operatorCode,
     pendingRefreshSecret: record.pendingRefreshSecret,
-    pendingCompletionSecret: record.pendingCompletionSecret,
+    pendingCompletionSecret,
     codeExpiresAt: record.codeExpiresAt,
     flowExpiresAt: record.flowExpiresAt,
     intervalSeconds: typeof record.intervalSeconds === "number" ? record.intervalSeconds : 5,
@@ -563,8 +538,18 @@ async function selfHostedPendingRemoteLogin(
     body: JSON.stringify(startBody),
   });
   if (!start.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending start failed.");
-  const pending = await parsePendingRemoteLoginStart(start);
-  if (!input.json) {
+  let pending = await parsePendingRemoteLoginStart(start);
+  if (input.json) {
+    input.writeOut(
+      `${JSON.stringify({
+        code: "pending_login_started",
+        flowId: pending.flowId,
+        operatorCode: pending.operatorCode,
+        codeExpiresAt: pending.codeExpiresAt,
+        flowExpiresAt: pending.flowExpiresAt,
+      })}\n`,
+    );
+  } else {
     input.writeOut(`Remote Login Code: ${pending.operatorCode}\n`);
     input.writeOut(
       `Approve from the host with caplets remote host approve ${pending.operatorCode}\n`,
@@ -576,6 +561,35 @@ async function selfHostedPendingRemoteLogin(
     pending.intervalSeconds * 1_000,
   );
   while (true) {
+    if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
+      const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          flowId: pending.flowId,
+          pendingRefreshSecret: pending.pendingRefreshSecret,
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        }),
+      });
+      if (!refresh.ok)
+        throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
+      pending = await parsePendingRemoteLoginStart(refresh, {
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      });
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({
+            code: "pending_login_code_refreshed",
+            flowId: pending.flowId,
+            operatorCode: pending.operatorCode,
+            codeExpiresAt: pending.codeExpiresAt,
+            flowExpiresAt: pending.flowExpiresAt,
+          })}\n`,
+        );
+      } else {
+        input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
+      }
+    }
     const poll = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -586,7 +600,14 @@ async function selfHostedPendingRemoteLogin(
     });
     if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
     const status = await parsePendingRemoteLoginStatus(poll);
-    if (status === "approved") break;
+    if (status === "approved") {
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+        );
+      }
+      break;
+    }
     if (status !== "pending") {
       throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
     }
@@ -1252,34 +1273,19 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
 
-        const credentials =
-          options.code?.trim() || options.codeStdin
-            ? await (async () => {
-                const code = await pairingCodeFromOptions(options, io.readStdin, writeErr);
-                const exchangeUrl = appendBasePath(
-                  new URL(normalizeRemoteProfileHostUrl(url)),
-                  "v1/remote/pairing/exchange",
-                );
-                const response = await (io.fetch ?? fetch)(exchangeUrl, {
-                  method: "POST",
-                  headers: { "content-type": "application/json" },
-                  body: JSON.stringify({
-                    code,
-                    ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-                  }),
-                });
-                if (!response.ok) {
-                  throw new CapletsError("AUTH_FAILED", "Remote Login pairing exchange failed.");
-                }
-                return parseRemoteLoginCredentials(response);
-              })()
-            : await selfHostedPendingRemoteLogin(url, {
-                ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-                json: options.json,
-                ...(io.fetch ? { fetch: io.fetch } : {}),
-                writeOut,
-                env,
-              });
+        if (options.code?.trim() || options.codeStdin) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            `Self-hosted Remote Login no longer accepts Pairing Codes. Run caplets remote login ${normalizeRemoteProfileHostUrl(url)} without --code and approve the pending login from the host.`,
+          );
+        }
+        const credentials = await selfHostedPendingRemoteLogin(url, {
+          ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+          json: options.json,
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+          writeOut,
+          env,
+        });
         const status = await store.saveSelfHostedProfile({
           hostUrl: url,
           hostIdentity: normalizeRemoteProfileHostUrl(url),
@@ -1292,7 +1298,11 @@ export function createProgram(io: CliIO = {}): Command {
             expiresAt: credentials.expiresAt,
           },
         });
-        writeRemoteStatus(status, options.json === true, writeOut);
+        if (options.json === true) {
+          writeOut(`${JSON.stringify({ code: "remote_profile_saved", ...status })}\n`);
+        } else {
+          writeRemoteStatus(status, false, writeOut);
+        }
       },
     );
 

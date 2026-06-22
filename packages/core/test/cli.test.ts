@@ -419,7 +419,7 @@ describe("cli init", () => {
       }),
     ).rejects.toMatchObject({
       code: "REQUEST_INVALID",
-      message: "Pairing Code is required when --code-stdin is used.",
+      message: expect.stringContaining("Self-hosted Remote Login no longer accepts Pairing Codes"),
     } satisfies Partial<CapletsError>);
     expect(fetchStub).not.toHaveBeenCalled();
   });
