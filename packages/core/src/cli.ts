@@ -609,6 +609,11 @@ async function selfHostedPendingRemoteLogin(
       break;
     }
     if (status !== "pending") {
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({ code: `pending_login_${status}`, flowId: pending.flowId })}\n`,
+        );
+      }
       throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
     }
     await sleep(intervalMs);
