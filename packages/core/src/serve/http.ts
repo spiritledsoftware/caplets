@@ -127,8 +127,8 @@ export function createHttpServeApp(
           hostUrl,
           hostIdentity: hostUrl,
           ...(clientLabel ? { clientLabel } : {}),
-          ...(clientFingerprint ? { clientFingerprint } : {}),
           ...remoteCredentialSourceHint(options.trustProxy, (name) => c.req.header(name)),
+          ...(clientFingerprint ? { clientFingerprint } : {}),
         });
         return c.json(pending);
       } catch (error) {
