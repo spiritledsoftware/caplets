@@ -525,6 +525,7 @@ async function selfHostedPendingRemoteLogin(
     clientLabel?: string | undefined;
     json?: boolean | undefined;
     fetch?: typeof fetch | undefined;
+    signal?: AbortSignal | undefined;
     writeOut: (value: string) => void;
     env: NodeJS.ProcessEnv | Record<string, string | undefined>;
   },
@@ -561,6 +562,22 @@ async function selfHostedPendingRemoteLogin(
     pending.intervalSeconds * 1_000,
   );
   while (true) {
+    if (input.signal?.aborted) {
+      await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/cancel"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          flowId: pending.flowId,
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        }),
+      }).catch(() => undefined);
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({ code: "pending_login_cancelled", flowId: pending.flowId })}\n`,
+        );
+      }
+      throw new CapletsError("REQUEST_INVALID", "Remote Login pending flow cancelled.");
+    }
     if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
       const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
         method: "POST",
@@ -1288,6 +1305,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
           json: options.json,
           ...(io.fetch ? { fetch: io.fetch } : {}),
+          ...(io.signal ? { signal: io.signal } : {}),
           writeOut,
           env,
         });

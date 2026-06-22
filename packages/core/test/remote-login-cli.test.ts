@@ -287,6 +287,57 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).not.toContain(pending?.pendingCompletionSecret ?? "missing");
   });
 
+  it("cancels pending remote login when the CLI signal is aborted", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const controller = new AbortController();
+    const requests: string[] = [];
+    const out: string[] = [];
+    let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+
+    await expect(
+      runCli(["remote", "login", "https://caplets.example.com/caplets", "--json"], {
+        authDir,
+        signal: controller.signal,
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          requests.push(url.pathname);
+          const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+          if (url.pathname.endsWith("/v1/remote/login/start")) {
+            pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
+            controller.abort();
+            return Response.json(pending);
+          }
+          if (url.pathname.endsWith("/v1/remote/login/cancel")) {
+            if (!pending) throw new Error("missing pending flow");
+            const flowId = body.flowId;
+            const pendingCompletionSecret = body.pendingCompletionSecret;
+            if (!flowId || !pendingCompletionSecret) throw new Error("missing pending cancel body");
+            return Response.json(server.cancelPendingLogin({ flowId, pendingCompletionSecret }));
+          }
+          throw new Error(`unexpected request ${url.pathname}`);
+        },
+        writeOut: (value) => out.push(value),
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Remote Login pending flow cancelled.",
+    });
+
+    expect(requests).toEqual(["/caplets/v1/remote/login/start", "/caplets/v1/remote/login/cancel"]);
+    const events = out
+      .join("")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { code: string });
+    expect(events.map((event) => event.code)).toEqual([
+      "pending_login_started",
+      "pending_login_cancelled",
+    ]);
+    expect(out.join("")).not.toContain(pending?.pendingRefreshSecret ?? "missing");
+    expect(out.join("")).not.toContain(pending?.pendingCompletionSecret ?? "missing");
+  });
+
   it("logs out a stored self-hosted remote profile", async () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
