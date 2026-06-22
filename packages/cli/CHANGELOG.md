@@ -1,5 +1,16 @@
 # caplets
 
+## 0.21.0
+
+### Minor Changes
+
+- a37e9a9: Add Caplets Vault for encrypted runtime-owned string values, `$vault:` config interpolation, access grants, CLI management, and GitHub catalog Vault setup.
+
+### Patch Changes
+
+- Updated dependencies [a37e9a9]
+  - @caplets/core@0.26.0
+
 ## 0.20.1
 
 ### Patch Changes
