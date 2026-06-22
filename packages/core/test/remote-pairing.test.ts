@@ -92,12 +92,21 @@ describe("self-hosted remote pairing", () => {
     expect(store.listClients()).toEqual([
       expect.objectContaining({ clientId: credentials.clientId, clientLabel: "MacBook Pro" }),
     ]);
+    expect(
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com/caplets",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:03:10.000Z"),
+      }),
+    ).toEqual(credentials);
+    expect(store.listClients()).toHaveLength(1);
     expect(() =>
       store.completePendingLogin({
         hostUrl: "https://caplets.example.com/caplets",
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
-        now: new Date("2026-06-19T12:03:30.000Z"),
+        now: new Date("2026-06-19T12:03:31.000Z"),
       }),
     ).toThrow(/exchanged/u);
   });
@@ -135,12 +144,20 @@ describe("self-hosted remote pairing", () => {
         now: new Date("2026-06-19T12:10:00.000Z"),
       }),
     ).toThrow(/unknown/u);
+    expect(
+      store.refreshPendingLogin({
+        flowId: pending.flowId,
+        pendingRefreshSecret: pending.pendingRefreshSecret,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:09:10.000Z"),
+      }),
+    ).toEqual(refreshed);
     expect(() =>
       store.refreshPendingLogin({
         flowId: pending.flowId,
         pendingRefreshSecret: pending.pendingRefreshSecret,
         pendingCompletionSecret: pending.pendingCompletionSecret,
-        now: new Date("2026-06-19T12:10:00.000Z"),
+        now: new Date("2026-06-19T12:09:31.000Z"),
       }),
     ).toThrow(/stale/u);
 

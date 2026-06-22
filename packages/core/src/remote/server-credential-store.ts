@@ -12,6 +12,7 @@ import { Buffer } from "node:buffer";
 import { createHash, timingSafeEqual, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { CapletsError } from "../errors";
+import { decryptVaultValue, encryptVaultValue, type VaultEncryptedRecord } from "../vault/crypto";
 import { normalizeRemoteProfileHostUrl } from "./options";
 import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
 import type {
@@ -115,7 +116,9 @@ type StoredPendingLogin = {
   operatorCodeHash: string;
   pendingRefreshHash: string;
   supersededPendingRefreshHashes: SupersededRefreshToken[];
+  pendingRefreshReplay?: PendingRefreshReplay | undefined;
   pendingCompletionHash: string;
+  completionReplay?: CompletionReplay | undefined;
   clientLabel: string;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;
@@ -132,6 +135,17 @@ type StoredPendingLogin = {
 type SupersededRefreshToken = {
   hash: string;
   supersededAt: string;
+};
+
+type PendingRefreshReplay = {
+  refreshHash: string;
+  expiresAt: string;
+  encryptedResponse: VaultEncryptedRecord;
+};
+
+type CompletionReplay = {
+  expiresAt: string;
+  encryptedCredentials: VaultEncryptedRecord;
 };
 
 type RemoteServerCredentialState = {
@@ -248,6 +262,16 @@ export class RemoteServerCredentialStore {
       const refreshHash = hashSecret(input.pendingRefreshSecret);
       if (!safeHashEqual(refreshHash, flow.pendingRefreshHash)) {
         if (
+          flow.pendingRefreshReplay &&
+          safeHashEqual(refreshHash, flow.pendingRefreshReplay.refreshHash) &&
+          Date.parse(flow.pendingRefreshReplay.expiresAt) > now.getTime()
+        ) {
+          return decryptPendingRefreshReplay(
+            flow.pendingRefreshReplay,
+            input.pendingCompletionSecret,
+          );
+        }
+        if (
           flow.supersededPendingRefreshHashes.some((entry) =>
             safeHashEqual(refreshHash, entry.hash),
           )
@@ -262,19 +286,7 @@ export class RemoteServerCredentialStore {
       const codeExpiresAt = new Date(
         now.getTime() + DEFAULT_PENDING_OPERATOR_CODE_TTL_MS,
       ).toISOString();
-      flow.operatorCodeHash = hashSecret(operatorCode);
-      flow.supersededPendingRefreshHashes = pruneSupersededRefreshTokens(
-        flow.supersededPendingRefreshHashes,
-        now,
-      );
-      flow.supersededPendingRefreshHashes.push({
-        hash: flow.pendingRefreshHash,
-        supersededAt: now.toISOString(),
-      });
-      flow.pendingRefreshHash = hashSecret(pendingRefreshSecret);
-      flow.codeExpiresAt = codeExpiresAt;
-      this.saveState(state);
-      return {
+      const response = {
         flowId: flow.flowId,
         operatorCode,
         pendingRefreshSecret,
@@ -282,6 +294,24 @@ export class RemoteServerCredentialStore {
         flowExpiresAt: flow.flowExpiresAt,
         intervalSeconds: DEFAULT_PENDING_POLL_INTERVAL_SECONDS,
       };
+      flow.operatorCodeHash = hashSecret(operatorCode);
+      flow.supersededPendingRefreshHashes = pruneSupersededRefreshTokens(
+        flow.supersededPendingRefreshHashes,
+        now,
+      );
+      flow.pendingRefreshReplay = {
+        refreshHash: flow.pendingRefreshHash,
+        expiresAt: new Date(now.getTime() + STALE_REFRESH_REVOKE_GRACE_MS).toISOString(),
+        encryptedResponse: encryptReplayValue(response, input.pendingCompletionSecret, now),
+      };
+      flow.supersededPendingRefreshHashes.push({
+        hash: flow.pendingRefreshHash,
+        supersededAt: now.toISOString(),
+      });
+      flow.pendingRefreshHash = hashSecret(pendingRefreshSecret);
+      flow.codeExpiresAt = codeExpiresAt;
+      this.saveState(state);
+      return response;
     });
   }
 
@@ -385,6 +415,13 @@ export class RemoteServerCredentialStore {
         throw new CapletsError("AUTH_FAILED", "Pending login belongs to a different host.");
       }
       if (flow.status !== "approved") {
+        if (
+          flow.status === "exchanged" &&
+          flow.completionReplay &&
+          Date.parse(flow.completionReplay.expiresAt) > now.getTime()
+        ) {
+          return decryptCompletionReplay(flow.completionReplay, input.pendingCompletionSecret);
+        }
         throw new CapletsError(
           "AUTH_FAILED",
           flow.status === "exchanged"
@@ -409,8 +446,13 @@ export class RemoteServerCredentialStore {
       state.clients.push(client);
       flow.status = "exchanged";
       flow.exchangedAt = now.toISOString();
+      const credentials = credentialsFromClient(client, accessToken, refreshToken);
+      flow.completionReplay = {
+        expiresAt: new Date(now.getTime() + STALE_REFRESH_REVOKE_GRACE_MS).toISOString(),
+        encryptedCredentials: encryptReplayValue(credentials, input.pendingCompletionSecret, now),
+      };
       this.saveState(state);
-      return credentialsFromClient(client, accessToken, refreshToken);
+      return credentials;
     });
   }
 
@@ -797,6 +839,99 @@ function assertPendingOperatorCodeFresh(flow: StoredPendingLogin, now: Date): vo
       "Pending login code has expired. Refresh the pending login for a new code.",
     );
   }
+}
+
+function encryptReplayValue(
+  value: unknown,
+  pendingCompletionSecret: string,
+  now: Date,
+): VaultEncryptedRecord {
+  return encryptVaultValue({
+    plaintext: JSON.stringify(value),
+    key: replayEncryptionKey(pendingCompletionSecret),
+    now,
+  });
+}
+
+function decryptPendingRefreshReplay(
+  replay: PendingRefreshReplay,
+  pendingCompletionSecret: string,
+): {
+  flowId: string;
+  operatorCode: string;
+  pendingRefreshSecret: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  intervalSeconds: number;
+} {
+  const parsed = JSON.parse(
+    decryptVaultValue(replay.encryptedResponse, replayEncryptionKey(pendingCompletionSecret)),
+  ) as Partial<{
+    flowId: unknown;
+    operatorCode: unknown;
+    pendingRefreshSecret: unknown;
+    codeExpiresAt: unknown;
+    flowExpiresAt: unknown;
+    intervalSeconds: unknown;
+  }>;
+  if (
+    typeof parsed.flowId !== "string" ||
+    typeof parsed.operatorCode !== "string" ||
+    typeof parsed.pendingRefreshSecret !== "string" ||
+    typeof parsed.codeExpiresAt !== "string" ||
+    typeof parsed.flowExpiresAt !== "string" ||
+    typeof parsed.intervalSeconds !== "number"
+  ) {
+    throw new CapletsError("CONFIG_INVALID", "Pending login refresh replay record is malformed.");
+  }
+  return {
+    flowId: parsed.flowId,
+    operatorCode: parsed.operatorCode,
+    pendingRefreshSecret: parsed.pendingRefreshSecret,
+    codeExpiresAt: parsed.codeExpiresAt,
+    flowExpiresAt: parsed.flowExpiresAt,
+    intervalSeconds: parsed.intervalSeconds,
+  };
+}
+
+function decryptCompletionReplay(
+  replay: CompletionReplay,
+  pendingCompletionSecret: string,
+): IssuedRemoteClientCredentials {
+  const parsed = JSON.parse(
+    decryptVaultValue(replay.encryptedCredentials, replayEncryptionKey(pendingCompletionSecret)),
+  ) as Partial<Record<keyof IssuedRemoteClientCredentials, unknown>>;
+  if (
+    typeof parsed.clientId !== "string" ||
+    typeof parsed.clientLabel !== "string" ||
+    typeof parsed.hostUrl !== "string" ||
+    typeof parsed.accessToken !== "string" ||
+    typeof parsed.refreshToken !== "string" ||
+    typeof parsed.expiresAt !== "string" ||
+    typeof parsed.createdAt !== "string" ||
+    parsed.tokenType !== "Bearer"
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Pending login completion replay record is malformed.",
+    );
+  }
+  return {
+    clientId: parsed.clientId,
+    clientLabel: parsed.clientLabel,
+    hostUrl: parsed.hostUrl,
+    accessToken: parsed.accessToken,
+    refreshToken: parsed.refreshToken,
+    expiresAt: parsed.expiresAt,
+    createdAt: parsed.createdAt,
+    tokenType: "Bearer",
+  };
+}
+
+function replayEncryptionKey(pendingCompletionSecret: string): Buffer {
+  return createHash("sha256")
+    .update(`caplets-pending-login-replay:${pendingCompletionSecret}`)
+    .digest();
 }
 
 function validateClient(
