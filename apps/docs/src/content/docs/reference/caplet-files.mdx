@@ -143,6 +143,24 @@ OpenAPI endpoint backend configuration for this Caplet.
 | `projectBinding`      | Optional | object  | Project Binding requirements for Caplets that need an attached project.           |
 | `runtime`             | Optional | object  | Runtime feature and resource requirements for hosted execution.                   |
 
+### `googleDiscoveryApi`
+
+Google Discovery API backend configuration for this Caplet.
+
+| Field                 | Status   | Type    | Description                                                                                |
+| --------------------- | -------- | ------- | ------------------------------------------------------------------------------------------ |
+| `discoveryPath`       | Optional | string  | Local Google Discovery document path.                                                      |
+| `discoveryUrl`        | Optional | string  | Remote Google Discovery document URL.                                                      |
+| `baseUrl`             | Optional | string  | Override base URL for Google API requests.                                                 |
+| `auth`                | Required | object  | Explicit Google API request auth config. Use \{"type":"none"\} for public APIs.            |
+| `requestTimeoutMs`    | Optional | integer | Timeout in milliseconds for Google API HTTP requests.                                      |
+| `operationCacheTtlMs` | Optional | integer | Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time. |
+| `includeOperations`   | Optional | array   | Optional list of includeOperations.                                                        |
+| `excludeOperations`   | Optional | array   | Optional list of excludeOperations.                                                        |
+| `disabled`            | Optional | boolean | When true, omit this Caplet from discovery.                                                |
+| `projectBinding`      | Optional | object  | Project Binding requirements for Caplets that need an attached project.                    |
+| `runtime`             | Optional | object  | Runtime feature and resource requirements for hosted execution.                            |
+
 ### `graphqlEndpoint`
 
 GraphQL endpoint backend configuration for this Caplet.

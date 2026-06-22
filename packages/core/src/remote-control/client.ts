@@ -68,7 +68,7 @@ export class RemoteControlClient {
     if (!payload.ok) {
       throw new CapletsError(
         payload.error.code,
-        redactRemoteMessage(payload.error.message),
+        redactRemoteMessage(payload.error.message, sensitiveValues(command, args)),
         payload.error.nextAction === undefined
           ? undefined
           : { nextAction: payload.error.nextAction },
@@ -157,12 +157,22 @@ function isCapletsErrorCode(value: string): value is CapletsErrorCode {
   return CAPLETS_ERROR_CODES.includes(value as CapletsErrorCode);
 }
 
-function redactRemoteMessage(message: string): string {
-  return String(redactSecrets(message))
+function redactRemoteMessage(message: string, values: string[] = []): string {
+  let redacted = String(redactSecrets(message));
+  for (const value of values) {
+    if (value.length === 0) continue;
+    redacted = redacted.split(value).join("[REDACTED]");
+  }
+  return redacted
     .replace(/\b(authorization\s*:\s*(?:basic|bearer)\s+)[^\s,;]+/giu, "$1[REDACTED]")
     .replace(/\b((?:access_)?token=)[^\s,;]+/giu, "$1[REDACTED]")
     .replace(
       /\b((?:token|secret|authorization|auth|api[-_]?key|password|credential|clientsecret|client_secret|code|refresh(?:_token)?)\s*[=:]\s*)[^\s,;]+/giu,
       "$1[REDACTED]",
     );
+}
+
+function sensitiveValues(command: RemoteCliCommand, args: RemoteCliRequest["arguments"]): string[] {
+  if (command === "vault_set" && typeof args.value === "string") return [args.value];
+  return [];
 }

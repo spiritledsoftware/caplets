@@ -31,3 +31,7 @@ _Avoid_: Discovery backend, discovery document backend, OpenAPI-backed Google AP
 **Media artifact**:
 A file-backed Caplets result for response content that should not be returned inline, such as binary media or oversized textual content.
 _Avoid_: Inline blob, base64 result, download blob
+
+**Caplets Vault**:
+A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
+_Avoid_: Caplets Secrets, project secrets, shared encrypted project vault

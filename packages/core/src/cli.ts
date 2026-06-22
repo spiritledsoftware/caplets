@@ -37,12 +37,21 @@ import {
 } from "./cli/completion";
 import { CloudAuthClient } from "./cloud-auth/client";
 import { openBrowserUrl } from "./cloud-auth/open-url";
+import { CapletsCloudClient } from "./cloud/client";
 import {
   formatCapletList,
   formatConfigPaths,
   listCaplets,
   resolveCliConfigPaths,
 } from "./cli/inspection";
+import {
+  formatVaultAccessGrant,
+  formatVaultAccessList,
+  formatVaultAccessRevoke,
+  formatVaultDeleteStatus,
+  formatVaultValueList,
+  formatVaultValueStatus,
+} from "./cli/vault";
 import { installCaplets } from "./cli/install";
 import {
   formatSetupMenu,
@@ -63,6 +72,7 @@ import {
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
+  vaultBootstrapResolver,
 } from "./config";
 import { CapletsEngine } from "./engine";
 import { CapletsError } from "./errors";
@@ -105,6 +115,8 @@ import {
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
 import { DEFAULT_AUTH_DIR } from "./config/paths";
 import { appendBasePath } from "./server/options";
+import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
+import type { VaultAccessGrantFilter } from "./vault";
 
 export { initConfig, starterConfig } from "./cli/init";
 export { installCaplets, normalizeGitRepo } from "./cli/install";
@@ -1623,6 +1635,299 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(await formatDoctorReport({ env, ...(io.daemon ? { daemon: io.daemon } : {}) }));
     });
 
+  const vault = program.command(cliCommands.vault).description("Manage Caplets Vault values.");
+
+  vault
+    .command("set")
+    .description("Set a local/global Vault value.")
+    .argument("<name>", "Vault key name")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--force", "overwrite an existing Vault value")
+    .option("--grant <capletId>", "grant this key to a configured Caplet after setting it")
+    .option("--as <referenceName>", "reference name the Caplet uses in config")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        name: string,
+        options: VaultTargetOptions & {
+          force?: boolean;
+          grant?: string;
+          as?: string;
+          json?: boolean;
+        },
+      ) => {
+        const target = parseVaultTarget(options);
+        if (target === "remote") {
+          const value = await readVaultValue(io);
+          assertVaultTransportValueSize(value);
+          const status = await remoteVaultSet(io, {
+            name,
+            value,
+            force: Boolean(options.force),
+            ...(options.grant ? { grant: options.grant } : {}),
+            ...((options.as ?? options.grant) ? { referenceName: options.as ?? name } : {}),
+          });
+          if (options.json) {
+            writeOut(`${JSON.stringify(status, null, 2)}\n`);
+            return;
+          }
+          writeOut(`Set remote Vault key ${validateVaultKeyName(name)}.\n`);
+          if (options.grant) {
+            writeOut(
+              `Granted remote Vault key ${validateVaultKeyName(name)} to ${options.grant} as ${validateVaultKeyName(options.as ?? name)}.\n`,
+            );
+          }
+          return;
+        }
+        const value = await readVaultValue(io);
+        const store = new FileVaultStore({ env });
+        const existed = store.getStatus(name).present;
+        const previousValue = existed && options.grant ? store.resolveValue(name) : undefined;
+        const status = store.set(name, value, { force: Boolean(options.force) });
+        try {
+          if (options.grant) {
+            const origin = resolveVaultAccessOrigin(options.grant, io);
+            store.grantAccess({
+              storedKey: name,
+              referenceName: options.as ?? name,
+              capletId: options.grant,
+              origin,
+            });
+          }
+        } catch (error) {
+          if (existed && previousValue !== undefined) {
+            store.set(name, previousValue, { force: true });
+          } else {
+            store.delete(name);
+          }
+          throw error;
+        }
+        if (options.json) {
+          writeOut(`${JSON.stringify(status, null, 2)}\n`);
+          return;
+        }
+        writeOut(`Set Vault key ${validateVaultKeyName(name)}.\n`);
+        if (options.grant) {
+          writeOut(
+            `Granted Vault key ${validateVaultKeyName(name)} to ${options.grant} as ${validateVaultKeyName(options.as ?? name)}.\n`,
+          );
+        }
+      },
+    );
+
+  vault
+    .command("get")
+    .description("Show local/global Vault metadata, or reveal with --show.")
+    .argument("<name>", "Vault key name")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--show", "reveal the raw Vault value")
+    .option("--json", "print JSON output")
+    .action(
+      async (name: string, options: VaultTargetOptions & { show?: boolean; json?: boolean }) => {
+        const target = parseVaultTarget(options);
+        if (target === "remote") {
+          const result = await remoteVaultGet(io, { name, reveal: Boolean(options.show) });
+          if (options.show) {
+            const value =
+              result && typeof result === "object" && "value" in result
+                ? String((result as { value: unknown }).value)
+                : "";
+            writeOut(options.json ? `${JSON.stringify(result, null, 2)}\n` : `${value}\n`);
+            return;
+          }
+          writeOut(
+            formatVaultValueStatus(
+              result as ReturnType<FileVaultStore["getStatus"]>,
+              Boolean(options.json),
+            ),
+          );
+          return;
+        }
+        const store = new FileVaultStore({ env });
+        if (options.show) {
+          const value = store.resolveValue(name);
+          writeOut(
+            options.json ? `${JSON.stringify({ key: name, value }, null, 2)}\n` : `${value}\n`,
+          );
+          return;
+        }
+        writeOut(formatVaultValueStatus(store.getStatus(name), Boolean(options.json)));
+      },
+    );
+
+  vault
+    .command("list")
+    .description("List local/global Vault keys without revealing values.")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--json", "print JSON output")
+    .action(async (options: VaultTargetOptions & { json?: boolean }) => {
+      const target = parseVaultTarget(options);
+      if (target === "remote") {
+        const result = await remoteVaultList(io);
+        writeOut(
+          formatVaultValueList(
+            result as ReturnType<FileVaultStore["listValues"]>,
+            Boolean(options.json),
+          ),
+        );
+        return;
+      }
+      writeOut(
+        formatVaultValueList(new FileVaultStore({ env }).listValues(), Boolean(options.json)),
+      );
+    });
+
+  vault
+    .command("delete")
+    .description("Delete a local/global Vault value without revealing it.")
+    .argument("<name>", "Vault key name")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--json", "print JSON output")
+    .action(async (name: string, options: VaultTargetOptions & { json?: boolean }) => {
+      const target = parseVaultTarget(options);
+      if (target === "remote") {
+        const result = await remoteVaultDelete(io, name);
+        writeOut(
+          formatVaultDeleteStatus(
+            result as ReturnType<FileVaultStore["delete"]>,
+            Boolean(options.json),
+          ),
+        );
+        return;
+      }
+      writeOut(
+        formatVaultDeleteStatus(new FileVaultStore({ env }).delete(name), Boolean(options.json)),
+      );
+    });
+
+  const vaultAccess = vault.command("access").description("Manage Vault access grants.");
+
+  vaultAccess
+    .command("grant")
+    .description("Grant a Vault key to a configured Caplet.")
+    .argument("<name>", "stored Vault key name")
+    .argument("<capletId>", "configured Caplet ID")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--as <referenceName>", "reference name the Caplet uses in config")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        name: string,
+        capletId: string,
+        options: VaultTargetOptions & { as?: string; json?: boolean },
+      ) => {
+        const target = parseVaultTarget(options);
+        if (target === "remote") {
+          const grant = await remoteVaultAccessGrant(io, {
+            name,
+            capletId,
+            referenceName: options.as ?? name,
+          });
+          writeOut(
+            formatVaultAccessGrant(
+              grant as ReturnType<FileVaultStore["grantAccess"]>,
+              Boolean(options.json),
+            ),
+          );
+          return;
+        }
+        const origin = resolveVaultAccessOrigin(capletId, io);
+        const grant = new FileVaultStore({ env }).grantAccess({
+          storedKey: name,
+          referenceName: options.as ?? name,
+          capletId,
+          origin,
+        });
+        writeOut(formatVaultAccessGrant(grant, Boolean(options.json)));
+      },
+    );
+
+  vaultAccess
+    .command("list")
+    .description("List Vault access grants without revealing values.")
+    .argument("[name]", "optional stored Vault key name")
+    .argument("[capletId]", "optional configured Caplet ID")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--caplet <capletId>", "filter by configured Caplet ID")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        name: string | undefined,
+        capletId: string | undefined,
+        options: VaultTargetOptions & { caplet?: string; json?: boolean },
+      ) => {
+        if (options.caplet && capletId && options.caplet !== capletId) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "Use either positional capletId or --caplet, not both.",
+          );
+        }
+        const capletFilter = options.caplet ?? capletId;
+        const target = parseVaultTarget(options);
+        if (target === "remote") {
+          const grants = await remoteVaultAccessList(io, {
+            ...(name ? { name } : {}),
+            ...(capletFilter ? { capletId: capletFilter } : {}),
+          });
+          writeOut(
+            formatVaultAccessList(
+              grants as ReturnType<FileVaultStore["listAccess"]>,
+              Boolean(options.json),
+            ),
+          );
+          return;
+        }
+        writeOut(
+          formatVaultAccessList(
+            new FileVaultStore({ env }).listAccess(vaultAccessFilter(name, capletFilter)),
+            Boolean(options.json),
+          ),
+        );
+      },
+    );
+
+  vaultAccess
+    .command("revoke")
+    .description("Revoke Vault access grants.")
+    .argument("<name>", "stored Vault key name")
+    .argument("<capletId>", "configured Caplet ID")
+    .option("-g, --global", "target the local/global Vault")
+    .option("--remote", "target the selected remote Vault")
+    .option("--as <referenceName>", "reference name the Caplet uses in config")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        name: string,
+        capletId: string,
+        options: VaultTargetOptions & { as?: string; json?: boolean },
+      ) => {
+        const target = parseVaultTarget(options);
+        if (target === "remote") {
+          const revoked = await remoteVaultAccessRevoke(io, {
+            name,
+            capletId,
+            ...(options.as ? { referenceName: options.as } : {}),
+          });
+          writeOut(
+            formatVaultAccessRevoke(
+              Array.isArray(revoked) ? revoked.length : 0,
+              Boolean(options.json),
+            ),
+          );
+          return;
+        }
+        const filter = vaultAccessFilter(name, capletId, options.as);
+        const revoked = new FileVaultStore({ env }).revokeAccess(filter);
+        writeOut(formatVaultAccessRevoke(revoked.length, Boolean(options.json)));
+      },
+    );
+
   program
     .command(cliCommands.list)
     .description("List configured Caplets.")
@@ -1646,7 +1951,9 @@ export function createProgram(io: CliIO = {}): Command {
         writeOut(formatCapletList(rows, options.format ?? "plain"));
         return;
       }
-      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env));
+      const config = loadConfigWithSources(currentConfigPath(), envProjectConfigPath(env), {
+        vaultResolver: vaultBootstrapResolver,
+      });
       const rows = listCaplets(config, { includeDisabled });
       if (options.json || options.format === "json") {
         writeOut(`${JSON.stringify(rows, null, 2)}\n`);
@@ -2402,6 +2709,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(projectConfigPath ? { projectConfigPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,
@@ -2438,6 +2746,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(configPath ? { configPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,
@@ -2468,6 +2777,7 @@ export function createProgram(io: CliIO = {}): Command {
         ...(configPath ? { configPath } : {}),
         config: localAuthConfigForTarget({
           serverId,
+          ...(io.authDir ? { authDir: io.authDir } : {}),
           ...(configPath ? { configPath } : {}),
           ...(projectConfigPath ? { projectConfigPath } : {}),
           source: target,
@@ -2600,6 +2910,17 @@ type MutationTargetOptions = {
 
 type AuthTargetOptions = MutationTargetOptions;
 
+type VaultTarget = "global" | "remote";
+
+type VaultTargetOptions = {
+  global?: boolean;
+  remote?: boolean;
+};
+
+type VaultRemoteTarget =
+  | { kind: "self_hosted"; client: RemoteControlClient }
+  | { kind: "cloud"; client: CapletsCloudClient; workspace: string };
+
 type AddCliResult = { path?: string; text: string; remote?: boolean };
 
 function remoteAddOptions<T extends Record<string, unknown>>(
@@ -2640,6 +2961,204 @@ function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
   if (options.global) return "global";
   if (options.remote) return "remote";
   return "project";
+}
+
+function parseVaultTarget(options: VaultTargetOptions): VaultTarget {
+  const selected = [
+    options.global ? "--global" : undefined,
+    options.remote ? "--remote" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  if (selected.length > 1) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Cannot combine Vault target flags: ${selected.join(", ")}`,
+    );
+  }
+  if (options.remote) return "remote";
+  return "global";
+}
+
+async function resolveVaultRemoteTarget(io: CliIO): Promise<VaultRemoteTarget> {
+  const env = io.env ?? process.env;
+  const mode = resolveRemoteMode({}, env).mode;
+  if (mode === "remote") {
+    return { kind: "self_hosted", client: requireRemoteClientForTarget(io) };
+  }
+  if (mode !== "cloud") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--remote requires CAPLETS_MODE=remote or CAPLETS_MODE=cloud and CAPLETS_REMOTE_URL",
+    );
+  }
+  const selection = await resolveRemoteSelection(
+    {
+      mode: "cloud",
+      ...(io.authDir ? { authDir: io.authDir } : {}),
+      ...(io.fetch ? { fetch: io.fetch } : {}),
+    },
+    env,
+  );
+  if (selection.kind !== "hosted_cloud") {
+    throw new CapletsError("REQUEST_INVALID", "--remote Vault target did not resolve to Cloud.");
+  }
+  return {
+    kind: "cloud",
+    workspace: selection.selectedWorkspace,
+    client: new CapletsCloudClient({
+      baseUrl: selection.remote.baseUrl,
+      accessToken: selection.credentials.accessToken,
+      ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
+    }),
+  };
+}
+
+async function remoteVaultSet(
+  io: CliIO,
+  input: {
+    name: string;
+    value: string;
+    force: boolean;
+    grant?: string | undefined;
+    referenceName?: string | undefined;
+  },
+): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") return await target.client.request("vault_set", input);
+  return await target.client.setVaultValue({ workspace: target.workspace, ...input });
+}
+
+async function remoteVaultGet(
+  io: CliIO,
+  input: { name: string; reveal: boolean },
+): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") {
+    return await target.client.request("vault_get", {
+      name: input.name,
+      reveal: input.reveal,
+    });
+  }
+  return await target.client.getVaultValue({
+    workspace: target.workspace,
+    name: input.name,
+    reveal: input.reveal,
+  });
+}
+
+async function remoteVaultList(io: CliIO): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") return await target.client.request("vault_list", {});
+  return await target.client.listVaultValues({ workspace: target.workspace });
+}
+
+async function remoteVaultDelete(io: CliIO, name: string): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") return await target.client.request("vault_delete", { name });
+  return await target.client.deleteVaultValue({ workspace: target.workspace, name });
+}
+
+async function remoteVaultAccessGrant(
+  io: CliIO,
+  input: { name: string; capletId: string; referenceName: string },
+): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted")
+    return await target.client.request("vault_access_grant", input);
+  return await target.client.grantVaultAccess({ workspace: target.workspace, ...input });
+}
+
+async function remoteVaultAccessList(
+  io: CliIO,
+  input: { name?: string | undefined; capletId?: string | undefined },
+): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") {
+    return await target.client.request("vault_access_list", input);
+  }
+  return await target.client.listVaultAccess({ workspace: target.workspace, ...input });
+}
+
+async function remoteVaultAccessRevoke(
+  io: CliIO,
+  input: { name: string; capletId: string; referenceName?: string | undefined },
+): Promise<unknown> {
+  const target = await resolveVaultRemoteTarget(io);
+  if (target.kind === "self_hosted") {
+    return await target.client.request("vault_access_revoke", input);
+  }
+  return await target.client.revokeVaultAccess({ workspace: target.workspace, ...input });
+}
+
+async function readVaultValue(io: CliIO): Promise<string> {
+  let value: string;
+  if (io.readStdin) {
+    value = stripOneTrailingNewline(await io.readStdin());
+  } else if (!process.stdin.isTTY && !io.writeOut && !io.writeErr) {
+    value = stripOneTrailingNewline(await readAllStdin());
+  } else if (io.writeOut || io.writeErr || !process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Vault value input is required. Run interactively or provide stdin.",
+    );
+  } else {
+    const output = new HiddenPromptOutput(process.stdout);
+    const readline = createInterface({ input: process.stdin, output, terminal: true });
+    try {
+      value = await readline.question("Vault value: ");
+    } finally {
+      readline.close();
+      process.stdout.write("\n");
+    }
+  }
+  if (value.length === 0) {
+    throw new CapletsError("REQUEST_INVALID", "Vault value input is required.");
+  }
+  return value;
+}
+
+function stripOneTrailingNewline(value: string): string {
+  return value.replace(/\r?\n$/u, "");
+}
+
+function assertVaultTransportValueSize(value: string): void {
+  if (Buffer.byteLength(value, "utf8") > VAULT_MAX_VALUE_BYTES) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Vault values must be ${VAULT_MAX_VALUE_BYTES} bytes or smaller.`,
+    );
+  }
+}
+
+function resolveVaultAccessOrigin(capletId: string, io: CliIO): ConfigSource {
+  const env = io.env ?? process.env;
+  const configPath = envConfigPath(env);
+  const projectConfigPath = envProjectConfigPath(env);
+  const config = loadConfigWithSources(configPath, projectConfigPath, {
+    vaultResolver: vaultBootstrapResolver,
+  });
+  if (config.shadows[capletId]?.length) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
+    );
+  }
+  const origin = config.sources[capletId];
+  if (!origin) {
+    throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
+  }
+  return origin;
+}
+
+function vaultAccessFilter(
+  storedKey?: string,
+  capletId?: string,
+  referenceName?: string,
+): VaultAccessGrantFilter {
+  return {
+    ...(storedKey ? { storedKey: validateVaultKeyName(storedKey) } : {}),
+    ...(capletId ? { capletId } : {}),
+    ...(referenceName ? { referenceName: validateVaultKeyName(referenceName) } : {}),
+  };
 }
 
 function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
@@ -3098,6 +3617,7 @@ function mergePartialLocalOverlays(
     sources,
     shadows,
     warnings: [...globalOverlay.warnings, ...projectOverlay.warnings],
+    sourceFound: globalOverlay.sourceFound || projectOverlay.sourceFound,
   };
 }
 

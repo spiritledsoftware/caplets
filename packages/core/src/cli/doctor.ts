@@ -28,7 +28,7 @@ import {
   resolveProjectConfigPath,
 } from "../config/paths";
 import { FileObservedOutputShapeStore } from "../observed-output-shapes";
-import { loadConfig, type CapletConfig } from "../config";
+import { loadConfig, loadLocalOverlayConfigWithSources, type CapletConfig } from "../config";
 import { resolveExposure } from "../exposure/policy";
 import { daemonStatus, type DaemonOperationOptions } from "../daemon";
 
@@ -49,6 +49,7 @@ export type DoctorJsonReport = {
   sync: Record<string, unknown>;
   daemon: Record<string, unknown>;
   remoteLogin: Record<string, unknown>;
+  vault: Record<string, unknown>;
   exposure: Record<string, unknown>;
   codeMode: Record<string, unknown>;
 };
@@ -96,6 +97,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
     },
     daemon: await resolveDaemonSection(env, options.daemon),
     remoteLogin: remoteLogin.report,
+    vault: resolveVaultSection(env, root),
     exposure: await resolveExposureSection(env),
     codeMode: await resolveCodeModeSection(options, env),
   };
@@ -153,6 +155,17 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
       : []),
     ...(report.remoteLogin.clientId ? [`  Client: ${report.remoteLogin.clientId}`] : []),
     "",
+    "Vault",
+    `  OK: ${yesNo(Boolean(report.vault.ok))}`,
+    ...(!report.vault.ok && typeof report.vault.message === "string"
+      ? [`  Error: ${report.vault.message}`]
+      : []),
+    ...(Array.isArray(report.vault.issues)
+      ? (report.vault.issues as Array<Record<string, unknown>>).map(
+          (issue) => `  ${issue.capletId}: ${issue.reason} ${issue.key} (${issue.recoveryCommand})`,
+        )
+      : []),
+    "",
     "Exposure",
     `  Default: ${report.exposure.default ?? "unknown"}`,
     `  Discovery timeout: ${report.exposure.discoveryTimeoutMs ?? "unknown"}ms`,
@@ -179,6 +192,47 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
       : []),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+function resolveVaultSection(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  cwd: string = process.cwd(),
+) {
+  const configPath = env.CAPLETS_CONFIG?.trim() ? env.CAPLETS_CONFIG.trim() : resolveConfigPath();
+  const projectConfigPath = env.CAPLETS_PROJECT_CONFIG?.trim()
+    ? env.CAPLETS_PROJECT_CONFIG.trim()
+    : resolveProjectConfigPath(cwd);
+  try {
+    const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    const issues = overlay.warnings
+      .filter((warning) => warning.message.includes("Vault key"))
+      .map((warning) => vaultIssueFromWarning(warning.message, warning.path))
+      .filter((issue): issue is NonNullable<typeof issue> => issue !== undefined);
+    return { ok: issues.length === 0, issues };
+  } catch (error) {
+    return {
+      ok: false,
+      issues: [],
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function vaultIssueFromWarning(message: string, path: string) {
+  const match = message.match(
+    /^Caplet ([^ ]+) references ([^ ]+) Vault key ([^ ]+) at ([^;]+); run `([^`]+)`/u,
+  );
+  if (!match) return undefined;
+  const recoveryCommand = match[5] ?? "";
+  return {
+    capletId: match[1],
+    reason: match[2],
+    key: match[3],
+    configPath: path,
+    referencePath: match[4],
+    target: recoveryCommand.includes("--remote") ? "remote" : "global",
+    recoveryCommand,
+  };
 }
 
 async function resolveDaemonSection(

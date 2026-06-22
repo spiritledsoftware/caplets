@@ -18,10 +18,17 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import { installCaplets } from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
-import { loadConfigWithSources } from "../config";
+import {
+  loadConfigWithSources,
+  loadLocalOverlayConfigWithSources,
+  vaultBootstrapResolver,
+  vaultResolverForAuthDir,
+  vaultStoreForAuthDir,
+} from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
+import { FileVaultStore, validateVaultKeyName, type VaultAccessGrantInput } from "../vault";
 import type { RemoteAuthFlowStore } from "./auth-flow";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
@@ -83,7 +90,9 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   assertObject(request.arguments, "remote control request arguments");
 
   if (request.command === "list") {
-    const config = loadConfigWithSources(context.configPath, context.projectConfigPath);
+    const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
+      vaultResolver: vaultBootstrapResolver,
+    });
     return listCaplets(config, {
       includeDisabled: optionalBoolean(request.arguments, "includeDisabled") ?? false,
     });
@@ -143,6 +152,10 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     });
   }
 
+  if (request.command.startsWith("vault_")) {
+    return dispatchVault(request, context);
+  }
+
   if (request.command === "auth_logout") {
     return logoutAuthResult(requiredString(request.arguments, "server"), {
       ...optionalProp("configPath", context.configPath),
@@ -175,11 +188,110 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   );
 }
 
+function dispatchVault(request: RemoteCliRequest, context: RemoteControlDispatchContext) {
+  const store = remoteVaultStore(context);
+  switch (request.command) {
+    case "vault_set": {
+      const name = requiredString(request.arguments, "name");
+      const value = requiredString(request.arguments, "value");
+      const grant = optionalString(request.arguments, "grant");
+      const grantInput = grant
+        ? ({
+            storedKey: validateVaultKeyName(name),
+            referenceName: validateVaultKeyName(
+              optionalString(request.arguments, "referenceName") ?? name,
+            ),
+            capletId: grant,
+            origin: remoteVaultAccessOrigin(grant, context),
+          } satisfies VaultAccessGrantInput)
+        : undefined;
+      const existed = store.getStatus(name).present;
+      const previousValue = existed && grantInput ? store.resolveValue(name) : undefined;
+      const status = store.set(name, value, {
+        force: optionalBoolean(request.arguments, "force") ?? false,
+      });
+      try {
+        if (grantInput) store.grantAccess(grantInput);
+      } catch (error) {
+        if (existed && previousValue !== undefined) {
+          store.set(name, previousValue, { force: true });
+        } else {
+          store.delete(name);
+        }
+        throw error;
+      }
+      return { remote: true, ...status };
+    }
+    case "vault_list":
+      return store.listValues();
+    case "vault_get": {
+      const name = requiredString(request.arguments, "name");
+      const reveal = optionalBoolean(request.arguments, "reveal") ?? false;
+      if (reveal) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Self-hosted remote Vault reveal is not supported through remote control.",
+        );
+      }
+      return store.getStatus(name);
+    }
+    case "vault_delete":
+      return store.delete(requiredString(request.arguments, "name"));
+    case "vault_access_grant": {
+      const storedKey = requiredString(request.arguments, "name");
+      const capletId = requiredString(request.arguments, "capletId");
+      return store.grantAccess({
+        storedKey,
+        referenceName: optionalString(request.arguments, "referenceName") ?? storedKey,
+        capletId,
+        origin: remoteVaultAccessOrigin(capletId, context),
+      });
+    }
+    case "vault_access_revoke":
+      return store.revokeAccess({
+        storedKey: requiredString(request.arguments, "name"),
+        capletId: requiredString(request.arguments, "capletId"),
+        ...optionalProp("referenceName", optionalString(request.arguments, "referenceName")),
+      });
+    case "vault_access_list":
+      return store.listAccess({
+        ...optionalProp("storedKey", optionalString(request.arguments, "name")),
+        ...optionalProp("capletId", optionalString(request.arguments, "capletId")),
+      });
+    default:
+      throw new CapletsError(
+        "UNKNOWN_OPERATION",
+        `Unsupported remote control command ${request.command}`,
+      );
+  }
+}
+
+function remoteVaultStore(context: RemoteControlDispatchContext): FileVaultStore {
+  return vaultStoreForAuthDir(context.authDir);
+}
+
+function remoteVaultAccessOrigin(capletId: string, context: RemoteControlDispatchContext) {
+  const overlay = loadLocalOverlayConfigWithSources(context.configPath, context.projectConfigPath, {
+    vaultResolver: vaultBootstrapResolver,
+  });
+  const origin = overlay.sources[capletId];
+  if (!origin) throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
+  if (overlay.shadows[capletId]?.length) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
+    );
+  }
+  return origin;
+}
+
 async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {
   if (!context.authFlowStore || !context.controlCallbackBaseUrl) {
     throw new CapletsError("REQUEST_INVALID", "Remote auth login is not available on this server");
   }
-  const config = loadConfigWithSources(context.configPath, context.projectConfigPath).config;
+  const config = loadConfigWithSources(context.configPath, context.projectConfigPath, {
+    vaultResolver: vaultResolverForAuthDir(context.authDir),
+  }).config;
   const target = await resolveAuthTarget(serverId, config, context.authDir);
   assertLoginTarget(target, serverId);
   const flowId = randomUUID();

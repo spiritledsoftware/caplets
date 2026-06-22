@@ -14,6 +14,24 @@ A per-user native service managed by `caplets daemon` that runs local HTTP `capl
 
 The Caplets Daemon is installed and updated through an install-time service contract. Runtime lifecycle commands operate on the installed service rather than changing its persisted serve or environment configuration.
 
+### Caplets Vault
+
+A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
+
+Caplets Vault replaces fragile agent-harness environment propagation for secret-like config values. Each runtime owns its own Vault store; local Caplets do not read, mirror, or forward remote or Cloud Vault values.
+
+### Raw Vault Reveal
+
+The explicit human-facing action that prints a Vault value in cleartext.
+
+Raw Vault Reveal is separate from config interpolation and agent-facing runtime execution. Generic remote-control and agent surfaces must not treat caller-provided request fields as proof that a reveal is authorized.
+
+### Vault Access Grant
+
+The authorization record that lets a specific Caplet reference resolve a specific Vault key during runtime config interpolation.
+
+Vault Access Grants are identified by Caplet ID, reference name, and config origin. The stored Vault key is mutable grant data so remapping a reference replaces the target key instead of leaving stale grants behind.
+
 ### Install-Time Service Contract
 
 The persisted daemon agreement that defines what command runs, which environment model applies, which native service identity owns it, and how updates become active.

@@ -6,10 +6,12 @@ import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
 import {
   type CapletConfig,
   type CapletsConfig,
-  loadConfig,
+  loadLocalRuntimeConfig,
+  type LocalOverlayConfigWarning,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectConfigPath,
+  vaultResolverForAuthDir,
 } from "./config";
 import { DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR } from "./config/paths";
 import { DownstreamManager } from "./downstream";
@@ -38,11 +40,16 @@ export type CapletsEngineOptions = {
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
-  configLoader?: (configPath: string, projectConfigPath: string) => CapletsConfig;
+  configLoader?: (
+    configPath: string,
+    projectConfigPath: string,
+    options?: { writeWarning?: ((warning: LocalOverlayConfigWarning) => void) | undefined },
+  ) => CapletsConfig;
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
   observedOutputShapeScope?: ObservedOutputShapeKey["scope"] | undefined;
   observedOutputShapeCacheDir?: string | undefined;
   projectFingerprint?: string | undefined;
+  vaultRecoveryTarget?: "global" | "remote" | undefined;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -74,7 +81,7 @@ export class CapletsEngine {
   private readonly watchDebounceMs: number;
   private readonly watchEnabled: boolean;
   private readonly writeErr: (value: string) => void;
-  private readonly configLoader: (configPath: string, projectConfigPath: string) => CapletsConfig;
+  private readonly configLoader: NonNullable<CapletsEngineOptions["configLoader"]>;
   private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
@@ -92,8 +99,10 @@ export class CapletsEngine {
       configPath: resolveConfigPath(options.configPath),
       projectConfigPath: options.projectConfigPath ?? resolveProjectConfigPath(),
     };
-    this.configLoader = options.configLoader ?? loadConfig;
-    const config = this.configLoader(this.paths.configPath, this.paths.projectConfigPath);
+    this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
+    this.configLoader =
+      options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
+    const config = this.loadConfigWithWarnings();
     this.registry = new ServerRegistry(config);
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
     this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
@@ -107,7 +116,6 @@ export class CapletsEngine {
     this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
-    this.writeErr = options.writeErr ?? ((value: string) => process.stderr.write(value));
     this.observedOutputShapeStore =
       options.observedOutputShapeStore ??
       new FileObservedOutputShapeStore(
@@ -381,7 +389,7 @@ export class CapletsEngine {
     }
     let nextConfig: CapletsConfig;
     try {
-      nextConfig = this.configLoader(this.paths.configPath, this.paths.projectConfigPath);
+      nextConfig = this.loadConfigWithWarnings();
     } catch (error) {
       this.writeErr(`Caplets config reload failed; keeping last known-good config.\n`);
       this.writeErr(`${JSON.stringify(toSafeError(error, "CONFIG_INVALID"), null, 2)}\n`);
@@ -418,6 +426,14 @@ export class CapletsEngine {
     }
     this.emitReload({ previous: previousConfig, next: nextConfig, invalidated });
     return invalidated;
+  }
+
+  private loadConfigWithWarnings(): CapletsConfig {
+    return this.configLoader(this.paths.configPath, this.paths.projectConfigPath, {
+      writeWarning: (warning) => {
+        this.writeErr(`Warning: ${warning.kind} at ${warning.path}: ${warning.message}\n`);
+      },
+    });
   }
 
   private async reloadUntilSettled(): Promise<boolean> {
@@ -562,6 +578,19 @@ export class CapletsEngine {
       }
     }, this.watchDebounceMs);
   }
+}
+
+function runtimeConfigLoader(
+  authDir: string | undefined,
+  vaultRecoveryTarget: CapletsEngineOptions["vaultRecoveryTarget"],
+): NonNullable<CapletsEngineOptions["configLoader"]> {
+  const vaultResolver = vaultResolverForAuthDir(authDir);
+  return (configPath, projectConfigPath, options) =>
+    loadLocalRuntimeConfig(configPath, projectConfigPath, {
+      ...options,
+      vaultResolver,
+      vaultRecoveryTarget,
+    });
 }
 
 function selectAuthOptions(authDir: string | undefined): { authDir?: string } {

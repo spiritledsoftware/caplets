@@ -182,12 +182,14 @@ export function validateCapletFile(path: string): void {
 }
 
 function normalizeLocalPath(value: string | undefined, baseDir: string): string | undefined {
-  if (!value || isAbsolute(value) || hasEnvReference(value)) {
+  if (!value || isAbsolute(value) || hasInterpolationReference(value)) {
     return value;
   }
   return join(baseDir, value);
 }
 
-function hasEnvReference(value: string): boolean {
-  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*/.test(value);
+function hasInterpolationReference(value: string): boolean {
+  return /\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$env:[A-Za-z_][A-Za-z0-9_]*|\$\{vault:[^}]+\}|\$vault:[A-Za-z0-9_-]+/.test(
+    value,
+  );
 }

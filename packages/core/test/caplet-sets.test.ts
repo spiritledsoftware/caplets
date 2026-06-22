@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CapletSetManager } from "../src/caplet-sets";
 import { parseConfig } from "../src/config";
 import { ServerRegistry } from "../src/registry";
+import { FileVaultStore } from "../src/vault";
 
 describe("CapletSetManager", () => {
   const dirs: string[] = [];
@@ -115,6 +116,58 @@ describe("CapletSetManager", () => {
       { name: "configured" },
       { name: "file" },
     ]);
+  });
+
+  it("resolves Vault references in nested child Caplets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-set-vault-"));
+    dirs.push(dir);
+    const authDir = join(dir, "auth");
+    const childConfigPath = join(dir, "child.json");
+    writeFileSync(
+      childConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "GitHub child Caplet.",
+            command: process.execPath,
+            env: { GH_TOKEN: "$vault:GH_TOKEN" },
+          },
+        },
+      }),
+    );
+    const store = new FileVaultStore({ root: join(authDir, "vault") });
+    store.set("GH_TOKEN", "nested_secret");
+    store.grantAccess({
+      storedKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      capletId: "github",
+      origin: { kind: "global-config", path: childConfigPath },
+    });
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+          toolCacheTtlMs: 0,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config), { authDir });
+
+    const tools = await manager.listTools(caplet);
+
+    expect(tools.map((tool) => tool.name)).toEqual(["github"]);
+    const child = (
+      manager as unknown as {
+        children: Map<string, { registry: ServerRegistry }>;
+      }
+    ).children.get("nested");
+    expect(child?.registry.config.mcpServers.github?.env).toEqual({
+      GH_TOKEN: "nested_secret",
+    });
   });
 
   it("routes child Google Discovery Caplets through nested tool calls", async () => {

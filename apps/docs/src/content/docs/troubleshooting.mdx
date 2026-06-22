@@ -107,6 +107,33 @@ caplets doctor
 If the Caplet should never ask for newly inferred scopes, configure `auth.scopes`
 explicitly and keep `includeOperations` narrow.
 
+### Vault-backed Caplet is quarantined
+
+Expected symptom: `doctor` reports a Vault issue, or a Caplet that references `$vault:...`
+does not appear in the agent.
+
+List the current Vault keys and grants:
+
+```sh
+caplets vault list
+caplets vault access list
+```
+
+Then run the repair command from `doctor`. For a missing grant it will look like:
+
+```sh
+caplets vault access grant GH_TOKEN github
+```
+
+If the Caplet runs in a remote or Cloud runtime, target that runtime:
+
+```sh
+caplets vault access grant GH_TOKEN github --remote
+```
+
+Vault diagnostics never print raw values. Use [Caplets Vault](/vault/#diagnostics) for the
+full setup and repair workflow.
+
 ### Download returned an artifact
 
 Expected symptom: a tool result contains `body.artifact` instead of inline bytes or text.

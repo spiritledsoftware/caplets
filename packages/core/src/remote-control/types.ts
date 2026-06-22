@@ -24,7 +24,14 @@ export type RemoteCliCommand =
   | "auth_login_complete"
   | "auth_logout"
   | "auth_refresh"
-  | "auth_list";
+  | "auth_list"
+  | "vault_set"
+  | "vault_list"
+  | "vault_get"
+  | "vault_delete"
+  | "vault_access_grant"
+  | "vault_access_revoke"
+  | "vault_access_list";
 
 export type RemoteCliRequest = {
   command: RemoteCliCommand;

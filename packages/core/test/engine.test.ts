@@ -3,16 +3,105 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
+import { FileVaultStore } from "../src/vault";
 
 describe("CapletsEngine", () => {
   const dirs: string[] = [];
   const engines: CapletsEngine[] = [];
+  const originalStateHome = process.env.XDG_STATE_HOME;
 
   afterEach(async () => {
     await Promise.all(engines.splice(0).map((engine) => engine.close()));
+    if (originalStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalStateHome;
+    }
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("uses the Vault-aware runtime loader by default", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "GitHub access.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    const store = new FileVaultStore();
+    store.set("GH_TOKEN", "resolved_vault_secret");
+    store.grantAccess({
+      storedKey: "GH_TOKEN",
+      referenceName: "GH_TOKEN",
+      capletId: "github",
+      origin: { kind: "global-config", path: configPath },
+    });
+
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+
+    expect(engine.currentConfig().mcpServers.github?.env).toEqual({
+      GH_TOKEN: "resolved_vault_secret",
+    });
+  });
+
+  it("prints recoverable Vault quarantine warnings during startup", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        github: {
+          name: "GitHub",
+          description: "GitHub access.",
+          command: process.execPath,
+          env: { GH_TOKEN: "$vault:GH_TOKEN" },
+        },
+      },
+    });
+    dirs.push(dir);
+    process.env.XDG_STATE_HOME = join(dir, "state");
+    const errors: string[] = [];
+
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    engines.push(engine);
+
+    expect(engine.currentConfig().mcpServers.github).toBeUndefined();
+    expect(errors.join("")).toContain("Caplet github references");
+    expect(errors.join("")).toContain("caplets vault access grant GH_TOKEN github");
+    expect(errors.join("")).not.toContain("resolved_vault_secret");
+  });
+
+  it("fails startup when no config sources exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-engine-missing-"));
+    dirs.push(dir);
+
+    expect(
+      () =>
+        new CapletsEngine({
+          configPath: join(dir, "missing-user.json"),
+          projectConfigPath: join(dir, "project", ".caplets", "config.json"),
+          watch: false,
+        }),
+    ).toThrow("Caplets config not found");
+  });
+
+  it("fails startup when config sources define no Caplets", () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+
+    expect(() => new CapletsEngine({ configPath, projectConfigPath, watch: false })).toThrow(
+      "Caplets config must define at least one",
+    );
   });
 
   it("adds, updates, and removes enabled Caplets across successful reloads", async () => {
@@ -137,6 +226,34 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["alpha"]);
     expect(listener).not.toHaveBeenCalled();
     expect(errors.join("")).toContain("Caplets config reload failed");
+  });
+
+  it("keeps last known-good config when config sources disappear", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const errors: string[] = [];
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      writeErr: (value) => errors.push(value),
+    });
+    engines.push(engine);
+
+    rmSync(configPath);
+
+    await expect(engine.reload()).resolves.toBe(false);
+    expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["alpha"]);
+    expect(errors.join("")).toContain("Caplets config reload failed");
+    expect(errors.join("")).toContain("Caplets config not found");
   });
 
   it("continues notifying reload listeners when one listener throws", async () => {

@@ -17,14 +17,12 @@ const requiredPages = [
   "agent-integrations.mdx",
   "remote-attach.mdx",
   "troubleshooting.mdx",
-  "changelog.mdx",
   "reference/config.mdx",
   "reference/code-mode-api.mdx",
   "reference/caplet-files.mdx",
 ];
 
 const generatedPages = [
-  "changelog.mdx",
   "reference/config.mdx",
   "reference/code-mode-api.mdx",
   "reference/caplet-files.mdx",
@@ -49,10 +47,15 @@ const requiredContent = new Map<string, string[]>([
   ["agent-integrations.mdx", ["Codex", "Claude", "OpenCode", "Pi"]],
   ["remote-attach.mdx", ["caplets attach", "caplets remote login"]],
   ["troubleshooting.mdx", ["caplets doctor", "CAPLETS_CONFIG"]],
-  ["changelog.mdx", ["Changelog", "GitHub releases"]],
-  ["reference/config.mdx", ["https://caplets.dev/config.schema.json", "Required"]],
+  [
+    "reference/config.mdx",
+    ["https://caplets.dev/config.schema.json", "Required", "googleDiscoveryApis"],
+  ],
   ["reference/code-mode-api.mdx", ["CapletHandle", "DebugApi", "CapletsResult"]],
-  ["reference/caplet-files.mdx", ["https://caplets.dev/caplet.schema.json", "CAPLET.md"]],
+  [
+    "reference/caplet-files.mdx",
+    ["https://caplets.dev/caplet.schema.json", "CAPLET.md", "googleDiscoveryApi"],
+  ],
 ]);
 
 const forbiddenPatterns = [

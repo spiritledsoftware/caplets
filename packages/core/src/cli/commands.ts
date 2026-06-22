@@ -32,6 +32,7 @@ export const cliCommands = {
   complete: "complete",
   config: "config",
   auth: "auth",
+  vault: "vault",
 } as const;
 
 export const topLevelCommandNames = [
@@ -63,6 +64,7 @@ export const topLevelCommandNames = [
   cliCommands.complete,
   cliCommands.config,
   cliCommands.auth,
+  cliCommands.vault,
   cliCommands.completion,
 ] as const;
 
@@ -76,11 +78,15 @@ export const cliSubcommands = {
   [cliCommands.config]: ["path", "paths"],
   [cliCommands.daemon]: ["install", "uninstall", "start", "restart", "stop", "status", "logs"],
   [cliCommands.setup]: ["codex", "claude-code", "opencode", "pi", "mcp-client"],
+  [cliCommands.vault]: ["set", "get", "list", "delete", "access"],
 } as const satisfies Record<string, readonly string[]>;
 
 export const cliNestedSubcommands = {
   [cliCommands.remote]: {
     host: ["pair", "clients", "revoke"],
+  },
+  [cliCommands.vault]: {
+    access: ["grant", "list", "revoke"],
   },
 } as const satisfies Record<string, Record<string, readonly string[]>>;
 

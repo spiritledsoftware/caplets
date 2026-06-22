@@ -63,3 +63,28 @@ After changing config, run:
 ```sh
 caplets doctor
 ```
+
+## Secret values
+
+Use [Caplets Vault](/vault/) for tokens, API keys, private URLs, and other values that
+should not live in agent config or depend on agent environment propagation.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "github-mcp",
+      "env": {
+        "GH_TOKEN": "$vault:GH_TOKEN"
+      }
+    }
+  }
+}
+```
+
+After adding a `$vault:` reference, set the value and grant it to the configured Caplet:
+
+```sh
+caplets vault set GH_TOKEN --grant github
+caplets doctor
+```

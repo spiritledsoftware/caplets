@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/cli";
+import { HOSTED_CLOUD_AUTH_SCOPES } from "../src/cloud-auth/types";
 import { CapletsEngine } from "../src/engine";
 import { normalizeRemoteProfileHostUrl } from "../src/remote/options";
+import { createRemoteProfileStore } from "../src/remote/profile-store";
 import { remoteProfileKey } from "../src/remote/profiles";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
+import { FileVaultStore } from "../src/vault";
 
 const dirs: string[] = [];
 
@@ -230,6 +233,163 @@ describe("remote CLI routing", () => {
     expect(JSON.parse(out.join(""))).toEqual([
       expect.objectContaining({ server: "github", backend: "mcp" }),
     ]);
+  });
+
+  it("routes Vault set and remote grants through remote control without local mirroring", async () => {
+    const context = testContext("caplets-cli-remote-vault-");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const localState = join(context.projectConfigPath, "..", "..", "local-state");
+    const fetch = vi.fn(
+      async (_url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body ?? "{}")));
+        return Response.json({
+          ok: true,
+          result: { key: "GH_TOKEN_REMOTE", present: true, valueBytes: 20 },
+        });
+      },
+    );
+
+    await runCli(
+      ["vault", "set", "GH_TOKEN_REMOTE", "--remote", "--grant", "github", "--as", "GH_TOKEN"],
+      {
+        env: { ...remoteEnv(context), XDG_STATE_HOME: localState },
+        fetch,
+        readStdin: async () => "remote_cli_secret\n",
+        writeOut: (value) => out.push(value),
+      },
+    );
+
+    expect(requests).toEqual([
+      {
+        command: "vault_set",
+        arguments: {
+          name: "GH_TOKEN_REMOTE",
+          value: "remote_cli_secret",
+          force: false,
+          grant: "github",
+          referenceName: "GH_TOKEN",
+        },
+      },
+    ]);
+    expect(out.join("")).toContain("Set remote Vault key GH_TOKEN_REMOTE.");
+    expect(out.join("")).not.toContain("remote_cli_secret");
+    expect(
+      new FileVaultStore({ env: { XDG_STATE_HOME: localState } }).getStatus("GH_TOKEN_REMOTE")
+        .present,
+    ).toBe(false);
+  });
+
+  it("prints remote Vault set JSON when --json is passed", async () => {
+    const context = testContext("caplets-cli-remote-vault-json-");
+    const out: string[] = [];
+    const fetch = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: { key: "GH_TOKEN_REMOTE", present: true, valueBytes: 20 },
+      }),
+    );
+
+    await runCli(["vault", "set", "GH_TOKEN_REMOTE", "--remote", "--json"], {
+      env: remoteEnv(context),
+      fetch,
+      readStdin: async () => "remote_cli_secret\n",
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toEqual({
+      key: "GH_TOKEN_REMOTE",
+      present: true,
+      valueBytes: 20,
+    });
+    expect(out.join("")).not.toContain("remote_cli_secret");
+  });
+
+  it("routes Vault access grant to hosted Cloud when remote mode selects Cloud", async () => {
+    const context = testContext("caplets-cli-cloud-vault-grant-");
+    await createRemoteProfileStore({ authDir: context.authDir }).saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_1",
+      workspaceSlug: "team",
+      clientLabel: "Cloud Test",
+      credentials: {
+        accessToken: "cloud-access-token",
+        refreshToken: "cloud-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: [...HOSTED_CLOUD_AUTH_SCOPES],
+        tokenType: "Bearer",
+      },
+    });
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetch = vi.fn(async (url: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      requests.push({
+        url: String(url),
+        authorization: new Headers(init?.headers).get("authorization"),
+        method: init?.method,
+        body: init?.body,
+      });
+      return Response.json({
+        storedKey: "GH_TOKEN",
+        referenceName: "GH_TOKEN",
+        capletId: "github",
+      });
+    });
+
+    await runCli(["vault", "access", "grant", "GH_TOKEN", "github", "--remote"], {
+      env: {
+        ...remoteEnv(context),
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+      },
+      fetch,
+      authDir: context.authDir,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(requests).toEqual([
+      {
+        url: "https://cloud.caplets.dev/api/workspaces/team/vault/access/GH_TOKEN/github",
+        authorization: "Bearer cloud-access-token",
+        method: "PUT",
+        body: JSON.stringify({ referenceName: "GH_TOKEN" }),
+      },
+    ]);
+    expect(out.join("")).toContain("Granted Vault key GH_TOKEN to github as GH_TOKEN.");
+  });
+
+  it("formats hosted Cloud Vault access grants without origin metadata", async () => {
+    const context = testContext("caplets-cli-cloud-vault-access-list-");
+    await createRemoteProfileStore({ authDir: context.authDir }).saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "ws_1",
+      workspaceSlug: "team",
+      clientLabel: "Cloud Test",
+      credentials: {
+        accessToken: "cloud-access-token",
+        refreshToken: "cloud-refresh-token",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: [...HOSTED_CLOUD_AUTH_SCOPES],
+        tokenType: "Bearer",
+      },
+    });
+    const out: string[] = [];
+    const fetch = vi.fn(async () =>
+      Response.json([{ storedKey: "GH_TOKEN", referenceName: "GH_TOKEN", capletId: "github" }]),
+    );
+
+    await runCli(["vault", "access", "list", "--remote"], {
+      env: {
+        ...remoteEnv(context),
+        CAPLETS_MODE: "cloud",
+        CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+      },
+      fetch,
+      authDir: context.authDir,
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toBe("GH_TOKEN -> github:GH_TOKEN\n");
   });
 
   it("falls back to remote list when local overlay loading warns", async () => {

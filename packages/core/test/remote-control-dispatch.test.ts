@@ -13,6 +13,7 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
+import { FileVaultStore } from "../src/vault";
 
 const dirs: string[] = [];
 
@@ -151,6 +152,144 @@ describe("dispatchRemoteCliRequest", () => {
       /hunter2|abc123|secret-value|key-value|json-token|json-password/u,
     );
     expect(JSON.stringify(response)).toContain("[REDACTED]");
+  });
+
+  it("executes Vault operations against server-side state", async () => {
+    const context = testContext();
+    const authDir = join(context.tempRoot, "auth");
+    writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "GitHub tools.",
+            transport: "http",
+            url: "https://api.githubcopilot.com/mcp",
+            auth: { type: "bearer", token: "$vault:GH_TOKEN" },
+          },
+        },
+      }),
+    );
+
+    const set = await dispatchRemoteCliRequest(
+      {
+        command: "vault_set",
+        arguments: {
+          name: "GH_TOKEN_REMOTE",
+          value: "remote_dispatch_secret",
+          grant: "github",
+          referenceName: "GH_TOKEN",
+          force: false,
+        },
+      },
+      { ...context, authDir },
+    );
+    const list = await dispatchRemoteCliRequest(
+      { command: "vault_access_list", arguments: {} },
+      { ...context, authDir },
+    );
+    const inspect = await dispatchRemoteCliRequest(
+      {
+        command: "inspect",
+        arguments: { caplet: "github", request: { operation: "inspect" } },
+      },
+      { ...context, authDir },
+    );
+
+    const store = new FileVaultStore({ root: join(authDir, "vault") });
+    expect(set).toMatchObject({ ok: true, result: { key: "GH_TOKEN_REMOTE", present: true } });
+    expect(JSON.stringify(set)).not.toContain("remote_dispatch_secret");
+    expect(store.resolveValue("GH_TOKEN_REMOTE")).toBe("remote_dispatch_secret");
+    expect(list).toMatchObject({
+      ok: true,
+      result: [
+        expect.objectContaining({
+          storedKey: "GH_TOKEN_REMOTE",
+          referenceName: "GH_TOKEN",
+          capletId: "github",
+        }),
+      ],
+    });
+    expect(JSON.stringify(list)).not.toContain("remote_dispatch_secret");
+    expect(inspect).toMatchObject({
+      ok: true,
+      result: {
+        structuredContent: {
+          result: { id: "github", backend: { type: "mcp" }, name: "GitHub" },
+        },
+      },
+    });
+  });
+
+  it("does not retain a remote Vault value when set-and-grant fails", async () => {
+    const context = testContext();
+    const authDir = join(context.tempRoot, "auth");
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "vault_set",
+        arguments: {
+          name: "GH_TOKEN",
+          value: "remote_orphan_secret",
+          grant: "missing_caplet",
+          force: false,
+        },
+      },
+      { ...context, authDir },
+    );
+
+    const store = new FileVaultStore({ root: join(authDir, "vault") });
+    expect(response).toMatchObject({ ok: false });
+    expect(store.getStatus("GH_TOKEN")).toEqual({ key: "GH_TOKEN", present: false });
+    expect(JSON.stringify(response)).not.toContain("remote_orphan_secret");
+  });
+
+  it("restores the previous remote Vault value when force set-and-grant fails", async () => {
+    const context = testContext();
+    const authDir = join(context.tempRoot, "auth");
+    const store = new FileVaultStore({ root: join(authDir, "vault") });
+    store.set("GH_TOKEN", "original_secret");
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "vault_set",
+        arguments: {
+          name: "GH_TOKEN",
+          value: "replacement_secret",
+          grant: "missing_caplet",
+          force: true,
+        },
+      },
+      { ...context, authDir },
+    );
+
+    expect(response).toMatchObject({ ok: false });
+    expect(store.resolveValue("GH_TOKEN")).toBe("original_secret");
+    expect(JSON.stringify(response)).not.toContain("replacement_secret");
+  });
+
+  it("rejects forged remote Vault raw reveal requests", async () => {
+    const context = testContext();
+    const authDir = join(context.tempRoot, "auth");
+    new FileVaultStore({ root: join(authDir, "vault") }).set("GH_TOKEN", "remote_secret");
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "vault_get",
+        arguments: { name: "GH_TOKEN", reveal: true, revealContext: "human-cli" },
+      },
+      { ...context, authDir },
+    );
+
+    expect(response).toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Self-hosted remote Vault reveal is not supported through remote control.",
+      },
+    });
+    expect(JSON.stringify(response)).not.toContain("remote_secret");
   });
 
   it("adds MCP Caplets to the server-side project Caplets root", async () => {
