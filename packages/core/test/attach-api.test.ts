@@ -104,7 +104,7 @@ describe("Attach API dispatch", () => {
       description: "Docs.",
       backend: "mcp",
       command: process.execPath,
-      shadowing: "allow",
+      shadowing: "namespace",
     };
     const engine = {
       exposureSnapshot: async () => ({
@@ -128,11 +128,15 @@ describe("Attach API dispatch", () => {
 
     const projection = await buildAttachProjection(engine);
 
-    expect(projection.manifest.caplets).toEqual([expect.objectContaining({ shadowing: "allow" })]);
-    expect(projection.manifest.codeModeCaplets).toEqual([
-      expect.objectContaining({ shadowing: "allow" }),
+    expect(projection.manifest.caplets).toEqual([
+      expect.objectContaining({ shadowing: "namespace" }),
     ]);
-    expect(projection.manifest.tools).toEqual([expect.objectContaining({ shadowing: "allow" })]);
+    expect(projection.manifest.codeModeCaplets).toEqual([
+      expect.objectContaining({ shadowing: "namespace" }),
+    ]);
+    expect(projection.manifest.tools).toEqual([
+      expect.objectContaining({ shadowing: "namespace" }),
+    ]);
   });
 
   it("preserves direct resource metadata in attach manifests", async () => {

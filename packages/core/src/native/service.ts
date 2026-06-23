@@ -25,6 +25,11 @@ import {
   nativeCodeModeToolName,
 } from "./tools";
 import { nativeDirectToolName } from "../exposure/direct-names";
+import {
+  resolveNamespaceExposure,
+  type NamespaceDiagnostic,
+  type NamespaceSourceEntry,
+} from "../exposure/namespace";
 import { resolveExposure } from "../exposure/policy";
 import {
   generateCodeModeDeclarations,
@@ -43,8 +48,12 @@ import type { CodeModeCallableCaplet } from "../code-mode/types";
 import {
   loadLocalOverlayConfigWithSources,
   parseConfig,
+  type CapletShadowingPolicy,
   type CapletsConfig,
   type LocalOverlayConfigWithSources,
+  type NamespaceAliasesConfig,
+  resolveConfigPath,
+  resolveProjectConfigPath,
 } from "../config";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 import type { CapletsRemoteAuth } from "../remote/options";
@@ -69,7 +78,7 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
 export type NativeCapletTool = {
   caplet: string;
   sourceCaplet?: string;
-  shadowing?: "forbid" | "allow";
+  shadowing?: CapletShadowingPolicy;
   toolName: string;
   title: string;
   description: string;
@@ -624,7 +633,13 @@ function createCompositeRemoteService(
   authKind: "self_hosted_remote" | "hosted_cloud",
 ): NativeCapletsService {
   const { remote, presence } = createCompositeRemoteParts(remoteOptions, local, options, authKind);
-  return new CompositeNativeCapletsService(remote, local, options, presence);
+  return new CompositeNativeCapletsService(
+    remote,
+    local,
+    options,
+    remoteOptions.url.toString(),
+    presence,
+  );
 }
 
 function createCompositeRemoteParts(
@@ -756,6 +771,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
           remote,
           this.local,
           this.options,
+          remoteOptions.url.toString(),
           presence,
         );
         this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
@@ -775,7 +791,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
         await Promise.all([remote.close(), presence?.close()]);
         return;
       }
-      await this.delegate.replaceRemote(remote, presence);
+      await this.delegate.replaceRemote(remote, remoteOptions.url.toString(), presence);
       this.remoteSignature = signature;
       this.credentialExpiresAt = remoteOptions.credentialExpiresAt;
     } catch (error) {
@@ -900,6 +916,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private readonly unsubscribeLocal: () => void;
   private readonly warnedShadowedLocalCaplets = new Set<string>();
   private tools: NativeCapletTool[] = [];
+  private routes = new Map<string, { service: "local" | "remote"; capletId: string }>();
+  private namespaceDiagnostics = new Map<string, NamespaceDiagnostic>();
   private closed = false;
   private batchingReload = false;
   private readonly codeModeSessions = new CodeModeSessionManager();
@@ -908,11 +926,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     private remote: NativeCapletsService,
     private readonly local: NativeCapletsService,
     private readonly options: NativeCapletsServiceOptions,
+    private remoteIdentity: string,
     private presence?: ProjectBindingSessionManager,
   ) {
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     this.unsubscribeLocal = this.local.onToolsChanged(() => this.updateMergedTools());
-    this.tools = this.mergeTools();
+    const merged = this.mergeTools();
+    this.tools = merged.tools;
+    this.routes = merged.routes;
+    this.namespaceDiagnostics = merged.namespaceDiagnostics;
     this.startPresence();
   }
 
@@ -924,8 +946,16 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (capletId === nativeCodeModeToolId) {
       return await executeCodeModeRunNative(this, request, this.codeModeSessions);
     }
-    if (this.localCanExecute(capletId)) {
-      return await this.local.execute(capletId, request);
+    const route = this.routes.get(capletId);
+    if (route?.service === "local") {
+      return await this.local.execute(route.capletId, request);
+    }
+    if (route?.service === "remote") {
+      return await this.remote.execute(route.capletId, request);
+    }
+    const diagnostic = this.namespaceDiagnostics.get(capletId);
+    if (diagnostic) {
+      throw new CapletsError("CAPLET_NAMESPACE_COLLISION", diagnostic.hint, diagnostic);
     }
     return await this.remote.execute(capletId, request);
   }
@@ -980,17 +1010,23 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async replaceRemote(
     remote: NativeCapletsService,
+    remoteIdentityOrPresence?: string | ProjectBindingSessionManager,
     presence?: ProjectBindingSessionManager,
   ): Promise<void> {
+    const remoteIdentity =
+      typeof remoteIdentityOrPresence === "string" ? remoteIdentityOrPresence : this.remoteIdentity;
+    const nextPresence =
+      typeof remoteIdentityOrPresence === "string" ? presence : remoteIdentityOrPresence;
     if (this.closed) {
-      await Promise.all([remote.close(), presence?.close()]);
+      await Promise.all([remote.close(), nextPresence?.close()]);
       return;
     }
     const previousRemote = this.remote;
     const previousPresence = this.presence;
     this.unsubscribeRemote();
     this.remote = remote;
-    this.presence = presence;
+    this.remoteIdentity = remoteIdentity;
+    this.presence = nextPresence;
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     await Promise.all([previousRemote.close(), previousPresence?.close()]);
     if (this.closed) return;
@@ -1002,11 +1038,15 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     if (this.closed || this.batchingReload) {
       return;
     }
-    const tools = this.mergeTools();
-    if (JSON.stringify(tools) === JSON.stringify(this.tools)) {
+    const merged = this.mergeTools();
+    if (JSON.stringify(merged.tools) === JSON.stringify(this.tools)) {
+      this.routes = merged.routes;
+      this.namespaceDiagnostics = merged.namespaceDiagnostics;
       return;
     }
-    this.tools = tools;
+    this.tools = merged.tools;
+    this.routes = merged.routes;
+    this.namespaceDiagnostics = merged.namespaceDiagnostics;
     for (const listener of this.listeners) {
       try {
         listener(this.listTools());
@@ -1016,31 +1056,148 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     }
   }
 
-  private mergeTools(): NativeCapletTool[] {
+  private mergeTools(): {
+    tools: NativeCapletTool[];
+    routes: Map<string, { service: "local" | "remote"; capletId: string }>;
+    namespaceDiagnostics: Map<string, NamespaceDiagnostic>;
+  } {
     const allLocalTools = this.local.listTools();
     const allRemoteTools = this.remote.listTools();
     const remoteCodeModeTools = remoteCodeModeCallableNativeTools(allRemoteTools);
     const remoteIds = remoteSuppressedCapletIds(allRemoteTools, remoteCodeModeTools);
-    const localTools = allLocalTools.filter(
+    const unsuppressedLocalTools = allLocalTools.filter(
       (tool) => tool.codeModeRun !== true && !remoteIds.has(tool.sourceCaplet ?? tool.caplet),
     );
     this.warnShadowedLocalCaplets(allLocalTools, remoteIds);
-    const localCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
+    const unsuppressedLocalCodeModeTools = codeModeCallableNativeTools(allLocalTools, {
       fallbackToVisible: false,
     }).filter((tool) => !remoteIds.has(tool.caplet));
     const remoteTools = allRemoteTools.filter((tool) => tool.codeModeRun !== true);
-    const mergedTools = [...remoteTools, ...localTools];
-    const codeModeTools = [...remoteCodeModeTools, ...localCodeModeTools];
-    return [
-      ...mergedTools,
+    const resolved = this.resolveVisibleToolIds(
+      remoteTools,
+      unsuppressedLocalTools,
+      remoteCodeModeTools,
+      unsuppressedLocalCodeModeTools,
+    );
+    const codeModeTools = [...resolved.remoteCodeModeTools, ...resolved.localCodeModeTools];
+    const tools = [
+      ...resolved.remoteTools,
+      ...resolved.localTools,
       ...(codeModeTools.length > 0 ? [codeModeRunNativeTool(codeModeTools)] : []),
     ];
+    return {
+      tools,
+      routes: resolved.routes,
+      namespaceDiagnostics: resolved.namespaceDiagnostics,
+    };
   }
 
-  private localCanExecute(capletId: string): boolean {
-    const allRemoteTools = this.remote.listTools();
-    const remoteIds = remoteSuppressedCapletIds(allRemoteTools);
-    return localExecutionKeys(this.local.listTools(), capletId).some((key) => !remoteIds.has(key));
+  private resolveVisibleToolIds(
+    remoteTools: NativeCapletTool[],
+    localTools: NativeCapletTool[],
+    remoteCodeModeTools: NativeCapletTool[],
+    localCodeModeTools: NativeCapletTool[],
+  ): {
+    remoteTools: NativeCapletTool[];
+    localTools: NativeCapletTool[];
+    remoteCodeModeTools: NativeCapletTool[];
+    localCodeModeTools: NativeCapletTool[];
+    routes: Map<string, { service: "local" | "remote"; capletId: string }>;
+    namespaceDiagnostics: Map<string, NamespaceDiagnostic>;
+  } {
+    const entries = nativeNamespaceEntries(
+      [
+        { service: "remote", tools: [...remoteTools, ...remoteCodeModeTools] },
+        { service: "local", tools: [...localTools, ...localCodeModeTools] },
+      ],
+      {
+        ...nativeNamespaceContext(this.options),
+        remoteIdentity: this.remoteIdentity,
+      },
+    );
+    const resolution = resolveNamespaceExposure(entries);
+    const namespacedRecords = resolution.visibleRecords.filter((record) => record.namespaced);
+    const namespacedBaseIds = new Set(namespacedRecords.map((record) => record.baseId));
+    const diagnosticBaseIds = new Set(
+      resolution.unavailableDiagnostics.map((diagnostic) => diagnostic.requestedId),
+    );
+    const routes = new Map<string, { service: "local" | "remote"; capletId: string }>();
+    const namespaceDiagnostics = new Map(resolution.suppressedBareIds);
+    for (const diagnostic of resolution.unavailableDiagnostics) {
+      namespaceDiagnostics.set(diagnostic.requestedId, diagnostic);
+    }
+    const alternativesByBaseId = new Map<string, Set<string>>();
+    const staleIdsByBaseId = new Map<string, Set<string>>();
+
+    const setRoute = (
+      visibleCapletId: string,
+      route: { service: "local" | "remote"; capletId: string },
+      overwrite: boolean,
+    ) => {
+      if (overwrite || !routes.has(visibleCapletId)) {
+        routes.set(visibleCapletId, route);
+      }
+    };
+    const rewrite = (
+      service: "local" | "remote",
+      tools: NativeCapletTool[],
+      overwrite: boolean,
+    ) => {
+      const rewritten: NativeCapletTool[] = [];
+      for (const tool of tools) {
+        const baseId = sourceBaseId(tool);
+        if (diagnosticBaseIds.has(baseId)) {
+          continue;
+        }
+        if (!namespacedBaseIds.has(baseId)) {
+          rewritten.push(tool);
+          setRoute(tool.caplet, { service, capletId: tool.caplet }, overwrite);
+          continue;
+        }
+
+        const record = namespacedRecords.find(
+          (candidate) => candidate.baseId === baseId && candidate.route.service === service,
+        );
+        if (!record) continue;
+        const visibleTool = renameNativeTool(tool, record.id);
+        rewritten.push(visibleTool);
+        addMapSetValue(alternativesByBaseId, baseId, visibleTool.caplet);
+        if (tool.caplet !== visibleTool.caplet) {
+          addMapSetValue(staleIdsByBaseId, baseId, tool.caplet);
+        }
+        setRoute(visibleTool.caplet, { service, capletId: tool.caplet }, overwrite);
+      }
+      return rewritten;
+    };
+
+    const remoteVisibleTools = rewrite("remote", remoteTools, false);
+    const localVisibleTools = rewrite("local", localTools, true);
+    const remoteVisibleCodeModeTools = rewrite("remote", remoteCodeModeTools, false);
+    const localVisibleCodeModeTools = rewrite("local", localCodeModeTools, true);
+    for (const [baseId, alternatives] of alternativesByBaseId) {
+      const baseDiagnostic = resolution.suppressedBareIds.get(baseId);
+      if (!baseDiagnostic) continue;
+      const alternativeList = [...alternatives];
+      namespaceDiagnostics.set(
+        baseId,
+        namespaceDiagnosticWithAlternatives(baseId, baseDiagnostic, alternativeList),
+      );
+      for (const staleId of staleIdsByBaseId.get(baseId) ?? []) {
+        namespaceDiagnostics.set(
+          staleId,
+          namespaceDiagnosticWithAlternatives(staleId, baseDiagnostic, alternativeList),
+        );
+      }
+    }
+
+    return {
+      remoteTools: remoteVisibleTools,
+      localTools: localVisibleTools,
+      remoteCodeModeTools: remoteVisibleCodeModeTools,
+      localCodeModeTools: localVisibleCodeModeTools,
+      routes,
+      namespaceDiagnostics,
+    };
   }
 
   private warnShadowedLocalCaplets(localTools: NativeCapletTool[], remoteIds: Set<string>): void {
@@ -1088,6 +1245,118 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   }
 }
 
+type NativeNamespaceRoute = {
+  service: "local" | "remote";
+  baseId: string;
+};
+
+function addMapSetValue<Key, Value>(map: Map<Key, Set<Value>>, key: Key, value: Value): void {
+  let values = map.get(key);
+  if (!values) {
+    values = new Set();
+    map.set(key, values);
+  }
+  values.add(value);
+}
+
+function namespaceDiagnosticWithAlternatives(
+  requestedId: string,
+  diagnostic: NamespaceDiagnostic,
+  alternatives: string[],
+): NamespaceDiagnostic {
+  return {
+    ...diagnostic,
+    requestedId,
+    alternatives,
+    hint: `Caplet '${requestedId}' is unavailable because namespace shadowing exposes qualified alternatives: ${alternatives.join(", ")}.`,
+  };
+}
+
+function nativeNamespaceContext(options: NativeCapletsServiceOptions): {
+  localIdentity: string;
+  namespaceAliases: NamespaceAliasesConfig;
+} {
+  const configPath = options.configPath ?? resolveConfigPath();
+  const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
+  let namespaceAliases = parseConfig({}).namespaceAliases;
+  try {
+    namespaceAliases = loadLocalOverlayConfigWithSources(configPath, projectConfigPath).config
+      .namespaceAliases;
+  } catch {
+    // Local overlay loading owns user-facing warnings and last-known-good behavior.
+  }
+  return {
+    localIdentity: `local:${configPath}\0${projectConfigPath}`,
+    namespaceAliases,
+  };
+}
+
+function nativeNamespaceEntries(
+  groups: Array<{ service: "local" | "remote"; tools: NativeCapletTool[] }>,
+  identities: {
+    remoteIdentity: string;
+    localIdentity: string;
+    namespaceAliases: NamespaceAliasesConfig;
+  },
+): NamespaceSourceEntry<NativeNamespaceRoute>[] {
+  const entries = new Map<string, NamespaceSourceEntry<NativeNamespaceRoute>>();
+  for (const group of groups) {
+    const byBaseId = new Map<string, NativeCapletTool[]>();
+    for (const tool of group.tools) {
+      const baseId = sourceBaseId(tool);
+      byBaseId.set(baseId, [...(byBaseId.get(baseId) ?? []), tool]);
+    }
+    for (const [baseId, tools] of byBaseId) {
+      const service = group.service;
+      entries.set(`${service}:${baseId}`, {
+        baseId,
+        sourceKind: service === "local" ? "local" : "upstream",
+        sourceLabel: service === "local" ? "local" : "remote",
+        namespaceAlias:
+          service === "local"
+            ? identities.namespaceAliases.local
+            : identities.namespaceAliases.upstreams[identities.remoteIdentity],
+        durableSourceIdentity:
+          service === "local" ? identities.localIdentity : identities.remoteIdentity,
+        shadowing: aggregateShadowing(tools),
+        route: { service, baseId },
+      });
+    }
+  }
+  return [...entries.values()];
+}
+
+function aggregateShadowing(tools: NativeCapletTool[]): CapletShadowingPolicy {
+  if (tools.some((tool) => (tool.shadowing ?? "forbid") === "forbid")) return "forbid";
+  if (tools.some((tool) => tool.shadowing === "namespace")) return "namespace";
+  return "allow";
+}
+
+function sourceBaseId(tool: NativeCapletTool): string {
+  return tool.sourceCaplet ?? tool.caplet;
+}
+
+function renameNativeTool(tool: NativeCapletTool, visibleBaseId: string): NativeCapletTool {
+  const baseId = sourceBaseId(tool);
+  const visibleCapletId =
+    tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`)
+      ? `${visibleBaseId}${tool.caplet.slice(baseId.length)}`
+      : visibleBaseId;
+  const operationName =
+    tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`)
+      ? tool.caplet.slice(baseId.length + 2)
+      : undefined;
+  const toolName = operationName
+    ? nativeDirectToolName(visibleBaseId, operationName)
+    : nativeCapletToolName(visibleCapletId);
+  return {
+    ...tool,
+    caplet: visibleCapletId,
+    ...(tool.sourceCaplet ? { sourceCaplet: visibleBaseId } : {}),
+    toolName,
+  };
+}
+
 function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCapletTool[] {
   return codeModeCallableNativeTools(tools, { fallbackToVisible: true });
 }
@@ -1099,29 +1368,13 @@ function remoteSuppressedCapletIds(
   return new Set(
     [
       ...allRemoteTools
-        .filter((tool) => tool.codeModeRun !== true && tool.shadowing !== "allow")
+        .filter((tool) => tool.codeModeRun !== true && (tool.shadowing ?? "forbid") === "forbid")
         .map((tool) => tool.sourceCaplet ?? tool.caplet),
       ...remoteCodeModeTools
-        .filter((tool) => tool.shadowing !== "allow")
+        .filter((tool) => (tool.shadowing ?? "forbid") === "forbid")
         .map((tool) => tool.caplet),
     ].filter((caplet) => caplet !== nativeCodeModeToolId),
   );
-}
-
-function localExecutionKeys(tools: NativeCapletTool[], capletId: string): string[] {
-  const keys: string[] = [];
-  for (const tool of tools) {
-    if (tool.codeModeRun) {
-      for (const caplet of tool.codeModeCaplets ?? []) {
-        if (caplet.id === capletId) keys.push(caplet.id);
-      }
-      continue;
-    }
-    if (tool.caplet === capletId || tool.sourceCaplet === capletId) {
-      keys.push(tool.sourceCaplet ?? tool.caplet);
-    }
-  }
-  return keys;
 }
 
 function createProjectBindingSessionManager(

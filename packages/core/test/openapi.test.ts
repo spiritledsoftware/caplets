@@ -843,6 +843,7 @@ describe("native OpenAPI Caplets", () => {
             negativeCacheTtlMs: 30_000,
           },
         },
+        namespaceAliases: { upstreams: {} },
         mcpServers: {},
         openapiEndpoints: { remote: endpoint },
         googleDiscoveryApis: {},

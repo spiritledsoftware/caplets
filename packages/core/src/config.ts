@@ -7,6 +7,7 @@ import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
   HTTP_BASE_URL_PATTERN,
+  NAMESPACE_ALIAS_LABEL_PATTERN,
   SERVER_ID_PATTERN,
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
@@ -91,7 +92,7 @@ export type AgentSelectionHintsConfig = {
   avoidWhen?: string | undefined;
 };
 
-export type CapletShadowingPolicy = "forbid" | "allow";
+export type CapletShadowingPolicy = "forbid" | "allow" | "namespace";
 
 export type CapletExposure =
   | "direct"
@@ -311,6 +312,11 @@ export type CapletConfig =
   | CliToolsConfig
   | CapletSetConfig;
 
+export type NamespaceAliasesConfig = {
+  local?: string | undefined;
+  upstreams: Record<string, string>;
+};
+
 export type CapletsOptions = {
   defaultSearchLimit: number;
   maxSearchLimit: number;
@@ -330,6 +336,7 @@ export type CompletionConfig = {
 export type CapletsConfig = {
   version: 1;
   options: CapletsOptions;
+  namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
   googleDiscoveryApis: Record<string, GoogleDiscoveryApiConfig>;
@@ -556,9 +563,50 @@ const exposureSchema = z
   .describe("How this Caplet is exposed to agents.");
 
 const shadowingSchema = z
-  .enum(["forbid", "allow"])
+  .enum(["forbid", "allow", "namespace"])
   .default("forbid")
   .describe("Whether attached local Caplets may shadow this remote Caplet ID.");
+
+const namespaceAliasLabelSchema = z
+  .string()
+  .regex(
+    NAMESPACE_ALIAS_LABEL_PATTERN,
+    "namespace alias labels must be lowercase DNS-style labels using letters, numbers, or hyphens",
+  )
+  .describe("Namespace label used when qualifying colliding Caplet IDs.");
+
+const namespaceAliasesSchema = z
+  .object({
+    local: namespaceAliasLabelSchema.optional(),
+    upstreams: z
+      .record(z.string().trim().min(1), namespaceAliasLabelSchema)
+      .default({})
+      .describe("Namespace aliases keyed by durable upstream source identity."),
+  })
+  .strict()
+  .default({ upstreams: {} })
+  .superRefine((aliases, ctx) => {
+    const seen = new Map<string, Array<string | number>>();
+    const addAlias = (value: string | undefined, path: Array<string | number>) => {
+      if (!value) return;
+      const existing = seen.get(value);
+      if (existing) {
+        ctx.addIssue({
+          code: "custom",
+          path,
+          message: `namespace alias '${value}' is already used at ${existing.join(".")}`,
+        });
+        return;
+      }
+      seen.set(value, path);
+    };
+
+    addAlias(aliases.local, ["local"]);
+    for (const [selector, alias] of Object.entries(aliases.upstreams)) {
+      addAlias(alias, ["upstreams", selector]);
+    }
+  })
+  .describe("Source-level namespace aliases for hash-qualified Caplet IDs.");
 
 const publicServerSchema = z
   .object({
@@ -1089,6 +1137,7 @@ type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
+  namespaceAliases?: unknown;
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
   googleDiscoveryApis?: Record<string, unknown>;
@@ -1170,6 +1219,7 @@ function configSchemaFor(
           exposureDiscoveryConcurrency: 4,
         })
         .describe("Global Caplets runtime options."),
+      namespaceAliases: namespaceAliasesSchema,
       mcpServers: z
         .record(z.string().regex(SERVER_ID_PATTERN), serverValueSchema)
         .default({})
@@ -2429,6 +2479,7 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
     merged = {
       ...merged,
       ...input,
+      namespaceAliases: mergeNamespaceAliases(merged?.namespaceAliases, input.namespaceAliases),
       mcpServers: {
         ...merged?.mcpServers,
         ...input.mcpServers,
@@ -2460,6 +2511,30 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
     };
   }
   return merged;
+}
+
+function mergeNamespaceAliases(left: unknown, right: unknown): Record<string, unknown> | undefined {
+  if (right !== undefined && !isPlainObject(right)) {
+    return right as Record<string, unknown>;
+  }
+  if (left !== undefined && !isPlainObject(left)) {
+    return left as Record<string, unknown>;
+  }
+  if (!isPlainObject(left) && !isPlainObject(right)) {
+    return undefined;
+  }
+  const leftRecord = isPlainObject(left) ? left : undefined;
+  const rightRecord = isPlainObject(right) ? right : undefined;
+  const leftUpstreams = isPlainObject(leftRecord?.upstreams) ? leftRecord.upstreams : undefined;
+  const rightUpstreams = isPlainObject(rightRecord?.upstreams) ? rightRecord.upstreams : undefined;
+  return stripUndefined({
+    ...leftRecord,
+    ...rightRecord,
+    upstreams: {
+      ...leftUpstreams,
+      ...rightUpstreams,
+    },
+  });
 }
 
 function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | undefined>): {
@@ -2629,6 +2704,10 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
       exposureDiscoveryConcurrency: parsed.data.options.exposureDiscoveryConcurrency,
       completion: parsed.data.completion,
     },
+    namespaceAliases: stripUndefined({
+      local: parsed.data.namespaceAliases.local,
+      upstreams: parsed.data.namespaceAliases.upstreams,
+    }) as NamespaceAliasesConfig,
     mcpServers: servers,
     openapiEndpoints,
     googleDiscoveryApis,

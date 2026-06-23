@@ -3,6 +3,7 @@ import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
   HTTP_BASE_URL_PATTERN,
+  NAMESPACE_ALIAS_LABEL_PATTERN,
   SERVER_ID_PATTERN,
   isAllowedHttpBaseUrl,
   isAllowedRemoteUrl,
@@ -64,7 +65,7 @@ export type CapletExposure =
   | "code_mode"
   | "direct_and_code_mode"
   | "progressive_and_code_mode";
-export type CapletShadowingPolicy = "forbid" | "allow";
+export type CapletShadowingPolicy = "forbid" | "allow" | "namespace";
 
 export type CapletServerConfig = CommonCapletConfig & {
   backend: "mcp";
@@ -192,6 +193,11 @@ export type CapletConfig =
   | CliToolsConfig
   | CapletSetConfig;
 
+export type NamespaceAliasesConfig = {
+  local?: string | undefined;
+  upstreams: Record<string, string>;
+};
+
 export type CapletsConfig = {
   version: 1;
   options: {
@@ -207,6 +213,7 @@ export type CapletsConfig = {
       negativeCacheTtlMs: number;
     };
   };
+  namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
   openapiEndpoints: Record<string, OpenApiEndpointConfig>;
   googleDiscoveryApis: Record<string, GoogleDiscoveryApiConfig>;
@@ -289,7 +296,7 @@ const exposureSchema = z.enum([
   "direct_and_code_mode",
   "progressive_and_code_mode",
 ]);
-const shadowingSchema = z.enum(["forbid", "allow"]).default("forbid");
+const shadowingSchema = z.enum(["forbid", "allow", "namespace"]).default("forbid");
 const commonSchema = {
   name: z.string().trim().min(1).max(80),
   description: z
@@ -472,6 +479,42 @@ const capletSetSchema = z
   })
   .strict();
 
+const namespaceAliasLabelSchema = z
+  .string()
+  .regex(
+    NAMESPACE_ALIAS_LABEL_PATTERN,
+    "namespace alias labels must be lowercase DNS-style labels using letters, numbers, or hyphens",
+  );
+
+const namespaceAliasesSchema = z
+  .object({
+    local: namespaceAliasLabelSchema.optional(),
+    upstreams: z.record(z.string().trim().min(1), namespaceAliasLabelSchema).default({}),
+  })
+  .strict()
+  .default({ upstreams: {} })
+  .superRefine((aliases, ctx) => {
+    const seen = new Map<string, Array<string | number>>();
+    const addAlias = (value: string | undefined, path: Array<string | number>) => {
+      if (!value) return;
+      const existing = seen.get(value);
+      if (existing) {
+        ctx.addIssue({
+          code: "custom",
+          path,
+          message: `namespace alias '${value}' is already used at ${existing.join(".")}`,
+        });
+        return;
+      }
+      seen.set(value, path);
+    };
+
+    addAlias(aliases.local, ["local"]);
+    for (const [selector, alias] of Object.entries(aliases.upstreams)) {
+      addAlias(alias, ["upstreams", selector]);
+    }
+  });
+
 const configSchema = z
   .object({
     version: z.literal(1).default(1),
@@ -516,6 +559,7 @@ const configSchema = z
     httpApis: z.record(z.string().regex(SERVER_ID_PATTERN), httpApiSchema).default({}),
     cliTools: z.record(z.string().regex(SERVER_ID_PATTERN), cliToolsSchema).default({}),
     capletSets: z.record(z.string().regex(SERVER_ID_PATTERN), capletSetSchema).default({}),
+    namespaceAliases: namespaceAliasesSchema,
   })
   .strict()
   .superRefine((config, ctx) => {
@@ -545,6 +589,10 @@ export function parseConfig(input: unknown): CapletsConfig {
       exposureDiscoveryConcurrency: config.options.exposureDiscoveryConcurrency,
       completion: config.completion,
     },
+    namespaceAliases: stripUndefined({
+      local: config.namespaceAliases.local,
+      upstreams: config.namespaceAliases.upstreams,
+    }) as NamespaceAliasesConfig,
     mcpServers: mapBackend(config.mcpServers, "mcp", (id, raw) => {
       const server = raw as z.infer<typeof mcpServerSchema>;
       return {

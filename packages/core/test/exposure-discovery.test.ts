@@ -116,6 +116,7 @@ function configFor(
       },
       ...options,
     },
+    namespaceAliases: { upstreams: {} },
     mcpServers: Object.fromEntries(
       caplets.filter((caplet) => caplet.backend === "mcp").map((caplet) => [caplet.server, caplet]),
     ) as CapletsConfig["mcpServers"],

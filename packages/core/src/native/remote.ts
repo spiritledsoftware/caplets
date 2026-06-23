@@ -5,6 +5,7 @@ import {
 } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
+import type { CapletShadowingPolicy } from "../config";
 import { CodeModeJournalStore } from "../code-mode/journal";
 import { runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
@@ -34,7 +35,7 @@ export type RemoteCapletsTool = {
   name: string;
   capletId?: string | undefined;
   sourceCapletId?: string | undefined;
-  shadowing?: "forbid" | "allow" | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
   title?: string | undefined;
   description?: string | undefined;
   inputSchema?: unknown;
@@ -674,11 +675,13 @@ function primitiveInvokeInput(
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
   const codeModeCaplets = manifest.codeModeCaplets ?? [];
   const codeModeMarker = attachCodeModeMarker(codeModeCaplets);
-  const codeModeShadowing: "forbid" | "allow" = codeModeCaplets.some(
+  const codeModeShadowing: CapletShadowingPolicy = codeModeCaplets.some(
     (entry) => entry.shadowing === "forbid",
   )
     ? "forbid"
-    : "allow";
+    : codeModeCaplets.some((entry) => entry.shadowing === "namespace")
+      ? "namespace"
+      : "allow";
   return [
     ...manifest.caplets.map((entry) => ({
       name: entry.capletId,
@@ -737,10 +740,10 @@ function primitiveToolsFromManifest(
       resourceTemplates: boolean;
       prompts: boolean;
       completions: boolean;
-      shadowing: "forbid" | "allow";
+      shadowing: CapletShadowingPolicy;
     }
   >();
-  const entryFor = (capletId: string, shadowing: "forbid" | "allow") => {
+  const entryFor = (capletId: string, shadowing: CapletShadowingPolicy) => {
     const existing = byCaplet.get(capletId);
     if (existing) {
       if (shadowing === "forbid") existing.shadowing = "forbid";
@@ -765,7 +768,11 @@ function primitiveToolsFromManifest(
     entryFor(entry.capletId, entry.shadowing).completions = true;
 
   const tools: RemoteCapletsTool[] = [];
-  const addPrimitiveTool = (capletId: string, operation: string, shadowing: "forbid" | "allow") => {
+  const addPrimitiveTool = (
+    capletId: string,
+    operation: string,
+    shadowing: CapletShadowingPolicy,
+  ) => {
     const name = `${capletId}__${operation}`;
     if (directToolNames.has(name)) return;
     tools.push(primitiveTool(capletId, operation, shadowing, codeModeMarker));
@@ -793,7 +800,7 @@ function primitiveToolsFromManifest(
 function primitiveTool(
   capletId: string,
   operation: string,
-  shadowing: "forbid" | "allow",
+  shadowing: CapletShadowingPolicy,
   codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
 ): RemoteCapletsTool {
   return {

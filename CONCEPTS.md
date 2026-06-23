@@ -8,6 +8,12 @@ Shared domain vocabulary for this project -- entities, named processes, and stat
 
 A configured capability surface that exposes a backend to agents through a stable handle, progressive wrapper tools, or direct tool operations.
 
+### Namespace Shadowing Policy
+
+A Caplet shadowing policy where a local/upstream ID collision exposes both Caplets under qualified namespace IDs and removes the ambiguous bare ID.
+
+Namespace Shadowing is collision-only: non-colliding Caplets keep their normal IDs, while colliding Caplets use explicit, hash-suffixed runtime labels such as `remote-a1b2` and `local-9f3c` before the double-underscore Caplet ID separator. Runtime labels may have configured aliases, but aliases replace the namespace label instead of creating duplicate handles. Hash suffixes must be small, stable, and derived from durable source identity; unresolved generated-ID collisions fail closed with diagnostics rather than falling back to forbidden shadowing behavior.
+
 ### Caplets Daemon
 
 A per-user native service managed by `caplets daemon` that runs local HTTP `caplets serve` through the operating system service manager.

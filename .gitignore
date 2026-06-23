@@ -38,3 +38,6 @@ benchmark-results/
 
 # worktrees
 .worktrees/
+
+# brag
+brag-output/

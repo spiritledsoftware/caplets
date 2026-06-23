@@ -96,11 +96,144 @@ describe("config", () => {
           auth: { type: "none" },
         },
       },
+      googleDiscoveryApis: {
+        drive: {
+          name: "Drive",
+          description: "Query Google Drive metadata.",
+          shadowing: "namespace",
+          discoveryUrl: "https://example.com/discovery.json",
+          auth: { type: "none" },
+        },
+      },
+      graphqlEndpoints: {
+        graph: {
+          name: "Graph",
+          description: "Query graph metadata.",
+          shadowing: "namespace",
+          endpointUrl: "https://example.com/graphql",
+          introspection: true,
+          auth: { type: "none" },
+        },
+      },
+      httpApis: {
+        api: {
+          name: "API",
+          description: "Query HTTP API metadata.",
+          shadowing: "namespace",
+          baseUrl: "https://example.com",
+          auth: { type: "none" },
+          actions: {
+            status: {
+              method: "GET",
+              path: "/status",
+            },
+          },
+        },
+      },
+      cliTools: {
+        repo: {
+          name: "Repo",
+          description: "Run repository commands.",
+          shadowing: "namespace",
+          actions: {
+            status: {
+              description: "Show repository status.",
+              command: "git",
+              args: ["status", "--short"],
+            },
+          },
+        },
+      },
+      capletSets: {
+        nested: {
+          name: "Nested",
+          description: "Search nested Caplets.",
+          shadowing: "namespace",
+          configPath: "./nested/config.json",
+        },
+      },
     });
 
     expect(config.mcpServers.github?.shadowing).toBe("allow");
     expect(config.openapiEndpoints.npm?.shadowing).toBe("forbid");
-    expect(JSON.stringify(configJsonSchema())).toContain('"shadowing"');
+    expect(config.googleDiscoveryApis.drive?.shadowing).toBe("namespace");
+    expect(config.graphqlEndpoints.graph?.shadowing).toBe("namespace");
+    expect(config.httpApis.api?.shadowing).toBe("namespace");
+    expect(config.cliTools.repo?.shadowing).toBe("namespace");
+    expect(config.capletSets.nested?.shadowing).toBe("namespace");
+    const schema = JSON.stringify(configJsonSchema());
+    expect(schema).toContain('"shadowing"');
+    expect(schema).toContain('"namespace"');
+  });
+
+  it("accepts source-level namespace aliases and exposes them in the generated schema", () => {
+    const config = parseConfig({
+      namespaceAliases: {
+        local: "mac",
+        upstreams: {
+          "https://vps.example.com": "vps",
+        },
+      },
+    });
+
+    expect(config.namespaceAliases).toEqual({
+      local: "mac",
+      upstreams: {
+        "https://vps.example.com": "vps",
+      },
+    });
+    const schema = JSON.stringify(configJsonSchema());
+    expect(schema).toContain('"namespaceAliases"');
+    expect(schema).toContain('"upstreams"');
+  });
+
+  it("rejects unsafe or duplicate namespace aliases", () => {
+    expect(() =>
+      parseConfig({
+        namespaceAliases: {
+          local: "mac.local",
+        },
+      }),
+    ).toThrow(CapletsError);
+
+    expect(() =>
+      parseConfig({
+        namespaceAliases: {
+          upstreams: {
+            "https://vps.example.com": "bad__alias",
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
+
+    expect(() =>
+      parseConfig({
+        namespaceAliases: {
+          local: "shared",
+          upstreams: {
+            "https://vps.example.com": "shared",
+          },
+        },
+      }),
+    ).toThrow(CapletsError);
+  });
+
+  it("rejects malformed namespaceAliases while loading merged config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-namespace-alias-invalid-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectRoot = join(dir, "project", ".caplets");
+      const projectConfigPath = join(projectRoot, "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(userConfigPath, JSON.stringify({ namespaceAliases: "mac" }));
+      writeFileSync(projectConfigPath, JSON.stringify({}));
+
+      expect(() => loadConfigWithSources(userConfigPath, projectConfigPath)).toThrow(CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("loads user config from a path with defaults and interpolation", () => {
@@ -3137,6 +3270,23 @@ describe("config", () => {
 
     expect(listCaplets({ config, sources: {}, shadows: {} }, { includeDisabled: false })).toEqual([
       expect.objectContaining({ server: "nested", backend: "caplets" }),
+    ]);
+  });
+
+  it("includes Caplet shadowing policy in inspection list rows", () => {
+    const config = parseConfig({
+      mcpServers: {
+        browser: {
+          name: "Browser",
+          description: "Local browser tools.",
+          command: "browser-mcp",
+          shadowing: "allow",
+        },
+      },
+    });
+
+    expect(listCaplets({ config, sources: {}, shadows: {} }, { includeDisabled: false })).toEqual([
+      expect.objectContaining({ server: "browser", shadowing: "allow" }),
     ]);
   });
 
