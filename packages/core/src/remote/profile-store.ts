@@ -33,6 +33,7 @@ type StoredRemoteProfile = {
   kind: "cloud" | "self-hosted";
   key: string;
   hostUrl: string;
+  hostIdentity?: string | undefined;
   workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
   clientId?: string | undefined;
@@ -65,6 +66,7 @@ export type CloudProfileLookup = {
 
 export type SaveSelfHostedProfileInput = {
   hostUrl: string;
+  hostIdentity?: string | undefined;
   clientId: string;
   clientLabel?: string | undefined;
   credentials: RemoteProfileCredential;
@@ -73,6 +75,7 @@ export type SaveSelfHostedProfileInput = {
 
 export type SelfHostedProfileLookup = {
   hostUrl: string;
+  hostIdentity?: string | undefined;
 };
 
 export type RefreshSelfHostedProfileInput = SelfHostedProfileLookup & {
@@ -164,7 +167,9 @@ export class FileRemoteProfileStore {
       kind: "self-hosted",
       hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
     });
-    return this.statusByKey(key, false);
+    const status = await this.statusByKey(key, false);
+    assertHostIdentityMatches(status, input.hostIdentity);
+    return status;
   }
 
   async logoutSelfHostedProfile(input: SelfHostedProfileLookup): Promise<boolean> {
@@ -251,10 +256,7 @@ export class FileRemoteProfileStore {
     const selected = this.readSelectedWorkspace(hostUrl);
     if (selected) return this.statusByKey(selected.profileKey, true);
     if (this.listProfilesForHost(hostUrl).length > 0) {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "Cloud Remote Profile requires a selected or explicit workspace.",
-      );
+      throw cloudWorkspaceAmbiguityError();
     }
     return this.migrateLegacyCloudProfile(hostUrl);
   }
@@ -312,10 +314,7 @@ export class FileRemoteProfileStore {
       } else if (selected) {
         key = selected.profileKey;
       } else if (this.listProfilesForHost(hostUrl).length > 0) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Cloud Remote Profile requires a selected or explicit workspace.",
-        );
+        throw cloudWorkspaceAmbiguityError();
       }
       if (!key) return false;
       const profile = this.readProfile(key);
@@ -371,10 +370,7 @@ export class FileRemoteProfileStore {
       const selected = this.readSelectedWorkspace(hostUrl);
       if (selected) status = await this.statusByKey(selected.profileKey, true);
       else if (this.listProfilesForHost(hostUrl).length > 0) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Cloud Remote Profile requires a selected or explicit workspace.",
-        );
+        throw cloudWorkspaceAmbiguityError();
       }
     }
     if (!status) return undefined;
@@ -452,6 +448,7 @@ export class FileRemoteProfileStore {
         kind: profile.kind,
         key: profile.key,
         hostUrl: profile.hostUrl,
+        hostIdentity: profile.hostIdentity,
         workspaceId: profile.workspaceId,
         workspaceSlug: profile.workspaceSlug,
         clientId: profile.clientId,
@@ -472,11 +469,13 @@ export class FileRemoteProfileStore {
     const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
     const now = (input.now ?? new Date()).toISOString();
     const existing = this.readProfile(key);
+    const hostIdentity = input.hostIdentity ?? existing?.hostIdentity;
     const profile: StoredRemoteProfile = {
       version: 1,
       kind: "self-hosted",
       key,
       hostUrl,
+      ...(hostIdentity ? { hostIdentity } : {}),
       clientId: input.clientId,
       ...(input.clientLabel ? { clientLabel: input.clientLabel } : {}),
       createdAt: existing?.createdAt ?? now,
@@ -682,6 +681,23 @@ function legacyCredential(credentials: CloudAuthCredentials): RemoteProfileCrede
   };
 }
 
+function assertHostIdentityMatches(
+  status: RemoteProfileStatus | undefined,
+  expectedHostIdentity: string | undefined,
+): void {
+  if (!status || !expectedHostIdentity || !status.hostIdentity) return;
+  if (status.hostIdentity === expectedHostIdentity) return;
+  throw new CapletsError("AUTH_FAILED", "Remote Profile belongs to a different host identity.");
+}
+
+function cloudWorkspaceAmbiguityError(): CapletsError {
+  return new CapletsError(
+    "REQUEST_INVALID",
+    "Cloud Remote Profile requires a selected or explicit workspace.",
+    { reason: "cloud_workspace_ambiguous" },
+  );
+}
+
 function parseStoredRemoteProfile(value: unknown): StoredRemoteProfile | undefined {
   if (!isRecord(value)) return undefined;
   if (value.version !== 1) return undefined;
@@ -701,6 +717,7 @@ function parseStoredRemoteProfile(value: unknown): StoredRemoteProfile | undefin
     kind: value.kind,
     key: value.key,
     hostUrl: value.hostUrl,
+    ...(typeof value.hostIdentity === "string" ? { hostIdentity: value.hostIdentity } : {}),
     ...(typeof value.workspaceId === "string" ? { workspaceId: value.workspaceId } : {}),
     ...(typeof value.workspaceSlug === "string" ? { workspaceSlug: value.workspaceSlug } : {}),
     ...(typeof value.clientId === "string" ? { clientId: value.clientId } : {}),

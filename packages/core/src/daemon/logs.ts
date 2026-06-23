@@ -11,6 +11,7 @@ import {
   watch,
 } from "node:fs";
 import { dirname } from "node:path";
+import { daemonHostPath } from "./host-path";
 import type { DaemonLogEntry, DaemonLogStream, DaemonLogsResult, DaemonPaths } from "./types";
 
 const TAIL_CHUNK_BYTES = 64 * 1024;
@@ -56,9 +57,10 @@ export async function followDaemonLogs(
   }
   const watchers = selectedStreams(options.stream ?? "all").map((stream) => {
     const file = paths[stream === "stdout" ? "stdoutLog" : "stderrLog"];
+    const hostFile = daemonHostPath(file);
     ensureLogFile(file);
-    let offset = existsSync(file) ? statSync(file).size : 0;
-    return watch(file, { persistent: true }, () => {
+    let offset = existsSync(hostFile) ? statSync(hostFile).size : 0;
+    return watch(hostFile, { persistent: true }, () => {
       const { content, nextOffset } = readFromOffset(file, offset);
       offset = nextOffset;
       for (const line of content.split(/\r?\n/u).filter(Boolean)) options.write({ stream, line });
@@ -81,15 +83,16 @@ function selectedStreams(stream: DaemonLogStream): Array<"stdout" | "stderr"> {
 }
 
 function tailLines(path: string, count: number): string[] {
-  if (count === 0 || !existsSync(path)) return [];
+  const hostPath = daemonHostPath(path);
+  if (count === 0 || !existsSync(hostPath)) return [];
   const lines =
-    count < 0 ? readFileSync(path, "utf8").split(/\r?\n/u) : readTailContent(path, count);
+    count < 0 ? readFileSync(hostPath, "utf8").split(/\r?\n/u) : readTailContent(path, count);
   if (lines.at(-1) === "") lines.pop();
   return count < 0 ? lines : lines.slice(-count);
 }
 
 function readTailContent(path: string, count: number): string[] {
-  const fd = openSync(path, "r");
+  const fd = openSync(daemonHostPath(path), "r");
   try {
     const size = fstatSync(fd).size;
     const chunks: Buffer[] = [];
@@ -113,8 +116,9 @@ function readTailContent(path: string, count: number): string[] {
 }
 
 function readFromOffset(path: string, offset: number): { content: string; nextOffset: number } {
-  if (!existsSync(path)) return { content: "", nextOffset: 0 };
-  const fd = openSync(path, "r");
+  const hostPath = daemonHostPath(path);
+  if (!existsSync(hostPath)) return { content: "", nextOffset: 0 };
+  const fd = openSync(hostPath, "r");
   try {
     const size = fstatSync(fd).size;
     if (size <= offset) return { content: "", nextOffset: size };
@@ -160,7 +164,8 @@ function logTimestamp(line: string): number | undefined {
 }
 
 function ensureLogFile(path: string): void {
-  if (existsSync(path)) return;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, "", { mode: 0o600 });
+  const hostPath = daemonHostPath(path);
+  if (existsSync(hostPath)) return;
+  mkdirSync(dirname(hostPath), { recursive: true, mode: 0o700 });
+  writeFileSync(hostPath, "", { mode: 0o600 });
 }

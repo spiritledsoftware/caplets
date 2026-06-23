@@ -362,7 +362,7 @@ function remoteSetupDefinition(
           type: "command",
           label: "Add remote-backed Caplets MCP server to Codex",
           command: "codex",
-          args: codexMcpAddArgs(["attach", "--remote-url", serverUrl]),
+          args: codexMcpAddArgs(["attach", serverUrl]),
         },
       ],
       nextSteps: [
@@ -380,7 +380,7 @@ function remoteSetupDefinition(
           type: "command",
           label: "Add remote-backed Caplets MCP server to Claude Code",
           command: "claude",
-          args: claudeMcpAddArgs(["attach", "--remote-url", serverUrl]),
+          args: claudeMcpAddArgs(["attach", serverUrl]),
         },
       ],
       nextSteps: [
@@ -409,7 +409,7 @@ function remoteSetupDefinition(
             mcpServers: {
               caplets: {
                 command: "caplets",
-                args: ["attach", "--remote-url", serverUrl],
+                args: ["attach", serverUrl],
               },
             },
           },

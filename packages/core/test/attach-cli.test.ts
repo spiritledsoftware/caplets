@@ -31,8 +31,9 @@ describe("caplets attach CLI", () => {
     await runCli(["attach", "--help"], { writeOut: (value) => out.push(value) });
 
     expect(out.join("")).toContain("Start a remote-backed Caplets MCP server.");
+    expect(out.join("")).toContain("Usage: caplets attach [options] [url]");
     expect(out.join("")).toContain("--transport <transport>");
-    expect(out.join("")).toContain("--remote-url <url>");
+    expect(out.join("")).not.toContain("--remote-url <url>");
     expect(out.join("")).toContain("--workspace <workspace>");
     expect(out.join("")).toContain("--once");
     expect(out.join("")).not.toContain("--user");
@@ -98,6 +99,45 @@ describe("caplets attach CLI", () => {
       configPath,
       projectConfigPath,
     });
+  });
+
+  it("accepts the remote URL as the primary positional attach argument", async () => {
+    const served: unknown[] = [];
+    const authDir = tempAuthDir();
+    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
+
+    await runCli(["attach", "https://caplets.example.com/caplets"], {
+      authDir,
+      env: { CAPLETS_MODE: "remote" },
+      attachServe: async (options: unknown) => {
+        served.push(options);
+      },
+    } as never);
+
+    expect(served).toHaveLength(1);
+    expect(served[0]).toMatchObject({
+      selection: {
+        kind: "self_hosted_remote",
+        remote: { baseUrl: new URL("https://caplets.example.com/caplets") },
+      },
+    });
+  });
+
+  it("rejects conflicting positional and legacy attach remote URLs", async () => {
+    await expect(
+      runCli(
+        [
+          "attach",
+          "https://caplets.example.com/caplets",
+          "--remote-url",
+          "https://other.example.com/caplets",
+        ],
+        {
+          env: { CAPLETS_MODE: "remote" },
+          attachServe: async () => undefined,
+        } as never,
+      ),
+    ).rejects.toThrow(/Pass either attach URL or --remote-url, not both/u);
   });
 
   it("uses attach --project-root for the default local overlay project config", async () => {
@@ -329,7 +369,7 @@ describe("caplets attach CLI", () => {
       const authDir = tempAuthDir();
       await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
 
-      await runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--once"], {
+      await runCli(["attach", "https://caplets.example.com/caplets", "--once"], {
         authDir,
         fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
         writeOut: (value) => out.push(value),
@@ -408,6 +448,49 @@ describe("caplets attach CLI", () => {
       error: {
         code: "cloud_auth_required",
         recoveryCommand: "caplets remote login <cloud-url>",
+      },
+    });
+  });
+
+  it("prints JSON recovery for revoked self-hosted credentials", async () => {
+    const authDir = tempAuthDir();
+    const out: string[] = [];
+    let exitCode = 0;
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await runCli(["attach", "--once", "--json"], {
+      authDir,
+      env: {
+        CAPLETS_MODE: "remote",
+        CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+      },
+      fetch: async () =>
+        Response.json(
+          { error: { code: "AUTH_FAILED", message: "Remote client credential has been revoked." } },
+          { status: 401 },
+        ),
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      error: {
+        code: "remote_credentials_revoked",
+        recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
       },
     });
   });

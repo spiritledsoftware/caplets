@@ -24,7 +24,7 @@ Codex:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "--remote-url", "https://caplets.example.com/caplets"]
+args = ["attach", "https://caplets.example.com/caplets"]
 ```
 
 Generic MCP JSON:
@@ -34,7 +34,7 @@ Generic MCP JSON:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "--remote-url", "https://caplets.example.com/caplets"]
+      "args": ["attach", "https://caplets.example.com/caplets"]
     }
   }
 }
@@ -42,24 +42,31 @@ Generic MCP JSON:
 
 ## Remote Login
 
-For a self-hosted remote, first create a short-lived Pairing Code on the server:
-
-```sh
-caplets remote host pair --host-url https://caplets.example.com/caplets
-```
-
-If the server uses a non-default credential state directory, pass the same directory with
-`--state-path` that the server uses for `caplets serve --remote-state-path`.
-
-Then log in once on the client and configure the agent to launch attach:
+For a self-hosted remote, start Remote Login from the client:
 
 ```sh
 caplets remote login https://caplets.example.com/caplets
-caplets attach --remote-url https://caplets.example.com/caplets
 ```
 
-Enter the Pairing Code at the hidden prompt from `caplets remote login`. Use
-`--code-stdin` for automation instead of putting Pairing Codes in shell history.
+The command prints a short operator code and waits. On the host, a server-local
+operator reviews the pending login metadata and approves the code from the same
+server environment that owns the remote credential state:
+
+```sh
+caplets remote host logins
+caplets remote host approve <code> --yes
+```
+
+If the server uses a non-default credential state directory, pass the same directory
+with `--state-path` that the server uses for `caplets serve --remote-state-path`.
+The visible approval code is not an attach credential, but do not put Caplets access
+or refresh credentials in shell history, agent configs, or environment variables.
+
+After approval, configure the agent to launch attach:
+
+```sh
+caplets attach https://caplets.example.com/caplets
+```
 
 For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
 

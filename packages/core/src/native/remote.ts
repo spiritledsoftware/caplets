@@ -1061,17 +1061,22 @@ function isPermanentRemoteCredentialsError(error: unknown): boolean {
     projectBindingCode?: unknown;
     details?: unknown;
   };
-  if (
-    candidate?.projectBindingCode === "remote_credentials_required" ||
-    candidate?.projectBindingCode === "remote_auth_failed"
-  ) {
+  if (isPermanentRemoteCredentialsCode(candidate?.projectBindingCode)) {
     return true;
   }
   if (isPlainObject(candidate?.details)) {
     const code = candidate.details.code;
-    if (code === "remote_credentials_required" || code === "remote_auth_failed") {
+    if (isPermanentRemoteCredentialsCode(code)) {
       return true;
     }
   }
   return isAuthFailure(error);
+}
+
+function isPermanentRemoteCredentialsCode(code: unknown): boolean {
+  return (
+    code === "remote_credentials_required" ||
+    code === "remote_credentials_revoked" ||
+    code === "remote_auth_failed"
+  );
 }

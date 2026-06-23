@@ -157,6 +157,80 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("reports revoked self-hosted credentials with relogin and operator approval guidance", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      clientLabel: "Test Device",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        tokenType: "Bearer",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        {
+          authDir,
+          fetch: async () =>
+            Response.json(
+              { error: { code: "REMOTE_CREDENTIALS_REVOKED", message: "Access denied." } },
+              { status: 401 },
+            ),
+        },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "remote_credentials_revoked",
+      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
+      message: expect.stringContaining("server operator"),
+    });
+  });
+
+  it("treats stale self-hosted refresh responses as revoked credentials", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+        tokenType: "Bearer",
+        expiresAt: "2026-06-19T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        {
+          authDir,
+          fetch: async () =>
+            Response.json(
+              { error: { code: "AUTH_FAILED", message: "Remote refresh credential is stale." } },
+              { status: 401 },
+            ),
+        },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "https://caplets.example.com/caplets",
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "remote_credentials_revoked",
+      recoveryCommand: "caplets remote login https://caplets.example.com/caplets",
+    });
+  });
+
   it("preserves CAPLETS_REMOTE_WORKSPACE for self-hosted remotes", async () => {
     const authDir = tempDir("caplets-remote-selection-auth-");
     await new FileRemoteProfileStore({
@@ -338,6 +412,36 @@ describe("resolveRemoteSelection", () => {
         mcpUrl: new URL("https://cloud.caplets.dev/v1/ws/team/mcp"),
         auth: { type: "bearer", token: "new-cloud-access" },
       },
+    });
+  });
+
+  it("fails with workspace-specific recovery when a Cloud host has profiles but no selected workspace", async () => {
+    const authDir = tempDir("caplets-remote-selection-auth-");
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveCloudProfile({
+      hostUrl: "https://cloud.caplets.dev",
+      workspaceId: "workspace_team",
+      workspaceSlug: "team",
+      credentials: {
+        accessToken: "cloud-access",
+        refreshToken: "cloud-refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        scope: ["project_binding:read", "project_binding:write", "mcp:tools"],
+      },
+    });
+    await store.clearSelectedCloudWorkspace("https://cloud.caplets.dev");
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_MODE: "cloud",
+          CAPLETS_REMOTE_URL: "https://cloud.caplets.dev",
+        },
+      ),
+    ).rejects.toMatchObject({
+      projectBindingCode: "workspace_switch_required",
+      recoveryCommand: "caplets remote login <cloud-url> --workspace <workspace>",
     });
   });
 

@@ -11,8 +11,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable, Writable } from "node:stream";
 import { version as packageJsonVersion } from "../package.json";
-import { initConfig, installCaplets, normalizeGitRepo, runCli } from "../src/cli";
+import {
+  initConfig,
+  installCaplets,
+  normalizeGitRepo,
+  readHiddenInputForTest,
+  runCli,
+} from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
@@ -201,6 +208,26 @@ describe("cli init", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("labels hidden input prompts without echoing entered secrets", async () => {
+    const writes: string[] = [];
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+        callback();
+      },
+    });
+
+    await expect(
+      readHiddenInputForTest("Value: ", {
+        input: Readable.from(["super_secret\n"]),
+        output,
+      }),
+    ).resolves.toBe("super_secret");
+
+    expect(writes.join("")).toBe("Value: \n");
+    expect(writes.join("")).not.toContain("super_secret");
   });
 
   it("rejects local Vault set without non-argv input in noninteractive execution", async () => {
@@ -419,7 +446,7 @@ describe("cli init", () => {
       }),
     ).rejects.toMatchObject({
       code: "REQUEST_INVALID",
-      message: "Pairing Code is required when --code-stdin is used.",
+      message: expect.stringContaining("Self-hosted Remote Login no longer accepts Pairing Codes"),
     } satisfies Partial<CapletsError>);
     expect(fetchStub).not.toHaveBeenCalled();
   });
@@ -3124,7 +3151,7 @@ describe("cli setup", () => {
         mcpServers: {
           caplets: {
             command: "caplets",
-            args: ["attach", "--remote-url", "https://caplets.example.test/caplets"],
+            args: ["attach", "https://caplets.example.test/caplets"],
           },
         },
       });
@@ -3241,7 +3268,6 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://caplets.example.test/caplets",
         ],
       },
@@ -3253,8 +3279,7 @@ describe("cli setup", () => {
       dryRun: false,
       actions: [
         {
-          command:
-            "codex mcp add caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+          command: "codex mcp add caplets -- caplets attach https://caplets.example.test/caplets",
           status: "completed",
         },
       ],
@@ -3293,14 +3318,40 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://caplets.example.test/caplets",
         ],
       },
     ]);
     expect(out.join("")).toContain(
-      "claude mcp add --transport stdio --scope user caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+      "claude mcp add --transport stdio --scope user caplets -- caplets attach https://caplets.example.test/caplets",
     );
+  });
+
+  it("keeps supported remote setup docs on pending login and secret-free attach", () => {
+    const repoRoot = join(import.meta.dirname, "../../..");
+    const supportedDocs = [
+      "README.md",
+      "apps/docs/src/content/docs/remote-attach.mdx",
+      "apps/docs/src/content/docs/troubleshooting.mdx",
+      "apps/docs/src/content/docs/install.mdx",
+      "apps/docs/src/content/docs/agent-integrations.mdx",
+      "apps/docs/src/content/docs/vault.mdx",
+      "apps/landing/src/data/landing.ts",
+      "docs/project-binding.md",
+      "docs/native-integrations.md",
+      "packages/opencode/README.md",
+      "packages/pi/README.md",
+    ];
+
+    for (const relativePath of supportedDocs) {
+      const text = readFileSync(join(repoRoot, relativePath), "utf8");
+      expect(text, relativePath).not.toMatch(/remote host pair/u);
+      expect(text, relativePath).not.toMatch(/remote login[^\n]*--code/u);
+      expect(text, relativePath).not.toMatch(/Pairing Code/u);
+      expect(text, relativePath).not.toMatch(/CAPLETS_REMOTE_(TOKEN|USER|PASSWORD)/u);
+      expect(text, relativePath).not.toMatch(/Basic Auth/u);
+      expect(text, relativePath).not.toMatch(/add-mcp --env/u);
+    }
   });
 
   it("keeps --server-url as a remote setup alias", async () => {
@@ -3325,7 +3376,6 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://legacy.example.test/caplets",
         ],
       },

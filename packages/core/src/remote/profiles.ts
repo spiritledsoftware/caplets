@@ -22,6 +22,7 @@ export type RemoteProfileCredential = {
 export type RemoteProfileStatusInput = {
   kind: RemoteProfileKind;
   hostUrl: string;
+  hostIdentity?: string | undefined;
   key?: string | undefined;
   workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
@@ -38,6 +39,7 @@ export type RemoteProfileStatus = {
   kind: RemoteProfileKind;
   key: string;
   hostUrl: string;
+  hostIdentity?: string | undefined;
   workspaceId?: string | undefined;
   workspaceSlug?: string | undefined;
   clientId?: string | undefined;
@@ -85,6 +87,7 @@ export function remoteProfileStatus(input: RemoteProfileStatusInput): RemoteProf
     kind: input.kind,
     key,
     hostUrl,
+    ...(input.hostIdentity ? { hostIdentity: input.hostIdentity } : {}),
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     ...(input.workspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
     ...(input.clientId ? { clientId: input.clientId } : {}),

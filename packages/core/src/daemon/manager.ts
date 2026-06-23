@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
+import { daemonHostPath } from "./host-path";
 import { buildLaunchdDescriptor, LAUNCHD_LABEL } from "./platform-darwin";
 import { buildSystemdDescriptor, SYSTEMD_UNIT } from "./platform-linux";
 import { buildWindowsTaskDescriptor, WINDOWS_TASK_NAME } from "./platform-windows";
@@ -39,10 +40,10 @@ function launchdManager(
   return {
     descriptor: buildLaunchdDescriptor,
     status: async (config, paths) => {
-      if (!existsSync(paths.descriptorFile) && !config) return notInstalled();
+      if (!existsSync(daemonHostPath(paths.descriptorFile)) && !config) return notInstalled();
       const result = await runner.exec("launchctl", ["print", target]);
       if (result.code !== 0)
-        return existsSync(paths.descriptorFile)
+        return existsSync(daemonHostPath(paths.descriptorFile))
           ? stopped({ stderr: result.stderr })
           : notInstalled({ stderr: result.stderr });
       const pid = parseNumberMatch(result.stdout, /\bpid\s*=\s*(\d+)/u);
@@ -64,7 +65,7 @@ function launchdManager(
       };
     },
     uninstall: async (config, paths) => {
-      const hasDescriptor = existsSync(paths.descriptorFile);
+      const hasDescriptor = existsSync(daemonHostPath(paths.descriptorFile));
       if (!hasDescriptor && !config) {
         return {
           action: "uninstall",
@@ -89,7 +90,7 @@ function launchdManager(
           `launchd unregister failed: ${result.stderr || result.stdout || result.code}`,
         );
       }
-      rmSync(paths.descriptorFile, { force: true });
+      rmSync(daemonHostPath(paths.descriptorFile), { force: true });
       return {
         action: "uninstall",
         native: notInstalled({ stdout: result.stdout, stderr: result.stderr }),
@@ -102,7 +103,7 @@ function launchdManager(
       launchdRestartLifecycle(runner, domain, target, config.paths.descriptorFile),
     stop: async (config) => {
       const command =
-        config && existsSync(config.paths.descriptorFile)
+        config && existsSync(daemonHostPath(config.paths.descriptorFile))
           ? ["launchctl", "bootout", domain, config.paths.descriptorFile]
           : ["launchctl", "bootout", target];
       const result = await runner.exec(command[0]!, command.slice(1));
@@ -125,18 +126,18 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
     descriptor: buildSystemdDescriptor,
     status: async (config, paths) => {
       if (!serviceAvailable) return unavailable("systemd --user is not available.");
-      if (!existsSync(paths.descriptorFile) && !config) return notInstalled();
+      if (!existsSync(daemonHostPath(paths.descriptorFile)) && !config) return notInstalled();
       const show = await runner.exec("systemctl", ["--user", "show", SYSTEMD_UNIT]);
       if (show.code !== 0) {
         const message = show.stderr || show.stdout || String(show.code);
         if (isSystemdUnavailable(message))
           return unavailable(`systemd --user is not available: ${message}`);
-        return existsSync(paths.descriptorFile)
+        return existsSync(daemonHostPath(paths.descriptorFile))
           ? stopped({ stderr: show.stderr, stdout: show.stdout })
           : notInstalled({ stderr: show.stderr });
       }
       const raw = parseSystemdShow(show.stdout);
-      if (!existsSync(paths.descriptorFile) && raw.LoadState === "not-found")
+      if (!existsSync(daemonHostPath(paths.descriptorFile)) && raw.LoadState === "not-found")
         return notInstalled({ raw, stderr: show.stderr });
       const active = await runner.exec("systemctl", ["--user", "is-active", SYSTEMD_UNIT]);
       if (active.code !== 0 && isSystemdUnavailable(active.stderr || active.stdout))
@@ -197,7 +198,7 @@ function systemdManager(runner: DaemonCommandRunner, serviceAvailable = true): D
         /not loaded|not found|No such file|does not exist/iu,
       );
       const descriptorBackup = backupPath(paths.descriptorFile);
-      rmSync(paths.descriptorFile, { force: true });
+      rmSync(daemonHostPath(paths.descriptorFile), { force: true });
       try {
         await assertExec(runner, commands[1]!, "systemd unregister failed");
       } catch (error) {
@@ -217,7 +218,7 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
   return {
     descriptor: buildWindowsTaskDescriptor,
     status: async (config, paths) => {
-      if (!existsSync(paths.descriptorFile) && !config) return notInstalled();
+      if (!existsSync(daemonHostPath(paths.descriptorFile)) && !config) return notInstalled();
       const result = await runner.exec("schtasks", [
         "/Query",
         "/TN",
@@ -259,8 +260,8 @@ function windowsTaskManager(runner: DaemonCommandRunner): DaemonManager {
         "Scheduled Task unregister failed",
         /cannot find|does not exist|not found/iu,
       );
-      rmSync(paths.descriptorFile, { force: true });
-      rmSync(paths.wrapperFile, { force: true });
+      rmSync(daemonHostPath(paths.descriptorFile), { force: true });
+      rmSync(daemonHostPath(paths.wrapperFile), { force: true });
       return { action: "uninstall", native: notInstalled(), commands: [command] };
     },
     start: async () => windowsLifecycle(runner, "start", ["/Run", "/TN", WINDOWS_TASK_NAME]),
@@ -322,17 +323,19 @@ function unsupportedManager(platform: NodeJS.Platform): DaemonManager {
 }
 
 function writeDescriptor(descriptor: DaemonDescriptor): void {
-  mkdirSync(dirname(descriptor.path), { recursive: true, mode: 0o700 });
+  const descriptorPath = daemonHostPath(descriptor.path);
+  mkdirSync(dirname(descriptorPath), { recursive: true, mode: 0o700 });
   writeFileSync(
-    descriptor.path,
+    descriptorPath,
     descriptor.kind === "windows-scheduled-task" ? descriptor.xml : descriptor.contents,
     { mode: 0o600 },
   );
-  chmodSync(descriptor.path, 0o600);
+  chmodSync(descriptorPath, 0o600);
   if (descriptor.kind === "windows-scheduled-task") {
-    mkdirSync(dirname(descriptor.wrapper.path), { recursive: true, mode: 0o700 });
-    writeFileSync(descriptor.wrapper.path, descriptor.wrapper.contents, { mode: 0o700 });
-    chmodSync(descriptor.wrapper.path, 0o700);
+    const wrapperPath = daemonHostPath(descriptor.wrapper.path);
+    mkdirSync(dirname(wrapperPath), { recursive: true, mode: 0o700 });
+    writeFileSync(wrapperPath, descriptor.wrapper.contents, { mode: 0o700 });
+    chmodSync(wrapperPath, 0o700);
   }
 }
 
@@ -369,24 +372,26 @@ function backupDescriptorFiles(descriptor: DaemonDescriptor): DescriptorBackup[]
 }
 
 function backupPath(path: string): DescriptorBackup {
-  const existed = existsSync(path);
+  const hostPath = daemonHostPath(path);
+  const existed = existsSync(hostPath);
   return {
     path,
     existed,
-    ...(existed ? { contents: readFileSync(path) } : {}),
-    ...(existed ? { mode: statSync(path).mode & 0o777 } : {}),
+    ...(existed ? { contents: readFileSync(hostPath) } : {}),
+    ...(existed ? { mode: statSync(hostPath).mode & 0o777 } : {}),
   };
 }
 
 function restoreDescriptorFiles(backups: DescriptorBackup[]): void {
   for (const backup of backups) {
+    const hostPath = daemonHostPath(backup.path);
     if (backup.existed && backup.contents) {
-      mkdirSync(dirname(backup.path), { recursive: true, mode: 0o700 });
-      writeFileSync(backup.path, backup.contents, { mode: backup.mode ?? 0o600 });
+      mkdirSync(dirname(hostPath), { recursive: true, mode: 0o700 });
+      writeFileSync(hostPath, backup.contents, { mode: backup.mode ?? 0o600 });
       // writeFileSync applies mode through umask; chmod restores the exact saved descriptor mode.
-      chmodSync(backup.path, backup.mode ?? 0o600);
+      chmodSync(hostPath, backup.mode ?? 0o600);
     } else {
-      rmSync(backup.path, { force: true });
+      rmSync(hostPath, { force: true });
     }
   }
 }

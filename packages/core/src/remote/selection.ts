@@ -132,12 +132,12 @@ export async function resolveRemoteSelection(
     input.workspace ?? (workspaceFromRemoteUrl ? undefined : env.CAPLETS_REMOTE_WORKSPACE);
   const profileWorkspace = workspaceFromRemoteUrl ?? explicitWorkspace;
   const normalizedRemoteUrl = normalizeRemoteProfileHostUrl(remoteUrl);
-  let status = await store.getCloudProfileStatus({
+  let status = await getCloudProfileStatusForSelection(store, {
     hostUrl: normalizedRemoteUrl,
     workspace: profileWorkspace,
   });
   if (!status && profileWorkspace) {
-    status = await store.getCloudProfileStatus({
+    status = await getCloudProfileStatusForSelection(store, {
       hostUrl: normalizedRemoteUrl,
     });
   }
@@ -284,8 +284,14 @@ async function refreshSelfHostedCredentials(
 
 async function selfHostedRefreshError(remoteUrl: string, response: Response): Promise<Error> {
   const summary = await parseSelfHostedRefreshError(response);
-  if (response.status === 401 || summary?.code === "AUTH_FAILED") {
-    return remoteLoginRequired(remoteUrl);
+  if (
+    response.status === 401 ||
+    summary?.code === "AUTH_FAILED" ||
+    summary?.code === "REMOTE_CREDENTIALS_REVOKED"
+  ) {
+    return selfHostedRefreshLooksRevoked(summary)
+      ? remoteLoginRevoked(remoteUrl)
+      : remoteLoginRequired(remoteUrl);
   }
   if (response.status === 503 || summary?.code === "SERVER_UNAVAILABLE") {
     return new CapletsError(
@@ -351,6 +357,53 @@ function remoteLoginRequired(remoteUrl: string): ProjectBindingError {
     message: `Remote Login required for ${normalizeRemoteProfileHostUrl(remoteUrl)}.`,
     recoveryCommand: `caplets remote login ${normalizeRemoteProfileHostUrl(remoteUrl)}`,
   });
+}
+
+function remoteLoginRevoked(remoteUrl: string): ProjectBindingError {
+  const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
+  return new ProjectBindingError({
+    code: "remote_credentials_revoked",
+    message: `Remote credentials for ${normalizedUrl} were revoked or rejected. Run Remote Login again and ask the server operator to approve the pending login.`,
+    recoveryCommand: `caplets remote login ${normalizedUrl}`,
+  });
+}
+
+function selfHostedRefreshLooksRevoked(
+  summary: { code?: string | undefined; message?: string | undefined } | undefined,
+): boolean {
+  if (summary?.code === "REMOTE_CREDENTIALS_REVOKED") return true;
+  return /revoked|rejected|stale/iu.test(summary?.message ?? "");
+}
+
+async function getCloudProfileStatusForSelection(
+  store: ReturnType<typeof createRemoteProfileStore>,
+  input: { hostUrl: string; workspace?: string | undefined },
+): Promise<
+  Awaited<ReturnType<ReturnType<typeof createRemoteProfileStore>["getCloudProfileStatus"]>>
+> {
+  try {
+    return await store.getCloudProfileStatus(input);
+  } catch (error) {
+    if (isCloudWorkspaceAmbiguity(error)) {
+      throw projectBindingError(
+        "workspace_switch_required",
+        "Cloud Remote Profile requires a selected or explicit workspace.",
+      );
+    }
+    throw error;
+  }
+}
+
+function isCloudWorkspaceAmbiguity(error: unknown): boolean {
+  const details = error instanceof CapletsError ? error.details : undefined;
+  return (
+    error instanceof CapletsError &&
+    error.code === "REQUEST_INVALID" &&
+    typeof details === "object" &&
+    details !== null &&
+    !Array.isArray(details) &&
+    (details as Record<string, unknown>).reason === "cloud_workspace_ambiguous"
+  );
 }
 
 async function parseSelfHostedRefreshCredentials(

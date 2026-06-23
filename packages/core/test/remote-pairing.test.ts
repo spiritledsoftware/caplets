@@ -13,6 +13,497 @@ afterEach(() => {
 });
 
 describe("self-hosted remote pairing", () => {
+  it("creates pending login flows that approve and complete with separate possession material", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      hostIdentity: "https://caplets.example.com/caplets",
+      clientLabel: "MacBook Pro",
+      clientFingerprint: "fp_123",
+      sourceHint: "127.0.0.1",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(pending).toMatchObject({
+      flowId: expect.stringMatching(/^rlogin_/u),
+      operatorCode: expect.stringMatching(/^cap_login_/u),
+      pendingRefreshSecret: expect.stringMatching(/^cap_pending_refresh_/u),
+      pendingCompletionSecret: expect.stringMatching(/^cap_pending_complete_/u),
+      codeExpiresAt: "2026-06-19T12:10:00.000Z",
+      flowExpiresAt: "2026-06-20T12:00:00.000Z",
+      intervalSeconds: 5,
+    });
+    expect(pending.pendingRefreshSecret).not.toBe(pending.pendingCompletionSecret);
+    expect(JSON.stringify(store.dumpForTest())).not.toContain(pending.operatorCode);
+    expect(JSON.stringify(store.dumpForTest())).not.toContain(pending.pendingRefreshSecret);
+    expect(JSON.stringify(store.dumpForTest())).not.toContain(pending.pendingCompletionSecret);
+
+    expect(
+      store.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:00.000Z"),
+      }),
+    ).toMatchObject({ status: "pending" });
+
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com/caplets",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
+      }),
+    ).toThrow(/approved/u);
+
+    const approved = store.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:02:00.000Z"),
+    });
+    expect(approved).toMatchObject({
+      flowId: pending.flowId,
+      status: "approved",
+      clientLabel: "MacBook Pro",
+      clientFingerprint: "fp_123",
+      sourceHint: "127.0.0.1",
+    });
+
+    expect(() =>
+      store.refreshPendingLogin({
+        flowId: pending.flowId,
+        pendingRefreshSecret: pending.pendingRefreshSecret,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:02:30.000Z"),
+      }),
+    ).toThrow(/approved/u);
+
+    const credentials = store.completePendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:03:00.000Z"),
+    });
+    expect(credentials).toMatchObject({
+      hostUrl: "https://caplets.example.com/caplets",
+      clientLabel: "MacBook Pro",
+      tokenType: "Bearer",
+    });
+    expect(credentials.accessToken).not.toBe(pending.pendingRefreshSecret);
+    expect(credentials.refreshToken).not.toBe(pending.pendingCompletionSecret);
+    expect(store.listClients()).toEqual([
+      expect.objectContaining({ clientId: credentials.clientId, clientLabel: "MacBook Pro" }),
+    ]);
+    expect(
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com/caplets",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:03:10.000Z"),
+      }),
+    ).toEqual(credentials);
+    expect(store.listClients()).toHaveLength(1);
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com/caplets",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:03:31.000Z"),
+      }),
+    ).toThrow(/exchanged/u);
+  });
+
+  it("rotates pending login codes and rejects terminal pending flows", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      clientLabel: "MacBook Pro",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    const refreshed = store.refreshPendingLogin({
+      flowId: pending.flowId,
+      pendingRefreshSecret: pending.pendingRefreshSecret,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:09:00.000Z"),
+    });
+
+    expect(refreshed).toMatchObject({
+      flowId: pending.flowId,
+      operatorCode: expect.stringMatching(/^cap_login_/u),
+      pendingRefreshSecret: expect.stringMatching(/^cap_pending_refresh_/u),
+      codeExpiresAt: "2026-06-19T12:19:00.000Z",
+      flowExpiresAt: pending.flowExpiresAt,
+      intervalSeconds: 5,
+    });
+    expect(refreshed.operatorCode).not.toBe(pending.operatorCode);
+    expect(refreshed.pendingRefreshSecret).not.toBe(pending.pendingRefreshSecret);
+    expect(JSON.stringify(store.dumpForTest())).not.toContain(refreshed.operatorCode);
+    expect(JSON.stringify(store.dumpForTest())).not.toContain(refreshed.pendingRefreshSecret);
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-19T12:10:00.000Z"),
+      }),
+    ).toThrow(/unknown/u);
+    expect(
+      store.refreshPendingLogin({
+        flowId: pending.flowId,
+        pendingRefreshSecret: pending.pendingRefreshSecret,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:09:10.000Z"),
+      }),
+    ).toEqual(refreshed);
+    expect(() =>
+      store.refreshPendingLogin({
+        flowId: pending.flowId,
+        pendingRefreshSecret: pending.pendingRefreshSecret,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:09:31.000Z"),
+      }),
+    ).toThrow(/stale/u);
+
+    store.denyPendingLogin({
+      operatorCode: refreshed.operatorCode,
+      now: new Date("2026-06-19T12:11:00.000Z"),
+    });
+    expect(
+      store.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:12:00.000Z"),
+      }),
+    ).toMatchObject({ status: "denied" });
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:12:30.000Z"),
+      }),
+    ).toThrow(/denied/u);
+  });
+
+  it("does not rewrite terminal pending login states after the flow expiry", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.denyPendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toThrow(/already denied/u);
+    expect(store.listPendingLogins(new Date("2026-06-20T12:00:02.000Z"))).toEqual([
+      expect.objectContaining({ flowId: pending.flowId, status: "denied" }),
+    ]);
+  });
+
+  it("rejects expired operator codes while allowing the client to refresh the flow", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-19T12:10:01.000Z"),
+      }),
+    ).toThrow(/code has expired/u);
+
+    const refreshed = store.refreshPendingLogin({
+      flowId: pending.flowId,
+      pendingRefreshSecret: pending.pendingRefreshSecret,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:10:02.000Z"),
+    });
+
+    expect(
+      store.approvePendingLogin({
+        operatorCode: refreshed.operatorCode,
+        now: new Date("2026-06-19T12:10:03.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "approved" });
+  });
+
+  it("lets operators deny pending logins after the visible code expires", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(
+      store.denyPendingLogin({
+        operatorCode: pending.operatorCode,
+        now: new Date("2026-06-19T12:10:01.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "denied" });
+    expect(
+      store.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:10:02.000Z"),
+      }),
+    ).toMatchObject({ status: "denied" });
+  });
+
+  it("cancels and expires pending login flows without issuing credentials", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const cancelled = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(
+      store.cancelPendingLogin({
+        flowId: cancelled.flowId,
+        pendingCompletionSecret: cancelled.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:00.000Z"),
+      }),
+    ).toMatchObject({ flowId: cancelled.flowId, status: "cancelled" });
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: cancelled.flowId,
+        pendingCompletionSecret: cancelled.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
+      }),
+    ).toThrow(/cancelled/u);
+
+    const expired = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    expect(
+      store.pollPendingLogin({
+        flowId: expired.flowId,
+        pendingCompletionSecret: expired.pendingCompletionSecret,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toMatchObject({ flowId: expired.flowId, status: "expired" });
+    expect(() =>
+      store.approvePendingLogin({
+        operatorCode: expired.operatorCode,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toThrow(/expired/u);
+    expect(store.listClients()).toHaveLength(0);
+  });
+
+  it("allows possession-material cancellation after approval before exchange", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(
+      store.cancelPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "cancelled" });
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:02:00.000Z"),
+      }),
+    ).toThrow(/cancelled/u);
+    expect(store.listClients()).toHaveLength(0);
+  });
+
+  it("does not let cancellation overwrite terminal pending login states", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const denied = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.denyPendingLogin({
+      operatorCode: denied.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(() =>
+      store.cancelPendingLogin({
+        flowId: denied.flowId,
+        pendingCompletionSecret: denied.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
+      }),
+    ).toThrow(/already denied/u);
+    expect(store.listPendingLogins(new Date("2026-06-19T12:02:00.000Z"))).toEqual([
+      expect.objectContaining({ flowId: denied.flowId, status: "denied" }),
+    ]);
+
+    const expired = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    expect(() =>
+      store.cancelPendingLogin({
+        flowId: expired.flowId,
+        pendingCompletionSecret: expired.pendingCompletionSecret,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toThrow(/already expired/u);
+    expect(store.listPendingLogins(new Date("2026-06-20T12:00:02.000Z"))).toContainEqual(
+      expect.objectContaining({ flowId: expired.flowId, status: "expired" }),
+    );
+  });
+
+  it("expires approved pending logins consistently before completion", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(
+      store.pollPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-20T12:00:01.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "expired" });
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-20T12:00:02.000Z"),
+      }),
+    ).toThrow(/expired/u);
+  });
+
+  it("bounds pending login stale refresh material retained per flow", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    let pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    for (let index = 0; index < 40; index += 1) {
+      const refreshed = store.refreshPendingLogin({
+        flowId: pending.flowId,
+        pendingRefreshSecret: pending.pendingRefreshSecret,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date(Date.parse("2026-06-19T12:00:00.000Z") + index * 1_000),
+      });
+      pending = { ...pending, ...refreshed };
+    }
+
+    const [stored] = store.dumpForTest().pendingLogins;
+    expect(stored?.supersededPendingRefreshHashes.length).toBeLessThanOrEqual(16);
+  });
+
+  it("cleans up expired pending login records before listing and creating new flows", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(store.listPendingLogins(new Date("2026-06-22T12:00:00.000Z"))).toEqual([]);
+
+    const fresh = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-22T12:00:00.000Z"),
+    });
+
+    expect(store.listPendingLogins(new Date("2026-06-22T12:01:00.000Z"))).toEqual([
+      expect.objectContaining({ flowId: fresh.flowId, status: "pending" }),
+    ]);
+  });
+
+  it("bounds active pending login flows per observed source", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+
+    for (let index = 0; index < 8; index += 1) {
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.7",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      });
+    }
+
+    expect(() =>
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.7",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toThrow(/Too many active pending logins for this source/u);
+
+    expect(
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: "203.0.113.8",
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toMatchObject({ operatorCode: expect.stringMatching(/^cap_login_/u) });
+  });
+
+  it("enforces pending login source quotas after normalizing source hints", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const overlongSource = "203.0.113.7,".repeat(40);
+
+    for (let index = 0; index < 8; index += 1) {
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: overlongSource,
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      });
+    }
+
+    expect(() =>
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: overlongSource,
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toThrow(/Too many active pending logins for this source/u);
+  });
+
+  it("bounds pending login display metadata and exposes a code fingerprint", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      clientLabel: `  ${"Client".repeat(40)}  `,
+      clientFingerprint: "f".repeat(400),
+      sourceHint: "203.0.113.7",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(pending.operatorCodeFingerprint).toMatch(/^[A-Za-z0-9_-]{8}$/u);
+    expect(store.listPendingLogins(new Date("2026-06-19T12:01:00.000Z"))).toEqual([
+      expect.objectContaining({
+        flowId: pending.flowId,
+        operatorCodeFingerprint: pending.operatorCodeFingerprint,
+        clientLabel: "Client".repeat(20),
+        clientFingerprint: "f".repeat(256),
+        sourceHint: "203.0.113.7",
+      }),
+    ]);
+  });
+
   it("issues one-time Pairing Codes that exchange for client credentials", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const issued = store.createPairingCode({

@@ -1,4 +1,4 @@
-import { Command, CommanderError } from "commander";
+import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -250,11 +250,30 @@ function collectValues(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
+const HIDDEN_INPUT_PROMPT_LABELS = {
+  vaultValue: "Value: ",
+} as const;
+
+export const readHiddenInputForTest = readHiddenInput;
+
 function remoteProfileStore(
   authDir: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
 ): FileRemoteProfileStore {
   return createRemoteProfileStore({ authDir, env });
+}
+
+function attachRemoteUrlFromArgs(
+  positionalUrl: string | undefined,
+  legacyRemoteUrl: string | undefined,
+): string | undefined {
+  if (positionalUrl && legacyRemoteUrl && positionalUrl !== legacyRemoteUrl) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Pass either attach URL or --remote-url, not both. Use caplets attach <url> for new configs.",
+    );
+  }
+  return positionalUrl ?? legacyRemoteUrl;
 }
 
 function remoteServerCredentialStore(
@@ -381,45 +400,33 @@ async function loginCloudRemoteProfile(
   });
 }
 
-async function pairingCodeFromOptions(
-  options: { code?: string; codeStdin?: boolean },
-  readStdin: (() => Promise<string>) | undefined,
-  writeErr: (value: string) => void,
+async function readHiddenInput(
+  label: string,
+  options: {
+    input?: NodeJS.ReadableStream;
+    output?: Pick<NodeJS.WriteStream, "write">;
+  } = {},
 ): Promise<string> {
-  if (options.code?.trim()) {
-    writeErr(
-      "Warning: --code may store the Pairing Code in shell history; prefer the hidden prompt or --code-stdin for automation.\n",
-    );
-    return options.code.trim();
-  }
-  if (options.codeStdin) {
-    const value = readStdin ? await readStdin() : await readAllStdin();
-    const code = value.trim();
-    if (code) return code;
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Pairing Code is required when --code-stdin is used.",
-    );
-  }
-  const output = new HiddenPromptOutput(process.stdout);
-  const readline = createInterface({ input: process.stdin, output, terminal: true });
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  output.write(label);
+  const hiddenOutput = new HiddenPromptOutput(output, { echoFirstChunk: false });
+  const readline = createInterface({ input, output: hiddenOutput, terminal: true });
   try {
-    const code = (await readline.question("Pairing Code: ")).trim();
-    if (code) return code;
+    return await readline.question("");
   } finally {
     readline.close();
-    process.stdout.write("\n");
+    output.write("\n");
   }
-  throw new CapletsError(
-    "REQUEST_INVALID",
-    "Pairing Code is required for self-hosted Remote Login.",
-  );
 }
 
 class HiddenPromptOutput extends Writable {
   private wrotePrompt = false;
 
-  constructor(private readonly output: NodeJS.WriteStream) {
+  constructor(
+    private readonly output: Pick<NodeJS.WriteStream, "write">,
+    private readonly options: { echoFirstChunk?: boolean } = { echoFirstChunk: true },
+  ) {
     super();
   }
 
@@ -428,7 +435,7 @@ class HiddenPromptOutput extends Writable {
     _encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
-    if (!this.wrotePrompt) {
+    if (this.options.echoFirstChunk !== false && !this.wrotePrompt) {
       this.output.write(chunk);
       this.wrotePrompt = true;
     }
@@ -445,12 +452,24 @@ async function readAllStdin(): Promise<string> {
 }
 
 type RemoteLoginCredentialsResponse = {
+  hostUrl?: string | undefined;
   clientId: string;
   clientLabel: string;
   accessToken: string;
   refreshToken: string;
   tokenType?: string | undefined;
   expiresAt?: string | undefined;
+};
+
+type PendingRemoteLoginStartResponse = {
+  flowId: string;
+  operatorCode: string;
+  operatorCodeFingerprint?: string | undefined;
+  pendingRefreshSecret: string;
+  pendingCompletionSecret: string;
+  codeExpiresAt: string;
+  flowExpiresAt: string;
+  intervalSeconds: number;
 };
 
 async function parseRemoteLoginCredentials(
@@ -472,6 +491,7 @@ async function parseRemoteLoginCredentials(
     );
   }
   return {
+    ...(typeof record.hostUrl === "string" ? { hostUrl: record.hostUrl } : {}),
     clientId: record.clientId,
     clientLabel: typeof record.clientLabel === "string" ? record.clientLabel : "Caplets CLI",
     accessToken: record.accessToken,
@@ -479,6 +499,279 @@ async function parseRemoteLoginCredentials(
     ...(typeof record.tokenType === "string" ? { tokenType: record.tokenType } : {}),
     ...(typeof record.expiresAt === "string" ? { expiresAt: record.expiresAt } : {}),
   };
+}
+
+async function parsePendingRemoteLoginStart(
+  response: Response,
+  options: { pendingCompletionSecret?: string | undefined } = {},
+): Promise<PendingRemoteLoginStartResponse> {
+  const parsed = await response.json();
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response must be an object.",
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record.flowId !== "string" ||
+    typeof record.operatorCode !== "string" ||
+    typeof record.pendingRefreshSecret !== "string" ||
+    typeof record.codeExpiresAt !== "string" ||
+    typeof record.flowExpiresAt !== "string"
+  ) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response is missing pending material.",
+    );
+  }
+  const pendingCompletionSecret =
+    typeof record.pendingCompletionSecret === "string"
+      ? record.pendingCompletionSecret
+      : options.pendingCompletionSecret;
+  if (!pendingCompletionSecret) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login response is missing completion material.",
+    );
+  }
+  return {
+    flowId: record.flowId,
+    operatorCode: record.operatorCode,
+    ...(typeof record.operatorCodeFingerprint === "string"
+      ? { operatorCodeFingerprint: record.operatorCodeFingerprint }
+      : {}),
+    pendingRefreshSecret: record.pendingRefreshSecret,
+    pendingCompletionSecret,
+    codeExpiresAt: record.codeExpiresAt,
+    flowExpiresAt: record.flowExpiresAt,
+    intervalSeconds: typeof record.intervalSeconds === "number" ? record.intervalSeconds : 5,
+  };
+}
+
+async function parsePendingRemoteLoginStatus(response: Response): Promise<string> {
+  const parsed = await response.json();
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login status response must be an object.",
+    );
+  }
+  const status = (parsed as Record<string, unknown>).status;
+  if (typeof status !== "string") {
+    throw new CapletsError(
+      "DOWNSTREAM_PROTOCOL_ERROR",
+      "Pending Remote Login status response is missing status.",
+    );
+  }
+  return status;
+}
+
+async function selfHostedPendingRemoteLogin(
+  url: string,
+  input: {
+    clientLabel?: string | undefined;
+    json?: boolean | undefined;
+    fetch?: typeof fetch | undefined;
+    signal?: AbortSignal | undefined;
+    writeOut: (value: string) => void;
+    env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  },
+): Promise<RemoteLoginCredentialsResponse> {
+  const fetchImpl = input.fetch ?? fetch;
+  const baseUrl = new URL(normalizeRemoteProfileHostUrl(url));
+  const startBody = input.clientLabel ? { clientLabel: input.clientLabel } : {};
+  const start = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/start"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(startBody),
+  });
+  if (!start.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending start failed.");
+  let pending = await parsePendingRemoteLoginStart(start);
+  if (input.json) {
+    input.writeOut(
+      `${JSON.stringify({
+        code: "pending_login_started",
+        flowId: pending.flowId,
+        operatorCode: pending.operatorCode,
+        operatorCodeFingerprint: pending.operatorCodeFingerprint,
+        codeExpiresAt: pending.codeExpiresAt,
+        flowExpiresAt: pending.flowExpiresAt,
+      })}\n`,
+    );
+  } else {
+    input.writeOut(`Remote Login Code: ${pending.operatorCode}\n`);
+    if (pending.operatorCodeFingerprint) {
+      input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
+    }
+    input.writeOut(
+      `Approve from the host with caplets remote host approve ${pending.operatorCode} --yes\n`,
+    );
+  }
+
+  const intervalMs = numberEnv(
+    input.env.CAPLETS_REMOTE_LOGIN_POLL_INTERVAL_MS,
+    pending.intervalSeconds * 1_000,
+  );
+  try {
+    while (true) {
+      const poll = await fetchPendingRemoteLoginStatus(fetchImpl, baseUrl, pending, input.signal);
+      if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
+      const status = await parsePendingRemoteLoginStatus(poll);
+      if (status === "approved") {
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+          );
+        }
+        break;
+      }
+      if (status !== "pending") {
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({ code: `pending_login_${status}`, flowId: pending.flowId })}\n`,
+          );
+        }
+        throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
+      }
+      if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
+        const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            flowId: pending.flowId,
+            pendingRefreshSecret: pending.pendingRefreshSecret,
+            pendingCompletionSecret: pending.pendingCompletionSecret,
+          }),
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        if (!refresh.ok) {
+          const retryPoll = await fetchPendingRemoteLoginStatus(fetchImpl, baseUrl, pending);
+          if (retryPoll.ok && (await parsePendingRemoteLoginStatus(retryPoll)) === "approved") {
+            if (input.json) {
+              input.writeOut(
+                `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+              );
+            }
+            break;
+          }
+          throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
+        }
+        pending = await parsePendingRemoteLoginStart(refresh, {
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        });
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({
+              code: "pending_login_code_refreshed",
+              flowId: pending.flowId,
+              operatorCode: pending.operatorCode,
+              operatorCodeFingerprint: pending.operatorCodeFingerprint,
+              codeExpiresAt: pending.codeExpiresAt,
+              flowExpiresAt: pending.flowExpiresAt,
+            })}\n`,
+          );
+        } else {
+          input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
+          if (pending.operatorCodeFingerprint) {
+            input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
+          }
+        }
+      }
+      await sleep(intervalMs, input.signal);
+    }
+
+    const complete = await completePendingRemoteLogin(fetchImpl, baseUrl, pending, input.signal);
+    if (!complete.ok)
+      throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
+    return parseRemoteLoginCredentials(complete);
+  } catch (error) {
+    if (input.signal?.aborted || isAbortError(error)) {
+      await cancelPendingRemoteLogin(fetchImpl, baseUrl, pending);
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({ code: "pending_login_cancelled", flowId: pending.flowId })}\n`,
+        );
+      }
+      throw new CapletsError("REQUEST_INVALID", "Remote Login pending flow cancelled.");
+    }
+    throw error;
+  }
+}
+
+async function completePendingRemoteLogin(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): Promise<Response> {
+  try {
+    return await fetchImpl(
+      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      pendingRemoteLoginCompletionRequest(pending, signal),
+    );
+  } catch {
+    return fetchImpl(
+      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      pendingRemoteLoginCompletionRequest(pending),
+    );
+  }
+}
+
+function pendingRemoteLoginCompletionRequest(
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): RequestInit {
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+    ...(signal ? { signal } : {}),
+  };
+}
+
+async function fetchPendingRemoteLoginStatus(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): Promise<Response> {
+  return fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+async function cancelPendingRemoteLogin(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+): Promise<void> {
+  await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/cancel"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+  }).catch(() => undefined);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError")
+  );
 }
 
 async function revokeSelfHostedRemoteClient(
@@ -611,9 +904,36 @@ function createSetupPromptHandle(
   };
 }
 
-async function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return;
-  await new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms: number, signal?: AbortSignal | undefined): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(done, ms);
+    const abort = () => done();
+    function done() {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function cliInterruptSignal(existing: AbortSignal | undefined): {
+  signal: AbortSignal | undefined;
+  dispose: () => void;
+} {
+  if (existing) return { signal: existing, dispose: () => {} };
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  process.once("SIGINT", abort);
+  process.once("SIGTERM", abort);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+    },
+  };
 }
 
 export function createProgram(io: CliIO = {}): Command {
@@ -983,11 +1303,17 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.attach)
     .description("Start a remote-backed Caplets MCP server.")
+    .argument("[url]", "remote Caplets service base URL")
     .option("--transport <transport>", "server transport: stdio or http")
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
-    .option("--remote-url <url>", "remote Caplets service base URL")
+    .addOption(
+      new Option(
+        "--remote-url <url>",
+        "legacy alias for the remote Caplets service base URL",
+      ).hideHelp(),
+    )
     .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
     .option(
       "--allow-unauthenticated-http",
@@ -999,23 +1325,28 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--once", "validate Project Binding once and exit")
     .option("--project-root <path>", "test-only project root override")
     .action(
-      async (options: {
-        remoteUrl?: string;
-        transport?: string;
-        host?: string;
-        port?: string;
-        path?: string;
-        workspace?: string;
-        allowUnauthenticatedHttp?: boolean;
-        trustProxy?: boolean;
-        json?: boolean;
-        verbose?: boolean;
-        once?: boolean;
-        projectRoot?: string;
-      }) => {
+      async (
+        url: string | undefined,
+        options: {
+          remoteUrl?: string;
+          transport?: string;
+          host?: string;
+          port?: string;
+          path?: string;
+          workspace?: string;
+          allowUnauthenticatedHttp?: boolean;
+          trustProxy?: boolean;
+          json?: boolean;
+          verbose?: boolean;
+          once?: boolean;
+          projectRoot?: string;
+        },
+      ) => {
         try {
+          const remoteUrl = attachRemoteUrlFromArgs(url, options.remoteUrl);
           const attachOptions = {
             ...options,
+            ...(remoteUrl ? { remoteUrl } : {}),
             ...(io.fetch ? { fetch: io.fetch } : {}),
             ...(io.authDir ? { authDir: io.authDir } : {}),
           };
@@ -1100,8 +1431,8 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--workspace <workspace>", "Cloud workspace ID or slug to select")
     .option("--client-label <label>", "client label for this machine")
     .option("--device-name <name>", "Cloud device label for this machine")
-    .option("--code <code>", "Pairing Code for explicit noninteractive self-hosted login")
-    .option("--code-stdin", "read the Pairing Code from stdin")
+    .addOption(new Option("--code <code>", "legacy Pairing Code input").hideHelp())
+    .addOption(new Option("--code-stdin", "legacy Pairing Code stdin input").hideHelp())
     .option("--no-open", "print the Cloud login URL without opening a browser")
     .option("--json", "print JSON output")
     .action(
@@ -1128,25 +1459,29 @@ export function createProgram(io: CliIO = {}): Command {
           return;
         }
 
-        const code = await pairingCodeFromOptions(options, io.readStdin, writeErr);
-        const exchangeUrl = appendBasePath(
-          new URL(normalizeRemoteProfileHostUrl(url)),
-          "v1/remote/pairing/exchange",
-        );
-        const response = await (io.fetch ?? fetch)(exchangeUrl, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            code,
-            ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-          }),
-        });
-        if (!response.ok) {
-          throw new CapletsError("AUTH_FAILED", "Remote Login pairing exchange failed.");
+        if (options.code?.trim() || options.codeStdin) {
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            `Self-hosted Remote Login no longer accepts Pairing Codes. Run caplets remote login ${normalizeRemoteProfileHostUrl(url)} without --code and approve the pending login from the host.`,
+          );
         }
-        const credentials = await parseRemoteLoginCredentials(response);
+        const interrupt = cliInterruptSignal(io.signal);
+        let credentials: RemoteLoginCredentialsResponse;
+        try {
+          credentials = await selfHostedPendingRemoteLogin(url, {
+            ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+            json: options.json,
+            ...(io.fetch ? { fetch: io.fetch } : {}),
+            ...(interrupt.signal ? { signal: interrupt.signal } : {}),
+            writeOut,
+            env,
+          });
+        } finally {
+          interrupt.dispose();
+        }
         const status = await store.saveSelfHostedProfile({
           hostUrl: url,
+          hostIdentity: normalizeRemoteProfileHostUrl(credentials.hostUrl ?? url),
           clientId: credentials.clientId,
           clientLabel: credentials.clientLabel,
           credentials: {
@@ -1156,7 +1491,11 @@ export function createProgram(io: CliIO = {}): Command {
             expiresAt: credentials.expiresAt,
           },
         });
-        writeRemoteStatus(status, options.json === true, writeOut);
+        if (options.json === true) {
+          writeOut(`${JSON.stringify({ code: "remote_profile_saved", ...status })}\n`);
+        } else {
+          writeRemoteStatus(status, false, writeOut);
+        }
       },
     );
 
@@ -1250,34 +1589,32 @@ export function createProgram(io: CliIO = {}): Command {
 
   const remoteHost = remote.command("host").description("Manage self-hosted remote credentials.");
   remoteHost
-    .command("pair")
-    .description("Create a short-lived self-hosted Pairing Code from the server environment.")
-    .requiredOption("--host-url <url>", "public Caplets host URL")
+    .command("pair", { hidden: true })
+    .description("Deprecated. Pairing Code bootstrap is no longer supported.")
+    .option("--host-url <url>", "public Caplets host URL; defaults to CAPLETS_SERVER_URL")
     .option("--state-path <path>", "server-owned remote credential state directory")
-    .option("--client-label <label>", "suggested client label")
     .option("--json", "print JSON output")
-    .action(
-      async (options: {
-        hostUrl: string;
-        statePath?: string;
-        clientLabel?: string;
-        json?: boolean;
-      }) => {
-        const issued = remoteServerCredentialStore(options.statePath, env).createPairingCode({
-          hostUrl: options.hostUrl,
-          ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-        });
-        if (options.json) {
-          writeOut(`${JSON.stringify(issued, null, 2)}\n`);
-          return;
-        }
-        writeOut(`Pairing Code: ${issued.code}\n`);
-        writeOut(`Expires At: ${issued.expiresAt}\n`);
+    .action(async (options: { hostUrl?: string; statePath?: string; json?: boolean }) => {
+      const hostUrl = options.hostUrl ?? env.CAPLETS_SERVER_URL;
+      const guidance =
+        "Self-hosted Pairing Code bootstrap is no longer supported. Run caplets remote login <url> from the client, then approve the pending login with caplets remote host logins and caplets remote host approve <code> from the host.";
+      if (options.json) {
         writeOut(
-          `Run caplets remote login ${normalizeRemoteProfileHostUrl(options.hostUrl)} and enter the Pairing Code when prompted.\n`,
+          `${JSON.stringify(
+            {
+              supported: false,
+              deprecated: true,
+              ...(hostUrl ? { hostUrl: normalizeRemoteProfileHostUrl(hostUrl) } : {}),
+              message: guidance,
+            },
+            null,
+            2,
+          )}\n`,
         );
-      },
-    );
+        return;
+      }
+      writeOut(`${guidance}\n`);
+    });
   remoteHost
     .command("clients")
     .description("List paired self-hosted remote clients from server state.")
@@ -1298,6 +1635,63 @@ export function createProgram(io: CliIO = {}): Command {
           `${client.clientId}\t${terminalSafeText(client.clientLabel)}\t${client.hostUrl}\t${client.revokedAt ? "revoked" : "active"}\n`,
         );
       }
+    });
+  remoteHost
+    .command("logins")
+    .description("List pending self-hosted Remote Login approvals from server state.")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--json", "print JSON output")
+    .action((options: { statePath?: string; json?: boolean }) => {
+      const pendingLogins = remoteServerCredentialStore(options.statePath, env).listPendingLogins();
+      if (options.json) {
+        writeOut(`${JSON.stringify({ pendingLogins }, null, 2)}\n`);
+        return;
+      }
+      if (pendingLogins.length === 0) {
+        writeOut("No pending Remote Login approvals.\n");
+        return;
+      }
+      for (const pending of pendingLogins) {
+        writeOut(
+          `${pending.flowId}\t${pending.operatorCodeFingerprint ?? "-"}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
+        );
+      }
+    });
+  remoteHost
+    .command("approve")
+    .description("Approve one pending self-hosted Remote Login code from server state.")
+    .argument("<code>", "operator-visible Remote Login code")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--yes", "approve without an interactive confirmation prompt")
+    .option("--json", "print JSON output")
+    .action((code: string, options: { statePath?: string; yes?: boolean; json?: boolean }) => {
+      if (!options.yes && !options.json) {
+        throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
+      }
+      const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
+        operatorCode: code,
+      });
+      if (options.json) {
+        writeOut(`${JSON.stringify(approved, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Approved pending Remote Login ${approved.flowId}.\n`);
+    });
+  remoteHost
+    .command("deny")
+    .description("Deny one pending self-hosted Remote Login code from server state.")
+    .argument("<code>", "operator-visible Remote Login code")
+    .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--json", "print JSON output")
+    .action((code: string, options: { statePath?: string; json?: boolean }) => {
+      const denied = remoteServerCredentialStore(options.statePath, env).denyPendingLogin({
+        operatorCode: code,
+      });
+      if (options.json) {
+        writeOut(`${JSON.stringify(denied, null, 2)}\n`);
+        return;
+      }
+      writeOut(`Denied pending Remote Login ${denied.flowId}.\n`);
     });
   remoteHost
     .command("revoke")
@@ -3101,14 +3495,7 @@ async function readVaultValue(io: CliIO): Promise<string> {
       "Vault value input is required. Run interactively or provide stdin.",
     );
   } else {
-    const output = new HiddenPromptOutput(process.stdout);
-    const readline = createInterface({ input: process.stdin, output, terminal: true });
-    try {
-      value = await readline.question("Vault value: ");
-    } finally {
-      readline.close();
-      process.stdout.write("\n");
-    }
+    value = await readHiddenInput(HIDDEN_INPUT_PROMPT_LABELS.vaultValue);
   }
   if (value.length === 0) {
     throw new CapletsError("REQUEST_INVALID", "Vault value input is required.");

@@ -76,6 +76,7 @@ export function createHttpServeApp(
     );
   }
   const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
+  const attachHostProtection = dnsRebindingProtection(options);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -83,17 +84,26 @@ export function createHttpServeApp(
     }),
   );
 
-  app.get(paths.base, (c) =>
-    c.json({
+  app.get(paths.base, (c) => {
+    const remote = remoteCredentialStore
+      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
+      : undefined;
+    return c.json({
       name: "caplets",
       transport: "http",
       base: paths.base,
-      versions: [versionDiscovery(paths, exposeAttach)],
+      versions: [versionDiscovery(paths, exposeAttach, remote)],
       auth: { type: options.auth.type },
-    }),
-  );
+      ...(remote ? { remote } : {}),
+    });
+  });
 
-  app.get(paths.version, (c) => c.json(versionDiscovery(paths, exposeAttach)));
+  app.get(paths.version, (c) => {
+    const remote = remoteCredentialStore
+      ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
+      : undefined;
+    return c.json(versionDiscovery(paths, exposeAttach, remote));
+  });
 
   app.get(paths.health, (c) =>
     c.json({
@@ -102,12 +112,64 @@ export function createHttpServeApp(
   );
 
   if (remoteCredentialStore) {
-    app.post(paths.pairingExchange, async (c) => {
+    app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
-        const parsed = await parseJsonObject(c.req.json(), "Pairing exchange request");
-        const code = stringField(parsed, "code");
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
         const clientLabel = optionalStringField(parsed, "clientLabel");
-        const credentials = remoteCredentialStore.exchangePairingCode({
+        const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
+        const hostUrl = remoteCredentialHostUrl(
+          c.req.url,
+          paths.base,
+          options.publicOrigin,
+          options.trustProxy,
+          (name) => c.req.header(name),
+        );
+        const pending = remoteCredentialStore.createPendingLogin({
+          hostUrl,
+          hostIdentity: hostUrl,
+          ...(clientLabel ? { clientLabel } : {}),
+          ...remoteCredentialSourceHint(options.trustProxy, (name) => c.req.header(name)),
+          ...(clientFingerprint ? { clientFingerprint } : {}),
+        });
+        return c.json(pending);
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginPoll, attachHostProtection, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
+        return c.json(
+          remoteCredentialStore.pollPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginRefresh, attachHostProtection, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
+        return c.json(
+          remoteCredentialStore.refreshPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingRefreshSecret: stringField(parsed, "pendingRefreshSecret"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
+        const credentials = remoteCredentialStore.completePendingLogin({
           hostUrl: remoteCredentialHostUrl(
             c.req.url,
             paths.base,
@@ -115,20 +177,31 @@ export function createHttpServeApp(
             options.trustProxy,
             (name) => c.req.header(name),
           ),
-          code,
-          ...(clientLabel ? { clientLabel } : {}),
+          flowId: stringField(parsed, "flowId"),
+          pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
         });
-        return c.json({
-          clientId: credentials.clientId,
-          clientLabel: credentials.clientLabel,
-          accessToken: credentials.accessToken,
-          refreshToken: credentials.refreshToken,
-          tokenType: credentials.tokenType,
-          expiresAt: credentials.expiresAt,
-        });
+        return c.json(credentials);
       } catch (error) {
         return remoteCredentialErrorResponse(error);
       }
+    });
+
+    app.post(paths.remoteLoginCancel, attachHostProtection, async (c) => {
+      try {
+        const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
+        return c.json(
+          remoteCredentialStore.cancelPendingLogin({
+            flowId: stringField(parsed, "flowId"),
+            pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+          }),
+        );
+      } catch (error) {
+        return remoteCredentialErrorResponse(error);
+      }
+    });
+
+    app.post(paths.pairingExchange, async (_c) => {
+      return remoteCredentialErrorResponse(legacyPairingCodeUnsupportedError());
     });
 
     app.post(paths.remoteRefresh, async (c) => {
@@ -222,8 +295,6 @@ export function createHttpServeApp(
     sessions.set(nextSessionId, session);
     return session.transport.handleRequest(c);
   });
-
-  const attachHostProtection = dnsRebindingProtection(options);
 
   if (exposeAttach) {
     app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
@@ -433,14 +504,52 @@ function remoteCredentialHostUrl(
   return publicHostUrl(requestUrl, basePath, publicOrigin, trustProxy, header);
 }
 
+function remoteCredentialSourceHint(
+  trustProxy: boolean,
+  header: (name: string) => string | undefined,
+): { sourceHint?: string | undefined } {
+  if (!trustProxy) return {};
+  const sourceHint =
+    firstForwardedValue(header("x-forwarded-for")) ??
+    firstForwardedValue(header("x-real-ip")) ??
+    firstForwardedValue(header("cf-connecting-ip"));
+  return sourceHint ? { sourceHint } : {};
+}
+
 function firstForwardedValue(value: string | undefined): string | undefined {
   return value?.split(",", 1)[0]?.trim() || undefined;
 }
 
-function versionDiscovery(paths: ReturnType<typeof servicePaths>, exposeAttach = true) {
+type RemoteHostMetadata = {
+  hostIdentity: string;
+  audience: string;
+};
+
+function remoteHostMetadata(
+  requestUrl: string,
+  basePath: string,
+  options: HttpServeOptions,
+  header: (name: string) => string | undefined,
+): RemoteHostMetadata {
+  const audience = remoteCredentialHostUrl(
+    requestUrl,
+    basePath,
+    options.publicOrigin,
+    options.trustProxy,
+    header,
+  );
+  return { hostIdentity: audience, audience };
+}
+
+function versionDiscovery(
+  paths: ReturnType<typeof servicePaths>,
+  exposeAttach = true,
+  remote?: RemoteHostMetadata | undefined,
+) {
   return {
     version: 1,
     path: paths.version,
+    ...(remote ? { remote } : {}),
     links: {
       mcp: paths.mcp,
       admin: paths.control,
@@ -642,6 +751,11 @@ export function servicePaths(base: string): {
   attachInvoke: string;
   projectBindings: string;
   pairingExchange: string;
+  remoteLoginStart: string;
+  remoteLoginPoll: string;
+  remoteLoginRefresh: string;
+  remoteLoginComplete: string;
+  remoteLoginCancel: string;
   remoteRefresh: string;
   remoteClient: string;
   health: string;
@@ -659,6 +773,11 @@ export function servicePaths(base: string): {
     attachInvoke: routePath(attach, "invoke"),
     projectBindings: routePath(attach, "project-bindings"),
     pairingExchange: routePath(remote, "pairing/exchange"),
+    remoteLoginStart: routePath(remote, "login/start"),
+    remoteLoginPoll: routePath(remote, "login/poll"),
+    remoteLoginRefresh: routePath(remote, "login/refresh"),
+    remoteLoginComplete: routePath(remote, "login/complete"),
+    remoteLoginCancel: routePath(remote, "login/cancel"),
     remoteRefresh: routePath(remote, "refresh"),
     remoteClient: routePath(remote, "client"),
     health: routePath(version, "healthz"),
@@ -806,6 +925,13 @@ function remoteCredentialErrorResponse(error: unknown): Response {
   const status =
     safe.code === "REQUEST_INVALID" ? 400 : safe.code === "SERVER_UNAVAILABLE" ? 503 : 401;
   return Response.json({ ok: false, error: safe }, { status });
+}
+
+function legacyPairingCodeUnsupportedError(): CapletsError {
+  return new CapletsError(
+    "REQUEST_INVALID",
+    "Self-hosted Pairing Code exchange is no longer supported. Run caplets remote login <url> and approve the pending login from the host.",
+  );
 }
 
 function dnsRebindingProtection(options: HttpServeOptions): MiddlewareHandler {
