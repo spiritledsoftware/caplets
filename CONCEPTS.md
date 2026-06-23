@@ -84,7 +84,13 @@ Remote Attach uses Remote Profiles for trust and credentials. Long-lived attach 
 
 The provider-neutral flow that trusts a local Caplets client to a Caplets host, whether the host is self-hosted or Caplets Cloud.
 
-Remote Login stores host credentials in Caplets-owned credential storage so agent configs can launch `caplets attach --remote-url ...` without carrying remote secrets.
+Remote Login stores host credentials in Caplets-owned credential storage so agent configs can launch Remote Attach using stable host selectors without carrying remote secrets.
+
+### Pending Remote Login
+
+The self-hosted Remote Login state between client initiation and server-local operator approval or rejection.
+
+A Pending Remote Login separates the operator-visible Pairing Code from client-held pending material. Approval alone does not create reusable attach credentials; the initiating client must still complete the flow with its possession proof before a Remote Profile can be stored.
 
 ### Pairing Code
 
