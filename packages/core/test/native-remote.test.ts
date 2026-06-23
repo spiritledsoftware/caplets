@@ -2264,6 +2264,59 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("reports rewritten direct-tool alternatives for namespace collisions", async () => {
+    const fixture = client([
+      {
+        name: "shared__ping",
+        sourceCapletId: "shared",
+        title: "Remote Ping",
+        description: "Remote direct tool.",
+        shadowing: "namespace",
+      },
+    ]);
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "shared__ping",
+          sourceCaplet: "shared",
+          toolName: "caplets__shared__ping",
+          title: "Local Ping",
+          description: "Local direct tool.",
+          promptGuidance: [],
+        },
+      ]),
+      execute: vi.fn(async () => ({ local: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+
+    await service.reload();
+
+    const alternatives = configuredCapletIds(service.listTools()).filter((caplet) =>
+      caplet.endsWith("__shared__ping"),
+    );
+    expect(alternatives).toEqual([
+      expect.stringMatching(/^remote-[a-f0-9]{4}__shared__ping$/u),
+      expect.stringMatching(/^local-[a-f0-9]{4}__shared__ping$/u),
+    ]);
+    for (const staleId of ["shared", "shared__ping"]) {
+      await expect(service.execute(staleId, { message: "hi" })).rejects.toMatchObject({
+        code: "CAPLET_NAMESPACE_COLLISION",
+        details: expect.objectContaining({
+          alternatives,
+        }),
+      });
+    }
+    await service.close();
+  });
+
   it("suppresses local direct tools by source Caplet ID when remote forbids shadowing", async () => {
     const fixture = client([{ name: "shared", title: "Remote Shared" }]);
     const writeErr = vi.fn();

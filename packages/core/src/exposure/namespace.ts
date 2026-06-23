@@ -167,21 +167,16 @@ function qualifyNamespaceGroup<Route>(
     reservedBareIds: Set<string>;
   },
 ): { records: NamespaceVisibleRecord<Route>[] } | { diagnostic: NamespaceDiagnostic } {
-  let hashLength = options.hashLength;
-  while (hashLength <= options.maxHashLength) {
-    const ids = group.map((entry) => qualifiedId(entry, options.baseId, hashLength));
-    const idSet = new Set(ids);
-    const collides =
-      idSet.size !== ids.length ||
-      ids.some((id) => options.reservedBareIds.has(id) || !SERVER_ID_PATTERN.test(id));
+  const ids = group.map((entry) => qualifiedId(entry, options.baseId, options.hashLength));
+  const idSet = new Set(ids);
+  const collides =
+    idSet.size !== ids.length ||
+    ids.some((id) => options.reservedBareIds.has(id) || !SERVER_ID_PATTERN.test(id));
 
-    if (!collides) {
-      return {
-        records: group.map((entry, index) => visibleRecord(entry, ids[index]!, true)),
-      };
-    }
-
-    hashLength += 1;
+  if (!collides) {
+    return {
+      records: group.map((entry, index) => visibleRecord(entry, ids[index]!, true)),
+    };
   }
 
   return {

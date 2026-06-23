@@ -1126,6 +1126,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     for (const diagnostic of resolution.unavailableDiagnostics) {
       namespaceDiagnostics.set(diagnostic.requestedId, diagnostic);
     }
+    const alternativesByBaseId = new Map<string, Set<string>>();
+    const staleIdsByBaseId = new Map<string, Set<string>>();
 
     const setRoute = (
       visibleCapletId: string,
@@ -1159,16 +1161,40 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         if (!record) continue;
         const visibleTool = renameNativeTool(tool, record.id);
         rewritten.push(visibleTool);
+        addMapSetValue(alternativesByBaseId, baseId, visibleTool.caplet);
+        if (tool.caplet !== visibleTool.caplet) {
+          addMapSetValue(staleIdsByBaseId, baseId, tool.caplet);
+        }
         setRoute(visibleTool.caplet, { service, capletId: tool.caplet }, overwrite);
       }
       return rewritten;
     };
 
+    const remoteVisibleTools = rewrite("remote", remoteTools, false);
+    const localVisibleTools = rewrite("local", localTools, true);
+    const remoteVisibleCodeModeTools = rewrite("remote", remoteCodeModeTools, false);
+    const localVisibleCodeModeTools = rewrite("local", localCodeModeTools, true);
+    for (const [baseId, alternatives] of alternativesByBaseId) {
+      const baseDiagnostic = resolution.suppressedBareIds.get(baseId);
+      if (!baseDiagnostic) continue;
+      const alternativeList = [...alternatives];
+      namespaceDiagnostics.set(
+        baseId,
+        namespaceDiagnosticWithAlternatives(baseId, baseDiagnostic, alternativeList),
+      );
+      for (const staleId of staleIdsByBaseId.get(baseId) ?? []) {
+        namespaceDiagnostics.set(
+          staleId,
+          namespaceDiagnosticWithAlternatives(staleId, baseDiagnostic, alternativeList),
+        );
+      }
+    }
+
     return {
-      remoteTools: rewrite("remote", remoteTools, false),
-      localTools: rewrite("local", localTools, true),
-      remoteCodeModeTools: rewrite("remote", remoteCodeModeTools, false),
-      localCodeModeTools: rewrite("local", localCodeModeTools, true),
+      remoteTools: remoteVisibleTools,
+      localTools: localVisibleTools,
+      remoteCodeModeTools: remoteVisibleCodeModeTools,
+      localCodeModeTools: localVisibleCodeModeTools,
       routes,
       namespaceDiagnostics,
     };
@@ -1223,6 +1249,28 @@ type NativeNamespaceRoute = {
   service: "local" | "remote";
   baseId: string;
 };
+
+function addMapSetValue<Key, Value>(map: Map<Key, Set<Value>>, key: Key, value: Value): void {
+  let values = map.get(key);
+  if (!values) {
+    values = new Set();
+    map.set(key, values);
+  }
+  values.add(value);
+}
+
+function namespaceDiagnosticWithAlternatives(
+  requestedId: string,
+  diagnostic: NamespaceDiagnostic,
+  alternatives: string[],
+): NamespaceDiagnostic {
+  return {
+    ...diagnostic,
+    requestedId,
+    alternatives,
+    hint: `Caplet '${requestedId}' is unavailable because namespace shadowing exposes qualified alternatives: ${alternatives.join(", ")}.`,
+  };
+}
 
 function nativeNamespaceContext(options: NativeCapletsServiceOptions): {
   localIdentity: string;
