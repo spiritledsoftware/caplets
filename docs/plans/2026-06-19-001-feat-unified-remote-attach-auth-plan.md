@@ -8,6 +8,15 @@ deepened: 2026-06-19
 
 # feat: Unify remote attach authentication
 
+## Supersession Note
+
+This plan is retained as historical planning context, but two implementation details were superseded during PR #144 review and follow-up work:
+
+- Remote Attach now uses `caplets attach <url>` as the primary public command shape. `--remote-url <url>` remains only as a hidden compatibility alias for existing configs.
+- Self-hosted Remote Login now uses a client-started Pending Remote Login flow with server-local approval (`caplets remote host logins` and `caplets remote host approve <code> --yes`) instead of operator-minted Pairing Code bootstrap/exchange.
+
+Use `docs/brainstorms/2026-06-19-unified-remote-attach-auth-requirements.md` and `docs/solutions/developer-experience/self-hosted-pending-remote-login-and-attach-positional-url.md` for the current command shape, credential-boundary guidance, and pending-login implementation pattern. The body below describes the earlier plan state and should not be used as current execution guidance where it mentions `caplets attach --remote-url <url>` as the primary path or operator-minted Pairing Code exchange as the self-hosted login flow.
+
 ## Summary
 
 Implement provider-neutral Remote Login for Caplets Cloud and self-hosted Caplets. After this work, users trust a host once with `caplets remote login <url>`, then `caplets attach --remote-url <url>` and native integrations resolve Caplets-owned credentials without agent env secrets, env-token setup, or Basic Auth.
