@@ -1,6 +1,6 @@
 {
   "name": "@caplets/opencode",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Native OpenCode plugin for Caplets.",
   "homepage": "https://github.com/spiritledsoftware/caplets#readme",
   "bugs": {

@@ -1,5 +1,15 @@
 # @caplets/core
 
+## 0.27.0
+
+### Minor Changes
+
+- 907dbd5: Add namespace shadowing policy support with source-level aliases and native remote/local qualified IDs.
+
+### Patch Changes
+
+- 907dbd5: Respect remote Caplet shadowing policy when merging local overlays into remote CLI list output.
+
 ## 0.26.1
 
 ### Patch Changes
