@@ -1,5 +1,17 @@
 # caplets
 
+## 0.21.1
+
+### Patch Changes
+
+- 16e97de: Make `caplets attach <url>` the primary remote attach command while keeping `--remote-url <url>` as a hidden compatibility alias.
+- 16e97de: Label hidden CLI prompts without echoing entered secrets, and document the pending self-hosted Remote Login requirements and implementation plan.
+- 16e97de: Replace self-hosted Remote Login's operator-minted Pairing Code bootstrap with a client-started pending login flow. The client now starts `caplets remote login <url>`, displays a short operator code, waits for server-local approval, rotates pre-login material while pending, and stores final Remote Profile credentials only after approval. Remote attach recovery now reports revoked self-hosted credentials and Cloud workspace ambiguity with stable recovery guidance, and public docs/examples show the pending-login approval sequence without remote secrets in agent configuration.
+- Updated dependencies [16e97de]
+- Updated dependencies [16e97de]
+- Updated dependencies [16e97de]
+  - @caplets/core@0.26.1
+
 ## 0.21.0
 
 ### Minor Changes
