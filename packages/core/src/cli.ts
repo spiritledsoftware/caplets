@@ -4068,6 +4068,12 @@ function mergeRemoteAndLocalRows(
       if (row.disabled) {
         continue;
       }
+      if (remote.shadowing !== "allow") {
+        options.writeErr(
+          `Local Caplet '${row.server}' is suppressed because the remote Caplet forbids shadowing that Caplet ID.\n`,
+        );
+        continue;
+      }
       options.writeErr(
         `Warning: ${formatOverlaySource(row.source)} Caplet ${row.server} shadows remote Caplet\n`,
       );

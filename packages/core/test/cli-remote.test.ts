@@ -493,7 +493,10 @@ describe("remote CLI routing", () => {
     const err: string[] = [];
     writeCliCapletConfig(context.configPath, "shared", "Disabled Shared", { disabled: true });
     const fetch = vi.fn(async () =>
-      Response.json({ ok: true, result: [remoteListRow("shared", "Remote Shared")] }),
+      Response.json({
+        ok: true,
+        result: [{ ...remoteListRow("shared", "Remote Shared"), shadowing: "allow" }],
+      }),
     );
 
     await runCli(["list", "--json"], {
@@ -509,13 +512,44 @@ describe("remote CLI routing", () => {
     expect(err.join("")).not.toContain("shadows remote Caplet");
   });
 
+  it("keeps remote list rows when the remote Caplet forbids local shadowing", async () => {
+    const context = testContext("caplets-cli-remote-list-forbid-shadow-");
+    const out: string[] = [];
+    const err: string[] = [];
+    writeCliCapletConfig(context.configPath, "shared", "Local Shared");
+    const fetch = vi.fn(async () =>
+      Response.json({
+        ok: true,
+        result: [{ ...remoteListRow("shared", "Remote Shared"), shadowing: "forbid" }],
+      }),
+    );
+
+    await runCli(["list", "--json"], {
+      env: remoteEnv(context),
+      fetch,
+      writeOut: (value) => out.push(value),
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(JSON.parse(out.join(""))).toEqual([
+      expect.objectContaining({ server: "shared", name: "Remote Shared", source: "remote" }),
+    ]);
+    expect(err.join("")).toContain(
+      "Local Caplet 'shared' is suppressed because the remote Caplet forbids shadowing that Caplet ID.",
+    );
+    expect(err.join("")).not.toContain("global Caplet shared shadows remote Caplet");
+  });
+
   it("lets project list rows shadow remote rows and warns on stderr", async () => {
     const context = testContext("caplets-cli-remote-list-project-shadow-");
     const out: string[] = [];
     const err: string[] = [];
     writeProjectMcpCaplet(context.projectCapletsRoot, "shared", "Project Shared");
     const fetch = vi.fn(async () =>
-      Response.json({ ok: true, result: [remoteListRow("shared", "Remote Shared")] }),
+      Response.json({
+        ok: true,
+        result: [{ ...remoteListRow("shared", "Remote Shared"), shadowing: "allow" }],
+      }),
     );
 
     await runCli(["list", "--json"], {
@@ -537,7 +571,10 @@ describe("remote CLI routing", () => {
     const err: string[] = [];
     writeCliCapletConfig(context.configPath, "shared", "Global Shared");
     const fetch = vi.fn(async () =>
-      Response.json({ ok: true, result: [remoteListRow("shared", "Remote Shared")] }),
+      Response.json({
+        ok: true,
+        result: [{ ...remoteListRow("shared", "Remote Shared"), shadowing: "allow" }],
+      }),
     );
 
     await runCli(["list", "--json"], {

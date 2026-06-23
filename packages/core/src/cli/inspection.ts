@@ -5,6 +5,7 @@ import {
   resolveConfigPath,
   resolveProjectConfigPath,
   type CapletConfig,
+  type CapletShadowingPolicy,
   type CapletsConfig,
   type ConfigSource,
   type ConfigWithSources,
@@ -21,6 +22,7 @@ type CapletListRow = {
   source: ConfigSource["kind"] | "remote" | "unknown";
   path: string | null;
   shadows: ConfigSource[];
+  shadowing?: CapletShadowingPolicy | undefined;
 };
 
 type ConfigPaths = {
@@ -50,6 +52,7 @@ export function listCaplets(
       source: sources[server.server]?.kind ?? "unknown",
       path: sources[server.server]?.path ?? null,
       shadows: shadows[server.server] ?? [],
+      shadowing: server.shadowing,
     }));
   return rows.sort((left, right) => left.server.localeCompare(right.server));
 }

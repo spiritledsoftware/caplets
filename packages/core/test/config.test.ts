@@ -3140,6 +3140,23 @@ describe("config", () => {
     ]);
   });
 
+  it("includes Caplet shadowing policy in inspection list rows", () => {
+    const config = parseConfig({
+      mcpServers: {
+        browser: {
+          name: "Browser",
+          description: "Local browser tools.",
+          command: "browser-mcp",
+          shadowing: "allow",
+        },
+      },
+    });
+
+    expect(listCaplets({ config, sources: {}, shadows: {} }, { includeDisabled: false })).toEqual([
+      expect.objectContaining({ server: "browser", shadowing: "allow" }),
+    ]);
+  });
+
   it("rejects invalid Caplet set sources and duplicate IDs", () => {
     expect(() =>
       parseConfig({
