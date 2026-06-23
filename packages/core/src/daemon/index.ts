@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
+import { daemonHostPath } from "./host-path";
 import {
   mergeDaemonEnv,
   readDaemonConfig,
@@ -78,7 +79,7 @@ export async function installDaemon(
   const plannedActions = ["write-config", "write-descriptor", "register-service"];
 
   const existingNative =
-    persisted || existsSync(paths.descriptorFile)
+    persisted || existsSync(daemonHostPath(paths.descriptorFile))
       ? await manager.status(persisted, paths)
       : undefined;
   const restartDecisionRequired =
@@ -116,10 +117,10 @@ export async function installDaemon(
     assertDaemonHealth(validation, "Daemon install validation");
   }
 
-  mkdirSync(paths.logDir, { recursive: true, mode: 0o700 });
+  mkdirSync(daemonHostPath(paths.logDir), { recursive: true, mode: 0o700 });
   ensureDaemonLogFiles(paths);
   const persistenceBackups = backupPersistenceFiles([paths.configFile, paths.stateFile]);
-  const hadExistingDescriptor = existsSync(paths.descriptorFile);
+  const hadExistingDescriptor = existsSync(daemonHostPath(paths.descriptorFile));
   let native: Awaited<ReturnType<DaemonManager["install"]>> | undefined;
   try {
     writeDaemonConfig(paths, config);
@@ -315,8 +316,8 @@ export async function uninstallDaemon(
   if (uninstall.purge) {
     removeDaemonConfig(paths);
     removeDaemonState(paths);
-    rmSync(paths.logDir, { recursive: true, force: true });
-    rmSync(dirname(paths.configFile), { recursive: true, force: true });
+    rmSync(daemonHostPath(paths.logDir), { recursive: true, force: true });
+    rmSync(dirname(daemonHostPath(paths.configFile)), { recursive: true, force: true });
   }
   const status = uninstall.purge
     ? {
@@ -680,22 +681,27 @@ function mergeServeOptions(
 type PersistenceBackup = { path: string; existed: boolean; contents?: Buffer; mode?: number };
 
 function backupPersistenceFiles(paths: string[]): PersistenceBackup[] {
-  return paths.map((path) => ({
-    path,
-    existed: existsSync(path),
-    ...(existsSync(path) ? { contents: readFileSync(path) } : {}),
-    ...(existsSync(path) ? { mode: statSync(path).mode & 0o777 } : {}),
-  }));
+  return paths.map((path) => {
+    const hostPath = daemonHostPath(path);
+    const existed = existsSync(hostPath);
+    return {
+      path,
+      existed,
+      ...(existed ? { contents: readFileSync(hostPath) } : {}),
+      ...(existed ? { mode: statSync(hostPath).mode & 0o777 } : {}),
+    };
+  });
 }
 
 function restorePersistenceFiles(backups: PersistenceBackup[]): void {
   for (const backup of backups) {
+    const hostPath = daemonHostPath(backup.path);
     if (backup.existed && backup.contents) {
-      mkdirSync(dirname(backup.path), { recursive: true, mode: 0o700 });
-      writeFileSync(backup.path, backup.contents, { mode: backup.mode ?? 0o600 });
-      chmodSync(backup.path, backup.mode ?? 0o600);
+      mkdirSync(dirname(hostPath), { recursive: true, mode: 0o700 });
+      writeFileSync(hostPath, backup.contents, { mode: backup.mode ?? 0o600 });
+      chmodSync(hostPath, backup.mode ?? 0o600);
     } else {
-      rmSync(backup.path, { recursive: true, force: true });
+      rmSync(hostPath, { recursive: true, force: true });
     }
   }
 }

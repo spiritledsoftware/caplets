@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
+import { daemonHostPath } from "./host-path";
 import type {
   DaemonConfig,
   DaemonEnvConfig,
@@ -28,11 +29,11 @@ export function writeDaemonState(paths: DaemonPaths, state: DaemonState): Daemon
 }
 
 export function removeDaemonConfig(paths: DaemonPaths): void {
-  rmSync(paths.configFile, { force: true });
+  rmSync(daemonHostPath(paths.configFile), { force: true });
 }
 
 export function removeDaemonState(paths: DaemonPaths): void {
-  rmSync(paths.stateFile, { force: true });
+  rmSync(daemonHostPath(paths.stateFile), { force: true });
 }
 
 export function mergeDaemonEnv(
@@ -66,8 +67,9 @@ function validateEnvName(value: string): void {
 }
 
 function readJson<T>(path: string): T | undefined {
+  const hostPath = daemonHostPath(path);
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
+    return JSON.parse(readFileSync(hostPath, "utf8")) as T;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -75,7 +77,8 @@ function readJson<T>(path: string): T | undefined {
 }
 
 function writeJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  const hostPath = daemonHostPath(path);
+  mkdirSync(dirname(hostPath), { recursive: true, mode: 0o700 });
+  writeFileSync(hostPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(hostPath, 0o600);
 }

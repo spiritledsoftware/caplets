@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -28,8 +29,23 @@ import {
   type DaemonCommandRunner,
   type DaemonManager,
 } from "../src/daemon";
+import { daemonHostPath } from "../src/daemon/host-path";
 import { serviceCommand } from "../src/daemon/shell";
 import { allocateLoopbackPort, validateDaemonCommand } from "../src/daemon/validation";
+
+function cwdBackslashEntriesContaining(marker: string): string[] {
+  return readdirSync(process.cwd()).filter(
+    (entry) => entry.includes("\\") && entry.includes(marker),
+  );
+}
+
+function removeCwdEntries(entries: string[]): void {
+  for (const entry of entries) rmSync(join(process.cwd(), entry), { recursive: true, force: true });
+}
+
+function daemonPathExists(path: string): boolean {
+  return existsSync(daemonHostPath(path));
+}
 
 describe("caplets daemon CLI", () => {
   it("shows daemon help and removes daemon lifecycle from serve help", async () => {
@@ -320,6 +336,35 @@ describe("daemon paths and config", () => {
     expect(paths.configFile).toBe(
       win32.join("C:\\Users\\Alice\\AppData\\Roaming", "Caplets", "daemon", "default.json"),
     );
+  });
+
+  it("does not leak Windows-emulated daemon files into the current working directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-cwd-"));
+    const marker = dir.split(/[\\/]/u).at(-1)!;
+    let leakedEntries: string[] = [];
+    try {
+      try {
+        await installDaemon(
+          { validate: false },
+          {
+            env: {
+              APPDATA: join(dir, "AppData", "Roaming"),
+              LOCALAPPDATA: join(dir, "AppData", "Local"),
+            },
+            home: "C:\\Users\\Alice",
+            platform: "win32",
+            commandRunner: fakeRunner(),
+          },
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        leakedEntries = cwdBackslashEntriesContaining(marker);
+      }
+
+      expect(leakedEntries).toEqual([]);
+    } finally {
+      removeCwdEntries(leakedEntries);
+    }
   });
 
   it("installs with HTTP serve config, env overrides, and home working directory", async () => {
@@ -1856,7 +1901,7 @@ describe("daemon lifecycle and logs", () => {
           paths.stdoutLog,
           paths.stderrLog,
         ]) {
-          rmSync(path, { force: true });
+          rmSync(daemonHostPath(path), { force: true });
         }
       }
       rmSync(dir, { recursive: true, force: true });
@@ -2134,7 +2179,7 @@ describe("daemon lifecycle and logs", () => {
           paths.stdoutLog,
           paths.stderrLog,
         ]) {
-          rmSync(path, { force: true });
+          rmSync(daemonHostPath(path), { force: true });
         }
       }
       rmSync(dir, { recursive: true, force: true });
@@ -2184,7 +2229,7 @@ describe("daemon lifecycle and logs", () => {
           paths.stdoutLog,
           paths.stderrLog,
         ]) {
-          rmSync(path, { force: true });
+          rmSync(daemonHostPath(path), { force: true });
         }
       }
       rmSync(dir, { recursive: true, force: true });
@@ -2220,19 +2265,19 @@ describe("daemon lifecycle and logs", () => {
       };
       paths = resolveDaemonPaths(options);
       const installed = await installDaemon({ validate: false }, options);
-      expect(existsSync(installed.config.paths.wrapperFile)).toBe(true);
+      expect(daemonPathExists(installed.config.paths.wrapperFile)).toBe(true);
 
       failDelete = true;
       await expect(uninstallDaemon({}, options)).rejects.toThrow(
         /Scheduled Task unregister failed/u,
       );
-      expect(existsSync(installed.config.paths.wrapperFile)).toBe(true);
+      expect(daemonPathExists(installed.config.paths.wrapperFile)).toBe(true);
 
       failDelete = false;
       await uninstallDaemon({}, options);
 
-      expect(existsSync(installed.config.paths.descriptorFile)).toBe(false);
-      expect(existsSync(installed.config.paths.wrapperFile)).toBe(false);
+      expect(daemonPathExists(installed.config.paths.descriptorFile)).toBe(false);
+      expect(daemonPathExists(installed.config.paths.wrapperFile)).toBe(false);
     } finally {
       if (paths) {
         for (const path of [
@@ -2243,7 +2288,7 @@ describe("daemon lifecycle and logs", () => {
           paths.stdoutLog,
           paths.stderrLog,
         ]) {
-          rmSync(path, { force: true });
+          rmSync(daemonHostPath(path), { force: true });
         }
       }
       rmSync(dir, { recursive: true, force: true });
