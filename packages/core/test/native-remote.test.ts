@@ -529,7 +529,7 @@ describe("RemoteNativeCapletsService", () => {
       const writeErr = vi.fn();
       const resolveRuntimeOptions = vi.fn(async () => {
         const error = new Error("Remote Login required.");
-        Object.assign(error, { projectBindingCode: "remote_credentials_required" });
+        Object.assign(error, { projectBindingCode: "remote_credentials_revoked" });
         throw error;
       });
       const remote = createSdkRemoteCapletsClient({

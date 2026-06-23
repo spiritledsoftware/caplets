@@ -282,6 +282,35 @@ describe("self-hosted remote pairing", () => {
     expect(store.listClients()).toHaveLength(0);
   });
 
+  it("allows possession-material cancellation after approval before exchange", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+
+    expect(
+      store.cancelPendingLogin({
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:01:30.000Z"),
+      }),
+    ).toMatchObject({ flowId: pending.flowId, status: "cancelled" });
+    expect(() =>
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:02:00.000Z"),
+      }),
+    ).toThrow(/cancelled/u);
+    expect(store.listClients()).toHaveLength(0);
+  });
+
   it("cleans up expired pending login records before listing and creating new flows", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     store.createPendingLogin({
@@ -327,6 +356,27 @@ describe("self-hosted remote pairing", () => {
         now: new Date("2026-06-19T12:00:00.000Z"),
       }),
     ).toMatchObject({ operatorCode: expect.stringMatching(/^cap_login_/u) });
+  });
+
+  it("enforces pending login source quotas after normalizing source hints", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const overlongSource = "203.0.113.7,".repeat(40);
+
+    for (let index = 0; index < 8; index += 1) {
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: overlongSource,
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      });
+    }
+
+    expect(() =>
+      store.createPendingLogin({
+        hostUrl: "https://caplets.example.com",
+        sourceHint: overlongSource,
+        now: new Date("2026-06-19T12:00:00.000Z"),
+      }),
+    ).toThrow(/Too many active pending logins for this source/u);
   });
 
   it("bounds pending login display metadata and exposes a code fingerprint", () => {

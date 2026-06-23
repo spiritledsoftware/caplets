@@ -601,24 +601,75 @@ async function selfHostedPendingRemoteLogin(
     input.env.CAPLETS_REMOTE_LOGIN_POLL_INTERVAL_MS,
     pending.intervalSeconds * 1_000,
   );
-  while (true) {
-    if (input.signal?.aborted) {
-      await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/cancel"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          flowId: pending.flowId,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-      }).catch(() => undefined);
-      if (input.json) {
-        input.writeOut(
-          `${JSON.stringify({ code: "pending_login_cancelled", flowId: pending.flowId })}\n`,
-        );
+  try {
+    while (true) {
+      const poll = await fetchPendingRemoteLoginStatus(fetchImpl, baseUrl, pending, input.signal);
+      if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
+      const status = await parsePendingRemoteLoginStatus(poll);
+      if (status === "approved") {
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+          );
+        }
+        break;
       }
-      throw new CapletsError("REQUEST_INVALID", "Remote Login pending flow cancelled.");
+      if (status !== "pending") {
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({ code: `pending_login_${status}`, flowId: pending.flowId })}\n`,
+          );
+        }
+        throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
+      }
+      if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
+        const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            flowId: pending.flowId,
+            pendingRefreshSecret: pending.pendingRefreshSecret,
+            pendingCompletionSecret: pending.pendingCompletionSecret,
+          }),
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        if (!refresh.ok) {
+          const retryPoll = await fetchPendingRemoteLoginStatus(fetchImpl, baseUrl, pending);
+          if (retryPoll.ok && (await parsePendingRemoteLoginStatus(retryPoll)) === "approved") {
+            if (input.json) {
+              input.writeOut(
+                `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+              );
+            }
+            break;
+          }
+          throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
+        }
+        pending = await parsePendingRemoteLoginStart(refresh, {
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        });
+        if (input.json) {
+          input.writeOut(
+            `${JSON.stringify({
+              code: "pending_login_code_refreshed",
+              flowId: pending.flowId,
+              operatorCode: pending.operatorCode,
+              operatorCodeFingerprint: pending.operatorCodeFingerprint,
+              codeExpiresAt: pending.codeExpiresAt,
+              flowExpiresAt: pending.flowExpiresAt,
+            })}\n`,
+          );
+        } else {
+          input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
+          if (pending.operatorCodeFingerprint) {
+            input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
+          }
+        }
+      }
+      await sleep(intervalMs, input.signal);
     }
-    const poll = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
+
+    const complete = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/complete"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -627,72 +678,62 @@ async function selfHostedPendingRemoteLogin(
       }),
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
-    const status = await parsePendingRemoteLoginStatus(poll);
-    if (status === "approved") {
+    if (!complete.ok)
+      throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
+    return parseRemoteLoginCredentials(complete);
+  } catch (error) {
+    if (input.signal?.aborted || isAbortError(error)) {
+      await cancelPendingRemoteLogin(fetchImpl, baseUrl, pending);
       if (input.json) {
         input.writeOut(
-          `${JSON.stringify({ code: "pending_login_approved", flowId: pending.flowId })}\n`,
+          `${JSON.stringify({ code: "pending_login_cancelled", flowId: pending.flowId })}\n`,
         );
       }
-      break;
+      throw new CapletsError("REQUEST_INVALID", "Remote Login pending flow cancelled.");
     }
-    if (status !== "pending") {
-      if (input.json) {
-        input.writeOut(
-          `${JSON.stringify({ code: `pending_login_${status}`, flowId: pending.flowId })}\n`,
-        );
-      }
-      throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
-    }
-    if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
-      const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          flowId: pending.flowId,
-          pendingRefreshSecret: pending.pendingRefreshSecret,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-      if (!refresh.ok)
-        throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
-      pending = await parsePendingRemoteLoginStart(refresh, {
-        pendingCompletionSecret: pending.pendingCompletionSecret,
-      });
-      if (input.json) {
-        input.writeOut(
-          `${JSON.stringify({
-            code: "pending_login_code_refreshed",
-            flowId: pending.flowId,
-            operatorCode: pending.operatorCode,
-            operatorCodeFingerprint: pending.operatorCodeFingerprint,
-            codeExpiresAt: pending.codeExpiresAt,
-            flowExpiresAt: pending.flowExpiresAt,
-          })}\n`,
-        );
-      } else {
-        input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
-        if (pending.operatorCodeFingerprint) {
-          input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
-        }
-      }
-    }
-    await sleep(intervalMs, input.signal);
+    throw error;
   }
+}
 
-  const complete = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/complete"), {
+async function fetchPendingRemoteLoginStatus(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): Promise<Response> {
+  return fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
     }),
-    ...(input.signal ? { signal: input.signal } : {}),
+    ...(signal ? { signal } : {}),
   });
-  if (!complete.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
-  return parseRemoteLoginCredentials(complete);
+}
+
+async function cancelPendingRemoteLogin(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+): Promise<void> {
+  await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/cancel"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+  }).catch(() => undefined);
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError")
+  );
 }
 
 async function revokeSelfHostedRemoteClient(

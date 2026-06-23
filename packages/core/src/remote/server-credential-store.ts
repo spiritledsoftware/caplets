@@ -202,7 +202,6 @@ export class RemoteServerCredentialStore {
       const flowExpiresAt = new Date(now.getTime() + DEFAULT_PENDING_FLOW_TTL_MS).toISOString();
       const state = this.loadState();
       cleanupPendingLogins(state, now);
-      enforcePendingLoginQuota(state, input.sourceHint);
       const clientLabel =
         boundedPendingLoginDisplayValue(input.clientLabel, PENDING_CLIENT_LABEL_MAX_LENGTH) ??
         "Caplets Remote Client";
@@ -214,6 +213,7 @@ export class RemoteServerCredentialStore {
         input.sourceHint,
         PENDING_SOURCE_HINT_MAX_LENGTH,
       );
+      enforcePendingLoginQuota(state, sourceHint);
       state.pendingLogins.push({
         flowId,
         hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
@@ -377,7 +377,7 @@ export class RemoteServerCredentialStore {
         now,
         state,
       );
-      if (flow.status !== "pending") {
+      if (flow.status === "exchanged") {
         throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       }
       flow.status = "cancelled";

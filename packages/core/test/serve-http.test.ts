@@ -319,6 +319,25 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("applies loopback host protection before pending login starts mutate state", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+    });
+
+    const started = await app.request("http://127.0.0.1:5387/v1/remote/login/start", {
+      method: "POST",
+      headers: { host: "attacker.example.com", "content-type": "application/json" },
+      body: JSON.stringify({ clientLabel: "Blocked client" }),
+    });
+
+    expect(started.status).toBe(403);
+    expect(store.listPendingLogins()).toHaveLength(0);
+    await engine.close();
+  });
+
   it("starts, polls, and completes pending remote login over HTTP without remote approval routes", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();

@@ -76,6 +76,7 @@ export function createHttpServeApp(
     );
   }
   const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
+  const attachHostProtection = dnsRebindingProtection(options);
   app.use(
     "*",
     logger((message, ...rest) => {
@@ -111,7 +112,7 @@ export function createHttpServeApp(
   );
 
   if (remoteCredentialStore) {
-    app.post(paths.remoteLoginStart, async (c) => {
+    app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
         const clientLabel = optionalStringField(parsed, "clientLabel");
@@ -136,7 +137,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginPoll, async (c) => {
+    app.post(paths.remoteLoginPoll, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login poll request");
         return c.json(
@@ -150,7 +151,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginRefresh, async (c) => {
+    app.post(paths.remoteLoginRefresh, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login refresh request");
         return c.json(
@@ -165,7 +166,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginComplete, async (c) => {
+    app.post(paths.remoteLoginComplete, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
         const credentials = remoteCredentialStore.completePendingLogin({
@@ -185,7 +186,7 @@ export function createHttpServeApp(
       }
     });
 
-    app.post(paths.remoteLoginCancel, async (c) => {
+    app.post(paths.remoteLoginCancel, attachHostProtection, async (c) => {
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login cancel request");
         return c.json(
@@ -294,8 +295,6 @@ export function createHttpServeApp(
     sessions.set(nextSessionId, session);
     return session.transport.handleRequest(c);
   });
-
-  const attachHostProtection = dnsRebindingProtection(options);
 
   if (exposeAttach) {
     app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
