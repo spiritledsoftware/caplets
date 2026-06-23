@@ -63,7 +63,6 @@ import {
   type SetupPromptReader,
 } from "./cli/setup";
 import {
-  type CapletShadowingPolicy,
   type CapletsConfig,
   type ConfigSource,
   type LocalOverlayConfigWithSources,
@@ -4069,8 +4068,7 @@ function mergeRemoteAndLocalRows(
       if (row.disabled) {
         continue;
       }
-      const shadowing = shadowingPolicyForRemoteOverlay(remote, row);
-      if (shadowing !== "allow") {
+      if (remote.shadowing !== "allow") {
         options.writeErr(
           `Local Caplet '${row.server}' is suppressed because the remote Caplet forbids shadowing that Caplet ID.\n`,
         );
@@ -4085,31 +4083,6 @@ function mergeRemoteAndLocalRows(
   return [...rows.values()]
     .filter((row) => options.includeDisabled || !row.disabled)
     .sort((left, right) => left.server.localeCompare(right.server));
-}
-
-function shadowingPolicyForRemoteOverlay(
-  remote: CapletListRow,
-  local: CapletListRow,
-): CapletShadowingPolicy | undefined {
-  if (remote.shadowing) return remote.shadowing;
-  if (local.shadowing !== "allow") return remote.shadowing;
-  if (!isSharedCapletsSourcePath(remote.path, local.path)) return remote.shadowing;
-  return local.shadowing;
-}
-
-function isSharedCapletsSourcePath(remotePath: string | null, localPath: string | null): boolean {
-  const remoteRelative = capletsSourceRelativePath(remotePath);
-  const localRelative = capletsSourceRelativePath(localPath);
-  return Boolean(remoteRelative && localRelative && remoteRelative === localRelative);
-}
-
-function capletsSourceRelativePath(path: string | null): string | undefined {
-  if (!path) return undefined;
-  const normalized = path.replaceAll("\\", "/");
-  const marker = "/.config/caplets/";
-  const index = normalized.lastIndexOf(marker);
-  if (index === -1) return undefined;
-  return normalized.slice(index + marker.length);
 }
 
 function formatOverlaySource(kind: ConfigSource["kind"] | "remote" | "unknown"): string {

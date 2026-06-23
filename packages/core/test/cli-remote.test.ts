@@ -590,43 +590,6 @@ describe("remote CLI routing", () => {
     expect(err.join("")).toContain("global Caplet shared shadows remote Caplet");
   });
 
-  it("uses shared local shadowing policy when older remote list rows omit it", async () => {
-    const context = testContext("caplets-cli-remote-list-shared-shadowing-fallback-");
-    const out: string[] = [];
-    const err: string[] = [];
-    writeCliCapletConfig(context.configPath, "browser-use", "Local Browser", {
-      shadowing: "allow",
-    });
-    const fetch = vi.fn(async () =>
-      Response.json({
-        ok: true,
-        result: [
-          {
-            ...remoteListRow("browser-use", "Remote Browser"),
-            path: "/home/ianpascoe/.config/caplets/config.json",
-          },
-        ],
-      }),
-    );
-
-    await runCli(["list", "--json"], {
-      env: remoteEnv(context),
-      fetch,
-      writeOut: (value) => out.push(value),
-      writeErr: (value) => err.push(value),
-    });
-
-    expect(JSON.parse(out.join(""))).toEqual([
-      expect.objectContaining({
-        server: "browser-use",
-        name: "Local Browser",
-        source: "global-config",
-      }),
-    ]);
-    expect(err.join("")).toContain("global Caplet browser-use shadows remote Caplet");
-    expect(err.join("")).not.toContain("forbids shadowing");
-  });
-
   it("routes call-tool through remote control and preserves JSON formatting", async () => {
     const context = testContext("caplets-cli-remote-call-only-");
     const requests: unknown[] = [];
@@ -1733,7 +1696,7 @@ function writeCliCapletConfig(
   path: string,
   id: string,
   name: string,
-  options: { disabled?: boolean; shadowing?: "allow" | "forbid" | "namespace" } = {},
+  options: { disabled?: boolean } = {},
 ): void {
   const dir = dirname(path);
   const script = join(dir, `${id}-tool.mjs`);
@@ -1746,7 +1709,6 @@ function writeCliCapletConfig(
           name,
           description: `${name} tools`,
           disabled: Boolean(options.disabled),
-          ...(options.shadowing ? { shadowing: options.shadowing } : {}),
           actions: {
             echo: {
               command: process.execPath,
@@ -1840,7 +1802,7 @@ function testContext(prefix: string): {
 } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
-  const userRoot = join(dir, "home", ".config", "caplets");
+  const userRoot = join(dir, "user");
   const authDir = join(dir, "auth");
   const projectCapletsRoot = join(dir, "project", ".caplets");
   mkdirSync(userRoot, { recursive: true });
