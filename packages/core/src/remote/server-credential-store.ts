@@ -167,6 +167,7 @@ const DEFAULT_PENDING_MAX_ACTIVE_FLOWS = 64;
 const DEFAULT_PENDING_MAX_ACTIVE_FLOWS_PER_SOURCE = 8;
 const PENDING_TERMINAL_RETENTION_MS = 24 * 60 * 60_000;
 const STALE_REFRESH_REVOKE_GRACE_MS = 30_000;
+const PENDING_SUPERSEDED_REFRESH_HASH_MAX = 16;
 const SUPERSEDED_REFRESH_TOKEN_RETENTION_MS = 24 * 60 * 60_000;
 const STATE_FILE = "remote-server-credentials.json";
 const LOCK_DIR = "remote-server-credentials.lock";
@@ -327,6 +328,9 @@ export class RemoteServerCredentialStore {
         hash: flow.pendingRefreshHash,
         supersededAt: now.toISOString(),
       });
+      flow.supersededPendingRefreshHashes = capSupersededRefreshTokens(
+        flow.supersededPendingRefreshHashes,
+      );
       flow.pendingRefreshHash = hashSecret(pendingRefreshSecret);
       flow.codeExpiresAt = codeExpiresAt;
       this.saveState(state);
@@ -355,7 +359,6 @@ export class RemoteServerCredentialStore {
         this.saveState(state);
         throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
       }
-      assertPendingOperatorCodeFresh(flow, now);
       flow.status = "denied";
       flow.deniedAt = now.toISOString();
       this.saveState(state);
@@ -377,7 +380,7 @@ export class RemoteServerCredentialStore {
         now,
         state,
       );
-      if (flow.status === "exchanged") {
+      if (flow.status !== "pending" && flow.status !== "approved") {
         throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
       }
       flow.status = "cancelled";
@@ -766,7 +769,7 @@ export class RemoteServerCredentialStore {
     if (!safeHashEqual(hashSecret(pendingCompletionSecret), flow.pendingCompletionHash)) {
       throw new CapletsError("AUTH_FAILED", "Pending login possession material is invalid.");
     }
-    if (Date.parse(flow.flowExpiresAt) <= now.getTime() && flow.status === "pending") {
+    if (Date.parse(flow.flowExpiresAt) <= now.getTime() && isActivePendingLogin(flow)) {
       flow.status = "expired";
     }
     return flow;
@@ -790,13 +793,19 @@ function pruneSupersededRefreshTokens(
   entries: SupersededRefreshToken[],
   now: Date,
 ): SupersededRefreshToken[] {
-  return entries.filter((entry) => {
-    const supersededAt = Date.parse(entry.supersededAt);
-    return (
-      Number.isFinite(supersededAt) &&
-      now.getTime() - supersededAt < SUPERSEDED_REFRESH_TOKEN_RETENTION_MS
-    );
-  });
+  return capSupersededRefreshTokens(
+    entries.filter((entry) => {
+      const supersededAt = Date.parse(entry.supersededAt);
+      return (
+        Number.isFinite(supersededAt) &&
+        now.getTime() - supersededAt < SUPERSEDED_REFRESH_TOKEN_RETENTION_MS
+      );
+    }),
+  );
+}
+
+function capSupersededRefreshTokens(entries: SupersededRefreshToken[]): SupersededRefreshToken[] {
+  return entries.slice(-PENDING_SUPERSEDED_REFRESH_HASH_MAX);
 }
 
 function cleanupPendingLogins(state: RemoteServerCredentialState, now: Date): boolean {

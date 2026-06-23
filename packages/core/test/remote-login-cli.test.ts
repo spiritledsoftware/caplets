@@ -515,6 +515,115 @@ describe("caplets remote CLI", () => {
     ]);
   });
 
+  it("keeps login start outside abort handling until cancellation material is available", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const controller = new AbortController();
+    const requests: string[] = [];
+    let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+
+    await expect(
+      runCli(["remote", "login", "https://caplets.example.com/caplets", "--json"], {
+        authDir,
+        signal: controller.signal,
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          requests.push(url.pathname);
+          const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+          if (url.pathname.endsWith("/v1/remote/login/start")) {
+            pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
+            controller.abort();
+            if (init?.signal) throw new DOMException("aborted", "AbortError");
+            return Response.json(pending);
+          }
+          if (url.pathname.endsWith("/v1/remote/login/poll")) {
+            throw new DOMException("aborted", "AbortError");
+          }
+          if (url.pathname.endsWith("/v1/remote/login/cancel")) {
+            if (!pending) throw new Error("missing pending flow");
+            const flowId = body.flowId;
+            const pendingCompletionSecret = body.pendingCompletionSecret;
+            if (!flowId || !pendingCompletionSecret) throw new Error("missing pending cancel body");
+            return Response.json(server.cancelPendingLogin({ flowId, pendingCompletionSecret }));
+          }
+          throw new Error(`unexpected request ${url.pathname}`);
+        },
+        writeOut: () => undefined,
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Remote Login pending flow cancelled.",
+    });
+
+    expect(requests).toEqual([
+      "/caplets/v1/remote/login/start",
+      "/caplets/v1/remote/login/poll",
+      "/caplets/v1/remote/login/cancel",
+    ]);
+  });
+
+  it("retries pending remote login completion after a lost response", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const requests: string[] = [];
+    let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+    let completeAttempts = 0;
+
+    await runCli(["remote", "login", "https://caplets.example.com/caplets", "--json"], {
+      authDir,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        requests.push(url.pathname);
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+        if (url.pathname.endsWith("/v1/remote/login/start")) {
+          pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
+          return Response.json(pending);
+        }
+        if (url.pathname.endsWith("/v1/remote/login/poll")) {
+          if (!pending) throw new Error("missing pending flow");
+          const flowId = body.flowId;
+          const pendingCompletionSecret = body.pendingCompletionSecret;
+          if (!flowId || !pendingCompletionSecret) throw new Error("missing pending poll body");
+          server.approvePendingLogin({ operatorCode: pending.operatorCode });
+          return Response.json(
+            server.pollPendingLogin({
+              flowId,
+              pendingCompletionSecret,
+            }),
+          );
+        }
+        if (url.pathname.endsWith("/v1/remote/login/complete")) {
+          if (!pending) throw new Error("missing pending flow");
+          const flowId = body.flowId;
+          const pendingCompletionSecret = body.pendingCompletionSecret;
+          if (!flowId || !pendingCompletionSecret) throw new Error("missing pending complete body");
+          completeAttempts += 1;
+          const credentials = server.completePendingLogin({
+            hostUrl: "https://caplets.example.com/caplets",
+            flowId,
+            pendingCompletionSecret,
+          });
+          if (completeAttempts === 1) throw new TypeError("socket closed");
+          return Response.json(credentials);
+        }
+        throw new Error(`unexpected request ${url.pathname}`);
+      },
+      writeOut: () => undefined,
+    });
+
+    expect(completeAttempts).toBe(2);
+    expect(requests).toEqual([
+      "/caplets/v1/remote/login/start",
+      "/caplets/v1/remote/login/poll",
+      "/caplets/v1/remote/login/complete",
+      "/caplets/v1/remote/login/complete",
+    ]);
+    const status = await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).getSelfHostedProfileStatus({ hostUrl: "https://caplets.example.com/caplets" });
+    expect(status?.authenticated).toBe(true);
+  });
+
   it("refreshes the visible pending login code during delayed approval", async () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });

@@ -585,7 +585,6 @@ async function selfHostedPendingRemoteLogin(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(startBody),
-    ...(input.signal ? { signal: input.signal } : {}),
   });
   if (!start.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending start failed.");
   let pending = await parsePendingRemoteLoginStart(start);
@@ -682,15 +681,7 @@ async function selfHostedPendingRemoteLogin(
       await sleep(intervalMs, input.signal);
     }
 
-    const complete = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/complete"), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        flowId: pending.flowId,
-        pendingCompletionSecret: pending.pendingCompletionSecret,
-      }),
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
+    const complete = await completePendingRemoteLogin(fetchImpl, baseUrl, pending, input.signal);
     if (!complete.ok)
       throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
     return parseRemoteLoginCredentials(complete);
@@ -706,6 +697,40 @@ async function selfHostedPendingRemoteLogin(
     }
     throw error;
   }
+}
+
+async function completePendingRemoteLogin(
+  fetchImpl: typeof fetch,
+  baseUrl: URL,
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): Promise<Response> {
+  try {
+    return await fetchImpl(
+      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      pendingRemoteLoginCompletionRequest(pending, signal),
+    );
+  } catch {
+    return fetchImpl(
+      appendBasePath(baseUrl, "v1/remote/login/complete"),
+      pendingRemoteLoginCompletionRequest(pending),
+    );
+  }
+}
+
+function pendingRemoteLoginCompletionRequest(
+  pending: PendingRemoteLoginStartResponse,
+  signal?: AbortSignal | undefined,
+): RequestInit {
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    }),
+    ...(signal ? { signal } : {}),
+  };
 }
 
 async function fetchPendingRemoteLoginStatus(
