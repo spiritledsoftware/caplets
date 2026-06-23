@@ -439,6 +439,7 @@ async function readAllStdin(): Promise<string> {
 }
 
 type RemoteLoginCredentialsResponse = {
+  hostUrl?: string | undefined;
   clientId: string;
   clientLabel: string;
   accessToken: string;
@@ -450,6 +451,7 @@ type RemoteLoginCredentialsResponse = {
 type PendingRemoteLoginStartResponse = {
   flowId: string;
   operatorCode: string;
+  operatorCodeFingerprint?: string | undefined;
   pendingRefreshSecret: string;
   pendingCompletionSecret: string;
   codeExpiresAt: string;
@@ -476,6 +478,7 @@ async function parseRemoteLoginCredentials(
     );
   }
   return {
+    ...(typeof record.hostUrl === "string" ? { hostUrl: record.hostUrl } : {}),
     clientId: record.clientId,
     clientLabel: typeof record.clientLabel === "string" ? record.clientLabel : "Caplets CLI",
     accessToken: record.accessToken,
@@ -522,6 +525,9 @@ async function parsePendingRemoteLoginStart(
   return {
     flowId: record.flowId,
     operatorCode: record.operatorCode,
+    ...(typeof record.operatorCodeFingerprint === "string"
+      ? { operatorCodeFingerprint: record.operatorCodeFingerprint }
+      : {}),
     pendingRefreshSecret: record.pendingRefreshSecret,
     pendingCompletionSecret,
     codeExpiresAt: record.codeExpiresAt,
@@ -566,6 +572,7 @@ async function selfHostedPendingRemoteLogin(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(startBody),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   if (!start.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending start failed.");
   let pending = await parsePendingRemoteLoginStart(start);
@@ -575,12 +582,16 @@ async function selfHostedPendingRemoteLogin(
         code: "pending_login_started",
         flowId: pending.flowId,
         operatorCode: pending.operatorCode,
+        operatorCodeFingerprint: pending.operatorCodeFingerprint,
         codeExpiresAt: pending.codeExpiresAt,
         flowExpiresAt: pending.flowExpiresAt,
       })}\n`,
     );
   } else {
     input.writeOut(`Remote Login Code: ${pending.operatorCode}\n`);
+    if (pending.operatorCodeFingerprint) {
+      input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
+    }
     input.writeOut(
       `Approve from the host with caplets remote host approve ${pending.operatorCode} --yes\n`,
     );
@@ -607,35 +618,6 @@ async function selfHostedPendingRemoteLogin(
       }
       throw new CapletsError("REQUEST_INVALID", "Remote Login pending flow cancelled.");
     }
-    if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
-      const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          flowId: pending.flowId,
-          pendingRefreshSecret: pending.pendingRefreshSecret,
-          pendingCompletionSecret: pending.pendingCompletionSecret,
-        }),
-      });
-      if (!refresh.ok)
-        throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
-      pending = await parsePendingRemoteLoginStart(refresh, {
-        pendingCompletionSecret: pending.pendingCompletionSecret,
-      });
-      if (input.json) {
-        input.writeOut(
-          `${JSON.stringify({
-            code: "pending_login_code_refreshed",
-            flowId: pending.flowId,
-            operatorCode: pending.operatorCode,
-            codeExpiresAt: pending.codeExpiresAt,
-            flowExpiresAt: pending.flowExpiresAt,
-          })}\n`,
-        );
-      } else {
-        input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
-      }
-    }
     const poll = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/poll"), {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -643,6 +625,7 @@ async function selfHostedPendingRemoteLogin(
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
       }),
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     if (!poll.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending poll failed.");
     const status = await parsePendingRemoteLoginStatus(poll);
@@ -662,7 +645,41 @@ async function selfHostedPendingRemoteLogin(
       }
       throw new CapletsError("AUTH_FAILED", `Remote Login pending flow ${status}.`);
     }
-    await sleep(intervalMs);
+    if (Date.parse(pending.codeExpiresAt) <= Date.now()) {
+      const refresh = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/refresh"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          flowId: pending.flowId,
+          pendingRefreshSecret: pending.pendingRefreshSecret,
+          pendingCompletionSecret: pending.pendingCompletionSecret,
+        }),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      if (!refresh.ok)
+        throw new CapletsError("AUTH_FAILED", "Remote Login pending refresh failed.");
+      pending = await parsePendingRemoteLoginStart(refresh, {
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      });
+      if (input.json) {
+        input.writeOut(
+          `${JSON.stringify({
+            code: "pending_login_code_refreshed",
+            flowId: pending.flowId,
+            operatorCode: pending.operatorCode,
+            operatorCodeFingerprint: pending.operatorCodeFingerprint,
+            codeExpiresAt: pending.codeExpiresAt,
+            flowExpiresAt: pending.flowExpiresAt,
+          })}\n`,
+        );
+      } else {
+        input.writeOut(`Remote Login Code refreshed: ${pending.operatorCode}\n`);
+        if (pending.operatorCodeFingerprint) {
+          input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
+        }
+      }
+    }
+    await sleep(intervalMs, input.signal);
   }
 
   const complete = await fetchImpl(appendBasePath(baseUrl, "v1/remote/login/complete"), {
@@ -672,6 +689,7 @@ async function selfHostedPendingRemoteLogin(
       flowId: pending.flowId,
       pendingCompletionSecret: pending.pendingCompletionSecret,
     }),
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   if (!complete.ok) throw new CapletsError("AUTH_FAILED", "Remote Login pending complete failed.");
   return parseRemoteLoginCredentials(complete);
@@ -807,9 +825,36 @@ function createSetupPromptHandle(
   };
 }
 
-async function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return;
-  await new Promise((resolve) => setTimeout(resolve, ms));
+async function sleep(ms: number, signal?: AbortSignal | undefined): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(done, ms);
+    const abort = () => done();
+    function done() {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function cliInterruptSignal(existing: AbortSignal | undefined): {
+  signal: AbortSignal | undefined;
+  dispose: () => void;
+} {
+  if (existing) return { signal: existing, dispose: () => {} };
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  process.once("SIGINT", abort);
+  process.once("SIGTERM", abort);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      process.off("SIGINT", abort);
+      process.off("SIGTERM", abort);
+    },
+  };
 }
 
 export function createProgram(io: CliIO = {}): Command {
@@ -1330,17 +1375,23 @@ export function createProgram(io: CliIO = {}): Command {
             `Self-hosted Remote Login no longer accepts Pairing Codes. Run caplets remote login ${normalizeRemoteProfileHostUrl(url)} without --code and approve the pending login from the host.`,
           );
         }
-        const credentials = await selfHostedPendingRemoteLogin(url, {
-          ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
-          json: options.json,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
-          ...(io.signal ? { signal: io.signal } : {}),
-          writeOut,
-          env,
-        });
+        const interrupt = cliInterruptSignal(io.signal);
+        let credentials: RemoteLoginCredentialsResponse;
+        try {
+          credentials = await selfHostedPendingRemoteLogin(url, {
+            ...(options.clientLabel ? { clientLabel: options.clientLabel } : {}),
+            json: options.json,
+            ...(io.fetch ? { fetch: io.fetch } : {}),
+            ...(interrupt.signal ? { signal: interrupt.signal } : {}),
+            writeOut,
+            env,
+          });
+        } finally {
+          interrupt.dispose();
+        }
         const status = await store.saveSelfHostedProfile({
           hostUrl: url,
-          hostIdentity: normalizeRemoteProfileHostUrl(url),
+          hostIdentity: normalizeRemoteProfileHostUrl(credentials.hostUrl ?? url),
           clientId: credentials.clientId,
           clientLabel: credentials.clientLabel,
           credentials: {
@@ -1512,7 +1563,7 @@ export function createProgram(io: CliIO = {}): Command {
       }
       for (const pending of pendingLogins) {
         writeOut(
-          `${pending.flowId}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
+          `${pending.flowId}\t${pending.operatorCodeFingerprint ?? "-"}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
         );
       }
     });

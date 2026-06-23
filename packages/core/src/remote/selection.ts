@@ -395,10 +395,14 @@ async function getCloudProfileStatusForSelection(
 }
 
 function isCloudWorkspaceAmbiguity(error: unknown): boolean {
+  const details = error instanceof CapletsError ? error.details : undefined;
   return (
     error instanceof CapletsError &&
     error.code === "REQUEST_INVALID" &&
-    /Cloud Remote Profile requires a selected or explicit workspace/u.test(error.message)
+    typeof details === "object" &&
+    details !== null &&
+    !Array.isArray(details) &&
+    (details as Record<string, unknown>).reason === "cloud_workspace_ambiguous"
   );
 }
 

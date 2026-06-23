@@ -256,10 +256,7 @@ export class FileRemoteProfileStore {
     const selected = this.readSelectedWorkspace(hostUrl);
     if (selected) return this.statusByKey(selected.profileKey, true);
     if (this.listProfilesForHost(hostUrl).length > 0) {
-      throw new CapletsError(
-        "REQUEST_INVALID",
-        "Cloud Remote Profile requires a selected or explicit workspace.",
-      );
+      throw cloudWorkspaceAmbiguityError();
     }
     return this.migrateLegacyCloudProfile(hostUrl);
   }
@@ -317,10 +314,7 @@ export class FileRemoteProfileStore {
       } else if (selected) {
         key = selected.profileKey;
       } else if (this.listProfilesForHost(hostUrl).length > 0) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Cloud Remote Profile requires a selected or explicit workspace.",
-        );
+        throw cloudWorkspaceAmbiguityError();
       }
       if (!key) return false;
       const profile = this.readProfile(key);
@@ -376,10 +370,7 @@ export class FileRemoteProfileStore {
       const selected = this.readSelectedWorkspace(hostUrl);
       if (selected) status = await this.statusByKey(selected.profileKey, true);
       else if (this.listProfilesForHost(hostUrl).length > 0) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Cloud Remote Profile requires a selected or explicit workspace.",
-        );
+        throw cloudWorkspaceAmbiguityError();
       }
     }
     if (!status) return undefined;
@@ -697,6 +688,14 @@ function assertHostIdentityMatches(
   if (!status || !expectedHostIdentity || !status.hostIdentity) return;
   if (status.hostIdentity === expectedHostIdentity) return;
   throw new CapletsError("AUTH_FAILED", "Remote Profile belongs to a different host identity.");
+}
+
+function cloudWorkspaceAmbiguityError(): CapletsError {
+  return new CapletsError(
+    "REQUEST_INVALID",
+    "Cloud Remote Profile requires a selected or explicit workspace.",
+    { reason: "cloud_workspace_ambiguous" },
+  );
 }
 
 function parseStoredRemoteProfile(value: unknown): StoredRemoteProfile | undefined {

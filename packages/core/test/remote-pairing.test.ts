@@ -329,6 +329,28 @@ describe("self-hosted remote pairing", () => {
     ).toMatchObject({ operatorCode: expect.stringMatching(/^cap_login_/u) });
   });
 
+  it("bounds pending login display metadata and exposes a code fingerprint", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      clientLabel: `  ${"Client".repeat(40)}  `,
+      clientFingerprint: "f".repeat(400),
+      sourceHint: "203.0.113.7",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(pending.operatorCodeFingerprint).toMatch(/^[A-Za-z0-9_-]{8}$/u);
+    expect(store.listPendingLogins(new Date("2026-06-19T12:01:00.000Z"))).toEqual([
+      expect.objectContaining({
+        flowId: pending.flowId,
+        operatorCodeFingerprint: pending.operatorCodeFingerprint,
+        clientLabel: "Client".repeat(20),
+        clientFingerprint: "f".repeat(256),
+        sourceHint: "203.0.113.7",
+      }),
+    ]);
+  });
+
   it("issues one-time Pairing Codes that exchange for client credentials", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const issued = store.createPairingCode({

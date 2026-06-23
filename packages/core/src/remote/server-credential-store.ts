@@ -127,6 +127,7 @@ type StoredPendingLogin = {
   codeExpiresAt: string;
   flowExpiresAt: string;
   status: PendingLoginStatus;
+  operatorCodeFingerprint?: string | undefined;
   approvedAt?: string | undefined;
   deniedAt?: string | undefined;
   cancelledAt?: string | undefined;
@@ -182,6 +183,7 @@ export class RemoteServerCredentialStore {
   createPendingLogin(input: CreatePendingLoginInput): {
     flowId: string;
     operatorCode: string;
+    operatorCodeFingerprint: string;
     pendingRefreshSecret: string;
     pendingCompletionSecret: string;
     codeExpiresAt: string;
@@ -201,6 +203,17 @@ export class RemoteServerCredentialStore {
       const state = this.loadState();
       cleanupPendingLogins(state, now);
       enforcePendingLoginQuota(state, input.sourceHint);
+      const clientLabel =
+        boundedPendingLoginDisplayValue(input.clientLabel, PENDING_CLIENT_LABEL_MAX_LENGTH) ??
+        "Caplets Remote Client";
+      const clientFingerprint = boundedPendingLoginDisplayValue(
+        input.clientFingerprint,
+        PENDING_CLIENT_FINGERPRINT_MAX_LENGTH,
+      );
+      const sourceHint = boundedPendingLoginDisplayValue(
+        input.sourceHint,
+        PENDING_SOURCE_HINT_MAX_LENGTH,
+      );
       state.pendingLogins.push({
         flowId,
         hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
@@ -209,9 +222,10 @@ export class RemoteServerCredentialStore {
         pendingRefreshHash: hashSecret(pendingRefreshSecret),
         supersededPendingRefreshHashes: [],
         pendingCompletionHash: hashSecret(pendingCompletionSecret),
-        clientLabel: input.clientLabel ?? "Caplets Remote Client",
-        ...(input.clientFingerprint ? { clientFingerprint: input.clientFingerprint } : {}),
-        ...(input.sourceHint ? { sourceHint: input.sourceHint } : {}),
+        operatorCodeFingerprint: pendingOperatorCodeFingerprint(operatorCode),
+        clientLabel,
+        ...(clientFingerprint ? { clientFingerprint } : {}),
+        ...(sourceHint ? { sourceHint } : {}),
         createdAt: now.toISOString(),
         codeExpiresAt,
         flowExpiresAt,
@@ -221,6 +235,7 @@ export class RemoteServerCredentialStore {
       return {
         flowId,
         operatorCode,
+        operatorCodeFingerprint: pendingOperatorCodeFingerprint(operatorCode),
         pendingRefreshSecret,
         pendingCompletionSecret,
         codeExpiresAt,
@@ -242,6 +257,7 @@ export class RemoteServerCredentialStore {
   refreshPendingLogin(input: RefreshPendingLoginInput): {
     flowId: string;
     operatorCode: string;
+    operatorCodeFingerprint: string;
     pendingRefreshSecret: string;
     codeExpiresAt: string;
     flowExpiresAt: string;
@@ -290,12 +306,14 @@ export class RemoteServerCredentialStore {
       const response = {
         flowId: flow.flowId,
         operatorCode,
+        operatorCodeFingerprint: pendingOperatorCodeFingerprint(operatorCode),
         pendingRefreshSecret,
         codeExpiresAt,
         flowExpiresAt: flow.flowExpiresAt,
         intervalSeconds: DEFAULT_PENDING_POLL_INTERVAL_SECONDS,
       };
       flow.operatorCodeHash = hashSecret(operatorCode);
+      flow.operatorCodeFingerprint = response.operatorCodeFingerprint;
       flow.supersededPendingRefreshHashes = pruneSupersededRefreshTokens(
         flow.supersededPendingRefreshHashes,
         now,
@@ -863,6 +881,7 @@ function decryptPendingRefreshReplay(
 ): {
   flowId: string;
   operatorCode: string;
+  operatorCodeFingerprint: string;
   pendingRefreshSecret: string;
   codeExpiresAt: string;
   flowExpiresAt: string;
@@ -873,6 +892,7 @@ function decryptPendingRefreshReplay(
   ) as Partial<{
     flowId: unknown;
     operatorCode: unknown;
+    operatorCodeFingerprint?: unknown;
     pendingRefreshSecret: unknown;
     codeExpiresAt: unknown;
     flowExpiresAt: unknown;
@@ -891,6 +911,10 @@ function decryptPendingRefreshReplay(
   return {
     flowId: parsed.flowId,
     operatorCode: parsed.operatorCode,
+    operatorCodeFingerprint:
+      typeof parsed.operatorCodeFingerprint === "string"
+        ? parsed.operatorCodeFingerprint
+        : pendingOperatorCodeFingerprint(parsed.operatorCode),
     pendingRefreshSecret: parsed.pendingRefreshSecret,
     codeExpiresAt: parsed.codeExpiresAt,
     flowExpiresAt: parsed.flowExpiresAt,
@@ -992,6 +1016,9 @@ function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus 
     hostUrl: flow.hostUrl,
     ...(flow.hostIdentity ? { hostIdentity: flow.hostIdentity } : {}),
     status: flow.status,
+    ...(flow.operatorCodeFingerprint
+      ? { operatorCodeFingerprint: flow.operatorCodeFingerprint }
+      : {}),
     clientLabel: flow.clientLabel,
     ...(flow.clientFingerprint ? { clientFingerprint: flow.clientFingerprint } : {}),
     ...(flow.sourceHint ? { sourceHint: flow.sourceHint } : {}),
@@ -1023,6 +1050,23 @@ function pendingApprovalStatus(flow: StoredPendingLogin): {
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("base64url");
+}
+
+const PENDING_CLIENT_LABEL_MAX_LENGTH = 120;
+const PENDING_CLIENT_FINGERPRINT_MAX_LENGTH = 256;
+const PENDING_SOURCE_HINT_MAX_LENGTH = 256;
+
+function boundedPendingLoginDisplayValue(
+  value: string | undefined,
+  maxLength: number,
+): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
+}
+
+function pendingOperatorCodeFingerprint(operatorCode: string): string {
+  return hashSecret(operatorCode).slice(0, 8);
 }
 
 function safeHashEqual(left: string, right: string): boolean {

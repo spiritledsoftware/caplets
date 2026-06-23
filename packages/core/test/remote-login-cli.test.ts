@@ -154,6 +154,57 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).not.toContain(pending?.pendingCompletionSecret ?? "missing");
   });
 
+  it("persists server-reported self-hosted host identity after pending login", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const out: string[] = [];
+
+    await runCli(["remote", "login", "http://127.0.0.1:5387/caplets", "--json"], {
+      authDir,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+        if (url.pathname.endsWith("/v1/remote/login/start")) {
+          return Response.json({
+            flowId: "rlogin_123",
+            operatorCode: "cap_login_123",
+            operatorCodeFingerprint: "abc12345",
+            pendingRefreshSecret: "cap_pending_refresh_secret",
+            pendingCompletionSecret: "cap_pending_complete_secret",
+            codeExpiresAt: "2999-01-01T00:00:00.000Z",
+            flowExpiresAt: "2999-01-02T00:00:00.000Z",
+            intervalSeconds: 5,
+          });
+        }
+        if (url.pathname.endsWith("/v1/remote/login/poll")) {
+          expect(body).toMatchObject({
+            flowId: "rlogin_123",
+            pendingCompletionSecret: "cap_pending_complete_secret",
+          });
+          return Response.json({ flowId: "rlogin_123", status: "approved" });
+        }
+        if (url.pathname.endsWith("/v1/remote/login/complete")) {
+          return Response.json({
+            hostUrl: "https://caplets.example.com/caplets",
+            clientId: "rcli_123",
+            clientLabel: "Server Device",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            tokenType: "Bearer",
+            expiresAt: "2999-01-01T00:00:00.000Z",
+          });
+        }
+        throw new Error(`unexpected request ${url.pathname}`);
+      },
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(JSON.parse(out.at(-1) ?? "{}")).toMatchObject({
+      hostUrl: "http://127.0.0.1:5387/caplets",
+      hostIdentity: "https://caplets.example.com/caplets",
+      clientId: "rcli_123",
+    });
+  });
+
   it("emits stable JSON events for pending remote login", async () => {
     const authDir = tempDir("caplets-remote-cli-auth-");
     const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
@@ -251,6 +302,109 @@ describe("caplets remote CLI", () => {
     expect(out.join("")).toContain(
       `Approve from the host with caplets remote host approve ${pending?.operatorCode} --yes`,
     );
+    expect(out.join("")).toContain(`Code fingerprint: ${pending?.operatorCodeFingerprint}`);
+  });
+
+  it("polls for approval before refreshing an expired visible pending code", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const requests: string[] = [];
+    let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+
+    await runCli(["remote", "login", "https://caplets.example.com/caplets", "--json"], {
+      authDir,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        requests.push(url.pathname);
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+        if (url.pathname.endsWith("/v1/remote/login/start")) {
+          pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
+          return Response.json({
+            ...pending,
+            codeExpiresAt: new Date(Date.now() - 1).toISOString(),
+          });
+        }
+        if (url.pathname.endsWith("/v1/remote/login/poll")) {
+          if (!pending) throw new Error("missing pending flow");
+          const flowId = body.flowId;
+          const pendingCompletionSecret = body.pendingCompletionSecret;
+          if (!flowId || !pendingCompletionSecret) throw new Error("missing pending poll body");
+          server.approvePendingLogin({ operatorCode: pending.operatorCode });
+          return Response.json(
+            server.pollPendingLogin({
+              flowId,
+              pendingCompletionSecret,
+            }),
+          );
+        }
+        if (url.pathname.endsWith("/v1/remote/login/complete")) {
+          if (!pending) throw new Error("missing pending flow");
+          const flowId = body.flowId;
+          const pendingCompletionSecret = body.pendingCompletionSecret;
+          if (!flowId || !pendingCompletionSecret) throw new Error("missing pending complete body");
+          return Response.json(
+            server.completePendingLogin({
+              hostUrl: "https://caplets.example.com/caplets",
+              flowId,
+              pendingCompletionSecret,
+            }),
+          );
+        }
+        throw new Error(`unexpected request ${url.pathname}`);
+      },
+      writeOut: () => undefined,
+    });
+
+    expect(requests).toEqual([
+      "/caplets/v1/remote/login/start",
+      "/caplets/v1/remote/login/poll",
+      "/caplets/v1/remote/login/complete",
+    ]);
+  });
+
+  it("cancels pending remote login on process interrupt without a test signal", async () => {
+    const authDir = tempDir("caplets-remote-cli-auth-");
+    const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
+    const requests: string[] = [];
+    let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+
+    await expect(
+      runCli(["remote", "login", "https://caplets.example.com/caplets", "--json"], {
+        authDir,
+        env: { CAPLETS_REMOTE_LOGIN_POLL_INTERVAL_MS: "10000" },
+        fetch: async (input, init) => {
+          const url = new URL(String(input));
+          requests.push(url.pathname);
+          const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
+          if (url.pathname.endsWith("/v1/remote/login/start")) {
+            pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
+            queueMicrotask(() => {
+              process.emit("SIGINT", "SIGINT");
+            });
+            return Response.json(pending);
+          }
+          if (url.pathname.endsWith("/v1/remote/login/cancel")) {
+            if (!pending) throw new Error("missing pending flow");
+            const flowId = body.flowId;
+            const pendingCompletionSecret = body.pendingCompletionSecret;
+            if (!flowId || !pendingCompletionSecret) throw new Error("missing pending cancel body");
+            return Response.json(
+              server.cancelPendingLogin({
+                flowId,
+                pendingCompletionSecret,
+              }),
+            );
+          }
+          throw new Error(`unexpected request ${url.pathname}`);
+        },
+        writeOut: () => undefined,
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Remote Login pending flow cancelled.",
+    });
+
+    expect(requests).toEqual(["/caplets/v1/remote/login/start", "/caplets/v1/remote/login/cancel"]);
   });
 
   it("refreshes the visible pending login code during delayed approval", async () => {
@@ -619,6 +773,7 @@ describe("caplets remote CLI", () => {
         {
           flowId: pending.flowId,
           status: "pending",
+          operatorCodeFingerprint: pending.operatorCodeFingerprint,
           clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
           clientFingerprint: "fp_test",
           sourceHint: "127.0.0.1",
@@ -627,6 +782,12 @@ describe("caplets remote CLI", () => {
     });
     expect(listOut.join("")).not.toContain(pending.pendingRefreshSecret);
     expect(listOut.join("")).not.toContain(pending.pendingCompletionSecret);
+    const plainListOut: string[] = [];
+    await runCli(["remote", "host", "logins", "--state-path", serverStateDir], {
+      writeOut: (value) => plainListOut.push(value),
+    });
+    expect(plainListOut.join("")).toContain(pending.operatorCodeFingerprint);
+    expect(plainListOut.join("")).not.toContain(pending.operatorCode);
 
     const approveOut: string[] = [];
     await runCli(

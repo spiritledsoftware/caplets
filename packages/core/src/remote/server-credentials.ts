@@ -31,6 +31,7 @@ export type RemotePendingLoginStatus = {
   hostUrl: string;
   hostIdentity?: string | undefined;
   status: RemotePendingLoginState;
+  operatorCodeFingerprint?: string | undefined;
   clientLabel: string;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;
