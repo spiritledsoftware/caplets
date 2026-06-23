@@ -51,6 +51,9 @@ import {
   type CapletShadowingPolicy,
   type CapletsConfig,
   type LocalOverlayConfigWithSources,
+  type NamespaceAliasesConfig,
+  resolveConfigPath,
+  resolveProjectConfigPath,
 } from "../config";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 import type { CapletsRemoteAuth } from "../remote/options";
@@ -630,7 +633,13 @@ function createCompositeRemoteService(
   authKind: "self_hosted_remote" | "hosted_cloud",
 ): NativeCapletsService {
   const { remote, presence } = createCompositeRemoteParts(remoteOptions, local, options, authKind);
-  return new CompositeNativeCapletsService(remote, local, options, presence);
+  return new CompositeNativeCapletsService(
+    remote,
+    local,
+    options,
+    remoteOptions.url.toString(),
+    presence,
+  );
 }
 
 function createCompositeRemoteParts(
@@ -762,6 +771,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
           remote,
           this.local,
           this.options,
+          remoteOptions.url.toString(),
           presence,
         );
         this.unsubscribeDelegate = this.delegate.onToolsChanged((tools) => this.emit(tools));
@@ -781,7 +791,7 @@ class ProfileBackedNativeCapletsService implements NativeCapletsService {
         await Promise.all([remote.close(), presence?.close()]);
         return;
       }
-      await this.delegate.replaceRemote(remote, presence);
+      await this.delegate.replaceRemote(remote, remoteOptions.url.toString(), presence);
       this.remoteSignature = signature;
       this.credentialExpiresAt = remoteOptions.credentialExpiresAt;
     } catch (error) {
@@ -916,6 +926,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     private remote: NativeCapletsService,
     private readonly local: NativeCapletsService,
     private readonly options: NativeCapletsServiceOptions,
+    private remoteIdentity: string,
     private presence?: ProjectBindingSessionManager,
   ) {
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
@@ -999,17 +1010,23 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   async replaceRemote(
     remote: NativeCapletsService,
+    remoteIdentityOrPresence?: string | ProjectBindingSessionManager,
     presence?: ProjectBindingSessionManager,
   ): Promise<void> {
+    const remoteIdentity =
+      typeof remoteIdentityOrPresence === "string" ? remoteIdentityOrPresence : this.remoteIdentity;
+    const nextPresence =
+      typeof remoteIdentityOrPresence === "string" ? presence : remoteIdentityOrPresence;
     if (this.closed) {
-      await Promise.all([remote.close(), presence?.close()]);
+      await Promise.all([remote.close(), nextPresence?.close()]);
       return;
     }
     const previousRemote = this.remote;
     const previousPresence = this.presence;
     this.unsubscribeRemote();
     this.remote = remote;
-    this.presence = presence;
+    this.remoteIdentity = remoteIdentity;
+    this.presence = nextPresence;
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     await Promise.all([previousRemote.close(), previousPresence?.close()]);
     if (this.closed) return;
@@ -1094,13 +1111,16 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         { service: "local", tools: [...localTools, ...localCodeModeTools] },
       ],
       {
-        remoteIdentity: this.options.remote?.url ?? "remote",
-        localIdentity: this.options.projectConfigPath ?? this.options.configPath ?? "local",
+        ...nativeNamespaceContext(this.options),
+        remoteIdentity: this.remoteIdentity,
       },
     );
     const resolution = resolveNamespaceExposure(entries);
     const namespacedRecords = resolution.visibleRecords.filter((record) => record.namespaced);
     const namespacedBaseIds = new Set(namespacedRecords.map((record) => record.baseId));
+    const diagnosticBaseIds = new Set(
+      resolution.unavailableDiagnostics.map((diagnostic) => diagnostic.requestedId),
+    );
     const routes = new Map<string, { service: "local" | "remote"; capletId: string }>();
     const namespaceDiagnostics = new Map(resolution.suppressedBareIds);
     for (const diagnostic of resolution.unavailableDiagnostics) {
@@ -1124,6 +1144,9 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       const rewritten: NativeCapletTool[] = [];
       for (const tool of tools) {
         const baseId = sourceBaseId(tool);
+        if (diagnosticBaseIds.has(baseId)) {
+          continue;
+        }
         if (!namespacedBaseIds.has(baseId)) {
           rewritten.push(tool);
           setRoute(tool.caplet, { service, capletId: tool.caplet }, overwrite);
@@ -1145,7 +1168,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       remoteTools: rewrite("remote", remoteTools, false),
       localTools: rewrite("local", localTools, true),
       remoteCodeModeTools: rewrite("remote", remoteCodeModeTools, false),
-      localCodeModeTools: rewrite("local", localCodeModeTools, false),
+      localCodeModeTools: rewrite("local", localCodeModeTools, true),
       routes,
       namespaceDiagnostics,
     };
@@ -1201,9 +1224,32 @@ type NativeNamespaceRoute = {
   baseId: string;
 };
 
+function nativeNamespaceContext(options: NativeCapletsServiceOptions): {
+  localIdentity: string;
+  namespaceAliases: NamespaceAliasesConfig;
+} {
+  const configPath = options.configPath ?? resolveConfigPath();
+  const projectConfigPath = options.projectConfigPath ?? resolveProjectConfigPath();
+  let namespaceAliases = parseConfig({}).namespaceAliases;
+  try {
+    namespaceAliases = loadLocalOverlayConfigWithSources(configPath, projectConfigPath).config
+      .namespaceAliases;
+  } catch {
+    // Local overlay loading owns user-facing warnings and last-known-good behavior.
+  }
+  return {
+    localIdentity: `local:${configPath}\0${projectConfigPath}`,
+    namespaceAliases,
+  };
+}
+
 function nativeNamespaceEntries(
   groups: Array<{ service: "local" | "remote"; tools: NativeCapletTool[] }>,
-  identities: { remoteIdentity: string; localIdentity: string },
+  identities: {
+    remoteIdentity: string;
+    localIdentity: string;
+    namespaceAliases: NamespaceAliasesConfig;
+  },
 ): NamespaceSourceEntry<NativeNamespaceRoute>[] {
   const entries = new Map<string, NamespaceSourceEntry<NativeNamespaceRoute>>();
   for (const group of groups) {
@@ -1218,6 +1264,10 @@ function nativeNamespaceEntries(
         baseId,
         sourceKind: service === "local" ? "local" : "upstream",
         sourceLabel: service === "local" ? "local" : "remote",
+        namespaceAlias:
+          service === "local"
+            ? identities.namespaceAliases.local
+            : identities.namespaceAliases.upstreams[identities.remoteIdentity],
         durableSourceIdentity:
           service === "local" ? identities.localIdentity : identities.remoteIdentity,
         shadowing: aggregateShadowing(tools),

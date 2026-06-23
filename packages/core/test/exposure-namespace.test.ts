@@ -148,6 +148,28 @@ describe("namespace exposure resolver", () => {
     ]);
   });
 
+  it("fails closed when a generated qualified ID collides with another suppressed bare ID", () => {
+    const result = resolveNamespaceExposure(
+      [
+        entry("github", "upstream", "https://remote.example.com", "namespace", {
+          namespaceAlias: "remote-d4b6-github",
+        }),
+        entry("github", "local", "/Users/me/.caplets"),
+        entry("remote-d4b6-github-d4b6__github", "upstream", "https://other.example.com"),
+        entry("remote-d4b6-github-d4b6__github", "local", "/Users/me/other-caplets"),
+      ],
+      { maxHashLength: 4 },
+    );
+
+    expect(result.routes.has("remote-d4b6-github-d4b6__github")).toBe(false);
+    expect(result.unavailableDiagnostics).toContainEqual(
+      expect.objectContaining({
+        requestedId: "github",
+        reason: "generated_id_collision",
+      }),
+    );
+  });
+
   it("reports invalid alias labels as resolver diagnostics", () => {
     const result = resolveNamespaceExposure([
       entry("github", "upstream", "https://remote.example.com", "namespace", {

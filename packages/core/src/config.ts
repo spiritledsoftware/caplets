@@ -2514,6 +2514,12 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
 }
 
 function mergeNamespaceAliases(left: unknown, right: unknown): Record<string, unknown> | undefined {
+  if (right !== undefined && !isPlainObject(right)) {
+    return right as Record<string, unknown>;
+  }
+  if (left !== undefined && !isPlainObject(left)) {
+    return left as Record<string, unknown>;
+  }
   if (!isPlainObject(left) && !isPlainObject(right)) {
     return undefined;
   }

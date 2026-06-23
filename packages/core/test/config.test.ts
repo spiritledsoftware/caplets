@@ -218,6 +218,24 @@ describe("config", () => {
     ).toThrow(CapletsError);
   });
 
+  it("rejects malformed namespaceAliases while loading merged config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-namespace-alias-invalid-"));
+    try {
+      const userRoot = join(dir, "user");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectRoot = join(dir, "project", ".caplets");
+      const projectConfigPath = join(projectRoot, "config.json");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(userConfigPath, JSON.stringify({ namespaceAliases: "mac" }));
+      writeFileSync(projectConfigPath, JSON.stringify({}));
+
+      expect(() => loadConfigWithSources(userConfigPath, projectConfigPath)).toThrow(CapletsError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("loads user config from a path with defaults and interpolation", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
     const path = join(dir, "config.json");

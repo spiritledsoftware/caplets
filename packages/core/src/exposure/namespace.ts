@@ -61,11 +61,7 @@ export function resolveNamespaceExposure<Route>(
   const visibleRecords: NamespaceVisibleRecord<Route>[] = [];
   const suppressedBareIds = new Map<string, NamespaceDiagnostic>();
   const unavailableDiagnostics: NamespaceDiagnostic[] = [];
-  const reservedBareIds = new Set(
-    [...groups.entries()]
-      .filter(([, group]) => group.length === 1 || !isNamespaceCollisionGroup(group))
-      .map(([baseId]) => baseId),
-  );
+  const reservedBareIds = new Set(groups.keys());
 
   for (const [baseId, group] of groups) {
     if (group.length === 1) {
