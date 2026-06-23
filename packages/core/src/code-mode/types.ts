@@ -5,7 +5,7 @@ export type CodeModeCallableCaplet = {
   id: string;
   name: string;
   description: string;
-  shadowing?: "forbid" | "allow";
+  shadowing?: "forbid" | "allow" | "namespace";
   useWhen?: string;
   avoidWhen?: string;
 };

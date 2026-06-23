@@ -1,4 +1,5 @@
 export const SERVER_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+export const NAMESPACE_ALIAS_LABEL_PATTERN = /^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 export const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 export const HTTP_BASE_URL_PATTERN = /^(?![a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*@)[^?#]*$/;
 export const FORBIDDEN_HEADERS = new Set([
@@ -38,6 +39,10 @@ export function validateHttpActionHeaders(
       });
     }
   }
+}
+
+export function isValidNamespaceAliasLabel(value: string): boolean {
+  return NAMESPACE_ALIAS_LABEL_PATTERN.test(value);
 }
 
 export function isAllowedRemoteUrl(value: string): boolean {

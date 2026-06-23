@@ -54,7 +54,7 @@ export type AttachManifestExport = {
   annotations?: unknown;
   schemaHash: string | null;
   capletId: string;
-  shadowing: "forbid" | "allow";
+  shadowing: CapletShadowingPolicy;
 };
 
 export type AttachProgressiveCapletExport = AttachManifestExport & {

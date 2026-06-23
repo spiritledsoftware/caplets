@@ -2132,6 +2132,66 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("qualifies remote and local overlays when remote attach manifest uses namespace shadowing", async () => {
+    const fixture = client([
+      { name: "shared", title: "Remote Shared", shadowing: "namespace" },
+      { name: "remote-only", title: "Remote Only" },
+    ]);
+    const localExecute = vi.fn(async (capletId: string, request: unknown) => ({
+      capletId,
+      request,
+      local: true,
+    }));
+    const localService = {
+      listTools: vi.fn(() => [
+        {
+          caplet: "shared",
+          toolName: "caplets__shared",
+          title: "Local Shared",
+          description: "Local shared Caplet.",
+          promptGuidance: [],
+        },
+      ]),
+      execute: localExecute,
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+      writeErr,
+    });
+
+    await service.reload();
+
+    const sharedTools = service.listTools().filter((tool) => tool.title.endsWith("Shared"));
+    expect(sharedTools.map((tool) => tool.caplet)).toEqual([
+      expect.stringMatching(/^remote-[a-f0-9]{4}__shared$/u),
+      expect.stringMatching(/^local-[a-f0-9]{4}__shared$/u),
+    ]);
+    expect(configuredCapletIds(service.listTools())).not.toContain("shared");
+    await expect(
+      service.execute(sharedTools[0]!.caplet, { operation: "inspect" }),
+    ).resolves.toEqual({ name: "shared", args: { operation: "inspect" } });
+    await expect(
+      service.execute(sharedTools[1]!.caplet, { operation: "inspect" }),
+    ).resolves.toEqual({ capletId: "shared", request: { operation: "inspect" }, local: true });
+    await expect(service.execute("shared", { operation: "inspect" })).rejects.toMatchObject({
+      code: "CAPLET_NAMESPACE_COLLISION",
+      details: expect.objectContaining({
+        alternatives: sharedTools.map((tool) => tool.caplet),
+      }),
+    });
+    expect(writeErr).not.toHaveBeenCalledWith(
+      "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
+    );
+    await service.close();
+  });
+
   it("suppresses local direct tools by source Caplet ID when remote forbids shadowing", async () => {
     const fixture = client([{ name: "shared", title: "Remote Shared" }]);
     const writeErr = vi.fn();

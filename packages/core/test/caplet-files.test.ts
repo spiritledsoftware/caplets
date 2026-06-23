@@ -85,6 +85,32 @@ mcpServer:
     );
   });
 
+  it("loads namespace shadowing from CAPLET.md frontmatter", () => {
+    const result = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "github/CAPLET.md",
+          content: `---
+name: GitHub
+description: Manage GitHub repositories.
+shadowing: namespace
+mcpServer:
+  command: github-mcp
+---
+
+# GitHub
+`,
+        },
+      ],
+    });
+
+    expect(result?.config.mcpServers?.github).toEqual(
+      expect.objectContaining({
+        shadowing: "namespace",
+      }),
+    );
+  });
+
   it("rejects duplicate in-memory caplet ids", () => {
     expect(() =>
       loadCapletFilesFromMap({

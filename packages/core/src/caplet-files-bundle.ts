@@ -129,7 +129,7 @@ const capletExposureSchema = z
   .describe("How this Caplet is exposed to agents.");
 
 const capletShadowingSchema = z
-  .enum(["forbid", "allow"])
+  .enum(["forbid", "allow", "namespace"])
   .describe("Whether attached local Caplets may shadow this remote Caplet ID.");
 
 const capletEndpointAuthSchema = z

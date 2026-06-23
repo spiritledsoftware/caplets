@@ -12,7 +12,7 @@ const fixtureFiles = [
     content: `---
 name: Weather
 description: Query weather forecast metadata.
-shadowing: allow
+shadowing: namespace
 openapiEndpoint:
   specPath: ./openapi.yaml
   auth:
@@ -146,7 +146,7 @@ describe("CapletSource adapters", () => {
       {
         id: "weather",
         backend: "openapi",
-        shadowing: "allow",
+        shadowing: "namespace",
         setupRequired: false,
         authRequired: true,
         projectBindingRequired: false,

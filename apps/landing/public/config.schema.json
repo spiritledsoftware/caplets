@@ -102,6 +102,35 @@
       },
       "additionalProperties": false
     },
+    "namespaceAliases": {
+      "default": {
+        "upstreams": {}
+      },
+      "description": "Source-level namespace aliases for hash-qualified Caplet IDs.",
+      "type": "object",
+      "properties": {
+        "local": {
+          "type": "string",
+          "pattern": "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+          "description": "Namespace label used when qualifying colliding Caplet IDs."
+        },
+        "upstreams": {
+          "default": {},
+          "description": "Namespace aliases keyed by durable upstream source identity.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+            "description": "Namespace label used when qualifying colliding Caplet IDs."
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "mcpServers": {
       "default": {},
       "description": "Downstream MCP servers keyed by stable server ID.",
@@ -351,7 +380,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -773,7 +802,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -1204,7 +1233,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -1670,7 +1699,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -2186,7 +2215,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -2551,7 +2580,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",
@@ -2814,7 +2843,7 @@
             "default": "forbid",
             "description": "Whether attached local Caplets may shadow this remote Caplet ID.",
             "type": "string",
-            "enum": ["forbid", "allow"]
+            "enum": ["forbid", "allow", "namespace"]
           },
           "useWhen": {
             "description": "When agents should prefer this Caplet or configured action.",

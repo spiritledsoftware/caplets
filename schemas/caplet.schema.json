@@ -41,7 +41,7 @@
     },
     "shadowing": {
       "type": "string",
-      "enum": ["forbid", "allow"],
+      "enum": ["forbid", "allow", "namespace"],
       "description": "Whether attached local Caplets may shadow this remote Caplet ID."
     },
     "useWhen": {
