@@ -1,5 +1,14 @@
 # caplets
 
+## 0.21.2
+
+### Patch Changes
+
+- 907dbd5: Respect remote Caplet shadowing policy when merging local overlays into remote CLI list output.
+- Updated dependencies [907dbd5]
+- Updated dependencies [907dbd5]
+  - @caplets/core@0.27.0
+
 ## 0.21.1
 
 ### Patch Changes
