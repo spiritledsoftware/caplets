@@ -168,6 +168,15 @@ caplets attach --once
 `caplets attach --once` validates the configured Project Binding WebSocket URL once and
 exits.
 
+If an old config uses `caplets attach --transport http` or attach HTTP bind flags, replace
+that server command with:
+
+```sh
+caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+```
+
+Keep MCP client configs on `caplets attach <url>`.
+
 ### Attach URL or workspace is wrong
 
 Expected symptom: the agent connects to a stale workspace, or the runtime reports that the
@@ -200,6 +209,10 @@ caplets doctor
 Run the agent from the project root, then retry the smallest Code Mode script that uses the
 project Caplet. If the capability needs setup commands, run the commands listed in the
 Caplet's `setup` metadata before asking the agent to call it.
+
+For stacked runtimes, project-local Caplets come from the attach or native session's project
+root. The long-running HTTP server startup directory is not used as the active project for
+every client.
 
 ## OSV no-auth smoke test
 

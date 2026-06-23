@@ -17,6 +17,14 @@ import type {
   ExposureSnapshot,
 } from "../exposure/discovery";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
+import type { NativeCapletsService } from "../native/service";
+
+export const CAPLETS_ATTACH_SESSION_HEADER = "caplets-attach-session-id";
+
+export type AttachSessionMetadata = {
+  projectRoot?: string | undefined;
+  projectConfigPath?: string | undefined;
+};
 
 export type AttachExportKind =
   | "caplet"
@@ -169,6 +177,85 @@ export async function buildAttachProjection(engine: CapletsEngine): Promise<Atta
     manifest,
     routes: routesFor(manifest),
   };
+}
+
+export async function buildNativeAttachProjection(
+  service: NativeCapletsService,
+): Promise<AttachProjection> {
+  const tools = service.listTools();
+  const partial = sortAttachProjectionInput({
+    caplets: tools
+      .filter((tool) => tool.codeModeRun !== true)
+      .map((tool) => ({
+        stableId: `native:${tool.caplet}`,
+        kind: "caplet" as const,
+        name: tool.caplet,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        annotations: tool.annotations,
+        schemaHash: schemaHash(tool.inputSchema ?? null),
+        capletId: tool.caplet,
+        shadowing: tool.shadowing ?? "forbid",
+      })),
+    tools: [],
+    resources: [],
+    resourceTemplates: [],
+    prompts: [],
+    completions: [],
+    codeModeCaplets: nativeCodeModeCaplets(tools),
+    diagnostics: [],
+  });
+  const revision = revisionFor(partial);
+  const manifest: AttachManifest = {
+    version: 1,
+    revision,
+    generatedAt: new Date().toISOString(),
+    ...withRevisionExportIds(revision, partial),
+  };
+  return {
+    manifest,
+    routes: routesFor(manifest),
+  };
+}
+
+function nativeCodeModeCaplets(
+  tools: ReturnType<NativeCapletsService["listTools"]>,
+): Array<Omit<AttachCodeModeCaplet, "exportId">> {
+  return tools.flatMap((tool) =>
+    (tool.codeModeCaplets ?? []).map((caplet) => ({
+      stableId: `native-code-mode:${caplet.id}`,
+      kind: "caplet" as const,
+      name: caplet.name,
+      title: caplet.name,
+      description: caplet.description,
+      schemaHash: null,
+      capletId: caplet.id,
+      shadowing: caplet.shadowing ?? "forbid",
+    })),
+  );
+}
+
+export async function invokeNativeAttachExport(
+  service: NativeCapletsService,
+  projection: AttachProjection,
+  request: AttachInvokeRequest,
+): Promise<unknown> {
+  if (request.revision !== projection.manifest.revision) {
+    throw new CapletsError("ATTACH_MANIFEST_STALE", "Attach manifest revision is stale.");
+  }
+  const route = projection.routes.get(request.exportId);
+  if (!route || route.kind !== request.kind) {
+    throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", "Attach export was not found.");
+  }
+  if (route.kind !== "caplet") {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Native attach sessions only support Caplet exports.",
+    );
+  }
+  return await service.execute(route.capletId, request.input);
 }
 
 export async function invokeAttachExport(

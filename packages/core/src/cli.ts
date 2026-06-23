@@ -276,6 +276,35 @@ function attachRemoteUrlFromArgs(
   return positionalUrl ?? legacyRemoteUrl;
 }
 
+function rejectAttachHttpServeFlags(options: {
+  transport?: string;
+  host?: string;
+  port?: string;
+  path?: string;
+  allowUnauthenticatedHttp?: boolean;
+  trustProxy?: boolean;
+}): void {
+  const invalid = [
+    options.transport !== undefined ? "--transport" : undefined,
+    options.host !== undefined ? "--host" : undefined,
+    options.port !== undefined ? "--port" : undefined,
+    options.path !== undefined ? "--path" : undefined,
+    options.allowUnauthenticatedHttp === true ? "--allow-unauthenticated-http" : undefined,
+    options.trustProxy === true ? "--trust-proxy" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  if (invalid.length === 0) return;
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    `caplets attach is stdio-only; ${invalid.join(", ")} ${invalid.length === 1 ? "is" : "are"} no longer supported. Use caplets serve --transport http --upstream-url <url> to start an HTTP stacked runtime.`,
+  );
+}
+
+export const rejectAttachHttpServeFlagsForTests = rejectAttachHttpServeFlags;
+
+function hiddenOption(flags: string, description: string): Option {
+  return new Option(flags, description).hideHelp();
+}
+
 function remoteServerCredentialStore(
   statePath: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
@@ -1117,6 +1146,10 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--path <path>", "HTTP service base path")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
     .option(
+      "--upstream-url <url>",
+      "upstream Caplets runtime URL to compose with this HTTP service",
+    )
+    .option(
       "--allow-unauthenticated-http",
       "allow unauthenticated HTTP serving on non-loopback hosts",
     )
@@ -1128,6 +1161,7 @@ export function createProgram(io: CliIO = {}): Command {
         port?: string;
         path?: string;
         remoteStatePath?: string;
+        upstreamUrl?: string;
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;
       }) => {
@@ -1304,10 +1338,10 @@ export function createProgram(io: CliIO = {}): Command {
     .command(cliCommands.attach)
     .description("Start a remote-backed Caplets MCP server.")
     .argument("[url]", "remote Caplets service base URL")
-    .option("--transport <transport>", "server transport: stdio or http")
-    .option("--host <host>", "HTTP bind host")
-    .option("--port <port>", "HTTP bind port")
-    .option("--path <path>", "HTTP service base path")
+    .addOption(hiddenOption("--transport <transport>", "server transport: stdio or http"))
+    .addOption(hiddenOption("--host <host>", "HTTP bind host"))
+    .addOption(hiddenOption("--port <port>", "HTTP bind port"))
+    .addOption(hiddenOption("--path <path>", "HTTP service base path"))
     .addOption(
       new Option(
         "--remote-url <url>",
@@ -1315,11 +1349,13 @@ export function createProgram(io: CliIO = {}): Command {
       ).hideHelp(),
     )
     .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
-    .option(
-      "--allow-unauthenticated-http",
-      "allow unauthenticated HTTP serving on non-loopback hosts",
+    .addOption(
+      hiddenOption(
+        "--allow-unauthenticated-http",
+        "allow unauthenticated HTTP serving on non-loopback hosts",
+      ),
     )
-    .option("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy")
+    .addOption(hiddenOption("--trust-proxy", "trust X-Forwarded-* headers from a reverse proxy"))
     .option("--json", "print JSON status events")
     .option("--verbose", "print detailed attach diagnostics")
     .option("--once", "validate Project Binding once and exit")
@@ -1343,6 +1379,7 @@ export function createProgram(io: CliIO = {}): Command {
         },
       ) => {
         try {
+          rejectAttachHttpServeFlags(options);
           const remoteUrl = attachRemoteUrlFromArgs(url, options.remoteUrl);
           const attachOptions = {
             ...options,

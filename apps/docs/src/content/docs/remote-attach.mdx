@@ -4,7 +4,12 @@ description: Connect an agent to a remote Caplets runtime.
 ---
 
 Use `caplets attach` when the agent should connect to a remote or Cloud-backed Caplets
-runtime instead of starting local backends.
+runtime instead of starting local backends. `caplets attach <url>` is a stdio MCP adapter;
+it does not run an HTTP server.
+
+Use `caplets serve --transport http --upstream-url <url>` for a long-running stacked
+runtime that composes local user/global Caplets, per-session project Caplets, and an
+upstream Caplets host.
 
 ## Modes
 
@@ -68,6 +73,16 @@ After approval, configure the agent to launch attach:
 caplets attach https://caplets.example.com/caplets
 ```
 
+For a stacked local runtime, run the HTTP service outside the agent process:
+
+```sh
+caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+```
+
+Then configure the agent with `caplets attach <local-runtime-url>`. The attach adapter
+sends its current working directory as the session project root, so project Caplets are
+resolved per attached client instead of from the long-running server's startup directory.
+
 For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
 
 ```sh
@@ -96,6 +111,11 @@ check.
 `caplets attach` can keep a local project bound to a remote runtime. Use this when the
 remote capability needs project-local context while the agent still talks to one Caplets
 MCP server.
+
+Stacked runtimes also attempt upstream Project Binding automatically when an attach or
+native session supplies a project root and the upstream supports Project Binding. If the
+upstream binding path is unavailable, local project Caplets and non-project upstream
+Caplets remain available with a diagnostic.
 
 Attach connects to the runtime attach API at `/v1/attach`. Ordinary MCP clients that are
 not using attach continue to connect to `/v1/mcp`, which still honors the configured

@@ -1,12 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
+import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
@@ -679,27 +680,36 @@ describe("createHttpServeApp", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ projectRoot: "/repo" }),
     });
-    expect(session.status).toBe(201);
-    const created = (await session.json()) as {
-      binding: { bindingId: string };
-      sessionId: string;
-    };
-    expect(created.binding.bindingId).toEqual(expect.any(String));
-    expect(created.sessionId).toEqual(expect.any(String));
+    expect(session.status).toBe(501);
+    await expect(session.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "UNSUPPORTED_CAPABILITY",
+        message: "Self-hosted Project Binding sessions are not implemented by this runtime.",
+      },
+    });
 
     const heartbeat = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      "http://127.0.0.1:5387/v1/attach/project-bindings/binding_123/heartbeat",
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
-    expect(heartbeat.status).toBe(200);
-    await expect(heartbeat.json()).resolves.toMatchObject({ ok: true });
+    expect(heartbeat.status).toBe(501);
+    await expect(heartbeat.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_CAPABILITY" },
+      binding: { bindingId: "binding_123", state: "not_attached" },
+    });
 
     const ended = await app.request(
-      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+      "http://127.0.0.1:5387/v1/attach/project-bindings/binding_123/session",
       { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
     );
-    expect(ended.status).toBe(200);
-    await expect(ended.json()).resolves.toMatchObject({ ok: true });
+    expect(ended.status).toBe(501);
+    await expect(ended.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_CAPABILITY" },
+      binding: { bindingId: "binding_123", state: "not_attached" },
+    });
 
     await engine.close();
   });
@@ -1092,6 +1102,307 @@ describe("createHttpServeApp", () => {
 
     await app.closeCapletsSessions();
     await engine.close();
+  });
+
+  it("only advertises attach sessions when the session route is mounted", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+
+    const discovery = (await (await app.request("http://127.0.0.1:5387/v1")).json()) as {
+      links: Record<string, string>;
+    };
+
+    expect(discovery.links).toMatchObject({
+      attachManifest: "/v1/attach/manifest",
+      attachEvents: "/v1/attach/events",
+      attachInvoke: "/v1/attach/invoke",
+    });
+    expect(discovery.links).not.toHaveProperty("attachSessions");
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("routes attach manifest, invoke, and events through an attach session", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    const closed: string[] = [];
+    let eventListener: (() => void) | undefined;
+    const manifest = attachManifest("session-rev", "session-tool");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: (metadata) => ({
+        manifest: async () => ({
+          ...manifest,
+          diagnostics: [
+            {
+              code: "SESSION_METADATA",
+              message: JSON.stringify(metadata),
+            },
+          ],
+        }),
+        invoke: async (request) => ({ invoked: request.exportId }),
+        onManifestChanged: (listener) => {
+          eventListener = listener;
+          return () => {
+            eventListener = undefined;
+          };
+        },
+        close: async () => {
+          closed.push(metadata.projectRoot ?? "<none>");
+        },
+      }),
+    });
+
+    const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectRoot,
+        projectConfigPath,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { sessionId: string };
+
+    const sessionHeaders = { [CAPLETS_ATTACH_SESSION_HEADER]: body.sessionId };
+    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: sessionHeaders,
+    });
+    expect(manifestResponse.status).toBe(200);
+    await expect(manifestResponse.json()).resolves.toMatchObject({
+      revision: "session-rev",
+      caplets: [expect.objectContaining({ capletId: "session-tool" })],
+      diagnostics: [
+        expect.objectContaining({
+          code: "SESSION_METADATA",
+          message: JSON.stringify({
+            projectRoot,
+            projectConfigPath,
+          }),
+        }),
+      ],
+    });
+
+    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { ...sessionHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: "session-rev",
+        kind: "caplet",
+        exportId: "session-export",
+        input: {},
+      }),
+    });
+    expect(invoked.status).toBe(200);
+    await expect(invoked.json()).resolves.toEqual({
+      ok: true,
+      data: { invoked: "session-export" },
+    });
+
+    const events = await app.request("http://127.0.0.1:5387/v1/attach/events", {
+      headers: sessionHeaders,
+    });
+    expect(events.status).toBe(200);
+    const reader = events.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    eventListener?.();
+    const changed = await reader.read();
+    expect(new TextDecoder().decode(changed.value)).toContain("session-rev");
+    await reader.cancel();
+
+    await app.closeCapletsSessions();
+    expect(closed).toEqual([projectRoot]);
+    await engine.close();
+  });
+
+  it("rejects attach session project config paths outside the project root", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot, projectConfigPath: "/tmp/outside-config.json" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "projectConfigPath must be <projectRoot>/.caplets/config.json.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects attach session project roots that are not directories", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const filePath = join(projectRoot, "not-a-directory");
+    writeFileSync(filePath, "content", "utf8");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot: filePath }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "projectRoot must be an existing directory.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects attach session project config paths that are not the standard project path", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectRoot,
+        projectConfigPath: "other-config.json",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "projectConfigPath must be <projectRoot>/.caplets/config.json.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects attach session project context on non-loopback runtimes", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const app = createHttpServeApp(httpOptions({ loopback: false }), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Attach session project context is only accepted by loopback runtimes.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("returns structured errors for unknown attach session headers", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { [CAPLETS_ATTACH_SESSION_HEADER]: "missing-session" },
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Attach session was not found.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("keeps attach sessions active while events are connected", async () => {
+    vi.useFakeTimers();
+    const { engine } = testEngine();
+    const manifest = attachManifest("session-rev", "session-tool");
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => ({
+        manifest: async () => manifest,
+        invoke: async () => ({ ok: true }),
+        onManifestChanged: () => () => undefined,
+        close: async () => undefined,
+      }),
+    });
+    try {
+      const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = (await created.json()) as { sessionId: string };
+      const sessionHeaders = { [CAPLETS_ATTACH_SESSION_HEADER]: body.sessionId };
+      const events = await app.request("http://127.0.0.1:5387/v1/attach/events", {
+        headers: sessionHeaders,
+      });
+      const reader = events.body!.getReader();
+      await reader.read();
+
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+
+      const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+        headers: sessionHeaders,
+      });
+      expect(manifestResponse.status).toBe(200);
+      await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+      await app.closeCapletsSessions();
+      await engine.close();
+    }
   });
 
   it("invokes exported attach entries by revision-scoped export ID", async () => {
@@ -1503,6 +1814,35 @@ function httpOptions(overrides: Partial<HttpServeOptions> = {}): HttpServeOption
     loopback: true,
     trustProxy: false,
     ...overrides,
+  };
+}
+
+function attachManifest(revision: string, capletId: string): AttachManifest {
+  return {
+    version: 1,
+    revision,
+    generatedAt: "2026-06-23T00:00:00.000Z",
+    caplets: [
+      {
+        stableId: `progressive:${capletId}`,
+        exportId: "session-export",
+        kind: "caplet",
+        name: capletId,
+        title: capletId,
+        description: "Session tool.",
+        inputSchema: { type: "object" },
+        schemaHash: null,
+        capletId,
+        shadowing: "forbid",
+      },
+    ],
+    tools: [],
+    resources: [],
+    resourceTemplates: [],
+    prompts: [],
+    completions: [],
+    codeModeCaplets: [],
+    diagnostics: [],
   };
 }
 

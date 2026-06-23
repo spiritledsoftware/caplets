@@ -183,6 +183,62 @@ describe("resolveServeOptions", () => {
     );
   });
 
+  it("resolves upstream URL for HTTP serving", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", upstreamUrl: "https://caplets.example.com/caplets" },
+        {},
+      ),
+    ).toMatchObject({
+      transport: "http",
+      upstreamUrl: "https://caplets.example.com/caplets",
+    });
+  });
+
+  it("rejects upstream URL for stdio serving", () => {
+    expect(() =>
+      resolveServeOptions(
+        { transport: "stdio", upstreamUrl: "https://caplets.example.com/caplets" },
+        {},
+      ),
+    ).toThrow(/--upstream-url is only valid with --transport http/u);
+  });
+
+  it("rejects self-referential upstream URLs", () => {
+    expect(() =>
+      resolveServeOptions({ transport: "http", upstreamUrl: "http://127.0.0.1:5387/" }, {}),
+    ).toThrow(/must not point back to this runtime/u);
+
+    expect(() =>
+      resolveServeOptions({ transport: "http", upstreamUrl: "http://localhost:5387/" }, {}),
+    ).toThrow(/must not point back to this runtime/u);
+
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http", host: "::1", upstreamUrl: "http://127.0.0.1:5387/" },
+        {},
+      ),
+    ).toThrow(/must not point back to this runtime/u);
+
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http", host: "0.0.0.0", upstreamUrl: "http://127.0.0.1:5387/" },
+        {},
+      ),
+    ).toThrow(/must not point back to this runtime/u);
+
+    expect(() =>
+      resolveServeOptions({ transport: "http", host: "::", upstreamUrl: "http://[::1]:5387/" }, {}),
+    ).toThrow(/must not point back to this runtime/u);
+
+    expect(() =>
+      resolveServeOptions(
+        { transport: "http", upstreamUrl: "https://caplets.example.com/caplets" },
+        { CAPLETS_SERVER_URL: "https://caplets.example.com/caplets/" },
+      ),
+    ).toThrow(/must not point back to this runtime/u);
+  });
+
   it("defaults daemonized serve to HTTP", () => {
     expect(resolveDaemonHttpServeOptions({}, {})).toMatchObject({
       transport: "http",

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildAttachProjection,
+  buildNativeAttachProjection,
   invokeAttachExport,
   type AttachProjection,
 } from "../src/attach/api";
 import type { CapletsEngine } from "../src/engine";
+import type { NativeCapletsService } from "../src/native/service";
 
 describe("Attach API dispatch", () => {
   it("sorts attach exports before hashing revisions", async () => {
@@ -136,6 +138,108 @@ describe("Attach API dispatch", () => {
     ]);
     expect(projection.manifest.tools).toEqual([
       expect.objectContaining({ shadowing: "namespace" }),
+    ]);
+  });
+
+  it("preserves native stacked Caplet IDs and shadowing policies in attach manifests", async () => {
+    const service = {
+      listTools: () => [
+        {
+          caplet: "filesystem",
+          toolName: "caplets__filesystem",
+          title: "Local Filesystem",
+          description: "Local project filesystem.",
+          promptGuidance: [],
+          inputSchema: { type: "object" },
+          shadowing: "allow",
+        },
+        {
+          caplet: "github",
+          toolName: "caplets__github",
+          title: "Remote GitHub",
+          description: "Upstream GitHub.",
+          promptGuidance: [],
+          inputSchema: { type: "object" },
+          shadowing: "forbid",
+        },
+        {
+          caplet: "vps__browser",
+          toolName: "caplets__vps__browser",
+          title: "Remote Browser",
+          description: "Namespaced upstream browser.",
+          promptGuidance: [],
+          inputSchema: { type: "object" },
+          shadowing: "namespace",
+        },
+      ],
+      execute: vi.fn(),
+      reload: vi.fn(),
+      onToolsChanged: vi.fn(),
+      close: vi.fn(),
+    } as unknown as NativeCapletsService;
+
+    const projection = await buildNativeAttachProjection(service);
+
+    expect(
+      projection.manifest.caplets.map((caplet) => ({
+        name: caplet.name,
+        capletId: caplet.capletId,
+        shadowing: caplet.shadowing,
+      })),
+    ).toEqual([
+      { name: "filesystem", capletId: "filesystem", shadowing: "allow" },
+      { name: "github", capletId: "github", shadowing: "forbid" },
+      { name: "vps__browser", capletId: "vps__browser", shadowing: "namespace" },
+    ]);
+  });
+
+  it("preserves native Code Mode caplets in attach manifests", async () => {
+    const service = {
+      listTools: () => [
+        {
+          caplet: "filesystem",
+          toolName: "caplets__filesystem",
+          title: "Filesystem",
+          description: "Filesystem.",
+          promptGuidance: [],
+          inputSchema: { type: "object" },
+          shadowing: "allow",
+        },
+        {
+          caplet: "code_mode",
+          toolName: "caplets__code_mode",
+          title: "Code Mode",
+          description: "Code Mode.",
+          promptGuidance: [],
+          inputSchema: { type: "object" },
+          codeModeRun: true,
+          codeModeCaplets: [
+            {
+              id: "filesystem",
+              name: "Filesystem",
+              description: "Filesystem.",
+              shadowing: "allow",
+            },
+          ],
+        },
+      ],
+      execute: vi.fn(),
+      reload: vi.fn(),
+      onToolsChanged: vi.fn(),
+      close: vi.fn(),
+    } as unknown as NativeCapletsService;
+
+    const projection = await buildNativeAttachProjection(service);
+
+    expect(projection.manifest.caplets.map((caplet) => caplet.capletId)).toEqual(["filesystem"]);
+    expect(projection.manifest.codeModeCaplets).toEqual([
+      expect.objectContaining({
+        stableId: "native-code-mode:filesystem",
+        kind: "caplet",
+        name: "Filesystem",
+        capletId: "filesystem",
+        shadowing: "allow",
+      }),
     ]);
   });
 

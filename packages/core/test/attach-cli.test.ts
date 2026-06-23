@@ -32,7 +32,12 @@ describe("caplets attach CLI", () => {
 
     expect(out.join("")).toContain("Start a remote-backed Caplets MCP server.");
     expect(out.join("")).toContain("Usage: caplets attach [options] [url]");
-    expect(out.join("")).toContain("--transport <transport>");
+    expect(out.join("")).not.toContain("--transport <transport>");
+    expect(out.join("")).not.toContain("--host <host>");
+    expect(out.join("")).not.toContain("--port <port>");
+    expect(out.join("")).not.toContain("--path <path>");
+    expect(out.join("")).not.toContain("--allow-unauthenticated-http");
+    expect(out.join("")).not.toContain("--trust-proxy");
     expect(out.join("")).not.toContain("--remote-url <url>");
     expect(out.join("")).toContain("--workspace <workspace>");
     expect(out.join("")).toContain("--once");
@@ -71,6 +76,25 @@ describe("caplets attach CLI", () => {
         attachServe: async () => undefined,
       } as never),
     ).rejects.toThrow(/unknown option '--user'/u);
+  });
+
+  it.each([
+    ["--transport", "http"],
+    ["--transport", "stdio"],
+    ["--host", "127.0.0.1"],
+    ["--port", "5387"],
+    ["--path", "/caplets"],
+    ["--allow-unauthenticated-http"],
+    ["--trust-proxy"],
+  ])("rejects attach HTTP serving flag %s", async (...flag: string[]) => {
+    await expect(
+      runCli(["attach", "https://caplets.example.com/caplets", ...flag], {
+        env: { CAPLETS_MODE: "remote" },
+        attachServe: async () => undefined,
+      } as never),
+    ).rejects.toThrow(
+      /caplets attach is stdio-only.*caplets serve --transport http --upstream-url/u,
+    );
   });
 
   it("passes local overlay config paths into attach serving", async () => {

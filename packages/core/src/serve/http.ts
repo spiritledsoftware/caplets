@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
@@ -10,8 +11,11 @@ import { CapletsError, toSafeError } from "../errors";
 import {
   attachErrorResponse,
   buildAttachProjection,
+  CAPLETS_ATTACH_SESSION_HEADER,
   invokeAttachExport,
+  type AttachManifest,
   type AttachInvokeRequest,
+  type AttachSessionMetadata,
 } from "../attach/api";
 import {
   dispatchRemoteCliRequest,
@@ -28,6 +32,7 @@ type HttpServeIo = {
   control?: Omit<RemoteControlDispatchContext, "writeErr">;
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
+  attachSessionFactory?: HttpAttachSessionFactory;
   exposeAttach?: boolean;
   remoteCredentialStore?: RemoteServerCredentialStore;
 };
@@ -38,6 +43,17 @@ type HttpMcpSession = {
 };
 
 export type HttpMcpSessionFactory = () => HttpMcpSession | Promise<HttpMcpSession>;
+
+export type HttpAttachSession = {
+  manifest(): Promise<AttachManifest>;
+  invoke(request: AttachInvokeRequest): Promise<unknown>;
+  onManifestChanged(listener: () => void): () => void;
+  close(): Promise<void>;
+};
+
+export type HttpAttachSessionFactory = (
+  metadata: AttachSessionMetadata,
+) => HttpAttachSession | Promise<HttpAttachSession>;
 
 type HttpSession = {
   server: HttpMcpSession;
@@ -52,6 +68,18 @@ type AttachEventStream = {
   close: () => void;
 };
 
+type AttachSessionRecord = {
+  session: HttpAttachSession;
+  lastUsedAt: number;
+};
+
+type AttachEventSource = {
+  manifestRevision: () => Promise<string>;
+  onManifestChanged: (listener: () => void) => () => void;
+};
+
+const ATTACH_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
+
 export function createHttpServeApp(
   options: HttpServeOptions,
   engine: CapletsEngine,
@@ -59,11 +87,13 @@ export function createHttpServeApp(
 ): CapletsHttpApp {
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
+  const attachSessions = new Map<string, AttachSessionRecord>();
   const attachEventStreams = new Set<AttachEventStream>();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
+  const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
   if (
     options.auth.type === "remote_credentials" &&
@@ -92,7 +122,7 @@ export function createHttpServeApp(
       name: "caplets",
       transport: "http",
       base: paths.base,
-      versions: [versionDiscovery(paths, exposeAttach, remote)],
+      versions: [versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote)],
       auth: { type: options.auth.type },
       ...(remote ? { remote } : {}),
     });
@@ -102,7 +132,7 @@ export function createHttpServeApp(
     const remote = remoteCredentialStore
       ? remoteHostMetadata(c.req.url, paths.base, options, (name) => c.req.header(name))
       : undefined;
-    return c.json(versionDiscovery(paths, exposeAttach, remote));
+    return c.json(versionDiscovery(paths, { exposeAttach, exposeAttachSessions }, remote));
   });
 
   app.get(paths.health, (c) =>
@@ -297,18 +327,75 @@ export function createHttpServeApp(
   });
 
   if (exposeAttach) {
+    if (io.attachSessionFactory) {
+      app.post(paths.attachSessions, attachHostProtection, protectedRouteAuth, async (c) => {
+        try {
+          const parsed = await parseJsonObject(c.req.json(), "Attach session request");
+          const metadata = parseAttachSessionMetadata(parsed, {
+            allowProjectContext: options.loopback,
+          });
+          const sessionId = randomUUID();
+          const session = await io.attachSessionFactory!(metadata);
+          attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
+          pruneIdleAttachSessions();
+          return c.json({ sessionId }, 201);
+        } catch (error) {
+          const response = attachErrorResponse(error);
+          return c.json(response.body, response.status);
+        }
+      });
+
+      app.delete(
+        routePath(paths.attachSessions, ":sessionId"),
+        attachHostProtection,
+        protectedRouteAuth,
+        async (c) => {
+          const sessionId = c.req.param("sessionId");
+          if (!sessionId) {
+            return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 400);
+          }
+          const record = attachSessions.get(sessionId);
+          attachSessions.delete(sessionId);
+          await record?.session.close();
+          return c.json({ ok: true });
+        },
+      );
+    }
+
     app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
-      const attachProjection = await buildAttachProjection(engine);
-      return c.json(attachProjection.manifest);
+      try {
+        const attachSession = attachSessionForRequest(c.req.header(CAPLETS_ATTACH_SESSION_HEADER));
+        if (attachSession) return c.json(await attachSession.manifest());
+        const attachProjection = await buildAttachProjection(engine);
+        return c.json(attachProjection.manifest);
+      } catch (error) {
+        const response = attachErrorResponse(error);
+        return c.json(response.body, response.status);
+      }
     });
 
-    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, () =>
-      attachEventsResponse(engine, attachEventStreams),
-    );
+    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, (c) => {
+      try {
+        const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+        const attachSession = attachSessionForRequest(attachSessionId);
+        return attachEventsResponse(attachEventSource(engine, attachSession), attachEventStreams, {
+          onActivity: () => {
+            if (attachSessionId) touchAttachSession(attachSessionId);
+          },
+        });
+      } catch (error) {
+        const response = attachErrorResponse(error);
+        return c.json(response.body, response.status);
+      }
+    });
 
     app.post(paths.attachInvoke, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
+        const attachSession = attachSessionForRequest(c.req.header(CAPLETS_ATTACH_SESSION_HEADER));
+        if (attachSession) {
+          return c.json({ ok: true, data: await attachSession.invoke(request) });
+        }
         const attachProjection = await buildAttachProjection(engine);
         const result = await invokeAttachExport(engine, attachProjection, request);
         return c.json({ ok: true, data: result });
@@ -317,6 +404,33 @@ export function createHttpServeApp(
         return c.json(response.body, response.status);
       }
     });
+  }
+
+  function attachSessionForRequest(sessionId: string | undefined): HttpAttachSession | undefined {
+    pruneIdleAttachSessions();
+    if (!sessionId) return undefined;
+    const record = attachSessions.get(sessionId);
+    if (!record) {
+      throw new CapletsError("REQUEST_INVALID", "Attach session was not found.");
+    }
+    record.lastUsedAt = Date.now();
+    return record.session;
+  }
+
+  function touchAttachSession(sessionId: string): void {
+    const record = attachSessions.get(sessionId);
+    if (record) record.lastUsedAt = Date.now();
+  }
+
+  function pruneIdleAttachSessions(): void {
+    const expiresBefore = Date.now() - ATTACH_SESSION_IDLE_TIMEOUT_MS;
+    for (const [sessionId, record] of attachSessions) {
+      if (record.lastUsedAt >= expiresBefore) continue;
+      attachSessions.delete(sessionId);
+      void record.session.close().catch((error) => {
+        writeErr(`Could not close idle attach session: ${errorMessage(error)}\n`);
+      });
+    }
   }
 
   app.post(paths.control, protectedRouteAuth, async (c) => {
@@ -363,29 +477,16 @@ export function createHttpServeApp(
     }),
   );
 
-  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, (c) => {
-    const bindingId = randomUUID();
-    return c.json(
-      {
-        binding: { bindingId, state: "attaching", syncState: "pending" },
-        sessionId: randomUUID(),
-      },
-      201,
-    );
-  });
+  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, (c) =>
+    c.json(projectBindingUnsupported(), 501),
+  );
 
   app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), protectedRouteAuth, (c) =>
-    c.json({
-      ok: true,
-      binding: { bindingId: c.req.param("bindingId"), state: "ready" },
-    }),
+    c.json(projectBindingUnsupported(c.req.param("bindingId")), 501),
   );
 
   app.delete(routePath(paths.projectBindings, ":bindingId/session"), protectedRouteAuth, (c) =>
-    c.json({
-      ok: true,
-      binding: { bindingId: c.req.param("bindingId"), state: "ended" },
-    }),
+    c.json(projectBindingUnsupported(c.req.param("bindingId")), 501),
   );
 
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
@@ -423,6 +524,8 @@ export function createHttpServeApp(
       }),
     );
     sessions.clear();
+    await Promise.allSettled([...attachSessions.values()].map((record) => record.session.close()));
+    attachSessions.clear();
   };
 
   if (options.warnUnauthenticatedNetwork) {
@@ -516,8 +619,23 @@ function remoteCredentialSourceHint(
   return sourceHint ? { sourceHint } : {};
 }
 
+function projectBindingUnsupported(bindingId?: string | undefined) {
+  return {
+    ok: false,
+    error: {
+      code: "UNSUPPORTED_CAPABILITY",
+      message: "Self-hosted Project Binding sessions are not implemented by this runtime.",
+    },
+    ...(bindingId ? { binding: { bindingId, state: "not_attached" } } : {}),
+  };
+}
+
 function firstForwardedValue(value: string | undefined): string | undefined {
   return value?.split(",", 1)[0]?.trim() || undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type RemoteHostMetadata = {
@@ -543,9 +661,11 @@ function remoteHostMetadata(
 
 function versionDiscovery(
   paths: ReturnType<typeof servicePaths>,
-  exposeAttach = true,
+  options: { exposeAttach?: boolean; exposeAttachSessions?: boolean } = {},
   remote?: RemoteHostMetadata | undefined,
 ) {
+  const exposeAttach = options.exposeAttach ?? true;
+  const exposeAttachSessions = options.exposeAttachSessions ?? false;
   return {
     version: 1,
     path: paths.version,
@@ -555,6 +675,7 @@ function versionDiscovery(
       admin: paths.control,
       ...(exposeAttach
         ? {
+            ...(exposeAttachSessions ? { attachSessions: paths.attachSessions } : {}),
             attachManifest: paths.attachManifest,
             attachEvents: paths.attachEvents,
             attachInvoke: paths.attachInvoke,
@@ -612,13 +733,94 @@ function isAttachExportKind(value: string): value is AttachInvokeRequest["kind"]
   );
 }
 
-function attachEventsResponse(
+function parseAttachSessionMetadata(
+  input: Record<string, unknown>,
+  options: { allowProjectContext: boolean },
+): AttachSessionMetadata {
+  const rawProjectRoot = optionalStringField(input, "projectRoot");
+  const rawProjectConfigPath = optionalStringField(input, "projectConfigPath");
+  if (!options.allowProjectContext && (rawProjectRoot || rawProjectConfigPath)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Attach session project context is only accepted by loopback runtimes.",
+    );
+  }
+  const projectRoot = canonicalProjectRoot(rawProjectRoot);
+  const projectConfigPath = canonicalProjectConfigPath(rawProjectConfigPath, projectRoot);
+  return {
+    ...(projectRoot ? { projectRoot } : {}),
+    ...(projectConfigPath ? { projectConfigPath } : {}),
+  };
+}
+
+function canonicalProjectRoot(projectRoot: string | undefined): string | undefined {
+  if (!projectRoot) return undefined;
+  try {
+    const canonical = realpathSync(projectRoot);
+    if (!statSync(canonical).isDirectory()) {
+      throw new Error("projectRoot is not a directory.");
+    }
+    return canonical;
+  } catch (error) {
+    throw new CapletsError("REQUEST_INVALID", "projectRoot must be an existing directory.", error);
+  }
+}
+
+function canonicalProjectConfigPath(
+  projectConfigPath: string | undefined,
+  projectRoot: string | undefined,
+): string | undefined {
+  if (!projectConfigPath) return undefined;
+  if (!projectRoot) {
+    throw new CapletsError("REQUEST_INVALID", "projectConfigPath requires projectRoot.");
+  }
+  const absoluteConfigPath = isAbsolute(projectConfigPath)
+    ? projectConfigPath
+    : resolve(projectRoot, projectConfigPath);
+  const candidate = existsSync(absoluteConfigPath)
+    ? realpathSync(absoluteConfigPath)
+    : resolve(absoluteConfigPath);
+  const expectedProjectConfigPath = resolve(projectRoot, ".caplets", "config.json");
+  const expected = existsSync(expectedProjectConfigPath)
+    ? realpathSync(expectedProjectConfigPath)
+    : expectedProjectConfigPath;
+  if (candidate === expected) {
+    return expected;
+  }
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    "projectConfigPath must be <projectRoot>/.caplets/config.json.",
+  );
+}
+
+function attachEventSource(
   engine: CapletsEngine,
+  session: HttpAttachSession | undefined,
+): AttachEventSource {
+  if (session) {
+    return {
+      manifestRevision: async () => (await session.manifest()).revision,
+      onManifestChanged: (listener) => session.onManifestChanged(listener),
+    };
+  }
+  return {
+    manifestRevision: async () => (await buildAttachProjection(engine)).manifest.revision,
+    onManifestChanged: (listener) =>
+      engine.onReload(() => {
+        listener();
+      }),
+  };
+}
+
+function attachEventsResponse(
+  source: AttachEventSource,
   activeStreams: Set<AttachEventStream>,
+  options: { onActivity?: () => void } = {},
 ): Response {
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
   let activeStream: AttachEventStream | undefined;
+  let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
   let closed = false;
   const readable = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -627,6 +829,7 @@ function attachEventsResponse(
           if (closed) return;
           closed = true;
           unsubscribe();
+          if (keepAliveTimer) clearInterval(keepAliveTimer);
           if (activeStream) activeStreams.delete(activeStream);
           try {
             controller.close();
@@ -636,15 +839,26 @@ function attachEventsResponse(
         },
       };
       activeStreams.add(activeStream);
+      options.onActivity?.();
       controller.enqueue(encoder.encode(": connected\n\n"));
-      unsubscribe = engine.onReload(() => {
-        void buildAttachProjection(engine)
-          .then((projection) => {
+      keepAliveTimer = setInterval(() => {
+        if (closed) return;
+        options.onActivity?.();
+        try {
+          controller.enqueue(encoder.encode(": keepalive\n\n"));
+        } catch {
+          activeStream?.close();
+        }
+      }, 30_000);
+      keepAliveTimer.unref?.();
+      unsubscribe = source.onManifestChanged(() => {
+        options.onActivity?.();
+        void source
+          .manifestRevision()
+          .then((revision) => {
             if (closed) return;
             controller.enqueue(
-              encoder.encode(
-                `event: manifest_changed\ndata: ${JSON.stringify({ revision: projection.manifest.revision })}\n\n`,
-              ),
+              encoder.encode(`event: manifest_changed\ndata: ${JSON.stringify({ revision })}\n\n`),
             );
           })
           .catch(() => undefined);
@@ -701,13 +915,15 @@ export async function serveHttpWithSessionFactory(
   options: HttpServeOptions,
   createSession: HttpMcpSessionFactory,
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
+  io: Pick<HttpServeIo, "attachSessionFactory" | "exposeAttach"> = {},
 ): Promise<void> {
   const resolvedEngineOptions = { exposeLocalArtifactPaths: false };
   const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
-    exposeAttach: false,
+    exposeAttach: io.exposeAttach ?? false,
     sessionFactory: createSession,
+    ...(io.attachSessionFactory ? { attachSessionFactory: io.attachSessionFactory } : {}),
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: resolveProjectCapletsRoot(),
@@ -747,6 +963,7 @@ export function servicePaths(base: string): {
   mcp: string;
   control: string;
   attachManifest: string;
+  attachSessions: string;
   attachEvents: string;
   attachInvoke: string;
   projectBindings: string;
@@ -768,6 +985,7 @@ export function servicePaths(base: string): {
     version,
     mcp: routePath(version, "mcp"),
     control: routePath(version, "admin"),
+    attachSessions: routePath(attach, "sessions"),
     attachManifest: routePath(attach, "manifest"),
     attachEvents: routePath(attach, "events"),
     attachInvoke: routePath(attach, "invoke"),

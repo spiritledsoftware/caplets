@@ -86,6 +86,12 @@ The process where a local agent-facing Caplets runtime connects to a trusted Cap
 
 Remote Attach uses Remote Profiles for trust and credentials. Long-lived attach traffic treats credentials as refreshable runtime state rather than fixed startup state.
 
+### Stacked Remote Runtime
+
+A local HTTP Caplets runtime that serves local Caplets while composing an upstream Caplets host through a configured upstream URL.
+
+Stacked Remote Runtime keeps project context session-scoped. `caplets attach` supplies the project root for a client session, while the long-running runtime owns env, Remote Profile, Project Binding, health, and composition behavior.
+
 ### Remote Login
 
 The provider-neutral flow that trusts a local Caplets client to a Caplets host, whether the host is self-hosted or Caplets Cloud.
