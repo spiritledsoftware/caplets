@@ -8,7 +8,7 @@ last_updated: 2026-06-22
 
 ## Summary
 
-Caplets should use one remote login model for both Caplets Cloud and self-hosted Caplets. Users trust a Caplets host once, then MCP clients and native integrations launch `caplets attach --remote-url ...` without Basic Auth, env-secret plumbing, copied bearer tokens, or Cloud-specific login commands.
+Caplets should use one remote login model for both Caplets Cloud and self-hosted Caplets. Users trust a Caplets host once, then MCP clients and native integrations launch `caplets attach <url>` without Basic Auth, env-secret plumbing, copied bearer tokens, or Cloud-specific login commands.
 
 The current codebase already contains much of the Remote Profile shape: `remote login/status/logout`, attach-time credential resolution, hosted Cloud login under Remote Profiles, and a self-hosted pairing exchange. The remaining product work is to replace the old operator-minted Pairing Code bootstrap with a client-started, server-approved pending login flow; harden that flow's refresh/security semantics; clarify migration/recovery behavior; and keep setup docs from reintroducing remote secrets.
 
@@ -31,7 +31,7 @@ Caplets should own remote trust. Agent wiring should install the right attach co
 - **Self-hosted v1 assumes server-local administrative authority.** Web/admin approval is deferred; the supported v1 self-hosted path requires shell access or equivalent local operator authority on the host, and user-facing errors/docs should say so.
 - **Pending login refresh is flow state, not a reusable credential.** The client can refresh a pending login within a longer refresh window, but refresh material is bound to the initiating flow/client, rotates, and cannot become attach bearer material.
 - **Remote trust requires host identity, not just URL strings.** URL-shaped commands remain the user interface, but credentials are audience-bound to the issuing host identity and must handle aliases, redirects, and workspace disambiguation deliberately.
-- **Agent configs do not carry secrets.** `add-mcp` installs `caplets attach --remote-url ...`; Caplets resolves credentials from its own store at runtime.
+- **Agent configs do not carry secrets.** `add-mcp` installs `caplets attach <url>`; Caplets resolves credentials from its own store at runtime.
 - **Basic Auth leaves the product path.** Self-hosted attach, MCP, and control routes should use issued client credentials or server-local operator authority rather than username/password auth.
 - **Backend OAuth stays separate.** `caplets auth login <caplet-id>` continues to mean authentication for a configured backend Caplet, not authentication to a Caplets host.
 - **Cloud becomes one host kind under remote login.** Existing Cloud browser/device auth can remain internally, but the user-facing command and credential lifecycle move under the unified remote namespace.
@@ -45,7 +45,7 @@ flowchart TB
   E --> F["Server-local operator approves code plus client context"]
   C --> G["Caplets stores host credentials"]
   F --> G
-  G --> H["add-mcp installs caplets attach --remote-url host URL"]
+  G --> H["add-mcp installs caplets attach host URL"]
   H --> I["Agent starts attach with no env secrets"]
 ```
 
@@ -55,7 +55,7 @@ flowchart TB
 
 - A1. **Self-hosted server operator.** Runs the Caplets HTTP service, approves pending login codes from the server environment or equivalent local administrative authority, and revokes paired clients.
 - A2. **Remote client user.** Logs a local machine into a Caplets host and configures agents to launch attach.
-- A3. **Agent or MCP client.** Starts `caplets attach --remote-url ...` and receives the remote-backed Caplets surface.
+- A3. **Agent or MCP client.** Starts `caplets attach <url>` and receives the remote-backed Caplets surface.
 - A4. **Caplets host.** Starts pending login flows, rotates pre-login refresh material, records server-local approvals, issues client credentials, validates attach requests, enforces administrative boundaries, and records client identity.
 - A5. **Caplets Cloud.** Implements the same remote login contract while preserving hosted workspace selection and refresh behavior.
 
@@ -68,7 +68,7 @@ flowchart TB
 - R1. `caplets remote login <url>` authenticates this machine to a Caplets host, whether the host is self-hosted or Caplets Cloud.
 - R2. `caplets remote status` shows saved remote credentials in redacted form, including host URL, canonical host identity when available, host kind, selected workspace when applicable, client label, created time, and last-used time when available.
 - R3. `caplets remote logout <url>` removes this machine's saved credentials for that host, with explicit disambiguation or clearly documented all-profile behavior when multiple profiles match the URL.
-- R4. `caplets attach --remote-url <url>` resolves stored credentials for the normalized host URL without requiring `CAPLETS_REMOTE_TOKEN`, `CAPLETS_REMOTE_USER`, or `CAPLETS_REMOTE_PASSWORD`.
+- R4. `caplets attach <url>` resolves stored credentials for the normalized host URL without requiring `CAPLETS_REMOTE_TOKEN`, `CAPLETS_REMOTE_USER`, or `CAPLETS_REMOTE_PASSWORD`.
 - R5. Attach mode inference remains URL-driven for user ergonomics: Cloud URLs use the hosted Cloud path, and non-Cloud URLs use the self-hosted path.
 - R6. Remote credentials are audience-restricted to the issuing Caplets host identity, not merely to the locator string the user typed.
 - R7. URL normalization, redirects, aliases, localhost-vs-LAN addresses, and host URL changes have defined behavior so Caplets does not silently duplicate profiles, attach with the wrong credentials, or lose logout/revocation semantics.
@@ -106,13 +106,13 @@ flowchart TB
 - R30. Valid existing Cloud credentials used by remote attach are migrated into the unified Remote Profile model before use or surfaced through the same `remote status` and `remote logout` lifecycle with a documented sunset.
 - R31. Recovery messages point users to `caplets remote login` only when legacy Cloud state is missing, invalid, unreadable, or outside the supported migration window.
 - R32. Cloud workspace selection is represented as part of the remote login profile, not as a separate auth model.
-- R33. When multiple Cloud workspace profiles share one Cloud URL, `remote status`, `remote logout`, and `attach --remote-url` provide explicit workspace/profile disambiguation or clearly documented all-profile behavior; they do not silently choose or delete the wrong profile.
+- R33. When multiple Cloud workspace profiles share one Cloud URL, `remote status`, `remote logout`, and `attach <url>` provide explicit workspace/profile disambiguation or clearly documented all-profile behavior; they do not silently choose or delete the wrong profile.
 
 **Agent setup and docs**
 
 - R34. First-run docs use `add-mcp` for generic MCP wiring instead of making `caplets setup` the primary path.
 - R35. Local MCP docs install `caplets serve` through `add-mcp`.
-- R36. Remote MCP docs install `caplets attach --remote-url <url>` through `add-mcp` after the user has completed `caplets remote login <url>`.
+- R36. Remote MCP docs install `caplets attach <url>` through `add-mcp` after the user has completed `caplets remote login <url>`.
 - R37. Remote MCP docs do not recommend `add-mcp --env` for Caplets remote credentials.
 - R38. Native OpenCode and Pi docs use their native extension setup paths and the same remote login model.
 - R39. `caplets setup` is deprecated, removed, or reduced to a transitional router that points users at `add-mcp` and native extension docs.
@@ -128,7 +128,7 @@ flowchart TB
 
 **Attach recovery behavior**
 
-- R46. `caplets attach --remote-url <url>` has state-specific human-readable and JSON recovery behavior for no saved credential, revoked credential, expired or refresh-failed credential, host unreachable, host-kind mismatch, workspace/profile ambiguity, and invalid URL.
+- R46. `caplets attach <url>` has state-specific human-readable and JSON recovery behavior for no saved credential, revoked credential, expired or refresh-failed credential, host unreachable, host-kind mismatch, workspace/profile ambiguity, and invalid URL.
 - R47. Attach recovery output identifies the next action when possible: run `caplets remote login`, ask a server operator to approve/reapprove, choose a workspace/profile, inspect server reachability, or fix the URL.
 
 ---
@@ -156,7 +156,7 @@ flowchart TB
 - F4. Agent wiring after remote login
   - **Trigger:** The user wants an MCP client to use a remote-backed Caplets surface.
   - **Actors:** A2, A3
-  - **Steps:** The user runs `add-mcp` with the `caplets attach --remote-url ...` command, the agent starts that command later, and Caplets resolves stored credentials before connecting to the host.
+  - **Steps:** The user runs `add-mcp` with the `caplets attach <url>` command, the agent starts that command later, and Caplets resolves stored credentials before connecting to the host.
   - **Covered by:** R4, R34, R36, R37, R46, R47
 
 - F5. Client revocation
@@ -180,7 +180,7 @@ flowchart TB
 - AE3. **Covers R11, R13, R14, R15.** Given a client starts self-hosted Remote Login and approval takes longer than the visible code lifetime, when the client refreshes within the pre-login refresh lifetime, then it receives a new visible code and rotated client-bound pre-login refresh material while the old code and old refresh material stop working.
 - AE4. **Covers R8, R23, R26.** Given a user attempts remote login or attach with credential-bearing data over a non-local plaintext URL, when no explicit warning-gated local-development exception is active, then the command refuses or reports secure-transport guidance without printing credentials.
 - AE5. **Covers R16.** Given many unauthenticated clients create or refresh pending logins, when limits or quotas are hit, then the host throttles or rejects the requests, cleans up expired state, and reports limit behavior without leaking valid codes.
-- AE6. **Covers R4, R36, R37.** Given a user has completed remote login, when they install `caplets attach --remote-url <url>` through `add-mcp`, then the agent config contains no remote token, password, or Caplets credential env vars.
+- AE6. **Covers R4, R36, R37.** Given a user has completed remote login, when they install `caplets attach <url>` through `add-mcp`, then the agent config contains no remote token, password, or Caplets credential env vars.
 - AE7. **Covers R23, R24, R26.** Given a remote credential is stored locally, when attach refreshes or reports diagnostics, then credentials remain host-scoped and redacted from output.
 - AE8. **Covers R27, R28.** Given a self-hosted operator lists paired clients, when they revoke one client, then that client's next attach attempt fails until it logs in again, and ordinary attach credentials cannot perform that revocation.
 - AE9. **Covers R30, R31.** Given a user still has valid legacy Cloud Auth state, when attach requires credentials, then Caplets migrates or surfaces the state through the unified Remote Profile lifecycle; re-login guidance appears only when the legacy state is missing, invalid, unreadable, or out of the compatibility window.
@@ -195,7 +195,7 @@ flowchart TB
 
 - A first-time MCP user can install Caplets into an agent config without writing a remote secret into that config.
 - Cloud and self-hosted docs use the same remote-login vocabulary.
-- `caplets attach --once --remote-url <url> --json` gives state-specific credential recovery guidance that points to `caplets remote login` or the correct remediation, not provider-specific or env-secret instructions.
+- `caplets attach <url> --once --json` gives state-specific credential recovery guidance that points to `caplets remote login` or the correct remediation, not provider-specific or env-secret instructions.
 - Self-hosted login can tolerate delayed approval with rotating pre-login refresh material without requiring the old operator-minted Pairing Code flow.
 - Self-hosted v1 docs and errors make clear that approval requires shell access or equivalent local administrative authority on the host.
 - Credential-bearing remote flows use authenticated encrypted transport by default, with only explicit warning-gated local-development exceptions.

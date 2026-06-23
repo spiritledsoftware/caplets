@@ -263,6 +263,19 @@ function remoteProfileStore(
   return createRemoteProfileStore({ authDir, env });
 }
 
+function attachRemoteUrlFromArgs(
+  positionalUrl: string | undefined,
+  legacyRemoteUrl: string | undefined,
+): string | undefined {
+  if (positionalUrl && legacyRemoteUrl && positionalUrl !== legacyRemoteUrl) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Pass either attach URL or --remote-url, not both. Use caplets attach <url> for new configs.",
+    );
+  }
+  return positionalUrl ?? legacyRemoteUrl;
+}
+
 function remoteServerCredentialStore(
   statePath: string | undefined,
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
@@ -1265,11 +1278,17 @@ export function createProgram(io: CliIO = {}): Command {
   program
     .command(cliCommands.attach)
     .description("Start a remote-backed Caplets MCP server.")
+    .argument("[url]", "remote Caplets service base URL")
     .option("--transport <transport>", "server transport: stdio or http")
     .option("--host <host>", "HTTP bind host")
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
-    .option("--remote-url <url>", "remote Caplets service base URL")
+    .addOption(
+      new Option(
+        "--remote-url <url>",
+        "legacy alias for the remote Caplets service base URL",
+      ).hideHelp(),
+    )
     .option("--workspace <workspace>", "hosted Cloud workspace ID or slug")
     .option(
       "--allow-unauthenticated-http",
@@ -1281,23 +1300,28 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--once", "validate Project Binding once and exit")
     .option("--project-root <path>", "test-only project root override")
     .action(
-      async (options: {
-        remoteUrl?: string;
-        transport?: string;
-        host?: string;
-        port?: string;
-        path?: string;
-        workspace?: string;
-        allowUnauthenticatedHttp?: boolean;
-        trustProxy?: boolean;
-        json?: boolean;
-        verbose?: boolean;
-        once?: boolean;
-        projectRoot?: string;
-      }) => {
+      async (
+        url: string | undefined,
+        options: {
+          remoteUrl?: string;
+          transport?: string;
+          host?: string;
+          port?: string;
+          path?: string;
+          workspace?: string;
+          allowUnauthenticatedHttp?: boolean;
+          trustProxy?: boolean;
+          json?: boolean;
+          verbose?: boolean;
+          once?: boolean;
+          projectRoot?: string;
+        },
+      ) => {
         try {
+          const remoteUrl = attachRemoteUrlFromArgs(url, options.remoteUrl);
           const attachOptions = {
             ...options,
+            ...(remoteUrl ? { remoteUrl } : {}),
             ...(io.fetch ? { fetch: io.fetch } : {}),
             ...(io.authDir ? { authDir: io.authDir } : {}),
           };

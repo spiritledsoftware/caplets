@@ -3151,7 +3151,7 @@ describe("cli setup", () => {
         mcpServers: {
           caplets: {
             command: "caplets",
-            args: ["attach", "--remote-url", "https://caplets.example.test/caplets"],
+            args: ["attach", "https://caplets.example.test/caplets"],
           },
         },
       });
@@ -3268,7 +3268,6 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://caplets.example.test/caplets",
         ],
       },
@@ -3280,8 +3279,7 @@ describe("cli setup", () => {
       dryRun: false,
       actions: [
         {
-          command:
-            "codex mcp add caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+          command: "codex mcp add caplets -- caplets attach https://caplets.example.test/caplets",
           status: "completed",
         },
       ],
@@ -3320,13 +3318,12 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://caplets.example.test/caplets",
         ],
       },
     ]);
     expect(out.join("")).toContain(
-      "claude mcp add --transport stdio --scope user caplets -- caplets attach --remote-url https://caplets.example.test/caplets",
+      "claude mcp add --transport stdio --scope user caplets -- caplets attach https://caplets.example.test/caplets",
     );
   });
 
@@ -3379,7 +3376,6 @@ describe("cli setup", () => {
           "--",
           "caplets",
           "attach",
-          "--remote-url",
           "https://legacy.example.test/caplets",
         ],
       },

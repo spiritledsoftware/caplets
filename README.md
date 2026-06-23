@@ -127,7 +127,7 @@ For a remote or Cloud-backed MCP server, point the client at `caplets attach` in
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach"]
+args = ["attach", "https://caplets.example.com/caplets"]
 ```
 
 ```json
@@ -135,7 +135,7 @@ args = ["attach"]
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach"]
+      "args": ["attach", "https://caplets.example.com/caplets"]
     }
   }
 }
@@ -150,7 +150,7 @@ host once, then launch attach or a native integration with only non-secret selec
 
 ```sh
 caplets remote login https://caplets.example.com/caplets
-caplets attach --remote-url https://caplets.example.com/caplets
+caplets attach https://caplets.example.com/caplets
 
 caplets remote login https://cloud.caplets.dev
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode

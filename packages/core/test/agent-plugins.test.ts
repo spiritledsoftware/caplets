@@ -22,7 +22,7 @@ describe("Codex and Claude manual MCP setup", () => {
     const readme = await readFile(path.join(repoRoot, "README.md"), "utf8");
     expect(readme).toContain('"command": "caplets"');
     expect(readme).toContain('"args": ["serve"]');
-    expect(readme).toContain('"args": ["attach"]');
+    expect(readme).toContain('"args": ["attach", "https://caplets.example.com/caplets"]');
     expect(readme).toContain("[mcp_servers.caplets]");
     expect(readme).toContain("codex mcp add caplets -- caplets serve");
     expect(readme).toContain(

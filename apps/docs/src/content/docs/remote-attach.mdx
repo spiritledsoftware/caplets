@@ -24,7 +24,7 @@ Codex:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "--remote-url", "https://caplets.example.com/caplets"]
+args = ["attach", "https://caplets.example.com/caplets"]
 ```
 
 Generic MCP JSON:
@@ -34,7 +34,7 @@ Generic MCP JSON:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "--remote-url", "https://caplets.example.com/caplets"]
+      "args": ["attach", "https://caplets.example.com/caplets"]
     }
   }
 }
@@ -65,7 +65,7 @@ or refresh credentials in shell history, agent configs, or environment variables
 After approval, configure the agent to launch attach:
 
 ```sh
-caplets attach --remote-url https://caplets.example.com/caplets
+caplets attach https://caplets.example.com/caplets
 ```
 
 For Caplets Cloud native integrations, log in once and then set the Cloud URL selector:
