@@ -70,6 +70,14 @@ export function buildDaemonCommandPlan(options: {
     serve: options.serve,
     workingDirectory,
   });
+  if (
+    command.pathEnv &&
+    serviceEnv.PATH === undefined &&
+    serviceEnv.Path === undefined &&
+    serviceEnv.path === undefined
+  ) {
+    serviceEnv.PATH = command.pathEnv;
+  }
   const base = {
     executable: command.executable,
     args: command.args,
@@ -138,12 +146,16 @@ function resolveDaemonCommand(options: {
   platform: NodeJS.Platform;
   scriptPath: string | undefined;
   serveArgs: string[];
-}): { executable: string; args: string[] } {
-  const script = resolveDaemonCliScript(options.scriptPath);
+}): { executable: string; args: string[]; pathEnv?: string | undefined } {
   const stableCommand = resolvePathCommand("caplets", options.env, options.platform);
   if (stableCommand) {
-    return { executable: stableCommand, args: options.serveArgs };
+    return {
+      executable: stableCommand,
+      args: options.serveArgs,
+      pathEnv: pathEnvValue(options.env),
+    };
   }
+  const script = resolveDaemonCliScript(options.scriptPath);
   return { executable: process.execPath, args: [script, ...options.serveArgs] };
 }
 
@@ -176,7 +188,7 @@ function resolvePathCommand(
   env: NodeJS.ProcessEnv | Record<string, string | undefined>,
   platform: NodeJS.Platform,
 ): string | undefined {
-  const path = env.PATH ?? env.Path ?? env.path;
+  const path = pathEnvValue(env);
   if (!path) return undefined;
   const delimiter = platform === "win32" ? ";" : ":";
   for (const entry of path.split(delimiter)) {
@@ -211,9 +223,13 @@ function pathCommandCandidates(
     .split(";")
     .map((value) => value.trim())
     .filter(Boolean);
-  return [command, ...extensions.map((extension) => `${command}${extension}`)].map((value) =>
-    resolve(resolved, value),
-  );
+  return extensions.map((extension) => resolve(resolved, `${command}${extension}`));
+}
+
+function pathEnvValue(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string | undefined {
+  return env.PATH ?? env.Path ?? env.path;
 }
 
 function isRunnableCommand(path: string, platform: NodeJS.Platform): boolean {
