@@ -1127,6 +1127,54 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("uses the stable caplets command instead of pnpm's versioned package target", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-pnpm-stable-bin-"));
+    const originalArgv = process.argv[1];
+    try {
+      const binDir = join(dir, "pnpm", "bin");
+      const packageTarget = join(
+        dir,
+        "pnpm",
+        "global",
+        "v11",
+        "233dbf-19efa214857",
+        "node_modules",
+        "caplets",
+        "dist",
+        "index.js",
+      );
+      const stableBin = join(binDir, "caplets");
+      mkdirSync(dirname(packageTarget), { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(packageTarget, "#!/usr/bin/env node\n");
+      chmodSync(packageTarget, 0o755);
+      writeFileSync(stableBin, '#!/bin/sh\nexec node /changed-by-pnpm/global/path "$@"\n');
+      chmodSync(stableBin, 0o755);
+      process.argv[1] = packageTarget;
+
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: { ...testEnv(dir), PATH: binDir },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.executable).toBe(stableBin);
+      expect(result.config.command.args[0]).toBe("serve");
+      expect(result.descriptor.kind).toBe("systemd-user");
+      if (result.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
+      expect(result.descriptor.contents).toContain(`ExecStart="${stableBin}" "serve"`);
+      expect(result.descriptor.contents).not.toContain(packageTarget);
+    } finally {
+      if (originalArgv === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = originalArgv;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rolls back descriptor files when native registration fails", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-rollback-"));
     try {
@@ -2431,8 +2479,8 @@ describe("daemon validation", () => {
         ...result.config,
         command: {
           ...result.config.command,
-          executable: candidate,
-          args: [],
+          executable: process.execPath,
+          args: [candidate],
         },
       };
 
@@ -2518,8 +2566,8 @@ createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.
         ...result.config,
         command: {
           ...result.config.command,
-          executable: serverFile,
-          args: [],
+          executable: process.execPath,
+          args: [serverFile],
         },
       };
 
