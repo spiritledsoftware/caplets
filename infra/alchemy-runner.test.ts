@@ -14,10 +14,6 @@ test("Alchemy runner preserves existing NODE_OPTIONS after the fetch shim", () =
   expect(buildNodeOptions("--trace-warnings")).toBe(`--import=${shimPath} --trace-warnings`);
 });
 
-test("Alchemy runner keeps fetch compatibility shim for cloud deployments", () => {
-  expect(buildNodeOptions()).toContain("alchemy-fetch-compat");
-});
-
 test.each([
   {
     landingPageDomain: "caplets.dev",

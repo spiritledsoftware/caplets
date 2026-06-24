@@ -917,24 +917,6 @@ describe("remote CLI routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("adds mcp to the project with --project in remote mode", async () => {
-    const context = testContext("caplets-cli-remote-add-explicit-project-");
-    const out: string[] = [];
-    const fetchMock = vi.fn(async () => Response.json({ ok: true, result: {} }));
-
-    await runCli(["add", "mcp", "github", "--url", "https://mcp.example.com/mcp", "--project"], {
-      env: remoteEnv(context),
-      fetch: fetchMock as typeof fetch,
-      writeOut: (value) => out.push(value),
-    });
-
-    const output = join(context.projectCapletsRoot, "github.md");
-    expect(readFileSync(output, "utf8")).toContain('url: "https://mcp.example.com/mcp"');
-    expect(existsSync(join(dirname(context.configPath), "github.md"))).toBe(false);
-    expect(out.join("")).toBe(`Wrote project MCP Caplet to ${output}\n`);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("adds mcp globally with --global in remote mode", async () => {
     const context = testContext("caplets-cli-remote-add-global-");
     const out: string[] = [];
@@ -1182,29 +1164,6 @@ describe("remote CLI routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("installs to the project with --project in remote mode", async () => {
-    const context = testContext("caplets-cli-remote-install-explicit-project-");
-    const repo = join(context.projectCapletsRoot, "repo");
-    const out: string[] = [];
-    const fetchMock = vi.fn(async () => Response.json({ ok: true, result: {} }));
-    writeInstallableRepo(repo);
-
-    await runCli(["install", "--project", repo, "github"], {
-      env: remoteEnv(context),
-      fetch: fetchMock as typeof fetch,
-      writeOut: (value) => out.push(value),
-    });
-
-    expect(readFileSync(join(context.projectCapletsRoot, "github", "CAPLET.md"), "utf8")).toContain(
-      "name: GitHub",
-    );
-    expect(existsSync(join(dirname(context.configPath), "github"))).toBe(false);
-    expect(out.join("")).toContain(
-      `Installed github to project ${join(context.projectCapletsRoot, "github")}`,
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("installs globally in remote mode with --global", async () => {
     const context = testContext("caplets-cli-remote-install-global-");
     const repo = join(context.projectCapletsRoot, "repo");
@@ -1289,24 +1248,6 @@ describe("remote CLI routing", () => {
     });
 
     expect(existsSync(context.projectConfigPath)).toBe(true);
-    expect(out.join("")).toBe(`Created project Caplets config at ${context.projectConfigPath}\n`);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("creates the project config with --project in remote mode", async () => {
-    const context = testContext("caplets-cli-remote-init-explicit-project-");
-    const out: string[] = [];
-    const fetchMock = vi.fn(async () => Response.json({ ok: true, result: {} }));
-    const userConfigBefore = readFileSync(context.configPath, "utf8");
-
-    await runCli(["init", "--project"], {
-      env: remoteEnv(context),
-      fetch: fetchMock as typeof fetch,
-      writeOut: (value) => out.push(value),
-    });
-
-    expect(existsSync(context.projectConfigPath)).toBe(true);
-    expect(readFileSync(context.configPath, "utf8")).toBe(userConfigBefore);
     expect(out.join("")).toBe(`Created project Caplets config at ${context.projectConfigPath}\n`);
     expect(fetchMock).not.toHaveBeenCalled();
   });

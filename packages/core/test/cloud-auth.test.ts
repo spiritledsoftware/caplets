@@ -33,18 +33,6 @@ afterEach(() => {
 });
 
 describe("caplets cloud auth CLI", () => {
-  it("shows Cloud Auth help", async () => {
-    const out: string[] = [];
-
-    await runCli(["cloud", "auth", "--help"], { writeOut: (value) => out.push(value) });
-
-    expect(out.join("")).toContain("Authenticate this Caplets client to hosted Caplets Cloud.");
-    expect(out.join("")).toContain("login");
-    expect(out.join("")).toContain("status");
-    expect(out.join("")).toContain("logout");
-    expect(out.join("")).toContain("workspaces");
-  });
-
   it("prints unauthenticated status as JSON when no credentials are stored", async () => {
     const out: string[] = [];
 

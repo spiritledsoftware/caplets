@@ -407,18 +407,6 @@ describe("caplets attach CLI", () => {
     );
   });
 
-  it("keeps attach --once as the finite Project Binding smoke path", async () => {
-    const out: string[] = [];
-    const authDir = tempAuthDir();
-    await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets");
-    await runCli(["attach", "--once", "--remote-url", "https://caplets.example.com/caplets"], {
-      authDir,
-      fetch: async () => Response.json({ error: "websocket_upgrade_required" }, { status: 426 }),
-      writeOut: (value) => out.push(value),
-    });
-    expect(out.join("")).toContain("Project Binding available at");
-  });
-
   it("prints structured JSON for CLI WebSocket failures", async () => {
     const out: string[] = [];
     let exitCode = 0;

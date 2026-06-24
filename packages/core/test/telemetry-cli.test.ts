@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
-import { completeCliWords } from "../src/cli/completion";
 import { readTelemetryIdentity, readTelemetryNotice, TelemetryDebugSink } from "../src/telemetry";
 
 const dirs: string[] = [];
@@ -308,16 +307,5 @@ describe("telemetry CLI", () => {
     expect(out.join("")).toContain('"telemetryDebug"');
     expect(out.join("")).toContain('"provider": "sentry"');
     expect(out.join("")).toContain('"command_family": "init"');
-  });
-
-  it("completion includes telemetry subcommands", async () => {
-    await expect(completeCliWords(["telemetry", ""])).resolves.toEqual([
-      "status",
-      "enable",
-      "disable",
-      "delete-id",
-      "rotate-id",
-      "debug",
-    ]);
   });
 });

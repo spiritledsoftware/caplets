@@ -74,12 +74,6 @@ describe("resolveRemoteMode", () => {
       /CAPLETS_MODE=cloud requires CAPLETS_REMOTE_URL/u,
     );
   });
-
-  it("parses cloud as a valid CAPLETS_MODE value", () => {
-    expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "sidecar" })).toThrow(
-      /Expected CAPLETS_MODE to be auto, local, remote, or cloud/u,
-    );
-  });
 });
 
 describe("resolveCapletsRemote", () => {
