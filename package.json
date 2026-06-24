@@ -30,6 +30,7 @@
     "lint:staged": "lint-staged",
     "prepare": "husky",
     "release": "turbo build && changeset publish",
+    "release:publish": "pnpm telemetry:prepare-release-env && pnpm release",
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "test": "vitest run",

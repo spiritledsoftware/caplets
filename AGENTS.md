@@ -41,7 +41,7 @@
 
 ## PR And Release Checks
 
-- CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `[no changeset]` label.
+- CI runs `pnpm verify` plus `pnpm changeset status --since=origin/main` on PRs unless the PR has the `no changeset` label.
 - User-facing package changes usually need a changeset; current versioning is handled by Changesets and `pnpm version-packages`/`pnpm release`.
 - Pre-commit only runs `pnpm lint-staged` (`oxfmt --check` and `oxlint` on staged JS/TS/config/docs files); pre-push runs the full `pnpm verify`.
 - Alchemy deploy workflows are in `.github/workflows/deploy.yml` and `.github/workflows/pr-preview-deploy.yml`; check `alchemy.run.ts` and `infra/` before changing deploy behavior.
