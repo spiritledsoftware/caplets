@@ -107,6 +107,43 @@ describe("update-check CLI", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("does not start refreshes for short commands with no cache", async () => {
+    const dir = tempDir();
+    const fetcher = vi.fn<typeof fetch>();
+
+    await runCli(["telemetry", "status"], {
+      version: "0.22.0",
+      stderrIsTTY: true,
+      fetch: fetcher,
+      updateCheckCacheDir: join(dir, "cache"),
+      updateCheckStateDir: join(dir, "state"),
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("suppresses telemetry debug structured output", async () => {
+    const dir = tempDir();
+    const err: string[] = [];
+    const fetcher = vi.fn<typeof fetch>();
+    writeCachedLatest(join(dir, "cache"));
+
+    await runCli(["telemetry", "debug", "--", "setup"], {
+      version: "0.22.0",
+      stderrIsTTY: true,
+      fetch: fetcher,
+      updateCheckCacheDir: join(dir, "cache"),
+      updateCheckStateDir: join(dir, "state"),
+      writeOut: () => {},
+      writeErr: (value) => err.push(value),
+    });
+
+    expect(err.join("")).toBe("");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("suppresses help, version, JSON, and completion output products", async () => {
     const dir = tempDir();
     const err: string[] = [];

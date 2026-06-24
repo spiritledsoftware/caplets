@@ -1,6 +1,7 @@
 import { fetchPublicCapletsMetadata, UpdateRegistryError } from "./registry";
 import {
   acquireUpdateRefreshLock,
+  readUpdateMetadataCache,
   releaseUpdateRefreshLock,
   UPDATE_CHECK_CACHE_TTL_MS,
   UPDATE_CHECK_FETCH_TIMEOUT_MS,
@@ -45,6 +46,8 @@ export async function refreshUpdateMetadata(
     writeUpdateMetadataCache(entry, options);
     return "refreshed";
   } catch (error) {
+    const existing = readUpdateMetadataCache({ ...options, now });
+    if (existing?.status === "positive" && existing.usable) return "failed";
     writeUpdateMetadataCache(
       {
         status: "negative",

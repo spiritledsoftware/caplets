@@ -44,6 +44,7 @@ describe("update-check eligibility", () => {
       ["list-tools", "--format", "JSON"],
       ["config", "path"],
       ["config", "paths"],
+      ["telemetry", "debug", "--", "setup"],
     ]) {
       expect(
         classifyUpdateNoticeEligibility({

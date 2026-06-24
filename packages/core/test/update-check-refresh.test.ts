@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -99,5 +99,55 @@ describe("update-check refresh", () => {
 
     expect(firstFetch).toHaveBeenCalledTimes(1);
     expect(secondFetch).not.toHaveBeenCalled();
+  });
+
+  it("replaces corrupt locks instead of skipping refresh forever", async () => {
+    const dir = tempDir();
+    writeFileSync(updateRefreshLockPath({ cacheDir: dir }), "");
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher, now: 1_000 })).resolves.toBe(
+      "refreshed",
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a usable stale positive cache when refresh fails", async () => {
+    const dir = tempDir();
+    const now = 1_000;
+    await refreshUpdateMetadata({
+      cacheDir: dir,
+      now,
+      fetcher: vi.fn<typeof fetch>(async () =>
+        Response.json({
+          name: "caplets",
+          "dist-tags": { latest: "0.23.0" },
+          versions: { "0.22.0": {}, "0.23.0": {} },
+        }),
+      ),
+    });
+
+    await expect(
+      refreshUpdateMetadata({
+        cacheDir: dir,
+        now: now + 25 * 60 * 60 * 1000,
+        fetcher: vi.fn<typeof fetch>(async () => new Response("nope", { status: 503 })),
+      }),
+    ).resolves.toBe("failed");
+
+    expect(
+      readUpdateMetadataCache({ cacheDir: dir, now: now + 25 * 60 * 60 * 1000 }),
+    ).toMatchObject({
+      status: "positive",
+      usable: true,
+      metadata: { distTags: { latest: "0.23.0" } },
+    });
   });
 });

@@ -17,6 +17,7 @@ export type MaybePrintUpdateNoticeOptions = UpdateCheckPathsOptions & {
   stderrIsTTY?: boolean | undefined;
   writeErr?: ((value: string) => void) | undefined;
   now?: number | undefined;
+  refreshForLater?: boolean | undefined;
 };
 
 export async function maybePrintUpdateNotice(
@@ -50,9 +51,10 @@ export async function maybePrintUpdateNotice(
   }
 
   if (
-    !cache ||
-    (cache.status === "positive" && !cache.fresh) ||
-    (cache.status === "negative" && !cache.fresh)
+    options.refreshForLater &&
+    (!cache ||
+      (cache.status === "positive" && !cache.fresh) ||
+      (cache.status === "negative" && !cache.fresh))
   ) {
     void refreshUpdateMetadata({
       ...options,

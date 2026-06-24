@@ -56,6 +56,7 @@ function isOutputProduct(args: string[]): boolean {
   const format = optionValue(args, "--format");
   if (format?.toLowerCase() === "json") return true;
   if (args[0] === "config" && (args[1] === "path" || args[1] === "paths")) return true;
+  if (args[0] === "telemetry" && args[1] === "debug") return true;
   return false;
 }
 

@@ -149,11 +149,12 @@ export function acquireUpdateRefreshLock(
 
   const existing = readJson<{ lockedAt?: unknown }>(path);
   if (
-    typeof existing?.lockedAt !== "number" ||
+    typeof existing?.lockedAt === "number" &&
     now - existing.lockedAt < UPDATE_CHECK_LOCK_TTL_MS
   ) {
     return false;
   }
+  if (!existing && !existsSync(path)) return false;
 
   try {
     rmSync(path, { force: true });

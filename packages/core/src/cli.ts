@@ -202,6 +202,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
       writeErr: wrappedIo.writeErr,
       cacheDir: wrappedIo.updateCheckCacheDir ?? defaultUpdateCheckCacheDir(wrappedIo.env),
       stateDir: wrappedIo.updateCheckStateDir ?? defaultUpdateCheckStateDir(wrappedIo.env),
+      refreshForLater: shouldRefreshUpdateMetadataForLater(args),
     }).catch(() => undefined);
   };
   const program = createProgram(wrappedIo);
@@ -258,6 +259,13 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   } finally {
     await dispatcher.shutdown();
   }
+}
+
+function shouldRefreshUpdateMetadataForLater(args: string[]): boolean {
+  const command = args[0];
+  if (command === cliCommands.serve) return true;
+  if (command !== cliCommands.attach) return false;
+  return !args.some((arg) => arg === "--once");
 }
 
 function normalizeCompletionWords(words: string[]): string[] {
@@ -1506,7 +1514,7 @@ export function createProgram(io: CliIO = {}): Command {
         if (nestedArgs.length > 0) {
           await runCli(nestedArgs, {
             ...io,
-            env: { ...env, CAPLETS_TELEMETRY_DEBUG: "1" },
+            env: { ...env, CAPLETS_DISABLE_UPDATE_CHECK: "1", CAPLETS_TELEMETRY_DEBUG: "1" },
             telemetryDebugSink: sink,
             writeOut,
             writeErr,
