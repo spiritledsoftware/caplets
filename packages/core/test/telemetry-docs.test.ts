@@ -41,11 +41,9 @@ describe("telemetry product docs", () => {
       "Is Code Mode succeeding?",
       "What reliability pressure is highest?",
       "caplets_cli_command",
-      "caplets_runtime_lifecycle",
       "caplets_tool_activation",
       "caplets_code_mode_outcome",
       "caplets_reliability_error",
-      "caplets_delivery_health",
     ]) {
       expect(text).toContain(expected);
     }

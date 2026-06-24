@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { isLoopbackHost } from "../server/options";
 import type { NativeCapletsServiceResolutionInput } from "./options";
@@ -589,10 +589,27 @@ function runtimeModeFromNativeOptions(options: NativeCapletsServiceOptions) {
 }
 
 function telemetryConfigFromNativeOptions(options: NativeCapletsServiceOptions): CapletsConfig {
-  return createLocalOverlayConfigLoader(options)(
-    resolveConfigPath(options.configPath),
+  const configPath = resolveConfigPath(options.configPath);
+  const config = createLocalOverlayConfigLoader(options)(
+    configPath,
     options.projectConfigPath ?? resolveProjectConfigPath(),
   );
+  const explicitTelemetry = readTelemetryOnlyConfig(configPath);
+  return explicitTelemetry === undefined ? config : { ...config, telemetry: explicitTelemetry };
+}
+
+function readTelemetryOnlyConfig(path: string): boolean | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? typeof (parsed as Record<string, unknown>).telemetry === "boolean"
+        ? ((parsed as Record<string, unknown>).telemetry as boolean)
+        : undefined
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {

@@ -72,6 +72,25 @@ describe("telemetry CLI", () => {
     expect(JSON.parse(readFileSync(userConfig, "utf8")).telemetry).toBe(true);
   });
 
+  it("preserves telemetry-only enablement when no backends are configured", async () => {
+    const dir = tempDir();
+    const configPath = join(dir, "config.json");
+    const out: string[] = [];
+
+    await runCli(["telemetry", "enable"], {
+      env: { CAPLETS_CONFIG: configPath },
+      writeOut: () => {},
+    });
+    await runCli(["telemetry", "status"], {
+      env: { CAPLETS_CONFIG: configPath, CI: "true" },
+      telemetryStateDir: join(dir, "state"),
+      writeOut: (value) => out.push(value),
+    });
+
+    expect(out.join("")).toContain("Telemetry: enabled");
+    expect(out.join("")).toContain("Config: enabled");
+  });
+
   it("delete-id and rotate-id manage only local identity state", async () => {
     const dir = tempDir();
     const stateDir = join(dir, "state");
@@ -191,6 +210,24 @@ describe("telemetry CLI", () => {
 
     expect(err.join("")).toContain("Caplets collects anonymous telemetry");
     expect(readTelemetryNotice({ stateDir: join(dir, "state") }).shown).toBe(true);
+  });
+
+  it("does not let telemetry notice write failures break successful commands", async () => {
+    const dir = tempDir();
+    const configPath = join(dir, "config.json");
+    writeMinimalConfig(configPath);
+
+    await expect(
+      runCli(["serve"], {
+        env: { CAPLETS_CONFIG: configPath },
+        telemetryStateDir: join(dir, "state"),
+        stderrIsTTY: true,
+        writeErr: () => {
+          throw new Error("telemetry notice write failed");
+        },
+        serve: async () => {},
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("captures sanitized reliability but no product event for parse errors in debug mode", async () => {

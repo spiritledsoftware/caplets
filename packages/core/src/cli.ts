@@ -414,7 +414,16 @@ function telemetryConfigForCli(context: TelemetryCliContext): Pick<CapletsConfig
     if (error instanceof CapletsError && error.code !== "CONFIG_INVALID") {
       return {};
     }
-    return { telemetry: false };
+    return telemetryOnlyConfigForCli(resolveConfigPath(context.configPath)) ?? { telemetry: false };
+  }
+}
+
+function telemetryOnlyConfigForCli(path: string): Pick<CapletsConfig, "telemetry"> | undefined {
+  try {
+    const config = readUserConfigObject(path);
+    return typeof config.telemetry === "boolean" ? { telemetry: config.telemetry } : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -453,7 +462,11 @@ async function captureCliTelemetry(
     productEvent?: boolean | undefined;
   },
 ): Promise<void> {
-  maybePrintCliTelemetryNotice(context, options.surface ?? "cli");
+  try {
+    maybePrintCliTelemetryNotice(context, options.surface ?? "cli");
+  } catch {
+    // Telemetry notice delivery is best-effort and must not affect command behavior.
+  }
   const state = resolveTelemetryState({
     config: telemetryConfigForCli(context),
     env: context.env,
@@ -492,6 +505,7 @@ async function captureCliTelemetry(
   }
 
   if (options.outcome !== "failure") return;
+  if (options.error === undefined) return;
   const reliability = buildReliabilityTelemetryEvent({
     name: "caplets_reliability_error",
     properties: {
@@ -1304,8 +1318,13 @@ export function createProgram(io: CliIO = {}): Command {
     stderrIsTTY: io.stderrIsTTY ?? process.stderr.isTTY === true,
     writeErr,
   });
-  const printTelemetryNotice = (surface: TelemetrySurface) =>
-    maybePrintCliTelemetryNotice(telemetryContext(), surface);
+  const printTelemetryNotice = (surface: TelemetrySurface) => {
+    try {
+      maybePrintCliTelemetryNotice(telemetryContext(), surface);
+    } catch {
+      // Telemetry notice delivery is best-effort and must not affect command behavior.
+    }
+  };
   const setExitCode =
     io.setExitCode ??
     ((code: number) => {
@@ -1495,6 +1514,11 @@ export function createProgram(io: CliIO = {}): Command {
           json?: boolean;
         },
       ) => {
+        try {
+          maybePrintCliTelemetryNotice(telemetryContext(), "code_mode");
+        } catch {
+          // Telemetry notice delivery is best-effort and must not affect Code Mode.
+        }
         if (code === "repl" && options.file === undefined) {
           await runCodeModeReplCli({
             env,

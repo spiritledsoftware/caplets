@@ -1751,6 +1751,41 @@ describe("createNativeCapletsService remote mode", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it("honors native telemetry opt-out when local overlay config has invalid backends", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha", description: "Remote alpha" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        telemetry: false,
+        mcpServers: {
+          invalid: { name: "Invalid", description: "Missing command." },
+        },
+      }),
+      "utf8",
+    );
+    const stateDir = join(dir, "state");
+    recordTelemetryNoticeShown({ stateDir, surface: "cli" });
+    const capture = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      telemetryStateDir: stateDir,
+      telemetryEnv: {},
+      telemetryDispatcher: { capture, shutdown: vi.fn(async () => undefined) },
+    });
+
+    await service.reload();
+    await service.execute("alpha", { operation: "inspect" });
+
+    expect(capture).not.toHaveBeenCalled();
+    await service.close();
+  });
+
   it("loads self-hosted native remote credentials from a saved Remote Profile", async () => {
     const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
     dirs.push(authDir);

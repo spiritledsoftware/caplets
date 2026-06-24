@@ -186,9 +186,13 @@ export function operationFamilyFromOperation(operation: unknown): CommandFamily 
 }
 
 export function outcomeFromResult(result: unknown): Outcome {
-  if (isRecord(result) && result.isError === true) return "failure";
+  if (isRecord(result) && result.isError === true) {
+    const code = errorCodeFromResult(result);
+    if (code.toLowerCase().includes("timeout")) return "timeout";
+    return "failure";
+  }
   if (isRecord(result) && result.ok === false) {
-    const code = isRecord(result.error) ? result.error.code : undefined;
+    const code = errorCodeFromResult(result);
     if (typeof code === "string" && code.toLowerCase().includes("timeout")) return "timeout";
     return "failure";
   }
@@ -203,13 +207,19 @@ export function codeModeTelemetryProperties(
   const record = isRecord(envelope) ? envelope : {};
   const meta = isRecord(record.meta) ? record.meta : {};
   const sessionStatus = meta.sessionStatus;
+  const effectiveTimeoutMs =
+    timeoutMs ?? (typeof meta.timeoutMs === "number" ? meta.timeoutMs : undefined);
   return {
     command_family: "code_mode",
     outcome: outcomeFromResult(record),
     duration_bucket: durationBucket(durationMs),
-    timeout_bucket: timeoutBucket(timeoutMs),
+    timeout_bucket: timeoutBucket(effectiveTimeoutMs),
     session_category:
-      sessionStatus === "created" || sessionStatus === "reused" ? sessionStatus : "unknown",
+      sessionStatus === "created" || sessionStatus === "reused"
+        ? sessionStatus
+        : sessionStatus === null
+          ? "none"
+          : "unknown",
     any_caplet_invoked: codeModeEnvelopeInvokedCaplet(record),
   };
 }
@@ -268,7 +278,11 @@ export function runtimeFailureTelemetryProperties(input: {
 
 function errorCodeFromResult(result: unknown): string {
   if (!isRecord(result)) return "UNKNOWN";
-  const error = result.error;
+  const error = isRecord(result.error)
+    ? result.error
+    : isRecord(result.structuredContent) && isRecord(result.structuredContent.error)
+      ? result.structuredContent.error
+      : undefined;
   if (isRecord(error) && typeof error.code === "string") return error.code;
   return "UNKNOWN";
 }

@@ -38,11 +38,8 @@ export type DiagnosticCategory =
 
 export type TelemetryProductEventName =
   | "caplets_cli_command"
-  | "caplets_setup_milestone"
-  | "caplets_runtime_lifecycle"
   | "caplets_tool_activation"
-  | "caplets_code_mode_outcome"
-  | "caplets_delivery_health";
+  | "caplets_code_mode_outcome";
 
 export type TelemetryReliabilityEventName = "caplets_reliability_error";
 
@@ -101,11 +98,8 @@ export type TelemetryEvent = ProductTelemetryEvent | ReliabilityTelemetryEvent;
 
 const PRODUCT_EVENTS = new Set<TelemetryProductEventName>([
   "caplets_cli_command",
-  "caplets_setup_milestone",
-  "caplets_runtime_lifecycle",
   "caplets_tool_activation",
   "caplets_code_mode_outcome",
-  "caplets_delivery_health",
 ]);
 
 const RELIABILITY_EVENTS = new Set<TelemetryReliabilityEventName>(["caplets_reliability_error"]);
