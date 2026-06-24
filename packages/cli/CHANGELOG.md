@@ -1,5 +1,18 @@
 # caplets
 
+## 0.22.0
+
+### Minor Changes
+
+- 5741c6c: Add opt-out anonymous telemetry controls, privacy-gated event builders, Sentry/PostHog provider adapters, CLI status/debug commands, and stderr-only first-run disclosure for eligible CLI/runtime commands.
+- 0c83a7e: Add stacked remote runtimes with `caplets serve --transport http --upstream-url <url>`, make `caplets attach <url>` stdio-only, and carry per-session project context through attach/native remote sessions.
+
+### Patch Changes
+
+- Updated dependencies [5741c6c]
+- Updated dependencies [0c83a7e]
+  - @caplets/core@0.28.0
+
 ## 0.21.2
 
 ### Patch Changes

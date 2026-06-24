@@ -1,5 +1,17 @@
 # @caplets/opencode
 
+## 0.8.0
+
+### Minor Changes
+
+- 5741c6c: Add opt-out anonymous telemetry controls, privacy-gated event builders, Sentry/PostHog provider adapters, CLI status/debug commands, and stderr-only first-run disclosure for eligible CLI/runtime commands.
+
+### Patch Changes
+
+- Updated dependencies [5741c6c]
+- Updated dependencies [0c83a7e]
+  - @caplets/core@0.28.0
+
 ## 0.7.4
 
 ### Patch Changes
