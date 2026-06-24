@@ -236,6 +236,26 @@ describe("telemetry CLI", () => {
     expect(readTelemetryNotice({ stateDir: join(dir, "state") }).shown).toBe(true);
   });
 
+  it("does not let parse-error telemetry failures mask the command error", async () => {
+    const dir = tempDir();
+    const configPath = join(dir, "config.json");
+    let writeErrCalls = 0;
+    writeMinimalConfig(configPath);
+
+    await expect(
+      runCli(["init", "--typo"], {
+        env: { CAPLETS_CONFIG: configPath },
+        telemetryStateDir: join(dir, "state"),
+        stderrIsTTY: true,
+        writeErr: () => {
+          writeErrCalls += 1;
+          if (writeErrCalls === 1) return;
+          throw new Error("telemetry notice write failed");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+  });
+
   it("prints telemetry debug output even when the nested command fails", async () => {
     const dir = tempDir();
     const out: string[] = [];

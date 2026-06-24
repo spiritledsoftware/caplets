@@ -229,7 +229,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
         startedAt,
         error: normalizedError,
         productEvent: captureProductEvent,
-      });
+      }).catch(() => undefined);
     }
     throw normalizedError;
   } finally {
