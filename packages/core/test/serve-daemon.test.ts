@@ -86,6 +86,47 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("passes upstream URL through daemon install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-upstream-"));
+    const upstreamUrl = "https://upstream.caplets.example.com/caplets";
+    try {
+      const out: string[] = [];
+      await runCli(
+        ["daemon", "install", "--json", "--no-validate", "--upstream-url", upstreamUrl],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const result = JSON.parse(out.join("")) as {
+        config: { serve: { upstreamUrl: string }; command: { args: string[] } };
+      };
+      const upstreamArgIndex = result.config.command.args.indexOf("--upstream-url");
+      expect(result.config.serve.upstreamUrl).toBe(upstreamUrl);
+      expect(upstreamArgIndex).toBeGreaterThanOrEqual(0);
+      expect(result.config.command.args[upstreamArgIndex + 1]).toBe(upstreamUrl);
+
+      const updateOut: string[] = [];
+      await runCli(["daemon", "install", "--dry-run", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => updateOut.push(value),
+        daemon: { platform: "linux", commandRunner: fakeRunner() },
+      });
+
+      const updateResult = JSON.parse(updateOut.join("")) as {
+        config: { serve: { upstreamUrl: string }; command: { args: string[] } };
+      };
+      const updateUpstreamArgIndex = updateResult.config.command.args.indexOf("--upstream-url");
+      expect(updateResult.config.serve.upstreamUrl).toBe(upstreamUrl);
+      expect(updateUpstreamArgIndex).toBeGreaterThanOrEqual(0);
+      expect(updateResult.config.command.args[updateUpstreamArgIndex + 1]).toBe(upstreamUrl);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("moves removed serve daemon subcommands to daemon guidance", async () => {
     await expect(runCli(["serve", "start"], { writeErr: () => {} })).rejects.toThrow(
       /Use caplets daemon start/u,
