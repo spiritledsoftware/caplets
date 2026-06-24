@@ -86,6 +86,38 @@ describe("caplets daemon CLI", () => {
     }
   });
 
+  it("passes upstream URL through daemon install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-upstream-"));
+    try {
+      const out: string[] = [];
+      await runCli(
+        [
+          "daemon",
+          "install",
+          "--dry-run",
+          "--json",
+          "--upstream-url",
+          "https://upstream.caplets.example.com/caplets",
+        ],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const result = JSON.parse(out.join("")) as {
+        config: { serve: { upstreamUrl: string }; command: { args: string[] } };
+      };
+      expect(result.config.serve.upstreamUrl).toBe("https://upstream.caplets.example.com/caplets");
+      expect(result.config.command.args).toEqual(
+        expect.arrayContaining(["--upstream-url", "https://upstream.caplets.example.com/caplets"]),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("moves removed serve daemon subcommands to daemon guidance", async () => {
     await expect(runCli(["serve", "start"], { writeErr: () => {} })).rejects.toThrow(
       /Use caplets daemon start/u,

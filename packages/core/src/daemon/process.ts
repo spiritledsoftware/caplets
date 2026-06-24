@@ -42,6 +42,7 @@ export function daemonServeArgs(options: HttpServeOptions): string[] {
   if (options.auth.type === "remote_credentials" && options.remoteCredentialStateDir) {
     args.push("--remote-state-path", options.remoteCredentialStateDir);
   }
+  if (options.upstreamUrl) args.push("--upstream-url", options.upstreamUrl);
   if (options.allowUnauthenticatedHttp) args.push("--allow-unauthenticated-http");
   if (options.trustProxy) args.push("--trust-proxy");
   return args;
