@@ -240,6 +240,29 @@ describe("Code Mode CLI", () => {
       },
     });
   });
+
+  it("routes recovery-only code-mode calls to unsupported repl scaffolding", async () => {
+    const out: string[] = [];
+    let exitCode = 0;
+
+    await runCli(["code-mode", "--recover", "recovery-123", "--json"], {
+      writeOut: (value) => out.push(value),
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "UNSUPPORTED_OPERATION" },
+      meta: {
+        sessionId: null,
+        sessionStatus: null,
+        recoveryRef: null,
+      },
+    });
+  });
 });
 
 function writeConfig(dir: string, config: Record<string, unknown>): string {
