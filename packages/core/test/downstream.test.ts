@@ -467,6 +467,7 @@ describe("downstream stdio lifecycle", () => {
 
   it("keeps health checks available when resource templates are not implemented", async () => {
     let resourceTemplatesListCount = 0;
+    let resourceTemplatesSupported = true;
     const server = createServer((request: IncomingMessage, response: ServerResponse) => {
       let body = "";
       request.setEncoding("utf8");
@@ -518,6 +519,20 @@ describe("downstream stdio lifecycle", () => {
           }
           if (message.method === "resources/templates/list") {
             resourceTemplatesListCount += 1;
+            if (resourceTemplatesSupported) {
+              response.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    resourceTemplates: [
+                      { name: "Repository file", uriTemplate: "file:///repo/{path}" },
+                    ],
+                  },
+                }),
+              );
+              return;
+            }
             response.end(
               JSON.stringify({
                 jsonrpc: "2.0",
@@ -554,18 +569,29 @@ describe("downstream stdio lifecycle", () => {
       });
       const registry = new ServerRegistry(config);
       const manager = new DownstreamManager(registry);
+      const serverConfig = config.mcpServers.remote!;
 
-      const checkResult = await manager.checkServer(config.mcpServers.remote!);
+      await expect(manager.listResourceTemplates(serverConfig)).resolves.toEqual([
+        expect.objectContaining({ uriTemplate: "file:///repo/{path}" }),
+      ]);
+      expect(resourceTemplatesListCount).toBe(1);
+
+      resourceTemplatesSupported = false;
+
+      const checkResult = await manager.checkServer(serverConfig);
 
       expect(checkResult).toMatchObject({
         id: "remote",
         status: "available",
+        capabilities: expect.objectContaining({ resourceTemplates: false }),
         toolCount: 1,
         resourceCount: 0,
         resourceTemplateCount: 0,
       });
-      expect(resourceTemplatesListCount).toBe(1);
+      expect(resourceTemplatesListCount).toBe(2);
       expect(registry.getStatus("remote")).toBe("available");
+      await expect(manager.listResourceTemplates(serverConfig)).resolves.toEqual([]);
+      expect(resourceTemplatesListCount).toBe(2);
 
       await manager.close();
     } finally {

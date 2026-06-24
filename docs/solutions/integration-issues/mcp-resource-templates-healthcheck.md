@@ -44,6 +44,8 @@ try {
 }
 ```
 
+When normalizing the method-not-found response, replace the cached template list with an empty array and refresh its timestamp before throwing `UNSUPPORTED_CAPABILITY`. That clears any stale templates from earlier successful probes and avoids repeated live calls to a known-unsupported method during the cache TTL.
+
 Add a regression test with an HTTP MCP fixture that advertises resources, implements `tools/list` and `resources/list`, but returns JSON-RPC `-32601` for `resources/templates/list`. The health check should return `status: "available"`, `resourceTemplateCount: 0`, and leave the registry status available.
 
 ## Why This Works

@@ -280,6 +280,8 @@ export class DownstreamManager {
       } while (cursor);
     } catch (error) {
       if (isMcpMethodNotFoundError(error)) {
+        connection.resourceTemplates = [];
+        connection.resourceTemplatesFetchedAt = Date.now();
         throw new CapletsError(
           "UNSUPPORTED_CAPABILITY",
           `${server.server} does not implement MCP resource templates`,
@@ -946,7 +948,7 @@ function isUnsupportedCapability(error: unknown): boolean {
 }
 
 function isMcpMethodNotFoundError(error: unknown): boolean {
-  return error instanceof Error && /MCP error -32601|Method not found/i.test(error.message);
+  return error instanceof Error && /MCP error -32601/i.test(error.message);
 }
 
 function stringifyPromptArgs(args: Record<string, unknown>): Record<string, string> {
