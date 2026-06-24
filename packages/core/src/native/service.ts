@@ -1033,6 +1033,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private batchingReload = false;
   private readonly codeModeSessions = new CodeModeSessionManager();
   private readonly telemetry: RuntimeTelemetryContext;
+  private readonly ownsTelemetryDispatcher: boolean;
 
   constructor(
     private remote: NativeCapletsService,
@@ -1043,6 +1044,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   ) {
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     this.unsubscribeLocal = this.local.onToolsChanged(() => this.updateMergedTools());
+    this.ownsTelemetryDispatcher = options.telemetryDispatcher === undefined;
     this.telemetry = createRuntimeTelemetryContext({
       config: telemetryConfigFromNativeOptions(options),
       env: options.telemetryEnv,
@@ -1110,6 +1112,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         this.local.listTools().map((tool) => tool.caplet),
       );
     }
+    this.telemetry.config = telemetryConfigFromNativeOptions(this.options);
     this.startPresence();
     this.updateMergedTools();
     return remoteReloaded || localReloaded;
@@ -1129,7 +1132,12 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.unsubscribeLocal();
     this.listeners.clear();
     this.codeModeSessions.close();
-    await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
+    await Promise.all([
+      this.remote.close(),
+      this.local.close(),
+      this.presence?.close(),
+      this.ownsTelemetryDispatcher ? this.telemetry.dispatcher.shutdown() : undefined,
+    ]);
   }
 
   async replaceRemote(
