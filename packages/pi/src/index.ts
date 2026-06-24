@@ -111,7 +111,11 @@ async function registerCapletsPiExtension(
       : undefined;
   const serviceOptions = explicitNativeOptions ?? settingsArgs ?? {};
   const service =
-    options.service ?? createNativeCapletsService(nativeServiceOptions(serviceOptions));
+    options.service ??
+    createNativeCapletsService({
+      ...nativeServiceOptions(serviceOptions),
+      telemetryIntegration: "pi",
+    });
   const showStatusWidget = shouldShowStatusWidget(
     serviceOptions,
     options.statusWidget ?? settingsArgs?.statusWidget,

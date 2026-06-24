@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { defaultTelemetryStateDir } from "../config/paths";
 import { createNativeCapletsService } from "../native/service";
 import { codeModeDeclarationHash, generateCodeModeDeclarations } from "../code-mode/declarations";
 import { runCodeMode } from "../code-mode/runner";
@@ -17,6 +18,7 @@ export type CodeModeCliOptions = {
   configPath?: string | undefined;
   projectConfigPath?: string | undefined;
   authDir?: string | undefined;
+  telemetryStateDir?: string | undefined;
   inlineCode?: string | undefined;
   file?: string | undefined;
   timeoutMs?: number | undefined;
@@ -34,6 +36,11 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
+    telemetryEnv: options.env as NodeJS.ProcessEnv | undefined,
+    telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
+    telemetrySurface: "code_mode",
+    telemetryVisibility: "visible",
+    telemetryRuntimeMode: runtimeScope(options.env) === "local" ? "local" : "unknown",
   });
   try {
     if (options.sessionId !== undefined) {
@@ -57,12 +64,19 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
       return;
     }
     const code = await readCodeModeCliCode(options);
+    const started = Date.now();
     const result = await runCodeMode({
       code,
-      service: service.codeModeService?.() ?? service,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      service: service.codeModeService?.() ?? service,
       runtimeScope: "cli-one-shot",
     });
+    await service
+      .captureCodeModeOutcome?.(result, {
+        started,
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      })
+      .catch(() => undefined);
     if (options.json) {
       options.writeOut(`${JSON.stringify(result, null, 2)}\n`);
     } else if (result.ok) {
@@ -90,6 +104,7 @@ export async function runCodeModeReplCli(
     | "configPath"
     | "projectConfigPath"
     | "authDir"
+    | "telemetryStateDir"
     | "sessionId"
     | "recoveryRef"
     | "json"
@@ -119,13 +134,20 @@ export async function runCodeModeReplCli(
 export async function codeModeTypesCli(
   options: Pick<
     CodeModeCliOptions,
-    "env" | "configPath" | "projectConfigPath" | "authDir" | "json" | "writeOut"
+    | "env"
+    | "configPath"
+    | "projectConfigPath"
+    | "authDir"
+    | "telemetryStateDir"
+    | "json"
+    | "writeOut"
   >,
 ): Promise<void> {
   const engine = new CapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
+    telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
   });
   try {
     const caplets = listCodeModeCallableCaplets(engine);

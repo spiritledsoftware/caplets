@@ -78,6 +78,12 @@ Recovery References are separate from session handles. Possessing a session hand
 
 The Caplets exposure mode where agents discover and call backend operations through a small set of wrapper tools instead of receiving every downstream operation as a separate top-level tool.
 
+### Anonymous Telemetry
+
+Opt-out Caplets usage and reliability reporting that uses a stable anonymous installation ID and categorical metadata only.
+
+Anonymous Telemetry is split by purpose: PostHog receives product usage events, while Sentry receives sanitized reliability events. It must not collect raw config, prompts, Code Mode code, tool arguments, tool outputs, paths, URLs, hostnames, Caplet IDs, credentials, or unsanitized error payloads.
+
 ## Remote Attach
 
 ### Remote Attach

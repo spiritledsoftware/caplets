@@ -43,6 +43,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   const declaration = generateCodeModeDeclarations({ caplets: callable });
   const declarationHash = codeModeDeclarationHash(declaration);
   const platformRuntimeHash = codeModeDeclarationHash(CODE_MODE_PLATFORM_RUNTIME_SOURCE);
+  let invokedCaplet = false;
   const sessionCompatibility = {
     declarationHash,
     platformRuntimeHash,
@@ -53,7 +54,7 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     input.sessionManager && input.sessionId
       ? input.sessionManager.diagnosticsSession(input.sessionId, sessionCompatibility)
       : undefined;
-  const metaBase: Omit<CodeModeRunMeta, "durationMs"> = {
+  const metaBase: Omit<CodeModeRunMeta, "durationMs" | "anyCapletInvoked"> = {
     runId: randomUUID(),
     traceId: randomUUID(),
     declarationHash,
@@ -63,7 +64,11 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
     sessionStatus: null,
     recoveryRef: null,
   };
-  const meta = (): CodeModeRunMeta => ({ ...metaBase, durationMs: Date.now() - startedAt });
+  const meta = (): CodeModeRunMeta => ({
+    ...metaBase,
+    durationMs: Date.now() - startedAt,
+    anyCapletInvoked: invokedCaplet,
+  });
 
   if (input.sessionId !== undefined && !input.sessionManager) {
     return {
@@ -170,7 +175,6 @@ export async function runCodeMode(input: RunCodeModeInput): Promise<CodeModeRunE
   }
 
   const capturedLogs: CodeModeLogEntry[] = [];
-  let invokedCaplet = false;
   const api = createCodeModeCapletsApi({
     service: input.service,
     readLogs: async (readInput) => input.logStore?.read(readInput) ?? { entries: [] },
@@ -378,7 +382,10 @@ async function journalRun(
   }
 }
 
-function setRecoveryMeta(metaBase: Omit<CodeModeRunMeta, "durationMs">, recoveryRef: string): void {
+function setRecoveryMeta(
+  metaBase: Omit<CodeModeRunMeta, "durationMs" | "anyCapletInvoked">,
+  recoveryRef: string,
+): void {
   metaBase.recoveryRef = recoveryRef;
 }
 

@@ -39,6 +39,7 @@ export type CodeModeRunMeta = {
   durationMs: number;
   timeoutMs: number;
   maxTimeoutMs: number;
+  anyCapletInvoked: boolean;
   sessionId?: string | null;
   sessionStatus?: CodeModeSessionStatus | null;
   recoveryRef?: string | null;

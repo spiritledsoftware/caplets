@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { isLoopbackHost } from "../server/options";
 import type { NativeCapletsServiceResolutionInput } from "./options";
@@ -18,7 +18,22 @@ import {
   type SdkRemoteCapletsClientOptions,
 } from "./remote";
 import { CapletsEngine } from "../engine";
-import { CapletsError } from "../errors";
+import { CapletsError, errorResult } from "../errors";
+import type {
+  RuntimeMode,
+  TelemetryDebugSink,
+  TelemetryDispatcher,
+  TelemetrySurface,
+  TelemetryVisibility,
+} from "../telemetry";
+import {
+  captureRuntimeReliabilityEvent,
+  captureRuntimeTelemetryEvent,
+  createRuntimeTelemetryContext,
+  runtimeFailureTelemetryProperties,
+  toolActivationProperties,
+  type RuntimeTelemetryContext,
+} from "../telemetry";
 import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
@@ -77,6 +92,14 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   writeErr?: (value: string) => void;
   remoteClientFactory?: (options: ResolvedNativeRemoteOptions) => RemoteCapletsClient;
   localServiceFactory?: (options: LocalNativeCapletsServiceOptions) => NativeCapletsService;
+  telemetryStateDir?: string | undefined;
+  telemetryEnv?: NodeJS.ProcessEnv | undefined;
+  telemetrySurface?: TelemetrySurface | undefined;
+  telemetryVisibility?: TelemetryVisibility | undefined;
+  telemetryRuntimeMode?: RuntimeMode | undefined;
+  telemetryIntegration?: "opencode" | "pi" | "native" | "unknown" | undefined;
+  telemetryDebugSink?: TelemetryDebugSink | undefined;
+  telemetryDispatcher?: TelemetryDispatcher | undefined;
 };
 
 export type NativeCapletTool = {
@@ -102,6 +125,10 @@ export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => v
 export type NativeCapletsService = {
   listTools(): NativeCapletTool[];
   execute(capletId: string, request: unknown): Promise<unknown>;
+  captureCodeModeOutcome?(
+    envelope: unknown,
+    options: { started: number; timeoutMs?: number | undefined },
+  ): Promise<void>;
   codeModeService?(): NativeCapletsService;
   reload(): Promise<boolean>;
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void;
@@ -163,6 +190,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.engine = new CapletsEngine({
       ...options,
       writeErr: this.writeErr,
+      telemetrySurface: options.telemetrySurface ?? "native",
+      telemetryVisibility: options.telemetryVisibility ?? "hidden",
+      telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
+      telemetryIntegration: options.telemetryIntegration ?? "native",
     });
     this.postReloadRefresh = this.refreshExposureSnapshot({
       emitToolsChanged: this.hasSnapshotBackedDirectExposure(),
@@ -205,11 +236,22 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(
+      const started = Date.now();
+      const envelope = await executeCodeModeRunNative(
         this.codeModeDelegate(),
         request,
         this.codeModeSessions,
       );
+      const parsed = codeModeRunInputSchema.safeParse(request);
+      void this.engine
+        .captureCodeModeOutcome(envelope, {
+          started,
+          ...(parsed.success && parsed.data.timeoutMs !== undefined
+            ? { timeoutMs: parsed.data.timeoutMs }
+            : {}),
+        })
+        .catch(() => undefined);
+      return envelope;
     }
     const route = this.directToolRoutes.get(capletId);
     if (route) {
@@ -226,6 +268,13 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       );
     }
     return await this.engine.execute(capletId, request);
+  }
+
+  async captureCodeModeOutcome(
+    envelope: unknown,
+    options: { started: number; timeoutMs?: number | undefined },
+  ): Promise<void> {
+    await this.engine.captureCodeModeOutcome(envelope, options);
   }
 
   codeModeService(): NativeCapletsService {
@@ -521,8 +570,46 @@ function nativeMcpPrimitiveRequest(
   return { operation: operationName };
 }
 
+function operationFromNativeRequest(request: unknown): unknown {
+  return isRecord(request) ? request.operation : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function runtimeModeFromNativeOptions(options: NativeCapletsServiceOptions) {
+  if (options.mode === "local") return "local";
+  if (options.mode === "remote") return "remote";
+  if (options.mode === "cloud") return "cloud";
+  if (options.remote?.url) return "remote";
+  const envMode = options.telemetryEnv?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
+  if (envMode === "remote" || envMode === "cloud" || envMode === "local") return envMode;
+  return "local";
+}
+
+function telemetryConfigFromNativeOptions(options: NativeCapletsServiceOptions): CapletsConfig {
+  const configPath = resolveConfigPath(options.configPath);
+  const config = createLocalOverlayConfigLoader(options)(
+    configPath,
+    options.projectConfigPath ?? resolveProjectConfigPath(),
+  );
+  const explicitTelemetry = readTelemetryOnlyConfig(configPath);
+  return explicitTelemetry === undefined ? config : { ...config, telemetry: explicitTelemetry };
+}
+
+function readTelemetryOnlyConfig(path: string): boolean | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? typeof (parsed as Record<string, unknown>).telemetry === "boolean"
+        ? ((parsed as Record<string, unknown>).telemetry as boolean)
+        : undefined
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {
@@ -962,6 +1049,8 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   private closed = false;
   private batchingReload = false;
   private readonly codeModeSessions = new CodeModeSessionManager();
+  private readonly telemetry: RuntimeTelemetryContext;
+  private readonly ownsTelemetryDispatcher: boolean;
 
   constructor(
     private remote: NativeCapletsService,
@@ -972,6 +1061,18 @@ class CompositeNativeCapletsService implements NativeCapletsService {
   ) {
     this.unsubscribeRemote = this.remote.onToolsChanged(() => this.updateMergedTools());
     this.unsubscribeLocal = this.local.onToolsChanged(() => this.updateMergedTools());
+    this.ownsTelemetryDispatcher = options.telemetryDispatcher === undefined;
+    this.telemetry = createRuntimeTelemetryContext({
+      config: telemetryConfigFromNativeOptions(options),
+      env: options.telemetryEnv,
+      stateDir: options.telemetryStateDir,
+      surface: options.telemetrySurface ?? "native",
+      visibility: options.telemetryVisibility ?? "hidden",
+      runtimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
+      integration: options.telemetryIntegration ?? "native",
+      debugSink: options.telemetryDebugSink,
+      dispatcher: options.telemetryDispatcher,
+    });
     const merged = this.mergeTools();
     this.tools = merged.tools;
     this.routes = merged.routes;
@@ -992,13 +1093,13 @@ class CompositeNativeCapletsService implements NativeCapletsService {
       return await this.local.execute(route.capletId, request);
     }
     if (route?.service === "remote") {
-      return await this.remote.execute(route.capletId, request);
+      return await this.executeRemote(route.capletId, request);
     }
     const diagnostic = this.namespaceDiagnostics.get(capletId);
     if (diagnostic) {
       throw new CapletsError("CAPLET_NAMESPACE_COLLISION", diagnostic.hint, diagnostic);
     }
-    return await this.remote.execute(capletId, request);
+    return await this.executeRemote(capletId, request);
   }
 
   codeModeService(): NativeCapletsService {
@@ -1028,6 +1129,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         this.local.listTools().map((tool) => tool.caplet),
       );
     }
+    this.telemetry.config = telemetryConfigFromNativeOptions(this.options);
     this.startPresence();
     this.updateMergedTools();
     return remoteReloaded || localReloaded;
@@ -1047,7 +1149,12 @@ class CompositeNativeCapletsService implements NativeCapletsService {
     this.unsubscribeLocal();
     this.listeners.clear();
     this.codeModeSessions.close();
-    await Promise.all([this.remote.close(), this.local.close(), this.presence?.close()]);
+    await Promise.all([
+      this.remote.close(),
+      this.local.close(),
+      this.presence?.close(),
+      this.ownsTelemetryDispatcher ? this.telemetry.dispatcher.shutdown() : undefined,
+    ]);
   }
 
   async replaceRemote(
@@ -1096,6 +1203,45 @@ class CompositeNativeCapletsService implements NativeCapletsService {
         writeErr(this.options, `Caplets tools-changed listener failed: ${errorMessage(error)}\n`);
       }
     }
+  }
+
+  private async executeRemote(capletId: string, request: unknown): Promise<unknown> {
+    const started = Date.now();
+    try {
+      const result = await this.remote.execute(capletId, request);
+      this.captureRemoteToolActivation(request, result, started);
+      return result;
+    } catch (error) {
+      const result = errorResult(error);
+      this.captureRemoteReliabilityError(request, result);
+      this.captureRemoteToolActivation(request, result, started);
+      throw error;
+    }
+  }
+
+  private captureRemoteToolActivation(request: unknown, result: unknown, started: number): void {
+    void captureRuntimeTelemetryEvent(this.telemetry, "caplets_tool_activation", {
+      command_family: "native",
+      ...toolActivationProperties({
+        config: this.telemetry.config,
+        caplet: undefined,
+        operation: operationFromNativeRequest(request),
+        exposureMode: "direct",
+        result,
+        durationMs: Date.now() - started,
+      }),
+    }).catch(() => undefined);
+  }
+
+  private captureRemoteReliabilityError(request: unknown, result: unknown): void {
+    void captureRuntimeReliabilityEvent(this.telemetry, {
+      command_family: "native",
+      ...runtimeFailureTelemetryProperties({
+        operation: operationFromNativeRequest(request),
+        exposureMode: "direct",
+        result,
+      }),
+    }).catch(() => undefined);
   }
 
   private mergeTools(): {

@@ -41,6 +41,9 @@ claude mcp add --transport stdio --scope user caplets -- caplets serve
 OpenCode can use Caplets through MCP or the native OpenCode integration. Native mode exposes
 `caplets__code_mode` for Code Mode, plus progressive or direct tools only when configured.
 
+Native integrations use the shared anonymous telemetry controls and do not send telemetry on a
+native-first run until a visible CLI telemetry notice has already been recorded.
+
 Remote native usage:
 
 ```sh
@@ -51,6 +54,9 @@ CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets openc
 
 Pi can use Caplets through MCP or the native Pi integration. Native mode uses the same local
 and remote selection rules as OpenCode.
+
+Native integrations use the shared anonymous telemetry controls and do not send telemetry on a
+native-first run until a visible CLI telemetry notice has already been recorded.
 
 Remote native usage:
 

@@ -74,6 +74,42 @@ export function defaultAuthDir(
   return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "auth");
 }
 
+export function defaultTelemetryStateDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "telemetry");
+}
+
+export function defaultTelemetryIdentityPath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultTelemetryStateDir(env, home, platform), "identity.json");
+}
+
+export function defaultTelemetryNoticePath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultTelemetryStateDir(env, home, platform), "notice.json");
+}
+
+export function defaultTelemetryDeliveryHealthPath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultTelemetryStateDir(env, home, platform), "delivery-health.json");
+}
+
 export function defaultArtifactDir(
   env: PathEnv = process.env,
   home = homedir(),
@@ -108,6 +144,10 @@ export function defaultObservedOutputShapeCacheDir(
 export const DEFAULT_CONFIG_PATH = defaultConfigPath();
 export const DEFAULT_AUTH_DIR = defaultAuthDir();
 export const DEFAULT_ARTIFACT_DIR = defaultArtifactDir();
+export const DEFAULT_TELEMETRY_STATE_DIR = defaultTelemetryStateDir();
+export const DEFAULT_TELEMETRY_IDENTITY_PATH = defaultTelemetryIdentityPath();
+export const DEFAULT_TELEMETRY_NOTICE_PATH = defaultTelemetryNoticePath();
+export const DEFAULT_TELEMETRY_DELIVERY_HEALTH_PATH = defaultTelemetryDeliveryHealthPath();
 export const DEFAULT_COMPLETION_CACHE_DIR = defaultCompletionCacheDir();
 export const DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR = defaultObservedOutputShapeCacheDir();
 export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
@@ -122,6 +162,10 @@ export function resolveProjectConfigPath(cwd = process.cwd()): string {
 
 export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
   return dirname(configPath);
+}
+
+export function resolveTelemetryStateDir(path?: string): string {
+  return path ?? DEFAULT_TELEMETRY_STATE_DIR;
 }
 
 export function resolveProjectCapletsRoot(cwd = process.cwd()): string {

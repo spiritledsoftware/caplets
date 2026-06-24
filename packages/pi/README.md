@@ -91,3 +91,11 @@ export default createCapletsPiExtension({
 
 The explicit config shape is `{ mode, remote: { url, pollIntervalMs } }`. Credentials come from
 `caplets remote login <url>`, not settings files or source code.
+
+## Anonymous Telemetry
+
+Caplets native integrations share the core anonymous telemetry controls. Native-first runs do not
+send telemetry until the CLI has recorded a visible telemetry notice. Disable telemetry with
+top-level `"telemetry": false` in the user Caplets config or `CAPLETS_DISABLE_TELEMETRY=1`.
+Telemetry never includes prompts, tool arguments, tool outputs, paths, URLs, hostnames, Caplet IDs,
+credentials, tokens, raw env, Code Mode code, logs, raw error messages, or unsanitized stack traces.

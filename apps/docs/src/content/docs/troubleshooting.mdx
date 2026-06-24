@@ -64,6 +64,33 @@ CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
 Project config should live at `.caplets/config.json`. User config is for personal agent
 setup; project config is for capabilities that should travel with a repository.
 
+### Disable or inspect telemetry
+
+Expected symptom: you want to disable anonymous telemetry, inspect local telemetry state, or see the
+sanitized events Caplets would send.
+
+Disable telemetry for one process:
+
+```sh
+CAPLETS_DISABLE_TELEMETRY=1 caplets doctor
+```
+
+Disable telemetry in your user Caplets config:
+
+```sh
+caplets telemetry disable
+```
+
+Inspect state or run a local debug capture:
+
+```sh
+caplets telemetry status
+caplets telemetry debug -- doctor
+```
+
+`caplets telemetry rotate-id` and `caplets telemetry delete-id` affect only the local anonymous ID.
+They do not delete provider-side historical anonymous events.
+
 ### Code Mode returns `ok: false`
 
 Expected symptom: a Code Mode call returns an error envelope instead of tool data.

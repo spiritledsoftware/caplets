@@ -188,6 +188,23 @@ caplets vault access grant GH_TOKEN github --remote
 Vault values are not exposed through Code Mode, progressive tools, or native agent APIs. Unset or
 ungranted Vault references quarantine only the affected Caplet and appear in `caplets doctor`.
 
+## Anonymous Telemetry
+
+Caplets collects opt-out anonymous telemetry for product usage and reliability. The first eligible
+interactive CLI run writes a notice to stderr only, including both disable controls:
+
+```sh
+CAPLETS_DISABLE_TELEMETRY=1 caplets serve
+caplets telemetry disable
+```
+
+Use `caplets telemetry status`, `enable`, `disable`, `rotate-id`, `delete-id`, and `debug` to
+inspect or control local telemetry. Caplets never collects raw config, prompts, Code Mode code, tool
+arguments, tool outputs, logs, file paths, URLs, hostnames, Caplet IDs, credentials, tokens, raw
+environment variables, raw error messages, or unsanitized stack traces. Rotating or deleting the
+local anonymous ID does not delete provider-side historical anonymous events; provider retention
+controls historical data.
+
 ## Benchmark
 
 The deterministic benchmark compares flat MCP exposure with Caplets over the same mock

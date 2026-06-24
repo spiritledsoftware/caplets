@@ -53,6 +53,7 @@ export function emptyCodeModeRunMeta(): CodeModeRunMeta {
     durationMs: 0,
     timeoutMs: 0,
     maxTimeoutMs: 0,
+    anyCapletInvoked: false,
     sessionId: null,
     sessionStatus: null,
     recoveryRef: null,

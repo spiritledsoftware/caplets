@@ -33,6 +33,8 @@
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "test": "vitest run",
+    "telemetry:check-release-env": "tsx ./scripts/check-telemetry-release-env.ts",
+    "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsgo --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
     "version-packages": "changeset version && oxlint --fix --quiet && oxfmt --write ."

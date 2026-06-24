@@ -56,10 +56,12 @@ jobs:
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
-          publish: pnpm release
+          publish: pnpm telemetry:prepare-release-env && pnpm release
           commit: "chore: version packages"
           title: "chore: version packages"
         env:
+          CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+          CAPLETS_SENTRY_DSN: ${{ secrets.CAPLETS_SENTRY_DSN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check whether CLI package was published

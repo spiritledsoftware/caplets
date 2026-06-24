@@ -1,5 +1,7 @@
 import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
@@ -113,8 +115,26 @@ import {
   type DaemonOperationOptions,
 } from "./daemon";
 import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./serve";
-import { DEFAULT_AUTH_DIR } from "./config/paths";
+import { DEFAULT_AUTH_DIR, defaultTelemetryStateDir } from "./config/paths";
 import { appendBasePath } from "./server/options";
+import {
+  deleteTelemetryIdentity,
+  buildProductTelemetryEvent,
+  buildReliabilityTelemetryEvent,
+  createTelemetryDispatcher,
+  durationBucket,
+  maybePrintTelemetryNotice,
+  readTelemetryDeliveryHealth,
+  readTelemetryIdentity,
+  readTelemetryNotice,
+  resolveTelemetryState,
+  rotateTelemetryIdentity,
+  TelemetryDebugSink,
+  type CommandFamily,
+  type DiagnosticCategory,
+  type TelemetryDispatcher,
+  type TelemetrySurface,
+} from "./telemetry";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
 
@@ -137,6 +157,9 @@ type CliIO = {
   signal?: AbortSignal;
   projectBindingWebSocketFactory?: ProjectBindingWebSocketFactory;
   authDir?: string;
+  telemetryStateDir?: string;
+  stderrIsTTY?: boolean;
+  telemetryDebugSink?: TelemetryDebugSink;
   version?: string;
   setExitCode?: (code: number) => void;
   serve?: (options: ServeOptions) => Promise<void>;
@@ -147,14 +170,44 @@ type CliIO = {
 };
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
-  const program = createProgram(io);
+  let observedExitCode = 0;
+  const wrappedIo: CliIO = {
+    ...io,
+    setExitCode: (code) => {
+      observedExitCode = code;
+      if (io.setExitCode) {
+        io.setExitCode(code);
+      } else {
+        process.exitCode = code;
+      }
+    },
+  };
+  const program = createProgram(wrappedIo);
+  const trackedCommand = telemetryCommandFamilyFromArgs(args);
+  const startedAt = Date.now();
+  const telemetryContext = telemetryContextForIo(wrappedIo);
+  const dispatcher = createTelemetryDispatcher({
+    stateDir: telemetryContext.stateDir,
+  });
   try {
     if (args.length === 0) {
       program.outputHelp();
       return;
     }
     await program.parseAsync(["node", "caplets", ...args]);
+    if (trackedCommand) {
+      await captureCliTelemetry(telemetryContext, {
+        debugSink: wrappedIo.telemetryDebugSink,
+        dispatcher,
+        commandFamily: trackedCommand.commandFamily,
+        surface: trackedCommand.surface,
+        outcome: observedExitCode === 0 ? "success" : "failure",
+        startedAt,
+      });
+    }
   } catch (error) {
+    let normalizedError = error;
+    let captureProductEvent = true;
     if (error instanceof CommanderError) {
       if (
         error.code === "commander.helpDisplayed" ||
@@ -163,9 +216,24 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
       ) {
         return;
       }
-      throw new CapletsError("REQUEST_INVALID", error.message);
+      normalizedError = new CapletsError("REQUEST_INVALID", error.message);
+      captureProductEvent = false;
     }
-    throw error;
+    if (trackedCommand) {
+      await captureCliTelemetry(telemetryContext, {
+        debugSink: wrappedIo.telemetryDebugSink,
+        dispatcher,
+        commandFamily: trackedCommand.commandFamily,
+        surface: trackedCommand.surface,
+        outcome: "failure",
+        startedAt,
+        error: normalizedError,
+        productEvent: captureProductEvent,
+      }).catch(() => undefined);
+    }
+    throw normalizedError;
+  } finally {
+    await dispatcher.shutdown();
   }
 }
 
@@ -255,6 +323,280 @@ const HIDDEN_INPUT_PROMPT_LABELS = {
 } as const;
 
 export const readHiddenInputForTest = readHiddenInput;
+
+type TelemetryCliContext = {
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  configPath: string | undefined;
+  projectConfigPath: string;
+  stateDir: string;
+  stderrIsTTY: boolean;
+  writeErr: (value: string) => void;
+};
+
+function telemetryContextForIo(io: CliIO): TelemetryCliContext {
+  const env = io.env ?? process.env;
+  return {
+    env,
+    configPath: envConfigPath(env),
+    projectConfigPath: envProjectConfigPath(env),
+    stateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(env),
+    stderrIsTTY: io.stderrIsTTY ?? process.stderr.isTTY === true,
+    writeErr: io.writeErr ?? ((value: string) => process.stderr.write(value)),
+  };
+}
+
+function telemetryCommandFamilyFromArgs(
+  args: string[],
+): { commandFamily: CommandFamily; surface: TelemetrySurface } | undefined {
+  const command = args[0];
+  if (
+    command === undefined ||
+    command === "--help" ||
+    command === "-h" ||
+    command === "--version" ||
+    command === "-V" ||
+    command === cliCommands.telemetry ||
+    command === cliCommands.completion ||
+    command === cliCommands.completeHidden
+  ) {
+    return undefined;
+  }
+  if (command === cliCommands.serve) return { commandFamily: "serve", surface: "serve" };
+  if (command === cliCommands.attach) return { commandFamily: "attach", surface: "attach" };
+  if (command === cliCommands.daemon) return { commandFamily: "daemon", surface: "daemon" };
+  if (command === cliCommands.codeMode) {
+    return { commandFamily: "code_mode", surface: "code_mode" };
+  }
+  if (command === cliCommands.setup) return { commandFamily: "setup", surface: "cli" };
+  if (command === cliCommands.init) return { commandFamily: "init", surface: "cli" };
+  if (command === cliCommands.install) return { commandFamily: "install", surface: "cli" };
+  if (command === cliCommands.add) return { commandFamily: "add", surface: "cli" };
+  if (command === cliCommands.doctor) return { commandFamily: "doctor", surface: "cli" };
+  if (command === cliCommands.auth) return { commandFamily: "auth", surface: "cli" };
+  if (command === cliCommands.remote || command === cliCommands.cloud) {
+    return { commandFamily: "remote", surface: "cli" };
+  }
+  if (command === cliCommands.inspect) return { commandFamily: "inspect", surface: "cli" };
+  if (command === cliCommands.checkBackend) return { commandFamily: "check", surface: "cli" };
+  if (
+    command === cliCommands.listTools ||
+    command === cliCommands.searchTools ||
+    command === cliCommands.getTool ||
+    command === cliCommands.callTool
+  ) {
+    return { commandFamily: "tools", surface: "cli" };
+  }
+  if (
+    command === cliCommands.listResources ||
+    command === cliCommands.searchResources ||
+    command === cliCommands.listResourceTemplates ||
+    command === cliCommands.readResource
+  ) {
+    return { commandFamily: "resources", surface: "cli" };
+  }
+  if (
+    command === cliCommands.listPrompts ||
+    command === cliCommands.searchPrompts ||
+    command === cliCommands.getPrompt
+  ) {
+    return { commandFamily: "prompts", surface: "cli" };
+  }
+  if (command === cliCommands.complete) return { commandFamily: "complete", surface: "cli" };
+  return { commandFamily: "unknown", surface: "cli" };
+}
+
+function telemetryConfigForCli(context: TelemetryCliContext): Pick<CapletsConfig, "telemetry"> {
+  try {
+    return loadConfigWithSources(context.configPath, context.projectConfigPath, {
+      vaultResolver: vaultBootstrapResolver,
+    }).config;
+  } catch (error) {
+    if (error instanceof CapletsError && error.code !== "CONFIG_INVALID") {
+      return {};
+    }
+    return telemetryOnlyConfigForCli(resolveConfigPath(context.configPath)) ?? { telemetry: false };
+  }
+}
+
+function telemetryOnlyConfigForCli(path: string): Pick<CapletsConfig, "telemetry"> | undefined {
+  try {
+    const config = readUserConfigObject(path);
+    return typeof config.telemetry === "boolean" ? { telemetry: config.telemetry } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function maybePrintCliTelemetryNotice(
+  context: TelemetryCliContext,
+  surface: TelemetrySurface,
+): void {
+  const state = resolveTelemetryState({
+    config: telemetryConfigForCli(context),
+    env: context.env,
+    stateDir: context.stateDir,
+    surface,
+    visibility: "visible",
+    allowWithoutNotice: true,
+    createIdentity: false,
+  });
+  if (state.status !== "enabled" || state.notice.shown) return;
+  maybePrintTelemetryNotice({
+    stateDir: context.stateDir,
+    surface,
+    stderrIsTTY: context.stderrIsTTY,
+    writeErr: context.writeErr,
+  });
+}
+
+async function captureCliTelemetry(
+  context: TelemetryCliContext,
+  options: {
+    debugSink?: TelemetryDebugSink | undefined;
+    dispatcher?: TelemetryDispatcher | undefined;
+    commandFamily: CommandFamily;
+    surface?: TelemetrySurface | undefined;
+    outcome: "success" | "failure";
+    startedAt: number;
+    error?: unknown;
+    productEvent?: boolean | undefined;
+  },
+): Promise<void> {
+  try {
+    maybePrintCliTelemetryNotice(context, options.surface ?? "cli");
+  } catch {
+    // Telemetry notice delivery is best-effort and must not affect command behavior.
+  }
+  const state = resolveTelemetryState({
+    config: telemetryConfigForCli(context),
+    env: context.env,
+    stateDir: context.stateDir,
+    surface: options.surface ?? "cli",
+    visibility: "visible",
+    debug: context.env.CAPLETS_TELEMETRY_DEBUG === "1",
+  });
+  if (state.status !== "enabled" && state.status !== "debug") return;
+  const identity =
+    state.status === "debug"
+      ? readTelemetryIdentity({ stateDir: context.stateDir, create: false })
+      : (state.identity ?? readTelemetryIdentity({ stateDir: context.stateDir, create: true }));
+  if (options.productEvent !== false) {
+    const product = buildProductTelemetryEvent({
+      name: "caplets_cli_command",
+      distinctId: identity.id,
+      properties: {
+        package: "@caplets/core",
+        version: packageJsonVersion,
+        surface: options.surface ?? "cli",
+        runtime_mode: runtimeModeForEnv(context.env),
+        execution_context: state.executionContext,
+        command_family: options.commandFamily,
+        outcome: options.outcome,
+        duration_bucket: durationBucket(Date.now() - options.startedAt),
+      },
+    });
+    if (state.status === "debug") {
+      options.debugSink?.capture("debug", product);
+    } else {
+      await (
+        options.dispatcher ?? createTelemetryDispatcher({ stateDir: context.stateDir })
+      ).capture(state, product);
+    }
+  }
+
+  if (options.outcome !== "failure") return;
+  if (options.error === undefined) return;
+  const reliability = buildReliabilityTelemetryEvent({
+    name: "caplets_reliability_error",
+    properties: {
+      package: "@caplets/core",
+      version: packageJsonVersion,
+      surface: options.surface ?? "cli",
+      runtime_mode: runtimeModeForEnv(context.env),
+      command_family: options.commandFamily,
+      error_code: errorCodeForTelemetry(options.error),
+      diagnostic_category: diagnosticCategoryForError(options.error),
+      os_family: platform(),
+      arch: arch(),
+      node_major: Number(process.versions.node.split(".")[0] ?? 0),
+    },
+  });
+  if (state.status === "debug") {
+    options.debugSink?.capture("debug", reliability);
+    return;
+  }
+  await (options.dispatcher ?? createTelemetryDispatcher({ stateDir: context.stateDir })).capture(
+    state,
+    reliability,
+  );
+}
+
+function readUserConfigObject(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch (error) {
+    throw new CapletsError("CONFIG_INVALID", `Caplets config at ${path} is not valid JSON`, error);
+  }
+}
+
+function runtimeModeForEnv(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+  const mode = env.CAPLETS_MODE;
+  return mode === "remote" || mode === "cloud" || mode === "local" ? mode : "unknown";
+}
+
+function errorCodeForTelemetry(error: unknown): string {
+  if (error instanceof CapletsError) return error.code;
+  return "UNKNOWN";
+}
+
+function diagnosticCategoryForError(error: unknown): DiagnosticCategory {
+  if (!(error instanceof CapletsError)) return "unknown";
+  if (error.code.startsWith("CONFIG")) return "config";
+  if (error.code.startsWith("AUTH")) return "auth";
+  if (error.code.includes("NETWORK") || error.code.includes("UNAVAILABLE")) return "network";
+  if (error.code.includes("VALID") || error.code.includes("REQUEST")) return "validation";
+  return "runtime";
+}
+
+function writeTelemetryConfig(path: string, enabled: boolean): void {
+  const config = {
+    ...readUserConfigObject(path),
+    $schema: "https://caplets.dev/config.schema.json",
+    telemetry: enabled,
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+function formatTelemetryStatus(context: TelemetryCliContext): string {
+  const config = telemetryConfigForCli(context);
+  const state = resolveTelemetryState({
+    config,
+    env: context.env,
+    stateDir: context.stateDir,
+    surface: "cli",
+    visibility: "visible",
+    createIdentity: false,
+  });
+  const notice = readTelemetryNotice({ stateDir: context.stateDir });
+  const identity = readTelemetryIdentity({ stateDir: context.stateDir, create: false });
+  const health = readTelemetryDeliveryHealth({ stateDir: context.stateDir });
+  const lines = [
+    `Telemetry: ${state.status}`,
+    `Decision: ${state.decider}`,
+    `Config: ${config.telemetry === false ? "disabled" : "enabled"}`,
+    `Environment: ${context.env.CAPLETS_DISABLE_TELEMETRY === "1" ? "disabled" : "enabled"}`,
+    `Notice shown: ${notice.shown ? `yes (${notice.surface})` : "no"}`,
+    `Anonymous ID: ${identity.kind === "stable" ? "present" : "not stored"}`,
+    `Delivery health: ${Object.keys(health).length === 0 ? "none" : JSON.stringify(health)}`,
+    "Disable with CAPLETS_DISABLE_TELEMETRY=1 or `caplets telemetry disable`.",
+  ];
+  return `${lines.join("\n")}\n`;
+}
 
 function remoteProfileStore(
   authDir: string | undefined,
@@ -968,11 +1310,37 @@ export function createProgram(io: CliIO = {}): Command {
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
   const env = io.env ?? process.env;
   const currentConfigPath = () => envConfigPath(env);
+  const telemetryContext = (): TelemetryCliContext => ({
+    env,
+    configPath: currentConfigPath(),
+    projectConfigPath: envProjectConfigPath(env),
+    stateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(env),
+    stderrIsTTY: io.stderrIsTTY ?? process.stderr.isTTY === true,
+    writeErr,
+  });
+  const printTelemetryNotice = (surface: TelemetrySurface) => {
+    try {
+      maybePrintCliTelemetryNotice(telemetryContext(), surface);
+    } catch {
+      // Telemetry notice delivery is best-effort and must not affect command behavior.
+    }
+  };
   const setExitCode =
     io.setExitCode ??
     ((code: number) => {
       process.exitCode = code;
     });
+  const executeOperationIo = (format: CliOutputFormat | undefined): ExecuteOperationIO => ({
+    writeOut,
+    writeErr,
+    setExitCode,
+    authDir: io.authDir,
+    env,
+    remote: remoteClientForCli(io),
+    format,
+    telemetryStateDir: telemetryContext().stateDir,
+    telemetryDebugSink: io.telemetryDebugSink,
+  });
   const program = new Command();
 
   program
@@ -1051,6 +1419,81 @@ export function createProgram(io: CliIO = {}): Command {
       if (suggestions.length > 0) writeOut(`${suggestions.join("\n")}\n`);
     });
 
+  const telemetry = program
+    .command(cliCommands.telemetry)
+    .description("Inspect and control anonymous Caplets telemetry.");
+
+  telemetry
+    .command("status")
+    .description("Show anonymous telemetry status.")
+    .action(() => {
+      writeOut(formatTelemetryStatus(telemetryContext()));
+    });
+
+  telemetry
+    .command("enable")
+    .description("Enable anonymous telemetry in the user config.")
+    .action(() => {
+      const path = resolveConfigPath(currentConfigPath());
+      writeTelemetryConfig(path, true);
+      writeOut(`Enabled anonymous telemetry in ${path}.\n`);
+      if (env.CAPLETS_DISABLE_TELEMETRY === "1") {
+        writeOut("CAPLETS_DISABLE_TELEMETRY=1 still disables telemetry for this process.\n");
+      }
+    });
+
+  telemetry
+    .command("disable")
+    .description("Disable anonymous telemetry in the user config.")
+    .action(() => {
+      const path = resolveConfigPath(currentConfigPath());
+      writeTelemetryConfig(path, false);
+      writeOut(`Disabled anonymous telemetry in ${path}.\n`);
+    });
+
+  telemetry
+    .command("delete-id")
+    .description("Delete the local anonymous telemetry ID.")
+    .action(() => {
+      deleteTelemetryIdentity({ stateDir: telemetryContext().stateDir });
+      writeOut(
+        "Deleted the local anonymous telemetry ID. This does not delete provider-side historical anonymous events; provider retention controls historical data.\n",
+      );
+    });
+
+  telemetry
+    .command("rotate-id")
+    .description("Rotate the local anonymous telemetry ID.")
+    .action(() => {
+      rotateTelemetryIdentity({ stateDir: telemetryContext().stateDir });
+      writeOut(
+        "Rotated the local anonymous telemetry ID. This does not delete provider-side historical anonymous events; provider retention controls historical data.\n",
+      );
+    });
+
+  telemetry
+    .command("debug")
+    .description("Run a Caplets command with local telemetry debug output.")
+    .allowUnknownOption(true)
+    .argument("[args...]", "Caplets command and arguments after --")
+    .action(async (args: string[]) => {
+      const nestedArgs = args[0] === "--" ? args.slice(1) : args;
+      const sink = new TelemetryDebugSink();
+      try {
+        if (nestedArgs.length > 0) {
+          await runCli(nestedArgs, {
+            ...io,
+            env: { ...env, CAPLETS_TELEMETRY_DEBUG: "1" },
+            telemetryDebugSink: sink,
+            writeOut,
+            writeErr,
+          });
+        }
+      } finally {
+        writeOut(`${JSON.stringify({ telemetryDebug: sink.toJSON() }, null, 2)}\n`);
+      }
+    });
+
   const codeMode = program
     .command(cliCommands.codeMode)
     .description("Run, inspect, and debug Caplets Code Mode.")
@@ -1071,6 +1514,11 @@ export function createProgram(io: CliIO = {}): Command {
           json?: boolean;
         },
       ) => {
+        try {
+          maybePrintCliTelemetryNotice(telemetryContext(), "code_mode");
+        } catch {
+          // Telemetry notice delivery is best-effort and must not affect Code Mode.
+        }
         if (code === "repl" && options.file === undefined) {
           await runCodeModeReplCli({
             env,
@@ -1104,6 +1552,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
           projectConfigPath: envProjectConfigPath(env),
           ...(io.authDir ? { authDir: io.authDir } : {}),
+          telemetryStateDir: telemetryContext().stateDir,
           ...(code === undefined ? {} : { inlineCode: code }),
           ...(options.file === undefined ? {} : { file: options.file }),
           ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
@@ -1127,6 +1576,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
           projectConfigPath: envProjectConfigPath(env),
           ...(io.authDir ? { authDir: io.authDir } : {}),
+          telemetryStateDir: telemetryContext().stateDir,
           ...(options.json === undefined && parentOptions.json === undefined
             ? {}
             : { json: options.json ?? parentOptions.json }),
@@ -1163,6 +1613,7 @@ export function createProgram(io: CliIO = {}): Command {
         allowUnauthenticatedHttp?: boolean;
         trustProxy?: boolean;
       }) => {
+        printTelemetryNotice("serve");
         const resolved = resolveServeOptions(options);
         const configPath = currentConfigPath();
         const runner =
@@ -1173,6 +1624,11 @@ export function createProgram(io: CliIO = {}): Command {
               {
                 ...(configPath ? { configPath } : {}),
                 ...(io.authDir ? { authDir: io.authDir } : {}),
+                telemetryEnv: env,
+                telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(env),
+                telemetrySurface: "serve",
+                telemetryVisibility: "visible",
+                telemetryRuntimeMode: runtimeModeForEnv(env),
               },
               writeErr,
             ));
@@ -1203,6 +1659,7 @@ export function createProgram(io: CliIO = {}): Command {
   addDaemonInstallOptions(
     daemon.command("install").description("Install or update the default Caplets daemon."),
   ).action(async (options: DaemonInstallCommandOptions) => {
+    printTelemetryNotice("daemon");
     const prompt = options.json ? undefined : createSetupPromptHandle(io, writeOut);
     try {
       const result = await installDaemon(daemonInstallOptions(options), {
@@ -1232,6 +1689,7 @@ export function createProgram(io: CliIO = {}): Command {
       .option("--purge", "remove daemon config, state, and logs")
       .option("--dry-run", "preview uninstall actions without mutation"),
   ).action(async (options: { json?: boolean; purge?: boolean; dryRun?: boolean }) => {
+    printTelemetryNotice("daemon");
     const result = await uninstallDaemon(
       { purge: options.purge === true, dryRun: options.dryRun === true },
       daemonOptions(),
@@ -1245,6 +1703,7 @@ export function createProgram(io: CliIO = {}): Command {
 
   addJsonOption(daemon.command("start").description("Start the default Caplets daemon.")).action(
     async (options: DaemonCommandOptions) => {
+      printTelemetryNotice("daemon");
       const result = await startDaemon(daemonOptions());
       if (options.json) {
         writeOut(`${JSON.stringify(result, null, 2)}\n`);
@@ -1259,6 +1718,7 @@ export function createProgram(io: CliIO = {}): Command {
   addJsonOption(
     daemon.command("restart").description("Restart the default Caplets daemon."),
   ).action(async (options: DaemonCommandOptions) => {
+    printTelemetryNotice("daemon");
     const result = await restartDaemon(daemonOptions());
     if (options.json) {
       writeOut(`${JSON.stringify(result, null, 2)}\n`);
@@ -1269,6 +1729,7 @@ export function createProgram(io: CliIO = {}): Command {
 
   addJsonOption(daemon.command("stop").description("Stop the default Caplets daemon.")).action(
     async (options: DaemonCommandOptions) => {
+      printTelemetryNotice("daemon");
       const result = await stopDaemon(daemonOptions());
       if (options.json) {
         writeOut(`${JSON.stringify(result, null, 2)}\n`);
@@ -1281,6 +1742,7 @@ export function createProgram(io: CliIO = {}): Command {
   addJsonOption(
     daemon.command("status").description("Show the default Caplets daemon status."),
   ).action(async (options: DaemonCommandOptions) => {
+    printTelemetryNotice("daemon");
     const status = await daemonStatus(daemonOptions());
     if (options.json) {
       writeOut(`${JSON.stringify(status, null, 2)}\n`);
@@ -1297,6 +1759,7 @@ export function createProgram(io: CliIO = {}): Command {
       .option("--tail <lines>", "show the last number of lines")
       .option("--stream <stream>", "log stream: stdout, stderr, or all"),
   ).action(async (options: DaemonLogsCommandOptions) => {
+    printTelemetryNotice("daemon");
     const tail = options.tail === undefined ? 10 : parseNonNegativeInteger(options.tail, "--tail");
     const stream = parseLogStream(options.stream);
     if (options.follow) {
@@ -1376,6 +1839,7 @@ export function createProgram(io: CliIO = {}): Command {
           projectRoot?: string;
         },
       ) => {
+        printTelemetryNotice("attach");
         try {
           rejectAttachHttpServeFlags(options);
           const remoteUrl = attachRemoteUrlFromArgs(url, options.remoteUrl);
@@ -2022,6 +2486,7 @@ export function createProgram(io: CliIO = {}): Command {
           format?: SetupFormat;
         },
       ) => {
+        printTelemetryNotice("cli");
         const setupOptions: SetupOptions = { ...options, env };
         if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
         if (!integration) {
@@ -2406,6 +2871,7 @@ export function createProgram(io: CliIO = {}): Command {
         capletIds: string[],
         options: MutationTargetOptions & { force?: boolean },
       ) => {
+        printTelemetryNotice("cli");
         const target = parseMutationTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
@@ -2706,19 +3172,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "inspect" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "inspect" }, executeOperationIo(options.format));
     });
 
   program
@@ -2727,19 +3181,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "check" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "check" }, executeOperationIo(options.format));
     });
 
   program
@@ -2748,19 +3190,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "tools" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "tools" }, executeOperationIo(options.format));
     });
 
   program
@@ -2781,15 +3211,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_tools", query }
             : { operation: "search_tools", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -2810,15 +3232,7 @@ export function createProgram(io: CliIO = {}): Command {
         await executeOperation(
           caplet,
           { operation: "describe_tool", name: tool },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -2844,15 +3258,7 @@ export function createProgram(io: CliIO = {}): Command {
           args: parseCallToolArgs(options.args),
           ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
         };
-        await executeOperation(caplet, request, {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        });
+        await executeOperation(caplet, request, executeOperationIo(options.format));
       },
     );
 
@@ -2868,15 +3274,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "resources" }
           : { operation: "resources", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -2897,15 +3295,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_resources", query }
             : { operation: "search_resources", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
   program
@@ -2920,15 +3310,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "resource_templates" }
           : { operation: "resource_templates", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -2941,15 +3323,7 @@ export function createProgram(io: CliIO = {}): Command {
       executeOperation(
         caplet,
         { operation: "read_resource", uri },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -2964,15 +3338,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "prompts" }
           : { operation: "prompts", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -2993,15 +3359,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_prompts", query }
             : { operation: "search_prompts", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
   program
@@ -3025,15 +3383,7 @@ export function createProgram(io: CliIO = {}): Command {
             name: prompt,
             args: parseJsonObjectOption(options.args, "get-prompt --args"),
           },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -3064,15 +3414,7 @@ export function createProgram(io: CliIO = {}): Command {
             ref: completionRefFromOptions(options),
             argument: { name: options.argument, value: options.value },
           },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
 
@@ -3900,6 +4242,8 @@ type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExi
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   remote?: RemoteControlClient | undefined;
   format?: CliOutputFormat | undefined;
+  telemetryStateDir?: string | undefined;
+  telemetryDebugSink?: TelemetryDebugSink | undefined;
 };
 
 type CapletListRow = ReturnType<typeof listCaplets>[number];
@@ -4157,6 +4501,12 @@ async function executeLocalOperation(
     ...(io.authDir ? { authDir: io.authDir } : {}),
     watch: false,
     writeErr: io.writeErr,
+    telemetryEnv: io.env ?? process.env,
+    telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(io.env ?? process.env),
+    telemetrySurface: "cli",
+    telemetryVisibility: "visible",
+    telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
+    telemetryDebugSink: io.telemetryDebugSink,
     ...(config ? { configLoader: () => config } : {}),
   });
   try {

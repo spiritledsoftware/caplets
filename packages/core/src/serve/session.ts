@@ -224,6 +224,7 @@ export class CapletsMcpSession {
   }
 
   private async handleCodeModeRunTool(request: unknown): Promise<any> {
+    const started = Date.now();
     const parsed = codeModeRunInputSchema.safeParse(request);
     const envelope = parsed.success
       ? await runCodeMode({
@@ -247,6 +248,14 @@ export class CapletsMcpSession {
           logs: { entries: [], truncated: false, stored: false },
           meta: emptyCodeModeRunMeta(),
         };
+    void this.engine
+      .captureCodeModeOutcome(envelope, {
+        started,
+        ...(parsed.success && parsed.data.timeoutMs !== undefined
+          ? { timeoutMs: parsed.data.timeoutMs }
+          : {}),
+      })
+      .catch(() => undefined);
     return {
       content: [{ type: "text" as const, text: JSON.stringify(envelope, null, 2) }],
       structuredContent: envelope,

@@ -19,6 +19,7 @@ import {
   type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
+import { recordTelemetryNoticeShown } from "../src/telemetry";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { createHttpServeApp } from "../src/serve/http";
 import type { HttpServeOptions } from "../src/serve/options";
@@ -1715,6 +1716,73 @@ describe("createNativeCapletsService remote mode", () => {
     });
 
     expect(service).not.toBeInstanceOf(RemoteNativeCapletsService);
+    await service.close();
+  });
+
+  it("refreshes composite telemetry config on reload and shuts down the dispatcher", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha", description: "Remote alpha" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const stateDir = join(dir, "state");
+    recordTelemetryNoticeShown({ stateDir, surface: "cli" });
+    const capture = vi.fn();
+    const shutdown = vi.fn(async () => undefined);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      telemetryStateDir: stateDir,
+      telemetryEnv: {},
+      telemetryDispatcher: { capture, shutdown },
+    });
+
+    await service.reload();
+    await service.execute("alpha", { operation: "inspect" });
+    await expect.poll(() => capture.mock.calls.length).toBe(1);
+
+    writeFileSync(configPath, JSON.stringify(progressiveTestConfig({ telemetry: false })), "utf8");
+    await expect(service.reload()).resolves.toBe(true);
+    await service.execute("alpha", { operation: "inspect" });
+    await expect.poll(() => capture.mock.calls.length).toBe(1);
+
+    await service.close();
+    expect(shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors native telemetry opt-out when local overlay config has invalid backends", async () => {
+    const fixture = client([{ name: "alpha", title: "Alpha", description: "Remote alpha" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        telemetry: false,
+        mcpServers: {
+          invalid: { name: "Invalid", description: "Missing command." },
+        },
+      }),
+      "utf8",
+    );
+    const stateDir = join(dir, "state");
+    recordTelemetryNoticeShown({ stateDir, surface: "cli" });
+    const capture = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      telemetryStateDir: stateDir,
+      telemetryEnv: {},
+      telemetryDispatcher: { capture, shutdown: vi.fn(async () => undefined) },
+    });
+
+    await service.reload();
+    await service.execute("alpha", { operation: "inspect" });
+
+    expect(capture).not.toHaveBeenCalled();
     await service.close();
   });
 
