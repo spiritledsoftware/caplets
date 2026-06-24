@@ -8,7 +8,7 @@ import {
 import { createNativeCapletsService } from "../native/service";
 import type { NativeCapletsService } from "../native/service";
 import { isCapletsCloudUrl } from "../remote/options";
-import { serveHttp, serveHttpWithSessionFactory } from "./http";
+import { CAPLETS_STACK_CHAIN_HEADER, serveHttp, serveHttpWithSessionFactory } from "./http";
 import { resolveServeOptions, type RawServeOptions, type ServeOptions } from "./options";
 import { NativeCapletsMcpSession } from "./native-session";
 import { serveStdio } from "./stdio";
@@ -54,23 +54,62 @@ async function serveHttpWithUpstream(
   engineOptions: CapletsEngineOptions,
   writeErr?: (value: string) => void,
 ): Promise<void> {
+  const stackChain = [serveStackIdentity(resolved)];
   await serveHttpWithSessionFactory(
     resolved,
-    async () => {
-      const service = createUpstreamNativeService(upstreamUrl, engineOptions, writeErr);
-      await service.reload();
-      return new NativeCapletsMcpSession(service);
-    },
+    async () =>
+      new NativeCapletsMcpSession(
+        await createReloadedUpstreamService(upstreamUrl, engineOptions, writeErr, {}, stackChain),
+      ),
     writeErr,
     {
       exposeAttach: true,
-      attachSessionFactory: async (metadata) => {
-        const service = createUpstreamNativeService(upstreamUrl, engineOptions, writeErr, metadata);
-        await service.reload();
-        return nativeAttachSession(service);
+      defaultAttachSessionFactory: async (_metadata, context) =>
+        nativeAttachSession(
+          await createReloadedUpstreamService(
+            upstreamUrl,
+            engineOptions,
+            writeErr,
+            {},
+            context.stackChain,
+          ),
+        ),
+      attachSessionFactory: async (metadata, context) => {
+        return nativeAttachSession(
+          await createReloadedUpstreamService(
+            upstreamUrl,
+            engineOptions,
+            writeErr,
+            metadata,
+            context.stackChain,
+          ),
+        );
       },
     },
   );
+}
+
+async function createReloadedUpstreamService(
+  upstreamUrl: string,
+  engineOptions: CapletsEngineOptions,
+  writeErr?: (value: string) => void,
+  metadata: AttachSessionMetadata = {},
+  stackChain: string[] = [],
+): Promise<NativeCapletsService> {
+  const service = createUpstreamNativeService(
+    upstreamUrl,
+    engineOptions,
+    writeErr,
+    metadata,
+    stackChain,
+  );
+  try {
+    await service.reload();
+    return service;
+  } catch (error) {
+    await service.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 function createUpstreamNativeService(
@@ -78,23 +117,53 @@ function createUpstreamNativeService(
   engineOptions: CapletsEngineOptions,
   writeErr?: (value: string) => void,
   metadata: AttachSessionMetadata = {},
+  stackChain: string[] = [],
 ): NativeCapletsService {
   return createNativeCapletsService({
     ...engineOptions,
     ...(metadata.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
     ...(metadata.projectConfigPath ? { projectConfigPath: metadata.projectConfigPath } : {}),
     mode: isCapletsCloudUrl(upstreamUrl) ? "cloud" : "remote",
-    remote: { url: upstreamUrl },
+    remote: {
+      url: upstreamUrl,
+      ...(stackChain.length > 0
+        ? { requestHeaders: { [CAPLETS_STACK_CHAIN_HEADER]: stackChain.join(",") } }
+        : {}),
+    },
     ...(writeErr ? { writeErr } : {}),
   });
 }
 
+function serveStackIdentity(options: Extract<ServeOptions, { transport: "http" }>): string {
+  const origin = options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`;
+  const url = new URL(origin);
+  url.pathname = options.path;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function formatHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
 function nativeAttachSession(service: NativeCapletsService) {
+  let cachedProjection: Awaited<ReturnType<typeof buildNativeAttachProjection>> | undefined;
+  const getProjection = async () => {
+    cachedProjection ??= await buildNativeAttachProjection(service);
+    return cachedProjection;
+  };
+  const unsubscribe = service.onToolsChanged(() => {
+    cachedProjection = undefined;
+  });
   return {
-    manifest: async () => (await buildNativeAttachProjection(service)).manifest,
+    manifest: async () => (await getProjection()).manifest,
     invoke: async (request: AttachInvokeRequest) =>
-      await invokeNativeAttachExport(service, await buildNativeAttachProjection(service), request),
+      await invokeNativeAttachExport(service, await getProjection(), request),
     onManifestChanged: (listener: () => void) => service.onToolsChanged(() => listener()),
-    close: async () => await service.close(),
+    close: async () => {
+      unsubscribe();
+      await service.close();
+    },
   };
 }

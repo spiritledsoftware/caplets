@@ -299,8 +299,6 @@ function rejectAttachHttpServeFlags(options: {
   );
 }
 
-export const rejectAttachHttpServeFlagsForTests = rejectAttachHttpServeFlags;
-
 function hiddenOption(flags: string, description: string): Option {
   return new Option(flags, description).hideHelp();
 }

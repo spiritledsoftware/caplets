@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
-import { createHttpServeApp } from "../src/serve/http";
+import { CAPLETS_STACK_CHAIN_HEADER, createHttpServeApp } from "../src/serve/http";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import type { HttpServeOptions } from "../src/serve/options";
 
@@ -1125,7 +1125,7 @@ describe("createHttpServeApp", () => {
 
   it("routes attach manifest, invoke, and events through an attach session", async () => {
     const { engine } = testEngine();
-    const projectRoot = tempDir("caplets-attach-session-project-");
+    const projectRoot = realpathSync(tempDir("caplets-attach-session-project-"));
     const projectConfigPath = join(projectRoot, ".caplets", "config.json");
     const closed: string[] = [];
     let eventListener: (() => void) | undefined;
@@ -1217,6 +1217,100 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("routes attach manifest and invoke through the default attach session without a session header", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      defaultAttachSessionFactory: () => ({
+        manifest: async () => attachManifest("default-rev", "default-tool"),
+        invoke: async (request) => ({ invoked: request.exportId }),
+        onManifestChanged: () => () => undefined,
+        close: async () => undefined,
+      }),
+    });
+
+    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    expect(manifestResponse.status).toBe(200);
+    const manifest = (await manifestResponse.json()) as AttachManifest;
+    expect(manifest.revision).toBe("default-rev");
+
+    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: "default-rev",
+        kind: "caplet",
+        exportId: "session-export",
+        input: {},
+      }),
+    });
+    expect(invoked.status).toBe(200);
+    await expect(invoked.json()).resolves.toEqual({
+      ok: true,
+      data: { invoked: "session-export" },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects attach requests that would cycle through the same stacked runtime", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      defaultAttachSessionFactory: () => {
+        throw new Error("default attach session should not be created");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { [CAPLETS_STACK_CHAIN_HEADER]: "http://127.0.0.1:5387/" },
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Stacked runtime upstream cycle detected.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("defaults attach session project config path from project root", async () => {
+    const { engine } = testEngine();
+    const projectRoot = realpathSync(tempDir("caplets-attach-session-project-"));
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    let captured: unknown;
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: (metadata) => {
+        captured = metadata;
+        return {
+          manifest: async () => attachManifest("session-rev", "session-tool"),
+          invoke: async () => ({ ok: true }),
+          onManifestChanged: () => () => undefined,
+          close: async () => undefined,
+        };
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(captured).toEqual({ projectRoot, projectConfigPath });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
   it("rejects attach session project config paths outside the project root", async () => {
     const { engine } = testEngine();
     const projectRoot = tempDir("caplets-attach-session-project-");
@@ -1239,6 +1333,40 @@ describe("createHttpServeApp", () => {
       error: {
         code: "REQUEST_INVALID",
         message: "projectConfigPath must be <projectRoot>/.caplets/config.json.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("rejects attach session project config symlinks that resolve outside the project root", async () => {
+    const { engine } = testEngine();
+    const projectRoot = realpathSync(tempDir("caplets-attach-session-project-"));
+    const outsideDir = tempDir("caplets-attach-session-outside-");
+    const outsideConfig = join(outsideDir, "config.json");
+    writeFileSync(outsideConfig, "{}", "utf8");
+    mkdirSync(join(projectRoot, ".caplets"), { recursive: true });
+    symlinkSync(outsideConfig, join(projectRoot, ".caplets", "config.json"));
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => {
+        throw new Error("session factory should not run");
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectRoot }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "projectConfigPath must resolve inside projectRoot.",
       },
     });
 
@@ -1398,6 +1526,37 @@ describe("createHttpServeApp", () => {
       });
       expect(manifestResponse.status).toBe(200);
       await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+      await app.closeCapletsSessions();
+      await engine.close();
+    }
+  });
+
+  it("prunes idle attach sessions without waiting for another request", async () => {
+    vi.useFakeTimers();
+    const { engine } = testEngine();
+    const close = vi.fn(async () => undefined);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: () => ({
+        manifest: async () => attachManifest("session-rev", "session-tool"),
+        invoke: async () => ({ ok: true }),
+        onManifestChanged: () => () => undefined,
+        close,
+      }),
+    });
+    try {
+      const created = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(created.status).toBe(201);
+
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+
+      expect(close).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
       await app.closeCapletsSessions();

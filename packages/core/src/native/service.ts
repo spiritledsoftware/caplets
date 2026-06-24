@@ -1,4 +1,5 @@
 import { resolve as resolvePath } from "node:path";
+import { isLoopbackHost } from "../server/options";
 import type { NativeCapletsServiceResolutionInput } from "./options";
 import {
   resolveNativeCapletsServiceOptions,
@@ -683,7 +684,9 @@ function createRemoteClient(
   if (options.remoteClientFactory) {
     return options.remoteClientFactory(remoteOptions);
   }
-  const attachSessionMetadata = attachSessionMetadataForOptions(options);
+  const attachSessionMetadata = isLoopbackRemote(remoteOptions)
+    ? attachSessionMetadataForOptions(options)
+    : undefined;
   const sdkOptions: SdkRemoteCapletsClientOptions = {
     ...remoteOptions,
     authKind,
@@ -702,6 +705,10 @@ function attachSessionMetadataForOptions(
     projectRoot: options.projectRoot,
     projectConfigPath: resolvePath(options.projectRoot, ".caplets", "config.json"),
   };
+}
+
+function isLoopbackRemote(remoteOptions: ResolvedNativeRemoteOptions): boolean {
+  return remoteOptions.url.protocol === "http:" && isLoopbackHost(remoteOptions.url.hostname);
 }
 
 class ProfileBackedNativeCapletsService implements NativeCapletsService {
@@ -1430,7 +1437,7 @@ function createProjectBindingSessionManager(
       },
     });
   }
-  if (!options.projectRoot) {
+  if (!options.projectRoot || !isLoopbackRemote(remoteOptions)) {
     return undefined;
   }
   return new RemoteProjectBindingSessionManager({
@@ -1450,6 +1457,7 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
   private allowedCapletIds: string[];
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private startPromise: Promise<void> | undefined;
+  private unsupported = false;
 
   constructor(
     private readonly options: {
@@ -1466,10 +1474,14 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
   }
 
   async start(): Promise<void> {
+    if (this.unsupported) return;
     if (!this.startPromise) {
       const start = this.register();
       this.startPromise = start;
-      void start.catch(() => {
+      void start.catch((error) => {
+        if (isUnsupportedProjectBinding(error)) {
+          this.unsupported = true;
+        }
         if (this.startPromise === start) {
           this.startPromise = undefined;
         }
@@ -1497,6 +1509,7 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
 
   async updateAllowedCapletIds(allowedCapletIds: string[]): Promise<void> {
     this.allowedCapletIds = [...allowedCapletIds];
+    await this.startPromise?.catch(() => undefined);
     if (!this.bindingId || !this.sessionId) return;
     await this.heartbeat().catch(() => undefined);
   }
@@ -1526,7 +1539,7 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
       void this.heartbeat().catch((error) => {
-        this.stopHeartbeat();
+        this.disconnect();
         this.options.writeErr?.(
           `Remote Project Binding heartbeat failed: ${errorMessage(error)}\n`,
         );
@@ -1539,6 +1552,13 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
     if (!this.heartbeatTimer) return;
     clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = undefined;
+  }
+
+  private disconnect(): void {
+    this.stopHeartbeat();
+    this.bindingId = undefined;
+    this.sessionId = undefined;
+    this.startPromise = undefined;
   }
 
   private async heartbeat(): Promise<void> {
@@ -1567,6 +1587,16 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
       body: JSON.stringify(input.body),
     });
     if (!response.ok) {
+      let payload: unknown;
+      try {
+        payload = (await response.json()) as unknown;
+      } catch {
+        payload = undefined;
+      }
+      const error = isRecord(payload) && isRecord(payload.error) ? payload.error : undefined;
+      if (error?.code === "UNSUPPORTED_CAPABILITY" && typeof error.message === "string") {
+        throw new CapletsError("UNSUPPORTED_CAPABILITY", error.message);
+      }
       throw new CapletsError(
         "SERVER_UNAVAILABLE",
         `Project Binding request failed (${response.status}).`,
@@ -1574,6 +1604,10 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
     }
     return (await response.json().catch(() => ({}))) as T;
   }
+}
+
+function isUnsupportedProjectBinding(error: unknown): boolean {
+  return isRecord(error) && error.code === "UNSUPPORTED_CAPABILITY";
 }
 
 function projectBindingUrl(attachUrl: URL, ...segments: string[]): URL {

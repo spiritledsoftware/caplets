@@ -184,22 +184,8 @@ export async function buildNativeAttachProjection(
 ): Promise<AttachProjection> {
   const tools = service.listTools();
   const partial = sortAttachProjectionInput({
-    caplets: tools
-      .filter((tool) => tool.codeModeRun !== true)
-      .map((tool) => ({
-        stableId: `native:${tool.caplet}`,
-        kind: "caplet" as const,
-        name: tool.caplet,
-        title: tool.title,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        outputSchema: tool.outputSchema,
-        annotations: tool.annotations,
-        schemaHash: schemaHash(tool.inputSchema ?? null),
-        capletId: tool.caplet,
-        shadowing: tool.shadowing ?? "forbid",
-      })),
-    tools: [],
+    caplets: nativeProgressiveCaplets(tools),
+    tools: nativeDirectTools(tools),
     resources: [],
     resourceTemplates: [],
     prompts: [],
@@ -218,6 +204,60 @@ export async function buildNativeAttachProjection(
     manifest,
     routes: routesFor(manifest),
   };
+}
+
+function nativeProgressiveCaplets(
+  tools: ReturnType<NativeCapletsService["listTools"]>,
+): Array<Omit<AttachProgressiveCapletExport, "exportId">> {
+  return tools
+    .filter((tool) => tool.codeModeRun !== true && !nativeDirectToolOperation(tool))
+    .map((tool) => ({
+      stableId: `native:${tool.caplet}`,
+      kind: "caplet" as const,
+      name: tool.caplet,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
+      annotations: tool.annotations,
+      schemaHash: schemaHash(tool.inputSchema ?? null),
+      capletId: tool.caplet,
+      shadowing: tool.shadowing ?? "forbid",
+    }));
+}
+
+function nativeDirectTools(
+  tools: ReturnType<NativeCapletsService["listTools"]>,
+): Array<Omit<AttachToolExport, "exportId">> {
+  return tools.flatMap((tool) => {
+    const operation = nativeDirectToolOperation(tool);
+    if (!operation || tool.codeModeRun === true || !tool.sourceCaplet) return [];
+    return [
+      {
+        stableId: `native-tool:${tool.caplet}`,
+        kind: "tool" as const,
+        name: tool.caplet,
+        downstreamName: operation,
+        title: tool.title,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
+        annotations: tool.annotations,
+        schemaHash: schemaHash({ input: tool.inputSchema, output: tool.outputSchema }),
+        capletId: tool.sourceCaplet,
+        shadowing: tool.shadowing ?? "forbid",
+      },
+    ];
+  });
+}
+
+function nativeDirectToolOperation(
+  tool: ReturnType<NativeCapletsService["listTools"]>[number],
+): string | undefined {
+  if (!tool.sourceCaplet || !tool.caplet.startsWith(`${tool.sourceCaplet}__`)) {
+    return undefined;
+  }
+  return tool.caplet.slice(tool.sourceCaplet.length + 2);
 }
 
 function nativeCodeModeCaplets(
@@ -250,9 +290,12 @@ export async function invokeNativeAttachExport(
     throw new CapletsError("ATTACH_EXPORT_NOT_FOUND", "Attach export was not found.");
   }
   if (route.kind !== "caplet") {
+    if (route.kind === "tool") {
+      return await service.execute(`${route.capletId}__${route.downstreamName}`, request.input);
+    }
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Native attach sessions only support Caplet exports.",
+      "Native attach sessions only support Caplet and tool exports.",
     );
   }
   return await service.execute(route.capletId, request.input);

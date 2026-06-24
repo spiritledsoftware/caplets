@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
@@ -33,6 +33,7 @@ type HttpServeIo = {
   authFlowStore?: RemoteAuthFlowStore;
   sessionFactory?: HttpMcpSessionFactory;
   attachSessionFactory?: HttpAttachSessionFactory;
+  defaultAttachSessionFactory?: HttpAttachSessionFactory;
   exposeAttach?: boolean;
   remoteCredentialStore?: RemoteServerCredentialStore;
 };
@@ -44,6 +45,8 @@ type HttpMcpSession = {
 
 export type HttpMcpSessionFactory = () => HttpMcpSession | Promise<HttpMcpSession>;
 
+export const CAPLETS_STACK_CHAIN_HEADER = "caplets-stack-chain";
+
 export type HttpAttachSession = {
   manifest(): Promise<AttachManifest>;
   invoke(request: AttachInvokeRequest): Promise<unknown>;
@@ -51,8 +54,13 @@ export type HttpAttachSession = {
   close(): Promise<void>;
 };
 
+export type HttpAttachSessionContext = {
+  stackChain: string[];
+};
+
 export type HttpAttachSessionFactory = (
   metadata: AttachSessionMetadata,
+  context: HttpAttachSessionContext,
 ) => HttpAttachSession | Promise<HttpAttachSession>;
 
 type HttpSession = {
@@ -79,6 +87,7 @@ type AttachEventSource = {
 };
 
 const ATTACH_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
+const ATTACH_SESSION_PRUNE_INTERVAL_MS = 60_000;
 
 export function createHttpServeApp(
   options: HttpServeOptions,
@@ -88,9 +97,17 @@ export function createHttpServeApp(
   const app = new Hono() as CapletsHttpApp;
   const sessions = new Map<string, HttpSession>();
   const attachSessions = new Map<string, AttachSessionRecord>();
+  const defaultAttachSessions = new Map<string, HttpAttachSession>();
+  const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
   const attachEventStreams = new Set<AttachEventStream>();
+  const attachSessionPruneTimer = setInterval(
+    () => pruneIdleAttachSessions(),
+    ATTACH_SESSION_PRUNE_INTERVAL_MS,
+  );
+  attachSessionPruneTimer.unref?.();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
+  const stackIdentity = httpStackIdentity(options);
   const authFlowStore = io.authFlowStore ?? new RemoteAuthFlowStore();
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
@@ -334,8 +351,9 @@ export function createHttpServeApp(
           const metadata = parseAttachSessionMetadata(parsed, {
             allowProjectContext: options.loopback,
           });
+          const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
           const sessionId = randomUUID();
-          const session = await io.attachSessionFactory!(metadata);
+          const session = await io.attachSessionFactory!(metadata, context);
           attachSessions.set(sessionId, { session, lastUsedAt: Date.now() });
           pruneIdleAttachSessions();
           return c.json({ sessionId }, 201);
@@ -364,7 +382,12 @@ export function createHttpServeApp(
 
     app.get(paths.attachManifest, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
-        const attachSession = attachSessionForRequest(c.req.header(CAPLETS_ATTACH_SESSION_HEADER));
+        const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+        const attachSession = attachSessionId
+          ? attachSessionForRequest(attachSessionId)
+          : await fallbackAttachSession(
+              attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
+            );
         if (attachSession) return c.json(await attachSession.manifest());
         const attachProjection = await buildAttachProjection(engine);
         return c.json(attachProjection.manifest);
@@ -374,10 +397,14 @@ export function createHttpServeApp(
       }
     });
 
-    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, (c) => {
+    app.get(paths.attachEvents, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
         const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
-        const attachSession = attachSessionForRequest(attachSessionId);
+        const attachSession = attachSessionId
+          ? attachSessionForRequest(attachSessionId)
+          : await fallbackAttachSession(
+              attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
+            );
         return attachEventsResponse(attachEventSource(engine, attachSession), attachEventStreams, {
           onActivity: () => {
             if (attachSessionId) touchAttachSession(attachSessionId);
@@ -392,7 +419,12 @@ export function createHttpServeApp(
     app.post(paths.attachInvoke, attachHostProtection, protectedRouteAuth, async (c) => {
       try {
         const request = await parseAttachInvokeRequest(c.req.json());
-        const attachSession = attachSessionForRequest(c.req.header(CAPLETS_ATTACH_SESSION_HEADER));
+        const attachSessionId = c.req.header(CAPLETS_ATTACH_SESSION_HEADER);
+        const attachSession = attachSessionId
+          ? attachSessionForRequest(attachSessionId)
+          : await fallbackAttachSession(
+              attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER)),
+            );
         if (attachSession) {
           return c.json({ ok: true, data: await attachSession.invoke(request) });
         }
@@ -415,6 +447,39 @@ export function createHttpServeApp(
     }
     record.lastUsedAt = Date.now();
     return record.session;
+  }
+
+  async function fallbackAttachSession(
+    context: HttpAttachSessionContext,
+  ): Promise<HttpAttachSession | undefined> {
+    if (!io.defaultAttachSessionFactory) return undefined;
+    const key = context.stackChain.join("\0");
+    const existing = defaultAttachSessions.get(key);
+    if (existing) return existing;
+    let pending = defaultAttachSessionPromises.get(key);
+    if (!pending) {
+      pending = Promise.resolve(io.defaultAttachSessionFactory({}, context)).then(
+        (session) => {
+          defaultAttachSessions.set(key, session);
+          defaultAttachSessionPromises.delete(key);
+          return session;
+        },
+        (error) => {
+          defaultAttachSessionPromises.delete(key);
+          throw error;
+        },
+      );
+      defaultAttachSessionPromises.set(key, pending);
+    }
+    return await pending;
+  }
+
+  function attachSessionContext(header: string | undefined): HttpAttachSessionContext {
+    const incoming = stackChainFromHeader(header);
+    if (incoming.includes(stackIdentity)) {
+      throw new CapletsError("REQUEST_INVALID", "Stacked runtime upstream cycle detected.");
+    }
+    return { stackChain: [...incoming, stackIdentity] };
   }
 
   function touchAttachSession(sessionId: string): void {
@@ -515,6 +580,7 @@ export function createHttpServeApp(
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
   app.closeCapletsSessions = async () => {
+    clearInterval(attachSessionPruneTimer);
     for (const stream of attachEventStreams) {
       stream.close();
     }
@@ -526,6 +592,9 @@ export function createHttpServeApp(
     sessions.clear();
     await Promise.allSettled([...attachSessions.values()].map((record) => record.session.close()));
     attachSessions.clear();
+    await Promise.allSettled([...defaultAttachSessions.values()].map((session) => session.close()));
+    defaultAttachSessions.clear();
+    defaultAttachSessionPromises.clear();
   };
 
   if (options.warnUnauthenticatedNetwork) {
@@ -636,6 +705,22 @@ function firstForwardedValue(value: string | undefined): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function httpStackIdentity(options: HttpServeOptions): string {
+  const origin = options.publicOrigin ?? `http://${formatHost(options.host)}:${options.port}`;
+  const url = new URL(origin);
+  url.pathname = options.path;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function stackChainFromHeader(header: string | undefined): string[] {
+  return (header ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
 }
 
 type RemoteHostMetadata = {
@@ -770,27 +855,34 @@ function canonicalProjectConfigPath(
   projectConfigPath: string | undefined,
   projectRoot: string | undefined,
 ): string | undefined {
-  if (!projectConfigPath) return undefined;
   if (!projectRoot) {
+    if (!projectConfigPath) return undefined;
     throw new CapletsError("REQUEST_INVALID", "projectConfigPath requires projectRoot.");
   }
-  const absoluteConfigPath = isAbsolute(projectConfigPath)
-    ? projectConfigPath
-    : resolve(projectRoot, projectConfigPath);
-  const candidate = existsSync(absoluteConfigPath)
-    ? realpathSync(absoluteConfigPath)
-    : resolve(absoluteConfigPath);
   const expectedProjectConfigPath = resolve(projectRoot, ".caplets", "config.json");
-  const expected = existsSync(expectedProjectConfigPath)
-    ? realpathSync(expectedProjectConfigPath)
-    : expectedProjectConfigPath;
-  if (candidate === expected) {
-    return expected;
+  const absoluteConfigPath =
+    projectConfigPath === undefined
+      ? expectedProjectConfigPath
+      : isAbsolute(projectConfigPath)
+        ? projectConfigPath
+        : resolve(projectRoot, projectConfigPath);
+  if (resolve(absoluteConfigPath) !== expectedProjectConfigPath) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "projectConfigPath must be <projectRoot>/.caplets/config.json.",
+    );
   }
-  throw new CapletsError(
-    "REQUEST_INVALID",
-    "projectConfigPath must be <projectRoot>/.caplets/config.json.",
-  );
+  if (!existsSync(expectedProjectConfigPath)) return expectedProjectConfigPath;
+  const expected = realpathSync(expectedProjectConfigPath);
+  if (!pathIsInside(expected, projectRoot)) {
+    throw new CapletsError("REQUEST_INVALID", "projectConfigPath must resolve inside projectRoot.");
+  }
+  return expected;
+}
+
+function pathIsInside(candidate: string, root: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function attachEventSource(
@@ -915,7 +1007,10 @@ export async function serveHttpWithSessionFactory(
   options: HttpServeOptions,
   createSession: HttpMcpSessionFactory,
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
-  io: Pick<HttpServeIo, "attachSessionFactory" | "exposeAttach"> = {},
+  io: Pick<
+    HttpServeIo,
+    "attachSessionFactory" | "defaultAttachSessionFactory" | "exposeAttach"
+  > = {},
 ): Promise<void> {
   const resolvedEngineOptions = { exposeLocalArtifactPaths: false };
   const engine = new CapletsEngine(resolvedEngineOptions);
@@ -924,6 +1019,9 @@ export async function serveHttpWithSessionFactory(
     exposeAttach: io.exposeAttach ?? false,
     sessionFactory: createSession,
     ...(io.attachSessionFactory ? { attachSessionFactory: io.attachSessionFactory } : {}),
+    ...(io.defaultAttachSessionFactory
+      ? { defaultAttachSessionFactory: io.defaultAttachSessionFactory }
+      : {}),
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: resolveProjectCapletsRoot(),

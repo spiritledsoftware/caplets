@@ -289,6 +289,49 @@ describe("RemoteNativeCapletsService", () => {
     }
   });
 
+  it("falls back to a plain attach manifest when project-context sessions are rejected", async () => {
+    const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const headers = new Headers(init?.headers);
+      requests.push({ url, method, headers });
+      if (url.endsWith("/sessions")) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "REQUEST_INVALID",
+              message: "Attach session project context is only accepted by loopback runtimes.",
+            },
+          },
+          { status: 400 },
+        );
+      }
+      if (url.endsWith("/manifest")) {
+        return Response.json(attachManifest("rev-1", "export-1"));
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+      attachSessionMetadata: { projectRoot: "/repo" },
+    });
+
+    await client.listTools();
+    await client.close();
+
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST https://caplets.example.com/v1/attach/sessions",
+      "GET https://caplets.example.com/v1/attach/manifest",
+    ]);
+    expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
+  });
+
   it("recreates attach sessions when the remote forgets the previous session", async () => {
     const requests: Array<{ url: string; method: string; headers: Headers }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {
@@ -3613,7 +3656,7 @@ describe("createNativeCapletsService remote mode", () => {
       },
     });
     dirs.push(dir);
-    const projectRoot = dirname(projectConfigPath);
+    const projectRoot = dirname(dirname(projectConfigPath));
 
     const service = createNativeCapletsService({
       mode: "remote",
@@ -3671,7 +3714,7 @@ describe("createNativeCapletsService remote mode", () => {
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
-      projectRoot: dirname(projectConfigPath),
+      projectRoot: dirname(dirname(projectConfigPath)),
       writeErr,
     });
 
@@ -3728,7 +3771,7 @@ describe("createNativeCapletsService remote mode", () => {
       remoteClientFactory: vi.fn(() => fixture.api),
       configPath,
       projectConfigPath,
-      projectRoot: dirname(projectConfigPath),
+      projectRoot: dirname(dirname(projectConfigPath)),
       writeErr,
     });
 
@@ -3754,6 +3797,127 @@ describe("createNativeCapletsService remote mode", () => {
       new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  it("stops retrying self-hosted Project Binding when upstream reports unsupported capability", async () => {
+    const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "UNSUPPORTED_CAPABILITY",
+                message:
+                  "Self-hosted Project Binding sessions are not implemented by this runtime.",
+              },
+            },
+            { status: 501 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        "Could not start upstream Project Binding: Self-hosted Project Binding sessions are not implemented by this runtime.\n",
+      ),
+    );
+    await service.reload();
+    await service.reload();
+
+    expect(
+      fetch.mock.calls.filter(
+        ([input, init]) =>
+          new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+    await service.close();
+  });
+
+  it("re-registers self-hosted Project Binding after heartbeat failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+      let sessionCount = 0;
+      let heartbeatCount = 0;
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            sessionCount += 1;
+            return Response.json(
+              {
+                binding: { bindingId: `binding_${sessionCount}`, state: "attaching" },
+                sessionId: `session_${sessionCount}`,
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+            heartbeatCount += 1;
+            if (heartbeatCount === 1) {
+              return new Response("expired", { status: 503 });
+            }
+            return Response.json({ ok: true });
+          }
+          return Response.json({ ok: true });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const writeErr = vi.fn();
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: {
+          url: "http://127.0.0.1:5387",
+          fetch,
+        },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+        writeErr,
+      });
+
+      await vi.waitFor(() => expect(sessionCount).toBe(1));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() =>
+        expect(writeErr).toHaveBeenCalledWith(
+          "Remote Project Binding heartbeat failed: Project Binding request failed (503).\n",
+        ),
+      );
+      await service.reload();
+      await vi.waitFor(() => expect(sessionCount).toBe(2));
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("updates local presence after local overlay reload changes the Caplet set", async () => {

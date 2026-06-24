@@ -3,6 +3,7 @@ import {
   buildAttachProjection,
   buildNativeAttachProjection,
   invokeAttachExport,
+  invokeNativeAttachExport,
   type AttachProjection,
 } from "../src/attach/api";
 import type { CapletsEngine } from "../src/engine";
@@ -191,6 +192,54 @@ describe("Attach API dispatch", () => {
       { name: "github", capletId: "github", shadowing: "forbid" },
       { name: "vps__browser", capletId: "vps__browser", shadowing: "namespace" },
     ]);
+  });
+
+  it("preserves native direct tool identity in attach manifests", async () => {
+    const service = {
+      listTools: () => [
+        {
+          caplet: "docs__read",
+          sourceCaplet: "docs",
+          toolName: "caplets__docs__read",
+          title: "read",
+          description: "Read docs.",
+          promptGuidance: [],
+          inputSchema: { type: "object", properties: { path: { type: "string" } } },
+          outputSchema: { type: "object" },
+          annotations: { readOnlyHint: true },
+          shadowing: "namespace",
+        },
+      ],
+      execute: vi.fn(async () => ({ ok: true })),
+      reload: vi.fn(),
+      onToolsChanged: vi.fn(),
+      close: vi.fn(),
+    } as unknown as NativeCapletsService;
+
+    const projection = await buildNativeAttachProjection(service);
+
+    expect(projection.manifest.caplets).toEqual([]);
+    expect(projection.manifest.tools).toEqual([
+      expect.objectContaining({
+        stableId: "native-tool:docs__read",
+        kind: "tool",
+        name: "docs__read",
+        downstreamName: "read",
+        capletId: "docs",
+        shadowing: "namespace",
+        annotations: { readOnlyHint: true },
+      }),
+    ]);
+
+    await expect(
+      invokeNativeAttachExport(service, projection, {
+        revision: projection.manifest.revision,
+        kind: "tool",
+        exportId: projection.manifest.tools[0]!.exportId,
+        input: { path: "README.md" },
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(service.execute).toHaveBeenCalledWith("docs__read", { path: "README.md" });
   });
 
   it("preserves native Code Mode caplets in attach manifests", async () => {

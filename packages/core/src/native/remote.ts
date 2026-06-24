@@ -170,12 +170,12 @@ export function createSdkRemoteCapletsClient(
       if (
         !options.attachSessionMetadata ||
         attachSessionsUnsupportedUntil > Date.now() ||
-        !attachSessionId ||
+        !sessionId ||
         !isAttachSessionNotFound(error)
       ) {
         throw error;
       }
-      attachSessionId = undefined;
+      if (attachSessionId === sessionId) attachSessionId = undefined;
       const nextSessionId = await ensureAttachSession(runtimeOptions);
       return await operation(runtimeOptions, nextSessionId);
     }
@@ -201,10 +201,12 @@ export function createSdkRemoteCapletsClient(
     try {
       const runtimeOptions = await resolveRuntimeOptions();
       if (closed || eventsAbort || listeners.size === 0) return;
+      const sessionId = await ensureAttachSession(runtimeOptions);
+      if (closed || eventsAbort || listeners.size === 0) return;
       eventsAbort = startAttachEvents(
         runtimeOptions.url,
         runtimeOptions.requestInit,
-        await ensureAttachSession(runtimeOptions),
+        sessionId,
         fetchFor(runtimeOptions),
         listeners,
         (closedAbort, retry) => {
@@ -615,6 +617,15 @@ async function createAttachSession(
   });
   if (!response.ok) {
     if (response.status === 404) return undefined;
+    let payload: unknown;
+    try {
+      payload = (await response.json()) as unknown;
+    } catch {
+      payload = undefined;
+    }
+    if (response.status === 400 && isAttachSessionProjectContextRejected(payload)) {
+      return undefined;
+    }
     throw new CapletsError(
       "SERVER_UNAVAILABLE",
       `Caplets attach session returned HTTP ${response.status}.`,
@@ -1037,6 +1048,15 @@ function isAttachSessionNotFound(error: unknown): boolean {
   return (
     candidate.code === "REQUEST_INVALID" &&
     /\battach session was not found\b/iu.test(errorMessage(error))
+  );
+}
+
+function isAttachSessionProjectContextRejected(payload: unknown): boolean {
+  const error = isPlainObject(payload) && isPlainObject(payload.error) ? payload.error : undefined;
+  return (
+    error?.code === "REQUEST_INVALID" &&
+    typeof error.message === "string" &&
+    /\bproject context is only accepted by loopback runtimes\b/iu.test(error.message)
   );
 }
 

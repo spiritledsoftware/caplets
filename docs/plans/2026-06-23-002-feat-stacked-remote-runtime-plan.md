@@ -2,7 +2,6 @@
 title: "feat: Add stacked remote runtime"
 type: feat
 date: 2026-06-23
-origin: docs/brainstorms/2026-06-23-stacked-remote-runtime-requirements.md
 ---
 
 # feat: Add stacked remote runtime
@@ -23,7 +22,7 @@ Codex can launch MCP commands without the user's expected shell environment, whi
 
 **Command contract**
 
-- PR1. `caplets serve --transport http --upstream-url <url>` starts the stacked runtime described by the origin requirements.
+- PR1. `caplets serve --transport http --upstream-url <url>` starts the stacked runtime described by these requirements.
 - PR2. `caplets attach <url>` is stdio-only for normal MCP use and no longer presents HTTP serving as an attach mode.
 - PR3. Attach and native sessions carry project root into the stacked runtime without relying on the runtime process CWD.
 
@@ -177,7 +176,7 @@ The runtime owns composition and diagnostics. The attach adapter owns stdio brid
 
 ## Sources / Research
 
-- Origin requirements: `docs/brainstorms/2026-06-23-stacked-remote-runtime-requirements.md`.
+- Requirements and implementation plan: this document.
 - Product strategy: `STRATEGY.md`, especially the Remote runtime and Project Binding track.
 - Domain vocabulary: `CONCEPTS.md`.
 - Current attach command and serve command definitions: `packages/core/src/cli.ts`.
