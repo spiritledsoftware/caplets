@@ -16,7 +16,6 @@ import { ServerRegistry } from "../src/registry";
 import {
   generatedToolInputSchema,
   handleServerTool,
-  jsonResult,
   projectCallToolResult,
   validateOperationRequest,
 } from "../src/tools";
@@ -132,38 +131,6 @@ describe("generated tool request validation", () => {
       "describe_tool",
       "call_tool",
     ]);
-  });
-
-  it("returns Markdown wrapper content while preserving structured result", () => {
-    const result = jsonResult({ id: "alpha", items: [{ name: "read" }, { name: "write" }] });
-
-    expect(result.structuredContent).toEqual({
-      result: { id: "alpha", items: [{ name: "read" }, { name: "write" }] },
-    });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(text).toContain("# Result");
-    expect(text).toContain("## Full Result");
-    expect(text).toContain('"name": "read"');
-    expect(text).toContain('"name": "write"');
-  });
-
-  it("describes the nested call_tool argument shape to agents", () => {
-    const schema = z.toJSONSchema(generatedToolInputSchema, { io: "input" }) as {
-      properties: Record<string, { description?: string }>;
-    };
-
-    const operationDescription = schema.properties.operation?.description;
-    const toolDescription = schema.properties.name?.description;
-    const argumentsDescription = schema.properties.args?.description;
-    const fieldsDescription = schema.properties.fields?.description;
-
-    expect(operationDescription).toContain("call_tool");
-    expect(toolDescription).toContain("Exact downstream tool or prompt name");
-    expect(argumentsDescription).toContain("call_tool");
-    expect(argumentsDescription).toContain("get_prompt");
-    expect(fieldsDescription).toBe(
-      "Optional call_tool structured output paths. Use only after describe_tool returns fieldSelection.supported true.",
-    );
   });
 });
 

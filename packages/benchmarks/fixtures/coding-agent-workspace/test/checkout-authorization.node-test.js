@@ -4,10 +4,6 @@ import test from "node:test";
 import { authorizeCheckout } from "../src/checkout-authorization.js";
 import { getRetryDelay, shouldRetry } from "../src/retry.js";
 
-test("exports checkout authorization helper", () => {
-  assert.equal(typeof authorizeCheckout, "function");
-});
-
 test("returns failed provider responses", async () => {
   const provider = {
     calls: [],

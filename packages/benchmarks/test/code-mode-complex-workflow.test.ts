@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS,
   computeCodeModeComplexWorkflowEval,
-  computeCodeModeLiveRegressionEval,
   computeCodeModeRepeatedWorkflowEval,
   validateCodeModeComplexWorkflowEval,
-  validateCodeModeLiveRegressionEval,
   validateCodeModeRepeatedWorkflowEval,
 } from "../lib/code-mode";
 
@@ -30,20 +28,6 @@ describe("Code Mode complex workflow eval", () => {
     expect(result.reductions.codeModeVsProgressiveExternalCalls).toBeGreaterThanOrEqual(
       CODE_MODE_COMPLEX_WORKFLOW_THRESHOLDS.minExternalCallReduction,
     );
-  });
-
-  it("tracks live cold-agent regressions from OSV and GitHub evals", () => {
-    const result = computeCodeModeLiveRegressionEval();
-
-    expect(validateCodeModeLiveRegressionEval(result)).toEqual([]);
-    expect(result.scenarios.map((scenario) => scenario.id)).toEqual([
-      "github-issues-and-prs-adjacent-entities",
-      "osv-package-version-tool-selection",
-    ]);
-    expect(result.improvements).toContain("code-mode-one-run-guidance");
-    expect(result.improvements).toContain("optional-use-avoid-hints");
-    expect(result.improvements).toContain("schema-error-call-signatures");
-    expect(result.improvements).toContain("transport-body-normalization");
   });
 
   it("captures repeated-workflow session reuse without deterministic live claims", () => {

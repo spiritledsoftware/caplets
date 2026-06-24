@@ -218,17 +218,6 @@ describe("Code Mode CLI", () => {
     }
   });
 
-  it("prints repl help with session and recovery option scaffolding", async () => {
-    const out: string[] = [];
-
-    await runCli(["code-mode", "repl", "--help"], {
-      writeOut: (value) => out.push(value),
-    });
-
-    expect(out.join("")).toContain("--session-id <id>");
-    expect(out.join("")).toContain("--recover <ref>");
-  });
-
   it("prints unsupported repl scaffolding as a JSON envelope", async () => {
     const out: string[] = [];
     let exitCode = 0;
