@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { defaultConfigPath } from "../config/paths";
 import { CapletsError } from "../errors";
 import { resolveServeOptions, type HttpServeOptions, type RawServeOptions } from "../serve/options";
+import { DISABLE_UPDATE_CHECK_ENV } from "../update-check/control";
 import { resolveDaemonShell } from "./env";
 import type {
   DaemonCommandPlan,
@@ -99,6 +100,7 @@ function daemonServiceEnv(options: {
   if (options.serve.publicOrigin && serviceEnv.CAPLETS_SERVER_URL === undefined) {
     serviceEnv.CAPLETS_SERVER_URL = options.serve.publicOrigin;
   }
+  serviceEnv[DISABLE_UPDATE_CHECK_ENV] = "1";
   return serviceEnv;
 }
 

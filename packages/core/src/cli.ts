@@ -68,6 +68,8 @@ import {
   type CapletsConfig,
   type ConfigSource,
   type LocalOverlayConfigWithSources,
+  defaultUpdateCheckCacheDir,
+  defaultUpdateCheckStateDir,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
   resolveCapletsRoot,
@@ -135,6 +137,7 @@ import {
   type TelemetryDispatcher,
   type TelemetrySurface,
 } from "./telemetry";
+import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
 import type { VaultAccessGrantFilter } from "./vault";
 
@@ -158,10 +161,13 @@ type CliIO = {
   projectBindingWebSocketFactory?: ProjectBindingWebSocketFactory;
   authDir?: string;
   telemetryStateDir?: string;
+  updateCheckCacheDir?: string;
+  updateCheckStateDir?: string;
   stderrIsTTY?: boolean;
   telemetryDebugSink?: TelemetryDebugSink;
   version?: string;
   setExitCode?: (code: number) => void;
+  maybePrintUpdateNotice?: () => Promise<void>;
   serve?: (options: ServeOptions) => Promise<void>;
   attachServe?: (options: AttachServeOptions) => Promise<void>;
   daemon?: DaemonOperationOptions;
@@ -171,6 +177,7 @@ type CliIO = {
 
 export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
   let observedExitCode = 0;
+  let updateNoticeHandled = false;
   const wrappedIo: CliIO = {
     ...io,
     setExitCode: (code) => {
@@ -181,6 +188,21 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
         process.exitCode = code;
       }
     },
+  };
+  wrappedIo.maybePrintUpdateNotice = async () => {
+    if (updateNoticeHandled) return;
+    updateNoticeHandled = true;
+    await maybePrintUpdateNotice({
+      args,
+      env: wrappedIo.env,
+      version: wrappedIo.version,
+      fetcher: wrappedIo.fetch,
+      signal: wrappedIo.signal,
+      stderrIsTTY: wrappedIo.stderrIsTTY,
+      writeErr: wrappedIo.writeErr,
+      cacheDir: wrappedIo.updateCheckCacheDir ?? defaultUpdateCheckCacheDir(wrappedIo.env),
+      stateDir: wrappedIo.updateCheckStateDir ?? defaultUpdateCheckStateDir(wrappedIo.env),
+    }).catch(() => undefined);
   };
   const program = createProgram(wrappedIo);
   const trackedCommand = telemetryCommandFamilyFromArgs(args);
@@ -195,6 +217,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
       return;
     }
     await program.parseAsync(["node", "caplets", ...args]);
+    await wrappedIo.maybePrintUpdateNotice();
     if (trackedCommand) {
       await captureCliTelemetry(telemetryContext, {
         debugSink: wrappedIo.telemetryDebugSink,
@@ -1632,6 +1655,7 @@ export function createProgram(io: CliIO = {}): Command {
               },
               writeErr,
             ));
+        await io.maybePrintUpdateNotice?.();
         await runner(resolved);
       },
     );
@@ -1851,6 +1875,7 @@ export function createProgram(io: CliIO = {}): Command {
           };
           if (!options.once) {
             const resolved = await resolveAttachServeOptions(attachOptions, env);
+            await io.maybePrintUpdateNotice?.();
             await (
               io.attachServe ??
               ((serveOptions) => attachResolvedCaplets(serveOptions, { writeErr }))
