@@ -23,6 +23,14 @@
 - Triage labels are documented in `docs/agents/triage-labels.md`; current live labels include `question` for `needs-info` and `wontfix` for `wontfix`.
 - This is a single-context repo. Start with `CONTEXT.md`, relevant ADRs in `docs/adr/`, and `docs/agents/domain.md`; use `STRATEGY.md`, `CONCEPTS.md`, and `docs/solutions/` when the task touches product direction, vocabulary, or documented patterns.
 
+## Test Quality Bar
+
+- Keep tests that protect behavior, user-visible contracts, generated artifacts, integrations, regressions, or data-safety boundaries. Remove or avoid tests that mostly restate implementation literals.
+- Do not add tests that only assert package metadata, prompt/help copy substrings, Markdown wrapper scaffolding, export importability, or duplicated flag passthrough when stronger behavior coverage already exists.
+- Prefer Code Mode coverage through structured envelopes, session/recovery metadata, generated API checks, schema checks, and real tool execution. Avoid long prompt-description snapshots.
+- Prefer benchmark tests that validate metric shape and failure thresholds. Do not pin static scenario IDs or improvement-name fixtures unless the exact list is the behavior under test.
+- When deleting or skipping a narrow unit test, make sure a stronger integration test, generated-file check, or full gate still protects the meaningful behavior.
+
 ## Docs And Generated Files
 
 - Source code is authoritative. Keep durable product docs in `docs/product/`, architecture docs in `docs/`, ADRs in `docs/adr/`, specs/plans in `docs/specs/` or `docs/plans/`, and solution patterns in `docs/solutions/`.

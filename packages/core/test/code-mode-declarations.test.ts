@@ -5,7 +5,6 @@ import { CODE_MODE_RUNTIME_API_DECLARATION } from "../src/code-mode/runtime-api.
 import {
   codeModeDeclarationHash,
   generateCodeModeDeclarations,
-  generateCodeModeRunToolDescription,
   minifyCodeModeDeclarationText,
 } from "../src/code-mode/declarations";
 import type { CodeModeCallableCaplet } from "../src/code-mode/types";
@@ -43,29 +42,6 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).toContain(
       "/**GitHub repo, issue, PR, workflow ops. Use when: Use for repository issue, PR, and workflow tasks. Avoid when: Avoid for package vulnerability lookup.*/",
     );
-    expect(declaration).toContain("/** Search tool summaries for the discovery pass;");
-    expect(declaration).toContain("prefer outputSchema/outputTypeScript over observed hints");
-    expect(declaration).toContain("Exact downstream tool identifier");
-    expect(declaration).toContain("useWhen?:string");
-    expect(declaration).toContain("avoidWhen?:string");
-    expect(declaration).toContain("readOnlyHint?:boolean");
-    expect(declaration).toContain("destructiveHint?:boolean");
-    expect(declaration).toContain("type ToolSummary={");
-    expect(declaration).not.toContain("ToolSummary={id?:string");
-    expect(declaration).not.toContain("tool?:string;description");
-    expect(declaration).toContain("inspect():Promise<CapletCard<Id>>;");
-    expect(declaration).toContain(
-      "callTool(name:string,args?:unknown):Promise<CapletsResult<unknown>>",
-    );
-    expect(declaration).toContain("observedOutputShape?:ObservedOutputShape");
-    expect(declaration).not.toContain("fieldSelection");
-    expect(declaration).toContain("resources(input?:PageInput):Promise<Page<ResourceSummary>>");
-    expect(declaration).toContain("readLogs(input:ReadLogsInput):Promise<ReadLogsResult>");
-    expect(declaration).toContain('type CodeModeSessionStatus="created"|"reused"');
-    expect(declaration).toContain("sessionId?:string");
-    expect(declaration).toContain("sessionStatus?:CodeModeSessionStatus");
-    expect(declaration).toContain("recoveryRef?:string");
-    expect(declaration).not.toContain("recoveryCommand?:string");
     expect(declaration).not.toContain("\n\n");
     expect(declaration).not.toContain(" = ");
   });
@@ -100,33 +76,6 @@ describe("generateCodeModeDeclarations", () => {
     expect(declaration).not.toContain("declare function clearTimeout");
     expect(declaration).not.toContain("declare function setInterval");
     expect(declaration).not.toContain("declare function clearInterval");
-  });
-
-  it("builds the shared Code Mode tool description from generated declarations", () => {
-    const declaration = 'declare const caplets:{docs:CapletHandle<"docs">;};';
-    const description = generateCodeModeRunToolDescription(declaration);
-
-    expect(description).toContain("Prefer a compact one-pass script for most tasks");
-    expect(description).toContain("Do not return full tool lists");
-    expect(description).toContain("keep bulky intermediate data inside the script");
-    expect(description).toContain("Execute with exact args");
-    expect(description).toContain("return only decision-ready JSON");
-    expect(description).toContain("For fallback, check candidate handles first");
-    expect(description).toContain("const ready=await h.check()");
-    expect(description).toContain("Never invent tool names, resource URIs, prompt names");
-    expect(description).toContain("use requiredArgs/acceptedArgs for simple calls");
-    expect(description).toContain("exact callSignature/inputSchema/inputTypeScript");
-    expect(description).toContain("omit `sessionId` to start a fresh reusable Code Mode session");
-    expect(description).toContain("keep `meta.sessionId`");
-    expect(description).toContain("successful top-level `var` bindings, function declarations");
-    expect(description).toContain("fails before executing your code");
-    expect(description).toContain("Use `meta.recoveryRef` with `caplets.debug.readRecovery");
-    expect(description).toContain("do not automatically replay recovery history");
-    expect(description).toContain("Generated declaration hints:");
-    expect(description).toContain(declaration);
-    expect(description).not.toContain("Do not split discovery and execution");
-    expect(description).not.toContain("caplets.github");
-    expect(description).not.toContain("search_issues");
   });
 
   it("uses intersection typing when a callable caplet id collides with debug", () => {
