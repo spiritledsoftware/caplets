@@ -1,5 +1,12 @@
 # @caplets/pi
 
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [bf6930e]
+  - @caplets/core@0.28.1
+
 ## 0.9.0
 
 ### Minor Changes

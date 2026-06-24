@@ -1,5 +1,12 @@
 # @caplets/opencode
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [bf6930e]
+  - @caplets/core@0.28.1
+
 ## 0.8.0
 
 ### Minor Changes
