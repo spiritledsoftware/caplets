@@ -56,7 +56,7 @@ jobs:
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
-          publish: pnpm telemetry:prepare-release-env && pnpm release
+          publish: pnpm release:publish
           commit: "chore: version packages"
           title: "chore: version packages"
         env:
