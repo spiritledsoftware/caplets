@@ -184,6 +184,42 @@ describe("update-check CLI", () => {
     expect(err.join("")).toBe("");
   });
 
+  it("warms the cache for default stdio serve without printing notices", async () => {
+    const dir = tempDir();
+    const err: string[] = [];
+    let resolveFetch: ((value: Response) => void) | undefined;
+    const fetcher = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const served: string[] = [];
+
+    await runCli(["serve"], {
+      version: "0.22.0",
+      stderrIsTTY: true,
+      fetch: fetcher,
+      updateCheckCacheDir: join(dir, "cache"),
+      updateCheckStateDir: join(dir, "state"),
+      writeErr: (value) => err.push(value),
+      serve: async () => {
+        served.push("started");
+      },
+    });
+
+    expect(err.join("")).toBe("");
+    expect(fetcher).toHaveBeenCalled();
+    expect(served).toEqual(["started"]);
+    resolveFetch?.(
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
+  });
+
   it("allows explicit stdio stderr opt-in without touching stdout", async () => {
     const dir = tempDir();
     const out: string[] = [];

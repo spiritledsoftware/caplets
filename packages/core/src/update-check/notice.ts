@@ -29,11 +29,10 @@ export async function maybePrintUpdateNotice(
     env: options.env,
     stderrIsTTY: options.stderrIsTTY,
   });
-  if (!eligibility.eligible) return;
   if (!options.version) return;
 
   const cache = readUpdateMetadataCache({ ...options, now });
-  if (cache?.status === "positive" && cache.usable) {
+  if (eligibility.eligible && cache?.status === "positive" && cache.usable) {
     const update = findAvailableUpdate(options.version, cache.metadata);
     if (update.available && shouldShowUpdateNotice(update.latestVersion, { ...options, now })) {
       try {
@@ -51,6 +50,7 @@ export async function maybePrintUpdateNotice(
   }
 
   if (
+    (eligibility.eligible || eligibility.reason === "stdio") &&
     options.refreshForLater &&
     (!cache ||
       (cache.status === "positive" && !cache.fresh) ||
