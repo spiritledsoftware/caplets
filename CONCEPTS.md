@@ -42,6 +42,16 @@ Vault Access Grants are identified by Caplet ID, reference name, and config orig
 
 The persisted daemon agreement that defines what command runs, which environment model applies, which native service identity owns it, and how updates become active.
 
+### MCP Resource
+
+A concrete read-only content item exposed by an MCP backend, identified by a URI and optionally accompanied by metadata such as a name or media type.
+
+### MCP Resource Template
+
+A templated MCP resource URI that describes a family of readable resources rather than one concrete item.
+
+MCP Resource Templates are distinct from MCP Resources: a backend can support concrete resources without supporting templates, so runtime health and discovery should treat template listing as optional.
+
 ### Native Service Manager
 
 The operating system facility that owns per-user service registration and lifecycle for the Caplets Daemon.

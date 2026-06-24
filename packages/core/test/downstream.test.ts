@@ -465,6 +465,140 @@ describe("downstream stdio lifecycle", () => {
     }
   });
 
+  it("keeps health checks available when resource templates are not implemented", async () => {
+    let resourceTemplatesListCount = 0;
+    let resourceTemplatesSupported = true;
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        void (async () => {
+          if (!body) {
+            response.statusCode = 202;
+            response.end();
+            return;
+          }
+          const message = JSON.parse(body) as { id?: number; method?: string };
+          response.setHeader("content-type", "application/json");
+          if (message.method === "initialize") {
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: {}, resources: {} },
+                  serverInfo: { name: "fixture-remote", version: "1.0.0" },
+                },
+              }),
+            );
+            return;
+          }
+          if (message.method === "tools/list") {
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: { tools: [{ name: "remote_echo", inputSchema: { type: "object" } }] },
+              }),
+            );
+            return;
+          }
+          if (message.method === "resources/list") {
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                result: { resources: [] },
+              }),
+            );
+            return;
+          }
+          if (message.method === "resources/templates/list") {
+            resourceTemplatesListCount += 1;
+            if (resourceTemplatesSupported) {
+              response.end(
+                JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: message.id,
+                  result: {
+                    resourceTemplates: [
+                      { name: "Repository file", uriTemplate: "file:///repo/{path}" },
+                    ],
+                  },
+                }),
+              );
+              return;
+            }
+            response.end(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: message.id,
+                error: { code: -32601, message: "Method not found" },
+              }),
+            );
+            return;
+          }
+          response.statusCode = 202;
+          response.end();
+        })().catch((error) => {
+          response.statusCode = 500;
+          response.end(String(error));
+        });
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Could not bind fixture server");
+      }
+      const config = parseConfig({
+        mcpServers: {
+          remote: {
+            name: "Remote",
+            description: "A useful remote server.",
+            transport: "http",
+            url: `http://127.0.0.1:${address.port}/mcp`,
+          },
+        },
+      });
+      const registry = new ServerRegistry(config);
+      const manager = new DownstreamManager(registry);
+      const serverConfig = config.mcpServers.remote!;
+
+      await expect(manager.listResourceTemplates(serverConfig)).resolves.toEqual([
+        expect.objectContaining({ uriTemplate: "file:///repo/{path}" }),
+      ]);
+      expect(resourceTemplatesListCount).toBe(1);
+
+      resourceTemplatesSupported = false;
+
+      const checkResult = await manager.checkServer(serverConfig);
+
+      expect(checkResult).toMatchObject({
+        id: "remote",
+        status: "available",
+        capabilities: expect.objectContaining({ resourceTemplates: false }),
+        toolCount: 1,
+        resourceCount: 0,
+        resourceTemplateCount: 0,
+      });
+      expect(resourceTemplatesListCount).toBe(2);
+      expect(registry.getStatus("remote")).toBe("available");
+      await expect(manager.listResourceTemplates(serverConfig)).resolves.toEqual([]);
+      expect(resourceTemplatesListCount).toBe(2);
+
+      await manager.close();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("wraps shared pending connection failures for concurrent callers", async () => {
     const releaseInitialize = deferred<void>();
     let initializeCount = 0;
