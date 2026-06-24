@@ -1,4 +1,5 @@
 import {
+  readTelemetryNotice,
   recordTelemetryNoticeShown,
   type TelemetrySurface,
   type TelemetryStateOptions,
@@ -15,6 +16,7 @@ export type TelemetryNoticeOptions = TelemetryStateOptions & {
 
 export function maybePrintTelemetryNotice(options: TelemetryNoticeOptions): boolean {
   if (!options.stderrIsTTY) return false;
+  if (readTelemetryNotice(options).shown) return false;
   options.writeErr(TELEMETRY_NOTICE);
   recordTelemetryNoticeShown({ ...options, surface: options.surface });
   return true;

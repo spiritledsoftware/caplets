@@ -217,6 +217,42 @@ describe("telemetry CLI", () => {
     });
   });
 
+  it("prints the first-run notice before parse-error reliability capture", async () => {
+    const dir = tempDir();
+    const err: string[] = [];
+    const configPath = join(dir, "config.json");
+    writeMinimalConfig(configPath);
+
+    await expect(
+      runCli(["init", "--typo"], {
+        env: { CAPLETS_CONFIG: configPath },
+        telemetryStateDir: join(dir, "state"),
+        stderrIsTTY: true,
+        writeErr: (value) => err.push(value),
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
+    expect(err.join("")).toContain("Caplets collects anonymous telemetry");
+    expect(readTelemetryNotice({ stateDir: join(dir, "state") }).shown).toBe(true);
+  });
+
+  it("prints telemetry debug output even when the nested command fails", async () => {
+    const dir = tempDir();
+    const out: string[] = [];
+
+    await expect(
+      runCli(["telemetry", "debug", "--", "init", "--typo"], {
+        telemetryStateDir: join(dir, "state"),
+        writeOut: (value) => out.push(value),
+        writeErr: () => {},
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
+    expect(out.join("")).toContain('"telemetryDebug"');
+    expect(out.join("")).toContain('"provider": "sentry"');
+    expect(out.join("")).toContain('"command_family": "init"');
+  });
+
   it("completion includes telemetry subcommands", async () => {
     await expect(completeCliWords(["telemetry", ""])).resolves.toEqual([
       "status",

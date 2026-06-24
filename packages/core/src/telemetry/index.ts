@@ -52,12 +52,14 @@ export {
 } from "./providers";
 export {
   backendFamilyCounts,
+  captureRuntimeReliabilityEvent,
   captureRuntimeTelemetryEvent,
   codeModeTelemetryProperties,
   createRuntimeTelemetryContext,
   exposureModeCounts,
   operationFamilyFromOperation,
   outcomeFromResult,
+  runtimeFailureTelemetryProperties,
   toolActivationProperties,
   type RuntimeTelemetryContext,
   type RuntimeTelemetryOptions,

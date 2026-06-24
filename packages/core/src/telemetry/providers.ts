@@ -1,6 +1,7 @@
 import type { NodeClient, NodeOptions } from "@sentry/node";
 import type { PostHog } from "posthog-node";
 import type { ProductTelemetryEvent, ReliabilityTelemetryEvent, TelemetryEvent } from "./events";
+import { BUNDLED_POSTHOG_TOKEN, BUNDLED_SENTRY_DSN } from "./intake.generated";
 import { stripSentryEvent } from "./privacy";
 import { recordTelemetryDrop, type TelemetryState } from "./state";
 
@@ -31,14 +32,15 @@ export function createTelemetryDispatcher(
   let sentry: Promise<SentryClient> | undefined;
 
   async function posthogClient(): Promise<PostHogClient | undefined> {
-    const token = options.posthogToken ?? process.env.CAPLETS_POSTHOG_TOKEN;
+    const token =
+      options.posthogToken ?? process.env.CAPLETS_POSTHOG_TOKEN ?? BUNDLED_POSTHOG_TOKEN;
     if (!token) return undefined;
     posthog ??= Promise.resolve((options.factories?.createPostHog ?? defaultPostHogFactory)(token));
     return posthog;
   }
 
   async function sentryClient(): Promise<SentryClient | undefined> {
-    const dsn = options.sentryDsn ?? process.env.CAPLETS_SENTRY_DSN;
+    const dsn = options.sentryDsn ?? process.env.CAPLETS_SENTRY_DSN ?? BUNDLED_SENTRY_DSN;
     if (!dsn) return undefined;
     sentry ??= Promise.resolve((options.factories?.createSentry ?? defaultSentryFactory)(dsn));
     return sentry;
@@ -91,8 +93,8 @@ async function capturePostHog(
     distinctId: event.distinctId,
     event: event.name,
     properties: {
-      $geoip_disable: true,
       ...event.properties,
+      $geoip_disable: true,
     },
   });
 }
@@ -129,13 +131,15 @@ async function defaultSentryFactory(dsn: string): Promise<SentryClient> {
     dsn,
     sendDefaultPii: false,
     defaultIntegrations: false,
+    integrations: [],
     tracesSampleRate: 0,
+    transport: sentry.makeNodeTransport,
+    stackParser: sentry.defaultStackParser,
     beforeSend(event) {
       return stripSentryEvent(
         event as unknown as Record<string, unknown>,
       ) as unknown as typeof event;
     },
   } satisfies NodeOptions;
-  sentry.init(options);
-  return sentry.getClient() as NodeClient;
+  return new sentry.NodeClient(options);
 }

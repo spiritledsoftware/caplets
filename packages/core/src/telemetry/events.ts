@@ -124,8 +124,8 @@ export function buildProductTelemetryEvent(input: {
     name: input.name,
     distinctId: input.distinctId,
     properties: {
-      $process_person_profile: false,
       ...input.properties,
+      $process_person_profile: false,
     },
   };
 }

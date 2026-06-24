@@ -376,9 +376,9 @@ function telemetryCommandFamilyFromArgs(
   if (command === cliCommands.remote || command === cliCommands.cloud) {
     return { commandFamily: "remote", surface: "cli" };
   }
+  if (command === cliCommands.inspect) return { commandFamily: "inspect", surface: "cli" };
+  if (command === cliCommands.checkBackend) return { commandFamily: "check", surface: "cli" };
   if (
-    command === cliCommands.inspect ||
-    command === cliCommands.checkBackend ||
     command === cliCommands.listTools ||
     command === cliCommands.searchTools ||
     command === cliCommands.getTool ||
@@ -428,6 +428,8 @@ function maybePrintCliTelemetryNotice(
     stateDir: context.stateDir,
     surface,
     visibility: "visible",
+    allowWithoutNotice: true,
+    createIdentity: false,
   });
   if (state.status !== "enabled" || state.notice.shown) return;
   maybePrintTelemetryNotice({
@@ -451,9 +453,7 @@ async function captureCliTelemetry(
     productEvent?: boolean | undefined;
   },
 ): Promise<void> {
-  if (options.productEvent !== false) {
-    maybePrintCliTelemetryNotice(context, options.surface ?? "cli");
-  }
+  maybePrintCliTelemetryNotice(context, options.surface ?? "cli");
   const state = resolveTelemetryState({
     config: telemetryConfigForCli(context),
     env: context.env,
@@ -1311,6 +1311,17 @@ export function createProgram(io: CliIO = {}): Command {
     ((code: number) => {
       process.exitCode = code;
     });
+  const executeOperationIo = (format: CliOutputFormat | undefined): ExecuteOperationIO => ({
+    writeOut,
+    writeErr,
+    setExitCode,
+    authDir: io.authDir,
+    env,
+    remote: remoteClientForCli(io),
+    format,
+    telemetryStateDir: telemetryContext().stateDir,
+    telemetryDebugSink: io.telemetryDebugSink,
+  });
   const program = new Command();
 
   program
@@ -1449,16 +1460,19 @@ export function createProgram(io: CliIO = {}): Command {
     .action(async (args: string[]) => {
       const nestedArgs = args[0] === "--" ? args.slice(1) : args;
       const sink = new TelemetryDebugSink();
-      if (nestedArgs.length > 0) {
-        await runCli(nestedArgs, {
-          ...io,
-          env: { ...env, CAPLETS_TELEMETRY_DEBUG: "1" },
-          telemetryDebugSink: sink,
-          writeOut,
-          writeErr,
-        });
+      try {
+        if (nestedArgs.length > 0) {
+          await runCli(nestedArgs, {
+            ...io,
+            env: { ...env, CAPLETS_TELEMETRY_DEBUG: "1" },
+            telemetryDebugSink: sink,
+            writeOut,
+            writeErr,
+          });
+        }
+      } finally {
+        writeOut(`${JSON.stringify({ telemetryDebug: sink.toJSON() }, null, 2)}\n`);
       }
-      writeOut(`${JSON.stringify({ telemetryDebug: sink.toJSON() }, null, 2)}\n`);
     });
 
   const codeMode = program
@@ -1514,6 +1528,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
           projectConfigPath: envProjectConfigPath(env),
           ...(io.authDir ? { authDir: io.authDir } : {}),
+          telemetryStateDir: telemetryContext().stateDir,
           ...(code === undefined ? {} : { inlineCode: code }),
           ...(options.file === undefined ? {} : { file: options.file }),
           ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
@@ -1537,6 +1552,7 @@ export function createProgram(io: CliIO = {}): Command {
           ...(currentConfigPath() ? { configPath: currentConfigPath() } : {}),
           projectConfigPath: envProjectConfigPath(env),
           ...(io.authDir ? { authDir: io.authDir } : {}),
+          telemetryStateDir: telemetryContext().stateDir,
           ...(options.json === undefined && parentOptions.json === undefined
             ? {}
             : { json: options.json ?? parentOptions.json }),
@@ -3132,19 +3148,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "inspect" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "inspect" }, executeOperationIo(options.format));
     });
 
   program
@@ -3153,19 +3157,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "check" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "check" }, executeOperationIo(options.format));
     });
 
   program
@@ -3174,19 +3166,7 @@ export function createProgram(io: CliIO = {}): Command {
     .argument("<caplet>", "configured Caplet ID")
     .option("--format <format>", "output format: markdown, md, plain, or json", parseOutputFormat)
     .action(async (caplet: string, options: { format?: CliOutputFormat }) => {
-      await executeOperation(
-        caplet,
-        { operation: "tools" },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
-      );
+      await executeOperation(caplet, { operation: "tools" }, executeOperationIo(options.format));
     });
 
   program
@@ -3207,15 +3187,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_tools", query }
             : { operation: "search_tools", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -3236,15 +3208,7 @@ export function createProgram(io: CliIO = {}): Command {
         await executeOperation(
           caplet,
           { operation: "describe_tool", name: tool },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -3270,15 +3234,7 @@ export function createProgram(io: CliIO = {}): Command {
           args: parseCallToolArgs(options.args),
           ...(options.field && options.field.length > 0 ? { fields: options.field } : {}),
         };
-        await executeOperation(caplet, request, {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        });
+        await executeOperation(caplet, request, executeOperationIo(options.format));
       },
     );
 
@@ -3294,15 +3250,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "resources" }
           : { operation: "resources", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -3323,15 +3271,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_resources", query }
             : { operation: "search_resources", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
   program
@@ -3346,15 +3286,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "resource_templates" }
           : { operation: "resource_templates", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -3367,15 +3299,7 @@ export function createProgram(io: CliIO = {}): Command {
       executeOperation(
         caplet,
         { operation: "read_resource", uri },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -3390,15 +3314,7 @@ export function createProgram(io: CliIO = {}): Command {
         options.limit === undefined
           ? { operation: "prompts" }
           : { operation: "prompts", limit: options.limit },
-        {
-          writeOut,
-          writeErr,
-          setExitCode,
-          authDir: io.authDir,
-          env,
-          remote: remoteClientForCli(io),
-          format: options.format,
-        },
+        executeOperationIo(options.format),
       ),
     );
   program
@@ -3419,15 +3335,7 @@ export function createProgram(io: CliIO = {}): Command {
           options.limit === undefined
             ? { operation: "search_prompts", query }
             : { operation: "search_prompts", query, limit: options.limit },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
   program
@@ -3451,15 +3359,7 @@ export function createProgram(io: CliIO = {}): Command {
             name: prompt,
             args: parseJsonObjectOption(options.args, "get-prompt --args"),
           },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         );
       },
     );
@@ -3490,15 +3390,7 @@ export function createProgram(io: CliIO = {}): Command {
             ref: completionRefFromOptions(options),
             argument: { name: options.argument, value: options.value },
           },
-          {
-            writeOut,
-            writeErr,
-            setExitCode,
-            authDir: io.authDir,
-            env,
-            remote: remoteClientForCli(io),
-            format: options.format,
-          },
+          executeOperationIo(options.format),
         ),
     );
 
@@ -4326,6 +4218,8 @@ type ExecuteOperationIO = Required<Pick<CliIO, "writeOut" | "writeErr" | "setExi
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   remote?: RemoteControlClient | undefined;
   format?: CliOutputFormat | undefined;
+  telemetryStateDir?: string | undefined;
+  telemetryDebugSink?: TelemetryDebugSink | undefined;
 };
 
 type CapletListRow = ReturnType<typeof listCaplets>[number];
@@ -4584,10 +4478,11 @@ async function executeLocalOperation(
     watch: false,
     writeErr: io.writeErr,
     telemetryEnv: io.env ?? process.env,
-    telemetryStateDir: defaultTelemetryStateDir(io.env ?? process.env),
+    telemetryStateDir: io.telemetryStateDir ?? defaultTelemetryStateDir(io.env ?? process.env),
     telemetrySurface: "cli",
     telemetryVisibility: "visible",
     telemetryRuntimeMode: runtimeModeForEnv(io.env ?? process.env),
+    telemetryDebugSink: io.telemetryDebugSink,
     ...(config ? { configLoader: () => config } : {}),
   });
   try {

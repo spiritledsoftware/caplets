@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -108,16 +116,18 @@ describe("telemetry state", () => {
     expect(resolveTelemetryState({ ...base, env: { VITEST: "true" } }).decider).toBe("test");
   });
 
-  it("suppresses hidden native and daemon surfaces until notice exists", () => {
+  it("suppresses non-CI telemetry until notice exists", () => {
     const stateDir = tempRoot();
-    const beforeNotice = resolveTelemetryState({
-      stateDir,
-      env: {},
-      surface: "native",
-      visibility: "hidden",
-    });
-    expect(beforeNotice.status).toBe("suppressed");
-    expect(beforeNotice.decider).toBe("notice");
+    for (const visibility of ["visible", "hidden", "unknown"] as const) {
+      const beforeNotice = resolveTelemetryState({
+        stateDir,
+        env: {},
+        surface: "native",
+        visibility,
+      });
+      expect(beforeNotice.status).toBe("suppressed");
+      expect(beforeNotice.decider).toBe("notice");
+    }
 
     recordTelemetryNoticeShown({ stateDir, surface: "cli" });
 
@@ -143,8 +153,9 @@ describe("telemetry state", () => {
     expect(state.executionContext).toBe("ci");
     expect(readTelemetryNotice({ stateDir }).shown).toBe(false);
 
-    const readonlyState = join("/dev/null", "caplets-telemetry-state");
-    const identity = readTelemetryIdentity({ stateDir: readonlyState, create: true });
+    const blockedStateDir = join(tempRoot(), "blocked-state");
+    writeFileSync(blockedStateDir, "not a directory");
+    const identity = readTelemetryIdentity({ stateDir: blockedStateDir, create: true });
     expect(identity.kind).toBe("ephemeral");
   });
 

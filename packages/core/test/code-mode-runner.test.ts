@@ -146,6 +146,7 @@ describe("runCodeMode", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.meta.anyCapletInvoked).toBe(true);
     expect(native.execute).toHaveBeenCalledWith("github", {
       operation: "call_tool",
       name: "listIssues",

@@ -92,7 +92,7 @@ describe("telemetry providers", () => {
       buildProductTelemetryEvent({
         name: "caplets_cli_command",
         distinctId: state.identity!.id,
-        properties: { surface: "cli", execution_context: "ci" },
+        properties: { surface: "cli", execution_context: "ci", $geoip_disable: false } as never,
       }),
     );
 

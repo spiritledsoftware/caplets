@@ -29,9 +29,11 @@ import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
 import {
+  captureRuntimeReliabilityEvent,
   captureRuntimeTelemetryEvent,
   codeModeTelemetryProperties,
   createRuntimeTelemetryContext,
+  runtimeFailureTelemetryProperties,
   toolActivationProperties,
   type RuntimeMode,
   type RuntimeTelemetryContext,
@@ -108,6 +110,7 @@ export class CapletsEngine {
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
   private readonly telemetry: RuntimeTelemetryContext;
+  private readonly telemetryExecuteExposureMode: "progressive" | "code_mode";
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
   private lastExposureSnapshot: ExposureSnapshot | undefined;
   private watchers: FSWatcher[] = [];
@@ -138,6 +141,8 @@ export class CapletsEngine {
       debugSink: options.telemetryDebugSink,
       dispatcher: options.telemetryDispatcher,
     });
+    this.telemetryExecuteExposureMode =
+      options.telemetrySurface === "code_mode" ? "code_mode" : "progressive";
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
     this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
     this.googleDiscovery = new GoogleDiscoveryManager(
@@ -257,17 +262,22 @@ export class CapletsEngine {
       this.captureToolActivation(
         caplet,
         operationFromRequest(request),
-        "progressive",
+        this.telemetryExecuteExposureMode,
         result,
         started,
       );
       return result;
     } catch (error) {
       const result = errorResult(error);
+      this.captureReliabilityError(
+        operationFromRequest(request),
+        this.telemetryExecuteExposureMode,
+        result,
+      );
       this.captureToolActivation(
         caplet,
         operationFromRequest(request),
-        "progressive",
+        this.telemetryExecuteExposureMode,
         result,
         started,
       );
@@ -290,6 +300,7 @@ export class CapletsEngine {
       return annotated;
     } catch (error) {
       const result = errorResult(error);
+      this.captureReliabilityError("call_tool", "direct", result);
       this.captureToolActivation(caplet, "call_tool", "direct", result, started);
       return result;
     }
@@ -307,6 +318,7 @@ export class CapletsEngine {
       return annotated;
     } catch (error) {
       const result = errorResult(error);
+      this.captureReliabilityError("read_resource", "direct", result);
       this.captureToolActivation(caplet, "read_resource", "direct", result, started);
       return result;
     }
@@ -328,6 +340,7 @@ export class CapletsEngine {
       return annotated;
     } catch (error) {
       const result = errorResult(error);
+      this.captureReliabilityError("get_prompt", "direct", result);
       this.captureToolActivation(caplet, "get_prompt", "direct", result, started);
       return result;
     }
@@ -660,6 +673,17 @@ export class CapletsEngine {
         this.resetWatchers();
       }
     }, this.watchDebounceMs);
+  }
+
+  private captureReliabilityError(
+    operation: unknown,
+    exposureMode: "direct" | "progressive" | "code_mode" | "mixed" | "unknown",
+    result: unknown,
+  ): void {
+    void captureRuntimeReliabilityEvent(this.telemetry, {
+      command_family: commandFamilyForTelemetrySurface(this.telemetry.surface),
+      ...runtimeFailureTelemetryProperties({ operation, exposureMode, result }),
+    }).catch(() => undefined);
   }
 
   private captureToolActivation(

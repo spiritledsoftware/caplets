@@ -44,12 +44,7 @@ export function resolveTelemetryState(options: ResolveTelemetryStateOptions): Te
     return { ...base, status: "disabled", decider: "test" };
   }
 
-  if (
-    executionContext !== "ci" &&
-    !notice.shown &&
-    !options.allowWithoutNotice &&
-    options.visibility !== "visible"
-  ) {
+  if (executionContext !== "ci" && !notice.shown && !options.allowWithoutNotice) {
     return { ...base, status: "suppressed", decider: "notice" };
   }
 

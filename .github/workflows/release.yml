@@ -51,18 +51,12 @@ jobs:
       - name: Verify package
         run: pnpm verify
 
-      - name: Check telemetry release env
-        env:
-          CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
-          CAPLETS_SENTRY_DSN: ${{ secrets.CAPLETS_SENTRY_DSN }}
-        run: pnpm telemetry:check-release-env
-
       - name: Create release PR or publish
         id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm version-packages
-          publish: pnpm release
+          publish: pnpm telemetry:prepare-release-env && pnpm release
           commit: "chore: version packages"
           title: "chore: version packages"
         env:

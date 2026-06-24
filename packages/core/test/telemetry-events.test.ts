@@ -41,6 +41,19 @@ describe("telemetry event builders", () => {
     });
   });
 
+  it("forces anonymous product profile behavior after caller properties", () => {
+    const event = buildProductTelemetryEvent({
+      name: "caplets_cli_command",
+      distinctId: "anon_1234567890abcdef1234567890abcdef",
+      properties: {
+        surface: "cli",
+        $process_person_profile: true,
+      } as never,
+    });
+
+    expect(event.properties.$process_person_profile).toBe(false);
+  });
+
   it("rejects unknown event and property keys", () => {
     expect(() =>
       buildProductTelemetryEvent({

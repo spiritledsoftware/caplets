@@ -79,7 +79,11 @@ export function rotateTelemetryIdentity(options: TelemetryStateOptions = {}): Te
 }
 
 export function deleteTelemetryIdentity(options: TelemetryStateOptions = {}): void {
-  rmSync(telemetryIdentityPath(options), { force: true });
+  try {
+    rmSync(telemetryIdentityPath(options), { force: true });
+  } catch {
+    // Telemetry state operations are best effort.
+  }
 }
 
 export function readTelemetryNotice(options: TelemetryStateOptions = {}): TelemetryNoticeState {

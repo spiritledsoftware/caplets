@@ -39,7 +39,7 @@ describe("telemetry release environment", () => {
   it("wires telemetry secrets into the release workflow", () => {
     const workflow = read(".github/workflows/release.yml");
 
-    expect(workflow).toContain("pnpm telemetry:check-release-env");
+    expect(workflow).toContain("publish: pnpm telemetry:prepare-release-env && pnpm release");
     expect(workflow).toContain("CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}");
     expect(workflow).toContain("CAPLETS_SENTRY_DSN: ${{ secrets.CAPLETS_SENTRY_DSN }}");
   });

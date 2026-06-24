@@ -18,6 +18,7 @@ export type CodeModeCliOptions = {
   configPath?: string | undefined;
   projectConfigPath?: string | undefined;
   authDir?: string | undefined;
+  telemetryStateDir?: string | undefined;
   inlineCode?: string | undefined;
   file?: string | undefined;
   timeoutMs?: number | undefined;
@@ -36,7 +37,7 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
     telemetryEnv: options.env as NodeJS.ProcessEnv | undefined,
-    telemetryStateDir: defaultTelemetryStateDir(options.env),
+    telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
     telemetrySurface: "code_mode",
     telemetryVisibility: "visible",
     telemetryRuntimeMode: runtimeScope(options.env) === "local" ? "local" : "unknown",
@@ -70,7 +71,7 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
       service: service.codeModeService?.() ?? service,
       runtimeScope: "cli-one-shot",
     });
-    void service
+    await service
       .captureCodeModeOutcome?.(result, {
         started,
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
@@ -103,6 +104,7 @@ export async function runCodeModeReplCli(
     | "configPath"
     | "projectConfigPath"
     | "authDir"
+    | "telemetryStateDir"
     | "sessionId"
     | "recoveryRef"
     | "json"
@@ -132,13 +134,20 @@ export async function runCodeModeReplCli(
 export async function codeModeTypesCli(
   options: Pick<
     CodeModeCliOptions,
-    "env" | "configPath" | "projectConfigPath" | "authDir" | "json" | "writeOut"
+    | "env"
+    | "configPath"
+    | "projectConfigPath"
+    | "authDir"
+    | "telemetryStateDir"
+    | "json"
+    | "writeOut"
   >,
 ): Promise<void> {
   const engine = new CapletsEngine({
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.projectConfigPath ? { projectConfigPath: options.projectConfigPath } : {}),
     ...(options.authDir ? { authDir: options.authDir } : {}),
+    telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
   });
   try {
     const caplets = listCodeModeCallableCaplets(engine);
