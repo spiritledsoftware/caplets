@@ -22,13 +22,16 @@ export {
   DEFAULT_AUTH_DIR,
   DEFAULT_COMPLETION_CACHE_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_TELEMETRY_STATE_DIR,
   PROJECT_CONFIG_FILE,
   defaultCacheBaseDir,
   defaultCompletionCacheDir,
+  defaultTelemetryStateDir,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
+  resolveTelemetryStateDir,
 } from "./config/paths";
 
 export type RemoteAuthConfig =
@@ -335,6 +338,7 @@ export type CompletionConfig = {
 
 export type CapletsConfig = {
   version: 1;
+  telemetry?: boolean | undefined;
   options: CapletsOptions;
   namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
@@ -1137,6 +1141,7 @@ type ConfigSchemaHttpApiValue = z.infer<typeof normalizedHttpApiSchema>;
 type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
+  telemetry?: unknown;
   namespaceAliases?: unknown;
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
@@ -1191,6 +1196,10 @@ function configSchemaFor(
         .max(50)
         .default(50)
         .describe("Maximum accepted search_tools limit."),
+      telemetry: z
+        .boolean()
+        .optional()
+        .describe("Set false to disable anonymous Caplets telemetry for this user config."),
       completion: z
         .object({
           discoveryTimeoutMs: z.number().int().positive().default(750),
@@ -2479,6 +2488,7 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
     merged = {
       ...merged,
       ...input,
+      telemetry: input.telemetry === undefined ? merged?.telemetry : input.telemetry,
       namespaceAliases: mergeNamespaceAliases(merged?.namespaceAliases, input.namespaceAliases),
       mcpServers: {
         ...merged?.mcpServers,
@@ -2550,7 +2560,9 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
     if (entry?.input === undefined) {
       continue;
     }
-    for (const id of capletIds(entry.input)) {
+    const entryInput =
+      entry.source.kind === "global-config" ? entry.input : stripUserOnlyConfig(entry.input);
+    for (const id of capletIds(entryInput)) {
       const source = sourceForId(entry.source, id);
       if (sources[id]) {
         shadows[id] = [...(shadows[id] ?? []), sources[id]];
@@ -2558,10 +2570,15 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
       sources[id] = source;
       merged = removeCapletId(merged, id);
     }
-    merged = mergeConfigInputs(merged, entry.input) ?? {};
+    merged = mergeConfigInputs(merged, entryInput) ?? {};
   }
 
   return { input: merged, sources, shadows };
+}
+
+function stripUserOnlyConfig(input: ConfigInput): ConfigInput {
+  const { telemetry: _telemetry, ...rest } = input;
+  return rest;
 }
 
 function removeCapletBackendId(
@@ -2696,6 +2713,7 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
 
   return {
     version: parsed.data.version,
+    telemetry: parsed.data.telemetry,
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,

@@ -28,6 +28,20 @@ import {
 import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
+import {
+  captureRuntimeTelemetryEvent,
+  codeModeTelemetryProperties,
+  createRuntimeTelemetryContext,
+  toolActivationProperties,
+  type RuntimeMode,
+  type RuntimeTelemetryContext,
+} from "./telemetry";
+import type {
+  TelemetryDebugSink,
+  TelemetryDispatcher,
+  TelemetrySurface,
+  TelemetryVisibility,
+} from "./telemetry";
 
 type ToolSummary = { name: string; description?: string };
 
@@ -50,6 +64,14 @@ export type CapletsEngineOptions = {
   observedOutputShapeCacheDir?: string | undefined;
   projectFingerprint?: string | undefined;
   vaultRecoveryTarget?: "global" | "remote" | undefined;
+  telemetryStateDir?: string | undefined;
+  telemetryEnv?: NodeJS.ProcessEnv | undefined;
+  telemetrySurface?: TelemetrySurface | undefined;
+  telemetryVisibility?: TelemetryVisibility | undefined;
+  telemetryRuntimeMode?: RuntimeMode | undefined;
+  telemetryIntegration?: "opencode" | "pi" | "native" | "unknown" | undefined;
+  telemetryDebugSink?: TelemetryDebugSink | undefined;
+  telemetryDispatcher?: TelemetryDispatcher | undefined;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -85,6 +107,7 @@ export class CapletsEngine {
   private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
+  private readonly telemetry: RuntimeTelemetryContext;
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
   private lastExposureSnapshot: ExposureSnapshot | undefined;
   private watchers: FSWatcher[] = [];
@@ -104,6 +127,17 @@ export class CapletsEngine {
       options.configLoader ?? runtimeConfigLoader(options.authDir, options.vaultRecoveryTarget);
     const config = this.loadConfigWithWarnings();
     this.registry = new ServerRegistry(config);
+    this.telemetry = createRuntimeTelemetryContext({
+      config: this.registry.config,
+      env: options.telemetryEnv,
+      stateDir: options.telemetryStateDir,
+      surface: options.telemetrySurface ?? "serve",
+      visibility: options.telemetryVisibility ?? "unknown",
+      runtimeMode: options.telemetryRuntimeMode ?? runtimeModeFromEnv(options.telemetryEnv),
+      integration: options.telemetryIntegration,
+      debugSink: options.telemetryDebugSink,
+      dispatcher: options.telemetryDispatcher,
+    });
     this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
     this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
     this.googleDiscovery = new GoogleDiscoveryManager(
@@ -199,9 +233,11 @@ export class CapletsEngine {
   }
 
   async execute(serverId: string, request: unknown): Promise<unknown> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
     try {
-      const caplet = this.registry.require(serverId);
-      return await handleServerTool(
+      caplet = this.registry.require(serverId);
+      const result = await handleServerTool(
         caplet,
         request,
         this.registry,
@@ -218,8 +254,24 @@ export class CapletsEngine {
         },
         this.googleDiscovery,
       );
+      this.captureToolActivation(
+        caplet,
+        operationFromRequest(request),
+        "progressive",
+        result,
+        started,
+      );
+      return result;
     } catch (error) {
-      return errorResult(error);
+      const result = errorResult(error);
+      this.captureToolActivation(
+        caplet,
+        operationFromRequest(request),
+        "progressive",
+        result,
+        started,
+      );
+      return result;
     }
   }
 
@@ -228,23 +280,35 @@ export class CapletsEngine {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
     try {
-      const caplet = this.registry.require(serverId);
+      caplet = this.registry.require(serverId);
       const result = await this.callTool(caplet, toolName, args);
-      return annotateDirectResult(result, caplet, toolName);
+      const annotated = annotateDirectResult(result, caplet, toolName);
+      this.captureToolActivation(caplet, "call_tool", "direct", annotated, started);
+      return annotated;
     } catch (error) {
-      return errorResult(error);
+      const result = errorResult(error);
+      this.captureToolActivation(caplet, "call_tool", "direct", result, started);
+      return result;
     }
   }
 
   async readDirectResource(serverId: string, downstreamUri: string): Promise<unknown> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
     try {
-      const caplet = this.registry.require(serverId);
+      caplet = this.registry.require(serverId);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP resources`);
       const result = await this.downstream.readResource(caplet, downstreamUri);
-      return annotateDirectResult(result, caplet, "read_resource");
+      const annotated = annotateDirectResult(result, caplet, "read_resource");
+      this.captureToolActivation(caplet, "read_resource", "direct", annotated, started);
+      return annotated;
     } catch (error) {
-      return errorResult(error);
+      const result = errorResult(error);
+      this.captureToolActivation(caplet, "read_resource", "direct", result, started);
+      return result;
     }
   }
 
@@ -253,13 +317,19 @@ export class CapletsEngine {
     promptName: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
     try {
-      const caplet = this.registry.require(serverId);
+      caplet = this.registry.require(serverId);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP prompts`);
       const result = await this.downstream.getPrompt(caplet, promptName, args);
-      return annotateDirectResult(result, caplet, promptName);
+      const annotated = annotateDirectResult(result, caplet, promptName);
+      this.captureToolActivation(caplet, "get_prompt", "direct", annotated, started);
+      return annotated;
     } catch (error) {
-      return errorResult(error);
+      const result = errorResult(error);
+      this.captureToolActivation(caplet, "get_prompt", "direct", result, started);
+      return result;
     }
   }
 
@@ -296,6 +366,17 @@ export class CapletsEngine {
     });
   }
 
+  async captureCodeModeOutcome(
+    envelope: unknown,
+    options: { started: number; timeoutMs?: number | undefined },
+  ): Promise<void> {
+    await captureRuntimeTelemetryEvent(
+      this.telemetry,
+      "caplets_code_mode_outcome",
+      codeModeTelemetryProperties(envelope, Date.now() - options.started, options.timeoutMs),
+    );
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     try {
@@ -314,6 +395,7 @@ export class CapletsEngine {
       this.closeWatchers();
       await this.downstream.close();
       await this.capletSets.close();
+      await this.telemetry.dispatcher.shutdown();
       this.reloadListeners.clear();
     }
   }
@@ -402,6 +484,7 @@ export class CapletsEngine {
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     this.registry = nextRegistry;
+    this.telemetry.config = nextConfig;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
     this.googleDiscovery.updateRegistry(nextRegistry);
@@ -578,6 +661,26 @@ export class CapletsEngine {
       }
     }, this.watchDebounceMs);
   }
+
+  private captureToolActivation(
+    caplet: CapletConfig | undefined,
+    operation: unknown,
+    exposureMode: "direct" | "progressive" | "code_mode" | "mixed" | "unknown",
+    result: unknown,
+    started: number,
+  ): void {
+    void captureRuntimeTelemetryEvent(this.telemetry, "caplets_tool_activation", {
+      command_family: commandFamilyForTelemetrySurface(this.telemetry.surface),
+      ...toolActivationProperties({
+        config: this.registry.config,
+        caplet,
+        operation,
+        exposureMode,
+        result,
+        durationMs: Date.now() - started,
+      }),
+    }).catch(() => undefined);
+  }
 }
 
 function runtimeConfigLoader(
@@ -718,4 +821,23 @@ function isUnsupportedCapability(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function operationFromRequest(request: unknown): unknown {
+  return isRecord(request) ? request.operation : undefined;
+}
+
+function runtimeModeFromEnv(env: NodeJS.ProcessEnv | undefined): RuntimeMode {
+  const mode = env?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
+  if (mode === "local" || mode === "remote" || mode === "cloud") return mode;
+  return "unknown";
+}
+
+function commandFamilyForTelemetrySurface(surface: TelemetrySurface) {
+  if (surface === "serve") return "serve";
+  if (surface === "attach") return "attach";
+  if (surface === "daemon") return "daemon";
+  if (surface === "code_mode") return "code_mode";
+  if (surface === "native") return "native";
+  return "tools";
 }

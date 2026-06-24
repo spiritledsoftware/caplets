@@ -316,6 +316,7 @@ describe("@caplets/opencode", () => {
         url: "https://caplets.example.com",
         pollIntervalMs: 5_000,
       },
+      telemetryIntegration: "opencode",
     });
   });
 
@@ -342,6 +343,7 @@ describe("@caplets/opencode", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "cloud",
       remote: { url: "https://cloud.caplets.dev" },
+      telemetryIntegration: "opencode",
     });
   });
 

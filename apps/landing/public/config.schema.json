@@ -29,6 +29,10 @@
       "exclusiveMinimum": 0,
       "maximum": 50
     },
+    "telemetry": {
+      "description": "Set false to disable anonymous Caplets telemetry for this user config.",
+      "type": "boolean"
+    },
     "completion": {
       "default": {
         "discoveryTimeoutMs": 750,

@@ -19,6 +19,13 @@ import {
 } from "./remote";
 import { CapletsEngine } from "../engine";
 import { CapletsError } from "../errors";
+import type {
+  RuntimeMode,
+  TelemetryDebugSink,
+  TelemetryDispatcher,
+  TelemetrySurface,
+  TelemetryVisibility,
+} from "../telemetry";
 import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
@@ -77,6 +84,14 @@ export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & 
   writeErr?: (value: string) => void;
   remoteClientFactory?: (options: ResolvedNativeRemoteOptions) => RemoteCapletsClient;
   localServiceFactory?: (options: LocalNativeCapletsServiceOptions) => NativeCapletsService;
+  telemetryStateDir?: string | undefined;
+  telemetryEnv?: NodeJS.ProcessEnv | undefined;
+  telemetrySurface?: TelemetrySurface | undefined;
+  telemetryVisibility?: TelemetryVisibility | undefined;
+  telemetryRuntimeMode?: RuntimeMode | undefined;
+  telemetryIntegration?: "opencode" | "pi" | "native" | "unknown" | undefined;
+  telemetryDebugSink?: TelemetryDebugSink | undefined;
+  telemetryDispatcher?: TelemetryDispatcher | undefined;
 };
 
 export type NativeCapletTool = {
@@ -102,6 +117,10 @@ export type NativeCapletsToolsChangedListener = (tools: NativeCapletTool[]) => v
 export type NativeCapletsService = {
   listTools(): NativeCapletTool[];
   execute(capletId: string, request: unknown): Promise<unknown>;
+  captureCodeModeOutcome?(
+    envelope: unknown,
+    options: { started: number; timeoutMs?: number | undefined },
+  ): Promise<void>;
   codeModeService?(): NativeCapletsService;
   reload(): Promise<boolean>;
   onToolsChanged(listener: NativeCapletsToolsChangedListener): () => void;
@@ -163,6 +182,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.engine = new CapletsEngine({
       ...options,
       writeErr: this.writeErr,
+      telemetrySurface: options.telemetrySurface ?? "native",
+      telemetryVisibility: options.telemetryVisibility ?? "hidden",
+      telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
+      telemetryIntegration: options.telemetryIntegration ?? "native",
     });
     this.postReloadRefresh = this.refreshExposureSnapshot({
       emitToolsChanged: this.hasSnapshotBackedDirectExposure(),
@@ -205,11 +228,22 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
     if (capletId === nativeCodeModeToolId) {
-      return await executeCodeModeRunNative(
+      const started = Date.now();
+      const envelope = await executeCodeModeRunNative(
         this.codeModeDelegate(),
         request,
         this.codeModeSessions,
       );
+      const parsed = codeModeRunInputSchema.safeParse(request);
+      void this.engine
+        .captureCodeModeOutcome(envelope, {
+          started,
+          ...(parsed.success && parsed.data.timeoutMs !== undefined
+            ? { timeoutMs: parsed.data.timeoutMs }
+            : {}),
+        })
+        .catch(() => undefined);
+      return envelope;
     }
     const route = this.directToolRoutes.get(capletId);
     if (route) {
@@ -226,6 +260,13 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       );
     }
     return await this.engine.execute(capletId, request);
+  }
+
+  async captureCodeModeOutcome(
+    envelope: unknown,
+    options: { started: number; timeoutMs?: number | undefined },
+  ): Promise<void> {
+    await this.engine.captureCodeModeOutcome(envelope, options);
   }
 
   codeModeService(): NativeCapletsService {
@@ -523,6 +564,15 @@ function nativeMcpPrimitiveRequest(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function runtimeModeFromNativeOptions(options: NativeCapletsServiceOptions) {
+  if (options.mode === "remote") return "remote";
+  if (options.mode === "cloud") return "cloud";
+  if (options.remote?.url) return "remote";
+  const envMode = options.telemetryEnv?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
+  if (envMode === "remote" || envMode === "cloud" || envMode === "local") return envMode;
+  return "local";
 }
 
 function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {

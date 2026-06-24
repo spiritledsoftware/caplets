@@ -77,6 +77,28 @@ npx caplets doctor
 The output should show the active Caplets paths and any integration checks Caplets can
 run in this environment. Treat failed rows as setup work, not as agent bugs.
 
+## Anonymous telemetry
+
+Caplets collects opt-out anonymous telemetry for product usage and reliability. The first eligible
+interactive CLI run writes a notice to stderr only, so JSON stdout and MCP protocol output stay
+clean.
+
+Disable telemetry for one process:
+
+```sh
+CAPLETS_DISABLE_TELEMETRY=1 caplets serve
+```
+
+Disable it in your user Caplets config:
+
+```sh
+caplets telemetry disable
+```
+
+Inspect local state with `caplets telemetry status`. Caplets never collects raw config, prompts,
+Code Mode code, tool arguments, tool outputs, logs, file paths, URLs, hostnames, Caplet IDs,
+credentials, tokens, raw environment variables, raw error messages, or unsanitized stack traces.
+
 ## First agent check
 
 After `doctor` is clean enough for your integration, ask the agent:

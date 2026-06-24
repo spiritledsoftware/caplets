@@ -720,7 +720,9 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension({ registerTool: vi.fn() });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({});
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      telemetryIntegration: "pi",
+    });
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 
@@ -734,7 +736,10 @@ describe("@caplets/pi", () => {
 
     createCapletsPiExtension({ args })({ registerTool: vi.fn() });
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith(args);
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      ...args,
+      telemetryIntegration: "pi",
+    });
     expect(nativeMocks.registerNativeCapletsProcessCleanup).toHaveBeenCalledWith(service);
   });
 
@@ -1048,6 +1053,7 @@ describe("@caplets/pi", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "remote",
       remote: { url: "http://localhost:5387" },
+      telemetryIntegration: "pi",
     });
   });
 
@@ -1160,6 +1166,7 @@ describe("@caplets/pi", () => {
         url: "https://caplets.example.com",
         pollIntervalMs: 1_000,
       },
+      telemetryIntegration: "pi",
     });
   });
 
@@ -1203,7 +1210,9 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      telemetryIntegration: "pi",
+    });
   });
 
   it("default export falls back to empty args when Pi settings are missing", async () => {
@@ -1216,7 +1225,9 @@ describe("@caplets/pi", () => {
 
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({});
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      telemetryIntegration: "pi",
+    });
   });
 
   it("warns and falls back to empty args when Pi settings are malformed", async () => {
@@ -1350,7 +1361,10 @@ describe("@caplets/pi", () => {
     await createCapletsPiExtension({ args: { mode: "local" } })(api as unknown as PiExtensionApi);
 
     expect(fsMocks.readFile).not.toHaveBeenCalled();
-    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({ mode: "local" });
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "local",
+      telemetryIntegration: "pi",
+    });
   });
 
   it("closes owned services on Pi session shutdown", async () => {

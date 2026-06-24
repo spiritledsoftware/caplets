@@ -709,6 +709,70 @@ describe("config", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("keeps top-level telemetry as a user-only preference during project config merge", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const userConfigPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, "user"), { recursive: true });
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      userConfigPath,
+      JSON.stringify({
+        telemetry: false,
+        mcpServers: {
+          userOnly: {
+            name: "User Only",
+            description: "A useful user-only downstream server.",
+            command: "user-only",
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        telemetry: true,
+        mcpServers: {
+          projectOnly: {
+            name: "Project Only",
+            description: "A useful project-only downstream server.",
+            command: "project-only",
+          },
+        },
+      }),
+    );
+
+    const config = loadConfig(userConfigPath, projectConfigPath);
+
+    expect(config.telemetry).toBe(false);
+    expect(Object.keys(config.mcpServers).sort()).toEqual(["projectOnly", "userOnly"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("ignores project-only telemetry config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-config-"));
+    const projectConfigPath = join(dir, ".caplets", "config.json");
+    mkdirSync(join(dir, ".caplets"), { recursive: true });
+    writeFileSync(
+      projectConfigPath,
+      JSON.stringify({
+        telemetry: false,
+        mcpServers: {
+          projectOnly: {
+            name: "Project Only",
+            description: "A useful project-only downstream server.",
+            command: "project-only",
+          },
+        },
+      }),
+    );
+
+    const config = loadConfig(join(dir, "missing-user-config.json"), projectConfigPath);
+
+    expect(config.telemetry).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("loads top-level and directory Caplet files with project Caplets winning", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-files-"));
     const userRoot = join(dir, "user");

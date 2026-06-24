@@ -2,13 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createNativeCapletsService,
   nativeCapletPromptGuidance,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
 } from "../src/native";
+import { recordTelemetryNoticeShown } from "../src/telemetry";
 import { FileVaultStore } from "../src/vault";
 
 const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
@@ -128,6 +129,75 @@ describe("native Caplets service", () => {
 
       expect(JSON.stringify(result)).toContain("Alpha");
       expect(JSON.stringify(result)).not.toContain("super-secret");
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("suppresses native-first telemetry until a visible notice has been recorded", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const capture = vi.fn();
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      telemetryStateDir: join(dir, "state"),
+      telemetryEnv: {},
+      telemetryDispatcher: { capture, shutdown: vi.fn() },
+    });
+
+    try {
+      await service.execute("alpha", { operation: "inspect" });
+      expect(capture).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("captures native tool telemetry after prior visible notice", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const stateDir = join(dir, "state");
+    recordTelemetryNoticeShown({ stateDir, surface: "cli" });
+    const capture = vi.fn();
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      telemetryStateDir: stateDir,
+      telemetryEnv: {},
+      telemetryDispatcher: { capture, shutdown: vi.fn() },
+    });
+
+    try {
+      await service.execute("alpha", { operation: "inspect" });
+      await expect.poll(() => capture.mock.calls.length).toBe(1);
+      expect(capture.mock.calls[0]?.[1]).toMatchObject({
+        provider: "posthog",
+        name: "caplets_tool_activation",
+        properties: expect.objectContaining({
+          surface: "native",
+          command_family: "native",
+          operation_family: "inspect",
+          outcome: "success",
+          integration: "native",
+        }),
+      });
     } finally {
       await service.close();
     }

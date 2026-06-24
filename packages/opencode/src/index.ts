@@ -9,9 +9,10 @@ import { createCapletsOpenCodeHooks } from "./hooks";
 export type CapletsOpenCodeConfig = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
 
 const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
-  const service = createNativeCapletsService(
-    normalizeOpenCodeConfig(config) as NativeCapletsServiceOptions,
-  );
+  const service = createNativeCapletsService({
+    ...normalizeOpenCodeConfig(config),
+    telemetryIntegration: "opencode",
+  } as NativeCapletsServiceOptions);
   registerNativeCapletsProcessCleanup(service);
   if (!(await service.reload())) {
     throw new Error("Failed to initialize Caplets native service.");
