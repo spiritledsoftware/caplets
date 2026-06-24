@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +12,26 @@ function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "caplets-telemetry-cli-"));
   dirs.push(dir);
   return dir;
+}
+
+function writeMinimalConfig(path: string): void {
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        mcpServers: {
+          example: {
+            name: "Example",
+            description: "Example test server.",
+            command: "node",
+            args: ["server.js"],
+          },
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 describe("telemetry CLI", () => {
@@ -77,9 +97,15 @@ describe("telemetry CLI", () => {
     const dir = tempDir();
     const out: string[] = [];
     const err: string[] = [];
+    const configPath = join(dir, "config.json");
+    writeMinimalConfig(configPath);
+    const env = {
+      CAPLETS_CONFIG: configPath,
+      CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+    };
 
     await runCli(["serve"], {
-      env: {},
+      env,
       telemetryStateDir: join(dir, "state"),
       stderrIsTTY: true,
       writeOut: (value) => out.push(value),
@@ -93,7 +119,7 @@ describe("telemetry CLI", () => {
     expect(readTelemetryNotice({ stateDir: join(dir, "state") }).shown).toBe(true);
 
     await runCli(["serve"], {
-      env: {},
+      env,
       telemetryStateDir: join(dir, "state"),
       stderrIsTTY: true,
       writeErr: (value) => err.push(value),
@@ -105,9 +131,14 @@ describe("telemetry CLI", () => {
   it("does not mark notice shown when stderr is redirected", async () => {
     const dir = tempDir();
     const err: string[] = [];
+    const configPath = join(dir, "config.json");
+    writeMinimalConfig(configPath);
 
     await runCli(["serve"], {
-      env: {},
+      env: {
+        CAPLETS_CONFIG: configPath,
+        CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+      },
       telemetryStateDir: join(dir, "state"),
       stderrIsTTY: false,
       writeErr: (value) => err.push(value),
