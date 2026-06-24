@@ -198,7 +198,7 @@ export async function runCli(args: string[], io: CliIO = {}): Promise<void> {
       version: wrappedIo.version,
       fetcher: wrappedIo.fetch,
       signal: wrappedIo.signal,
-      stderrIsTTY: wrappedIo.stderrIsTTY,
+      stderrIsTTY: wrappedIo.stderrIsTTY ?? process.stderr.isTTY === true,
       writeErr: wrappedIo.writeErr,
       cacheDir: wrappedIo.updateCheckCacheDir ?? defaultUpdateCheckCacheDir(wrappedIo.env),
       stateDir: wrappedIo.updateCheckStateDir ?? defaultUpdateCheckStateDir(wrappedIo.env),

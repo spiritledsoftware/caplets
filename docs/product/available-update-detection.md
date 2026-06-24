@@ -31,8 +31,8 @@ Passive notices and refreshes are suppressed for:
 - native integrations
 - default stdio `caplets serve` and `caplets attach`
 
-Foreground HTTP `caplets serve --transport http` may show a cached update notice when stderr is
-human-facing.
+Foreground `caplets serve --transport http` or `caplets serve --transport sse` may show a cached
+update notice when stderr is human-facing.
 
 ## Controls
 

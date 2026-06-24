@@ -52,15 +52,19 @@ function isHelpOrVersion(args: string[]): boolean {
 }
 
 function isOutputProduct(args: string[]): boolean {
-  if (args.some((arg) => arg === "--json" || arg === "--format=json")) return true;
+  if (args.some((arg) => arg === "--json" || arg.toLowerCase() === "--format=json")) return true;
   const format = optionValue(args, "--format");
-  if (format === "json") return true;
-  if (args[0] === "config" && args[1] === "path") return true;
+  if (format?.toLowerCase() === "json") return true;
+  if (args[0] === "config" && (args[1] === "path" || args[1] === "paths")) return true;
   return false;
 }
 
 function isCi(env: UpdateCheckEnv): boolean {
-  return env.CI === "true" || env.GITHUB_ACTIONS === "true" || env.BUILDKITE === "true";
+  return isTruthyEnv(env.CI) || isTruthyEnv(env.GITHUB_ACTIONS) || isTruthyEnv(env.BUILDKITE);
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  return value === "1" || value === "true";
 }
 
 function optionValue(args: string[], name: string): string | undefined {

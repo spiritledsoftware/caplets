@@ -96,7 +96,8 @@ async function readBoundedText(
   maxBytes = UPDATE_CHECK_MAX_RESPONSE_BYTES,
 ): Promise<string> {
   const contentLength = response.headers.get("content-length");
-  if (contentLength && Number(contentLength) > maxBytes) {
+  const contentLengthNum = Number(contentLength);
+  if (contentLength && Number.isFinite(contentLengthNum) && contentLengthNum > maxBytes) {
     throw new UpdateRegistryError("registry response was too large", "too_large");
   }
 

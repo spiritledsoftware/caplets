@@ -50,6 +50,16 @@ describe("update-check registry", () => {
     ).rejects.toMatchObject({ reason: "too_large" });
   });
 
+  it("rejects oversized finite content-length headers before reading", async () => {
+    const fetcher = vi.fn<typeof fetch>(
+      async () => new Response("{}", { headers: { "content-length": "128" } }),
+    );
+
+    await expect(
+      fetchPublicCapletsMetadata({ fetcher, timeoutMs: 100, maxResponseBytes: 16 }),
+    ).rejects.toMatchObject({ reason: "too_large" });
+  });
+
   it("honors an already-aborted caller signal", async () => {
     const controller = new AbortController();
     controller.abort();

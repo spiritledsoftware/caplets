@@ -54,7 +54,7 @@ export async function maybePrintUpdateNotice(
     (cache.status === "positive" && !cache.fresh) ||
     (cache.status === "negative" && !cache.fresh)
   ) {
-    await refreshUpdateMetadata({
+    void refreshUpdateMetadata({
       ...options,
       now,
       fetcher: options.fetcher,

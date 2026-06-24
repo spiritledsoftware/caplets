@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_UPDATE_CHECK_CACHE_DIR, DEFAULT_UPDATE_CHECK_STATE_DIR } from "../config/paths";
@@ -136,14 +145,22 @@ export function acquireUpdateRefreshLock(
 ): boolean {
   const now = options.now ?? Date.now();
   const path = updateRefreshLockPath(options);
+  if (createUpdateRefreshLock(path, now)) return true;
+
   const existing = readJson<{ lockedAt?: unknown }>(path);
   if (
-    typeof existing?.lockedAt === "number" &&
+    typeof existing?.lockedAt !== "number" ||
     now - existing.lockedAt < UPDATE_CHECK_LOCK_TTL_MS
   ) {
     return false;
   }
-  return writePrivateJson(path, { lockedAt: now });
+
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    return false;
+  }
+  return createUpdateRefreshLock(path, now);
 }
 
 export function releaseUpdateRefreshLock(options: UpdateCheckPathsOptions = {}): void {
@@ -163,6 +180,26 @@ export function writePrivateJson(path: string, value: unknown): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function createUpdateRefreshLock(path: string, now: number): boolean {
+  let fd: number | undefined;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    fd = openSync(path, "wx", 0o600);
+    writeFileSync(fd, `${JSON.stringify({ lockedAt: now }, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Update-check state is best effort.
+      }
+    }
   }
 }
 

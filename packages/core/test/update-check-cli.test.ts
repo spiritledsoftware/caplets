@@ -63,6 +63,31 @@ describe("update-check CLI", () => {
     expect(readUpdateNoticeState({ stateDir: join(dir, "state") }).shown["0.23.0"]).toBeDefined();
   });
 
+  it("uses process stderr TTY state when tests do not inject it", async () => {
+    const dir = tempDir();
+    const err: string[] = [];
+    const original = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    writeCachedLatest(join(dir, "cache"));
+    Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+    try {
+      await runCli(["telemetry", "status"], {
+        version: "0.22.0",
+        updateCheckCacheDir: join(dir, "cache"),
+        updateCheckStateDir: join(dir, "state"),
+        writeOut: () => {},
+        writeErr: (value) => err.push(value),
+      });
+    } finally {
+      if (original) {
+        Object.defineProperty(process.stderr, "isTTY", original);
+      } else {
+        Reflect.deleteProperty(process.stderr, "isTTY");
+      }
+    }
+
+    expect(err.join("")).toContain("Update available: caplets 0.22.0 -> 0.23.0");
+  });
+
   it("does not fall back to the core package version when no CLI version is injected", async () => {
     const dir = tempDir();
     const err: string[] = [];
@@ -141,6 +166,41 @@ describe("update-check CLI", () => {
 
     expect(out.join("")).toBe("");
     expect(err.join("")).toContain("Update available: caplets 0.22.0 -> 0.23.0");
+  });
+
+  it("does not block serve startup on a refresh for later", async () => {
+    const dir = tempDir();
+    let resolveFetch: ((value: Response) => void) | undefined;
+    const fetcher = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    const served: string[] = [];
+
+    await runCli(["serve"], {
+      env: { CAPLETS_UPDATE_NOTICE_STDERR: "1" },
+      version: "0.22.0",
+      stderrIsTTY: false,
+      fetch: fetcher,
+      updateCheckCacheDir: join(dir, "cache"),
+      updateCheckStateDir: join(dir, "state"),
+      writeErr: () => {},
+      serve: async () => {
+        served.push("started");
+      },
+    });
+
+    expect(fetcher).toHaveBeenCalled();
+    expect(served).toEqual(["started"]);
+    resolveFetch?.(
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
   });
 
   it("does not let telemetry disablement suppress update detection", async () => {

@@ -37,4 +37,30 @@ describe("update-check eligibility", () => {
       }),
     ).toMatchObject({ eligible: false, reason: "output_product" });
   });
+
+  it("suppresses uppercase JSON format values and config path outputs", () => {
+    for (const args of [
+      ["list-tools", "--format=JSON"],
+      ["list-tools", "--format", "JSON"],
+      ["config", "path"],
+      ["config", "paths"],
+    ]) {
+      expect(
+        classifyUpdateNoticeEligibility({
+          args,
+          stderrIsTTY: true,
+        }),
+      ).toMatchObject({ eligible: false, reason: "output_product" });
+    }
+  });
+
+  it("treats CI=1 as a CI context", () => {
+    expect(
+      classifyUpdateNoticeEligibility({
+        args: ["telemetry", "status"],
+        env: { CI: "1" },
+        stderrIsTTY: true,
+      }),
+    ).toMatchObject({ eligible: false, reason: "ci" });
+  });
 });

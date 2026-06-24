@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   readUpdateMetadataCache,
   refreshUpdateMetadata,
+  UPDATE_CHECK_LOCK_TTL_MS,
   updateRefreshLockPath,
   writePrivateJson,
 } from "../src/update-check";
@@ -73,5 +74,30 @@ describe("update-check refresh", () => {
     );
 
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("replaces a stale lock with a single exclusive refresh owner", async () => {
+    const dir = tempDir();
+    writePrivateJson(updateRefreshLockPath({ cacheDir: dir }), { lockedAt: 1_000 });
+    const firstFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
+    const secondFetch = vi.fn<typeof fetch>();
+    const now = 1_000 + UPDATE_CHECK_LOCK_TTL_MS + 1;
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher: firstFetch, now })).resolves.toBe(
+      "refreshed",
+    );
+    writePrivateJson(updateRefreshLockPath({ cacheDir: dir }), { lockedAt: now });
+    await expect(
+      refreshUpdateMetadata({ cacheDir: dir, fetcher: secondFetch, now: now + 1 }),
+    ).resolves.toBe("skipped");
+
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
   });
 });
