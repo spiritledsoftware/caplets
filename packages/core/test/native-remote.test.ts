@@ -3596,7 +3596,7 @@ describe("createNativeCapletsService remote mode", () => {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
           workspaceId: "ws_1",
-          projectRoot: dirname(projectConfigPath),
+          projectRoot: dirname(dirname(projectConfigPath)),
           heartbeatIntervalMs: 60_000,
         },
       },
@@ -3614,7 +3614,9 @@ describe("createNativeCapletsService remote mode", () => {
       .map(
         (body) => JSON.parse(body) as { projectFiles?: Array<{ path: string; content: string }> },
       );
-    expect(projectBindingBodies[0]?.projectFiles).toEqual([{ path: "config.json", content: "{}" }]);
+    expect(projectBindingBodies[0]?.projectFiles).toEqual([
+      { path: ".caplets/config.json", content: "{}" },
+    ]);
     expect(fetch).toHaveBeenCalledWith(
       new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
       expect.objectContaining({
@@ -3949,7 +3951,7 @@ describe("createNativeCapletsService remote mode", () => {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
           workspaceId: "ws_1",
-          projectRoot: dirname(projectConfigPath),
+          projectRoot: dirname(dirname(projectConfigPath)),
         },
       },
       remoteClientFactory: vi.fn(() => fixture.api),

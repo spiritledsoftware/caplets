@@ -1466,6 +1466,93 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("rejects attach session project context through a configured public origin", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store, "https://caplets.tail7ff085.ts.net/");
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://caplets.tail7ff085.ts.net",
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        remoteCredentialStore: store,
+        attachSessionFactory: () => {
+          throw new Error("session factory should not run");
+        },
+      },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        host: "caplets.tail7ff085.ts.net",
+        authorization: `Bearer ${credentials.accessToken}`,
+      },
+      body: JSON.stringify({ projectRoot }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "REQUEST_INVALID",
+        message: "Attach session project context is only accepted by loopback runtimes.",
+      },
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
+  it("canonicalizes symlinked attach session project config paths", async () => {
+    const { engine } = testEngine();
+    const projectRoot = tempDir("caplets-attach-session-project-");
+    const canonicalProjectRoot = realpathSync(projectRoot);
+    const projectConfigPath = join(canonicalProjectRoot, ".caplets", "config.json");
+    mkdirSync(join(canonicalProjectRoot, ".caplets"), { recursive: true });
+    writeFileSync(projectConfigPath, "{}", "utf8");
+    const symlinkedProjectRoot = tempDir("caplets-attach-session-link-parent-");
+    rmSync(symlinkedProjectRoot, { recursive: true, force: true });
+    symlinkSync(projectRoot, symlinkedProjectRoot, "dir");
+    dirs.push(symlinkedProjectRoot);
+    let metadata: unknown;
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      attachSessionFactory: (sessionMetadata) => {
+        metadata = sessionMetadata;
+        return {
+          manifest: async () => attachManifest("session-rev", "session-tool"),
+          invoke: async () => ({ ok: true }),
+          onManifestChanged: () => () => undefined,
+          close: async () => undefined,
+        };
+      },
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        projectRoot: symlinkedProjectRoot,
+        projectConfigPath: join(symlinkedProjectRoot, ".caplets", "config.json"),
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(metadata).toEqual({
+      projectRoot: canonicalProjectRoot,
+      projectConfigPath,
+    });
+
+    await app.closeCapletsSessions();
+    await engine.close();
+  });
+
   it("returns structured errors for unknown attach session headers", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, {

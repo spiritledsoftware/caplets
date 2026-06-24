@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { isLoopbackHost } from "../server/options";
 import type { NativeCapletsServiceResolutionInput } from "./options";
@@ -701,10 +702,19 @@ function attachSessionMetadataForOptions(
   options: NativeCapletsServiceOptions,
 ): SdkRemoteCapletsClientOptions["attachSessionMetadata"] {
   if (!options.projectRoot) return undefined;
+  const projectRoot = canonicalProjectRootForMetadata(options.projectRoot);
   return {
-    projectRoot: options.projectRoot,
-    projectConfigPath: resolvePath(options.projectRoot, ".caplets", "config.json"),
+    projectRoot,
+    projectConfigPath: resolvePath(projectRoot, ".caplets", "config.json"),
   };
+}
+
+function canonicalProjectRootForMetadata(projectRoot: string): string {
+  try {
+    return realpathSync(projectRoot);
+  } catch {
+    return projectRoot;
+  }
 }
 
 function isLoopbackRemote(remoteOptions: ResolvedNativeRemoteOptions): boolean {

@@ -24,6 +24,7 @@ import {
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
 
@@ -349,7 +350,9 @@ export function createHttpServeApp(
         try {
           const parsed = await parseJsonObject(c.req.json(), "Attach session request");
           const metadata = parseAttachSessionMetadata(parsed, {
-            allowProjectContext: options.loopback,
+            allowProjectContext: allowAttachSessionProjectContext(options, c.req.url, (name) =>
+              c.req.header(name),
+            ),
           });
           const context = attachSessionContext(c.req.header(CAPLETS_STACK_CHAIN_HEADER));
           const sessionId = randomUUID();
@@ -860,13 +863,17 @@ function canonicalProjectConfigPath(
     throw new CapletsError("REQUEST_INVALID", "projectConfigPath requires projectRoot.");
   }
   const expectedProjectConfigPath = resolve(projectRoot, ".caplets", "config.json");
-  const absoluteConfigPath =
+  const lexicalConfigPath =
     projectConfigPath === undefined
       ? expectedProjectConfigPath
       : isAbsolute(projectConfigPath)
         ? projectConfigPath
         : resolve(projectRoot, projectConfigPath);
-  if (resolve(absoluteConfigPath) !== expectedProjectConfigPath) {
+  const canonicalConfigPath =
+    projectConfigPath === undefined
+      ? expectedProjectConfigPath
+      : canonicalizeExistingParentPath(lexicalConfigPath);
+  if (resolve(canonicalConfigPath) !== expectedProjectConfigPath) {
     throw new CapletsError(
       "REQUEST_INVALID",
       "projectConfigPath must be <projectRoot>/.caplets/config.json.",
@@ -880,9 +887,45 @@ function canonicalProjectConfigPath(
   return expected;
 }
 
+function canonicalizeExistingParentPath(path: string): string {
+  const parent = dirname(path);
+  try {
+    return resolve(realpathSync(parent), path.slice(parent.length + 1));
+  } catch {
+    return resolve(path);
+  }
+}
+
 function pathIsInside(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function allowAttachSessionProjectContext(
+  options: HttpServeOptions,
+  requestUrl: string,
+  header: (name: string) => string | undefined,
+): boolean {
+  if (!options.loopback) return false;
+  const host = attachRequestHost(options, requestUrl, header);
+  return isLoopbackHost(host);
+}
+
+function attachRequestHost(
+  options: HttpServeOptions,
+  requestUrl: string,
+  header: (name: string) => string | undefined,
+): string {
+  const fallback = new URL(requestUrl).host;
+  const forwardedHost = options.trustProxy
+    ? firstForwardedValue(header("x-forwarded-host"))
+    : undefined;
+  const host = forwardedHost ?? header("host") ?? fallback;
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return host.split(":")[0] ?? host;
+  }
 }
 
 function attachEventSource(
@@ -1011,8 +1054,13 @@ export async function serveHttpWithSessionFactory(
     HttpServeIo,
     "attachSessionFactory" | "defaultAttachSessionFactory" | "exposeAttach"
   > = {},
+  engineOptions: CapletsEngineOptions = {},
 ): Promise<void> {
-  const resolvedEngineOptions = { exposeLocalArtifactPaths: false };
+  const resolvedEngineOptions = {
+    exposeLocalArtifactPaths: false,
+    vaultRecoveryTarget: "remote" as const,
+    ...engineOptions,
+  };
   const engine = new CapletsEngine(resolvedEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
@@ -1024,7 +1072,7 @@ export async function serveHttpWithSessionFactory(
       : {}),
     control: {
       ...resolvedEngineOptions,
-      projectCapletsRoot: resolveProjectCapletsRoot(),
+      projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
     },
   });
   const paths = servicePaths(options.path);

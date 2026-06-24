@@ -86,6 +86,7 @@ async function serveHttpWithUpstream(
         );
       },
     },
+    engineOptions,
   );
 }
 
