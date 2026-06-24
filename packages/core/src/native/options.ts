@@ -16,6 +16,7 @@ export type NativeRemoteCapletsOptions = {
   url?: string;
   workspace?: string;
   fetch?: typeof fetch;
+  requestHeaders?: Record<string, string>;
   pollIntervalMs?: number;
   cloud?: NativeCloudPresenceInput;
 };
@@ -98,20 +99,33 @@ export function resolveNativeCapletsServiceOptions(
         );
 
   const cloud = resolveNativeCloudPresence(input.remote?.cloud, env);
+  const requestInit =
+    mode.mode === "cloud" && cloud
+      ? { headers: { Authorization: `Bearer ${cloud.accessToken}` } }
+      : server.requestInit;
   return {
     mode: mode.mode,
     remote: {
       url: server.attachUrl,
       auth: nativeAuthFromRemoteAuth(server.auth),
       pollIntervalMs: parsePollInterval(input.remote?.pollIntervalMs),
-      requestInit:
-        mode.mode === "cloud" && cloud
-          ? { headers: { Authorization: `Bearer ${cloud.accessToken}` } }
-          : server.requestInit,
+      requestInit: withRequestHeaders(requestInit, input.remote?.requestHeaders),
       ...(cloud ? { cloud } : {}),
       ...(server.fetch ? { fetch: server.fetch } : {}),
     },
   };
+}
+
+function withRequestHeaders(
+  requestInit: RequestInit,
+  requestHeaders: Record<string, string> | undefined,
+): RequestInit {
+  if (!requestHeaders) return requestInit;
+  const headers = new Headers(requestInit.headers);
+  for (const [name, value] of Object.entries(requestHeaders)) {
+    headers.set(name, value);
+  }
+  return { ...requestInit, headers };
 }
 
 function resolveNativeHostedCloudRemote(

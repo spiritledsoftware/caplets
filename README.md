@@ -141,6 +141,16 @@ args = ["attach", "https://caplets.example.com/caplets"]
 }
 ```
 
+`caplets attach <url>` is always the stdio client command for MCP configs. To run a
+long-lived local HTTP runtime that composes local and project Caplets with an upstream
+host, start the runtime separately:
+
+```sh
+caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+```
+
+Then point agents at that local runtime with `caplets attach <local-runtime-url>`.
+
 Native integrations expose `caplets__code_mode` for multi-step TypeScript workflows over
 generated `caplets.<id>` handles. Progressive exposure adds `caplets__<id>` tools; direct
 exposure adds operation-level tools such as `caplets__<id>__<operation>`.

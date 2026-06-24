@@ -35,6 +35,7 @@ function createAttachNativeService(options: AttachServeOptions, io: AttachServeI
   return createNativeCapletsService({
     mode: options.selection.kind === "hosted_cloud" ? "cloud" : "remote",
     configPath: options.configPath,
+    projectRoot: options.projectRoot,
     projectConfigPath: options.projectConfigPath,
     ...(options.authDir ? { authDir: options.authDir } : {}),
     remote: {

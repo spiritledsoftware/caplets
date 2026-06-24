@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectBindingSessionManager } from "../src/cloud/presence";
+import { CAPLETS_ATTACH_SESSION_HEADER } from "../src/attach/api";
 import type { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
@@ -183,6 +184,242 @@ function deferred<T = void>() {
 }
 
 describe("RemoteNativeCapletsService", () => {
+  it("creates an attach session before fetching a session-aware manifest", async () => {
+    const requests: Array<{ url: string; method: string; headers: Headers; body?: unknown }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      const request = {
+        url,
+        method: init?.method ?? "GET",
+        headers: new Headers(init?.headers),
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      };
+      requests.push(request);
+      if (url.endsWith("/sessions")) {
+        return Response.json({ sessionId: "attach_session_123" }, { status: 201 });
+      }
+      if (url.endsWith("/manifest")) {
+        return Response.json(attachManifest("rev-1", "export-1"));
+      }
+      if (url.endsWith("/invoke")) {
+        return Response.json({ ok: true, data: { invoked: true } });
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+      attachSessionMetadata: {
+        projectRoot: "/repo",
+        projectConfigPath: "/repo/.caplets/config.json",
+      },
+    });
+
+    await client.listTools();
+    await expect(client.callTool("remote", {})).resolves.toEqual({ invoked: true });
+    await client.close();
+
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST https://caplets.example.com/v1/attach/sessions",
+      "GET https://caplets.example.com/v1/attach/manifest",
+      "POST https://caplets.example.com/v1/attach/invoke",
+      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+    ]);
+    expect(requests[0]?.body).toEqual({
+      projectRoot: "/repo",
+      projectConfigPath: "/repo/.caplets/config.json",
+    });
+    expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_123");
+    expect(requests[2]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_123");
+  });
+
+  it("retries attach session discovery after an unsupported cooldown", async () => {
+    let now = new Date("2026-06-23T00:00:00.000Z").getTime();
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      let sessionsSupported = false;
+      const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const headers = new Headers(init?.headers);
+        requests.push({ url, method, headers });
+        if (url.endsWith("/sessions") && method === "POST") {
+          return sessionsSupported
+            ? Response.json({ sessionId: "attach_session_123" }, { status: 201 })
+            : Response.json({ ok: false }, { status: 404 });
+        }
+        if (url.endsWith("/manifest")) {
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+        attachSessionMetadata: { projectRoot: "/repo" },
+      });
+
+      await client.listTools();
+      await client.listTools();
+      sessionsSupported = true;
+      now += 60_000;
+      await client.listTools();
+      await client.close();
+
+      const sessionRequests = requests.filter(
+        (request) => request.url.endsWith("/sessions") && request.method === "POST",
+      );
+      const manifestRequests = requests.filter((request) => request.url.endsWith("/manifest"));
+      expect(sessionRequests).toHaveLength(2);
+      expect(
+        manifestRequests.map((request) => request.headers.get(CAPLETS_ATTACH_SESSION_HEADER)),
+      ).toEqual([null, null, "attach_session_123"]);
+      expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
+        "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+      );
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
+  it("falls back to a plain attach manifest when project-context sessions are rejected", async () => {
+    const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const headers = new Headers(init?.headers);
+      requests.push({ url, method, headers });
+      if (url.endsWith("/sessions")) {
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "REQUEST_INVALID",
+              message: "Attach session project context is only accepted by loopback runtimes.",
+            },
+          },
+          { status: 400 },
+        );
+      }
+      if (url.endsWith("/manifest")) {
+        return Response.json(attachManifest("rev-1", "export-1"));
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+      attachSessionMetadata: { projectRoot: "/repo" },
+    });
+
+    await client.listTools();
+    await client.close();
+
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST https://caplets.example.com/v1/attach/sessions",
+      "GET https://caplets.example.com/v1/attach/manifest",
+    ]);
+    expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
+  });
+
+  it("recreates attach sessions when the remote forgets the previous session", async () => {
+    const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const headers = new Headers(init?.headers);
+      requests.push({ url, method, headers });
+      if (url.endsWith("/sessions")) {
+        const count = requests.filter((request) => request.url.endsWith("/sessions")).length;
+        return Response.json({ sessionId: `attach_session_${count}` }, { status: 201 });
+      }
+      if (
+        url.endsWith("/manifest") &&
+        headers.get(CAPLETS_ATTACH_SESSION_HEADER) === "attach_session_1"
+      ) {
+        return Response.json(
+          {
+            ok: false,
+            error: { code: "REQUEST_INVALID", message: "Attach session was not found." },
+          },
+          { status: 400 },
+        );
+      }
+      if (url.endsWith("/manifest")) {
+        return Response.json(attachManifest("rev-1", "export-1"));
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+      attachSessionMetadata: { projectRoot: "/repo" },
+    });
+
+    await client.listTools();
+    await client.close();
+
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST https://caplets.example.com/v1/attach/sessions",
+      "GET https://caplets.example.com/v1/attach/manifest",
+      "POST https://caplets.example.com/v1/attach/sessions",
+      "GET https://caplets.example.com/v1/attach/manifest",
+      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_2",
+    ]);
+    expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_1");
+    expect(requests[3]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBe("attach_session_2");
+  });
+
+  it("closes attach sessions that finish creating during client shutdown", async () => {
+    const sessionsStarted = deferred<Response>();
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      requests.push({ url, method });
+      if (url.endsWith("/sessions") && method === "POST") {
+        return await sessionsStarted.promise;
+      }
+      return Response.json({ ok: true });
+    });
+    const client = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: fetchStub,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+      attachSessionMetadata: { projectRoot: "/repo" },
+    });
+
+    const listTools = client.listTools();
+    await vi.waitFor(() =>
+      expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "POST https://caplets.example.com/v1/attach/sessions",
+      ]),
+    );
+    const close = client.close();
+    sessionsStarted.resolve(Response.json({ sessionId: "attach_session_123" }, { status: 201 }));
+    await close;
+    await expect(listTools).rejects.toThrow();
+
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
+      "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_123",
+    );
+  });
+
   it("refetches and retries once when attach invoke reports a stale manifest", async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {
@@ -3359,7 +3596,7 @@ describe("createNativeCapletsService remote mode", () => {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
           workspaceId: "ws_1",
-          projectRoot: dirname(projectConfigPath),
+          projectRoot: dirname(dirname(projectConfigPath)),
           heartbeatIntervalMs: 60_000,
         },
       },
@@ -3377,7 +3614,9 @@ describe("createNativeCapletsService remote mode", () => {
       .map(
         (body) => JSON.parse(body) as { projectFiles?: Array<{ path: string; content: string }> },
       );
-    expect(projectBindingBodies[0]?.projectFiles).toEqual([{ path: "config.json", content: "{}" }]);
+    expect(projectBindingBodies[0]?.projectFiles).toEqual([
+      { path: ".caplets/config.json", content: "{}" },
+    ]);
     expect(fetch).toHaveBeenCalledWith(
       new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
       expect.objectContaining({
@@ -3385,6 +3624,302 @@ describe("createNativeCapletsService remote mode", () => {
         body: JSON.stringify({ state: "offline" }),
       }),
     );
+  });
+
+  it("starts and tears down upstream Project Binding for self-hosted remote sessions", async () => {
+    const fixture = client();
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          return Response.json(
+            {
+              binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },
+              sessionId: "session_1",
+            },
+            { status: 201 },
+          );
+        }
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          init?.method === "DELETE"
+        ) {
+          return Response.json({ ok: true });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        local: { name: "Local", description: "Local Caplet.", command: process.execPath },
+      },
+    });
+    dirs.push(dir);
+    const projectRoot = dirname(dirname(projectConfigPath));
+
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot,
+    });
+
+    await vi.waitFor(() =>
+      expect(fetch).toHaveBeenCalledWith(
+        new URL("http://127.0.0.1:5387/v1/attach/project-bindings/sessions"),
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    await service.close();
+
+    const bodies = fetch.mock.calls
+      .map(([, init]) => init?.body)
+      .filter((body): body is string => typeof body === "string")
+      .map(
+        (body) =>
+          JSON.parse(body) as {
+            projectRoot?: string;
+            allowedCapletIds?: string[];
+            sessionId?: string;
+          },
+      );
+    expect(bodies[0]).toMatchObject({
+      projectRoot,
+      allowedCapletIds: ["local", "code_mode"],
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("keeps stacked remote tools available when upstream Project Binding is unavailable", async () => {
+    const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+    const fetch = vi.fn(async () => new Response("not found", { status: 404 }));
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        "Could not start upstream Project Binding: Project Binding request failed (404).\n",
+      ),
+    );
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toContain("remote");
+    await service.close();
+  });
+
+  it("retries self-hosted Project Binding registration after an initial failure", async () => {
+    const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+    let bindingAvailable = false;
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          if (!bindingAvailable) {
+            return new Response("temporarily unavailable", { status: 503 });
+          }
+          return Response.json(
+            {
+              binding: { bindingId: "binding_1", state: "attaching", syncState: "pending" },
+              sessionId: "session_1",
+            },
+            { status: 201 },
+          );
+        }
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          init?.method === "DELETE"
+        ) {
+          return Response.json({ ok: true });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        "Could not start upstream Project Binding: Project Binding request failed (503).\n",
+      ),
+    );
+    bindingAvailable = true;
+    await service.reload();
+    await vi.waitFor(() =>
+      expect(
+        fetch.mock.calls.filter(
+          ([input, init]) =>
+            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST",
+        ),
+      ).toHaveLength(2),
+    );
+    await service.close();
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("stops retrying self-hosted Project Binding when upstream reports unsupported capability", async () => {
+    const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          return Response.json(
+            {
+              ok: false,
+              error: {
+                code: "UNSUPPORTED_CAPABILITY",
+                message:
+                  "Self-hosted Project Binding sessions are not implemented by this runtime.",
+              },
+            },
+            { status: 501 },
+          );
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        "Could not start upstream Project Binding: Self-hosted Project Binding sessions are not implemented by this runtime.\n",
+      ),
+    );
+    await service.reload();
+    await service.reload();
+
+    expect(
+      fetch.mock.calls.filter(
+        ([input, init]) =>
+          new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+    await service.close();
+  });
+
+  it("re-registers self-hosted Project Binding after heartbeat failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client([{ name: "remote", title: "Remote", description: "Remote Caplet." }]);
+      let sessionCount = 0;
+      let heartbeatCount = 0;
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            sessionCount += 1;
+            return Response.json(
+              {
+                binding: { bindingId: `binding_${sessionCount}`, state: "attaching" },
+                sessionId: `session_${sessionCount}`,
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+            heartbeatCount += 1;
+            if (heartbeatCount === 1) {
+              return new Response("expired", { status: 503 });
+            }
+            return Response.json({ ok: true });
+          }
+          return Response.json({ ok: true });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const writeErr = vi.fn();
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: {
+          url: "http://127.0.0.1:5387",
+          fetch,
+        },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+        writeErr,
+      });
+
+      await vi.waitFor(() => expect(sessionCount).toBe(1));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() =>
+        expect(writeErr).toHaveBeenCalledWith(
+          "Remote Project Binding heartbeat failed: Project Binding request failed (503).\n",
+        ),
+      );
+      await service.reload();
+      await vi.waitFor(() => expect(sessionCount).toBe(2));
+      await service.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("updates local presence after local overlay reload changes the Caplet set", async () => {
@@ -3416,7 +3951,7 @@ describe("createNativeCapletsService remote mode", () => {
           url: "https://cloud.caplets.dev",
           accessToken: "token",
           workspaceId: "ws_1",
-          projectRoot: dirname(projectConfigPath),
+          projectRoot: dirname(dirname(projectConfigPath)),
         },
       },
       remoteClientFactory: vi.fn(() => fixture.api),

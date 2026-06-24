@@ -4,7 +4,13 @@ import {
   directResourceUriMatchesTemplate,
 } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
-import type { AttachCodeModeCaplet, AttachManifest, AttachManifestExport } from "../attach/api";
+import {
+  CAPLETS_ATTACH_SESSION_HEADER,
+  type AttachCodeModeCaplet,
+  type AttachManifest,
+  type AttachManifestExport,
+  type AttachSessionMetadata,
+} from "../attach/api";
 import type { CapletShadowingPolicy } from "../config";
 import { CodeModeJournalStore } from "../code-mode/journal";
 import { runCodeMode } from "../code-mode/runner";
@@ -58,9 +64,12 @@ export type RemoteCapletsClientOptions = ResolvedNativeCapletsServiceOptions & {
 
 export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"] & {
   resolveRuntimeOptions?: () => Promise<RemoteCapletsClientOptions["remote"]>;
+  attachSessionMetadata?: AttachSessionMetadata | undefined;
   authKind?: "self_hosted_remote" | "hosted_cloud";
   writeErr?: (value: string) => void;
 };
+
+const ATTACH_SESSION_UNSUPPORTED_RETRY_MS = 60_000;
 
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
@@ -79,6 +88,9 @@ export function createSdkRemoteCapletsClient(
   let eventsAbort: AbortController | undefined;
   let eventsStartInFlight: Promise<void> | undefined;
   let eventsReconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let attachSessionId: string | undefined;
+  let attachSessionInFlight: Promise<string | undefined> | undefined;
+  let attachSessionsUnsupportedUntil = 0;
   let closed = false;
 
   const resolveRuntimeOptions = async (): Promise<RemoteCapletsClientOptions["remote"]> => {
@@ -89,12 +101,14 @@ export function createSdkRemoteCapletsClient(
     runtimeOptions.fetch ?? fetch;
 
   const fetchCurrentManifest = async (): Promise<AttachManifest> => {
-    const runtimeOptions = await resolveRuntimeOptions();
-    return await fetchAttachManifest(
-      runtimeOptions.url,
-      runtimeOptions.requestInit,
-      fetchFor(runtimeOptions),
-    );
+    return await withAttachSessionRetry(async (runtimeOptions, sessionId) => {
+      return await fetchAttachManifest(
+        runtimeOptions.url,
+        runtimeOptions.requestInit,
+        sessionId,
+        fetchFor(runtimeOptions),
+      );
+    });
   };
 
   const invokeCurrentExport = async (body: {
@@ -103,13 +117,68 @@ export function createSdkRemoteCapletsClient(
     exportId: string;
     input: unknown;
   }): Promise<unknown> => {
-    const runtimeOptions = await resolveRuntimeOptions();
-    return await invokeAttachExport(
+    return await withAttachSessionRetry(async (runtimeOptions, sessionId) => {
+      return await invokeAttachExport(
+        runtimeOptions.url,
+        runtimeOptions.requestInit,
+        sessionId,
+        fetchFor(runtimeOptions),
+        body,
+      );
+    });
+  };
+
+  const ensureAttachSession = async (
+    runtimeOptions: RemoteCapletsClientOptions["remote"],
+  ): Promise<string | undefined> => {
+    if (!options.attachSessionMetadata) return undefined;
+    if (attachSessionsUnsupportedUntil > Date.now()) return undefined;
+    attachSessionsUnsupportedUntil = 0;
+    if (attachSessionId) return attachSessionId;
+    if (attachSessionInFlight) return await attachSessionInFlight;
+    attachSessionInFlight = createAttachSession(
       runtimeOptions.url,
       runtimeOptions.requestInit,
       fetchFor(runtimeOptions),
-      body,
+      options.attachSessionMetadata,
     );
+    try {
+      attachSessionId = await attachSessionInFlight;
+      if (!attachSessionId) {
+        attachSessionsUnsupportedUntil = Date.now() + ATTACH_SESSION_UNSUPPORTED_RETRY_MS;
+      }
+      return attachSessionId;
+    } finally {
+      attachSessionInFlight = undefined;
+    }
+  };
+
+  const withAttachSessionRetry = async <T>(
+    operation: (
+      runtimeOptions: RemoteCapletsClientOptions["remote"],
+      attachSessionId: string | undefined,
+    ) => Promise<T>,
+  ): Promise<T> => {
+    const runtimeOptions = await resolveRuntimeOptions();
+    const sessionId = await ensureAttachSession(runtimeOptions);
+    if (closed) {
+      throw new CapletsError("SERVER_UNAVAILABLE", "Remote Caplets client is closed.");
+    }
+    try {
+      return await operation(runtimeOptions, sessionId);
+    } catch (error) {
+      if (
+        !options.attachSessionMetadata ||
+        attachSessionsUnsupportedUntil > Date.now() ||
+        !sessionId ||
+        !isAttachSessionNotFound(error)
+      ) {
+        throw error;
+      }
+      if (attachSessionId === sessionId) attachSessionId = undefined;
+      const nextSessionId = await ensureAttachSession(runtimeOptions);
+      return await operation(runtimeOptions, nextSessionId);
+    }
   };
 
   const clearEventsReconnectTimer = () => {
@@ -132,9 +201,12 @@ export function createSdkRemoteCapletsClient(
     try {
       const runtimeOptions = await resolveRuntimeOptions();
       if (closed || eventsAbort || listeners.size === 0) return;
+      const sessionId = await ensureAttachSession(runtimeOptions);
+      if (closed || eventsAbort || listeners.size === 0) return;
       eventsAbort = startAttachEvents(
         runtimeOptions.url,
         runtimeOptions.requestInit,
+        sessionId,
         fetchFor(runtimeOptions),
         listeners,
         (closedAbort, retry) => {
@@ -236,6 +308,20 @@ export function createSdkRemoteCapletsClient(
       eventsAbort?.abort();
       eventsAbort = undefined;
       listeners.clear();
+      const pendingSessionId = await attachSessionInFlight?.catch(() => undefined);
+      const sessionId = attachSessionId ?? pendingSessionId;
+      attachSessionId = undefined;
+      if (sessionId) {
+        await (async () => {
+          const runtimeOptions = await resolveRuntimeOptions();
+          await closeAttachSession(
+            runtimeOptions.url,
+            runtimeOptions.requestInit,
+            fetchFor(runtimeOptions),
+            sessionId,
+          );
+        })().catch(() => undefined);
+      }
     },
   };
 }
@@ -494,28 +580,94 @@ function nativeToolRouteId(tool: RemoteCapletsTool): string {
 async function fetchAttachManifest(
   attachUrl: URL,
   requestInit: RequestInit | undefined,
+  attachSessionId: string | undefined,
   fetchImpl: typeof fetch,
 ): Promise<AttachManifest> {
+  const headers = attachHeaders(requestInit, attachSessionId);
   const response = await fetchImpl(new URL("manifest", slashUrl(attachUrl)), {
     ...requestInit,
     method: "GET",
+    headers,
   });
   if (!response.ok) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      `Caplets attach manifest returned HTTP ${response.status}.`,
-    );
+    let payload: unknown;
+    try {
+      payload = (await response.json()) as unknown;
+    } catch {
+      payload = { error: { message: `Caplets attach manifest returned HTTP ${response.status}.` } };
+    }
+    throw attachPayloadError(payload, response.status, "manifest");
   }
   return (await response.json()) as AttachManifest;
+}
+
+async function createAttachSession(
+  attachUrl: URL,
+  requestInit: RequestInit | undefined,
+  fetchImpl: typeof fetch,
+  metadata: AttachSessionMetadata,
+): Promise<string | undefined> {
+  const headers = new Headers(requestInit?.headers);
+  headers.set("content-type", "application/json");
+  const response = await fetchImpl(new URL("sessions", slashUrl(attachUrl)), {
+    ...requestInit,
+    method: "POST",
+    headers,
+    body: JSON.stringify(metadata),
+  });
+  if (!response.ok) {
+    if (response.status === 404) return undefined;
+    let payload: unknown;
+    try {
+      payload = (await response.json()) as unknown;
+    } catch {
+      payload = undefined;
+    }
+    if (response.status === 400 && isAttachSessionProjectContextRejected(payload)) {
+      return undefined;
+    }
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplets attach session returned HTTP ${response.status}.`,
+    );
+  }
+  const payload = (await response.json()) as unknown;
+  if (!isPlainObject(payload) || typeof payload.sessionId !== "string") {
+    throw new CapletsError("SERVER_UNAVAILABLE", "Caplets attach session response was invalid.");
+  }
+  return payload.sessionId;
+}
+
+async function closeAttachSession(
+  attachUrl: URL,
+  requestInit: RequestInit | undefined,
+  fetchImpl: typeof fetch,
+  attachSessionId: string,
+): Promise<void> {
+  await fetchImpl(new URL(`sessions/${encodeURIComponent(attachSessionId)}`, slashUrl(attachUrl)), {
+    ...requestInit,
+    method: "DELETE",
+    headers: attachHeaders(requestInit, attachSessionId),
+  });
+}
+
+function attachHeaders(
+  requestInit: RequestInit | undefined,
+  attachSessionId: string | undefined,
+): Headers {
+  const headers = new Headers(requestInit?.headers);
+  if (attachSessionId) headers.set(CAPLETS_ATTACH_SESSION_HEADER, attachSessionId);
+  return headers;
 }
 
 async function invokeAttachExport(
   attachUrl: URL,
   requestInit: RequestInit | undefined,
+  attachSessionId: string | undefined,
   fetchImpl: typeof fetch,
   body: { revision: string; kind: string; exportId: string; input: unknown },
 ): Promise<unknown> {
-  const headers = new Headers(requestInit?.headers);
+  const headers = attachHeaders(requestInit, attachSessionId);
   headers.set("content-type", "application/json");
   const response = await fetchImpl(new URL("invoke", slashUrl(attachUrl)), {
     ...requestInit,
@@ -531,12 +683,13 @@ async function invokeAttachExport(
       throw attachPayloadError(
         { error: { message: `Caplets attach invoke returned HTTP ${response.status}.` } },
         response.status,
+        "invoke",
       );
     }
     throw error;
   }
   if (!response.ok) {
-    throw attachPayloadError(payload, response.status);
+    throw attachPayloadError(payload, response.status, "invoke");
   }
   if (isPlainObject(payload) && payload.ok === true && "data" in payload) {
     return payload.data;
@@ -874,12 +1027,12 @@ function slashUrl(url: URL): URL {
   return next;
 }
 
-function attachPayloadError(payload: unknown, status: number): Error {
+function attachPayloadError(payload: unknown, status: number, endpoint: string): Error {
   const error = isPlainObject(payload) && isPlainObject(payload.error) ? payload.error : undefined;
   const message =
     typeof error?.message === "string"
       ? error.message
-      : `Caplets attach invoke returned HTTP ${status}.`;
+      : `Caplets attach ${endpoint} returned HTTP ${status}.`;
   const thrown = new Error(message) as Error & { status?: number; code?: unknown };
   thrown.status = status;
   if (error && "code" in error) thrown.code = error.code;
@@ -890,9 +1043,27 @@ function isAttachManifestStale(error: unknown): boolean {
   return isPlainObject(error) && error.code === "ATTACH_MANIFEST_STALE";
 }
 
+function isAttachSessionNotFound(error: unknown): boolean {
+  const candidate = error as { code?: unknown };
+  return (
+    candidate.code === "REQUEST_INVALID" &&
+    /\battach session was not found\b/iu.test(errorMessage(error))
+  );
+}
+
+function isAttachSessionProjectContextRejected(payload: unknown): boolean {
+  const error = isPlainObject(payload) && isPlainObject(payload.error) ? payload.error : undefined;
+  return (
+    error?.code === "REQUEST_INVALID" &&
+    typeof error.message === "string" &&
+    /\bproject context is only accepted by loopback runtimes\b/iu.test(error.message)
+  );
+}
+
 function startAttachEvents(
   attachUrl: URL,
   requestInit: RequestInit | undefined,
+  attachSessionId: string | undefined,
   fetchImpl: typeof fetch,
   listeners: Set<() => void>,
   onClose: (abort: AbortController, retry: boolean) => void,
@@ -901,9 +1072,11 @@ function startAttachEvents(
   let retry = true;
   void (async () => {
     try {
+      const headers = attachHeaders(requestInit, attachSessionId);
       const response = await fetchImpl(new URL("events", slashUrl(attachUrl)), {
         ...requestInit,
         method: "GET",
+        headers,
         signal: abort.signal,
       });
       if (!response.ok) {

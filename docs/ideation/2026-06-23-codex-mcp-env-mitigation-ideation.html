@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ideation: Codex MCP Env Mitigation</title>
+    <style>
+      :root {
+        --ember: #e0582f;
+        --parchment: #f6e8c8;
+        --ink: #1f2018;
+        --linen: #fbf7ec;
+        --paper: #fff8ea;
+        --ash: #e3d8c0;
+        --olive: #686b4e;
+        --danger: #b33a2e;
+        --success: #3f7a52;
+        --info: #2f5f75;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        background: var(--linen);
+        color: var(--ink);
+      }
+      body {
+        margin: 0;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        font-size: 15px;
+        line-height: 1.55;
+        letter-spacing: 0;
+      }
+      .page {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 48px 24px 56px;
+      }
+      header {
+        border-bottom: 1px solid var(--ash);
+        padding-bottom: 24px;
+        margin-bottom: 28px;
+      }
+      .eyebrow {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        color: var(--olive);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      h1 {
+        max-width: 16ch;
+        margin: 12px 0 14px;
+        font-size: 2rem;
+        line-height: 1.08;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+      h2 {
+        margin: 34px 0 12px;
+        font-size: 1.45rem;
+        line-height: 1.15;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+      h3 {
+        margin: 0 0 8px;
+        font-size: 1.05rem;
+        line-height: 1.3;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+      p,
+      li {
+        max-width: 74ch;
+      }
+      a {
+        color: var(--ember);
+        text-decoration-thickness: 1px;
+        text-underline-offset: 2px;
+      }
+      code {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 0.92em;
+        background: var(--parchment);
+        border: 1px solid var(--ash);
+        border-radius: 4px;
+        padding: 1px 4px;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin: 22px 0 0;
+      }
+      .stat,
+      .panel,
+      .idea,
+      .rejections table {
+        background: var(--paper);
+        border: 1px solid var(--ash);
+        border-radius: 10px;
+      }
+      .stat {
+        padding: 12px;
+      }
+      .stat strong {
+        display: block;
+        font-size: 1.35rem;
+        line-height: 1.1;
+      }
+      .stat span {
+        display: block;
+        margin-top: 4px;
+        color: var(--olive);
+        font-size: 12px;
+      }
+      .panel {
+        padding: 18px;
+        margin: 14px 0;
+      }
+      .axes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 0;
+        margin: 10px 0 0;
+        list-style: none;
+      }
+      .axes li,
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 14px;
+        background: var(--parchment);
+        color: var(--ink);
+        padding: 5px 9px;
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .jump-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 10px 0 18px;
+        padding: 0;
+        list-style: none;
+      }
+      .jump-list a {
+        display: block;
+        min-height: 100%;
+        padding: 10px 12px;
+        background: var(--paper);
+        border: 1px solid var(--ash);
+        border-radius: 8px;
+        color: var(--ink);
+        text-decoration: none;
+      }
+      .idea {
+        padding: 18px;
+        margin: 16px 0;
+      }
+      .idea-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .rank {
+        color: var(--ember);
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0 14px;
+      }
+      .basis,
+      .rationale,
+      .downsides {
+        margin-top: 12px;
+        padding-left: 12px;
+        border-left: 3px solid var(--ash);
+      }
+      .basis strong,
+      .rationale strong,
+      .downsides strong {
+        display: block;
+        margin-bottom: 3px;
+      }
+      .visual {
+        margin: 14px 0;
+        border: 1px solid var(--ash);
+        border-radius: 8px;
+        background: #fffaf0;
+        padding: 12px;
+        overflow: auto;
+      }
+      .visual svg {
+        display: block;
+        width: 100%;
+        min-width: 520px;
+        height: auto;
+      }
+      .rejections table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--ash);
+        padding: 10px 12px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: var(--parchment);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      tr:last-child td {
+        border-bottom: 0;
+      }
+      footer {
+        margin-top: 34px;
+        padding-top: 18px;
+        border-top: 1px solid var(--ash);
+        color: var(--olive);
+        font-size: 13px;
+      }
+      @media (max-width: 760px) {
+        .page {
+          padding: 28px 16px 40px;
+        }
+        .summary {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .jump-list {
+          grid-template-columns: 1fr;
+        }
+        .idea-head {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header>
+        <div class="eyebrow">ce-ideate · repo-grounded · 2026-06-23</div>
+        <h1>Ideation: Codex MCP Env Mitigation</h1>
+        <p>
+          Focus: mitigate Codex MCP launch pain where the client does not inherit or pass the shell
+          environment, causing Caplets <code>$env:</code> config interpolation to fail under
+          <code>caplets serve</code> or <code>caplets attach</code>.
+        </p>
+        <div class="summary">
+          <div class="stat"><strong>12</strong><span>candidate clusters</span></div>
+          <div class="stat"><strong>7</strong><span>ranked survivors</span></div>
+          <div class="stat"><strong>4</strong><span>topic axes</span></div>
+          <div class="stat"><strong>High</strong><span>top confidence</span></div>
+        </div>
+      </header>
+
+      <section>
+        <h2>Grounding Context</h2>
+        <div class="panel">
+          <p>
+            Caplets currently registers Codex with a minimal MCP command. Local setup calls
+            <code>codex mcp add caplets -- caplets serve</code>, while remote setup calls
+            <code>codex mcp add caplets -- caplets attach &lt;url&gt;</code>. That is simple, but it
+            leaves Caplets dependent on whatever environment Codex gives the child process.
+          </p>
+          <p>
+            Config interpolation is centralized in <code>packages/core/src/config.ts</code>.
+            <code>$env:NAME</code> and <code>${NAME}</code> are resolved from
+            <code>process.env</code>; missing references quarantine only the affected Caplet and
+            push recoverable warnings. Vault references already resolve through the same config
+            path, and the project explicitly frames Vault as replacing fragile agent-harness env
+            propagation for secret-like values.
+          </p>
+          <p>
+            Remote attach has already moved in the safer direction: docs and tests prefer
+            <code>caplets remote login &lt;url&gt;</code> plus
+            <code>caplets attach &lt;url&gt;</code>, with credentials stored in Remote Profiles
+            rather than agent config or env. The daemon work also provides a useful precedent: when
+            environment becomes product behavior, Caplets models it as an explicit install-time
+            service contract rather than accidental inheritance.
+          </p>
+          <p>
+            External MCP client patterns point the same way. Codex supports explicit per-server MCP
+            env configuration, and other clients commonly expose per-server env/interpolation or
+            wrappers. The market direction is explicit launch contracts, OAuth/HTTP where possible,
+            and fewer assumptions about login-shell inheritance.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Topic Axes</h2>
+        <ul class="axes">
+          <li>Startup launch/env</li>
+          <li>Config interpolation/secrets</li>
+          <li>Setup/repair UX</li>
+          <li>Long-term runtime architecture</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Ranked Ideas</h2>
+        <ul class="jump-list">
+          <li><a href="#idea-1">1. Codex Launch Contract</a></li>
+          <li><a href="#idea-2">2. Env Debt Compiler</a></li>
+          <li><a href="#idea-3">3. Codex Reality Simulator</a></li>
+          <li><a href="#idea-4">4. MCP Repair Mode</a></li>
+          <li><a href="#idea-5">5. Caplets Launch Capsule</a></li>
+          <li><a href="#idea-6">6. Secret Ref Policy</a></li>
+          <li><a href="#idea-7">7. Local Runtime Bridge</a></li>
+        </ul>
+
+        <article class="idea" id="idea-1">
+          <div class="idea-head">
+            <div>
+              <div class="rank">1.</div>
+              <h3>Codex Launch Contract</h3>
+            </div>
+            <span class="chip">Conf 90% · Cx M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Upgrade <code>caplets setup codex</code> from raw command
+            registration into a Codex-aware launch contract. The setup flow should install explicit
+            non-secret MCP env/env_vars, resolved Caplets binary/config paths, a PATH strategy, and
+            the selected local/remote mode, while blocking secret copying and routing secret-like
+            references to Vault or Remote Profiles.
+          </p>
+          <div class="visual" aria-label="Launch contract flow diagram">
+            <svg viewBox="0 0 760 190" role="img">
+              <rect x="10" y="30" width="150" height="70" rx="8" fill="#f6e8c8" stroke="#e3d8c0" />
+              <text x="85" y="61" text-anchor="middle" font-size="15" fill="#1f2018">
+                caplets setup
+              </text>
+              <text x="85" y="82" text-anchor="middle" font-size="12" fill="#686b4e">
+                reads config refs
+              </text>
+              <path d="M170 65 H250" stroke="#e0582f" stroke-width="2" />
+              <polygon points="250,65 240,60 240,70" fill="#e0582f" />
+              <rect
+                x="260"
+                y="15"
+                width="210"
+                height="100"
+                rx="8"
+                fill="#fff8ea"
+                stroke="#e3d8c0"
+              />
+              <text x="365" y="45" text-anchor="middle" font-size="15" fill="#1f2018">
+                Launch contract
+              </text>
+              <text x="365" y="68" text-anchor="middle" font-size="12" fill="#686b4e">
+                non-secret env · PATH · config paths
+              </text>
+              <text x="365" y="90" text-anchor="middle" font-size="12" fill="#686b4e">
+                secrets routed to Vault/Profile
+              </text>
+              <path d="M480 65 H580" stroke="#e0582f" stroke-width="2" />
+              <polygon points="580,65 570,60 570,70" fill="#e0582f" />
+              <rect x="590" y="30" width="155" height="70" rx="8" fill="#f6e8c8" stroke="#e3d8c0" />
+              <text x="667" y="61" text-anchor="middle" font-size="15" fill="#1f2018">
+                Codex MCP
+              </text>
+              <text x="667" y="82" text-anchor="middle" font-size="12" fill="#686b4e">
+                no shell-env guess
+              </text>
+              <line x1="365" y1="115" x2="365" y2="157" stroke="#3f7a52" stroke-width="2" />
+              <rect
+                x="250"
+                y="158"
+                width="230"
+                height="24"
+                rx="6"
+                fill="#eaf3ed"
+                stroke="#b6d2bf"
+              />
+              <text x="365" y="175" text-anchor="middle" font-size="12" fill="#2c5e3d">
+                validated by initialize probe
+              </text>
+            </svg>
+          </div>
+          <div class="basis">
+            <strong>Basis:</strong> direct: <code>packages/core/src/cli/setup.ts</code> currently
+            generates bare <code>codex mcp add caplets -- caplets serve</code>; Codex supports
+            explicit MCP server env; project docs already say Vault replaces fragile env
+            propagation.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> This is the best top-level move because it uses Codex's
+            available mechanism without making secrets live in Codex config. It turns the
+            integration from implicit parent-env hope into an installed Caplets contract.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Requires Codex-specific config write/repair behavior and
+            careful secret classification. It should not become an excuse to copy tokens into MCP
+            env.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: startup launch/env</span
+            ><span class="chip">Confidence: 90%</span><span class="chip">Complexity: Medium</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-2">
+          <div class="idea-head">
+            <div>
+              <div class="rank">2.</div>
+              <h3>Env Debt Compiler</h3>
+            </div>
+            <span class="chip">Conf 88% · Cx M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Add <code>caplets doctor env-debt</code> or
+            <code>caplets setup codex --repair</code>. It scans active config for
+            <code>$env:</code> and <code>${VAR}</code>, classifies each reference as secret,
+            path/toolchain, runtime selector, remote credential, or unknown, then proposes the
+            correct durable home: Vault, explicit launch contract env, Remote Login, or manual
+            repair.
+          </p>
+          <div class="basis">
+            <strong>Basis:</strong> direct: Caplets already detects missing env references before
+            validation, quarantines only affected Caplets, and has Vault diagnostics that produce
+            redacted repair commands.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> The product should not ask the user to know which values
+            belong in Codex env versus Vault versus Remote Profiles. Caplets has enough context to
+            turn env references into a repair queue.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Classification is imperfect. The safe version should default
+            to dry-run, avoid printing raw values, and only auto-apply non-secret migrations.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: config interpolation/secrets</span
+            ><span class="chip">Confidence: 88%</span><span class="chip">Complexity: Medium</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-3">
+          <div class="idea-head">
+            <div>
+              <div class="rank">3.</div>
+              <h3>Codex Reality Simulator</h3>
+            </div>
+            <span class="chip">Conf 86% · Cx S/M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Add <code>caplets doctor codex</code> that inspects the
+            registered Codex MCP config, runs the exact command through a sanitized GUI-like
+            environment, sends a newline-delimited MCP <code>initialize</code> request, and compares
+            that result with the user's current shell. The report should distinguish command path
+            failure, config ref failure, Vault grant failure, Remote Profile failure, and startup
+            crash.
+          </p>
+          <div class="visual" aria-label="Reality simulator comparison">
+            <svg viewBox="0 0 760 160" role="img">
+              <rect x="30" y="24" width="230" height="90" rx="8" fill="#fff8ea" stroke="#e3d8c0" />
+              <text x="145" y="55" text-anchor="middle" font-size="15" fill="#1f2018">
+                Shell run
+              </text>
+              <text x="145" y="78" text-anchor="middle" font-size="12" fill="#686b4e">
+                interactive env
+              </text>
+              <circle cx="145" cy="101" r="8" fill="#3f7a52" />
+              <rect x="500" y="24" width="230" height="90" rx="8" fill="#fff8ea" stroke="#e3d8c0" />
+              <text x="615" y="55" text-anchor="middle" font-size="15" fill="#1f2018">
+                Codex-like run
+              </text>
+              <text x="615" y="78" text-anchor="middle" font-size="12" fill="#686b4e">
+                sanitized env
+              </text>
+              <circle cx="615" cy="101" r="8" fill="#b33a2e" />
+              <path d="M270 70 H490" stroke="#e0582f" stroke-width="2" stroke-dasharray="6 5" />
+              <text x="380" y="58" text-anchor="middle" font-size="12" fill="#686b4e">
+                same initialize probe
+              </text>
+              <rect
+                x="274"
+                y="118"
+                width="212"
+                height="26"
+                rx="6"
+                fill="#f6e8c8"
+                stroke="#e3d8c0"
+              />
+              <text x="380" y="136" text-anchor="middle" font-size="12" fill="#1f2018">
+                diagnose the delta
+              </text>
+            </svg>
+          </div>
+          <div class="basis">
+            <strong>Basis:</strong> direct: prior diagnosis and repo troubleshooting both identify
+            raw JSON-RPC <code>initialize</code> against the exact launch command as the decisive
+            MCP startup test.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> The current failure mode is often "works in Terminal, fails
+            in Codex." This tool validates the actual launch model instead of the wrong parent
+            process.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> It needs Codex config inspection and a good approximation of
+            Codex Desktop's stripped environment. Still, even a conservative simulation is better
+            than today's shell-only doctor path.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: setup/repair UX</span><span class="chip">Confidence: 86%</span
+            ><span class="chip">Complexity: Small/Medium</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-4">
+          <div class="idea-head">
+            <div>
+              <div class="rank">4.</div>
+              <h3>MCP Repair Mode</h3>
+            </div>
+            <span class="chip">Conf 82% · Cx M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> When <code>caplets serve</code> starts but unresolved env
+            or Vault refs quarantine most or all Caplets, expose a minimal safe MCP surface anyway:
+            <code>diagnose_startup</code>, <code>list_unresolved_refs</code>,
+            <code>suggest_repairs</code>, and status resources. Broken downstream Caplets stay
+            hidden until repaired.
+          </p>
+          <div class="basis">
+            <strong>Basis:</strong> direct: config loading already produces recoverable quarantine
+            warnings; doctor already formats Vault repair commands without raw values; Codex users
+            experience the problem as missing tools inside Codex.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> This flips startup failure from invisible absence into an
+            agent-actionable degraded state. It makes Caplets useful precisely when the normal
+            Caplet list cannot load.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Must be carefully scoped so repair tools do not expose
+            secrets or mutate config implicitly. The first version can be read-only and
+            command-generating.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: setup/repair UX</span><span class="chip">Confidence: 82%</span
+            ><span class="chip">Complexity: Medium</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-5">
+          <div class="idea-head">
+            <div>
+              <div class="rank">5.</div>
+              <h3>Caplets Launch Capsule</h3>
+            </div>
+            <span class="chip">Conf 80% · Cx M</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Install a stable Caplets-owned wrapper, such as
+            <code>caplets-codex-mcp</code> or <code>caplets launch codex-local</code>, and register
+            that with Codex instead of raw <code>caplets</code>. The capsule reconstructs only
+            allowed non-secret launch env, pins the resolved executable/config paths, emits redacted
+            startup diagnostics, then execs <code>serve</code> or <code>attach</code>.
+          </p>
+          <div class="basis">
+            <strong>Basis:</strong> direct: the prior local Codex fix used a wrapper to reconstruct
+            PATH and launch <code>caplets serve</code>; daemon code already treats persistent
+            environment as an explicit service boundary.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> This is the pragmatic bridge when Codex's parent process is
+            unreliable and when writing direct Codex config is not enough. It gives Caplets one
+            launch boundary it can version, validate, and diagnose.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Adds another installed artifact and platform-specific PATH
+            concerns. It should be generated and managed by setup, not hand-authored by users.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: startup launch/env</span
+            ><span class="chip">Confidence: 80%</span><span class="chip">Complexity: Medium</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-6">
+          <div class="idea-head">
+            <div>
+              <div class="rank">6.</div>
+              <h3>Secret Ref Policy</h3>
+            </div>
+            <span class="chip">Conf 78% · Cx S</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Make the platform rule explicit: <code>$env:</code> is for
+            runtime shape, paths, ports, selectors, and toolchain knobs; <code>$vault:</code> is for
+            secrets. Catalog tests already lean this way, but docs, schema text, setup warnings, and
+            doctor output should all say it consistently.
+          </p>
+          <div class="basis">
+            <strong>Basis:</strong> direct: the GitHub Caplet uses <code>$vault:GH_TOKEN</code>;
+            catalog guardrails already flag secret-looking <code>$env</code> refs; docs still
+            describe env interpolation broadly for stdio servers.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> This is small but compounding. It prevents new examples and
+            third-party Caplets from reintroducing the exact Codex env dependency that Vault was
+            built to remove.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Secret detection can produce false positives. Treat warnings
+            as guidance first, then tighten catalog enforcement where intent is clear.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: config interpolation/secrets</span
+            ><span class="chip">Confidence: 78%</span><span class="chip">Complexity: Small</span>
+          </div>
+        </article>
+
+        <article class="idea" id="idea-7">
+          <div class="idea-head">
+            <div>
+              <div class="rank">7.</div>
+              <h3>Local Runtime Bridge</h3>
+            </div>
+            <span class="chip">Conf 62% · Cx H</span>
+          </div>
+          <p>
+            <strong>Description:</strong> Longer term, make Codex launch only a thin stdio adapter
+            while the real local Caplets runtime lives in a managed daemon or local control plane.
+            The daemon owns install-time env, Vault resolution, Remote Profiles, logs, reloads, and
+            health; Codex only speaks to the bridge.
+          </p>
+          <div class="basis">
+            <strong>Basis:</strong> direct: Caplets already has daemon install-time env contracts,
+            launchd/systemd/Windows service logic, validation, status, and logs; external MCP
+            patterns increasingly move sensitive auth toward HTTP/OAuth instead of local
+            child-process inheritance.
+          </div>
+          <div class="rationale">
+            <strong>Rationale:</strong> This addresses the root architecture: agent clients are poor
+            process supervisors. A thin adapter makes MCP startup failures smaller and gives Caplets
+            a durable runtime boundary across clients.
+          </div>
+          <div class="downsides">
+            <strong>Downsides:</strong> Large scope and only indirectly required for the current
+            pain. It should follow after launch contracts, migration, and diagnostics prove the
+            shape.
+          </div>
+          <div class="meta-row">
+            <span class="chip">Axis: long-term runtime architecture</span
+            ><span class="chip">Confidence: 62%</span><span class="chip">Complexity: High</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="rejections">
+        <h2>Rejection Summary</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Idea</th>
+              <th>Reason Rejected</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>Profile-only remote attach</td>
+              <td>
+                Sound and already mostly product direction; folded into the launch contract and
+                secret policy rather than kept as a standalone idea.
+              </td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>Remote-first Codex escape hatch</td>
+              <td>
+                Useful option but too narrow as a primary mitigation; users still need local Caplets
+                to work.
+              </td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>Machine-readable Caplet requirements</td>
+              <td>
+                Strong long-term leverage, but better as an extension of Env Debt Compiler after the
+                migration categories are proven.
+              </td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>First-run failure receipt</td>
+              <td>
+                Good support affordance, but below the ambition floor compared with live preflight
+                and repair mode.
+              </td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td>No-parent-env mode</td>
+              <td>
+                Verifier marked weak; it overcorrects because non-secret PATH, HOME, and toolchain
+                selectors still have legitimate env-shaped uses.
+              </td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>Raw Codex env copying</td>
+              <td>
+                Rejected because it would normalize secrets in MCP/client config, contradicting
+                Vault and Remote Profile direction.
+              </td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>Generic dotenv sourcing</td>
+              <td>
+                Too vague and risky as a default. A managed launch capsule can support explicit
+                imports later without making dotenv the product contract.
+              </td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td>Catalog-only Vault policy</td>
+              <td>
+                Too small alone; retained as broader Secret Ref Policy covering docs, setup, schema,
+                and doctor.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="composition-signal">
+        Composed 2026-06-23 by ce-ideate from repo-grounded analysis in
+        <code>/Users/ianpascoe/.codex/worktrees/4298/caplets</code>.
+      </footer>
+    </main>
+  </body>
+</html>

@@ -74,3 +74,12 @@ Use:
 ```
 
 For remote-backed MCP, use `caplets attach` instead of `caplets serve`.
+
+`caplets attach <url>` is stdio-only. If you want one local HTTP runtime to own environment,
+Vault, Remote Login, reloads, and logs while still composing an upstream host, run:
+
+```sh
+caplets serve --transport http --upstream-url https://caplets.example.com/caplets
+```
+
+Then configure the MCP client with `caplets attach <local-runtime-url>`.

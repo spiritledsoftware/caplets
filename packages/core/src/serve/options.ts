@@ -11,6 +11,7 @@ export type RawServeOptions = {
   port?: string | number;
   path?: string;
   remoteStatePath?: string;
+  upstreamUrl?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
 };
@@ -27,6 +28,7 @@ export type HttpServeOptions = {
   publicOrigin?: string | undefined;
   auth: HttpServeAuthOptions;
   remoteCredentialStateDir?: string | undefined;
+  upstreamUrl?: string | undefined;
   allowUnauthenticatedHttp: boolean;
   warnUnauthenticatedNetwork: boolean;
   loopback: boolean;
@@ -48,9 +50,20 @@ const HTTP_ONLY_OPTIONS = [
   "port",
   "path",
   "remoteStatePath",
+  "upstreamUrl",
   "allowUnauthenticatedHttp",
   "trustProxy",
 ] as const;
+
+const HTTP_ONLY_OPTION_FLAGS = {
+  host: "--host",
+  port: "--port",
+  path: "--path",
+  remoteStatePath: "--remote-state-path",
+  upstreamUrl: "--upstream-url",
+  allowUnauthenticatedHttp: "--allow-unauthenticated-http",
+  trustProxy: "--trust-proxy",
+} as const satisfies Record<(typeof HTTP_ONLY_OPTIONS)[number], string>;
 
 export function resolveServeOptions(
   raw: RawServeOptions,
@@ -62,7 +75,7 @@ export function resolveServeOptions(
     if (invalid.length > 0) {
       throw new CapletsError(
         "REQUEST_INVALID",
-        `${invalid.map((key) => `--${key}`).join(", ")} ${invalid.length === 1 ? "is" : "are"} only valid with --transport http`,
+        `${invalid.map((key) => HTTP_ONLY_OPTION_FLAGS[key]).join(", ")} ${invalid.length === 1 ? "is" : "are"} only valid with --transport http`,
       );
     }
     return { transport };
@@ -78,6 +91,15 @@ export function resolveServeOptions(
     nonEmpty(raw.remoteStatePath, "--remote-state-path") ??
     nonEmpty(env.CAPLETS_REMOTE_SERVER_STATE_DIR, "CAPLETS_REMOTE_SERVER_STATE_DIR") ??
     join(DEFAULT_AUTH_DIR, "remote-server");
+  const upstreamUrl = nonEmpty(raw.upstreamUrl, "--upstream-url");
+  if (upstreamUrl) {
+    rejectSelfReferentialUpstream(upstreamUrl, {
+      ...(serverUrl ? { origin: serverUrl.origin } : {}),
+      host,
+      port,
+      path,
+    });
+  }
 
   const loopback = isLoopbackHost(host);
   const auth: HttpServeAuthOptions =
@@ -92,6 +114,7 @@ export function resolveServeOptions(
     ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
     auth,
     ...(auth.type === "remote_credentials" ? { remoteCredentialStateDir } : {}),
+    ...(upstreamUrl ? { upstreamUrl } : {}),
     allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp === true,
     warnUnauthenticatedNetwork: !loopback && auth.type === "development_unauthenticated",
     loopback,
@@ -152,6 +175,66 @@ function normalizeHttpPath(value: string): string {
 
 function serverUrlHost(url: URL | undefined): string | undefined {
   return url?.hostname.replace(/^\[(.*)\]$/u, "$1");
+}
+
+function rejectSelfReferentialUpstream(
+  upstreamUrl: string,
+  local: { origin?: string; host: string; port: number; path: string },
+): void {
+  const upstream = parseServerBaseUrl(upstreamUrl);
+  const localBase = localServeBaseUrl(local);
+  if (sameServerBase(upstream, localBase)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "--upstream-url must not point back to this runtime.",
+    );
+  }
+}
+
+function localServeBaseUrl(local: { origin?: string; host: string; port: number; path: string }) {
+  const origin = local.origin ?? `http://${formatHost(local.host)}:${local.port}`;
+  const url = new URL(origin);
+  url.pathname = local.path;
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+
+function sameServerBase(left: URL, right: URL): boolean {
+  return (
+    left.protocol === right.protocol &&
+    sameHost(left.hostname, right.hostname) &&
+    effectivePort(left) === effectivePort(right) &&
+    normalizePath(left.pathname) === normalizePath(right.pathname)
+  );
+}
+
+function sameHost(left: string, right: string): boolean {
+  if (left === right) return true;
+  const normalizedLeft = normalizeLoopbackHost(left);
+  const normalizedRight = normalizeLoopbackHost(right);
+  return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
+}
+
+function normalizeLoopbackHost(host: string): "loopback" | undefined {
+  const normalized = host.toLowerCase().replace(/^\[(.*)\]$/u, "$1");
+  if (normalized === "localhost" || normalized === "::1") return "loopback";
+  if (normalized === "0.0.0.0" || normalized === "::") return "loopback";
+  if (/^127(?:\.\d{1,3}){3}$/u.test(normalized)) return "loopback";
+  return undefined;
+}
+
+function effectivePort(url: URL): string {
+  if (url.port) return url.port;
+  return url.protocol === "https:" ? "443" : "80";
+}
+
+function normalizePath(path: string): string {
+  return path === "/" ? "/" : path.replace(/\/+$/u, "");
+}
+
+function formatHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 function nonEmpty(value: string | undefined, label: string): string | undefined {

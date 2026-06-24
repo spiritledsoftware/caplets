@@ -589,6 +589,31 @@ describe("cli init", () => {
     ]);
   });
 
+  it("resolves HTTP serve with an upstream URL", async () => {
+    const served: unknown[] = [];
+
+    delete process.env.CAPLETS_SERVER_URL;
+    delete process.env.CAPLETS_SERVER_USER;
+    delete process.env.CAPLETS_SERVER_PASSWORD;
+
+    await runCli(
+      ["serve", "--transport", "http", "--upstream-url", "https://caplets.example.com/caplets"],
+      {
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      },
+    );
+
+    expect(served).toEqual([
+      expect.objectContaining({
+        transport: "http",
+        upstreamUrl: "https://caplets.example.com/caplets",
+      }),
+    ]);
+  });
+
   it("rejects HTTP-only serve options with stdio", async () => {
     await expect(
       runCli(["serve", "--transport", "stdio", "--port", "5387"], { writeErr: () => {} }),

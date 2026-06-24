@@ -12,6 +12,8 @@ Hosted Cloud and self-hosted remotes use `caplets remote login <url>` and a save
 
 The attach client connects to the remote `/v1/attach` API for runtime Caplet discovery and calls. `/v1/mcp` remains the ordinary agent-facing MCP endpoint and continues to honor configured exposure policy.
 
+Stacked runtimes use the same project vocabulary. `caplets serve --transport http --upstream-url <url>` starts a long-running HTTP runtime, and each `caplets attach <local-runtime-url>` or native session supplies its own project root. The runtime attempts upstream Project Binding for that session when the upstream supports it, but project-local Caplets are still loaded from the session project root.
+
 ## Binding Session Loop
 
 Foreground attach creates a server-side Binding Session through the Project Binding control API, opens the control WebSocket, emits normalized JSON events, sends periodic heartbeats, and sends a remote session-end request when interrupted. A single reconnectable WebSocket close emits a `reconnecting` event before retrying the same Binding Session.
