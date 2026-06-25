@@ -49,6 +49,7 @@ describe("update-check CLI", () => {
     writeCachedLatest(join(dir, "cache"));
 
     await runCli(["telemetry", "status"], {
+      env: {},
       version: "0.22.0",
       stderrIsTTY: true,
       updateCheckCacheDir: join(dir, "cache"),
@@ -71,6 +72,7 @@ describe("update-check CLI", () => {
     Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
     try {
       await runCli(["telemetry", "status"], {
+        env: {},
         version: "0.22.0",
         updateCheckCacheDir: join(dir, "cache"),
         updateCheckStateDir: join(dir, "state"),
@@ -197,6 +199,7 @@ describe("update-check CLI", () => {
     const served: string[] = [];
 
     await runCli(["serve"], {
+      env: {},
       version: "0.22.0",
       stderrIsTTY: true,
       fetch: fetcher,

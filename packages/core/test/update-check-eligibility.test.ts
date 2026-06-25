@@ -6,6 +6,7 @@ describe("update-check eligibility", () => {
     expect(
       classifyUpdateNoticeEligibility({
         args: ["attach"],
+        env: {},
         stderrIsTTY: true,
       }),
     ).toMatchObject({ eligible: false, reason: "stdio" });
@@ -23,6 +24,7 @@ describe("update-check eligibility", () => {
     expect(
       classifyUpdateNoticeEligibility({
         args: ["serve", "--transport", "http"],
+        env: {},
         stderrIsTTY: true,
       }),
     ).toMatchObject({ eligible: true, command: "serve" });
