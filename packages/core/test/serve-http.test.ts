@@ -838,6 +838,7 @@ describe("createHttpServeApp", () => {
 
   it("expires inactive Project Binding sessions from in-memory lookups", async () => {
     vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
     try {
       vi.setSystemTime(new Date("2026-06-25T12:00:00.000Z"));
       const { engine } = testEngine();
@@ -847,6 +848,10 @@ describe("createHttpServeApp", () => {
         writeErr: () => {},
         projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
       });
+      cleanup = async () => {
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
 
       const session = await app.request(
         "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
@@ -860,15 +865,8 @@ describe("createHttpServeApp", () => {
         binding: { bindingId: string };
         sessionId: string;
       };
-      vi.setSystemTime(new Date("2026-06-25T12:01:01.000Z"));
+      await vi.advanceTimersByTimeAsync(60_000);
 
-      const status = await app.request(
-        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
-      );
-      await expect(status.json()).resolves.toMatchObject({
-        bindingId: created.binding.bindingId,
-        state: "not_attached",
-      });
       const heartbeat = await app.request(
         `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
         {
@@ -878,9 +876,18 @@ describe("createHttpServeApp", () => {
         },
       );
       expect(heartbeat.status).toBe(404);
+      const status = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+      );
+      await expect(status.json()).resolves.toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "not_attached",
+      });
 
-      await engine.close();
+      await cleanup();
+      cleanup = undefined;
     } finally {
+      await cleanup?.();
       vi.useRealTimers();
     }
   });

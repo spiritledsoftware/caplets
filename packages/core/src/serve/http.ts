@@ -136,10 +136,10 @@ export function createHttpServeApp(
   const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
   const projectBindingSessions = new Map<string, ProjectBindingHttpRecord>();
   const attachEventStreams = new Set<AttachEventStream>();
-  const attachSessionPruneTimer = setInterval(
-    () => pruneIdleAttachSessions(),
-    ATTACH_SESSION_PRUNE_INTERVAL_MS,
-  );
+  const attachSessionPruneTimer = setInterval(() => {
+    pruneIdleAttachSessions();
+    pruneExpiredProjectBindingSessions();
+  }, ATTACH_SESSION_PRUNE_INTERVAL_MS);
   attachSessionPruneTimer.unref?.();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
@@ -538,6 +538,14 @@ export function createHttpServeApp(
     }
   }
 
+  function pruneExpiredProjectBindingSessions(): void {
+    const now = Date.now();
+    for (const [bindingId, record] of projectBindingSessions) {
+      if (record.active && Date.parse(record.expiresAt) > now) continue;
+      projectBindingSessions.delete(bindingId);
+    }
+  }
+
   app.post(paths.control, protectedRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
@@ -718,10 +726,13 @@ export function createHttpServeApp(
     async (c) => {
       try {
         const bindingId = requiredRouteParam(c.req.param("bindingId"));
-        const record = projectBindingRecordFor(bindingId, projectBindingOwnerKey(c));
+        const ownerKey = projectBindingOwnerKey(c);
+        let record = projectBindingRecordFor(bindingId, ownerKey);
         if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
         const parsed = await parseJsonObject(c.req.json(), "Project Binding heartbeat request");
         const sessionId = stringField(parsed, "sessionId");
+        record = projectBindingRecordFor(bindingId, ownerKey);
+        if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
         if (sessionId !== record.sessionId) {
           return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 403);
         }
