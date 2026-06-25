@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectBindingSessionManager } from "../src/cloud/presence";
-import { CAPLETS_ATTACH_SESSION_HEADER } from "../src/attach/api";
+import { CAPLETS_ATTACH_SESSION_HEADER, buildNativeAttachProjection } from "../src/attach/api";
+import { listCodeModeCallableCaplets } from "../src/code-mode/api";
 import type { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
@@ -16,6 +17,7 @@ import {
 } from "../src/native/remote";
 import {
   createNativeCapletsService,
+  type NativeCapletTool,
   type NativeCapletsService,
   resetNativeProjectBindingFallbackWarningForTests,
 } from "../src/native/service";
@@ -2612,6 +2614,192 @@ describe("createNativeCapletsService remote mode", () => {
       "Local Caplet 'shared' is suppressed because the remote attach manifest forbids shadowing that Caplet ID.\n",
     );
     await service.close();
+  });
+
+  it("omits bare Code Mode handles when namespace shadowing qualifies remote and local overlays", async () => {
+    const fixture = client([{ name: "shared", title: "Remote Shared", shadowing: "namespace" }]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        shared: {
+          name: "Local Shared",
+          description: "Local shared Caplet.",
+          command: process.execPath,
+          shadowing: "namespace",
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+    });
+
+    await service.reload();
+
+    const callableIds = listCodeModeCallableCaplets(service).map((caplet) => caplet.id);
+    expect(callableIds).not.toContain("shared");
+    expect(callableIds).toEqual([
+      expect.stringMatching(/^local-[a-f0-9]{4}__shared$/u),
+      expect.stringMatching(/^remote-[a-f0-9]{4}__shared$/u),
+    ]);
+    await service.close();
+  });
+
+  it("preserves namespace collisions across stacked attach manifests", async () => {
+    const innerRemote = client([
+      { name: "computer-use", title: "VPS Computer Use", shadowing: "namespace" },
+    ]);
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        "computer-use": {
+          name: "MacBook Computer Use",
+          description: "MacBook computer use.",
+          command: process.execPath,
+          shadowing: "namespace",
+        },
+      },
+    });
+    dirs.push(dir);
+    const innerService = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => innerRemote.api),
+      configPath,
+      projectConfigPath,
+    });
+    await innerService.reload();
+    const innerProjection = await buildNativeAttachProjection(innerService);
+
+    const outerFetch: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/manifest")) return Response.json(innerProjection.manifest);
+      if (url.endsWith("/invoke") && init?.method === "POST") {
+        return Response.json({ ok: true, data: { remote: true } });
+      }
+      return Response.json({ ok: true });
+    });
+    const outerRemoteClient = createSdkRemoteCapletsClient({
+      url: new URL("http://127.0.0.1:5387/v1/attach"),
+      requestInit: {},
+      fetch: outerFetch,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const outerService = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => outerRemoteClient),
+      configPath,
+      projectConfigPath,
+    });
+
+    await outerService.reload();
+
+    const callableIds = listCodeModeCallableCaplets(outerService).map((caplet) => caplet.id);
+    expect(callableIds).not.toContain("computer-use");
+    expect(callableIds).toEqual([
+      expect.stringMatching(/^local-[a-f0-9]{4}__computer-use$/u),
+      expect.stringMatching(/^remote-[a-f0-9]{4}__computer-use$/u),
+    ]);
+    await outerService.close();
+    await innerService.close();
+  });
+
+  it("preserves Code Mode-only namespace collisions across stacked attach manifests", async () => {
+    const localCodeModeTool = (): NativeCapletTool => ({
+      caplet: "code_mode",
+      toolName: "caplets__code_mode",
+      title: "Code Mode",
+      description: "Local Code Mode.",
+      codeModeRun: true,
+      codeModeCaplets: [
+        {
+          id: "shared",
+          name: "MacBook Shared",
+          description: "MacBook shared handle.",
+          shadowing: "namespace",
+        },
+      ],
+      promptGuidance: [],
+    });
+    const innerRemote = client([
+      {
+        name: "code_mode",
+        title: "Code Mode",
+        description: "Remote Code Mode.",
+        codeModeRun: true,
+        codeModeCaplets: [
+          {
+            stableId: "code_mode:shared",
+            exportId: "remote-shared",
+            kind: "caplet",
+            name: "VPS Shared",
+            description: "VPS shared handle.",
+            schemaHash: null,
+            capletId: "shared",
+            shadowing: "namespace",
+          },
+        ],
+      },
+    ]);
+    const innerLocalService = {
+      listTools: vi.fn(() => [localCodeModeTool()]),
+      execute: vi.fn(async () => ({ local: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const innerService = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => innerRemote.api),
+      localServiceFactory: vi.fn(() => innerLocalService),
+    });
+    await innerService.reload();
+    const innerProjection = await buildNativeAttachProjection(innerService);
+
+    const outerFetch: typeof fetch = vi.fn(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/manifest")) return Response.json(innerProjection.manifest);
+      if (url.endsWith("/invoke") && init?.method === "POST") {
+        return Response.json({ ok: true, data: { remote: true } });
+      }
+      return Response.json({ ok: true });
+    });
+    const outerRemoteClient = createSdkRemoteCapletsClient({
+      url: new URL("http://127.0.0.1:5387/v1/attach"),
+      requestInit: {},
+      fetch: outerFetch,
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const outerLocalService = {
+      listTools: vi.fn(() => [localCodeModeTool()]),
+      execute: vi.fn(async () => ({ local: true })),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    } satisfies NativeCapletsService;
+    const outerService = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => outerRemoteClient),
+      localServiceFactory: vi.fn(() => outerLocalService),
+    });
+
+    await outerService.reload();
+
+    const callableIds = listCodeModeCallableCaplets(outerService).map((caplet) => caplet.id);
+    expect(callableIds).not.toContain("shared");
+    expect(callableIds).toEqual([
+      expect.stringMatching(/^local-[a-f0-9]{4}__shared$/u),
+      expect.stringMatching(/^remote-[a-f0-9]{4}__shared$/u),
+    ]);
+    await outerService.close();
+    await innerService.close();
   });
 
   it("uses configured namespace aliases for native remote and local overlays", async () => {

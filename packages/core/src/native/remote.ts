@@ -538,6 +538,7 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
       ? {
           codeModeCaplets: tool.codeModeCaplets.map((caplet) => ({
             id: caplet.capletId,
+            ...(caplet.sourceCapletId ? { sourceCapletId: caplet.sourceCapletId } : {}),
             name: caplet.name,
             description: caplet.description ?? "",
             shadowing: caplet.shadowing,
@@ -575,6 +576,9 @@ function remoteCodeModeCallableNativeTools(tools: NativeCapletTool[]): NativeCap
     const tool = byId.get(caplet.id);
     return {
       caplet: caplet.id,
+      ...(caplet.sourceCapletId && caplet.sourceCapletId !== caplet.id
+        ? { sourceCaplet: caplet.sourceCapletId }
+        : {}),
       toolName: tool?.toolName ?? nativeCapletToolName(caplet.id),
       title: caplet.name,
       description: caplet.description,
@@ -894,6 +898,7 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
     ...manifest.caplets.map((entry) => ({
       name: entry.capletId,
       capletId: entry.capletId,
+      sourceCapletId: entry.sourceCapletId,
       title: entry.title ?? entry.name,
       description: entry.description,
       inputSchema: entry.inputSchema,
