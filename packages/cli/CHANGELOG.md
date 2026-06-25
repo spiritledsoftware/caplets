@@ -1,5 +1,14 @@
 # caplets
 
+## 0.23.2
+
+### Patch Changes
+
+- d5d776c: Preserve namespace shadowing across stacked attach manifests so re-attached Code Mode handles do not expose duplicate bare Caplet IDs.
+- Updated dependencies [d5d776c]
+- Updated dependencies [27a9c96]
+  - @caplets/core@0.29.2
+
 ## 0.23.1
 
 ### Patch Changes
