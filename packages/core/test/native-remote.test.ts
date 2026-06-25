@@ -333,6 +333,55 @@ describe("RemoteNativeCapletsService", () => {
     expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
   });
 
+  it("falls back to a plain attach manifest when session creation stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const headers = new Headers(init?.headers);
+        requests.push({ url, method, headers });
+        if (url.endsWith("/sessions")) {
+          return await new Promise<Response>(() => undefined);
+        }
+        if (url.endsWith("/manifest")) {
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+        attachSessionMetadata: { projectRoot: "/repo" },
+      });
+
+      const listed = client.listTools();
+      await vi.waitFor(() =>
+        expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+          "POST https://caplets.example.com/v1/attach/sessions",
+        ]),
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(listed).resolves.toEqual([
+        expect.objectContaining({ name: "remote", capletId: "remote" }),
+      ]);
+      await client.close();
+
+      expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "POST https://caplets.example.com/v1/attach/sessions",
+        "GET https://caplets.example.com/v1/attach/manifest",
+      ]);
+      expect(requests[1]?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recreates attach sessions when the remote forgets the previous session", async () => {
     const requests: Array<{ url: string; method: string; headers: Headers }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {
@@ -3910,9 +3959,13 @@ describe("createNativeCapletsService remote mode", () => {
     });
 
     await vi.waitFor(() =>
-      expect(writeErr).toHaveBeenCalledWith(
-        "Could not start upstream Project Binding: Self-hosted Project Binding sessions are not implemented by this runtime.\n",
-      ),
+      expect(
+        fetch.mock.calls.filter(
+          ([input, init]) =>
+            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST",
+        ),
+      ).toHaveLength(1),
     );
     await service.reload();
     await service.reload();
@@ -3924,6 +3977,7 @@ describe("createNativeCapletsService remote mode", () => {
           init?.method === "POST",
       ),
     ).toHaveLength(1);
+    expect(writeErr).not.toHaveBeenCalled();
     await service.close();
   });
 

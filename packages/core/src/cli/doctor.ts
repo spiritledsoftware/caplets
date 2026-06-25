@@ -80,13 +80,11 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
           : "unconfigured",
       selectedWorkspace: remoteLogin.selectedWorkspace ?? remote.workspace ?? null,
       webSocketUrl: remote.webSocketUrl,
+      sessionSupport:
+        remoteLogin.authenticated && remoteLogin.kind === "self-hosted" ? "unsupported" : "unknown",
       lease: null,
       lastUpgradeError: null,
-      recoveryCommand: remoteLogin.authenticated
-        ? "caplets attach --once"
-        : remote.configured || remoteLogin.configured
-          ? `caplets remote login ${remoteLogin.hostUrl ?? "<url>"}`
-          : "caplets remote login <url>",
+      recoveryCommand: projectBindingRecovery(remoteLogin, remote),
     },
     sync: {
       state: options.syncStatus?.state ?? "idle",
@@ -130,6 +128,9 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
     `  Auth mode: ${report.projectBinding.authMode}`,
     `  Selected Workspace: ${report.projectBinding.selectedWorkspace ?? "none"}`,
     `  Binding Session: ${report.projectBinding.state}`,
+    ...(report.projectBinding.sessionSupport !== "unknown"
+      ? [`  Session support: ${report.projectBinding.sessionSupport}`]
+      : []),
     `  Recovery: ${report.projectBinding.recoveryCommand}`,
     "",
     "Project sync",
@@ -233,6 +234,21 @@ function vaultIssueFromWarning(message: string, path: string) {
     target: recoveryCommand.includes("--remote") ? "remote" : "global",
     recoveryCommand,
   };
+}
+
+function projectBindingRecovery(
+  remoteLogin: DoctorRemoteLoginSection,
+  remote: Record<string, unknown>,
+): string {
+  if (remoteLogin.authenticated) {
+    return remoteLogin.kind === "self-hosted"
+      ? "Self-hosted Project Binding sessions are not implemented by this runtime."
+      : "caplets attach --once";
+  }
+  if (remote.configured || remoteLogin.configured) {
+    return `caplets remote login ${remoteLogin.hostUrl ?? "<url>"}`;
+  }
+  return "caplets remote login <url>";
 }
 
 async function resolveDaemonSection(

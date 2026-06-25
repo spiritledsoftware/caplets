@@ -1425,6 +1425,7 @@ class CompositeNativeCapletsService implements NativeCapletsService {
 
   private startPresence(): void {
     void this.presence?.start().catch((error) => {
+      if (isUnsupportedProjectBinding(error)) return;
       writeErr(this.options, `Could not start upstream Project Binding: ${errorMessage(error)}\n`);
     });
   }

@@ -151,6 +151,45 @@ describe("caplets doctor", () => {
     });
   });
 
+  it("does not recommend Project Binding recovery for authenticated self-hosted remotes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: "http://127.0.0.1:5387",
+        clientId: "rcli_test",
+        credentials: {
+          accessToken: "remote-access",
+          refreshToken: "remote-refresh",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
+
+      await runCli(["doctor"], {
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        writeOut: (value) => out.push(value),
+      });
+
+      const report = out.join("");
+      expect(report).toContain("Auth mode: self_hosted_remote");
+      expect(report).toContain("Session support: unsupported");
+      expect(report).toContain(
+        "Recovery: Self-hosted Project Binding sessions are not implemented by this runtime.",
+      );
+      expect(report).not.toContain("Recovery: caplets attach --once");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports unresolved local Vault references with repair commands", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-"));
     const configPath = join(dir, "config.json");

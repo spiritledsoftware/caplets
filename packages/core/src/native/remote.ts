@@ -70,6 +70,7 @@ export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"]
 };
 
 const ATTACH_SESSION_UNSUPPORTED_RETRY_MS = 60_000;
+const ATTACH_SESSION_CREATE_TIMEOUT_MS = 5_000;
 
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
@@ -609,12 +610,32 @@ async function createAttachSession(
 ): Promise<string | undefined> {
   const headers = new Headers(requestInit?.headers);
   headers.set("content-type", "application/json");
-  const response = await fetchImpl(new URL("sessions", slashUrl(attachUrl)), {
+  const abortController = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutReached = new Promise<undefined>((resolve) => {
+    timeout = setTimeout(() => {
+      abortController.abort();
+      resolve(undefined);
+    }, ATTACH_SESSION_CREATE_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+  const fetchSession = fetchImpl(new URL("sessions", slashUrl(attachUrl)), {
     ...requestInit,
     method: "POST",
     headers,
     body: JSON.stringify(metadata),
+    signal: abortController.signal,
+  }).catch((error: unknown) => {
+    if (abortController.signal.aborted) return undefined;
+    throw error;
   });
+  let response: Response | undefined;
+  try {
+    response = await Promise.race([fetchSession, timeoutReached]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+  if (!response) return undefined;
   if (!response.ok) {
     if (response.status === 404) return undefined;
     let payload: unknown;
