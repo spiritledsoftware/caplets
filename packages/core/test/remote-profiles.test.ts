@@ -332,6 +332,45 @@ describe("Remote Profile storage", () => {
     expect(existsSync(lockPath)).toBe(false);
   });
 
+  it("does not wait for a refresh lock when self-hosted credentials are still fresh", async () => {
+    const root = tempDir("caplets-remote-profiles-");
+    const store = new FileRemoteProfileStore({ root });
+    const hostUrl = "https://caplets.example.com";
+    await store.saveSelfHostedProfile({
+      hostUrl,
+      clientId: "rcli_123",
+      credentials: {
+        accessToken: "fresh_access",
+        refreshToken: "fresh_refresh",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+    const key = remoteProfileKey({ kind: "self-hosted", hostUrl });
+    const refreshLockPath = join(
+      root,
+      "remote-profile-refresh-locks",
+      `${encodeURIComponent(key)}.lock`,
+    );
+    mkdirSync(refreshLockPath, { recursive: true });
+    let refreshCalls = 0;
+
+    await expect(
+      store.refreshSelfHostedProfileIfNeeded({
+        hostUrl,
+        needsRefresh: (credential) => Date.parse(credential.expiresAt ?? "") <= Date.now() + 60_000,
+        refresh: async () => {
+          refreshCalls += 1;
+          throw new Error("unexpected refresh");
+        },
+      }),
+    ).resolves.toMatchObject({
+      credential: { accessToken: "fresh_access" },
+      status: { authenticated: true },
+    });
+    expect(refreshCalls).toBe(0);
+    expect(existsSync(refreshLockPath)).toBe(true);
+  });
+
   it("rejects credential-bearing remote URLs before persisting profile data", async () => {
     const root = tempDir("caplets-remote-profiles-");
     const store = new FileRemoteProfileStore({ root });

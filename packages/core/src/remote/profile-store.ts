@@ -193,13 +193,21 @@ export class FileRemoteProfileStore {
       kind: "self-hosted",
       hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
     });
+    const snapshot = await this.withMutationLock(async () =>
+      this.selfHostedRefreshSnapshot(key, input),
+    );
+    if (!snapshot || !snapshot.needsRefresh) return snapshot?.result;
+
     return await this.withRefreshLock(key, async () => {
-      const snapshot = await this.withMutationLock(async () =>
+      const lockedSnapshot = await this.withMutationLock(async () =>
         this.selfHostedRefreshSnapshot(key, input),
       );
-      if (!snapshot || !snapshot.needsRefresh) return snapshot?.result;
+      if (!lockedSnapshot || !lockedSnapshot.needsRefresh) return lockedSnapshot?.result;
 
-      const refreshed = await input.refresh(snapshot.result.status, snapshot.result.credential);
+      const refreshed = await input.refresh(
+        lockedSnapshot.result.status,
+        lockedSnapshot.result.credential,
+      );
       return await this.withMutationLock(async () => {
         const current = await this.selfHostedRefreshSnapshot(key, input);
         if (!current || !current.needsRefresh) return current?.result;

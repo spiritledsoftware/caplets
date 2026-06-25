@@ -70,6 +70,10 @@ export type SdkRemoteCapletsClientOptions = RemoteCapletsClientOptions["remote"]
 };
 
 const ATTACH_SESSION_UNSUPPORTED_RETRY_MS = 60_000;
+const ATTACH_SESSION_CREATE_TIMEOUT_MS = 5_000;
+const ATTACH_SESSION_CREATE_TIMED_OUT = Symbol("attach session create timed out");
+
+type AttachSessionCreateResult = string | undefined | typeof ATTACH_SESSION_CREATE_TIMED_OUT;
 
 export type RemoteNativeCapletsServiceOptions = {
   client: RemoteCapletsClient;
@@ -89,7 +93,7 @@ export function createSdkRemoteCapletsClient(
   let eventsStartInFlight: Promise<void> | undefined;
   let eventsReconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let attachSessionId: string | undefined;
-  let attachSessionInFlight: Promise<string | undefined> | undefined;
+  let attachSessionInFlight: Promise<AttachSessionCreateResult> | undefined;
   let attachSessionsUnsupportedUntil = 0;
   let closed = false;
 
@@ -135,7 +139,10 @@ export function createSdkRemoteCapletsClient(
     if (attachSessionsUnsupportedUntil > Date.now()) return undefined;
     attachSessionsUnsupportedUntil = 0;
     if (attachSessionId) return attachSessionId;
-    if (attachSessionInFlight) return await attachSessionInFlight;
+    if (attachSessionInFlight) {
+      const inFlightSessionId = await attachSessionInFlight;
+      return inFlightSessionId === ATTACH_SESSION_CREATE_TIMED_OUT ? undefined : inFlightSessionId;
+    }
     attachSessionInFlight = createAttachSession(
       runtimeOptions.url,
       runtimeOptions.requestInit,
@@ -143,7 +150,11 @@ export function createSdkRemoteCapletsClient(
       options.attachSessionMetadata,
     );
     try {
-      attachSessionId = await attachSessionInFlight;
+      const createdSessionId = await attachSessionInFlight;
+      if (createdSessionId === ATTACH_SESSION_CREATE_TIMED_OUT) {
+        return undefined;
+      }
+      attachSessionId = createdSessionId;
       if (!attachSessionId) {
         attachSessionsUnsupportedUntil = Date.now() + ATTACH_SESSION_UNSUPPORTED_RETRY_MS;
       }
@@ -308,7 +319,9 @@ export function createSdkRemoteCapletsClient(
       eventsAbort?.abort();
       eventsAbort = undefined;
       listeners.clear();
-      const pendingSessionId = await attachSessionInFlight?.catch(() => undefined);
+      const pendingSessionResult = await attachSessionInFlight?.catch(() => undefined);
+      const pendingSessionId =
+        typeof pendingSessionResult === "string" ? pendingSessionResult : undefined;
       const sessionId = attachSessionId ?? pendingSessionId;
       attachSessionId = undefined;
       if (sessionId) {
@@ -606,15 +619,46 @@ async function createAttachSession(
   requestInit: RequestInit | undefined,
   fetchImpl: typeof fetch,
   metadata: AttachSessionMetadata,
-): Promise<string | undefined> {
+): Promise<AttachSessionCreateResult> {
   const headers = new Headers(requestInit?.headers);
   headers.set("content-type", "application/json");
-  const response = await fetchImpl(new URL("sessions", slashUrl(attachUrl)), {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const sessionUrl = new URL("sessions", slashUrl(attachUrl));
+  const timeoutReached = new Promise<typeof ATTACH_SESSION_CREATE_TIMED_OUT>((resolve) => {
+    timeout = setTimeout(() => {
+      timedOut = true;
+      resolve(ATTACH_SESSION_CREATE_TIMED_OUT);
+    }, ATTACH_SESSION_CREATE_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+  const fetchSession = fetchImpl(sessionUrl, {
     ...requestInit,
     method: "POST",
     headers,
     body: JSON.stringify(metadata),
+  }).catch((error: unknown) => {
+    if (timedOut) return undefined;
+    throw error;
   });
+  void fetchSession
+    .then(async (response) => {
+      if (!timedOut || !response?.ok) return;
+      const lateSessionId = await attachSessionIdFromResponse(response).catch(() => undefined);
+      if (!lateSessionId) return;
+      await closeAttachSession(attachUrl, requestInit, fetchImpl, lateSessionId).catch(
+        () => undefined,
+      );
+    })
+    .catch(() => undefined);
+  let response: Response | typeof ATTACH_SESSION_CREATE_TIMED_OUT | undefined;
+  try {
+    response = await Promise.race([fetchSession, timeoutReached]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+  if (response === ATTACH_SESSION_CREATE_TIMED_OUT) return ATTACH_SESSION_CREATE_TIMED_OUT;
+  if (!response) return undefined;
   if (!response.ok) {
     if (response.status === 404) return undefined;
     let payload: unknown;
@@ -631,11 +675,22 @@ async function createAttachSession(
       `Caplets attach session returned HTTP ${response.status}.`,
     );
   }
-  const payload = (await response.json()) as unknown;
-  if (!isPlainObject(payload) || typeof payload.sessionId !== "string") {
+  return await parseAttachSessionIdResponse(response);
+}
+
+async function parseAttachSessionIdResponse(response: Response): Promise<string> {
+  const sessionId = await attachSessionIdFromResponse(response);
+  if (!sessionId) {
     throw new CapletsError("SERVER_UNAVAILABLE", "Caplets attach session response was invalid.");
   }
-  return payload.sessionId;
+  return sessionId;
+}
+
+async function attachSessionIdFromResponse(response: Response): Promise<string | undefined> {
+  const payload = (await response.json()) as unknown;
+  return isPlainObject(payload) && typeof payload.sessionId === "string"
+    ? payload.sessionId
+    : undefined;
 }
 
 async function closeAttachSession(
