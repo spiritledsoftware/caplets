@@ -4,6 +4,7 @@ import type { ResolvedCapletsRemote } from "../remote/options";
 import { resolveRemoteSelection } from "../remote/selection";
 import { ProjectBindingError } from "./errors";
 import { bootstrapProjectBindingGitignore } from "./gitignore";
+import { buildMutagenSyncPolicy, type MutagenSyncPolicy } from "./mutagen";
 import { runProjectBindingSession, type ProjectBindingSessionEvent } from "./session";
 import { buildProjectSyncManifest } from "./sync-filter";
 import { enforceProjectSyncSizeLimits, type ProjectSyncTier } from "./sync-size";
@@ -27,6 +28,7 @@ export type ResolvedAttachOptions = {
   once: boolean;
   remote: ResolvedCapletsRemote;
   authMode: "self_hosted_remote" | "hosted_cloud";
+  syncPolicy: MutagenSyncPolicy;
   selectedWorkspace?: string | undefined;
 };
 
@@ -55,6 +57,7 @@ export async function resolveAttachOptionsForRun(
     once: raw.once === true,
     remote: selection.remote,
     authMode: selection.kind,
+    syncPolicy: preflightProjectSync(raw.projectRoot ?? process.cwd(), hostedTier(env)),
     ...(selection.kind === "hosted_cloud"
       ? { selectedWorkspace: selection.selectedWorkspace }
       : raw.workspace
@@ -69,7 +72,7 @@ export async function attachProjectOnce(
 ): Promise<{ ok: true; projectRoot: string; webSocketUrl: string }> {
   const resolved = await resolveAttachOptionsForRun({ ...raw, once: true }, env);
   bootstrapProjectBindingGitignore(resolved.projectRoot);
-  preflightProjectSync(resolved.projectRoot, hostedTier(env));
+  assertSyncPolicy(resolved.syncPolicy);
   const response = await (resolved.remote.fetch ?? fetch)(projectBindingProbeUrl(resolved.remote), {
     ...resolved.remote.requestInit,
     method: "GET",
@@ -104,7 +107,7 @@ export async function attachProjectSession(
     ? { ...raw, workspace: resolved.selectedWorkspace }
     : raw;
   bootstrapProjectBindingGitignore(resolved.projectRoot);
-  preflightProjectSync(resolved.projectRoot, hostedTier(env));
+  assertSyncPolicy(resolved.syncPolicy);
   return await runProjectBindingSession({
     projectRoot: resolved.projectRoot,
     remote: resolved.remote,
@@ -132,15 +135,28 @@ async function isWebSocketUpgradeRequired(response: Response): Promise<boolean> 
   return body?.error === "websocket_upgrade_required";
 }
 
-function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): void {
-  if (!existsSync(projectRoot)) return;
+function preflightProjectSync(projectRoot: string, tier: ProjectSyncTier): MutagenSyncPolicy {
+  if (!existsSync(projectRoot)) {
+    return {
+      ok: true,
+      ignore: [],
+      exclusionSummary: [],
+      totalBytes: 0,
+      maxSingleFileBytes: 0,
+      maxProjectBytes: 0,
+    };
+  }
   const manifest = buildProjectSyncManifest({ projectRoot });
   const size = enforceProjectSyncSizeLimits({ tier, files: manifest.files });
-  if (!size.ok) {
+  return buildMutagenSyncPolicy({ manifest, size });
+}
+
+function assertSyncPolicy(policy: MutagenSyncPolicy): void {
+  if (!policy.ok) {
     throw new ProjectBindingError({
-      code: size.code,
-      message: "Project sync size exceeds the selected workspace policy.",
-      recoveryCommand: size.recoveryCommand,
+      code: "sync_size_limit_exceeded",
+      message: policy.publicMessage,
+      recoveryCommand: policy.recoveryCommand,
     });
   }
 }

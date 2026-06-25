@@ -25,6 +25,7 @@ import {
   type ObservedOutputShapeKey,
   type ObservedOutputShapeStore,
 } from "./observed-output-shapes";
+import type { ProjectBindingExecutionContext } from "./project-binding/execution-context";
 import { ServerRegistry } from "./registry";
 import { handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
@@ -74,6 +75,7 @@ export type CapletsEngineOptions = {
   telemetryIntegration?: "opencode" | "pi" | "native" | "unknown" | undefined;
   telemetryDebugSink?: TelemetryDebugSink | undefined;
   telemetryDispatcher?: TelemetryDispatcher | undefined;
+  projectBindingContext?: ProjectBindingExecutionContext | undefined;
 };
 
 export type CapletsEngineReloadEvent = {
@@ -109,6 +111,7 @@ export class CapletsEngine {
   private readonly observedOutputShapeStore: ObservedOutputShapeStore | undefined;
   private readonly observedOutputShapeScope: ObservedOutputShapeKey["scope"];
   private readonly projectFingerprint: string | undefined;
+  private readonly projectBindingContext: ProjectBindingExecutionContext | undefined;
   private readonly telemetry: RuntimeTelemetryContext;
   private readonly telemetryExecuteExposureMode: "progressive" | "code_mode";
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
@@ -143,7 +146,10 @@ export class CapletsEngine {
     });
     this.telemetryExecuteExposureMode =
       options.telemetrySurface === "code_mode" ? "code_mode" : "progressive";
-    this.downstream = new DownstreamManager(this.registry, selectAuthOptions(options.authDir));
+    this.downstream = new DownstreamManager(this.registry, {
+      ...selectAuthOptions(options.authDir),
+      projectBindingContext: options.projectBindingContext,
+    });
     this.openapi = new OpenApiManager(this.registry, selectHttpLikeOptions(options));
     this.googleDiscovery = new GoogleDiscoveryManager(
       this.registry,
@@ -151,7 +157,9 @@ export class CapletsEngine {
     );
     this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
     this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
-    this.cli = new CliToolsManager(this.registry);
+    this.cli = new CliToolsManager(this.registry, {
+      projectBindingContext: options.projectBindingContext,
+    });
     this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
@@ -162,6 +170,7 @@ export class CapletsEngine {
       );
     this.observedOutputShapeScope = options.observedOutputShapeScope ?? "local";
     this.projectFingerprint = options.projectFingerprint ?? safeProjectFingerprint();
+    this.projectBindingContext = options.projectBindingContext;
     if (this.watchEnabled) {
       this.resetWatchers();
     }
@@ -184,6 +193,9 @@ export class CapletsEngine {
       ...(options.discoverNonDirectMcpSurfaces === undefined
         ? {}
         : { discoverNonDirectMcpSurfaces: options.discoverNonDirectMcpSurfaces }),
+      ...(this.projectBindingContext === undefined
+        ? {}
+        : { projectBindingContext: this.projectBindingContext }),
       listTools: async (caplet) => this.listTools(caplet),
       listResources: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listResources(caplet, true)),
@@ -197,6 +209,10 @@ export class CapletsEngine {
 
   currentExposureSnapshot(): ExposureSnapshot | undefined {
     return this.lastExposureSnapshot;
+  }
+
+  currentProjectBindingContext(): ProjectBindingExecutionContext | undefined {
+    return this.projectBindingContext;
   }
 
   watchedPaths(): string[] {
@@ -242,6 +258,7 @@ export class CapletsEngine {
     let caplet: CapletConfig | undefined;
     try {
       caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
       const result = await handleServerTool(
         caplet,
         request,
@@ -294,6 +311,7 @@ export class CapletsEngine {
     let caplet: CapletConfig | undefined;
     try {
       caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
       const result = await this.callTool(caplet, toolName, args);
       const annotated = annotateDirectResult(result, caplet, toolName);
       this.captureToolActivation(caplet, "call_tool", "direct", annotated, started);
@@ -311,6 +329,7 @@ export class CapletsEngine {
     let caplet: CapletConfig | undefined;
     try {
       caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP resources`);
       const result = await this.downstream.readResource(caplet, downstreamUri);
       const annotated = annotateDirectResult(result, caplet, "read_resource");
@@ -333,6 +352,7 @@ export class CapletsEngine {
     let caplet: CapletConfig | undefined;
     try {
       caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
       if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP prompts`);
       const result = await this.downstream.getPrompt(caplet, promptName, args);
       const annotated = annotateDirectResult(result, caplet, promptName);
@@ -432,6 +452,21 @@ export class CapletsEngine {
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
     }));
+  }
+
+  private assertProjectBindingCallable(caplet: CapletConfig): void {
+    if (!caplet.projectBinding?.required || this.projectBindingContext) return;
+    throw new CapletsError(
+      "UNSUPPORTED_CAPABILITY",
+      "Project Binding session context is required before this Caplet can be exposed.",
+      {
+        projectBinding: {
+          reason: "missing_context",
+          capletId: caplet.server,
+          recoveryCommand: "Reconnect through an attach or native session with project context.",
+        },
+      },
+    );
   }
 
   private async listTools(server: CapletConfig) {

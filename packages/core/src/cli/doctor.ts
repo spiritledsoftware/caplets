@@ -581,6 +581,6 @@ function allCaplets(config: { [key: string]: unknown }): CapletConfig[] {
 function hiddenReasonFor(caplet: CapletConfig): string {
   if (caplet.disabled) return "disabled";
   if (caplet.setup) return "setup_required";
-  if (caplet.projectBinding?.required) return "project_binding_required";
+  if (caplet.projectBinding?.required) return "project_binding_missing_context";
   return "not_exposed";
 }

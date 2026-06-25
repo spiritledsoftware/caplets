@@ -1,6 +1,8 @@
 import type { Prompt, Resource, ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types";
 import type { CapletConfig, CapletsConfig } from "../config";
 import { toSafeError, type SafeErrorSummary } from "../errors";
+import { projectBindingMissingContextDiagnostic } from "../project-binding/errors";
+import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
 import {
   directPromptName,
   directResourceTemplateUri,
@@ -13,6 +15,15 @@ export type HiddenCapletReason =
   | "disabled"
   | "setup_required"
   | "project_binding_required"
+  | "project_binding_missing_context"
+  | "project_binding_unsupported"
+  | "project_binding_auth_failed"
+  | "project_binding_metadata_unknown"
+  | "project_binding_sync_failed"
+  | "project_binding_retry_exhausted"
+  | "project_binding_quarantined"
+  | "project_binding_invalid_cwd"
+  | "project_binding_policy_denied"
   | "discovery_failed"
   | "empty_surface";
 
@@ -75,6 +86,7 @@ export type DiscoverExposureSnapshotOptions = {
   config: CapletsConfig;
   caplets: CapletConfig[];
   discoverNonDirectMcpSurfaces?: boolean | undefined;
+  projectBindingContext?: ProjectBindingExecutionContext | undefined;
   listTools(caplet: CapletConfig): Promise<Tool[]>;
   listResources?(caplet: Extract<CapletConfig, { backend: "mcp" }>): Promise<Resource[]>;
   listResourceTemplates?(
@@ -158,8 +170,14 @@ async function discoverCaplet(
 ): Promise<{ callable?: CallableCaplet; hidden?: HiddenCaplet }> {
   if (caplet.disabled) return { hidden: { capletId: caplet.server, reason: "disabled" } };
   if (caplet.setup) return { hidden: { capletId: caplet.server, reason: "setup_required" } };
-  if (caplet.projectBinding?.required) {
-    return { hidden: { capletId: caplet.server, reason: "project_binding_required" } };
+  if (caplet.projectBinding?.required && !options.projectBindingContext) {
+    return {
+      hidden: {
+        capletId: caplet.server,
+        reason: "project_binding_missing_context",
+        error: projectBindingMissingContextDiagnostic(),
+      },
+    };
   }
 
   const exposure = resolveExposure(caplet.exposure, options.config.options.exposure);

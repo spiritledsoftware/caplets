@@ -1,11 +1,14 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serve, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
 import { CAPLETS_STACK_CHAIN_HEADER, createHttpServeApp } from "../src/serve/http";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import type { HttpServeOptions } from "../src/serve/options";
@@ -673,43 +676,232 @@ describe("createHttpServeApp", () => {
 
   it("mounts Project Binding session routes under the attach namespace", async () => {
     const { engine } = testEngine();
-    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
 
     const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projectRoot: "/repo" }),
+      body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
     });
-    expect(session.status).toBe(501);
-    await expect(session.json()).resolves.toMatchObject({
-      ok: false,
-      error: {
-        code: "UNSUPPORTED_CAPABILITY",
-        message: "Self-hosted Project Binding sessions are not implemented by this runtime.",
+    expect(session.status).toBe(201);
+    const created = (await session.json()) as {
+      binding: { bindingId: string; state: string; syncState: string; serverProjectRoot: string };
+      sessionId: string;
+    };
+    expect(created).toMatchObject({
+      binding: {
+        state: "attaching",
+        syncState: "pending",
+        serverProjectRoot: join(workspaceRoot, "sha256_repo", "project"),
       },
+      sessionId: expect.any(String),
     });
 
     const heartbeat = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/binding_123/heartbeat",
-      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: created.sessionId,
+          state: "ready",
+          syncState: "idle",
+        }),
+      },
     );
-    expect(heartbeat.status).toBe(501);
+    expect(heartbeat.status).toBe(200);
     await expect(heartbeat.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "UNSUPPORTED_CAPABILITY" },
-      binding: { bindingId: "binding_123", state: "not_attached" },
+      ok: true,
+      binding: { bindingId: created.binding.bindingId, state: "ready", syncState: "idle" },
+    });
+
+    const status = await app.request(
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+    );
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({
+      bindingId: created.binding.bindingId,
+      state: "ready",
+      syncState: "idle",
     });
 
     const ended = await app.request(
-      "http://127.0.0.1:5387/v1/attach/project-bindings/binding_123/session",
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
       { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
     );
-    expect(ended.status).toBe(501);
+    expect(ended.status).toBe(200);
     await expect(ended.json()).resolves.toMatchObject({
-      ok: false,
-      error: { code: "UNSUPPORTED_CAPABILITY" },
-      binding: { bindingId: "binding_123", state: "not_attached" },
+      ok: true,
+      binding: { bindingId: created.binding.bindingId, state: "ended", syncState: "not_started" },
     });
+
+    await engine.close();
+  });
+
+  it("accepts Project Binding WebSocket connections for owned sessions", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      const session = await withTimeout(
+        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        }),
+        "create Project Binding session",
+      );
+      expect(session.status).toBe(201);
+      const created = (await session.json()) as {
+        binding: { bindingId: string; state: string; syncState: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
+        await expect(
+          withTimeout(nextSocketJson(socket), "receive Project Binding ready"),
+        ).resolves.toMatchObject({
+          type: "ready",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+          syncState: "pending",
+        });
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+        await withTimeout(
+          waitFor(async () => {
+            const status = await fetch(
+              `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+            );
+            const payload = (await status.json()) as { state: string; syncState: string };
+            expect(payload).toMatchObject({ state: "ready", syncState: "idle" });
+          }),
+          "observe Project Binding heartbeat",
+        );
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("authenticates Project Binding WebSocket connections with bearer subprotocols", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await withTimeout(
+        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        }),
+        "create authenticated Project Binding session",
+      );
+      expect(session.status).toBe(201);
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        await expect(
+          withTimeout(nextSocketJson(socket), "receive authenticated Project Binding ready"),
+        ).resolves.toMatchObject({
+          type: "ready",
+          bindingId: created.binding.bindingId,
+          sessionId: created.sessionId,
+        });
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("rejects Project Binding heartbeats from a different Remote Credential client", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const owner = pairedClient(store);
+    const other = pairedClient(store);
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+
+    const session = await app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${owner.accessToken}`,
+      },
+      body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+    });
+    const created = (await session.json()) as {
+      binding: { bindingId: string };
+      sessionId: string;
+    };
+
+    const heartbeat = await app.request(
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${other.accessToken}`,
+        },
+        body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+      },
+    );
+
+    expect(heartbeat.status).toBe(404);
 
     await engine.close();
   });
@@ -2028,6 +2220,85 @@ async function listMcpTools(
   expect(deleted.status).toBe(200);
 
   return payload.result.tools;
+}
+
+async function startTestHttpServer(app: ReturnType<typeof createHttpServeApp>): Promise<{
+  origin: string;
+  close: () => Promise<void>;
+}> {
+  return await new Promise((resolve) => {
+    const websocketServer = new WebSocketServer({ noServer: true });
+    const server = serve(
+      {
+        fetch: app.fetch,
+        hostname: "127.0.0.1",
+        port: 0,
+        websocket: {
+          server: websocketServer as unknown as WebSocketServerLike,
+        },
+      },
+      (info) => {
+        resolve({
+          origin: `http://127.0.0.1:${info.port}`,
+          close: async () => {
+            for (const client of websocketServer.clients) {
+              client.terminate();
+            }
+            await new Promise<void>((closed) => server.close(() => closed()));
+          },
+        });
+      },
+    );
+  });
+}
+
+async function waitForSocketOpen(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.OPEN) return;
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", () => resolve());
+    socket.once("error", reject);
+  });
+}
+
+async function nextSocketJson(socket: WebSocket): Promise<unknown> {
+  return await new Promise((resolve, reject) => {
+    socket.once("message", (data) => {
+      try {
+        resolve(JSON.parse(data.toString()) as unknown);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    socket.once("error", reject);
+  });
+}
+
+async function waitFor(assertion: () => Promise<void>, attempts = 20): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw lastError;
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms = 1_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function parseMcpResponse(text: string): {

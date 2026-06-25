@@ -1,4 +1,7 @@
 import { CapletsError } from "../errors";
+import type { SafeErrorSummary } from "../errors";
+import { redactUnknownSecrets } from "../redaction";
+import type { ProjectBindingHiddenReason } from "./types";
 
 export const PROJECT_BINDING_ERROR_CODES = [
   "cloud_auth_required",
@@ -34,6 +37,14 @@ export type ProjectBindingRecovery = {
   requestId?: string | undefined;
 };
 
+export type ProjectBindingHiddenDiagnosticInput = {
+  reason: ProjectBindingHiddenReason;
+  message: string;
+  recoveryCommand?: string | undefined;
+  requestId?: string | undefined;
+  details?: Record<string, unknown> | undefined;
+};
+
 export class ProjectBindingError extends CapletsError {
   readonly projectBindingCode: ProjectBindingErrorCode;
   readonly recoveryCommand?: string | undefined;
@@ -64,6 +75,31 @@ export function projectBindingError(
   message?: string,
 ): ProjectBindingError {
   return new ProjectBindingError(projectBindingRecovery(code, message));
+}
+
+export function projectBindingHiddenDiagnostic(
+  input: ProjectBindingHiddenDiagnosticInput,
+): SafeErrorSummary {
+  return {
+    code: "UNSUPPORTED_CAPABILITY",
+    message: redactUnknownSecrets(input.message),
+    details: redactUnknownSecrets({
+      projectBinding: {
+        reason: input.reason,
+        ...(input.recoveryCommand === undefined ? {} : { recoveryCommand: input.recoveryCommand }),
+        ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+        ...(input.details === undefined ? {} : input.details),
+      },
+    }),
+  };
+}
+
+export function projectBindingMissingContextDiagnostic(): SafeErrorSummary {
+  return projectBindingHiddenDiagnostic({
+    reason: "missing_context",
+    message: "Project Binding session context is required before this Caplet can be exposed.",
+    recoveryCommand: "Reconnect through an attach or native session with project context.",
+  });
 }
 
 function recoveryCommandFor(code: ProjectBindingErrorCode): string | undefined {

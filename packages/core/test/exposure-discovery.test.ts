@@ -53,6 +53,60 @@ describe("exposure discovery", () => {
     ]);
   });
 
+  it("hides project-bound caplets without session context with a stable diagnostic", async () => {
+    const projectBound = {
+      ...httpCaplet("workspace", "progressive"),
+      projectBinding: { required: true },
+    } satisfies Extract<CapletConfig, { backend: "http" }>;
+
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([projectBound]),
+      caplets: [projectBound],
+      listTools: async () => [tool("run")],
+    });
+
+    expect(snapshot.callableCaplets).toEqual([]);
+    expect(snapshot.hiddenCaplets).toEqual([
+      {
+        capletId: "workspace",
+        reason: "project_binding_missing_context",
+        error: {
+          code: "UNSUPPORTED_CAPABILITY",
+          message: "Project Binding session context is required before this Caplet can be exposed.",
+          details: {
+            projectBinding: {
+              reason: "missing_context",
+              recoveryCommand:
+                "Reconnect through an attach or native session with project context.",
+            },
+          },
+        },
+      },
+    ]);
+  });
+
+  it("discovers project-bound caplets when session context is available", async () => {
+    const projectBound = {
+      ...httpCaplet("workspace", "progressive"),
+      projectBinding: { required: true },
+    } satisfies Extract<CapletConfig, { backend: "http" }>;
+
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([projectBound]),
+      caplets: [projectBound],
+      projectBindingContext: {
+        sessionId: "session_1",
+        bindingId: "binding_1",
+        projectRoot: "/repo",
+        projectFingerprint: "sha256:repo",
+      },
+      listTools: async () => [tool("run")],
+    });
+
+    expect(snapshot.callableCaplets.map((entry) => entry.caplet.server)).toEqual(["workspace"]);
+    expect(snapshot.hiddenCaplets).toEqual([]);
+  });
+
   it("keeps direct resource templates unique per downstream template", async () => {
     const docs = mcpCaplet("docs", "direct");
     const snapshot = await discoverExposureSnapshot({

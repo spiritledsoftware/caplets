@@ -209,6 +209,51 @@ describe("caplets doctor", () => {
     }
   });
 
+  it("reports project-bound Caplets as missing session context in exposure diagnostics", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-project-binding-"));
+    const configPath = join(dir, "config.json");
+    const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+    try {
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          cliTools: {
+            workspace: {
+              name: "Workspace",
+              description: "Project workspace tools.",
+              projectBinding: { required: true },
+              actions: {
+                cwd: { command: process.execPath },
+              },
+            },
+          },
+        }),
+      );
+      writeFileSync(projectConfigPath, "{}");
+
+      const report = await doctorJsonReport({
+        env: {
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: projectConfigPath,
+        },
+        cwd: join(dir, "project"),
+      });
+
+      expect(report.exposure).toMatchObject({
+        caplets: [
+          expect.objectContaining({
+            id: "workspace",
+            callable: false,
+            hiddenReason: "project_binding_missing_context",
+          }),
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("honors DoctorOptions.cwd when checking project Vault references", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-cwd-"));
     const configPath = join(dir, "config.json");

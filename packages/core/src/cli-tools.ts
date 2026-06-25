@@ -10,6 +10,10 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
+import {
+  resolveProjectBoundCwd,
+  type ProjectBindingExecutionContext,
+} from "./project-binding/execution-context";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -18,7 +22,12 @@ const DEFAULT_INPUT_SCHEMA = { type: "object", additionalProperties: true } as c
 type CliToolAction = CliToolActionConfig & { name: string };
 
 export class CliToolsManager {
-  constructor(private registry: ServerRegistry) {}
+  constructor(
+    private registry: ServerRegistry,
+    private readonly options: {
+      projectBindingContext?: ProjectBindingExecutionContext | undefined;
+    } = {},
+  ) {}
 
   updateRegistry(registry: ServerRegistry): void {
     this.registry = registry;
@@ -84,7 +93,7 @@ export class CliToolsManager {
   ): Promise<CompatibilityCallToolResult> {
     const action = getAction(config, toolName);
     validateInput(action, args);
-    const execution = resolveExecution(config, action, args);
+    const execution = resolveExecution(config, action, args, this.options.projectBindingContext);
     const startedAt = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), execution.timeoutMs);
@@ -195,8 +204,14 @@ function resolveExecution(
   config: CliToolsConfig,
   action: CliToolAction,
   input: Record<string, unknown>,
+  projectBindingContext?: ProjectBindingExecutionContext | undefined,
 ): Execution {
-  const cwd = interpolateString(action.cwd ?? config.cwd, input, "cwd");
+  const configuredCwd = interpolateString(action.cwd ?? config.cwd, input, "cwd");
+  const cwd = resolveProjectBoundCwd({
+    caplet: config,
+    configuredCwd,
+    context: projectBindingContext,
+  });
   if (cwd && !existsSync(cwd)) {
     throw new CapletsError(
       "CONFIG_INVALID",
