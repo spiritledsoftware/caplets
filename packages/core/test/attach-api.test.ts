@@ -100,6 +100,55 @@ describe("Attach API dispatch", () => {
     ]);
   });
 
+  it("includes authoritative Project Binding metadata for hidden Caplets", async () => {
+    const engine = {
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [
+          {
+            capletId: "workspace",
+            reason: "project_binding_missing_context",
+            error: {
+              code: "UNSUPPORTED_CAPABILITY",
+              message:
+                "Project Binding session context is required before this Caplet can be exposed.",
+              details: {
+                projectBinding: {
+                  reason: "missing_context",
+                  recoveryCommand:
+                    "Reconnect through an attach or native session with project context.",
+                },
+              },
+            },
+          },
+        ],
+      }),
+    } as unknown as CapletsEngine;
+
+    const projection = await buildAttachProjection(engine);
+
+    expect(projection.manifest.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ATTACH_CAPLET_PROJECT_BINDING_MISSING_CONTEXT",
+        capletId: "workspace",
+        details: {
+          projectBinding: expect.objectContaining({
+            required: true,
+            capability: "project_binding",
+            version: 1,
+            reason: "missing_context",
+          }),
+        },
+      }),
+    ]);
+  });
+
   it("uses configured Caplet shadowing policy in attach manifests", async () => {
     const caplet = {
       server: "docs",

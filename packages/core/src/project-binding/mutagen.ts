@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import { redactSecretText } from "../redaction";
+import type { ProjectBindingQuarantineRecord } from "./types";
+import type { ProjectSyncExclusionSummary, ProjectSyncManifest } from "./sync-filter";
+import type { ProjectSyncSizeResult } from "./sync-size";
 
 export type ManagedSyncState = "idle" | "starting" | "syncing" | "ready" | "blocked" | "stopped";
 
@@ -6,6 +10,7 @@ export type ManagedSyncDiagnosticCode =
   | "project_sync_binary_missing"
   | "project_sync_auth_failed"
   | "project_sync_conflict"
+  | "project_sync_policy_denied"
   | "project_sync_process_exit"
   | "project_sync_status_unavailable";
 
@@ -53,6 +58,7 @@ export type StartMutagenProjectSyncInput = {
   bindingId: string;
   localProjectRoot: string;
   serverProjectRoot: string;
+  syncPolicy?: MutagenSyncPolicy | undefined;
 };
 
 export type MutagenProjectSyncBindingInput = {
@@ -63,6 +69,26 @@ export type ManagedMutagenProjectSyncOptions = {
   mutagenBinary?: string;
   runner?: MutagenProcessRunner;
 };
+
+export type MutagenSyncPolicy =
+  | {
+      ok: true;
+      ignore: string[];
+      exclusionSummary: ProjectSyncExclusionSummary[];
+      totalBytes: number;
+      maxSingleFileBytes: number;
+      maxProjectBytes: number;
+    }
+  | {
+      ok: false;
+      diagnosticCode: ManagedSyncDiagnosticCode;
+      publicMessage: string;
+      recoveryCommand: string;
+      exclusionSummary: ProjectSyncExclusionSummary[];
+      totalBytes?: number | undefined;
+      maxSingleFileBytes?: number | undefined;
+      maxProjectBytes?: number | undefined;
+    };
 
 type MutagenVersionInfo = {
   version: string;
@@ -95,6 +121,10 @@ export function planMutagenSyncCreateCommand(
   input: StartMutagenProjectSyncInput,
   mutagenBinary = "mutagen",
 ): MutagenCommandPlan {
+  const policyArgs =
+    input.syncPolicy?.ok === true
+      ? ["--ignore-vcs", ...input.syncPolicy.ignore.flatMap((pattern) => ["--ignore", pattern])]
+      : [];
   return {
     command: mutagenBinary,
     args: [
@@ -104,6 +134,7 @@ export function planMutagenSyncCreateCommand(
       input.serverProjectRoot,
       "--name",
       mutagenSyncName(input.bindingId),
+      ...policyArgs,
     ],
   };
 }
@@ -121,6 +152,32 @@ export function planMutagenSyncTerminateCommand(
 
 export function mutagenSyncName(bindingId: string): string {
   return `caplets-${bindingId}`;
+}
+
+export function buildMutagenSyncPolicy(input: {
+  manifest: ProjectSyncManifest;
+  size: ProjectSyncSizeResult;
+}): MutagenSyncPolicy {
+  if (!input.size.ok) {
+    return {
+      ok: false,
+      diagnosticCode: "project_sync_policy_denied",
+      publicMessage: "Project sync policy cannot be enforced.",
+      recoveryCommand: input.size.recoveryCommand,
+      exclusionSummary: input.manifest.exclusionSummary,
+      totalBytes: input.size.totalBytes,
+      maxSingleFileBytes: input.size.maxSingleFileBytes,
+      maxProjectBytes: input.size.maxProjectBytes,
+    };
+  }
+  return {
+    ok: true,
+    ignore: uniqueSorted(input.manifest.exclusionSummary.map((entry) => entry.pattern)),
+    exclusionSummary: input.manifest.exclusionSummary,
+    totalBytes: input.size.totalBytes,
+    maxSingleFileBytes: input.size.maxSingleFileBytes,
+    maxProjectBytes: input.size.maxProjectBytes,
+  };
 }
 
 export class ManagedMutagenProjectSync {
@@ -145,6 +202,10 @@ export class ManagedMutagenProjectSync {
       bindingId: input.bindingId,
       publicMessage: "Project sync is starting.",
     });
+    if (input.syncPolicy?.ok === false) {
+      this.#block(input.bindingId, input.syncPolicy.diagnosticCode, input.syncPolicy.publicMessage);
+      return this.snapshot();
+    }
     const versionResult = await this.#run(planMutagenVersionCommand(this.mutagenBinary));
     if (versionResult.blocked) {
       return this.snapshot();
@@ -264,12 +325,16 @@ export class ManagedMutagenProjectSync {
     }
   }
 
-  #block(bindingId: string | undefined, diagnosticCode: ManagedSyncDiagnosticCode): void {
+  #block(
+    bindingId: string | undefined,
+    diagnosticCode: ManagedSyncDiagnosticCode,
+    publicMessage = "Project sync is blocked.",
+  ): void {
     this.#setState({
       state: "blocked",
       bindingId,
       diagnosticCode,
-      publicMessage: "Project sync is blocked.",
+      publicMessage,
     });
   }
 
@@ -292,6 +357,10 @@ export class ManagedMutagenProjectSync {
   }
 }
 
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
 export function mutagenProjectSyncDoctorData(
   snapshot: ManagedSyncStateSnapshot,
 ): MutagenProjectSyncDoctorData {
@@ -311,6 +380,55 @@ export function mutagenProjectSyncDoctorData(
     doctorData.lastCommand = snapshot.lastCommand;
   }
   return doctorData;
+}
+
+export function managedSyncQuarantineRecord(input: {
+  capletId: string;
+  snapshot: ManagedSyncStateSnapshot;
+  recordedAt?: string | undefined;
+}): ProjectBindingQuarantineRecord {
+  const record: ProjectBindingQuarantineRecord = {
+    capletId: input.capletId,
+    reason: input.snapshot.state === "blocked" ? "sync_failed" : "quarantined",
+    message: input.snapshot.publicMessage,
+    sync: projectBindingManagedSyncSnapshot(input.snapshot),
+  };
+  if (input.snapshot.diagnosticCode !== undefined) {
+    record.code = input.snapshot.diagnosticCode;
+  }
+  if (input.recordedAt !== undefined) {
+    record.recordedAt = input.recordedAt;
+  }
+  return record;
+}
+
+function projectBindingManagedSyncSnapshot(
+  snapshot: ManagedSyncStateSnapshot,
+): NonNullable<ProjectBindingQuarantineRecord["sync"]> {
+  const sync: NonNullable<ProjectBindingQuarantineRecord["sync"]> = {
+    state: snapshot.state,
+  };
+  if (snapshot.diagnosticCode !== undefined) {
+    sync.diagnosticCode = snapshot.diagnosticCode;
+  }
+  if (snapshot.mutagenBinary !== undefined) {
+    sync.mutagenBinary = snapshot.mutagenBinary;
+  }
+  if (snapshot.mutagenVersion !== undefined) {
+    sync.mutagenVersion = snapshot.mutagenVersion;
+  }
+  if (snapshot.lastCommand !== undefined) {
+    sync.lastCommand = {
+      command: snapshot.lastCommand.command,
+      args: [...snapshot.lastCommand.args],
+      stdout: redactSecretText(snapshot.lastCommand.stdout).text,
+      stderr: redactSecretText(snapshot.lastCommand.stderr).text,
+      ...(snapshot.lastCommand.exitCode === undefined
+        ? {}
+        : { exitCode: snapshot.lastCommand.exitCode }),
+    };
+  }
+  return sync;
 }
 
 export function parseMutagenVersionOutput(output: string): MutagenVersionInfo {

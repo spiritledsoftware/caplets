@@ -198,6 +198,39 @@ describe("CapletsEngine", () => {
     expect(engine.enabledServers().map((caplet) => caplet.server)).toEqual(["drive"]);
   });
 
+  it("fails project-bound calls before backend dispatch when session context is missing", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        workspace: {
+          name: "Workspace",
+          description: "Project workspace action.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          projectBinding: { required: true },
+          actions: {
+            run: { method: "GET", path: "/run" },
+          },
+        },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    engines.push(engine);
+
+    const result = (await engine.execute("workspace", {
+      operation: "call_tool",
+      name: "run",
+      args: {},
+    })) as { structuredContent?: { error?: unknown } };
+
+    expect(result.structuredContent?.error).toMatchObject({
+      code: "UNSUPPORTED_CAPABILITY",
+      details: {
+        projectBinding: expect.objectContaining({ reason: "missing_context" }),
+      },
+    });
+  });
+
   it("keeps last known-good config when reload validation fails", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

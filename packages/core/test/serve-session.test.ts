@@ -43,6 +43,40 @@ describe("CapletsMcpSession", () => {
     await engine.close();
   });
 
+  it("registers project-bound Caplets when the engine has session context", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha.",
+          command: "node",
+          projectBinding: { required: true },
+        },
+      },
+    });
+    dirs.push(dir);
+    const projectRoot = join(dir, "project");
+    const engine = new CapletsEngine({
+      configPath,
+      projectConfigPath,
+      watch: false,
+      projectBindingContext: {
+        sessionId: "session_1",
+        bindingId: "binding_1",
+        projectRoot,
+        projectFingerprint: "sha256:project",
+      },
+    });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+
+    expect(session.registeredToolIds()).toEqual(["alpha"]);
+    expect(server.registered.get("alpha")).toBeDefined();
+
+    await session.close();
+    await engine.close();
+  });
+
   it("reconciles tools when the shared engine reloads", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

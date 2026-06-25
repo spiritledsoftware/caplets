@@ -23,6 +23,11 @@ import {
   staticRemoteHeaders,
 } from "./auth";
 import { CapletsError, toSafeError, type CapletsErrorCode, type SafeErrorSummary } from "./errors";
+import {
+  projectBindingConnectionKey,
+  resolveProjectBoundCwd,
+  type ProjectBindingExecutionContext,
+} from "./project-binding/execution-context";
 import type { ServerRegistry } from "./registry";
 import { searchToolList } from "./tool-search";
 
@@ -94,11 +99,18 @@ export class DownstreamManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string } = {},
+    private readonly options: {
+      authDir?: string | undefined;
+      projectBindingContext?: ProjectBindingExecutionContext | undefined;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
     this.registry = registry;
+  }
+
+  updateProjectBindingContext(context: ProjectBindingExecutionContext | undefined): void {
+    this.options.projectBindingContext = context;
   }
 
   async close(): Promise<void> {
@@ -115,14 +127,24 @@ export class DownstreamManager {
   }
 
   async closeServer(serverId: string): Promise<void> {
-    const connection = this.connections.get(serverId) ?? this.connecting.get(serverId)?.connection;
-    this.connections.delete(serverId);
-    this.connecting.delete(serverId);
-    this.restartState.delete(serverId);
-    if (connection) {
-      connection.closing = true;
-      await connection.transport.close();
+    const keys = [...new Set([...this.connections.keys(), ...this.connecting.keys()])].filter(
+      (key) => key === serverId || key.startsWith(`${serverId}#project:`),
+    );
+    const connections = keys.flatMap((key) => [
+      ...(this.connections.get(key) ? [this.connections.get(key)!] : []),
+      ...(this.connecting.get(key)?.connection ? [this.connecting.get(key)!.connection] : []),
+    ]);
+    for (const key of keys) {
+      this.connections.delete(key);
+      this.connecting.delete(key);
+      this.restartState.delete(key);
     }
+    await Promise.allSettled(
+      connections.map((connection) => {
+        connection.closing = true;
+        return connection.transport.close();
+      }),
+    );
   }
 
   async checkServer(server: CapletServerConfig): Promise<{
@@ -533,20 +555,21 @@ export class DownstreamManager {
 
   private async connect(server: CapletServerConfig): Promise<ManagedConnection> {
     const expectedFingerprint = this.currentServerFingerprint(server);
-    const existing = this.connections.get(server.server);
+    const connectionKey = this.connectionKey(server);
+    const existing = this.connections.get(connectionKey);
     if (existing) {
       if (existing.configFingerprint !== expectedFingerprint) {
-        this.connections.delete(server.server);
+        this.connections.delete(connectionKey);
         existing.closing = true;
         await existing.transport.close();
       } else {
         return existing;
       }
     }
-    const pending = this.connecting.get(server.server);
+    const pending = this.connecting.get(connectionKey);
     if (pending) {
       if (pending.connection.configFingerprint !== expectedFingerprint) {
-        this.connecting.delete(server.server);
+        this.connecting.delete(connectionKey);
         pending.connection.closing = true;
         void pending.promise.catch(() => undefined);
         await pending.connection.transport.close();
@@ -569,7 +592,7 @@ export class DownstreamManager {
     if (!sameServerConfig(currentServer, server)) {
       throw staleServerConfigError(server.server);
     }
-    const restart = this.restartState.get(server.server);
+    const restart = this.restartState.get(connectionKey);
     if (restart && restart.restartUsed && Date.now() < restart.backoffUntil) {
       throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} is in restart backoff`);
     }
@@ -598,9 +621,9 @@ export class DownstreamManager {
         connection.promptsFetchedAt = undefined;
       });
       transport.onclose = () => {
-        const current = this.connections.get(server.server);
+        const current = this.connections.get(connectionKey);
         if (current === connection) {
-          this.connections.delete(server.server);
+          this.connections.delete(connectionKey);
         }
         if (connection.closing) {
           return;
@@ -608,7 +631,7 @@ export class DownstreamManager {
         if (current !== connection) {
           return;
         }
-        this.restartState.set(server.server, {
+        this.restartState.set(connectionKey, {
           restartUsed: true,
           backoffUntil: Date.now() + 1_000,
         });
@@ -622,7 +645,7 @@ export class DownstreamManager {
         if (connection.closing) {
           return;
         }
-        if (this.connections.get(server.server) !== connection) {
+        if (this.connections.get(connectionKey) !== connection) {
           return;
         }
         this.registry.setStatus(
@@ -635,7 +658,7 @@ export class DownstreamManager {
         connection,
         promise: this.startConnection(server, expectedFingerprint, connection),
       };
-      this.connecting.set(server.server, pendingConnection);
+      this.connecting.set(connectionKey, pendingConnection);
       return await pendingConnection.promise;
     } catch (error) {
       if (isAuthRemediationError(error)) {
@@ -677,20 +700,21 @@ export class DownstreamManager {
         await connection.transport.close();
         throw staleServerConfigError(server.server);
       }
-      const pending = this.connecting.get(server.server);
+      const connectionKey = this.connectionKey(server);
+      const pending = this.connecting.get(connectionKey);
       if (pending?.connection !== connection) {
         connection.closing = true;
         await connection.transport.close();
         throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} connection was replaced`);
       }
-      this.connecting.delete(server.server);
-      this.connections.set(server.server, connection);
+      this.connecting.delete(connectionKey);
+      this.connections.set(connectionKey, connection);
       this.registry.setStatus(server.server, "available");
       return connection;
     } catch (error) {
-      const pending = this.connecting.get(server.server);
+      const pending = this.connecting.get(this.connectionKey(server));
       if (pending?.connection === connection) {
-        this.connecting.delete(server.server);
+        this.connecting.delete(this.connectionKey(server));
       }
       throw error;
     }
@@ -698,6 +722,11 @@ export class DownstreamManager {
 
   private createTransport(server: CapletServerConfig): any {
     if (server.transport === "stdio") {
+      const cwd = resolveProjectBoundCwd({
+        caplet: server,
+        configuredCwd: server.cwd,
+        context: this.options.projectBindingContext,
+      });
       return new StdioClientTransport({
         command: server.command!,
         ...(server.args ? { args: server.args } : {}),
@@ -710,7 +739,7 @@ export class DownstreamManager {
               ) as Record<string, string>,
             }
           : {}),
-        ...(server.cwd ? { cwd: server.cwd } : {}),
+        ...(cwd ? { cwd } : {}),
         stderr: "pipe",
       });
     }
@@ -804,6 +833,13 @@ export class DownstreamManager {
       throw staleServerConfigError(server.server);
     }
     return serializeServerConfig(current);
+  }
+
+  private connectionKey(server: CapletServerConfig): string {
+    return projectBindingConnectionKey(
+      server.server,
+      server.projectBinding?.required ? this.options.projectBindingContext : undefined,
+    );
   }
 }
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -71,6 +71,80 @@ describe("CliToolsManager", () => {
     expect(literalResult.structuredContent).toMatchObject({
       exitCode: 0,
       json: { message: literal },
+    });
+  });
+
+  it("runs project-bound CLI actions in the bound project root by default", async () => {
+    const { config, caplet } = cliConfig({
+      projectBinding: { required: true },
+      actions: {
+        cwd: {
+          command: process.execPath,
+          args: ["-e", "console.log(JSON.stringify({ cwd: process.cwd() }))"],
+          output: { type: "json" },
+        },
+      },
+    });
+    const projectRoot = mkdtempSync(join(tmpdir(), "caplets-cli-project-"));
+    dirs.push(projectRoot);
+    const manager = new CliToolsManager(new ServerRegistry(config), {
+      projectBindingContext: projectBindingContext(projectRoot),
+    });
+
+    const result = await manager.callTool(caplet, "cwd", {});
+
+    expect(result.structuredContent).toMatchObject({
+      json: { cwd: projectRoot },
+    });
+  });
+
+  it("checks project-bound CLI cwd relative to the bound project root", async () => {
+    const { config, caplet } = cliConfig({
+      projectBinding: { required: true },
+      cwd: "tools",
+      actions: {
+        cwd: {
+          command: process.execPath,
+          args: ["-e", "console.log(process.cwd())"],
+        },
+      },
+    });
+    const projectRoot = mkdtempSync(join(tmpdir(), "caplets-cli-project-"));
+    dirs.push(projectRoot);
+    mkdirSync(join(projectRoot, "tools"));
+    const manager = new CliToolsManager(new ServerRegistry(config), {
+      projectBindingContext: projectBindingContext(projectRoot),
+    });
+
+    await expect(manager.checkTools(caplet)).resolves.toMatchObject({
+      status: "available",
+    });
+  });
+
+  it("rejects project-bound CLI cwd escapes before spawning", async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), "caplets-cli-project-"));
+    const outside = mkdtempSync(join(tmpdir(), "caplets-cli-outside-"));
+    dirs.push(projectRoot, outside);
+    mkdirSync(join(projectRoot, "tools"));
+    const { config, caplet } = cliConfig({
+      projectBinding: { required: true },
+      cwd: outside,
+      actions: {
+        cwd: {
+          command: process.execPath,
+          args: ["-e", "console.log(process.cwd())"],
+        },
+      },
+    });
+    const manager = new CliToolsManager(new ServerRegistry(config), {
+      projectBindingContext: projectBindingContext(projectRoot),
+    });
+
+    await expect(manager.callTool(caplet, "cwd", {})).rejects.toMatchObject({
+      code: "UNSUPPORTED_CAPABILITY",
+      details: {
+        projectBinding: expect.objectContaining({ reason: "invalid_cwd" }),
+      },
     });
   });
 
@@ -208,7 +282,7 @@ describe("CliToolsManager", () => {
     ).toThrow(CapletsError);
   });
 
-  function cliConfig() {
+  function cliConfig(overrides: Record<string, unknown> = {}) {
     const dir = mkdtempSync(join(tmpdir(), "caplets-cli-"));
     dirs.push(dir);
     const script = join(dir, "echo.mjs");
@@ -225,6 +299,7 @@ describe("CliToolsManager", () => {
         local: {
           name: "Local CLI",
           description: "Run local CLI fixtures.",
+          ...overrides,
           actions: {
             echo_json: {
               description: "Echo one JSON message.",
@@ -262,10 +337,20 @@ describe("CliToolsManager", () => {
               args: [script, "fail"],
               output: { type: "json" },
             },
+            ...(overrides.actions as Record<string, unknown> | undefined),
           },
         },
       },
     });
     return { config, caplet: config.cliTools.local! };
+  }
+
+  function projectBindingContext(projectRoot: string) {
+    return {
+      sessionId: "session_1",
+      bindingId: "binding_1",
+      projectRoot,
+      projectFingerprint: `sha256:${projectRoot}`,
+    };
   }
 });

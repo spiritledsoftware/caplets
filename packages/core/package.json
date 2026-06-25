@@ -114,12 +114,14 @@
     "vfile-matter": "^5.0.1",
     "web-streams-polyfill": "^4.3.0",
     "whatwg-url": "^16.0.1",
+    "ws": "^8.21.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
     "@types/semver": "^7.7.1",
+    "@types/ws": "^8.18.1",
     "@typescript/native-preview": "7.0.0-dev.20260613.1",
     "rolldown": "^1.1.1",
     "vitest": "^4.1.8"

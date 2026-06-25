@@ -185,7 +185,9 @@ export type {
   ProjectBindingWorkspaceStoreOptions,
 } from "./project-binding/workspaces";
 export {
+  buildMutagenSyncPolicy,
   ManagedMutagenProjectSync,
+  managedSyncQuarantineRecord,
   mutagenProjectSyncDoctorData,
   mutagenSyncName,
   parseMutagenVersionOutput as parseManagedMutagenVersionOutput,
@@ -199,6 +201,7 @@ export type {
   ManagedSyncDiagnosticCode,
   ManagedSyncState,
   ManagedSyncStateSnapshot,
+  MutagenSyncPolicy,
   MutagenCommandPlan,
   MutagenLastCommandStatus,
   MutagenProcessResult,

@@ -42,6 +42,18 @@ Vault Access Grants are identified by Caplet ID, reference name, and config orig
 
 The persisted daemon agreement that defines what command runs, which environment model applies, which native service identity owns it, and how updates become active.
 
+### Project Binding
+
+A session-scoped connection between a local project root and a Caplets runtime so project-bound Caplets can run against the same project the user is editing.
+
+Project Binding is not synonymous with file sync. Local-only runtimes use it as project context for local execution, while remote or stacked runtimes also use it to decide when project files must be propagated upstream.
+
+### Project Binding Quarantine
+
+The session-scoped state where Caplets with failed required Project Binding are withheld from callable surfaces after retry.
+
+Project Binding Quarantine applies to affected Caplets rather than the whole runtime. Unrelated local and upstream Caplets can remain available while diagnostics report which Caplets were withheld and why.
+
 ### Available Update Detection
 
 The passive CLI behavior that checks whether a newer published `caplets` CLI version is available and reports it through a best-effort stderr-only notice when stderr is an eligible human-facing notice channel.

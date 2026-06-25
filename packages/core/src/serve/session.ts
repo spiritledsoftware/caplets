@@ -36,6 +36,8 @@ import { decodeDirectResourceUri } from "../exposure/direct-names";
 import { resolveExposure } from "../exposure/policy";
 import { generatedToolInputSchemaForCaplet } from "../generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "../native/service";
+import { projectBindingMissingContextDiagnostic } from "../project-binding/errors";
+import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
 import {
   nativeCapletPromptGuidance,
   nativeCapletToolDescription,
@@ -76,11 +78,21 @@ export class CapletsMcpSession {
         version: packageJsonVersion,
       });
     this.unsubscribeReload = this.engine.onReload(({ previous, next }) => {
-      this.reconcileFromSnapshot(staticExposureSnapshot(next, this.engine.enabledServers()));
+      this.reconcileFromSnapshot(
+        staticExposureSnapshot(
+          next,
+          this.engine.enabledServers(),
+          this.engine.currentProjectBindingContext(),
+        ),
+      );
       void this.refreshExposure(previous, next);
     });
     this.reconcileFromSnapshot(
-      staticExposureSnapshot(this.engine.currentConfig(), this.engine.enabledServers()),
+      staticExposureSnapshot(
+        this.engine.currentConfig(),
+        this.engine.enabledServers(),
+        this.engine.currentProjectBindingContext(),
+      ),
     );
   }
 
@@ -453,9 +465,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function staticExposureSnapshot(config: CapletsConfig, caplets: CapletConfig[]): ExposureSnapshot {
+function staticExposureSnapshot(
+  config: CapletsConfig,
+  caplets: CapletConfig[],
+  projectBindingContext?: ProjectBindingExecutionContext | undefined,
+): ExposureSnapshot {
   const callableCaplets = caplets
-    .filter((caplet) => !caplet.disabled && !caplet.setup && !caplet.projectBinding?.required)
+    .filter(
+      (caplet) =>
+        !caplet.disabled &&
+        !caplet.setup &&
+        (!caplet.projectBinding?.required || projectBindingContext),
+    )
     .map((caplet) => ({
       caplet,
       exposure: resolveExposure(caplet.exposure, config.options.exposure),
@@ -474,14 +495,22 @@ function staticExposureSnapshot(config: CapletsConfig, caplets: CapletConfig[]):
     directResourceTemplates: [],
     directPrompts: [],
     hiddenCaplets: caplets
-      .filter((caplet) => caplet.disabled || caplet.setup || caplet.projectBinding?.required)
+      .filter(
+        (caplet) =>
+          caplet.disabled ||
+          caplet.setup ||
+          (caplet.projectBinding?.required && !projectBindingContext),
+      )
       .map((caplet) => ({
         capletId: caplet.server,
         reason: caplet.disabled
           ? ("disabled" as const)
           : caplet.setup
             ? ("setup_required" as const)
-            : ("project_binding_required" as const),
+            : ("project_binding_missing_context" as const),
+        ...(caplet.projectBinding?.required && !projectBindingContext
+          ? { error: projectBindingMissingContextDiagnostic() }
+          : {}),
       })),
   };
 }

@@ -1,10 +1,17 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
-import { serve, type ServerType } from "@hono/node-server";
+import {
+  serve,
+  upgradeWebSocket,
+  type ServerType,
+  type WebSocketServerLike,
+} from "@hono/node-server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
+import { WebSocketServer } from "ws";
+import { fingerprintProjectRoot } from "../cloud/project-root";
 import { resolveProjectCapletsRoot } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
@@ -17,6 +24,16 @@ import {
   type AttachInvokeRequest,
   type AttachSessionMetadata,
 } from "../attach/api";
+import {
+  type BindingTerminalReason,
+  PROJECT_BINDING_STATES,
+  PROJECT_BINDING_SYNC_STATES,
+  type ProjectBindingLease,
+  type ProjectBindingState,
+  type ProjectBindingSyncState,
+} from "../project-binding";
+import type { ProjectBindingSocketClientMessage } from "../project-binding/session";
+import { ProjectBindingWorkspaceStore } from "../project-binding/workspaces";
 import {
   dispatchRemoteCliRequest,
   type RemoteControlDispatchContext,
@@ -37,6 +54,7 @@ type HttpServeIo = {
   defaultAttachSessionFactory?: HttpAttachSessionFactory;
   exposeAttach?: boolean;
   remoteCredentialStore?: RemoteServerCredentialStore;
+  projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
 };
 
 type HttpMcpSession = {
@@ -82,6 +100,21 @@ type AttachSessionRecord = {
   lastUsedAt: number;
 };
 
+type ProjectBindingHttpRecord = {
+  ownerKey: string;
+  sessionId: string;
+  bindingId: string;
+  projectRoot: string;
+  projectFingerprint: string;
+  serverWorkspaceFingerprint: string;
+  serverProjectRoot: string;
+  state: ProjectBindingState;
+  syncState: ProjectBindingSyncState;
+  updatedAt: string;
+  expiresAt: string;
+  active: boolean;
+};
+
 type AttachEventSource = {
   manifestRevision: () => Promise<string>;
   onManifestChanged: (listener: () => void) => () => void;
@@ -89,6 +122,7 @@ type AttachEventSource = {
 
 const ATTACH_SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
 const ATTACH_SESSION_PRUNE_INTERVAL_MS = 60_000;
+const PROJECT_BINDING_LEASE_TTL_MS = 60_000;
 
 export function createHttpServeApp(
   options: HttpServeOptions,
@@ -100,11 +134,12 @@ export function createHttpServeApp(
   const attachSessions = new Map<string, AttachSessionRecord>();
   const defaultAttachSessions = new Map<string, HttpAttachSession>();
   const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
+  const projectBindingSessions = new Map<string, ProjectBindingHttpRecord>();
   const attachEventStreams = new Set<AttachEventStream>();
-  const attachSessionPruneTimer = setInterval(
-    () => pruneIdleAttachSessions(),
-    ATTACH_SESSION_PRUNE_INTERVAL_MS,
-  );
+  const attachSessionPruneTimer = setInterval(() => {
+    pruneIdleAttachSessions();
+    pruneExpiredProjectBindingSessions();
+  }, ATTACH_SESSION_PRUNE_INTERVAL_MS);
   attachSessionPruneTimer.unref?.();
   const writeErr = io.writeErr ?? process.stderr.write.bind(process.stderr);
   const paths = servicePaths(options.path);
@@ -113,6 +148,8 @@ export function createHttpServeApp(
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const projectBindingWorkspaceStore =
+    io.projectBindingWorkspaceStore ?? new ProjectBindingWorkspaceStore();
   if (
     options.auth.type === "remote_credentials" &&
     options.trustProxy === true &&
@@ -501,6 +538,14 @@ export function createHttpServeApp(
     }
   }
 
+  function pruneExpiredProjectBindingSessions(): void {
+    const now = Date.now();
+    for (const [bindingId, record] of projectBindingSessions) {
+      if (record.active && Date.parse(record.expiresAt) > now) continue;
+      projectBindingSessions.delete(bindingId);
+    }
+  }
+
   app.post(paths.control, protectedRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
@@ -534,28 +579,363 @@ export function createHttpServeApp(
     );
   });
 
-  app.get(routePath(paths.projectBindings, "connect"), protectedRouteAuth, (c) =>
-    c.json({ error: "websocket_upgrade_required" }, 426),
-  );
-
-  app.get(routePath(paths.projectBindings, ":bindingId/status"), protectedRouteAuth, (c) =>
-    c.json({
-      bindingId: c.req.param("bindingId"),
-      state: "not_attached",
+  app.get(
+    routePath(paths.projectBindings, "connect"),
+    protectedRouteAuth,
+    async (c, next) => {
+      if (c.req.header("upgrade")?.toLowerCase() !== "websocket") {
+        return c.json({ error: "websocket_upgrade_required" }, 426);
+      }
+      const validation = projectBindingSocketRecordForRequest(c);
+      if (!validation.ok) return validation.response;
+      return next();
+    },
+    upgradeWebSocket((c) => {
+      const validation = projectBindingSocketRecordForRequest(c);
+      return {
+        onOpen: (_event, ws) => {
+          if (!validation.ok) {
+            ws.close(1008, "Project Binding session was not found.");
+            return;
+          }
+          sendProjectBindingReadyWhenOpen(ws, validation.record);
+        },
+        onMessage: (event, ws) => {
+          if (!validation.ok) {
+            ws.close(1008, "Project Binding session was not found.");
+            return;
+          }
+          void parseProjectBindingSocketClientMessage(event.data)
+            .then(async (message) => {
+              if (!message) return;
+              if (
+                message.bindingId !== validation.record.bindingId ||
+                message.sessionId !== validation.record.sessionId
+              ) {
+                ws.close(1008, "Project Binding message does not match this session.");
+                return;
+              }
+              if (message.type === "heartbeat") {
+                await updateProjectBindingHeartbeat(validation.record, message);
+                return;
+              }
+              await endProjectBindingRecord(validation.record, message.reason);
+              ws.send(JSON.stringify({ type: "ended", reason: message.reason }));
+              ws.close(1000, message.reason.message);
+            })
+            .catch((error) => {
+              writeErr(`Project Binding WebSocket message failed: ${errorMessage(error)}\n`);
+              ws.close(1011, "Project Binding message failed.");
+            });
+        },
+        onError: (event) => {
+          writeErr(`Project Binding WebSocket error: ${errorMessage(event)}\n`);
+        },
+        onClose: () => {
+          if (!validation.ok) return;
+          void endProjectBindingRecord(validation.record, {
+            code: "interrupted",
+            message: "Project Binding WebSocket closed.",
+          }).catch((error) => {
+            writeErr(`Project Binding WebSocket close cleanup failed: ${errorMessage(error)}\n`);
+          });
+        },
+      };
     }),
   );
 
-  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, (c) =>
-    c.json(projectBindingUnsupported(), 501),
+  app.get(routePath(paths.projectBindings, ":bindingId/status"), protectedRouteAuth, (c) =>
+    projectBindingStatusResponse(
+      requiredRouteParam(c.req.param("bindingId")),
+      projectBindingOwnerKey(c),
+    ),
   );
 
-  app.post(routePath(paths.projectBindings, ":bindingId/heartbeat"), protectedRouteAuth, (c) =>
-    c.json(projectBindingUnsupported(c.req.param("bindingId")), 501),
+  app.post(routePath(paths.projectBindings, "sessions"), protectedRouteAuth, async (c) => {
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Project Binding session request");
+      const projectRoot = stringField(parsed, "projectRoot");
+      const projectFingerprint =
+        optionalStringField(parsed, "projectFingerprint") ?? fingerprintProjectRoot(projectRoot);
+      const ownerKey = projectBindingOwnerKey(c);
+      const serverWorkspaceFingerprint = projectBindingWorkspaceFingerprint(
+        ownerKey,
+        projectFingerprint,
+      );
+      const bindingId = `binding_${randomUUID()}`;
+      const sessionId = `session_${randomUUID()}`;
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + PROJECT_BINDING_LEASE_TTL_MS).toISOString();
+      const paths = await projectBindingWorkspaceStore.ensureWorkspace({
+        projectFingerprint: serverWorkspaceFingerprint,
+        projectRoot,
+        lastActiveAt: now.toISOString(),
+      });
+      const record: ProjectBindingHttpRecord = {
+        ownerKey,
+        bindingId,
+        sessionId,
+        projectRoot,
+        projectFingerprint,
+        serverWorkspaceFingerprint,
+        serverProjectRoot: paths.project,
+        state: "attaching",
+        syncState: "pending",
+        updatedAt: now.toISOString(),
+        expiresAt,
+        active: true,
+      };
+      await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+      projectBindingSessions.set(bindingId, record);
+      return c.json({ binding: projectBindingResponse(record), sessionId }, 201);
+    } catch (error) {
+      const safe = toSafeError(
+        error,
+        error instanceof CapletsError ? error.code : "REQUEST_INVALID",
+      );
+      return c.json({ ok: false, error: safe }, error instanceof CapletsError ? 400 : 500);
+    }
+  });
+
+  app.get(routePath(paths.projectBindings, ":bindingId/session"), protectedRouteAuth, (c) => {
+    const record = projectBindingRecordFor(
+      requiredRouteParam(c.req.param("bindingId")),
+      projectBindingOwnerKey(c),
+    );
+    if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+    return c.json({
+      ok: true,
+      binding: projectBindingResponse(record),
+      sessionId: record.sessionId,
+    });
+  });
+
+  app.post(
+    routePath(paths.projectBindings, ":bindingId/heartbeat"),
+    protectedRouteAuth,
+    async (c) => {
+      try {
+        const bindingId = requiredRouteParam(c.req.param("bindingId"));
+        const ownerKey = projectBindingOwnerKey(c);
+        let record = projectBindingRecordFor(bindingId, ownerKey);
+        if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+        const parsed = await parseJsonObject(c.req.json(), "Project Binding heartbeat request");
+        const sessionId = stringField(parsed, "sessionId");
+        record = projectBindingRecordFor(bindingId, ownerKey);
+        if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+        if (sessionId !== record.sessionId) {
+          return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 403);
+        }
+        await updateProjectBindingHeartbeat(record, {
+          type: "heartbeat",
+          bindingId,
+          sessionId,
+          state: projectBindingStateField(parsed, "state", record.state),
+          syncState: projectBindingSyncStateField(parsed, "syncState", record.syncState),
+        });
+        return c.json({ ok: true, binding: projectBindingResponse(record) });
+      } catch (error) {
+        const safe = toSafeError(
+          error,
+          error instanceof CapletsError ? error.code : "REQUEST_INVALID",
+        );
+        return c.json({ ok: false, error: safe }, error instanceof CapletsError ? 400 : 500);
+      }
+    },
   );
 
-  app.delete(routePath(paths.projectBindings, ":bindingId/session"), protectedRouteAuth, (c) =>
-    c.json(projectBindingUnsupported(c.req.param("bindingId")), 501),
+  app.delete(
+    routePath(paths.projectBindings, ":bindingId/session"),
+    protectedRouteAuth,
+    async (c) => {
+      const bindingId = requiredRouteParam(c.req.param("bindingId"));
+      const record = projectBindingRecordFor(bindingId, projectBindingOwnerKey(c));
+      if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+      await endProjectBindingRecord(record);
+      return c.json({ ok: true, binding: projectBindingResponse(record) });
+    },
   );
+
+  function projectBindingSocketRecordForRequest(
+    c: Parameters<MiddlewareHandler>[0],
+  ): { ok: true; record: ProjectBindingHttpRecord } | { ok: false; response: Response } {
+    const url = new URL(c.req.url);
+    const bindingId = url.searchParams.get("bindingId") ?? "";
+    const sessionId = url.searchParams.get("sessionId") ?? "";
+    const projectFingerprint = url.searchParams.get("projectFingerprint") ?? "";
+    const record = projectBindingRecordFor(bindingId, projectBindingOwnerKey(c));
+    if (!record) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ ok: false, error: { code: "REQUEST_INVALID" } }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        }),
+      };
+    }
+    if (sessionId !== record.sessionId) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ ok: false, error: { code: "REQUEST_INVALID" } }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+      };
+    }
+    if (projectFingerprint && projectFingerprint !== record.projectFingerprint) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ ok: false, error: { code: "REQUEST_INVALID" } }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        }),
+      };
+    }
+    return { ok: true, record };
+  }
+
+  async function updateProjectBindingHeartbeat(
+    record: ProjectBindingHttpRecord,
+    message: Extract<ProjectBindingSocketClientMessage, { type: "heartbeat" }>,
+  ): Promise<void> {
+    record.state = message.state;
+    record.syncState = message.syncState;
+    record.updatedAt = new Date().toISOString();
+    record.expiresAt = new Date(
+      Date.parse(record.updatedAt) + PROJECT_BINDING_LEASE_TTL_MS,
+    ).toISOString();
+    record.active = true;
+    await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+  }
+
+  function sendProjectBindingReadyWhenOpen(
+    ws: { readyState: number; send: (data: string) => void },
+    record: ProjectBindingHttpRecord,
+    attempts = 20,
+  ): void {
+    setTimeout(() => {
+      if (ws.readyState === 1) {
+        ws.send(
+          JSON.stringify({
+            type: "ready",
+            bindingId: record.bindingId,
+            sessionId: record.sessionId,
+            syncState: record.syncState,
+          }),
+        );
+        return;
+      }
+      if (attempts > 1) sendProjectBindingReadyWhenOpen(ws, record, attempts - 1);
+    }, 10);
+  }
+
+  async function endProjectBindingRecord(
+    record: ProjectBindingHttpRecord,
+    _reason?: BindingTerminalReason | undefined,
+  ): Promise<void> {
+    if (!projectBindingSessions.has(record.bindingId) || !record.active) return;
+    record.state = "ended";
+    record.syncState = "not_started";
+    record.active = false;
+    record.updatedAt = new Date().toISOString();
+    await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+    projectBindingSessions.delete(record.bindingId);
+  }
+
+  function projectBindingOwnerKey(c: Parameters<MiddlewareHandler>[0]): string {
+    if (!remoteCredentialStore) return "development_unauthenticated";
+    return validatedRemoteClient(
+      authorizationHeaderForRequest(c),
+      remoteCredentialStore,
+      c.req.url,
+      paths.base,
+      options,
+      (name) => c.req.header(name),
+    ).clientId;
+  }
+
+  function projectBindingRecordFor(
+    bindingId: string,
+    ownerKey: string,
+  ): ProjectBindingHttpRecord | undefined {
+    const record = projectBindingSessions.get(bindingId);
+    if (!record || record.ownerKey !== ownerKey) return undefined;
+    if (!record.active || Date.parse(record.expiresAt) <= Date.now()) {
+      projectBindingSessions.delete(bindingId);
+      return undefined;
+    }
+    return record;
+  }
+
+  function projectBindingStatusResponse(bindingId: string, ownerKey: string): Response {
+    const record = projectBindingRecordFor(bindingId, ownerKey);
+    if (!record) {
+      return new Response(JSON.stringify({ bindingId, state: "not_attached" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify(projectBindingResponse(record)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  function projectBindingResponse(record: ProjectBindingHttpRecord) {
+    return {
+      bindingId: record.bindingId,
+      state: record.state,
+      syncState: record.syncState,
+      projectFingerprint: record.projectFingerprint,
+      serverProjectRoot: record.serverProjectRoot,
+      updatedAt: record.updatedAt,
+      expiresAt: record.expiresAt,
+    };
+  }
+
+  function projectBindingLease(record: ProjectBindingHttpRecord): ProjectBindingLease {
+    return {
+      bindingId: record.bindingId,
+      projectFingerprint: record.serverWorkspaceFingerprint,
+      state: record.state,
+      active: record.active,
+      updatedAt: record.updatedAt,
+      expiresAt: record.expiresAt,
+    };
+  }
+
+  function projectBindingWorkspaceFingerprint(
+    ownerKey: string,
+    projectFingerprint: string,
+  ): string {
+    return `sha256_${createHash("sha256").update(ownerKey).update("\0").update(projectFingerprint).digest("hex")}`;
+  }
+
+  function projectBindingStateField(
+    input: Record<string, unknown>,
+    key: string,
+    fallback: ProjectBindingState,
+  ): ProjectBindingState {
+    const value = optionalStringField(input, key);
+    if (value === undefined) return fallback;
+    if (!PROJECT_BINDING_STATES.includes(value as ProjectBindingState)) {
+      throw new CapletsError("REQUEST_INVALID", `${key} must be a Project Binding state.`);
+    }
+    return value as ProjectBindingState;
+  }
+
+  function projectBindingSyncStateField(
+    input: Record<string, unknown>,
+    key: string,
+    fallback: ProjectBindingSyncState,
+  ): ProjectBindingSyncState {
+    const value = optionalStringField(input, key);
+    if (value === undefined) return fallback;
+    if (!PROJECT_BINDING_SYNC_STATES.includes(value as ProjectBindingSyncState)) {
+      throw new CapletsError("REQUEST_INVALID", `${key} must be a Project Binding sync state.`);
+    }
+    return value as ProjectBindingSyncState;
+  }
 
   app.get(routePath(paths.control, "auth/callback/:flowId"), async (c) => {
     const flowId = c.req.param("flowId");
@@ -598,6 +978,7 @@ export function createHttpServeApp(
     await Promise.allSettled([...defaultAttachSessions.values()].map((session) => session.close()));
     defaultAttachSessions.clear();
     defaultAttachSessionPromises.clear();
+    projectBindingSessions.clear();
   };
 
   if (options.warnUnauthenticatedNetwork) {
@@ -689,17 +1070,6 @@ function remoteCredentialSourceHint(
     firstForwardedValue(header("x-real-ip")) ??
     firstForwardedValue(header("cf-connecting-ip"));
   return sourceHint ? { sourceHint } : {};
-}
-
-function projectBindingUnsupported(bindingId?: string | undefined) {
-  return {
-    ok: false,
-    error: {
-      code: "UNSUPPORTED_CAPABILITY",
-      message: "Self-hosted Project Binding sessions are not implemented by this runtime.",
-    },
-    ...(bindingId ? { binding: { bindingId, state: "not_attached" } } : {}),
-  };
 }
 
 function firstForwardedValue(value: string | undefined): string | undefined {
@@ -1034,14 +1404,22 @@ export async function serveHttp(
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
-  const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
-    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-    writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
-    writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
-    writeErr(`Control endpoint: ${origin}${paths.control}\n`);
-    writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(`Auth: ${authDescription(options)}\n`);
-  });
+  const server = serve(
+    {
+      fetch: app.fetch,
+      hostname: options.host,
+      port: options.port,
+      websocket: { server: createProjectBindingWebSocketServer() },
+    },
+    () => {
+      writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+      writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+      writeErr(`Attach manifest: ${origin}${paths.attachManifest}\n`);
+      writeErr(`Control endpoint: ${origin}${paths.control}\n`);
+      writeErr(`Health check: ${origin}${paths.health}\n`);
+      writeErr(`Auth: ${authDescription(options)}\n`);
+    },
+  );
 
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
@@ -1078,13 +1456,21 @@ export async function serveHttpWithSessionFactory(
   const paths = servicePaths(options.path);
   const origin = `http://${formatHost(options.host)}:${options.port}`;
   const baseUrl = `${origin}${paths.base === "/" ? "" : paths.base}`;
-  const server = serve({ fetch: app.fetch, hostname: options.host, port: options.port }, () => {
-    writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
-    writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
-    writeErr(`Control endpoint: ${origin}${paths.control}\n`);
-    writeErr(`Health check: ${origin}${paths.health}\n`);
-    writeErr(`Auth: ${authDescription(options)}\n`);
-  });
+  const server = serve(
+    {
+      fetch: app.fetch,
+      hostname: options.host,
+      port: options.port,
+      websocket: { server: createProjectBindingWebSocketServer() },
+    },
+    () => {
+      writeErr(`Caplets HTTP service listening on ${baseUrl}\n`);
+      writeErr(`MCP endpoint: ${origin}${paths.mcp}\n`);
+      writeErr(`Control endpoint: ${origin}${paths.control}\n`);
+      writeErr(`Health check: ${origin}${paths.health}\n`);
+      writeErr(`Auth: ${authDescription(options)}\n`);
+    },
+  );
 
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
@@ -1097,6 +1483,10 @@ function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions)
 
 function resolveProjectCapletsRootForConfigPath(projectConfigPath: string): string {
   return dirname(projectConfigPath);
+}
+
+function createProjectBindingWebSocketServer(): WebSocketServerLike {
+  return new WebSocketServer({ noServer: true }) as unknown as WebSocketServerLike;
 }
 
 export function routePath(base: string, path: string): string {
@@ -1181,7 +1571,7 @@ function routeAuth(
     );
   }
   return async (c, next) => {
-    const header = c.req.header("authorization") ?? "";
+    const header = authorizationHeaderForRequest(c);
     const token = bearerToken(header);
     if (!token) {
       return c.text("Unauthorized", 401);
@@ -1248,6 +1638,27 @@ function bearerToken(header: string): string | undefined {
   return scheme?.toLowerCase() === "bearer" && token ? token : undefined;
 }
 
+function authorizationHeaderForRequest(c: Parameters<MiddlewareHandler>[0]): string {
+  const header = c.req.header("authorization");
+  if (header) return header;
+  const token = bearerTokenFromWebSocketProtocol(c.req.header("sec-websocket-protocol"));
+  return token ? `Bearer ${token}` : "";
+}
+
+function bearerTokenFromWebSocketProtocol(header: string | undefined): string | undefined {
+  const encoded = (header ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith("caplets.bearer."))
+    ?.slice("caplets.bearer.".length);
+  if (!encoded) return undefined;
+  try {
+    return Buffer.from(encoded, "base64url").toString("utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 async function parseJsonObject(
   input: Promise<unknown>,
   label: string,
@@ -1279,6 +1690,59 @@ function optionalStringField(input: Record<string, unknown>, key: string): strin
     throw new CapletsError("REQUEST_INVALID", `${key} must be a non-empty string.`);
   }
   return value.trim();
+}
+
+async function parseProjectBindingSocketClientMessage(
+  data: unknown,
+): Promise<ProjectBindingSocketClientMessage | undefined> {
+  const text = await socketMessageText(data);
+  if (!text) return undefined;
+  const parsed = JSON.parse(text) as Partial<ProjectBindingSocketClientMessage>;
+  if (
+    parsed.type === "heartbeat" &&
+    typeof parsed.bindingId === "string" &&
+    typeof parsed.sessionId === "string" &&
+    PROJECT_BINDING_STATES.includes(parsed.state as ProjectBindingState) &&
+    PROJECT_BINDING_SYNC_STATES.includes(parsed.syncState as ProjectBindingSyncState)
+  ) {
+    return parsed as ProjectBindingSocketClientMessage;
+  }
+  if (
+    parsed.type === "end" &&
+    typeof parsed.bindingId === "string" &&
+    typeof parsed.sessionId === "string" &&
+    isBindingTerminalReason(parsed.reason)
+  ) {
+    return parsed as ProjectBindingSocketClientMessage;
+  }
+  return undefined;
+}
+
+async function socketMessageText(data: unknown): Promise<string | undefined> {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+  }
+  if (data instanceof Blob) return await data.text();
+  return undefined;
+}
+
+function isBindingTerminalReason(value: unknown): value is BindingTerminalReason {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof (value as Partial<BindingTerminalReason>).code === "string" &&
+    typeof (value as Partial<BindingTerminalReason>).message === "string"
+  );
+}
+
+function requiredRouteParam(value: string | undefined): string {
+  if (!value) {
+    throw new CapletsError("REQUEST_INVALID", "Route parameter is required.");
+  }
+  return value;
 }
 
 function remoteCredentialErrorResponse(error: unknown): Response {

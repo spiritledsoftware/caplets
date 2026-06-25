@@ -160,12 +160,7 @@ export async function buildAttachProjection(engine: CapletsEngine): Promise<Atta
     prompts: snapshot.directPrompts.map(promptExport),
     completions: completionExports(snapshot),
     codeModeCaplets: snapshot.codeModeCaplets.map(codeModeCapletExport),
-    diagnostics: snapshot.hiddenCaplets.map((hidden) => ({
-      code: `ATTACH_CAPLET_${hidden.reason.toUpperCase()}`,
-      message: `Caplet ${hidden.capletId} is not exported: ${hidden.reason}.`,
-      capletId: hidden.capletId,
-      ...(hidden.error ? { details: hidden.error } : {}),
-    })),
+    diagnostics: snapshot.hiddenCaplets.map(attachDiagnosticForHiddenCaplet),
   });
   const revision = revisionFor(partial);
   const manifest: AttachManifest = {
@@ -177,6 +172,38 @@ export async function buildAttachProjection(engine: CapletsEngine): Promise<Atta
   return {
     manifest,
     routes: routesFor(manifest),
+  };
+}
+
+function attachDiagnosticForHiddenCaplet(hidden: ExposureSnapshot["hiddenCaplets"][number]) {
+  return {
+    code: `ATTACH_CAPLET_${hidden.reason.toUpperCase()}`,
+    message: `Caplet ${hidden.capletId} is not exported: ${hidden.reason}.`,
+    capletId: hidden.capletId,
+    ...hiddenDiagnosticDetails(hidden),
+  };
+}
+
+function hiddenDiagnosticDetails(
+  hidden: ExposureSnapshot["hiddenCaplets"][number],
+): Pick<AttachDiagnostic, "details"> {
+  if (!hidden.error) return {};
+  const details = hidden.error.details;
+  if (!hidden.reason.startsWith("project_binding_")) {
+    return { details: hidden.error };
+  }
+  const existing =
+    isRecord(details) && isRecord(details.projectBinding) ? details.projectBinding : {};
+  return {
+    details: {
+      projectBinding: {
+        required: true,
+        capability: "project_binding",
+        version: 1,
+        capletId: hidden.capletId,
+        ...existing,
+      },
+    },
   };
 }
 

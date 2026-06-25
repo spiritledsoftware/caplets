@@ -292,6 +292,50 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("lists and executes local project-bound CLI tools when native project context is supplied", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      cliTools: {
+        workspace: {
+          name: "Workspace",
+          description: "Inspect the bound workspace.",
+          projectBinding: { required: true },
+          actions: {
+            cwd: {
+              command: process.execPath,
+              args: ["-e", "console.log(JSON.stringify({ cwd: process.cwd() }))"],
+              output: { type: "json" },
+            },
+          },
+        },
+      },
+    });
+    dirs.push(dir);
+    const projectRoot = join(dir, "project");
+    const service = createNativeCapletsService({
+      configPath,
+      projectConfigPath,
+      projectRoot,
+    });
+
+    try {
+      expect(service.listTools()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            caplet: "workspace",
+            toolName: "caplets__workspace",
+          }),
+        ]),
+      );
+      await expect(
+        service.execute("workspace", { operation: "call_tool", name: "cwd", args: {} }),
+      ).resolves.toMatchObject({
+        structuredContent: { json: { cwd: projectRoot } },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("discovers direct MCP tools for native integrations during reload", async () => {
     const fixture = join(fixturesDir, "stdio-server.ts");
     const { dir, configPath, projectConfigPath } = tempConfig({

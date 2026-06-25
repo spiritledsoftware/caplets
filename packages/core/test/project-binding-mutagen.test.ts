@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ManagedMutagenProjectSync,
+  buildMutagenSyncPolicy,
+  managedSyncQuarantineRecord,
   mutagenProjectSyncDoctorData,
   planMutagenSyncCreateCommand,
   planMutagenSyncListCommand,
@@ -25,6 +27,53 @@ describe("project binding Mutagen command planning", () => {
     ).toEqual({
       command: "mutagen",
       args: ["sync", "create", localProjectRoot, serverProjectRoot, "--name", "caplets-bind_123"],
+    });
+  });
+
+  it("plans sync creation with enforceable ignore policy", () => {
+    const policy = buildMutagenSyncPolicy({
+      manifest: {
+        projectRoot: localProjectRoot,
+        files: [{ relativePath: "src/index.ts", sizeBytes: 10 }],
+        totalBytes: 10,
+        exclusionSummary: [
+          { source: "hard_denylist", pattern: ".env", count: 1 },
+          { source: "gitignore", pattern: "dist", count: 1 },
+          { source: "capletsignore", pattern: "tmp-local", count: 1 },
+        ],
+      },
+      size: {
+        ok: true,
+        totalBytes: 10,
+        maxSingleFileBytes: 100,
+        maxProjectBytes: 100,
+      },
+    });
+
+    expect(
+      planMutagenSyncCreateCommand({
+        bindingId,
+        localProjectRoot,
+        serverProjectRoot,
+        syncPolicy: policy,
+      }),
+    ).toEqual({
+      command: "mutagen",
+      args: [
+        "sync",
+        "create",
+        localProjectRoot,
+        serverProjectRoot,
+        "--name",
+        "caplets-bind_123",
+        "--ignore-vcs",
+        "--ignore",
+        ".env",
+        "--ignore",
+        "dist",
+        "--ignore",
+        "tmp-local",
+      ],
     });
   });
 
@@ -74,6 +123,32 @@ describe("managed project sync state transitions", () => {
         stdout: "",
       },
     } satisfies ManagedSyncStateSnapshot);
+  });
+
+  it("blocks before starting Mutagen when sync policy is not enforceable", async () => {
+    const runner = recordRunner([]);
+    const sync = new ManagedMutagenProjectSync({ runner });
+
+    await sync.start({
+      bindingId,
+      localProjectRoot,
+      serverProjectRoot,
+      syncPolicy: {
+        ok: false,
+        diagnosticCode: "project_sync_policy_denied",
+        publicMessage: "Project sync policy cannot be enforced.",
+        recoveryCommand: "Add exclusions to .capletsignore or reduce project size.",
+        exclusionSummary: [],
+      },
+    });
+
+    expect(runner.calls).toEqual([]);
+    expect(sync.snapshot()).toMatchObject({
+      state: "blocked",
+      bindingId,
+      diagnosticCode: "project_sync_policy_denied",
+      publicMessage: "Project sync policy cannot be enforced.",
+    });
   });
 
   it("marks project sync ready when the named session is watching cleanly", async () => {
@@ -181,6 +256,39 @@ describe("managed project sync state transitions", () => {
       lastCommand: {
         command: "/usr/local/bin/mutagen",
         exitCode: 0,
+      },
+    });
+  });
+
+  it("projects blocked sync state into a redacted quarantine record", async () => {
+    const sync = new ManagedMutagenProjectSync({
+      runner: recordRunner([new Error("authorization bearer super-secret-token failed")]),
+    });
+
+    await sync.start({ bindingId, localProjectRoot, serverProjectRoot });
+
+    expect(
+      managedSyncQuarantineRecord({
+        capletId: "repo-tools",
+        snapshot: sync.snapshot(),
+        recordedAt: "2026-06-25T12:00:00.000Z",
+      }),
+    ).toEqual({
+      capletId: "repo-tools",
+      reason: "sync_failed",
+      message: "Project sync is blocked.",
+      code: "project_sync_auth_failed",
+      recordedAt: "2026-06-25T12:00:00.000Z",
+      sync: {
+        state: "blocked",
+        diagnosticCode: "project_sync_auth_failed",
+        mutagenBinary: "mutagen",
+        lastCommand: {
+          command: "mutagen",
+          args: ["version"],
+          stderr: "authorization bearer [REDACTED] failed",
+          stdout: "",
+        },
       },
     });
   });

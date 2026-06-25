@@ -99,6 +99,68 @@ describe("compact schema fingerprints", () => {
 });
 
 describe("downstream stdio lifecycle", () => {
+  it("starts project-bound stdio servers in the bound project root", async () => {
+    const fixture = join(fixturesDir, "stdio-cwd-server.ts");
+    const projectRoot = mkdtempSync(join(tmpdir(), "caplets-stdio-project-"));
+    const config = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A cwd fixture server.",
+          command: process.execPath,
+          args: ["--import", tsxImport, fixture],
+          projectBinding: { required: true },
+        },
+      },
+    });
+    const registry = new ServerRegistry(config);
+    const manager = new DownstreamManager(registry, {
+      projectBindingContext: projectBindingContext(projectRoot, "sha256:one"),
+    });
+
+    try {
+      const result = await manager.callTool(config.mcpServers.fixture!, "cwd", {});
+
+      expect(result.structuredContent).toEqual({ cwd: projectRoot });
+    } finally {
+      await manager.close();
+      rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reuse project-bound stdio connections across binding fingerprints", async () => {
+    const fixture = join(fixturesDir, "stdio-cwd-server.ts");
+    const firstRoot = mkdtempSync(join(tmpdir(), "caplets-stdio-first-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "caplets-stdio-second-"));
+    const config = parseConfig({
+      mcpServers: {
+        fixture: {
+          name: "Fixture",
+          description: "A cwd fixture server.",
+          command: process.execPath,
+          args: ["--import", tsxImport, fixture],
+          projectBinding: { required: true },
+        },
+      },
+    });
+    const manager = new DownstreamManager(new ServerRegistry(config), {
+      projectBindingContext: projectBindingContext(firstRoot, "sha256:first"),
+    });
+
+    try {
+      const first = await manager.callTool(config.mcpServers.fixture!, "cwd", {});
+      manager.updateProjectBindingContext(projectBindingContext(secondRoot, "sha256:second"));
+      const second = await manager.callTool(config.mcpServers.fixture!, "cwd", {});
+
+      expect(first.structuredContent).toEqual({ cwd: firstRoot });
+      expect(second.structuredContent).toEqual({ cwd: secondRoot });
+    } finally {
+      await manager.close();
+      rmSync(firstRoot, { recursive: true, force: true });
+      rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
   it("lazily starts stdio servers, caches metadata, forwards results, and refuses absent tools", async () => {
     const fixture = join(fixturesDir, "stdio-server.ts");
     const config = parseConfig({
@@ -686,6 +748,15 @@ describe("downstream stdio lifecycle", () => {
     }
   });
 });
+
+function projectBindingContext(projectRoot: string, projectFingerprint: string) {
+  return {
+    sessionId: `session_${projectFingerprint}`,
+    bindingId: `binding_${projectFingerprint}`,
+    projectRoot,
+    projectFingerprint,
+  };
+}
 
 describe("downstream remote OAuth lifecycle", () => {
   it("surfaces missing OAuth credentials as AUTH_REQUIRED", async () => {
