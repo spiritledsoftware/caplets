@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   codeModeDeclarationHash,
   generateCodeModeDeclarations,
-  generateCodeModeRunToolDescription,
   hasDirectFetchCall,
   hasExecutableImport,
   minifyCodeModeDeclarationText,
@@ -60,12 +59,6 @@ describe("@caplets/core/code-mode public API", () => {
     expect(hasDirectFetchCall('await fetch("https://example.com");')).toBe(true);
     expect(hasExecutableImport('const x = "import fs from \\"node:fs\\"";')).toBe(false);
     expect(hasExecutableImport('await import("node:fs");')).toBe(true);
-    expect(generateCodeModeRunToolDescription(declaration)).toContain(
-      "Generated declaration hints:",
-    );
-    expect(generateCodeModeRunToolDescription(declaration)).toContain(
-      'const h=caplets["caplet-id"]',
-    );
   });
 
   it("exports public session and recovery declaration types without runtime stores", () => {

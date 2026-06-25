@@ -660,6 +660,11 @@ function mergeServeOptions(
       : existing?.serve.remoteCredentialStateDir
         ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
         : {}),
+    ...(install.upstreamUrl !== undefined
+      ? { upstreamUrl: install.upstreamUrl }
+      : existing?.serve.upstreamUrl
+        ? { upstreamUrl: existing.serve.upstreamUrl }
+        : {}),
     ...(install.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: install.allowUnauthenticatedHttp }
       : existing

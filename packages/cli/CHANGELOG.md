@@ -1,5 +1,12 @@
 # caplets
 
+## 0.22.1
+
+### Patch Changes
+
+- Updated dependencies [bf6930e]
+  - @caplets/core@0.28.1
+
 ## 0.22.0
 
 ### Minor Changes

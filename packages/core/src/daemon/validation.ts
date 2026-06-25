@@ -1,7 +1,7 @@
 import { CapletsError } from "../errors";
 import { servicePaths } from "../serve/http";
 import type { DaemonConfig, DaemonHealthResult } from "./types";
-import { serviceCommand } from "./shell";
+import { serviceCommand, shellCommandLine } from "./shell";
 
 export async function validateDaemonCommand(
   config: DaemonConfig,
@@ -161,9 +161,20 @@ function healthUrl(config: DaemonConfig, port = config.serve.port): string {
   return `http://${formatHost(config.serve.host)}:${port}${servicePaths(config.serve.path).health}`;
 }
 
-function validationSpawnCommand(config: DaemonConfig): { command: string; args: string[] } {
+export function validationSpawnCommand(config: DaemonConfig): { command: string; args: string[] } {
   const planned = serviceCommand(config);
+  if (isWindowsCommandShim(planned.executable)) {
+    const shell = { executable: "cmd.exe", args: ["/d", "/s", "/c"] };
+    return {
+      command: shell.executable,
+      args: [...shell.args, shellCommandLine(shell, [planned.executable, ...planned.args])],
+    };
+  }
   return { command: planned.executable, args: planned.args };
+}
+
+function isWindowsCommandShim(path: string): boolean {
+  return /\.(?:bat|cmd)$/iu.test(path);
 }
 
 async function sleep(ms: number): Promise<void> {

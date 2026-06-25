@@ -75,7 +75,7 @@ describe("resolveRemoteMode", () => {
     );
   });
 
-  it("parses cloud as a valid CAPLETS_MODE value", () => {
+  it("rejects invalid CAPLETS_MODE values", () => {
     expect(() => resolveRemoteMode({}, { CAPLETS_MODE: "sidecar" })).toThrow(
       /Expected CAPLETS_MODE to be auto, local, remote, or cloud/u,
     );

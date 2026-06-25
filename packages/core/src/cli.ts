@@ -277,6 +277,7 @@ type DaemonInstallCommandOptions = {
   port?: string;
   path?: string;
   remoteStatePath?: string;
+  upstreamUrl?: string;
   allowUnauthenticatedHttp?: boolean;
   trustProxy?: boolean;
   json?: boolean;
@@ -311,6 +312,10 @@ function addDaemonInstallOptions(command: Command): Command {
     .option("--port <port>", "HTTP bind port")
     .option("--path <path>", "HTTP service base path")
     .option("--remote-state-path <path>", "server-owned remote credential state directory")
+    .option(
+      "--upstream-url <url>",
+      "upstream Caplets runtime URL to compose with this HTTP service",
+    )
     .option(
       "--allow-unauthenticated-http",
       "allow unauthenticated HTTP serving on non-loopback hosts",
@@ -715,6 +720,7 @@ function daemonInstallOptions(options: DaemonInstallCommandOptions): DaemonInsta
     ...(options.port !== undefined ? { port: options.port } : {}),
     ...(options.path !== undefined ? { path: options.path } : {}),
     ...(options.remoteStatePath !== undefined ? { remoteStatePath: options.remoteStatePath } : {}),
+    ...(options.upstreamUrl !== undefined ? { upstreamUrl: options.upstreamUrl } : {}),
     ...(options.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: options.allowUnauthenticatedHttp }
       : {}),

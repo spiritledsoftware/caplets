@@ -138,23 +138,31 @@ export class DownstreamManager {
       const capabilities = connection.client.getServerCapabilities() ?? {};
       const tools = await this.refreshTools(server, true);
       this.registry.setStatus(server.server, "available");
+      const capabilitySummary = {
+        tools: Boolean(capabilities.tools),
+        resources: Boolean(capabilities.resources),
+        resourceTemplates: Boolean(capabilities.resources),
+        prompts: Boolean(capabilities.prompts),
+        completions: Boolean(capabilities.completions),
+      };
       const result = {
         id: server.server,
         status: "available",
-        capabilities: {
-          tools: Boolean(capabilities.tools),
-          resources: Boolean(capabilities.resources),
-          resourceTemplates: Boolean(capabilities.resources),
-          prompts: Boolean(capabilities.prompts),
-          completions: Boolean(capabilities.completions),
-        },
+        capabilities: capabilitySummary,
         toolCount: tools.length,
         elapsedMs: Date.now() - startedAt,
       };
       if (capabilities.resources) {
+        let resourceTemplateCount = 0;
+        try {
+          resourceTemplateCount = (await this.listResourceTemplates(server, true)).length;
+        } catch (error) {
+          if (!isUnsupportedCapability(error)) throw error;
+          capabilitySummary.resourceTemplates = false;
+        }
         Object.assign(result, {
           resourceCount: (await this.listResources(server, true)).length,
-          resourceTemplateCount: (await this.listResourceTemplates(server, true)).length,
+          resourceTemplateCount,
         });
       }
       if (capabilities.prompts) {
@@ -261,14 +269,27 @@ export class DownstreamManager {
       return connection.resourceTemplates;
     const resourceTemplates: McpResourceTemplate[] = [];
     let cursor: string | undefined;
-    do {
-      const result = await connection.client.listResourceTemplates(
-        cursor ? { cursor } : undefined,
-        { timeout: server.startupTimeoutMs },
-      );
-      resourceTemplates.push(...(result.resourceTemplates ?? []));
-      cursor = result.nextCursor;
-    } while (cursor);
+    try {
+      do {
+        const result = await connection.client.listResourceTemplates(
+          cursor ? { cursor } : undefined,
+          { timeout: server.startupTimeoutMs },
+        );
+        resourceTemplates.push(...(result.resourceTemplates ?? []));
+        cursor = result.nextCursor;
+      } while (cursor);
+    } catch (error) {
+      if (isMcpMethodNotFoundError(error)) {
+        connection.resourceTemplates = [];
+        connection.resourceTemplatesFetchedAt = Date.now();
+        throw new CapletsError(
+          "UNSUPPORTED_CAPABILITY",
+          `${server.server} does not implement MCP resource templates`,
+          { server: server.server, capability: "resourceTemplates" },
+        );
+      }
+      throw error;
+    }
     connection.resourceTemplates = resourceTemplates;
     connection.resourceTemplatesFetchedAt = Date.now();
     return resourceTemplates;
@@ -920,6 +941,14 @@ function nearbyToolNames(tools: Tool[], needle: string): string[] {
 
 function isTimeoutLike(error: unknown): boolean {
   return error instanceof Error && /timeout|timed out|aborted/i.test(error.message);
+}
+
+function isUnsupportedCapability(error: unknown): boolean {
+  return error instanceof CapletsError && error.code === "UNSUPPORTED_CAPABILITY";
+}
+
+function isMcpMethodNotFoundError(error: unknown): boolean {
+  return error instanceof Error && /MCP error -32601/i.test(error.message);
 }
 
 function stringifyPromptArgs(args: Record<string, unknown>): Record<string, string> {

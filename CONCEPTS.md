@@ -48,6 +48,16 @@ The passive CLI behavior that checks whether a newer published `caplets` CLI ver
 
 Available Update Detection preserves stdout contracts for protocols, JSON output, shell completion, help, and version commands, and suppresses passive notices by default in CI, non-interactive automation, daemon-managed services, native integrations, and default stdio `serve` or `attach` sessions. In v1, stdio-backed `serve` and `attach` are notice-eligible only when `CAPLETS_UPDATE_NOTICE_STDERR=1` explicitly marks the current foreground invocation's stderr as notice-safe.
 
+### MCP Resource
+
+A concrete read-only content item exposed by an MCP backend, identified by a URI and optionally accompanied by metadata such as a name or media type.
+
+### MCP Resource Template
+
+A templated MCP resource URI that describes a family of readable resources rather than one concrete item.
+
+MCP Resource Templates are distinct from MCP Resources: a backend can support concrete resources without supporting templates, so runtime health and discovery should treat template listing as optional.
+
 ### Native Service Manager
 
 The operating system facility that owns per-user service registration and lifecycle for the Caplets Daemon.

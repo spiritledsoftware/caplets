@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.28.1
+
+### Patch Changes
+
+- bf6930e: Add `--upstream-url` to `caplets daemon install` so managed HTTP daemons can run stacked Caplets runtimes.
+
 ## 0.28.0
 
 ### Minor Changes

@@ -31,7 +31,11 @@ import {
 } from "../src/daemon";
 import { daemonHostPath } from "../src/daemon/host-path";
 import { serviceCommand } from "../src/daemon/shell";
-import { allocateLoopbackPort, validateDaemonCommand } from "../src/daemon/validation";
+import {
+  allocateLoopbackPort,
+  validateDaemonCommand,
+  validationSpawnCommand,
+} from "../src/daemon/validation";
 
 function cwdBackslashEntriesContaining(marker: string): string[] {
   return readdirSync(process.cwd()).filter(
@@ -81,6 +85,47 @@ describe("caplets daemon CLI", () => {
       ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
 
       expect(existsSync(join(dir, "config", "caplets", "daemon", "default.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes upstream URL through daemon install", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-upstream-"));
+    const upstreamUrl = "https://upstream.caplets.example.com/caplets";
+    try {
+      const out: string[] = [];
+      await runCli(
+        ["daemon", "install", "--json", "--no-validate", "--upstream-url", upstreamUrl],
+        {
+          env: testEnv(dir),
+          writeOut: (value) => out.push(value),
+          daemon: { platform: "linux", commandRunner: fakeRunner() },
+        },
+      );
+
+      const result = JSON.parse(out.join("")) as {
+        config: { serve: { upstreamUrl: string }; command: { args: string[] } };
+      };
+      const upstreamArgIndex = result.config.command.args.indexOf("--upstream-url");
+      expect(result.config.serve.upstreamUrl).toBe(upstreamUrl);
+      expect(upstreamArgIndex).toBeGreaterThanOrEqual(0);
+      expect(result.config.command.args[upstreamArgIndex + 1]).toBe(upstreamUrl);
+
+      const updateOut: string[] = [];
+      await runCli(["daemon", "install", "--dry-run", "--json"], {
+        env: testEnv(dir),
+        writeOut: (value) => updateOut.push(value),
+        daemon: { platform: "linux", commandRunner: fakeRunner() },
+      });
+
+      const updateResult = JSON.parse(updateOut.join("")) as {
+        config: { serve: { upstreamUrl: string }; command: { args: string[] } };
+      };
+      const updateUpstreamArgIndex = updateResult.config.command.args.indexOf("--upstream-url");
+      expect(updateResult.config.serve.upstreamUrl).toBe(upstreamUrl);
+      expect(updateUpstreamArgIndex).toBeGreaterThanOrEqual(0);
+      expect(updateResult.config.command.args[updateUpstreamArgIndex + 1]).toBe(upstreamUrl);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1153,6 +1198,149 @@ describe("daemon paths and config", () => {
     } finally {
       if (originalArgv === undefined) process.argv.splice(1, 1);
       else process.argv[1] = originalArgv;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the stable caplets command instead of pnpm's versioned package target", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-pnpm-stable-bin-"));
+    const originalArgv = process.argv[1];
+    try {
+      const binDir = join(dir, "pnpm", "bin");
+      const packageTarget = join(
+        dir,
+        "pnpm",
+        "global",
+        "v11",
+        "233dbf-19efa214857",
+        "node_modules",
+        "caplets",
+        "dist",
+        "index.js",
+      );
+      const stableBin = join(binDir, "caplets");
+      mkdirSync(dirname(packageTarget), { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(packageTarget, "#!/usr/bin/env node\n");
+      chmodSync(packageTarget, 0o755);
+      writeFileSync(stableBin, '#!/bin/sh\nexec node /changed-by-pnpm/global/path "$@"\n');
+      chmodSync(stableBin, 0o755);
+      process.argv[1] = packageTarget;
+
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: { ...testEnv(dir), PATH: binDir },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.executable).toBe(stableBin);
+      expect(result.config.command.args[0]).toBe("serve");
+      expect(result.descriptor.kind).toBe("systemd-user");
+      if (result.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
+      expect(result.descriptor.contents).toContain(`ExecStart="${stableBin}" "serve"`);
+      expect(result.descriptor.contents).not.toContain(packageTarget);
+    } finally {
+      if (originalArgv === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = originalArgv;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("checks PATH before rejecting a transient runner fallback", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-path-before-runner-"));
+    const originalArgv = process.argv[1];
+    try {
+      const binDir = join(dir, "bin");
+      const stableBin = join(binDir, "caplets");
+      const transientCli = join(dir, "dlx-12345", "node_modules", ".bin", "caplets");
+      mkdirSync(binDir, { recursive: true });
+      mkdirSync(dirname(transientCli), { recursive: true });
+      writeFileSync(stableBin, "#!/bin/sh\n");
+      writeFileSync(transientCli, "#!/usr/bin/env node\n");
+      chmodSync(stableBin, 0o755);
+      chmodSync(transientCli, 0o755);
+      process.argv[1] = transientCli;
+
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: { ...testEnv(dir), PATH: binDir },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.executable).toBe(stableBin);
+    } finally {
+      if (originalArgv === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = originalArgv;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves PATH when the daemon command uses an installed shim", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-shim-path-"));
+    try {
+      const binDir = join(dir, "bin");
+      const nodeDir = join(dir, "node");
+      const stableBin = join(binDir, "caplets");
+      const path = `${binDir}:${nodeDir}`;
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(stableBin, '#!/bin/sh\nexec node "$@"\n');
+      chmodSync(stableBin, 0o755);
+
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: { ...testEnv(dir), PATH: path },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.executable).toBe(stableBin);
+      expect(result.config.command.env.PATH).toBe(path);
+      expect(result.descriptor.kind).toBe("systemd-user");
+      if (result.descriptor.kind !== "systemd-user") throw new Error("expected systemd");
+      expect(result.descriptor.contents).toContain(`Environment="PATH=${path}"`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses PATHEXT candidates without extensionless commands on Windows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-windows-pathext-"));
+    try {
+      const binDir = join(dir, "bin");
+      const extensionless = join(binDir, "caplets");
+      const cmdShim = join(binDir, "caplets.CMD");
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(extensionless, "not executable by Windows PATH lookup\n");
+      writeFileSync(cmdShim, "@echo off\r\n");
+
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: {
+            APPDATA: win32.join(dir, "AppData", "Roaming"),
+            LOCALAPPDATA: win32.join(dir, "AppData", "Local"),
+            PATH: binDir,
+            PATHEXT: ".CMD",
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.executable).toBe(cmdShim);
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -2461,8 +2649,8 @@ describe("daemon validation", () => {
         ...result.config,
         command: {
           ...result.config.command,
-          executable: candidate,
-          args: [],
+          executable: process.execPath,
+          args: [candidate],
         },
       };
 
@@ -2548,8 +2736,8 @@ createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.
         ...result.config,
         command: {
           ...result.config.command,
-          executable: serverFile,
-          args: [],
+          executable: process.execPath,
+          args: [serverFile],
         },
       };
 
@@ -2560,6 +2748,44 @@ createServer((_request, response) => response.end("ok")).listen(${port}, "127.0.
 
       expect(childEnv.SERVICE_ONLY).toBe("1");
       expect(childEnv.INSTALLER_ONLY).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("wraps Windows cmd shims for validation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-validation-cmd-"));
+    try {
+      const result = await installDaemon(
+        { validate: false, dryRun: true },
+        {
+          env: {
+            APPDATA: win32.join(dir, "AppData", "Roaming"),
+            LOCALAPPDATA: win32.join(dir, "AppData", "Local"),
+          },
+          home: "C:\\Users\\Alice",
+          platform: "win32",
+          commandRunner: fakeRunner(),
+        },
+      );
+      const config = {
+        ...result.config,
+        command: {
+          ...result.config.command,
+          executable: "C:\\Users\\Alice\\AppData\\Roaming\\pnpm\\caplets.cmd",
+          args: ["serve", "--path", "pa th"],
+        },
+      };
+
+      expect(validationSpawnCommand(config)).toEqual({
+        command: "cmd.exe",
+        args: [
+          "/d",
+          "/s",
+          "/c",
+          '"C:\\Users\\Alice\\AppData\\Roaming\\pnpm\\caplets.cmd" serve --path "pa th"',
+        ],
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

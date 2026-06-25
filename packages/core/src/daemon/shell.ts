@@ -13,7 +13,7 @@ export function serviceCommand(config: {
     shell?: { executable: string; args: string[] };
   };
 }): { executable: string; args: string[]; display: string } {
-  const direct = [process.execPath, config.command.executable, ...config.command.args];
+  const direct = [config.command.executable, ...config.command.args];
   if (!config.command.shell) {
     return {
       executable: direct[0]!,

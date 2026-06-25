@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { defaultConfigPath } from "../config/paths";
@@ -43,6 +43,7 @@ export function daemonServeArgs(options: HttpServeOptions): string[] {
   if (options.auth.type === "remote_credentials" && options.remoteCredentialStateDir) {
     args.push("--remote-state-path", options.remoteCredentialStateDir);
   }
+  if (options.upstreamUrl) args.push("--upstream-url", options.upstreamUrl);
   if (options.allowUnauthenticatedHttp) args.push("--allow-unauthenticated-http");
   if (options.trustProxy) args.push("--trust-proxy");
   return args;
@@ -56,8 +57,12 @@ export function buildDaemonCommandPlan(options: {
   inheritEnv?: boolean;
 }): DaemonCommandPlan {
   const platform = options.operation.platform ?? process.platform;
-  const executable = resolveDaemonExecutable(process.argv[1]);
-  const args = daemonServeArgs(options.serve);
+  const command = resolveDaemonCommand({
+    env: options.operation.env ?? process.env,
+    platform,
+    scriptPath: process.argv[1],
+    serveArgs: daemonServeArgs(options.serve),
+  });
   const workingDirectory = options.operation.home ?? homedir();
   const explicitEnv = options.explicitEnv ?? {};
   const serviceEnv = daemonServiceEnv({
@@ -67,9 +72,17 @@ export function buildDaemonCommandPlan(options: {
     serve: options.serve,
     workingDirectory,
   });
+  if (
+    command.pathEnv &&
+    serviceEnv.PATH === undefined &&
+    serviceEnv.Path === undefined &&
+    serviceEnv.path === undefined
+  ) {
+    serviceEnv.PATH = command.pathEnv;
+  }
   const base = {
-    executable,
-    args,
+    executable: command.executable,
+    args: command.args,
     workingDirectory,
     env: serviceEnv,
     inheritEnv: options.inheritEnv ?? false,
@@ -131,7 +144,25 @@ function configSelectionEnvKeys(platform: NodeJS.Platform): string[] {
     : ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"];
 }
 
-function resolveDaemonExecutable(scriptPath: string | undefined): string {
+function resolveDaemonCommand(options: {
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  platform: NodeJS.Platform;
+  scriptPath: string | undefined;
+  serveArgs: string[];
+}): { executable: string; args: string[]; pathEnv?: string | undefined } {
+  const stableCommand = resolvePathCommand("caplets", options.env, options.platform);
+  if (stableCommand) {
+    return {
+      executable: stableCommand,
+      args: options.serveArgs,
+      pathEnv: pathEnvValue(options.env),
+    };
+  }
+  const script = resolveDaemonCliScript(options.scriptPath);
+  return { executable: process.execPath, args: [script, ...options.serveArgs] };
+}
+
+function resolveDaemonCliScript(scriptPath: string | undefined): string {
   if (!scriptPath) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -153,6 +184,75 @@ function resolveDaemonExecutable(scriptPath: string | undefined): string {
     );
   }
   return executable;
+}
+
+function resolvePathCommand(
+  command: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  platform: NodeJS.Platform,
+): string | undefined {
+  const path = pathEnvValue(env);
+  if (!path) return undefined;
+  const delimiter = platform === "win32" ? ";" : ":";
+  for (const entry of path.split(delimiter)) {
+    const directory = entry.trim();
+    if (!directory) continue;
+    for (const candidate of pathCommandCandidates(directory, command, env, platform)) {
+      if (!isRunnableCommand(candidate, platform)) continue;
+      const realCandidate = safeRealpath(candidate);
+      if (isTransientRunnerPath(candidate) || isTransientRunnerPath(realCandidate)) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          "Cannot install the daemon from a temporary runner such as npx or pnpm dlx. Install caplets first, then rerun caplets daemon install.",
+        );
+      }
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function pathCommandCandidates(
+  directory: string,
+  command: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  platform: NodeJS.Platform,
+): string[] {
+  const resolved = isAbsolute(directory) ? directory : resolve(directory);
+  if (platform !== "win32") return [resolve(resolved, command)];
+  const lower = command.toLocaleLowerCase();
+  if (/\.[^.\\/]+$/u.test(lower)) return [resolve(resolved, command)];
+  const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return extensions.map((extension) => resolve(resolved, `${command}${extension}`));
+}
+
+function pathEnvValue(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): string | undefined {
+  return env.PATH ?? env.Path ?? env.path;
+}
+
+function isRunnableCommand(path: string, platform: NodeJS.Platform): boolean {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return false;
+    if (platform === "win32") return true;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 function isTransientRunnerPath(path: string): boolean {
