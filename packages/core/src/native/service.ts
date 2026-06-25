@@ -79,6 +79,8 @@ import { resolveRemoteSelection, type ResolvedRemoteSelection } from "../remote/
 
 const REMOTE_PROJECT_BINDING_FALLBACK_WARNING =
   "Remote project binding unavailable; using local Caplets only. Run caplets doctor for details.\n";
+const SELF_HOSTED_PROJECT_BINDING_UNSUPPORTED_MESSAGE =
+  "Self-hosted Project Binding sessions are not implemented by this runtime.";
 let hasWarnedRemoteProjectBindingFallback = false;
 
 export type NativeCapletsServiceOptions = NativeCapletsServiceResolutionInput & {
@@ -1764,7 +1766,11 @@ class RemoteProjectBindingSessionManager implements NativeProjectBindingManager 
 }
 
 function isUnsupportedProjectBinding(error: unknown): boolean {
-  return isRecord(error) && error.code === "UNSUPPORTED_CAPABILITY";
+  return (
+    isRecord(error) &&
+    error.code === "UNSUPPORTED_CAPABILITY" &&
+    error.message === SELF_HOSTED_PROJECT_BINDING_UNSUPPORTED_MESSAGE
+  );
 }
 
 function projectBindingUrl(attachUrl: URL, ...segments: string[]): URL {
