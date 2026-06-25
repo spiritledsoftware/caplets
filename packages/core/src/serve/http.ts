@@ -598,17 +598,7 @@ export function createHttpServeApp(
             ws.close(1008, "Project Binding session was not found.");
             return;
           }
-          setTimeout(() => {
-            if (ws.readyState !== 1) return;
-            ws.send(
-              JSON.stringify({
-                type: "ready",
-                bindingId: validation.record.bindingId,
-                sessionId: validation.record.sessionId,
-                syncState: validation.record.syncState,
-              }),
-            );
-          }, 0);
+          sendProjectBindingReadyWhenOpen(ws, validation.record);
         },
         onMessage: (event, ws) => {
           if (!validation.ok) {
@@ -816,6 +806,27 @@ export function createHttpServeApp(
     ).toISOString();
     record.active = true;
     await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+  }
+
+  function sendProjectBindingReadyWhenOpen(
+    ws: { readyState: number; send: (data: string) => void },
+    record: ProjectBindingHttpRecord,
+    attempts = 20,
+  ): void {
+    setTimeout(() => {
+      if (ws.readyState === 1) {
+        ws.send(
+          JSON.stringify({
+            type: "ready",
+            bindingId: record.bindingId,
+            sessionId: record.sessionId,
+            syncState: record.syncState,
+          }),
+        );
+        return;
+      }
+      if (attempts > 1) sendProjectBindingReadyWhenOpen(ws, record, attempts - 1);
+    }, 10);
   }
 
   async function endProjectBindingRecord(
