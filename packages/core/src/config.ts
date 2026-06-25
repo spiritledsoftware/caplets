@@ -22,16 +22,22 @@ export {
   DEFAULT_AUTH_DIR,
   DEFAULT_COMPLETION_CACHE_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_UPDATE_CHECK_CACHE_DIR,
+  DEFAULT_UPDATE_CHECK_STATE_DIR,
   DEFAULT_TELEMETRY_STATE_DIR,
   PROJECT_CONFIG_FILE,
   defaultCacheBaseDir,
   defaultCompletionCacheDir,
   defaultTelemetryStateDir,
+  defaultUpdateCheckCacheDir,
+  defaultUpdateCheckStateDir,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
   resolveTelemetryStateDir,
+  resolveUpdateCheckCacheDir,
+  resolveUpdateCheckStateDir,
 } from "./config/paths";
 
 export type RemoteAuthConfig =

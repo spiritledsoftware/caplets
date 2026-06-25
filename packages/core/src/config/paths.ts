@@ -110,6 +110,26 @@ export function defaultTelemetryDeliveryHealthPath(
   return pathJoin(defaultTelemetryStateDir(env, home, platform), "delivery-health.json");
 }
 
+export function defaultUpdateCheckStateDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "update-check");
+}
+
+export function defaultUpdateCheckCacheDir(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return platform === "win32"
+    ? pathJoin(defaultCacheBaseDir(env, home, platform), "caplets", "cache", "update-check")
+    : pathJoin(defaultCacheBaseDir(env, home, platform), "caplets", "update-check");
+}
+
 export function defaultArtifactDir(
   env: PathEnv = process.env,
   home = homedir(),
@@ -148,6 +168,8 @@ export const DEFAULT_TELEMETRY_STATE_DIR = defaultTelemetryStateDir();
 export const DEFAULT_TELEMETRY_IDENTITY_PATH = defaultTelemetryIdentityPath();
 export const DEFAULT_TELEMETRY_NOTICE_PATH = defaultTelemetryNoticePath();
 export const DEFAULT_TELEMETRY_DELIVERY_HEALTH_PATH = defaultTelemetryDeliveryHealthPath();
+export const DEFAULT_UPDATE_CHECK_STATE_DIR = defaultUpdateCheckStateDir();
+export const DEFAULT_UPDATE_CHECK_CACHE_DIR = defaultUpdateCheckCacheDir();
 export const DEFAULT_COMPLETION_CACHE_DIR = defaultCompletionCacheDir();
 export const DEFAULT_OBSERVED_OUTPUT_SHAPE_CACHE_DIR = defaultObservedOutputShapeCacheDir();
 export const PROJECT_CONFIG_FILE = join(".caplets", "config.json");
@@ -166,6 +188,14 @@ export function resolveCapletsRoot(configPath = resolveConfigPath()): string {
 
 export function resolveTelemetryStateDir(path?: string): string {
   return path ?? DEFAULT_TELEMETRY_STATE_DIR;
+}
+
+export function resolveUpdateCheckStateDir(path?: string): string {
+  return path ?? DEFAULT_UPDATE_CHECK_STATE_DIR;
+}
+
+export function resolveUpdateCheckCacheDir(path?: string): string {
+  return path ?? DEFAULT_UPDATE_CHECK_CACHE_DIR;
 }
 
 export function resolveProjectCapletsRoot(cwd = process.cwd()): string {

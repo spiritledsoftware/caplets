@@ -451,6 +451,36 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("forces managed service update notices off even when installer opts in", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-update-check-env-"));
+    try {
+      const result = await installDaemon(
+        {
+          env: ["CAPLETS_UPDATE_NOTICE_STDERR=1"],
+          inheritEnv: true,
+          validate: false,
+          dryRun: true,
+        },
+        {
+          env: {
+            ...testEnv(dir),
+            CAPLETS_UPDATE_NOTICE_STDERR: "1",
+          },
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner(),
+        },
+      );
+
+      expect(result.config.command.env.CAPLETS_DISABLE_UPDATE_CHECK).toBe("1");
+      expect(result.descriptor.kind).toBe("systemd-user");
+      if (result.descriptor.kind !== "systemd-user") throw new Error("expected systemd descriptor");
+      expect(result.descriptor.contents).toContain("CAPLETS_DISABLE_UPDATE_CHECK=1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces failed health checks in plain daemon status", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-cli-status-health-"));
     try {

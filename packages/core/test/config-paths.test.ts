@@ -5,6 +5,8 @@ import {
   defaultConfigBaseDir,
   defaultConfigPath,
   defaultStateBaseDir,
+  defaultUpdateCheckCacheDir,
+  defaultUpdateCheckStateDir,
 } from "../src/config/paths";
 
 describe("config paths", () => {
@@ -80,6 +82,21 @@ describe("config paths", () => {
     );
     expect(defaultAuthDir(env, home, "win32")).toBe(
       win32.join(home, "AppData", "Local", "caplets", "auth"),
+    );
+  });
+
+  it("uses Caplets-owned update-check state and cache directories", () => {
+    expect(defaultUpdateCheckStateDir({}, "/home/alex", "linux")).toBe(
+      posix.join("/home/alex", ".local", "state", "caplets", "update-check"),
+    );
+    expect(defaultUpdateCheckCacheDir({}, "/home/alex", "linux")).toBe(
+      posix.join("/home/alex", ".cache", "caplets", "update-check"),
+    );
+    expect(defaultUpdateCheckCacheDir({}, "/Users/alex", "darwin")).toBe(
+      posix.join("/Users/alex", "Library", "Caches", "caplets", "update-check"),
+    );
+    expect(defaultUpdateCheckCacheDir({}, "C:\\Users\\Alex", "win32")).toBe(
+      win32.join("C:\\Users\\Alex", "AppData", "Local", "caplets", "cache", "update-check"),
     );
   });
 });

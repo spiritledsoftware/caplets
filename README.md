@@ -205,6 +205,19 @@ environment variables, raw error messages, or unsanitized stack traces. Rotating
 local anonymous ID does not delete provider-side historical anonymous events; provider retention
 controls historical data.
 
+## Available Update Detection
+
+Caplets can passively check public npm metadata for the published `caplets` CLI package and print a
+short stderr-only notice when a newer eligible version is already cached. The notice preserves stdout
+for MCP stdio, JSON output, shell completion, help, and version commands.
+
+Set `CAPLETS_DISABLE_UPDATE_CHECK=1` to disable both passive notices and outbound update metadata
+lookups. This control is independent from anonymous telemetry controls.
+
+Default stdio `caplets serve` and `caplets attach` sessions stay quiet. Set
+`CAPLETS_UPDATE_NOTICE_STDERR=1` only for a foreground host where stderr is visible to the user and
+separate from protocol stdout.
+
 ## Benchmark
 
 The deterministic benchmark compares flat MCP exposure with Caplets over the same mock
@@ -257,6 +270,7 @@ Package map:
 
 Long-lived docs:
 
+- [Available Update Detection](https://github.com/spiritledsoftware/caplets/blob/main/docs/product/available-update-detection.md)
 - [Code Mode PRD](https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-code-mode-prd.md)
 - [Caplets Vault](https://github.com/spiritledsoftware/caplets/blob/main/docs/product/caplets-vault.md)
 - [Architecture](https://github.com/spiritledsoftware/caplets/blob/main/docs/architecture.md)

@@ -1,0 +1,153 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  readUpdateMetadataCache,
+  refreshUpdateMetadata,
+  UPDATE_CHECK_LOCK_TTL_MS,
+  updateRefreshLockPath,
+  writePrivateJson,
+} from "../src/update-check";
+
+const dirs: string[] = [];
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "caplets-update-check-refresh-"));
+  dirs.push(dir);
+  return dir;
+}
+
+describe("update-check refresh", () => {
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes positive package metadata for later invocations", async () => {
+    const dir = tempDir();
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {}, "0.24.0-beta.1": {} },
+      }),
+    );
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher, now: 1_000 })).resolves.toBe(
+      "refreshed",
+    );
+
+    expect(readUpdateMetadataCache({ cacheDir: dir, now: 1_001 })).toMatchObject({
+      status: "positive",
+      metadata: {
+        packageName: "caplets",
+        distTags: { latest: "0.23.0" },
+        versions: ["0.22.0", "0.23.0", "0.24.0-beta.1"],
+      },
+    });
+  });
+
+  it("writes negative backoff when refresh fails", async () => {
+    const dir = tempDir();
+    const fetcher = vi.fn<typeof fetch>(async () => new Response("nope", { status: 503 }));
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher, now: 1_000 })).resolves.toBe(
+      "failed",
+    );
+
+    expect(readUpdateMetadataCache({ cacheDir: dir, now: 1_001 })).toMatchObject({
+      status: "negative",
+      reason: "http",
+      fresh: true,
+    });
+  });
+
+  it("skips refresh when a fresh lock exists", async () => {
+    const dir = tempDir();
+    writePrivateJson(updateRefreshLockPath({ cacheDir: dir }), { lockedAt: 1_000 });
+    const fetcher = vi.fn<typeof fetch>();
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher, now: 1_001 })).resolves.toBe(
+      "skipped",
+    );
+
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("replaces a stale lock with a single exclusive refresh owner", async () => {
+    const dir = tempDir();
+    writePrivateJson(updateRefreshLockPath({ cacheDir: dir }), { lockedAt: 1_000 });
+    const firstFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
+    const secondFetch = vi.fn<typeof fetch>();
+    const now = 1_000 + UPDATE_CHECK_LOCK_TTL_MS + 1;
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher: firstFetch, now })).resolves.toBe(
+      "refreshed",
+    );
+    writePrivateJson(updateRefreshLockPath({ cacheDir: dir }), { lockedAt: now });
+    await expect(
+      refreshUpdateMetadata({ cacheDir: dir, fetcher: secondFetch, now: now + 1 }),
+    ).resolves.toBe("skipped");
+
+    expect(firstFetch).toHaveBeenCalledTimes(1);
+    expect(secondFetch).not.toHaveBeenCalled();
+  });
+
+  it("replaces corrupt locks instead of skipping refresh forever", async () => {
+    const dir = tempDir();
+    writeFileSync(updateRefreshLockPath({ cacheDir: dir }), "");
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        name: "caplets",
+        "dist-tags": { latest: "0.23.0" },
+        versions: { "0.22.0": {}, "0.23.0": {} },
+      }),
+    );
+
+    await expect(refreshUpdateMetadata({ cacheDir: dir, fetcher, now: 1_000 })).resolves.toBe(
+      "refreshed",
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a usable stale positive cache when refresh fails", async () => {
+    const dir = tempDir();
+    const now = 1_000;
+    await refreshUpdateMetadata({
+      cacheDir: dir,
+      now,
+      fetcher: vi.fn<typeof fetch>(async () =>
+        Response.json({
+          name: "caplets",
+          "dist-tags": { latest: "0.23.0" },
+          versions: { "0.22.0": {}, "0.23.0": {} },
+        }),
+      ),
+    });
+
+    await expect(
+      refreshUpdateMetadata({
+        cacheDir: dir,
+        now: now + 25 * 60 * 60 * 1000,
+        fetcher: vi.fn<typeof fetch>(async () => new Response("nope", { status: 503 })),
+      }),
+    ).resolves.toBe("failed");
+
+    expect(
+      readUpdateMetadataCache({ cacheDir: dir, now: now + 25 * 60 * 60 * 1000 }),
+    ).toMatchObject({
+      status: "positive",
+      usable: true,
+      metadata: { distTags: { latest: "0.23.0" } },
+    });
+  });
+});

@@ -42,6 +42,12 @@ Vault Access Grants are identified by Caplet ID, reference name, and config orig
 
 The persisted daemon agreement that defines what command runs, which environment model applies, which native service identity owns it, and how updates become active.
 
+### Available Update Detection
+
+The passive CLI behavior that checks whether a newer published `caplets` CLI version is available and reports it through a best-effort stderr-only notice when stderr is an eligible human-facing notice channel.
+
+Available Update Detection preserves stdout contracts for protocols, JSON output, shell completion, help, and version commands, and suppresses passive notices by default in CI, non-interactive automation, daemon-managed services, native integrations, and default stdio `serve` or `attach` sessions. In v1, stdio-backed `serve` and `attach` are notice-eligible only when `CAPLETS_UPDATE_NOTICE_STDERR=1` explicitly marks the current foreground invocation's stderr as notice-safe.
+
 ### MCP Resource
 
 A concrete read-only content item exposed by an MCP backend, identified by a URI and optionally accompanied by metadata such as a name or media type.
