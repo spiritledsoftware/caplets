@@ -6,7 +6,12 @@ import type { ProjectBindingSessionContext } from "./types";
 
 export type ProjectBindingExecutionContext = Pick<
   ProjectBindingSessionContext,
-  "projectRoot" | "projectFingerprint" | "projectConfigPath" | "bindingId" | "sessionId"
+  | "projectRoot"
+  | "projectFingerprint"
+  | "projectConfigPath"
+  | "bindingId"
+  | "sessionId"
+  | "quarantineRecords"
 >;
 
 export function resolveProjectBoundCwd(input: {

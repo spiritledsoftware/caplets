@@ -54,6 +54,7 @@ import {
   generateCodeModeRunToolDescription,
 } from "../code-mode/declarations";
 import type { DirectToolRegistration, ExposureSnapshot } from "../exposure/discovery";
+import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
 import { runCodeMode } from "../code-mode/runner";
 import { CodeModeSessionManager } from "../code-mode/sessions";
 import { CodeModeJournalStore } from "../code-mode/journal";
@@ -190,6 +191,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     this.engine = new CapletsEngine({
       ...options,
       writeErr: this.writeErr,
+      projectBindingContext: projectBindingContextForNativeOptions(options),
       telemetrySurface: options.telemetrySurface ?? "native",
       telemetryVisibility: options.telemetryVisibility ?? "hidden",
       telemetryRuntimeMode: options.telemetryRuntimeMode ?? runtimeModeFromNativeOptions(options),
@@ -208,8 +210,17 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     const progressiveTools: NativeCapletTool[] = [];
     const codeModeCaplets: NativeCapletTool[] = [];
     const directTools: NativeCapletTool[] = [];
-    for (const caplet of this.engine.enabledServers()) {
-      if (caplet.setup || caplet.projectBinding?.required) continue;
+    const snapshotCaplets = this.exposureSnapshot?.callableCaplets;
+    const caplets = snapshotCaplets
+      ? snapshotCaplets.map((entry) => entry.caplet)
+      : this.engine.enabledServers().filter((caplet) => {
+          if (caplet.setup) return false;
+          if (caplet.projectBinding?.required && !this.engine.currentProjectBindingContext()) {
+            return false;
+          }
+          return true;
+        });
+    for (const caplet of caplets) {
       const exposure = resolveExposure(
         caplet.exposure,
         this.engine.currentConfig().options.exposure,
@@ -416,7 +427,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   private hasSnapshotBackedDirectExposure(): boolean {
     return this.engine.enabledServers().some((caplet) => {
-      if (caplet.setup || caplet.projectBinding?.required) return false;
+      if (caplet.setup) return false;
+      if (caplet.projectBinding?.required && !this.engine.currentProjectBindingContext()) {
+        return false;
+      }
       if (caplet.backend === "http" || caplet.backend === "cli") return false;
       return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure).direct;
     });
@@ -449,7 +463,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     const caplets =
       snapshotCaplets ??
       this.engine.enabledServers().filter((caplet) => {
-        if (caplet.setup || caplet.projectBinding?.required) return false;
+        if (caplet.setup) return false;
+        if (caplet.projectBinding?.required && !this.engine.currentProjectBindingContext()) {
+          return false;
+        }
         return resolveExposure(caplet.exposure, this.engine.currentConfig().options.exposure)
           .codeMode;
       });
@@ -802,6 +819,21 @@ function canonicalProjectRootForMetadata(projectRoot: string): string {
   } catch {
     return projectRoot;
   }
+}
+
+function projectBindingContextForNativeOptions(
+  options: NativeCapletsServiceOptions,
+): ProjectBindingExecutionContext | undefined {
+  if (!options.projectRoot) return undefined;
+  const projectRoot = canonicalProjectRootForMetadata(options.projectRoot);
+  return {
+    projectRoot,
+    projectFingerprint: fingerprintProjectRoot(projectRoot),
+    projectConfigPath:
+      options.projectConfigPath ?? resolvePath(projectRoot, ".caplets", "config.json"),
+    sessionId: "native-local",
+    bindingId: "native-local",
+  };
 }
 
 function isLoopbackRemote(remoteOptions: ResolvedNativeRemoteOptions): boolean {

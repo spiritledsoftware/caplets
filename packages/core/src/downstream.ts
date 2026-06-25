@@ -137,8 +137,8 @@ export class DownstreamManager {
     for (const key of keys) {
       this.connections.delete(key);
       this.connecting.delete(key);
+      this.restartState.delete(key);
     }
-    this.restartState.delete(serverId);
     await Promise.allSettled(
       connections.map((connection) => {
         connection.closing = true;
@@ -592,7 +592,7 @@ export class DownstreamManager {
     if (!sameServerConfig(currentServer, server)) {
       throw staleServerConfigError(server.server);
     }
-    const restart = this.restartState.get(server.server);
+    const restart = this.restartState.get(connectionKey);
     if (restart && restart.restartUsed && Date.now() < restart.backoffUntil) {
       throw new CapletsError("SERVER_UNAVAILABLE", `${server.server} is in restart backoff`);
     }
@@ -631,7 +631,7 @@ export class DownstreamManager {
         if (current !== connection) {
           return;
         }
-        this.restartState.set(server.server, {
+        this.restartState.set(connectionKey, {
           restartUsed: true,
           backoffUntil: Date.now() + 1_000,
         });

@@ -1,8 +1,12 @@
 import type { Prompt, Resource, ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types";
 import type { CapletConfig, CapletsConfig } from "../config";
 import { toSafeError, type SafeErrorSummary } from "../errors";
-import { projectBindingMissingContextDiagnostic } from "../project-binding/errors";
+import {
+  projectBindingHiddenDiagnostic,
+  projectBindingMissingContextDiagnostic,
+} from "../project-binding/errors";
 import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
+import type { ProjectBindingQuarantineRecord } from "../project-binding/types";
 import {
   directPromptName,
   directResourceTemplateUri,
@@ -179,6 +183,18 @@ async function discoverCaplet(
       },
     };
   }
+  const quarantineRecord = options.projectBindingContext?.quarantineRecords?.find(
+    (record) => record.capletId === caplet.server,
+  );
+  if (quarantineRecord) {
+    return {
+      hidden: {
+        capletId: caplet.server,
+        reason: hiddenReasonForQuarantine(quarantineRecord),
+        error: diagnosticForQuarantine(quarantineRecord),
+      },
+    };
+  }
 
   const exposure = resolveExposure(caplet.exposure, options.config.options.exposure);
   if (
@@ -252,6 +268,46 @@ async function discoverCaplet(
       },
     };
   }
+}
+
+function hiddenReasonForQuarantine(record: ProjectBindingQuarantineRecord): HiddenCapletReason {
+  switch (record.reason) {
+    case "sync_failed":
+      return "project_binding_sync_failed";
+    case "retry_exhausted":
+      return "project_binding_retry_exhausted";
+    case "invalid_cwd":
+      return "project_binding_invalid_cwd";
+    case "policy_denied":
+      return "project_binding_policy_denied";
+    case "binding_unsupported":
+      return "project_binding_unsupported";
+    case "auth_trust_failed":
+      return "project_binding_auth_failed";
+    case "metadata_unknown":
+      return "project_binding_metadata_unknown";
+    case "missing_context":
+      return "project_binding_missing_context";
+    case "quarantined":
+      return "project_binding_quarantined";
+  }
+}
+
+function diagnosticForQuarantine(record: ProjectBindingQuarantineRecord): SafeErrorSummary {
+  return projectBindingHiddenDiagnostic({
+    reason: record.reason,
+    message: record.message,
+    recoveryCommand: record.recoveryCommand,
+    requestId: record.requestId,
+    details: {
+      capletId: record.capletId,
+      ...(record.code === undefined ? {} : { diagnosticCode: record.code }),
+      ...(record.upstreamId === undefined ? {} : { upstreamId: record.upstreamId }),
+      ...(record.recordedAt === undefined ? {} : { recordedAt: record.recordedAt }),
+      ...(record.retry === undefined ? {} : { retry: record.retry }),
+      ...(record.sync === undefined ? {} : { sync: record.sync }),
+    },
+  });
 }
 
 async function mapWithConcurrency<T, R>(

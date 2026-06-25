@@ -107,6 +107,51 @@ describe("exposure discovery", () => {
     expect(snapshot.hiddenCaplets).toEqual([]);
   });
 
+  it("hides quarantined project-bound caplets even when session context is available", async () => {
+    const projectBound = {
+      ...httpCaplet("workspace", "progressive"),
+      projectBinding: { required: true },
+    } satisfies Extract<CapletConfig, { backend: "http" }>;
+
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([projectBound]),
+      caplets: [projectBound],
+      projectBindingContext: {
+        sessionId: "session_1",
+        bindingId: "binding_1",
+        projectRoot: "/repo",
+        projectFingerprint: "sha256:repo",
+        quarantineRecords: [
+          {
+            capletId: "workspace",
+            reason: "sync_failed",
+            message: "Project sync failed.",
+            code: "project_sync_process_exit",
+          },
+        ],
+      },
+      listTools: vi.fn(async () => [tool("run")]),
+    });
+
+    expect(snapshot.callableCaplets).toEqual([]);
+    expect(snapshot.hiddenCaplets).toEqual([
+      expect.objectContaining({
+        capletId: "workspace",
+        reason: "project_binding_sync_failed",
+        error: expect.objectContaining({
+          message: "Project sync failed.",
+          details: {
+            projectBinding: expect.objectContaining({
+              reason: "sync_failed",
+              capletId: "workspace",
+              diagnosticCode: "[REDACTED]",
+            }),
+          },
+        }),
+      }),
+    ]);
+  });
+
   it("keeps direct resource templates unique per downstream template", async () => {
     const docs = mcpCaplet("docs", "direct");
     const snapshot = await discoverExposureSnapshot({

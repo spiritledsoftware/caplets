@@ -8,6 +8,7 @@ import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import type { ProjectBindingLease } from "../src/project-binding";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
 import { CAPLETS_STACK_CHAIN_HEADER, createHttpServeApp } from "../src/serve/http";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
@@ -690,14 +691,21 @@ describe("createHttpServeApp", () => {
     });
     expect(session.status).toBe(201);
     const created = (await session.json()) as {
-      binding: { bindingId: string; state: string; syncState: string; serverProjectRoot: string };
+      binding: {
+        bindingId: string;
+        projectFingerprint: string;
+        state: string;
+        syncState: string;
+        serverProjectRoot: string;
+      };
       sessionId: string;
     };
     expect(created).toMatchObject({
       binding: {
+        projectFingerprint: "sha256_repo",
         state: "attaching",
         syncState: "pending",
-        serverProjectRoot: join(workspaceRoot, "sha256_repo", "project"),
+        serverProjectRoot: expect.stringContaining(workspaceRoot),
       },
       sessionId: expect.any(String),
     });
@@ -741,6 +749,140 @@ describe("createHttpServeApp", () => {
     });
 
     await engine.close();
+  });
+
+  it("scopes Project Binding server workspaces by Remote Credential owner", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const first = pairedClient(store);
+    const second = pairedClient(store);
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+
+    async function createSession(accessToken: string): Promise<{
+      binding: { projectFingerprint: string; serverProjectRoot: string };
+    }> {
+      const response = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      expect(response.status).toBe(201);
+      return (await response.json()) as {
+        binding: { projectFingerprint: string; serverProjectRoot: string };
+      };
+    }
+
+    const firstSession = await createSession(first.accessToken);
+    const secondSession = await createSession(second.accessToken);
+
+    expect(firstSession.binding.projectFingerprint).toBe("sha256_repo");
+    expect(secondSession.binding.projectFingerprint).toBe("sha256_repo");
+    expect(firstSession.binding.serverProjectRoot).not.toBe(
+      secondSession.binding.serverProjectRoot,
+    );
+    expect(firstSession.binding.serverProjectRoot).toContain(workspaceRoot);
+    expect(secondSession.binding.serverProjectRoot).toContain(workspaceRoot);
+
+    await engine.close();
+  });
+
+  it("does not retain Project Binding sessions when lease persistence fails", async () => {
+    const { engine } = testEngine();
+    let attemptedBindingId: string | undefined;
+    class FailingWorkspaceStore extends ProjectBindingWorkspaceStore {
+      override async writeLease(lease: ProjectBindingLease): Promise<void> {
+        attemptedBindingId = lease.bindingId;
+        throw new Error("disk full");
+      }
+    }
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new FailingWorkspaceStore({ root: workspaceRoot }),
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      },
+    );
+
+    expect(response.status).toBe(500);
+    expect(attemptedBindingId).toBeTruthy();
+    const status = await app.request(
+      `http://127.0.0.1:5387/v1/attach/project-bindings/${attemptedBindingId}/status`,
+    );
+    await expect(status.json()).resolves.toMatchObject({
+      bindingId: attemptedBindingId,
+      state: "not_attached",
+    });
+
+    await engine.close();
+  });
+
+  it("expires inactive Project Binding sessions from in-memory lookups", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-25T12:00:00.000Z"));
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+      });
+
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      vi.setSystemTime(new Date("2026-06-25T12:01:01.000Z"));
+
+      const status = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+      );
+      await expect(status.json()).resolves.toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "not_attached",
+      });
+      const heartbeat = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+        },
+      );
+      expect(heartbeat.status).toBe(404);
+
+      await engine.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("accepts Project Binding WebSocket connections for owned sessions", async () => {

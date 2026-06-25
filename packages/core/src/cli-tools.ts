@@ -47,8 +47,13 @@ export class CliToolsManager {
       for (const action of actionsFor(config)) {
         const cwdTemplate = action.cwd ?? config.cwd;
         if (cwdTemplate && !cwdTemplate.includes("$input")) {
-          const cwd = interpolateRequiredString(cwdTemplate, {}, "cwd");
-          if (!existsSync(cwd)) {
+          const configuredCwd = interpolateRequiredString(cwdTemplate, {}, "cwd");
+          const cwd = resolveProjectBoundCwd({
+            caplet: config,
+            configuredCwd,
+            context: this.options.projectBindingContext,
+          });
+          if (cwd && !existsSync(cwd)) {
             throw new CapletsError(
               "CONFIG_INVALID",
               `CLI cwd does not exist for ${config.server}/${action.name}`,

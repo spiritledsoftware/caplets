@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { StreamableHTTPTransport } from "@hono/mcp";
@@ -106,6 +106,7 @@ type ProjectBindingHttpRecord = {
   bindingId: string;
   projectRoot: string;
   projectFingerprint: string;
+  serverWorkspaceFingerprint: string;
   serverProjectRoot: string;
   state: ProjectBindingState;
   syncState: ProjectBindingSyncState;
@@ -649,21 +650,27 @@ export function createHttpServeApp(
       const projectRoot = stringField(parsed, "projectRoot");
       const projectFingerprint =
         optionalStringField(parsed, "projectFingerprint") ?? fingerprintProjectRoot(projectRoot);
+      const ownerKey = projectBindingOwnerKey(c);
+      const serverWorkspaceFingerprint = projectBindingWorkspaceFingerprint(
+        ownerKey,
+        projectFingerprint,
+      );
       const bindingId = `binding_${randomUUID()}`;
       const sessionId = `session_${randomUUID()}`;
       const now = new Date();
       const expiresAt = new Date(now.getTime() + PROJECT_BINDING_LEASE_TTL_MS).toISOString();
       const paths = await projectBindingWorkspaceStore.ensureWorkspace({
-        projectFingerprint,
+        projectFingerprint: serverWorkspaceFingerprint,
         projectRoot,
         lastActiveAt: now.toISOString(),
       });
       const record: ProjectBindingHttpRecord = {
-        ownerKey: projectBindingOwnerKey(c),
+        ownerKey,
         bindingId,
         sessionId,
         projectRoot,
         projectFingerprint,
+        serverWorkspaceFingerprint,
         serverProjectRoot: paths.project,
         state: "attaching",
         syncState: "pending",
@@ -671,8 +678,8 @@ export function createHttpServeApp(
         expiresAt,
         active: true,
       };
-      projectBindingSessions.set(bindingId, record);
       await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+      projectBindingSessions.set(bindingId, record);
       return c.json({ binding: projectBindingResponse(record), sessionId }, 201);
     } catch (error) {
       const safe = toSafeError(
@@ -821,6 +828,10 @@ export function createHttpServeApp(
   ): ProjectBindingHttpRecord | undefined {
     const record = projectBindingSessions.get(bindingId);
     if (!record || record.ownerKey !== ownerKey) return undefined;
+    if (!record.active || Date.parse(record.expiresAt) <= Date.now()) {
+      projectBindingSessions.delete(bindingId);
+      return undefined;
+    }
     return record;
   }
 
@@ -853,12 +864,19 @@ export function createHttpServeApp(
   function projectBindingLease(record: ProjectBindingHttpRecord): ProjectBindingLease {
     return {
       bindingId: record.bindingId,
-      projectFingerprint: record.projectFingerprint,
+      projectFingerprint: record.serverWorkspaceFingerprint,
       state: record.state,
       active: record.active,
       updatedAt: record.updatedAt,
       expiresAt: record.expiresAt,
     };
+  }
+
+  function projectBindingWorkspaceFingerprint(
+    ownerKey: string,
+    projectFingerprint: string,
+  ): string {
+    return `sha256_${createHash("sha256").update(ownerKey).update("\0").update(projectFingerprint).digest("hex")}`;
   }
 
   function projectBindingStateField(

@@ -455,7 +455,23 @@ export class CapletsEngine {
   }
 
   private assertProjectBindingCallable(caplet: CapletConfig): void {
-    if (!caplet.projectBinding?.required || this.projectBindingContext) return;
+    if (!caplet.projectBinding?.required) return;
+    const quarantineRecord = this.projectBindingContext?.quarantineRecords?.find(
+      (record) => record.capletId === caplet.server,
+    );
+    if (quarantineRecord) {
+      throw new CapletsError("UNSUPPORTED_CAPABILITY", quarantineRecord.message, {
+        projectBinding: {
+          reason: quarantineRecord.reason,
+          capletId: caplet.server,
+          ...(quarantineRecord.code === undefined ? {} : { diagnosticCode: quarantineRecord.code }),
+          ...(quarantineRecord.recoveryCommand === undefined
+            ? {}
+            : { recoveryCommand: quarantineRecord.recoveryCommand }),
+        },
+      });
+    }
+    if (this.projectBindingContext) return;
     throw new CapletsError(
       "UNSUPPORTED_CAPABILITY",
       "Project Binding session context is required before this Caplet can be exposed.",

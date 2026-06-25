@@ -98,6 +98,29 @@ describe("CliToolsManager", () => {
     });
   });
 
+  it("checks project-bound CLI cwd relative to the bound project root", async () => {
+    const { config, caplet } = cliConfig({
+      projectBinding: { required: true },
+      cwd: "tools",
+      actions: {
+        cwd: {
+          command: process.execPath,
+          args: ["-e", "console.log(process.cwd())"],
+        },
+      },
+    });
+    const projectRoot = mkdtempSync(join(tmpdir(), "caplets-cli-project-"));
+    dirs.push(projectRoot);
+    mkdirSync(join(projectRoot, "tools"));
+    const manager = new CliToolsManager(new ServerRegistry(config), {
+      projectBindingContext: projectBindingContext(projectRoot),
+    });
+
+    await expect(manager.checkTools(caplet)).resolves.toMatchObject({
+      status: "available",
+    });
+  });
+
   it("rejects project-bound CLI cwd escapes before spawning", async () => {
     const projectRoot = mkdtempSync(join(tmpdir(), "caplets-cli-project-"));
     const outside = mkdtempSync(join(tmpdir(), "caplets-cli-outside-"));
