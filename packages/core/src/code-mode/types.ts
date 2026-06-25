@@ -3,6 +3,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 
 export type CodeModeCallableCaplet = {
   id: string;
+  sourceCapletId?: string | undefined;
   name: string;
   description: string;
   shadowing?: "forbid" | "allow" | "namespace";

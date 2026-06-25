@@ -617,6 +617,7 @@ function readTelemetryOnlyConfig(path: string): boolean | undefined {
 function codeModeRunNativeTool(capletTools: NativeCapletTool[]): NativeCapletTool {
   const codeModeCaplets = capletTools.map((tool) => ({
     id: tool.caplet,
+    ...(tool.sourceCaplet ? { sourceCapletId: tool.sourceCaplet } : {}),
     name: tool.title,
     description: tool.description,
     ...(tool.shadowing ? { shadowing: tool.shadowing } : {}),
@@ -1526,21 +1527,18 @@ function sourceBaseId(tool: NativeCapletTool): string {
 
 function renameNativeTool(tool: NativeCapletTool, visibleBaseId: string): NativeCapletTool {
   const baseId = sourceBaseId(tool);
-  const visibleCapletId =
-    tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`)
-      ? `${visibleBaseId}${tool.caplet.slice(baseId.length)}`
-      : visibleBaseId;
-  const operationName =
-    tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`)
-      ? tool.caplet.slice(baseId.length + 2)
-      : undefined;
+  const directTool = Boolean(tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`));
+  const visibleCapletId = directTool
+    ? `${visibleBaseId}${tool.caplet.slice(baseId.length)}`
+    : visibleBaseId;
+  const operationName = directTool ? tool.caplet.slice(baseId.length + 2) : undefined;
   const toolName = operationName
     ? nativeDirectToolName(visibleBaseId, operationName)
     : nativeCapletToolName(visibleCapletId);
   return {
     ...tool,
     caplet: visibleCapletId,
-    ...(tool.sourceCaplet ? { sourceCaplet: visibleBaseId } : {}),
+    sourceCaplet: directTool ? visibleBaseId : baseId,
     toolName,
   };
 }

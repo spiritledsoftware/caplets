@@ -62,6 +62,7 @@ export type AttachManifestExport = {
   annotations?: unknown;
   schemaHash: string | null;
   capletId: string;
+  sourceCapletId?: string | undefined;
   shadowing: CapletShadowingPolicy;
 };
 
@@ -222,6 +223,7 @@ function nativeProgressiveCaplets(
       annotations: tool.annotations,
       schemaHash: schemaHash(tool.inputSchema ?? null),
       capletId: tool.caplet,
+      ...(tool.sourceCaplet ? { sourceCapletId: tool.sourceCaplet } : {}),
       shadowing: tool.shadowing ?? "forbid",
     }));
 }
@@ -272,6 +274,7 @@ function nativeCodeModeCaplets(
       description: caplet.description,
       schemaHash: null,
       capletId: caplet.id,
+      ...(caplet.sourceCapletId ? { sourceCapletId: caplet.sourceCapletId } : {}),
       shadowing: caplet.shadowing ?? "forbid",
     })),
   );
