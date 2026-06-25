@@ -1,5 +1,12 @@
 # @caplets/core
 
+## 0.29.2
+
+### Patch Changes
+
+- d5d776c: Preserve namespace shadowing across stacked attach manifests so re-attached Code Mode handles do not expose duplicate bare Caplet IDs.
+- 27a9c96: Fix Project Binding for self-hosted and local project-bound Caplets.
+
 ## 0.29.1
 
 ### Patch Changes
