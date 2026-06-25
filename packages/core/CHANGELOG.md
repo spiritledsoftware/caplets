@@ -1,5 +1,16 @@
 # @caplets/core
 
+## 0.29.0
+
+### Minor Changes
+
+- f1a44c5: Add passive available-update detection for the Caplets CLI with cached public npm metadata, stderr-only human-facing notices, update-specific env controls, and strict suppression for protocol and machine-readable output paths.
+
+### Patch Changes
+
+- d5717b9: Keep MCP backend health checks available when a server supports resources but not resource templates.
+- cc3d9f4: Keep daemon service descriptors pointed at the stable `caplets` command instead of pnpm's versioned package target so pnpm updates do not strand installed daemons on removed package paths.
+
 ## 0.28.1
 
 ### Patch Changes
