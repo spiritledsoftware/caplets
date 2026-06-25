@@ -382,6 +382,59 @@ describe("RemoteNativeCapletsService", () => {
     }
   });
 
+  it("closes attach sessions that finish creating after the session creation timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const sessionsStarted = deferred<Response>();
+      const requests: Array<{ url: string; method: string; headers: Headers }> = [];
+      const fetchStub: typeof fetch = vi.fn(async (input, init) => {
+        const url = String(input);
+        const method = init?.method ?? "GET";
+        const headers = new Headers(init?.headers);
+        requests.push({ url, method, headers });
+        if (url.endsWith("/sessions") && method === "POST") {
+          return await sessionsStarted.promise;
+        }
+        if (url.endsWith("/manifest")) {
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      });
+      const client = createSdkRemoteCapletsClient({
+        url: new URL("https://caplets.example.com/v1/attach"),
+        requestInit: {},
+        fetch: fetchStub,
+        auth: { enabled: false, user: "caplets" },
+        pollIntervalMs: 60_000,
+        attachSessionMetadata: { projectRoot: "/repo" },
+      });
+
+      const listed = client.listTools();
+      await vi.waitFor(() =>
+        expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+          "POST https://caplets.example.com/v1/attach/sessions",
+        ]),
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(listed).resolves.toEqual([
+        expect.objectContaining({ name: "remote", capletId: "remote" }),
+      ]);
+      sessionsStarted.resolve(Response.json({ sessionId: "attach_session_late" }, { status: 201 }));
+      await vi.waitFor(() =>
+        expect(requests.map((request) => `${request.method} ${request.url}`)).toContain(
+          "DELETE https://caplets.example.com/v1/attach/sessions/attach_session_late",
+        ),
+      );
+      await client.close();
+
+      const manifestRequest = requests.find((request) => request.url.endsWith("/manifest"));
+      expect(manifestRequest?.headers.get(CAPLETS_ATTACH_SESSION_HEADER)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recreates attach sessions when the remote forgets the previous session", async () => {
     const requests: Array<{ url: string; method: string; headers: Headers }> = [];
     const fetchStub: typeof fetch = vi.fn(async (input, init) => {

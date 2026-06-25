@@ -610,25 +610,35 @@ async function createAttachSession(
 ): Promise<string | undefined> {
   const headers = new Headers(requestInit?.headers);
   headers.set("content-type", "application/json");
-  const abortController = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const sessionUrl = new URL("sessions", slashUrl(attachUrl));
   const timeoutReached = new Promise<undefined>((resolve) => {
     timeout = setTimeout(() => {
-      abortController.abort();
+      timedOut = true;
       resolve(undefined);
     }, ATTACH_SESSION_CREATE_TIMEOUT_MS);
     timeout.unref?.();
   });
-  const fetchSession = fetchImpl(new URL("sessions", slashUrl(attachUrl)), {
+  const fetchSession = fetchImpl(sessionUrl, {
     ...requestInit,
     method: "POST",
     headers,
     body: JSON.stringify(metadata),
-    signal: abortController.signal,
   }).catch((error: unknown) => {
-    if (abortController.signal.aborted) return undefined;
+    if (timedOut) return undefined;
     throw error;
   });
+  void fetchSession
+    .then(async (response) => {
+      if (!timedOut || !response?.ok) return;
+      const lateSessionId = await attachSessionIdFromResponse(response).catch(() => undefined);
+      if (!lateSessionId) return;
+      await closeAttachSession(attachUrl, requestInit, fetchImpl, lateSessionId).catch(
+        () => undefined,
+      );
+    })
+    .catch(() => undefined);
   let response: Response | undefined;
   try {
     response = await Promise.race([fetchSession, timeoutReached]);
@@ -652,11 +662,22 @@ async function createAttachSession(
       `Caplets attach session returned HTTP ${response.status}.`,
     );
   }
-  const payload = (await response.json()) as unknown;
-  if (!isPlainObject(payload) || typeof payload.sessionId !== "string") {
+  return await parseAttachSessionIdResponse(response);
+}
+
+async function parseAttachSessionIdResponse(response: Response): Promise<string> {
+  const sessionId = await attachSessionIdFromResponse(response);
+  if (!sessionId) {
     throw new CapletsError("SERVER_UNAVAILABLE", "Caplets attach session response was invalid.");
   }
-  return payload.sessionId;
+  return sessionId;
+}
+
+async function attachSessionIdFromResponse(response: Response): Promise<string | undefined> {
+  const payload = (await response.json()) as unknown;
+  return isPlainObject(payload) && typeof payload.sessionId === "string"
+    ? payload.sessionId
+    : undefined;
 }
 
 async function closeAttachSession(

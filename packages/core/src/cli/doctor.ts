@@ -80,8 +80,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
           : "unconfigured",
       selectedWorkspace: remoteLogin.selectedWorkspace ?? remote.workspace ?? null,
       webSocketUrl: remote.webSocketUrl,
-      sessionSupport:
-        remoteLogin.authenticated && remoteLogin.kind === "self-hosted" ? "unsupported" : "unknown",
+      sessionSupport: remoteLogin.kind === "self-hosted" ? "unsupported" : "unknown",
       lease: null,
       lastUpgradeError: null,
       recoveryCommand: projectBindingRecovery(remoteLogin, remote),
