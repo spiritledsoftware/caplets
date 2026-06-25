@@ -1,5 +1,12 @@
 # @caplets/opencode
 
+## 0.8.3
+
+### Patch Changes
+
+- Updated dependencies [470c825]
+  - @caplets/core@0.29.1
+
 ## 0.8.2
 
 ### Patch Changes
