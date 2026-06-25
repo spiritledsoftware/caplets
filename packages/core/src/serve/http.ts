@@ -633,6 +633,15 @@ export function createHttpServeApp(
         onError: (event) => {
           writeErr(`Project Binding WebSocket error: ${errorMessage(event)}\n`);
         },
+        onClose: () => {
+          if (!validation.ok) return;
+          void endProjectBindingRecord(validation.record, {
+            code: "interrupted",
+            message: "Project Binding WebSocket closed.",
+          }).catch((error) => {
+            writeErr(`Project Binding WebSocket close cleanup failed: ${errorMessage(error)}\n`);
+          });
+        },
       };
     }),
   );
@@ -802,6 +811,7 @@ export function createHttpServeApp(
     record: ProjectBindingHttpRecord,
     _reason?: BindingTerminalReason | undefined,
   ): Promise<void> {
+    if (!projectBindingSessions.has(record.bindingId) || !record.active) return;
     record.state = "ended";
     record.syncState = "not_started";
     record.active = false;

@@ -50,14 +50,15 @@ export async function resolveAttachOptionsForRun(
     ...(raw.authDir !== undefined ? { authDir: raw.authDir } : {}),
   };
   const selection = await resolveRemoteSelection(remoteInput, env);
+  const projectRoot = raw.projectRoot ?? process.cwd();
   return {
-    projectRoot: raw.projectRoot ?? process.cwd(),
+    projectRoot,
     json: raw.json === true,
     verbose: raw.verbose === true,
     once: raw.once === true,
     remote: selection.remote,
     authMode: selection.kind,
-    syncPolicy: preflightProjectSync(raw.projectRoot ?? process.cwd(), hostedTier(env)),
+    syncPolicy: preflightProjectSync(projectRoot, hostedTier(env)),
     ...(selection.kind === "hosted_cloud"
       ? { selectedWorkspace: selection.selectedWorkspace }
       : raw.workspace

@@ -950,6 +950,55 @@ describe("createHttpServeApp", () => {
     }
   });
 
+  it("ends Project Binding sessions when sockets close without an explicit end message", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: new ProjectBindingWorkspaceStore({ root: workspaceRoot }),
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      const session = await withTimeout(
+        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        }),
+        "create Project Binding session",
+      );
+      expect(session.status).toBe(201);
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+      );
+      await withTimeout(waitForSocketOpen(socket), "open Project Binding WebSocket");
+      await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+      socket.close();
+
+      await withTimeout(
+        waitFor(async () => {
+          const status = await fetch(
+            `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+          );
+          await expect(status.json()).resolves.toMatchObject({
+            bindingId: created.binding.bindingId,
+            state: "not_attached",
+          });
+        }),
+        "observe Project Binding close cleanup",
+      );
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
   it("authenticates Project Binding WebSocket connections with bearer subprotocols", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();

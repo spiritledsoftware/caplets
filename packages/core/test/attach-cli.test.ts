@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -212,20 +212,22 @@ describe("caplets attach CLI", () => {
 
   it("resolves attach options from flags, env, and the caller cwd", async () => {
     const authDir = tempAuthDir();
+    const projectRoot = tempProjectRoot();
+    writeFileSync(join(projectRoot, "project-file.txt"), "bound root file\n");
     await saveSelfHostedProfile(authDir, "https://caplets.example.com/caplets", "profile-token");
     const resolved = await resolveAttachOptions(
       {
         remoteUrl: "https://caplets.example.com/caplets",
         workspace: "workspace",
         once: true,
-        projectRoot: "/repo",
+        projectRoot,
         authDir,
       },
       { CAPLETS_REMOTE_URL: "https://env.example.com" },
     );
 
     expect(resolved).toMatchObject({
-      projectRoot: "/repo",
+      projectRoot,
       once: true,
       remote: {
         baseUrl: new URL("https://caplets.example.com/caplets"),
@@ -233,6 +235,7 @@ describe("caplets attach CLI", () => {
         auth: { type: "bearer", token: "profile-token" },
       },
     });
+    expect(resolved.syncPolicy.totalBytes).toBeGreaterThan(0);
   });
 
   it("reports WebSocket upgrade failures clearly in once mode", async () => {

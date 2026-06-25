@@ -83,5 +83,5 @@ function realExistingPath(path: string, capletId: string, label: string): string
 
 function isPathInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && rel !== ".." && !isAbsolute(rel));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
