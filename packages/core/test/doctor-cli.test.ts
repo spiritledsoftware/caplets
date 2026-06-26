@@ -87,6 +87,11 @@ describe("caplets doctor", () => {
         hostUrl: "https://cloud.caplets.dev/",
         workspaceSlug: "personal-c9b49d",
       },
+      projectBinding: {
+        authMode: "hosted_cloud",
+        sessionSupport: "unknown",
+        recoveryCommand: "caplets attach --once",
+      },
     });
   });
 
@@ -198,6 +203,140 @@ describe("caplets doctor", () => {
       expect(report).toContain("Recovery: caplets attach --once");
       expect(report).not.toContain("Self-hosted Project Binding sessions are not implemented");
       expect(requests).toEqual([{ method: "POST", path: "/v1/attach/project-bindings/sessions" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats non-201 2xx self-hosted Project Binding probe responses as supported", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await saveSelfHostedProfile(authDir);
+
+      await runCli(["doctor", "--json"], {
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        fetch: async () => new Response(null, { status: 204 }),
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        projectBinding: {
+          authMode: "self_hosted_remote",
+          sessionSupport: "supported",
+          lastUpgradeError: null,
+          recoveryCommand: "caplets attach --once",
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces malformed Project Binding diagnostic session responses", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await saveSelfHostedProfile(authDir);
+
+      await runCli(["doctor", "--json"], {
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        fetch: async () => Response.json({ binding: { bindingId: "binding_1" } }, { status: 201 }),
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        projectBinding: {
+          authMode: "self_hosted_remote",
+          sessionSupport: "unknown",
+          lastUpgradeError:
+            "Project Binding diagnostic session response was missing bindingId or sessionId; cleanup was not attempted.",
+          recoveryCommand: "caplets doctor",
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces Project Binding diagnostic session cleanup failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await saveSelfHostedProfile(authDir);
+
+      await runCli(["doctor", "--json"], {
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        fetch: async (url, init) => {
+          if (init?.method === "DELETE") return Response.json({ ok: false }, { status: 503 });
+          if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
+            return Response.json(
+              { binding: { bindingId: "binding_1" }, sessionId: "session_1" },
+              { status: 201 },
+            );
+          }
+          return Response.json({ ok: true });
+        },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        projectBinding: {
+          authMode: "self_hosted_remote",
+          sessionSupport: "unknown",
+          lastUpgradeError: "Project Binding diagnostic cleanup returned 503.",
+          recoveryCommand: "caplets doctor",
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds self-hosted Project Binding doctor probes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    try {
+      await saveSelfHostedProfile(authDir);
+
+      const report = await doctorJsonReport({
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        projectBindingProbeTimeoutMs: 1,
+        fetch: async (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      });
+
+      expect(report.projectBinding).toMatchObject({
+        authMode: "self_hosted_remote",
+        sessionSupport: "unknown",
+        lastUpgradeError: "Project Binding session probe timed out after 1ms.",
+        recoveryCommand: "caplets doctor",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -463,3 +602,17 @@ describe("caplets doctor", () => {
     });
   });
 });
+
+async function saveSelfHostedProfile(authDir: string): Promise<void> {
+  await new FileRemoteProfileStore({
+    root: join(authDir, "remote-profiles"),
+  }).saveSelfHostedProfile({
+    hostUrl: "http://127.0.0.1:5387",
+    clientId: "rcli_test",
+    credentials: {
+      accessToken: "remote-access",
+      refreshToken: "remote-refresh",
+      expiresAt: "2999-01-01T00:00:00.000Z",
+    },
+  });
+}

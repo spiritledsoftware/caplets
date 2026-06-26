@@ -33,6 +33,8 @@ import { loadConfig, loadLocalOverlayConfigWithSources, type CapletConfig } from
 import { resolveExposure } from "../exposure/policy";
 import { daemonStatus, type DaemonOperationOptions } from "../daemon";
 
+const PROJECT_BINDING_DOCTOR_PROBE_TIMEOUT_MS = 5_000;
+
 export type DoctorOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   cwd?: string;
@@ -42,6 +44,7 @@ export type DoctorOptions = {
   observedOutputShapeCacheDir?: string;
   daemon?: DaemonOperationOptions;
   fetch?: typeof fetch;
+  projectBindingProbeTimeoutMs?: number;
 };
 
 export type DoctorJsonReport = {
@@ -244,6 +247,7 @@ function projectBindingRecovery(
   sessionSupport: ProjectBindingSessionSupport,
 ): string {
   if (remoteLogin.authenticated) {
+    if (remoteLogin.kind === "cloud") return "caplets attach --once";
     if (sessionSupport === "supported") return "caplets attach --once";
     if (sessionSupport === "unsupported") {
       return "Upgrade the remote Caplets service and rerun caplets doctor.";
@@ -276,29 +280,53 @@ async function resolveProjectBindingSessionSupport(
   }
 
   const fetchImpl = options.fetch ?? remote.fetch ?? fetch;
+  const timeoutMs = options.projectBindingProbeTimeoutMs ?? PROJECT_BINDING_DOCTOR_PROBE_TIMEOUT_MS;
   const headers = new Headers(remote.requestInit.headers);
   headers.set("content-type", "application/json");
   try {
-    const response = await fetchImpl(projectBindingSessionsUrl(remote), {
-      ...remote.requestInit,
-      method: "POST",
-      headers,
-      body: JSON.stringify({ diagnosticProbe: true }),
-    });
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      projectBindingSessionsUrl(remote),
+      timeoutMs,
+      {
+        ...remote.requestInit,
+        method: "POST",
+        headers,
+        body: JSON.stringify({ diagnosticProbe: true }),
+      },
+    );
     if (response.status === 201) {
-      const created = (await response.json().catch(() => ({}))) as {
-        binding?: { bindingId?: unknown };
-        sessionId?: unknown;
-      };
+      const created = await readDiagnosticSessionResponse(response);
+      if (!created.ok) return { value: "unknown", lastError: created.error };
       const bindingId =
-        typeof created.binding?.bindingId === "string" ? created.binding.bindingId : undefined;
-      const sessionId = typeof created.sessionId === "string" ? created.sessionId : undefined;
-      if (bindingId && sessionId) {
-        await endProjectBindingDiagnosticSession(fetchImpl, remote, bindingId, sessionId);
+        typeof created.value.binding?.bindingId === "string"
+          ? created.value.binding.bindingId
+          : undefined;
+      const sessionId =
+        typeof created.value.sessionId === "string" ? created.value.sessionId : undefined;
+      if (!bindingId || !sessionId) {
+        return {
+          value: "unknown",
+          lastError:
+            "Project Binding diagnostic session response was missing bindingId or sessionId; cleanup was not attempted.",
+        };
+      }
+      const cleanupError = await endProjectBindingDiagnosticSession(
+        fetchImpl,
+        remote,
+        bindingId,
+        sessionId,
+        timeoutMs,
+      );
+      if (cleanupError) {
+        return { value: "unknown", lastError: cleanupError };
       }
       return { value: "supported", lastError: null };
     }
     if (response.status === 400) return { value: "supported", lastError: null };
+    if (response.status >= 200 && response.status < 300) {
+      return { value: "supported", lastError: null };
+    }
     if (response.status === 404 || response.status === 405 || response.status === 501) {
       return {
         value: "unsupported",
@@ -324,26 +352,85 @@ function projectBindingSessionsUrl(remote: ResolvedCapletsRemote): URL {
   return controlProjectBindingUrl(remote, "sessions");
 }
 
+async function readDiagnosticSessionResponse(response: Response): Promise<
+  | {
+      ok: true;
+      value: {
+        binding?: { bindingId?: unknown };
+        sessionId?: unknown;
+      };
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    return {
+      ok: true,
+      value: (await response.json()) as {
+        binding?: { bindingId?: unknown };
+        sessionId?: unknown;
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: `Project Binding diagnostic session response could not be parsed; cleanup was not attempted: ${errorMessage(error)}`,
+    };
+  }
+}
+
 async function endProjectBindingDiagnosticSession(
   fetchImpl: typeof fetch,
   remote: ResolvedCapletsRemote,
   bindingId: string,
   sessionId: string,
-): Promise<void> {
+  timeoutMs: number,
+): Promise<string | null> {
   const headers = new Headers(remote.requestInit.headers);
   headers.set("content-type", "application/json");
-  await fetchImpl(controlProjectBindingUrl(remote, `${encodeURIComponent(bindingId)}/session`), {
-    ...remote.requestInit,
-    method: "DELETE",
-    headers,
-    body: JSON.stringify({
-      sessionId,
-      terminalReason: {
-        code: "completed",
-        message: "Project Binding diagnostic probe completed.",
+  try {
+    const response = await fetchWithTimeout(
+      fetchImpl,
+      controlProjectBindingUrl(remote, `${encodeURIComponent(bindingId)}/session`),
+      timeoutMs,
+      {
+        ...remote.requestInit,
+        method: "DELETE",
+        headers,
+        body: JSON.stringify({
+          sessionId,
+          terminalReason: {
+            code: "completed",
+            message: "Project Binding diagnostic probe completed.",
+          },
+        }),
       },
-    }),
-  }).catch(() => undefined);
+    );
+    return response.ok ? null : `Project Binding diagnostic cleanup returned ${response.status}.`;
+  } catch (error) {
+    return `Project Binding diagnostic cleanup failed: ${errorMessage(error)}`;
+  }
+}
+
+async function fetchWithTimeout(
+  fetchImpl: typeof fetch,
+  url: URL,
+  timeoutMs: number,
+  init: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () =>
+      controller.abort(new Error(`Project Binding session probe timed out after ${timeoutMs}ms.`)),
+    timeoutMs,
+  );
+  try {
+    return await fetchImpl(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function controlProjectBindingUrl(remote: ResolvedCapletsRemote, suffix: string): URL {
