@@ -102,22 +102,25 @@ export function installCaplets(
       repoRoot: source.repoRoot,
       sourceId: source.id,
     });
-    const installed = plans.map((plan) =>
-      installOneCaplet(plan, { force: Boolean(options.force) }),
-    );
-    const installedWithHashes = installed.map((caplet) => ({
-      ...caplet,
-      hash: hashInstalledArtifact(caplet.destination),
-      status: "installed" as const,
-      ...(options.lockfilePath ? { lockfile: options.lockfilePath } : {}),
-    }));
-    if (options.lockfilePath) {
-      updateLockfileAfterInstall(options.lockfilePath, plans, installedWithHashes, {
-        source,
-        now: options.now ?? new Date(),
-      });
+    const now = options.now ?? new Date();
+    const installed: InstallableCaplet[] = [];
+    for (const plan of plans) {
+      const caplet = installOneCaplet(plan, { force: Boolean(options.force) });
+      const installedWithHash = {
+        ...caplet,
+        hash: hashInstalledArtifact(caplet.destination),
+        status: "installed" as const,
+        ...(options.lockfilePath ? { lockfile: options.lockfilePath } : {}),
+      };
+      installed.push(options.lockfilePath ? installedWithHash : caplet);
+      if (options.lockfilePath) {
+        updateLockfileAfterInstall(options.lockfilePath, [plan], [installedWithHash], {
+          source,
+          now,
+        });
+      }
     }
-    return { installed: options.lockfilePath ? installedWithHashes : installed };
+    return { installed };
   } finally {
     source.cleanup();
   }

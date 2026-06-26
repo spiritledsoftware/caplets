@@ -2094,6 +2094,56 @@ describe("cli init", () => {
     }
   });
 
+  it("records successful installs before a later install fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-partial-lockfile-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const capletsRoot = join(repo, "caplets");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      mkdirSync(join(capletsRoot, "alpha"), { recursive: true });
+      writeFileSync(join(capletsRoot, "alpha", "CAPLET.md"), capletFixture("Alpha"));
+      mkdirSync(join(capletsRoot, "broken"), { recursive: true });
+      writeFileSync(join(capletsRoot, "broken", "CAPLET.md"), capletFixture("Broken"));
+      writeFileSync(join(dir, "outside.txt"), "outside source boundary\n");
+      symlinkSync(join(dir, "outside.txt"), join(capletsRoot, "broken", "outside-link.txt"));
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await expect(
+        runCli(["install", repo, "alpha", "broken"], { writeOut: () => {} }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+      } satisfies Partial<CapletsError>);
+
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
+      expect(lockfile.entries).toMatchObject([
+        {
+          id: "alpha",
+          destination: "alpha",
+          installedHash: expect.stringMatching(/^sha256:/),
+        },
+      ]);
+      expect(lockfile.entries.some((entry: { id: string }) => entry.id === "broken")).toBe(false);
+
+      await runCli(["install", "--json"], { writeOut: (value) => out.push(value) });
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          {
+            id: "alpha",
+            status: "noop",
+            lockfile: lockfilePath,
+          },
+        ],
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports a missing project lockfile when install has no repo argument", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-missing-lockfile-"));
     const projectRoot = join(dir, "project");
