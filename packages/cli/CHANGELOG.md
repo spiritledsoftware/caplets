@@ -1,5 +1,13 @@
 # caplets
 
+## 0.23.3
+
+### Patch Changes
+
+- 75f4b64: Fix `caplets doctor` Project Binding diagnostics for authenticated self-hosted remotes so supported session routes are reported as supported instead of always unsupported.
+- Updated dependencies [75f4b64]
+  - @caplets/core@0.29.3
+
 ## 0.23.2
 
 ### Patch Changes
