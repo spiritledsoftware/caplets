@@ -2094,6 +2094,24 @@ describe("cli init", () => {
     }
   });
 
+  it("reports a missing project lockfile when install has no repo argument", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-missing-lockfile-"));
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await expect(runCli(["install"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_NOT_FOUND",
+        message: `Caplets lockfile not found at ${join(projectRoot, ".caplets.lock.json")}`,
+      } satisfies Partial<CapletsError>);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("restores missing Caplets from the project lockfile when install has no repo argument", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-"));
     const repo = join(dir, "repo");

@@ -138,6 +138,21 @@ describe("caplets lockfile", () => {
     }
   });
 
+  it("reports missing lockfiles as not found instead of invalid JSON", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-missing-"));
+    const lockPath = join(dir, "caplets.lock.json");
+    try {
+      expect(() => readCapletsLockfile(lockPath)).toThrow(
+        expect.objectContaining({
+          code: "CONFIG_NOT_FOUND",
+          message: `Caplets lockfile not found at ${lockPath}`,
+        }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("validates lockfile destinations against the selected Caplets root", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-lockfile-destination-"));
     const root = join(dir, "caplets");

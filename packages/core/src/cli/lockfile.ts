@@ -60,15 +60,38 @@ export type CapletsLockfile = {
 };
 
 export function readCapletsLockfile(path: string): CapletsLockfile {
+  let contents: string;
+  try {
+    contents = readFileSync(path, "utf8");
+  } catch (error) {
+    if (isErrorCode(error, "ENOENT")) {
+      throw new CapletsError("CONFIG_NOT_FOUND", `Caplets lockfile not found at ${path}`, {
+        cause: toSafeError(error),
+      });
+    }
+    throw new CapletsError("CONFIG_INVALID", `Could not read Caplets lockfile at ${path}`, {
+      cause: toSafeError(error),
+    });
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
+    parsed = JSON.parse(contents);
   } catch (error) {
     throw new CapletsError("CONFIG_INVALID", `Caplets lockfile at ${path} is not valid JSON`, {
       cause: toSafeError(error),
     });
   }
   return parseCapletsLockfile(parsed, path);
+}
+
+function isErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code
+  );
 }
 
 export function writeCapletsLockfile(path: string, lockfile: CapletsLockfile): void {
