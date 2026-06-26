@@ -151,10 +151,11 @@ describe("caplets doctor", () => {
     });
   });
 
-  it("does not recommend Project Binding recovery for authenticated self-hosted remotes", async () => {
+  it("reports supported Project Binding sessions for authenticated self-hosted remotes", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
     const authDir = join(dir, "auth");
     const out: string[] = [];
+    const requests: Array<{ method: string; path: string }> = [];
     try {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
@@ -175,22 +176,34 @@ describe("caplets doctor", () => {
           CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
           XDG_STATE_HOME: join(dir, "state"),
         },
+        fetch: async (url, init) => {
+          requests.push({
+            method: init?.method ?? "GET",
+            path: new URL(String(url)).pathname,
+          });
+          if (String(url).endsWith("/v1/attach/project-bindings/sessions")) {
+            return Response.json(
+              { ok: false, error: { code: "REQUEST_INVALID" } },
+              { status: 400 },
+            );
+          }
+          return Response.json({ ok: true });
+        },
         writeOut: (value) => out.push(value),
       });
 
       const report = out.join("");
       expect(report).toContain("Auth mode: self_hosted_remote");
-      expect(report).toContain("Session support: unsupported");
-      expect(report).toContain(
-        "Recovery: Self-hosted Project Binding sessions are not implemented by this runtime.",
-      );
-      expect(report).not.toContain("Recovery: caplets attach --once");
+      expect(report).toContain("Session support: supported");
+      expect(report).toContain("Recovery: caplets attach --once");
+      expect(report).not.toContain("Self-hosted Project Binding sessions are not implemented");
+      expect(requests).toEqual([{ method: "POST", path: "/v1/attach/project-bindings/sessions" }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("reports unsupported Project Binding sessions for unauthenticated self-hosted remotes", async () => {
+  it("requires Remote Login before probing self-hosted Project Binding sessions", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
     const configPath = join(dir, "config.json");
     const out: string[] = [];
@@ -216,7 +229,49 @@ describe("caplets doctor", () => {
       });
       expect(report.projectBinding).toMatchObject({
         authMode: "remote_login_required",
-        sessionSupport: "unsupported",
+        sessionSupport: "unknown",
+        recoveryCommand: "caplets remote login http://127.0.0.1:5387/",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports unsupported Project Binding sessions when an authenticated self-hosted remote lacks the route", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-self-hosted-"));
+    const authDir = join(dir, "auth");
+    const out: string[] = [];
+    try {
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: "http://127.0.0.1:5387",
+        clientId: "rcli_test",
+        credentials: {
+          accessToken: "remote-access",
+          refreshToken: "remote-refresh",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
+
+      await runCli(["doctor", "--json"], {
+        authDir,
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+        fetch: async () => Response.json({ ok: false }, { status: 404 }),
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        projectBinding: {
+          authMode: "self_hosted_remote",
+          sessionSupport: "unsupported",
+          lastUpgradeError: "Project Binding session endpoint returned 404.",
+          recoveryCommand: "Upgrade the remote Caplets service and rerun caplets doctor.",
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

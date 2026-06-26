@@ -12,6 +12,7 @@ import {
   resolveCapletsRemote,
   resolveHostedCloudRemote,
   resolveRemoteMode,
+  type ResolvedCapletsRemote,
 } from "../remote/options";
 import { createRemoteProfileStore } from "../remote/profile-store";
 import type { RemoteProfileCredential, RemoteProfileStatus } from "../remote/profiles";
@@ -40,6 +41,7 @@ export type DoctorOptions = {
   authDir?: string;
   observedOutputShapeCacheDir?: string;
   daemon?: DaemonOperationOptions;
+  fetch?: typeof fetch;
 };
 
 export type DoctorJsonReport = {
@@ -62,6 +64,7 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
   const remoteLogin = await resolveRemoteLoginSection(options, env);
   const server = resolveServerSection(env);
   const remote = resolveRemoteSection(env, remoteLogin);
+  const sessionSupport = await resolveProjectBindingSessionSupport(options, env, remoteLogin);
 
   return {
     server,
@@ -80,10 +83,10 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
           : "unconfigured",
       selectedWorkspace: remoteLogin.selectedWorkspace ?? remote.workspace ?? null,
       webSocketUrl: remote.webSocketUrl,
-      sessionSupport: remoteLogin.kind === "self-hosted" ? "unsupported" : "unknown",
+      sessionSupport: sessionSupport.value,
       lease: null,
-      lastUpgradeError: null,
-      recoveryCommand: projectBindingRecovery(remoteLogin, remote),
+      lastUpgradeError: sessionSupport.lastError,
+      recoveryCommand: projectBindingRecovery(remoteLogin, remote, sessionSupport.value),
     },
     sync: {
       state: options.syncStatus?.state ?? "idle",
@@ -238,16 +241,119 @@ function vaultIssueFromWarning(message: string, path: string) {
 function projectBindingRecovery(
   remoteLogin: DoctorRemoteLoginSection,
   remote: Record<string, unknown>,
+  sessionSupport: ProjectBindingSessionSupport,
 ): string {
   if (remoteLogin.authenticated) {
-    return remoteLogin.kind === "self-hosted"
-      ? "Self-hosted Project Binding sessions are not implemented by this runtime."
-      : "caplets attach --once";
+    if (sessionSupport === "supported") return "caplets attach --once";
+    if (sessionSupport === "unsupported") {
+      return "Upgrade the remote Caplets service and rerun caplets doctor.";
+    }
+    return "caplets doctor";
   }
   if (remote.configured || remoteLogin.configured) {
     return `caplets remote login ${remoteLogin.hostUrl ?? "<url>"}`;
   }
   return "caplets remote login <url>";
+}
+
+type ProjectBindingSessionSupport = "supported" | "unsupported" | "unknown";
+
+async function resolveProjectBindingSessionSupport(
+  options: DoctorOptions,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  remoteLogin: DoctorRemoteLoginSection,
+): Promise<{ value: ProjectBindingSessionSupport; lastError: string | null }> {
+  if (remoteLogin.kind !== "self-hosted") return { value: "unknown", lastError: null };
+  if (!remoteLogin.authenticated || !remoteLogin.credential?.accessToken) {
+    return { value: "unknown", lastError: null };
+  }
+
+  let remote: ResolvedCapletsRemote;
+  try {
+    remote = resolveCapletsRemote(selfHostedDoctorInput(remoteLogin), env);
+  } catch (error) {
+    return { value: "unknown", lastError: errorMessage(error) };
+  }
+
+  const fetchImpl = options.fetch ?? remote.fetch ?? fetch;
+  const headers = new Headers(remote.requestInit.headers);
+  headers.set("content-type", "application/json");
+  try {
+    const response = await fetchImpl(projectBindingSessionsUrl(remote), {
+      ...remote.requestInit,
+      method: "POST",
+      headers,
+      body: JSON.stringify({ diagnosticProbe: true }),
+    });
+    if (response.status === 201) {
+      const created = (await response.json().catch(() => ({}))) as {
+        binding?: { bindingId?: unknown };
+        sessionId?: unknown;
+      };
+      const bindingId =
+        typeof created.binding?.bindingId === "string" ? created.binding.bindingId : undefined;
+      const sessionId = typeof created.sessionId === "string" ? created.sessionId : undefined;
+      if (bindingId && sessionId) {
+        await endProjectBindingDiagnosticSession(fetchImpl, remote, bindingId, sessionId);
+      }
+      return { value: "supported", lastError: null };
+    }
+    if (response.status === 400) return { value: "supported", lastError: null };
+    if (response.status === 404 || response.status === 405 || response.status === 501) {
+      return {
+        value: "unsupported",
+        lastError: `Project Binding session endpoint returned ${response.status}.`,
+      };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return {
+        value: "unknown",
+        lastError: `Project Binding session probe was not authorized (${response.status}).`,
+      };
+    }
+    return {
+      value: "unknown",
+      lastError: `Project Binding session probe returned ${response.status}.`,
+    };
+  } catch (error) {
+    return { value: "unknown", lastError: errorMessage(error) };
+  }
+}
+
+function projectBindingSessionsUrl(remote: ResolvedCapletsRemote): URL {
+  return controlProjectBindingUrl(remote, "sessions");
+}
+
+async function endProjectBindingDiagnosticSession(
+  fetchImpl: typeof fetch,
+  remote: ResolvedCapletsRemote,
+  bindingId: string,
+  sessionId: string,
+): Promise<void> {
+  const headers = new Headers(remote.requestInit.headers);
+  headers.set("content-type", "application/json");
+  await fetchImpl(controlProjectBindingUrl(remote, `${encodeURIComponent(bindingId)}/session`), {
+    ...remote.requestInit,
+    method: "DELETE",
+    headers,
+    body: JSON.stringify({
+      sessionId,
+      terminalReason: {
+        code: "completed",
+        message: "Project Binding diagnostic probe completed.",
+      },
+    }),
+  }).catch(() => undefined);
+}
+
+function controlProjectBindingUrl(remote: ResolvedCapletsRemote, suffix: string): URL {
+  const url = new URL(remote.projectBindingWebSocketUrl);
+  if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol === "ws:") url.protocol = "http:";
+  url.pathname = url.pathname.replace(/\/connect$/u, `/${suffix}`);
+  url.search = "";
+  url.hash = "";
+  return url;
 }
 
 async function resolveDaemonSection(
@@ -570,6 +676,10 @@ function observedOutputShapePath(value: unknown): string | undefined {
     typeof (value as { path?: unknown }).path === "string"
     ? (value as { path: string }).path
     : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function allCaplets(config: { [key: string]: unknown }): CapletConfig[] {
