@@ -6,6 +6,8 @@ tags:
   - mcp
   - code
   - search
+projectBinding:
+  required: true
 setup:
   commands:
     - label: Install ast-grep MCP
@@ -28,6 +30,8 @@ mcpServer:
 Use this Caplet to expose ast-grep's structural search, scan, rule testing, rewrite, and scaffold workflows without giving an agent unrestricted shell access.
 
 The manifest uses the full `ast-grep-mcp` MCP server.
+
+Project Binding is required because ast-grep reads and may rewrite files in the attached repository. The bound root defines the workspace that search and rewrite operations are allowed to target.
 
 ## Setup
 

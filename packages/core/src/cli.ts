@@ -54,7 +54,11 @@ import {
   formatVaultValueList,
   formatVaultValueStatus,
 } from "./cli/vault";
-import { installCaplets } from "./cli/install";
+import {
+  installCaplets,
+  restoreCapletsFromLockfile,
+  updateCapletsFromLockfile,
+} from "./cli/install";
 import {
   formatSetupMenu,
   runInteractiveSetup,
@@ -70,12 +74,14 @@ import {
   type LocalOverlayConfigWithSources,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
+  defaultCapletsLockfilePath,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
+  resolveProjectLockfilePath,
   vaultBootstrapResolver,
 } from "./config";
 import { CapletsEngine } from "./engine";
@@ -406,6 +412,7 @@ function telemetryCommandFamilyFromArgs(
   if (command === cliCommands.setup) return { commandFamily: "setup", surface: "cli" };
   if (command === cliCommands.init) return { commandFamily: "init", surface: "cli" };
   if (command === cliCommands.install) return { commandFamily: "install", surface: "cli" };
+  if (command === cliCommands.update) return { commandFamily: "install", surface: "cli" };
   if (command === cliCommands.add) return { commandFamily: "add", surface: "cli" };
   if (command === cliCommands.doctor) return { commandFamily: "doctor", surface: "cli" };
   if (command === cliCommands.auth) return { commandFamily: "auth", surface: "cli" };
@@ -2897,44 +2904,136 @@ export function createProgram(io: CliIO = {}): Command {
 
   program
     .command(cliCommands.install)
-    .description("Install Caplets from a repo's caplets directory.")
-    .argument("<repo>", "local repo path, Git URL, or GitHub owner/repo")
+    .description("Install Caplets from a repo's caplets directory or restore from a lockfile.")
+    .argument("[repo]", "local repo path, Git URL, or GitHub owner/repo")
     .argument("[caplets...]", "optional Caplet IDs to install")
     .option("--project", "install to the project Caplets root")
     .option("-g, --global", "install to the user Caplets root")
     .option("--remote", "install through remote control")
     .option("--force", "overwrite installed Caplets")
+    .option("--json", "print JSON output")
     .action(
       async (
-        repo: string,
+        repo: string | undefined,
         capletIds: string[],
-        options: MutationTargetOptions & { force?: boolean },
+        options: MutationTargetOptions & { force?: boolean; json?: boolean },
       ) => {
         printTelemetryNotice("cli");
-        const target = parseMutationTarget(options);
+        const target = parseCatalogLifecycleTarget(options);
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = (await remote.request("install", {
-            repo,
+            ...(repo ? { repo } : {}),
             capletIds,
             force: Boolean(options.force),
           })) as { installed: Array<{ id: string; destination: string }> };
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            return;
+          }
           for (const caplet of result.installed) {
             writeOut(`Installed ${caplet.id} to remote ${caplet.destination}\n`);
+          }
+          return;
+        }
+        const destinationRoot =
+          target === "global"
+            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
+            : envProjectCapletsRoot(env);
+        const lockfilePath =
+          target === "global"
+            ? defaultCapletsLockfilePath(env)
+            : resolveProjectLockfilePath(process.cwd());
+        if (!repo) {
+          const result = restoreCapletsFromLockfile({
+            capletIds,
+            force: Boolean(options.force),
+            destinationRoot,
+            lockfilePath,
+          });
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            return;
+          }
+          for (const caplet of result.installed) {
+            writeOut(
+              `${caplet.status === "noop" ? "Already installed" : "Restored"} ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+            );
           }
           return;
         }
         const result = installCaplets(repo, {
           capletIds,
           force: Boolean(options.force),
-          destinationRoot:
-            target === "global"
-              ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
-              : envProjectCapletsRoot(env),
+          destinationRoot,
+          lockfilePath,
         });
+        if (options.json) {
+          writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          return;
+        }
         for (const caplet of result.installed) {
           writeOut(
             `Installed ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
+          );
+        }
+      },
+    );
+
+  program
+    .command(cliCommands.update)
+    .description("Update installed Caplets from the selected lockfile.")
+    .argument("[caplets...]", "optional Caplet IDs to update")
+    .option("--project", "update the project Caplets root")
+    .option("-g, --global", "update the user Caplets root")
+    .option("--remote", "update through remote control")
+    .option("--force", "replace local modifications and risk-increasing changes")
+    .option("--json", "print JSON output")
+    .action(
+      async (
+        capletIds: string[],
+        options: MutationTargetOptions & { force?: boolean; json?: boolean },
+      ) => {
+        printTelemetryNotice("cli");
+        const target = parseCatalogLifecycleTarget(options);
+        if (target === "remote") {
+          const remote = requireRemoteClientForTarget(io);
+          const result = (await remote.request("update", {
+            capletIds,
+            force: Boolean(options.force),
+          })) as { installed: Array<{ id: string; destination: string; status?: string }> };
+          if (options.json) {
+            writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+            return;
+          }
+          for (const caplet of result.installed) {
+            writeOut(
+              `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at remote ${caplet.destination}\n`,
+            );
+          }
+          return;
+        }
+        const destinationRoot =
+          target === "global"
+            ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
+            : envProjectCapletsRoot(env);
+        const lockfilePath =
+          target === "global"
+            ? defaultCapletsLockfilePath(env)
+            : resolveProjectLockfilePath(process.cwd());
+        const result = updateCapletsFromLockfile({
+          capletIds,
+          force: Boolean(options.force),
+          destinationRoot,
+          lockfilePath,
+        });
+        if (options.json) {
+          writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
+          return;
+        }
+        for (const caplet of result.installed) {
+          writeOut(
+            `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
           );
         }
       },
@@ -3773,6 +3872,24 @@ function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
   return "project";
 }
 
+function parseCatalogLifecycleTarget(options: MutationTargetOptions): MutationTarget {
+  if (options.project && options.remote) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Cannot combine --project and --remote for catalog install or update.",
+    );
+  }
+  if (options.global && options.project) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      "Cannot combine mutation target flags: --project, --global",
+    );
+  }
+  if (options.remote) return "remote";
+  if (options.global) return "global";
+  return "project";
+}
+
 function parseVaultTarget(options: VaultTargetOptions): VaultTarget {
   const selected = [
     options.global ? "--global" : undefined,
@@ -3966,6 +4083,28 @@ function vaultAccessFilter(
 
 function localMutationTargetLabel(target: Exclude<MutationTarget, "remote">, io: CliIO): string {
   return remoteClientForCli(io) ? `${target} ` : "";
+}
+
+function installJsonResult(
+  installed: Array<{
+    id: string;
+    destination: string;
+    status?: string | undefined;
+    hash?: string | undefined;
+    lockfile?: string | undefined;
+    source?: string | undefined;
+  }>,
+) {
+  return {
+    entries: installed.map((entry) => ({
+      id: entry.id,
+      status: entry.status ?? "installed",
+      destination: entry.destination,
+      ...(entry.lockfile ? { lockfile: entry.lockfile } : {}),
+      ...(entry.hash ? { hash: entry.hash } : {}),
+      ...(entry.source ? { source: entry.source } : {}),
+    })),
+  };
 }
 
 function parseAuthFlagTarget(options: AuthTargetOptions): AuthTarget | undefined {

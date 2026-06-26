@@ -8,6 +8,8 @@ tags:
   - lsp
   - language-server
   - diagnostics
+projectBinding:
+  required: true
 mcpServer:
   command: npx
   args: [-y, language-server-mcp]
@@ -18,6 +20,8 @@ mcpServer:
 Use this Caplet to expose Language Server Protocol capabilities through `language-server-mcp` without handing every language-server operation to an agent up front.
 
 The server runs over stdio, starts local language servers lazily, and gives agents project-aware code intelligence for repositories that have LSP configuration or supported built-in language servers.
+
+Project Binding is required because all useful LSP operations need a trustworthy bound project root for workspace-relative files, language-server startup, diagnostics, and edit containment.
 
 ## Good Fits
 

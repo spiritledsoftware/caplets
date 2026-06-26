@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   accessSync,
   constants,
@@ -9,24 +10,37 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   type Stats,
   statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { discoverCapletFiles, validateCapletFile } from "../caplet-files";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError, toSafeError } from "../errors";
+import {
+  readCapletsLockfile,
+  validateLockfileDestination,
+  writeCapletsLockfile,
+  type CapletsLockEntry,
+  type CapletsLockSource,
+} from "./lockfile";
 
 type InstallableCaplet = {
   id: string;
   source: string;
   destination: string;
   kind: "file" | "directory";
+  hash?: string | undefined;
+  status?: "installed" | "restored" | "updated" | "noop" | undefined;
+  lockfile?: string | undefined;
 };
 
 type InstallPlan = InstallableCaplet & {
@@ -40,6 +54,8 @@ export function installCaplets(
     capletIds?: string[];
     destinationRoot?: string;
     force?: boolean;
+    lockfilePath?: string | undefined;
+    now?: Date | undefined;
   } = {},
 ): { installed: InstallableCaplet[] } {
   const source = resolveInstallSource(repo);
@@ -73,16 +89,258 @@ export function installCaplets(
     for (const caplet of selected) {
       validateCapletFile(caplet.path);
     }
-    const installed = preflightInstallCaplets(selected, {
+    const plans = preflightInstallCaplets(selected, {
       destinationRoot,
       force: Boolean(options.force),
       repoRoot: source.repoRoot,
       sourceId: source.id,
-    }).map((plan) => installOneCaplet(plan, { force: Boolean(options.force) }));
-    return { installed };
+    });
+    const installed = plans.map((plan) =>
+      installOneCaplet(plan, { force: Boolean(options.force) }),
+    );
+    const installedWithHashes = installed.map((caplet) => ({
+      ...caplet,
+      hash: hashInstalledArtifact(caplet.destination),
+      status: "installed" as const,
+      ...(options.lockfilePath ? { lockfile: options.lockfilePath } : {}),
+    }));
+    if (options.lockfilePath) {
+      updateLockfileAfterInstall(options.lockfilePath, plans, installedWithHashes, {
+        source,
+        now: options.now ?? new Date(),
+      });
+    }
+    return { installed: options.lockfilePath ? installedWithHashes : installed };
   } finally {
     source.cleanup();
   }
+}
+
+export function restoreCapletsFromLockfile(options: {
+  destinationRoot?: string;
+  lockfilePath: string;
+  force?: boolean;
+  capletIds?: string[] | undefined;
+  now?: Date | undefined;
+}): { installed: InstallableCaplet[] } {
+  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
+  const lockfile = readCapletsLockfile(options.lockfilePath);
+  const selectedIds = new Set(options.capletIds ?? []);
+  const entries = lockfile.entries.filter(
+    (entry) => selectedIds.size === 0 || selectedIds.has(entry.id),
+  );
+  const missing = [...selectedIds].filter(
+    (id) => !lockfile.entries.some((entry) => entry.id === id),
+  );
+  if (missing.length > 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplet ${missing.join(", ")} not found in lockfile`,
+    );
+  }
+  if (entries.length === 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `No Caplets found in lockfile ${options.lockfilePath}`,
+    );
+  }
+
+  const results: InstallableCaplet[] = [];
+  for (const entry of entries) {
+    const destination = validateLockfileDestination(destinationRoot, entry.destination);
+    const existing = lstatIfExists(destination);
+    if (existing) {
+      const currentHash = hashInstalledArtifact(destination);
+      if (currentHash === entry.installedHash) {
+        results.push({
+          id: entry.id,
+          source: lockSourceDisplay(entry.source),
+          destination,
+          kind: entry.kind,
+          hash: currentHash,
+          status: "noop",
+          lockfile: options.lockfilePath,
+        });
+        continue;
+      }
+      if (!options.force) {
+        throw new CapletsError(
+          "CONFIG_EXISTS",
+          `Caplet ${entry.id} has local modifications at ${destination}; pass --force to replace it`,
+        );
+      }
+    }
+
+    const sourcePath = resolveLockedSourcePath(entry.source);
+    const sourceBoundary =
+      entry.source.type === "local" ? dirname(sourcePath) : dirname(sourcePath);
+    const plan: InstallPlan = {
+      id: entry.id,
+      source: lockSourceDisplay(entry.source),
+      sourcePath,
+      sourceBoundary,
+      destination,
+      kind: entry.kind,
+    };
+    preflightInstallCaplets(
+      [
+        {
+          id: entry.id,
+          path: entry.kind === "directory" ? join(sourcePath, "CAPLET.md") : sourcePath,
+        },
+      ],
+      {
+        destinationRoot,
+        force: true,
+        repoRoot:
+          entry.source.type === "local"
+            ? inferLocalRepoRoot(entry.source.path)
+            : dirname(dirname(sourcePath)),
+        sourceId: lockSourceDisplay(entry.source),
+      },
+    );
+    installOneCaplet(plan, { force: true });
+    const hash = hashInstalledArtifact(destination);
+    if (hash !== entry.installedHash) {
+      const nextEntries = lockfile.entries.map((candidate) =>
+        candidate.id === entry.id
+          ? {
+              ...candidate,
+              installedHash: hash,
+              updatedAt: (options.now ?? new Date()).toISOString(),
+            }
+          : candidate,
+      );
+      writeCapletsLockfile(options.lockfilePath, { version: 1, entries: nextEntries });
+    }
+    results.push({
+      id: entry.id,
+      source: lockSourceDisplay(entry.source),
+      destination,
+      kind: entry.kind,
+      hash,
+      status: "restored",
+      lockfile: options.lockfilePath,
+    });
+  }
+  return { installed: results };
+}
+
+export function updateCapletsFromLockfile(options: {
+  destinationRoot?: string;
+  lockfilePath: string;
+  force?: boolean;
+  capletIds?: string[] | undefined;
+  now?: Date | undefined;
+}): { installed: InstallableCaplet[] } {
+  const destinationRoot = options.destinationRoot ?? resolveProjectCapletsRoot();
+  const lockfile = readCapletsLockfile(options.lockfilePath);
+  const selectedIds = new Set(options.capletIds ?? []);
+  const entries = lockfile.entries.filter(
+    (entry) => selectedIds.size === 0 || selectedIds.has(entry.id),
+  );
+  const missing = [...selectedIds].filter(
+    (id) => !lockfile.entries.some((entry) => entry.id === id),
+  );
+  if (missing.length > 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Caplet ${missing.join(", ")} not found in lockfile`,
+    );
+  }
+  if (entries.length === 0) {
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `No Caplets found in lockfile ${options.lockfilePath}`,
+    );
+  }
+
+  const nextEntries = new Map(lockfile.entries.map((entry) => [entry.id, entry]));
+  const results: InstallableCaplet[] = [];
+  for (const entry of entries) {
+    const destination = validateLockfileDestination(destinationRoot, entry.destination);
+    const existing = lstatIfExists(destination);
+    if (existing) {
+      const currentHash = hashInstalledArtifact(destination);
+      if (currentHash !== entry.installedHash && !options.force) {
+        throw new CapletsError(
+          "CONFIG_EXISTS",
+          `Caplet ${entry.id} has local modifications at ${destination}; pass --force to update it`,
+        );
+      }
+    }
+
+    const sourcePath = resolveLockedSourcePath(entry.source);
+    if (!existsSync(sourcePath)) {
+      throw new CapletsError("CONFIG_NOT_FOUND", `Locked source for ${entry.id} is unavailable`);
+    }
+    const sourceHash = hashInstalledArtifact(sourcePath);
+    const nextRisk = riskSummaryForSourcePath(sourcePath);
+    if (!options.force && riskIncrease(entry.risk, nextRisk)) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,
+      );
+    }
+    if (existing && sourceHash === entry.installedHash && !options.force) {
+      results.push({
+        id: entry.id,
+        source: lockSourceDisplay(entry.source),
+        destination,
+        kind: entry.kind,
+        hash: entry.installedHash,
+        status: "noop",
+        lockfile: options.lockfilePath,
+      });
+      continue;
+    }
+
+    const plan: InstallPlan = {
+      id: entry.id,
+      source: lockSourceDisplay(entry.source),
+      sourcePath,
+      sourceBoundary: dirname(sourcePath),
+      destination,
+      kind: entry.kind,
+    };
+    preflightInstallCaplets(
+      [
+        {
+          id: entry.id,
+          path: entry.kind === "directory" ? join(sourcePath, "CAPLET.md") : sourcePath,
+        },
+      ],
+      {
+        destinationRoot,
+        force: true,
+        repoRoot:
+          entry.source.type === "local"
+            ? inferLocalRepoRoot(entry.source.path)
+            : dirname(dirname(sourcePath)),
+        sourceId: lockSourceDisplay(entry.source),
+      },
+    );
+    installOneCaplet(plan, { force: true });
+    const hash = hashInstalledArtifact(destination);
+    const now = (options.now ?? new Date()).toISOString();
+    nextEntries.set(entry.id, {
+      ...entry,
+      installedHash: hash,
+      updatedAt: now,
+      risk: nextRisk,
+    });
+    results.push({
+      id: entry.id,
+      source: lockSourceDisplay(entry.source),
+      destination,
+      kind: entry.kind,
+      hash,
+      status: "updated",
+      lockfile: options.lockfilePath,
+    });
+  }
+  writeCapletsLockfile(options.lockfilePath, { version: 1, entries: [...nextEntries.values()] });
+  return { installed: results };
 }
 
 function discoverSelectedCapletFiles(
@@ -108,9 +366,16 @@ function discoverSelectedCapletFiles(
   return candidates.sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function resolveInstallSource(repo: string): { id: string; repoRoot: string; cleanup: () => void } {
+function resolveInstallSource(repo: string): {
+  id: string;
+  repoRoot: string;
+  cleanup: () => void;
+  sourceKind: "local" | "git";
+  repository?: string | undefined;
+  resolvedRevision?: string | undefined;
+} {
   if (existsSync(repo) && statSync(repo).isDirectory()) {
-    return { id: repo, repoRoot: repo, cleanup: () => {} };
+    return { id: repo, repoRoot: repo, cleanup: () => {}, sourceKind: "local" };
   }
 
   const normalizedRepo = normalizeGitRepo(repo);
@@ -120,14 +385,365 @@ function resolveInstallSource(repo: string): { id: string; repoRoot: string; cle
       stdio: "ignore",
       timeout: 60_000,
     });
+    const resolvedRevision = gitRevision(repoRoot);
     return {
       id: normalizedRepo,
       repoRoot,
+      sourceKind: "git",
+      repository: normalizedRepo,
+      resolvedRevision,
       cleanup: () => removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true),
     };
   } catch (error) {
     removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true);
     throw new CapletsError("CONFIG_NOT_FOUND", `Could not clone repo ${repo}`, toSafeError(error));
+  }
+}
+
+function updateLockfileAfterInstall(
+  lockfilePath: string,
+  plans: InstallPlan[],
+  installed: InstallableCaplet[],
+  options: {
+    source: ReturnType<typeof resolveInstallSource>;
+    now: Date;
+  },
+): void {
+  const existing = existsSync(lockfilePath)
+    ? readCapletsLockfile(lockfilePath)
+    : { version: 1 as const, entries: [] };
+  const installedById = new Map(installed.map((caplet) => [caplet.id, caplet]));
+  const next = new Map(existing.entries.map((entry) => [entry.id, entry]));
+  for (const plan of plans) {
+    const caplet = installedById.get(plan.id);
+    if (!caplet?.hash) continue;
+    const now = options.now.toISOString();
+    const previous = next.get(plan.id);
+    next.set(plan.id, {
+      id: plan.id,
+      destination: relative(dirname(lockfilePath), caplet.destination).startsWith("..")
+        ? destinationDisplay(plan, caplet.destination)
+        : destinationDisplay(plan, caplet.destination),
+      kind: plan.kind,
+      source: lockSourceForPlan(plan, options.source),
+      installedHash: caplet.hash,
+      installedAt: previous?.installedAt ?? now,
+      updatedAt: now,
+      risk: riskSummaryForSourcePath(plan.sourcePath),
+    });
+  }
+  writeCapletsLockfile(lockfilePath, { version: 1, entries: [...next.values()] });
+}
+
+function destinationDisplay(plan: InstallPlan, destination: string): string {
+  return plan.kind === "file" ? `${plan.id}.md` : basename(destination);
+}
+
+function lockSourceForPlan(
+  plan: InstallPlan,
+  source: ReturnType<typeof resolveInstallSource>,
+): CapletsLockSource {
+  const sourcePath = relative(source.repoRoot, plan.sourcePath).replace(/\\/g, "/");
+  if (source.sourceKind === "git") {
+    return {
+      type: "git",
+      repository: source.repository ?? source.id,
+      path: sourcePath,
+      trackedRef: "HEAD",
+      resolvedRevision: source.resolvedRevision,
+      portability: "portable",
+    };
+  }
+  return {
+    type: "local",
+    path: plan.sourcePath,
+    portability: "non_portable",
+    ...localGitInfo(source.repoRoot),
+  };
+}
+
+function resolveLockedSourcePath(source: CapletsLockSource): string {
+  if (source.type === "local") {
+    if (!existsSync(source.path)) {
+      throw new CapletsError(
+        "CONFIG_NOT_FOUND",
+        `Locked local source ${source.path} is unavailable`,
+      );
+    }
+    return source.path;
+  }
+  const repoRoot = mkdtempSync(join(tmpdir(), "caplets-restore-"));
+  try {
+    execFileSync("git", ["clone", "--", source.repository, repoRoot], {
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    if (source.resolvedRevision) {
+      execFileSync("git", ["checkout", "--detach", source.resolvedRevision], {
+        cwd: repoRoot,
+        stdio: "ignore",
+        timeout: 60_000,
+      });
+    }
+    return join(repoRoot, source.path);
+  } catch (error) {
+    removeInstallPath(repoRoot, `temporary restore source ${repoRoot}`, true);
+    throw new CapletsError(
+      "CONFIG_NOT_FOUND",
+      `Could not restore locked source ${source.repository}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function riskSummaryForSourcePath(sourcePath: string): CapletsLockEntry["risk"] {
+  const frontmatter = readCapletFrontmatter(sourcePath);
+  const backendFamilies = capletBackendFamilies(frontmatter);
+  const auth = capletAuth(frontmatter);
+  const runtime = isRecord(frontmatter.runtime) ? frontmatter.runtime : undefined;
+  const projectBindingRequired =
+    isRecord(frontmatter.projectBinding) && frontmatter.projectBinding.required === true;
+  const runtimeFeatures = Array.isArray(runtime?.features)
+    ? runtime.features.filter((feature): feature is string => typeof feature === "string")
+    : undefined;
+  const mutating = capletCanMutate(frontmatter);
+  const destructive = capletCanDestroy(frontmatter);
+  return {
+    backendFamilies: backendFamilies.length > 0 ? backendFamilies : ["unknown"],
+    safety: derivedSafety({
+      backendFamilies,
+      auth,
+      projectBindingRequired,
+      runtimeFeatures: runtimeFeatures ?? [],
+      mutating,
+      destructive,
+      frontmatter,
+    }),
+    projectBindingRequired,
+    authScopes: Array.isArray(auth?.scopes)
+      ? auth.scopes.filter((scope): scope is string => typeof scope === "string")
+      : undefined,
+    runtimeFeatures,
+    mutating,
+    destructive,
+    bodyHash: hashInstalledArtifact(sourcePath),
+  };
+}
+
+function riskIncrease(current: CapletsLockEntry["risk"], next: CapletsLockEntry["risk"]): boolean {
+  if (current.safety === "unknown" || next.safety === "unknown") return true;
+  if (riskRank(next.safety) > riskRank(current.safety)) return true;
+  if (!current.projectBindingRequired && next.projectBindingRequired) return true;
+  if (!current.mutating && next.mutating) return true;
+  if (!current.destructive && next.destructive) return true;
+  if (!isSubset(current.authScopes ?? [], next.authScopes ?? [])) return true;
+  if (!isSubset(current.runtimeFeatures ?? [], next.runtimeFeatures ?? [])) return true;
+  return false;
+}
+
+function readCapletFrontmatter(sourcePath: string): Record<string, unknown> {
+  const capletFile = lstatSync(sourcePath).isDirectory()
+    ? join(sourcePath, "CAPLET.md")
+    : sourcePath;
+  const text = readFileSync(capletFile, "utf8");
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(text);
+  if (!match) return {};
+  const yaml = match[1];
+  if (yaml === undefined) return {};
+  const parsed = parseYaml(yaml);
+  return isRecord(parsed) ? parsed : {};
+}
+
+function capletBackendFamilies(frontmatter: Record<string, unknown>): string[] {
+  const families: Array<readonly [string, string]> = [
+    ["mcp", "mcpServer"],
+    ["openapi", "openapiEndpoint"],
+    ["googleDiscovery", "googleDiscoveryApi"],
+    ["graphql", "graphqlEndpoint"],
+    ["http", "httpApi"],
+    ["cli", "cliTools"],
+    ["caplets", "capletSet"],
+  ];
+  return families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family]));
+}
+
+function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknown> | undefined {
+  for (const key of [
+    "mcpServer",
+    "openapiEndpoint",
+    "googleDiscoveryApi",
+    "graphqlEndpoint",
+    "httpApi",
+  ]) {
+    const backend = frontmatter[key];
+    if (isRecord(backend) && isRecord(backend.auth)) return backend.auth;
+  }
+  return undefined;
+}
+
+function derivedSafety(input: {
+  backendFamilies: string[];
+  auth: Record<string, unknown> | undefined;
+  projectBindingRequired: boolean;
+  runtimeFeatures: string[];
+  mutating: boolean;
+  destructive: boolean;
+  frontmatter: Record<string, unknown>;
+}): CapletsLockEntry["risk"]["safety"] {
+  if (
+    input.projectBindingRequired ||
+    input.runtimeFeatures.length > 0 ||
+    input.backendFamilies.includes("cli") ||
+    isLocalMcpServer(input.frontmatter)
+  ) {
+    return "local_control";
+  }
+  if (
+    input.destructive ||
+    input.mutating ||
+    input.auth !== undefined ||
+    input.backendFamilies.some((family) =>
+      ["openapi", "googleDiscovery", "graphql", "http"].includes(family),
+    )
+  ) {
+    return "mutating_saas";
+  }
+  return "standard";
+}
+
+function isLocalMcpServer(frontmatter: Record<string, unknown>): boolean {
+  const mcpServer = frontmatter.mcpServer;
+  return isRecord(mcpServer) && typeof mcpServer.command === "string";
+}
+
+function capletCanMutate(frontmatter: Record<string, unknown>): boolean {
+  if (frontmatter.graphqlEndpoint !== undefined) return true;
+  if (frontmatter.openapiEndpoint !== undefined || frontmatter.googleDiscoveryApi !== undefined) {
+    return true;
+  }
+  const httpApi = frontmatter.httpApi;
+  if (isRecord(httpApi) && isRecord(httpApi.actions)) {
+    return Object.values(httpApi.actions).some((action) => {
+      if (!isRecord(action)) return false;
+      return typeof action.method === "string" && action.method.toUpperCase() !== "GET";
+    });
+  }
+  if (isRecord(frontmatter.cliTools) && isRecord(frontmatter.cliTools.actions)) {
+    return Object.values(frontmatter.cliTools.actions).some((action) => {
+      if (!isRecord(action) || !isRecord(action.annotations)) return true;
+      return action.annotations.readOnlyHint !== true;
+    });
+  }
+  return false;
+}
+
+function capletCanDestroy(frontmatter: Record<string, unknown>): boolean {
+  const httpApi = frontmatter.httpApi;
+  if (isRecord(httpApi) && isRecord(httpApi.actions)) {
+    return Object.values(httpApi.actions).some(
+      (action) =>
+        isRecord(action) &&
+        typeof action.method === "string" &&
+        action.method.toUpperCase() === "DELETE",
+    );
+  }
+  if (isRecord(frontmatter.cliTools) && isRecord(frontmatter.cliTools.actions)) {
+    return Object.values(frontmatter.cliTools.actions).some(
+      (action) =>
+        isRecord(action) &&
+        isRecord(action.annotations) &&
+        action.annotations.destructiveHint === true,
+    );
+  }
+  return false;
+}
+
+function riskRank(value: CapletsLockEntry["risk"]["safety"]): number {
+  switch (value) {
+    case "standard":
+      return 0;
+    case "mutating_saas":
+      return 1;
+    case "local_control":
+      return 2;
+    case "unknown":
+      return 3;
+  }
+}
+
+function isSubset(previous: string[], next: string[]): boolean {
+  const previousValues = new Set(previous);
+  return next.every((value) => previousValues.has(value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function lockSourceDisplay(source: CapletsLockSource): string {
+  return source.type === "git" ? `${source.repository}#${source.path}` : `${source.path}`;
+}
+
+function inferLocalRepoRoot(sourcePath: string): string {
+  const marker = `${sep}caplets${sep}`;
+  const index = sourcePath.lastIndexOf(marker);
+  return index === -1 ? dirname(sourcePath) : sourcePath.slice(0, index);
+}
+
+function hashInstalledArtifact(path: string): string {
+  const hash = createHash("sha256");
+  hashPath(path, "", hash);
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function hashPath(path: string, relativePath: string, hash: ReturnType<typeof createHash>): void {
+  const stats = lstatSync(path);
+  const mode = stats.mode & 0o111 ? "executable" : "plain";
+  if (stats.isDirectory()) {
+    hash.update(`dir\0${relativePath}\0`);
+    for (const entry of readdirSync(path).sort()) {
+      hashPath(join(path, entry), relativePath ? `${relativePath}/${entry}` : entry, hash);
+    }
+    return;
+  }
+  if (stats.isSymbolicLink()) {
+    hash.update(`symlink\0${relativePath}\0${readlinkSync(path)}\0`);
+    return;
+  }
+  hash.update(`file\0${relativePath}\0${mode}\0`);
+  hash.update(readFileSync(path));
+  hash.update("\0");
+}
+
+function gitRevision(repoRoot: string): string | undefined {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function localGitInfo(repoRoot: string): Partial<Extract<CapletsLockSource, { type: "local" }>> {
+  try {
+    const gitRepository = execFileSync("git", ["config", "--get", "remote.origin.url"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    }).trim();
+    const gitRevisionValue = gitRevision(repoRoot);
+    return {
+      ...(gitRepository ? { gitRepository } : {}),
+      ...(gitRevisionValue ? { gitRevision: gitRevisionValue } : {}),
+      dirty: false,
+    };
+  } catch {
+    return {};
   }
 }
 
@@ -329,16 +945,64 @@ function installOneCaplet(plan: InstallPlan, options: { force: boolean }): Insta
         `Caplet ${plan.id} already exists at ${plan.destination}; pass --force to overwrite it`,
       );
     }
-    removeInstallPath(plan.destination, `existing Caplet destination ${plan.destination}`, false);
   }
 
-  copyInstallPath(plan);
+  replaceInstallPath(plan, Boolean(stats));
   return {
     id: plan.id,
     source: plan.source,
     destination: plan.destination,
     kind: plan.kind,
   };
+}
+
+function replaceInstallPath(plan: InstallPlan, hasExistingDestination: boolean): void {
+  const stagedPath = uniqueSiblingPath(plan.destination, ".tmp");
+  const backupPath = uniqueSiblingPath(plan.destination, ".old");
+  try {
+    copyInstallPath(plan, stagedPath);
+    if (!hasExistingDestination) {
+      renameSync(stagedPath, plan.destination);
+      return;
+    }
+
+    renameSync(plan.destination, backupPath);
+    try {
+      renameSync(stagedPath, plan.destination);
+    } catch (error) {
+      try {
+        renameSync(backupPath, plan.destination);
+      } catch (restoreError) {
+        throw new CapletsError(
+          "CONFIG_INVALID",
+          `Could not restore existing Caplet destination ${plan.destination}`,
+          toSafeError(restoreError),
+        );
+      }
+      throw error;
+    }
+    removeInstallPath(backupPath, `previous Caplet destination ${backupPath}`, true);
+  } catch (error) {
+    removeInstallPath(stagedPath, `staged Caplet destination ${stagedPath}`, true);
+    if (error instanceof CapletsError) {
+      throw error;
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Could not install Caplet ${plan.id} to ${plan.destination}`,
+      toSafeError(error),
+    );
+  }
+}
+
+function uniqueSiblingPath(path: string, suffix: string): string {
+  const parent = dirname(path);
+  const name = basename(path);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = join(parent, `.${name}${suffix}-${process.pid}-${Date.now()}-${attempt}`);
+    if (!existsSync(candidate)) return candidate;
+  }
+  throw new CapletsError("CONFIG_EXISTS", `Could not allocate staging path for ${path}`);
 }
 
 function rejectSymlinkDestination(id: string, path: string, stats: Stats | undefined): void {
@@ -400,14 +1064,14 @@ function removeInstallPath(path: string, label: string, force: boolean): void {
   }
 }
 
-function copyInstallPath(plan: InstallPlan): void {
+function copyInstallPath(plan: InstallPlan, destination: string): void {
   try {
     if (plan.kind === "directory") {
-      copyDirectoryCaplet(plan.sourcePath, plan.destination, realpathSync(plan.sourceBoundary));
+      copyDirectoryCaplet(plan.sourcePath, destination, realpathSync(plan.sourceBoundary));
       return;
     }
 
-    cpSync(plan.sourcePath, plan.destination, {
+    cpSync(plan.sourcePath, destination, {
       recursive: false,
       force: false,
       errorOnExist: true,

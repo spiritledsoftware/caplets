@@ -465,6 +465,48 @@ describe("dispatchRemoteCliRequest", () => {
     ).resolves.toMatchObject({ ok: true, result: { remote: true } });
   });
 
+  it("installs catalog Caplets into remote global state", async () => {
+    const context = testContext();
+    const sourceRepo = join(context.tempRoot, "source-global");
+    const sourceCaplets = join(sourceRepo, "caplets");
+    const globalRoot = join(context.tempRoot, "remote-global");
+    const globalLockfilePath = join(context.tempRoot, "remote-state", "caplets.lock.json");
+    mkdirSync(sourceCaplets, { recursive: true });
+    writeFileSync(
+      join(sourceCaplets, "sample.md"),
+      [
+        "---",
+        "name: Sample",
+        "description: Sample Caplet.",
+        "httpApi:",
+        "  baseUrl: http://127.0.0.1:1",
+        "  auth:",
+        "    type: none",
+        "  actions:",
+        "    check:",
+        "      method: GET",
+        "      path: /check",
+        "---",
+        "",
+        "# Sample",
+        "",
+      ].join("\n"),
+    );
+
+    await expect(
+      dispatchRemoteCliRequest(
+        { command: "install", arguments: { repo: sourceRepo, capletIds: ["sample"] } },
+        { ...context, globalCapletsRoot: globalRoot, globalLockfilePath },
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { remote: true } });
+
+    expect(existsSync(join(globalRoot, "sample.md"))).toBe(true);
+    expect(existsSync(join(context.projectCapletsRoot, "sample.md"))).toBe(false);
+    expect(JSON.parse(readFileSync(globalLockfilePath, "utf8"))).toMatchObject({
+      entries: [expect.objectContaining({ id: "sample" })],
+    });
+  });
+
   it("dispatches complete_cli using server-owned config", async () => {
     const context = testContext();
     writeFileSync(

@@ -8,6 +8,28 @@ Shared domain vocabulary for this project -- entities, named processes, and stat
 
 A configured capability surface that exposes a backend to agents through a stable handle, progressive wrapper tools, or direct tool operations.
 
+### Prebuilt Caplets Catalog
+
+The repo-owned collection of installable Caplet files under `caplets/`.
+
+The Prebuilt Caplets Catalog is curated as a Code Mode-first capability catalog, not a generic marketplace. Catalog entries should be install-ready when promoted, with setup, auth, validation, safety, and Project Binding metadata appropriate to the backend.
+
+Install-ready catalog entries have an explicit verification status, a reproducible validation path, and a named primary Code Mode workflow. Unverified entries may exist as drafts or recipes, but they do not count as install-ready catalog coverage.
+
+### Catalog-Grade Caplet
+
+A Caplet that is ready to live in the Prebuilt Caplets Catalog.
+
+Catalog-Grade Caplets include enough frontmatter, setup or verification guidance, auth handling, least-privilege scope notes, safety notes, Code Mode workflow guidance, and local/project/runtime metadata for agents to use them without rediscovering private assumptions from the author's environment.
+
+### Caplets Lockfile
+
+A `caplets.lock.json` file that records installed catalog Caplets, their source repository, source path, destination, tracked source channel, resolved revision when available, content hash, and portability status.
+
+Caplets Lockfiles let `caplets install`, no-argument install restore, and `caplets update` manage installed Caplets from recorded provenance rather than from copied files alone. Project installs use `./.caplets.lock.json`; global installs use the target machine's Caplets state directory.
+
+Caplets Lockfiles are share-safe and integrity-aware. They strip credential-bearing source URLs, prefer project-relative paths where possible, verify recorded content before restore, and fail closed when local-source entries are unavailable or marked non-portable.
+
 ### Namespace Shadowing Policy
 
 A Caplet shadowing policy where a local/upstream ID collision exposes both Caplets under qualified namespace IDs and removes the ambiguous bare ID.

@@ -74,6 +74,15 @@ export function defaultAuthDir(
   return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "auth");
 }
 
+export function defaultCapletsLockfilePath(
+  env: PathEnv = process.env,
+  home = homedir(),
+  platform: Platform = process.platform,
+): string {
+  const pathJoin = platform === "win32" ? win32.join : posix.join;
+  return pathJoin(defaultStateBaseDir(env, home, platform), "caplets", "caplets.lock.json");
+}
+
 export function defaultTelemetryStateDir(
   env: PathEnv = process.env,
   home = homedir(),
@@ -163,6 +172,7 @@ export function defaultObservedOutputShapeCacheDir(
 
 export const DEFAULT_CONFIG_PATH = defaultConfigPath();
 export const DEFAULT_AUTH_DIR = defaultAuthDir();
+export const DEFAULT_CAPLETS_LOCKFILE_PATH = defaultCapletsLockfilePath();
 export const DEFAULT_ARTIFACT_DIR = defaultArtifactDir();
 export const DEFAULT_TELEMETRY_STATE_DIR = defaultTelemetryStateDir();
 export const DEFAULT_TELEMETRY_IDENTITY_PATH = defaultTelemetryIdentityPath();
@@ -180,6 +190,14 @@ export function resolveConfigPath(path?: string): string {
 
 export function resolveProjectConfigPath(cwd = process.cwd()): string {
   return join(displayPath(cwd), PROJECT_CONFIG_FILE);
+}
+
+export function resolveProjectLockfilePath(cwd = process.cwd()): string {
+  return join(displayPath(cwd), ".caplets.lock.json");
+}
+
+export function resolveCapletsLockfilePath(path?: string): string {
+  return path ?? DEFAULT_CAPLETS_LOCKFILE_PATH;
 }
 
 export function resolveCapletsRoot(configPath = resolveConfigPath()): string {

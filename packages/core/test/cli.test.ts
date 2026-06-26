@@ -1327,6 +1327,26 @@ describe("cli init", () => {
       );
       expect(out.join("")).toContain("Installed filesystem");
       expect(out.join("")).toContain("Installed github");
+      const lock = JSON.parse(readFileSync(join(projectRoot, ".caplets.lock.json"), "utf8"));
+      expect(lock).toMatchObject({
+        version: 1,
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            id: "filesystem",
+            destination: "filesystem.md",
+            kind: "file",
+            source: expect.objectContaining({ type: "local", portability: "non_portable" }),
+            installedHash: expect.stringMatching(/^sha256:/),
+          }),
+          expect.objectContaining({
+            id: "github",
+            destination: "github",
+            kind: "directory",
+            source: expect.objectContaining({ type: "local", portability: "non_portable" }),
+            installedHash: expect.stringMatching(/^sha256:/),
+          }),
+        ]),
+      });
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
@@ -1340,10 +1360,12 @@ describe("cli init", () => {
     const configPath = join(dir, "user", "config.json");
     const out: string[] = [];
     const cwd = process.cwd();
+    const originalXdgStateHome = process.env.XDG_STATE_HOME;
     try {
       writeInstallableRepo(repo);
       mkdirSync(projectRoot, { recursive: true });
       process.env.CAPLETS_CONFIG = configPath;
+      process.env.XDG_STATE_HOME = join(dir, "state");
       process.chdir(projectRoot);
 
       await runCli(["install", "--global", repo], { writeOut: (value) => out.push(value) });
@@ -1355,11 +1377,17 @@ describe("cli init", () => {
         "name: GitHub",
       );
       expect(existsSync(join(projectRoot, ".caplets"))).toBe(false);
+      expect(existsSync(join(dir, "state", "caplets", "caplets.lock.json"))).toBe(true);
       expect(out.join("")).toContain(
         `Installed filesystem to ${join(dir, "user", "filesystem.md")}`,
       );
       expect(out.join("")).toContain(`Installed github to ${join(dir, "user", "github")}`);
     } finally {
+      if (originalXdgStateHome === undefined) {
+        delete process.env.XDG_STATE_HOME;
+      } else {
+        process.env.XDG_STATE_HOME = originalXdgStateHome;
+      }
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2028,6 +2056,303 @@ describe("cli init", () => {
       expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
       expect(existsSync(join(projectRoot, ".caplets", "filesystem.md"))).toBe(false);
       expect(out.join("")).toBe(`Installed github to ${expectedDestination}\n`);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints install results as JSON when requested", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-json-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          {
+            id: "github",
+            status: "installed",
+            destination: join(projectRoot, ".caplets", "github"),
+            lockfile: join(projectRoot, ".caplets.lock.json"),
+            hash: expect.stringMatching(/^sha256:/),
+          },
+        ],
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores missing Caplets from the project lockfile when install has no repo argument", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      rmSync(join(projectRoot, ".caplets", "github"), { recursive: true, force: true });
+
+      await runCli(["install", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          expect.objectContaining({
+            id: "github",
+            status: "restored",
+            hash: expect.stringMatching(/^sha256:/),
+          }),
+        ],
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts remote global lockfile restore through install --global --remote", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-remote-global-"));
+    const authDir = join(dir, "auth");
+    const requests: unknown[] = [];
+    const out: string[] = [];
+    const fetchMock = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        requests.push(JSON.parse(String(init?.body)));
+        return Response.json({
+          ok: true,
+          result: {
+            installed: [
+              {
+                id: "github",
+                destination: "/remote/global/github",
+                status: "restored",
+              },
+            ],
+          },
+        });
+      },
+    );
+    try {
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: "http://127.0.0.1:5387",
+        clientId: "rcli_install_test",
+        clientLabel: "Remote Install Test",
+        credentials: {
+          accessToken: "remote-profile-access-token",
+          refreshToken: "remote-profile-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
+
+      await runCli(["install", "--global", "--remote", "--json"], {
+        env: {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
+          CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+        },
+        authDir,
+        fetch: fetchMock,
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(requests).toEqual([
+        {
+          command: "install",
+          arguments: {
+            capletIds: [],
+            force: false,
+          },
+        },
+      ]);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          {
+            id: "github",
+            status: "restored",
+            destination: "/remote/global/github",
+          },
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to restore over local modifications without force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-conflict-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      writeFileSync(join(projectRoot, ".caplets", "github", "README.md"), "local edit\n");
+
+      await expect(runCli(["install"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_EXISTS",
+      } satisfies Partial<CapletsError>);
+
+      await runCli(["install", "--force"], { writeOut: () => {} });
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
+        "Extra files are copied with directory Caplets.\n",
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates tracked Caplets from the project lockfile", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "updated upstream\n");
+
+      await runCli(["update", "github", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
+        "updated upstream\n",
+      );
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          {
+            id: "github",
+            status: "updated",
+            destination: join(projectRoot, ".caplets", "github"),
+            lockfile: join(projectRoot, ".caplets.lock.json"),
+            hash: expect.stringMatching(/^sha256:/),
+          },
+        ],
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks update over local modifications unless forced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-conflict-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      writeFileSync(join(projectRoot, ".caplets", "github", "README.md"), "local edit\n");
+      writeFileSync(join(repo, "caplets", "github", "README.md"), "updated upstream\n");
+
+      await expect(runCli(["update", "github"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_EXISTS",
+      } satisfies Partial<CapletsError>);
+
+      await runCli(["update", "github", "--force"], { writeOut: () => {} });
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
+        "updated upstream\n",
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires force when update adds a required project binding", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-risk-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      writeFileSync(
+        join(repo, "caplets", "github", "CAPLET.md"),
+        [
+          "---",
+          "name: GitHub",
+          "description: Work with GitHub repositories and pull requests.",
+          "projectBinding:",
+          "  required: true",
+          "  description: Requires the current repository to resolve issue references.",
+          "mcpServer:",
+          "  command: npx",
+          "  args:",
+          "    - -y",
+          "    - github-mcp-server",
+          "---",
+          "# GitHub",
+        ].join("\n"),
+      );
+
+      await expect(runCli(["update", "github"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+      } satisfies Partial<CapletsError>);
+
+      await runCli(["update", "github", "--force"], { writeOut: () => {} });
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "CAPLET.md"), "utf8")).toContain(
+        "projectBinding:",
+      );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the existing destination when a forced reinstall copy fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-stage-failure-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      writeFileSync(join(repo, "outside.txt"), "outside source boundary\n");
+      symlinkSync(join(repo, "outside.txt"), join(repo, "caplets", "github", "outside-link"));
+
+      await expect(
+        runCli(["install", repo, "github", "--force"], { writeOut: () => {} }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_INVALID",
+      } satisfies Partial<CapletsError>);
+      expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
+        "Extra files are copied with directory Caplets.\n",
+      );
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
