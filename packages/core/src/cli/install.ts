@@ -300,10 +300,13 @@ export function updateCapletsFromLockfile(options: {
         );
       }
       if (existing && sourceHash === entry.installedHash && !options.force) {
-        if (!sameLockSource(entry.source, nextSource)) {
+        const sourceChanged = !sameLockSource(entry.source, nextSource);
+        const riskChanged = !sameLockRisk(entry.risk, nextRisk);
+        if (sourceChanged || riskChanged) {
           nextEntries.set(entry.id, {
             ...entry,
             source: nextSource,
+            risk: nextRisk,
             updatedAt: (options.now ?? new Date()).toISOString(),
           });
           writeCapletsLockfile(options.lockfilePath, {
@@ -395,6 +398,10 @@ function refreshedLockSource(
 }
 
 function sameLockSource(left: CapletsLockSource, right: CapletsLockSource): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameLockRisk(left: CapletsLockEntry["risk"], right: CapletsLockEntry["risk"]): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
