@@ -1,5 +1,12 @@
 # @caplets/pi
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies [931f18e]
+  - @caplets/core@0.30.0
+
 ## 0.9.5
 
 ### Patch Changes
