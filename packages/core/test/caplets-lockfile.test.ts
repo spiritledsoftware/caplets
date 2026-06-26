@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -54,6 +55,11 @@ describe("caplets lockfile", () => {
         ],
       });
       expect(existsSync(join(dir, "nested", "caplets.lock.json.tmp"))).toBe(false);
+      expect(
+        readdirSync(join(dir, "nested")).filter((entry) =>
+          entry.startsWith(".caplets.lock.json.tmp-"),
+        ),
+      ).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -94,6 +100,28 @@ describe("caplets lockfile", () => {
                 type: "git",
                 repository: "https://token@example.com/private/repo.git",
                 path: "caplets/github",
+                trackedRef: "main",
+                resolvedRevision: "abc123",
+                portability: "portable",
+              },
+            }),
+          ],
+        })}\n`,
+      );
+      expect(() => readCapletsLockfile(lockPath)).toThrow(
+        expect.objectContaining({ code: "CONFIG_INVALID" }) as CapletsError,
+      );
+
+      writeFileSync(
+        lockPath,
+        `${JSON.stringify({
+          version: 1,
+          entries: [
+            lockEntry({
+              source: {
+                type: "git",
+                repository: "https://github.com/spiritledsoftware/caplets.git",
+                path: "../outside",
                 trackedRef: "main",
                 resolvedRevision: "abc123",
                 portability: "portable",

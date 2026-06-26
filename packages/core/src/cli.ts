@@ -2920,11 +2920,13 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         printTelemetryNotice("cli");
         const target = parseCatalogLifecycleTarget(options);
+        const installSource = repo && isInstallSourceArgument(repo) ? repo : undefined;
+        const selectedCapletIds = repo && !installSource ? [repo, ...capletIds] : capletIds;
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
           const result = (await remote.request("install", {
-            ...(repo ? { repo } : {}),
-            capletIds,
+            ...(installSource ? { repo: installSource } : {}),
+            capletIds: selectedCapletIds,
             force: Boolean(options.force),
           })) as { installed: Array<{ id: string; destination: string }> };
           if (options.json) {
@@ -2944,9 +2946,9 @@ export function createProgram(io: CliIO = {}): Command {
           target === "global"
             ? defaultCapletsLockfilePath(env)
             : resolveProjectLockfilePath(process.cwd());
-        if (!repo) {
+        if (!installSource) {
           const result = restoreCapletsFromLockfile({
-            capletIds,
+            capletIds: selectedCapletIds,
             force: Boolean(options.force),
             destinationRoot,
             lockfilePath,
@@ -2962,8 +2964,8 @@ export function createProgram(io: CliIO = {}): Command {
           }
           return;
         }
-        const result = installCaplets(repo, {
-          capletIds,
+        const result = installCaplets(installSource, {
+          capletIds: selectedCapletIds,
           force: Boolean(options.force),
           destinationRoot,
           lockfilePath,
@@ -3888,6 +3890,13 @@ function parseCatalogLifecycleTarget(options: MutationTargetOptions): MutationTa
   if (options.remote) return "remote";
   if (options.global) return "global";
   return "project";
+}
+
+function isInstallSourceArgument(value: string): boolean {
+  if (existsSync(value)) return true;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return true;
+  if (/^[^@\s]+@[^:\s]+:.+/.test(value)) return true;
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(value);
 }
 
 function parseVaultTarget(options: VaultTargetOptions): VaultTarget {

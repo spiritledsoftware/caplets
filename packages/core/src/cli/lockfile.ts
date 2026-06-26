@@ -78,7 +78,8 @@ export function writeCapletsLockfile(path: string, lockfile: CapletsLockfile): v
     entries: [...validated.entries].sort((left, right) => left.id.localeCompare(right.id)),
   };
   const parent = dirname(path);
-  const temporary = join(parent, `${path.split(/[\\/]/).at(-1) ?? "caplets.lock.json"}.tmp`);
+  const basename = path.split(/[\\/]/).at(-1) ?? "caplets.lock.json";
+  const temporary = join(parent, `.${basename}.tmp-${process.pid}-${Date.now()}`);
   try {
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     writeFileSync(temporary, `${JSON.stringify(stable, null, 2)}\n`, { mode: 0o600 });
@@ -171,10 +172,11 @@ function parseLockSource(value: unknown, label: string): CapletsLockSource {
       requireString(value.repository, `${label}.repository`),
       label,
     );
+    const path = requireSafeRelativePath(requireString(value.path, `${label}.path`), label);
     return {
       type,
       repository,
-      path: requireString(value.path, `${label}.path`),
+      path,
       trackedRef: optionalString(value.trackedRef, `${label}.trackedRef`),
       resolvedRevision: optionalString(value.resolvedRevision, `${label}.resolvedRevision`),
       portability: parseEnum(
@@ -242,6 +244,13 @@ function requireCredentialFreeSource(source: string, label: string): string {
     }
   }
   return source;
+}
+
+function requireSafeRelativePath(path: string, label: string): string {
+  if (isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
+    throw new CapletsError("CONFIG_INVALID", `${label}.path must be a safe relative path`);
+  }
+  return path;
 }
 
 function rejectSymlinkedExistingPath(root: string, destination: string): void {

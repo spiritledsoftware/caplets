@@ -131,17 +131,19 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     return dispatchAdd(request.arguments, context);
   }
 
+  const globalCatalogTarget = () => ({
+    destinationRoot: context.globalCapletsRoot ?? resolveCapletsRoot(context.configPath),
+    lockfilePath: context.globalLockfilePath ?? defaultCapletsLockfilePath(),
+  });
+
   if (request.command === "install") {
-    const destinationRoot = context.globalCapletsRoot ?? resolveCapletsRoot(context.configPath);
-    const lockfilePath = context.globalLockfilePath ?? defaultCapletsLockfilePath();
     const repo = optionalString(request.arguments, "repo");
     if (!repo) {
       return {
         remote: true,
         ...restoreCapletsFromLockfile({
           ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-          destinationRoot,
-          lockfilePath,
+          ...globalCatalogTarget(),
           ...optionalProp("force", optionalBoolean(request.arguments, "force")),
         }),
       };
@@ -150,8 +152,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
       remote: true,
       ...installCaplets(repo, {
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-        destinationRoot,
-        lockfilePath,
+        ...globalCatalogTarget(),
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
@@ -162,8 +163,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
       remote: true,
       ...updateCapletsFromLockfile({
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-        destinationRoot: context.globalCapletsRoot ?? resolveCapletsRoot(context.configPath),
-        lockfilePath: context.globalLockfilePath ?? defaultCapletsLockfilePath(),
+        ...globalCatalogTarget(),
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
