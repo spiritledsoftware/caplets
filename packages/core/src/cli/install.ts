@@ -293,12 +293,6 @@ export function updateCapletsFromLockfile(options: {
             )
           : hashInstalledArtifact(lockedSource.sourcePath);
       const nextRisk = riskSummaryForSourcePath(lockedSource.sourcePath);
-      if (!options.force && riskIncrease(entry.risk, nextRisk)) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,
-        );
-      }
       if (existing && sourceHash === entry.installedHash && !options.force) {
         const sourceChanged = !sameLockSource(entry.source, nextSource);
         const riskChanged = !sameLockRisk(entry.risk, nextRisk);
@@ -324,6 +318,12 @@ export function updateCapletsFromLockfile(options: {
           lockfile: options.lockfilePath,
         });
         continue;
+      }
+      if (!options.force && riskIncrease(entry.risk, nextRisk)) {
+        throw new CapletsError(
+          "REQUEST_INVALID",
+          `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,
+        );
       }
 
       const plan: InstallPlan = {

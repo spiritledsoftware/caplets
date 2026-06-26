@@ -2547,6 +2547,44 @@ describe("cli init", () => {
     }
   });
 
+  it("refreshes stale increased risk metadata when update is already current", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-noop-risk-increase-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      const lockfilePath = join(projectRoot, ".caplets.lock.json");
+      const lockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
+      const github = lockfile.entries.find((entry: { id: string }) => entry.id === "github");
+      const originalRisk = github.risk;
+      github.risk = {
+        ...github.risk,
+        safety: "unknown",
+      };
+      writeFileSync(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`);
+
+      await runCli(["update", "github", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [expect.objectContaining({ id: "github", status: "noop" })],
+      });
+      const updatedLockfile = JSON.parse(readFileSync(lockfilePath, "utf8"));
+      const updatedGithub = updatedLockfile.entries.find(
+        (entry: { id: string }) => entry.id === "github",
+      );
+      expect(updatedGithub.risk).toEqual(originalRisk);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("updates git-backed Caplets from the tracked ref and records the new revision", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-update-git-"));
     const repo = join(dir, "repo");
