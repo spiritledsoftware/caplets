@@ -2557,6 +2557,7 @@ export function createProgram(io: CliIO = {}): Command {
     .action(async (options: { json?: boolean }) => {
       const doctorOptions = {
         env,
+        ...(io.fetch ? { fetch: io.fetch } : {}),
         ...(io.authDir ? { authDir: io.authDir } : {}),
         ...(io.daemon ? { daemon: io.daemon } : {}),
       };
