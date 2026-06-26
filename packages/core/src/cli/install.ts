@@ -153,7 +153,6 @@ export function restoreCapletsFromLockfile(options: {
   }
 
   const nextEntries = new Map(lockfile.entries.map((entry) => [entry.id, entry]));
-  let lockfileChanged = false;
   const results: InstallableCaplet[] = [];
   for (const entry of entries) {
     const destination = validateLockfileDestination(destinationRoot, entry.destination);
@@ -215,7 +214,10 @@ export function restoreCapletsFromLockfile(options: {
           installedHash: hash,
           updatedAt: (options.now ?? new Date()).toISOString(),
         });
-        lockfileChanged = true;
+        writeCapletsLockfile(options.lockfilePath, {
+          version: 1,
+          entries: [...nextEntries.values()],
+        });
       }
       results.push({
         id: entry.id,
@@ -229,9 +231,6 @@ export function restoreCapletsFromLockfile(options: {
     } finally {
       lockedSource.cleanup();
     }
-  }
-  if (lockfileChanged) {
-    writeCapletsLockfile(options.lockfilePath, { version: 1, entries: [...nextEntries.values()] });
   }
   return { installed: results };
 }
@@ -285,6 +284,7 @@ export function updateCapletsFromLockfile(options: {
       if (!existsSync(lockedSource.sourcePath)) {
         throw new CapletsError("CONFIG_NOT_FOUND", `Locked source for ${entry.id} is unavailable`);
       }
+      const nextSource = refreshedLockSource(entry.source, lockedSource);
       const sourceHash =
         entry.kind === "directory"
           ? hashDirectoryCapletInstallSource(
@@ -300,6 +300,17 @@ export function updateCapletsFromLockfile(options: {
         );
       }
       if (existing && sourceHash === entry.installedHash && !options.force) {
+        if (!sameLockSource(entry.source, nextSource)) {
+          nextEntries.set(entry.id, {
+            ...entry,
+            source: nextSource,
+            updatedAt: (options.now ?? new Date()).toISOString(),
+          });
+          writeCapletsLockfile(options.lockfilePath, {
+            version: 1,
+            entries: [...nextEntries.values()],
+          });
+        }
         results.push({
           id: entry.id,
           source: lockSourceDisplay(entry.source),
@@ -342,15 +353,7 @@ export function updateCapletsFromLockfile(options: {
       const now = (options.now ?? new Date()).toISOString();
       nextEntries.set(entry.id, {
         ...entry,
-        source:
-          entry.source.type === "git"
-            ? {
-                ...entry.source,
-                ...(lockedSource.resolvedRevision
-                  ? { resolvedRevision: lockedSource.resolvedRevision }
-                  : {}),
-              }
-            : entry.source,
+        source: nextSource,
         installedHash: hash,
         updatedAt: now,
         risk: nextRisk,
@@ -373,6 +376,26 @@ export function updateCapletsFromLockfile(options: {
     }
   }
   return { installed: results };
+}
+
+function refreshedLockSource(
+  source: CapletsLockSource,
+  lockedSource: LockedSourceResolution,
+): CapletsLockSource {
+  if (source.type === "git") {
+    return {
+      ...source,
+      ...(lockedSource.resolvedRevision ? { resolvedRevision: lockedSource.resolvedRevision } : {}),
+    };
+  }
+  return {
+    ...source,
+    ...localGitInfo(lockedSource.repoRoot),
+  };
+}
+
+function sameLockSource(left: CapletsLockSource, right: CapletsLockSource): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function discoverSelectedCapletFiles(
