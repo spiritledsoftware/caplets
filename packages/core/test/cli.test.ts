@@ -2413,6 +2413,22 @@ describe("cli init", () => {
     }
   });
 
+  it("rejects project-scoped remote catalog lifecycle targets", async () => {
+    await expect(
+      runCli(["install", "--project", "--remote"], { writeOut: () => {} }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Cannot combine mutation target flags: --project, --remote",
+    } satisfies Partial<CapletsError>);
+
+    await expect(
+      runCli(["update", "--project", "--remote"], { writeOut: () => {} }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_INVALID",
+      message: "Cannot combine mutation target flags: --project, --remote",
+    } satisfies Partial<CapletsError>);
+  });
+
   it("refuses to restore over local modifications without force", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-conflict-"));
     const repo = join(dir, "repo");
@@ -2848,6 +2864,33 @@ describe("cli init", () => {
       expect(readFileSync(join(projectRoot, ".caplets", "github", "README.md"), "utf8")).toBe(
         "updated upstream\n",
       );
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats destination symlinks as local modifications during update", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-update-symlink-conflict-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      const installedReadme = join(projectRoot, ".caplets", "github", "README.md");
+      const linkedReadme = join(projectRoot, "same-readme.txt");
+      writeFileSync(linkedReadme, "Extra files are copied with directory Caplets.\n");
+      rmSync(installedReadme);
+      symlinkSync(linkedReadme, installedReadme);
+
+      await expect(runCli(["update", "github"], { writeOut: () => {} })).rejects.toMatchObject({
+        code: "CONFIG_EXISTS",
+      } satisfies Partial<CapletsError>);
+      expect(lstatSync(installedReadme).isSymbolicLink()).toBe(true);
     } finally {
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });

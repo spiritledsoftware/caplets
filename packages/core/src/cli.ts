@@ -3886,16 +3886,16 @@ function parseMutationTarget(options: MutationTargetOptions): MutationTarget {
 }
 
 function parseCatalogLifecycleTarget(options: MutationTargetOptions): MutationTarget {
-  if (options.project && options.remote) {
+  const selected = [
+    options.project ? "--project" : undefined,
+    options.global ? "--global" : undefined,
+    options.remote ? "--remote" : undefined,
+  ].filter((value): value is string => value !== undefined);
+  const allowedRemoteGlobal = options.remote && options.global && !options.project;
+  if (selected.length > 1 && !allowedRemoteGlobal) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Cannot combine --project and --remote for catalog install or update.",
-    );
-  }
-  if (options.global && options.project) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      "Cannot combine mutation target flags: --project, --global",
+      `Cannot combine mutation target flags: ${selected.join(", ")}`,
     );
   }
   if (options.remote) return "remote";
