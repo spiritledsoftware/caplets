@@ -2175,6 +2175,38 @@ describe("cli init", () => {
     }
   });
 
+  it("restores a selected Caplet ID when a same-named local directory exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-id-directory-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github"], { writeOut: () => {} });
+      rmSync(join(projectRoot, ".caplets", "github"), { recursive: true, force: true });
+      mkdirSync(join(projectRoot, "github"), { recursive: true });
+
+      await runCli(["install", "github", "--json"], { writeOut: (value) => out.push(value) });
+
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          expect.objectContaining({
+            id: "github",
+            status: "restored",
+          }),
+        ],
+      });
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("persists every changed lockfile entry after restoring multiple Caplets", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-restore-many-"));
     const repo = join(dir, "repo");

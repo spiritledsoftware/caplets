@@ -2,7 +2,7 @@ import { Command, CommanderError, Option } from "commander";
 import { Buffer } from "node:buffer";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { version as packageJsonVersion } from "../package.json";
@@ -59,6 +59,7 @@ import {
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
 } from "./cli/install";
+import { readCapletsLockfile } from "./cli/lockfile";
 import {
   formatSetupMenu,
   runInteractiveSetup,
@@ -2920,7 +2921,20 @@ export function createProgram(io: CliIO = {}): Command {
       ) => {
         printTelemetryNotice("cli");
         const target = parseCatalogLifecycleTarget(options);
-        const installSource = repo && isInstallSourceArgument(repo) ? repo : undefined;
+        const localLockfilePath =
+          target === "remote"
+            ? undefined
+            : target === "global"
+              ? defaultCapletsLockfilePath(env)
+              : resolveProjectLockfilePath(process.cwd());
+        const installSource =
+          repo &&
+          isInstallSourceArgument(repo, {
+            allowImplicitLocalPath: target !== "remote",
+            lockfilePath: localLockfilePath,
+          })
+            ? repo
+            : undefined;
         const selectedCapletIds = repo && !installSource ? [repo, ...capletIds] : capletIds;
         if (target === "remote") {
           const remote = requireRemoteClientForTarget(io);
@@ -2942,10 +2956,7 @@ export function createProgram(io: CliIO = {}): Command {
           target === "global"
             ? resolveCapletsRoot(resolveConfigPath(currentConfigPath()))
             : envProjectCapletsRoot(env);
-        const lockfilePath =
-          target === "global"
-            ? defaultCapletsLockfilePath(env)
-            : resolveProjectLockfilePath(process.cwd());
+        const lockfilePath = localLockfilePath ?? resolveProjectLockfilePath(process.cwd());
         if (!installSource) {
           const result = restoreCapletsFromLockfile({
             capletIds: selectedCapletIds,
@@ -3892,11 +3903,32 @@ function parseCatalogLifecycleTarget(options: MutationTargetOptions): MutationTa
   return "project";
 }
 
-function isInstallSourceArgument(value: string): boolean {
-  if (existsSync(value)) return true;
+function isInstallSourceArgument(
+  value: string,
+  options: { allowImplicitLocalPath?: boolean; lockfilePath?: string | undefined } = {},
+): boolean {
+  if (isExplicitLocalPath(value)) return true;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return true;
   if (/^[^@\s]+@[^:\s]+:.+/.test(value)) return true;
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(value);
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(value)) return true;
+  return (
+    options.allowImplicitLocalPath !== false &&
+    existsSync(value) &&
+    !lockfileContainsCapletId(options.lockfilePath, value)
+  );
+}
+
+function isExplicitLocalPath(value: string): boolean {
+  return isAbsolute(value) || /^\.{1,2}(?:[\\/]|$)/.test(value) || /[\\/]/.test(value);
+}
+
+function lockfileContainsCapletId(path: string | undefined, capletId: string): boolean {
+  if (!path) return false;
+  try {
+    return readCapletsLockfile(path).entries.some((entry) => entry.id === capletId);
+  } catch {
+    return false;
+  }
 }
 
 function parseVaultTarget(options: VaultTargetOptions): VaultTarget {
