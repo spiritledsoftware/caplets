@@ -107,7 +107,6 @@ const capletRuntimeRequirementsSchema = z
   })
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
-
 const capletAgentSelectionHintSchema = z
   .string()
   .trim()

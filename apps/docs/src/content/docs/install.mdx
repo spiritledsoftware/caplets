@@ -31,6 +31,41 @@ caplets install spiritledsoftware/caplets osv
 `caplets setup` configures supported agent harnesses. The OSV Caplet is the recommended
 first install because it is public and does not require credentials.
 
+## Install lockfiles and updates
+
+Successful installs write a lockfile so the same Caplets can be restored or updated later.
+Project installs write `./.caplets.lock.json`. Global installs write
+`caplets.lock.json` under the Caplets state directory, such as
+`~/.local/state/caplets/caplets.lock.json` on Linux.
+
+Restore the Caplets recorded in the selected lockfile with no source argument:
+
+```sh
+caplets install
+caplets install --global
+```
+
+Update every tracked Caplet, or only named Caplets:
+
+```sh
+caplets update
+caplets update sentry github
+```
+
+Install, restore, and update refuse to overwrite local edits unless you pass `--force`.
+Use `--json` when a script needs per-entry statuses and machine-readable errors.
+
+For explicit remote catalog lifecycle operations, `--remote` targets the remote machine's
+global Caplets root and global lockfile:
+
+```sh
+caplets install --remote spiritledsoftware/caplets sentry
+caplets install --remote
+caplets update --remote sentry
+```
+
+Remote project install and update semantics are intentionally separate from this workflow.
+
 ## Manual MCP setup
 
 If your client does not support `caplets setup`, or if you are avoiding a global install,

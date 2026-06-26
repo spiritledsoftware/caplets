@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { posix, win32 } from "node:path";
 import {
   defaultAuthDir,
+  defaultCapletsLockfilePath,
   defaultConfigBaseDir,
   defaultConfigPath,
   defaultStateBaseDir,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
+  resolveProjectLockfilePath,
 } from "../src/config/paths";
 
 describe("config paths", () => {
@@ -22,6 +24,9 @@ describe("config paths", () => {
     expect(defaultAuthDir(env, home, "linux")).toBe(
       posix.join(home, ".local", "state", "caplets", "auth"),
     );
+    expect(defaultCapletsLockfilePath(env, home, "linux")).toBe(
+      posix.join(home, ".local", "state", "caplets", "caplets.lock.json"),
+    );
   });
 
   it("uses absolute Unix XDG overrides", () => {
@@ -35,6 +40,9 @@ describe("config paths", () => {
     );
     expect(defaultAuthDir(env, "/home/alex", "darwin")).toBe(
       posix.join("/xdg/state", "caplets", "auth"),
+    );
+    expect(defaultCapletsLockfilePath(env, "/home/alex", "darwin")).toBe(
+      posix.join("/xdg/state", "caplets", "caplets.lock.json"),
     );
   });
 
@@ -65,6 +73,9 @@ describe("config paths", () => {
     expect(defaultAuthDir(env, "C:\\Users\\Alex", "win32")).toBe(
       win32.join(env.LOCALAPPDATA, "caplets", "auth"),
     );
+    expect(defaultCapletsLockfilePath(env, "C:\\Users\\Alex", "win32")).toBe(
+      win32.join(env.LOCALAPPDATA, "caplets", "caplets.lock.json"),
+    );
   });
 
   it("falls back to Windows home app data directories when env vars are missing or relative", () => {
@@ -82,6 +93,15 @@ describe("config paths", () => {
     );
     expect(defaultAuthDir(env, home, "win32")).toBe(
       win32.join(home, "AppData", "Local", "caplets", "auth"),
+    );
+    expect(defaultCapletsLockfilePath(env, home, "win32")).toBe(
+      win32.join(home, "AppData", "Local", "caplets", "caplets.lock.json"),
+    );
+  });
+
+  it("resolves project lockfiles next to the project root instead of inside .caplets", () => {
+    expect(resolveProjectLockfilePath("/workspace/project")).toBe(
+      posix.join("/workspace/project", ".caplets.lock.json"),
     );
   });
 

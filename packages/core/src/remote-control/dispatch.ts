@@ -16,11 +16,17 @@ import {
 } from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
-import { installCaplets } from "./../cli/install";
+import {
+  installCaplets,
+  restoreCapletsFromLockfile,
+  updateCapletsFromLockfile,
+} from "./../cli/install";
 import { listCaplets } from "./../cli/inspection";
 import {
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
+  defaultCapletsLockfilePath,
+  resolveCapletsRoot,
   vaultBootstrapResolver,
   vaultResolverForAuthDir,
   vaultStoreForAuthDir,
@@ -34,6 +40,8 @@ import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
   projectCapletsRoot: string;
+  globalCapletsRoot?: string | undefined;
+  globalLockfilePath?: string | undefined;
   authFlowStore?: RemoteAuthFlowStore;
   controlCallbackBaseUrl?: string;
 };
@@ -123,12 +131,39 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     return dispatchAdd(request.arguments, context);
   }
 
+  const globalCatalogTarget = () => ({
+    destinationRoot: context.globalCapletsRoot ?? resolveCapletsRoot(context.configPath),
+    lockfilePath: context.globalLockfilePath ?? defaultCapletsLockfilePath(),
+  });
+
   if (request.command === "install") {
+    const repo = optionalString(request.arguments, "repo");
+    if (!repo) {
+      return {
+        remote: true,
+        ...restoreCapletsFromLockfile({
+          ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
+          ...globalCatalogTarget(),
+          ...optionalProp("force", optionalBoolean(request.arguments, "force")),
+        }),
+      };
+    }
     return {
       remote: true,
-      ...installCaplets(requiredString(request.arguments, "repo"), {
+      ...installCaplets(repo, {
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-        destinationRoot: context.projectCapletsRoot,
+        ...globalCatalogTarget(),
+        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
+      }),
+    };
+  }
+
+  if (request.command === "update") {
+    return {
+      remote: true,
+      ...updateCapletsFromLockfile({
+        ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
+        ...globalCatalogTarget(),
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };

@@ -55,6 +55,14 @@ Install a no-auth example Caplet and try it from your agent:
 caplets install spiritledsoftware/caplets osv
 ```
 
+Installs write a lockfile. Run `caplets install` with no source argument to restore the
+selected project or global lockfile, and run `caplets update` to refresh tracked Caplets:
+
+```sh
+caplets install
+caplets update osv
+```
+
 Or add Caplets manually to any MCP client:
 
 ```json

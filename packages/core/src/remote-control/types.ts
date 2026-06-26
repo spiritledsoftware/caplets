@@ -19,6 +19,7 @@ export type RemoteCliCommand =
   | "init"
   | "add"
   | "install"
+  | "update"
   | "complete_cli"
   | "auth_login_start"
   | "auth_login_complete"

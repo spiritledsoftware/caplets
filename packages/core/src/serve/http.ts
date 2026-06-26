@@ -12,7 +12,11 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { logger } from "hono/logger";
 import { WebSocketServer } from "ws";
 import { fingerprintProjectRoot } from "../cloud/project-root";
-import { resolveProjectCapletsRoot } from "../config";
+import {
+  defaultCapletsLockfilePath,
+  resolveCapletsRoot,
+  resolveProjectCapletsRoot,
+} from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import {
@@ -1003,6 +1007,8 @@ function controlContext(
   return {
     ...io.control,
     projectCapletsRoot: io.control?.projectCapletsRoot ?? resolveProjectCapletsRoot(),
+    globalCapletsRoot: io.control?.globalCapletsRoot ?? resolveCapletsRoot(io.control?.configPath),
+    globalLockfilePath: io.control?.globalLockfilePath ?? defaultCapletsLockfilePath(),
     authFlowStore,
     controlCallbackBaseUrl: new URL(
       controlPath,
@@ -1399,6 +1405,8 @@ export async function serveHttp(
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
+      globalCapletsRoot: resolveCapletsRoot(resolvedEngineOptions.configPath),
+      globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
   const paths = servicePaths(options.path);
@@ -1451,6 +1459,8 @@ export async function serveHttpWithSessionFactory(
     control: {
       ...resolvedEngineOptions,
       projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
+      globalCapletsRoot: resolveCapletsRoot(resolvedEngineOptions.configPath),
+      globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
   const paths = servicePaths(options.path);

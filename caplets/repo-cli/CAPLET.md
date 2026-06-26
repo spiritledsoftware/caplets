@@ -5,6 +5,8 @@ description: Inspect and run common local repository workflows through curated C
 tags:
   - cli
   - code
+projectBinding:
+  required: true
 cliTools:
   actions:
     git_status:
@@ -35,3 +37,5 @@ cliTools:
 # Repository CLI
 
 Use this Caplet to expose a small, typed set of local repository commands without giving an agent arbitrary shell access.
+
+Project Binding is required because every command is meant to run against the attached repository. The bound root prevents the agent from accidentally treating an unrelated working directory as the target project.

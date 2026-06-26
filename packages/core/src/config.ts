@@ -20,6 +20,7 @@ import { FileVaultStore, validateVaultKeyName, type VaultConfigOrigin } from "./
 
 export {
   DEFAULT_AUTH_DIR,
+  DEFAULT_CAPLETS_LOCKFILE_PATH,
   DEFAULT_COMPLETION_CACHE_DIR,
   DEFAULT_CONFIG_PATH,
   DEFAULT_UPDATE_CHECK_CACHE_DIR,
@@ -27,14 +28,17 @@ export {
   DEFAULT_TELEMETRY_STATE_DIR,
   PROJECT_CONFIG_FILE,
   defaultCacheBaseDir,
+  defaultCapletsLockfilePath,
   defaultCompletionCacheDir,
   defaultTelemetryStateDir,
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
+  resolveCapletsLockfilePath,
   resolveCapletsRoot,
   resolveConfigPath,
   resolveProjectCapletsRoot,
   resolveProjectConfigPath,
+  resolveProjectLockfilePath,
   resolveTelemetryStateDir,
   resolveUpdateCheckCacheDir,
   resolveUpdateCheckStateDir,
@@ -551,7 +555,6 @@ const runtimeRequirementsSchema = z
   })
   .strict()
   .describe("Runtime feature and resource requirements for hosted execution.");
-
 const agentSelectionHintSchema = z
   .string()
   .trim()
