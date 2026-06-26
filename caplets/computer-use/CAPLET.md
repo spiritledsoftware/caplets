@@ -6,7 +6,6 @@ tags:
   - computer-use
   - desktop
   - local-control
-shadowing: namespace
 mcpServer:
   command: npx
   args:
