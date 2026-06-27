@@ -13,7 +13,7 @@ describe("virtual catalog results", () => {
     Object.defineProperty(window, "scrollY", { configurable: true, writable: true, value: 0 });
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
-      media: "(max-width: 680px)",
+      media: "(max-width: 640px)",
       onchange: null,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -77,35 +77,74 @@ describe("virtual catalog results", () => {
   });
 
   it("uses the mobile row estimate when the compact layout is active", async () => {
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: true,
-      media: "(max-width: 680px)",
+    window.matchMedia = vi.fn((query) => ({
+      matches: query === "(max-width: 640px)" || query === "(max-width: 900px)",
+      media: query,
       onchange: null,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       addListener: vi.fn(),
       removeListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    });
+    }));
     mountSearchShell(manyCatalogSearchRows(10));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
     initVirtualCatalogSearch();
 
-    expect(resultSpacer().style.height).toBe("1840px");
+    expect(resultSpacer().style.height).toBe("1880px");
   });
 
-  it("uses delegated copy handling for virtual rows", async () => {
+  it("uses the narrow row estimate when mobile rows stack", async () => {
+    window.matchMedia = vi.fn((query) => ({
+      matches:
+        query === "(max-width: 420px)" ||
+        query === "(max-width: 640px)" ||
+        query === "(max-width: 900px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    mountSearchShell(manyCatalogSearchRows(10));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+
+    expect(resultSpacer().style.height).toBe("3200px");
+  });
+
+  it("uses the tablet row estimate when the responsive row layout is active", async () => {
+    window.matchMedia = vi.fn((query) => ({
+      matches: query === "(max-width: 900px)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+    mountSearchShell(manyCatalogSearchRows(10));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+
+    expect(resultSpacer().style.height).toBe("1680px");
+  });
+
+  it("keeps search result rows preview-only", async () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     await import("../src/scripts/copy");
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
     initVirtualCatalogSearch();
-    document.querySelector<HTMLButtonElement>("[data-copy-command]")?.click();
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      expect.stringMatching(/^caplets install spiritledsoftware\/caplets caplet-/),
-    );
+    expect(document.querySelector("[data-copy-command]")).toBeNull();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
   });
 });
 

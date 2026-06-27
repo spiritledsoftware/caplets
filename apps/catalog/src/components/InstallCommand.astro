@@ -21,7 +21,7 @@ const { command, detail = false } = Astro.props;
   <code class="font-mono text-sm [overflow-wrap:anywhere]">{command.text || "Install command unavailable"}</code>
   {
     detail && command.copyable ? (
-      <Button class="bg-card text-card-foreground hover:bg-muted" variant="outline" size="sm" type="button" data-copy-command={command.text}>
+      <Button class="min-h-11 bg-card text-card-foreground hover:bg-muted" variant="outline" size="sm" type="button" data-copy-command={command.text}>
         <HugeIcon class="size-4" icon={Copy01Icon} />
         <span>Copy</span>
       </Button>

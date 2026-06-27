@@ -1,7 +1,7 @@
 ---
 import HugeIcon from "./HugeIcon.astro";
 import type { CatalogSearchRow } from "../lib/search-row";
-import { AlertCircleIcon, catalogStatusIcons, Copy01Icon } from "../lib/status-icons";
+import { AlertCircleIcon, catalogStatusIcons } from "../lib/status-icons";
 
 type Props = {
   rows: CatalogSearchRow[];
@@ -12,18 +12,18 @@ const initialRows = rows.slice(0, 24);
 ---
 
 <section aria-label="Catalog results">
-  <div class="catalog-result-grid" role="table" aria-label="Catalog results" data-result-table>
+  <div class="catalog-result-grid" role="table" aria-label="Catalog results" aria-rowcount={rows.length + 1} data-result-table>
     <div class="catalog-result-grid__header" role="row">
       <span role="columnheader">Caplet</span>
       <span role="columnheader">Description</span>
       <span role="columnheader">Installs</span>
-      <span role="columnheader">Install</span>
       <span role="columnheader">Status</span>
+      <span role="columnheader">Actions</span>
     </div>
     <div
       class="catalog-result-grid__spacer"
       data-result-spacer
-      style={`height:${Math.max(rows.length, 1) * 72}px`}
+      style={`--result-count:${Math.max(rows.length, 1)}`}
     >
       <div class="catalog-result-grid__rows" data-result-list role="rowgroup">
         {initialRows.map((row, index) => (
@@ -32,7 +32,8 @@ const initialRows = rows.slice(0, 24);
             data-result-row
             data-index={index}
             role="row"
-            style={`transform:translateY(${index * 72}px)`}
+            aria-rowindex={index + 2}
+            style={`--result-index:${index}`}
           >
             <div class="catalog-result-row__name" role="cell">
               <div class="catalog-result-row__heading">
@@ -42,21 +43,6 @@ const initialRows = rows.slice(0, 24);
             </div>
             <p class="catalog-result-row__description" role="cell">{row.description}</p>
             <div class="catalog-result-row__installs" role="cell">{row.installCountDisplay}</div>
-            <div class="catalog-result-row__command" role="cell">
-              <code title={row.installCommandText}>{row.installCommandText}</code>
-              {row.installCommandCopyable ? (
-                <button
-                  class="catalog-result-row__copy"
-                  type="button"
-                  aria-label={`Copy install command for ${row.name}`}
-                  data-copy-command={row.installCommandText}
-                >
-                  <HugeIcon class="size-[18px]" icon={Copy01Icon} label="Copy" />
-                </button>
-              ) : (
-                <span class="catalog-result-row__copy-unavailable">Copy unavailable</span>
-              )}
-            </div>
             <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
               {row.statuses.map((status) => (
                 <span
@@ -65,12 +51,17 @@ const initialRows = rows.slice(0, 24);
                   aria-label={status.label}
                 >
                   <HugeIcon
-                    class="size-[18px]"
+                    class="catalog-result-row__status-icon size-[18px]"
                     icon={catalogStatusIcons[status.code] ?? AlertCircleIcon}
                     label={status.label}
                   />
+                  <span class="catalog-result-row__status-label">{status.label}</span>
                 </span>
               ))}
+            </div>
+            <div class="catalog-result-row__actions" role="cell">
+              <a class="catalog-result-row__inspect" href={row.detailHref}>Inspect</a>
+              <code class="catalog-result-row__command" title={row.installCommandText}>{row.installCommandPreview}</code>
             </div>
           </article>
         ))}

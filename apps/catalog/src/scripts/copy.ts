@@ -1,10 +1,15 @@
 const copyStatus = document.querySelector("[data-copy-status]") as HTMLElement | null;
+let clearCopyStatusTimer = 0;
 
 function announceCopyStatus(message: string): void {
   if (!copyStatus) return;
+  window.clearTimeout(clearCopyStatusTimer);
   copyStatus.textContent = "";
   window.setTimeout(() => {
     copyStatus.textContent = message;
+    clearCopyStatusTimer = window.setTimeout(() => {
+      copyStatus.textContent = "";
+    }, 3200);
   }, 0);
 }
 

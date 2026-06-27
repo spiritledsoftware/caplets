@@ -39,31 +39,15 @@ import { benchmarkProvenance, benchmarkRows, deterministicSurface, proofStats } 
         ))}
       </dl>
 
-      <div class="grid gap-3 md:hidden" aria-label="Live benchmark token results">
+      <div class="grid gap-2 rounded-lg border border-border bg-card/80 p-3 md:hidden" aria-label="Live benchmark token results">
         {
           benchmarkRows.map((row) => (
-            <Card>
-              <CardContent class="grid gap-3 p-4">
-                <div>
-                  <span class="text-xs font-medium text-muted-foreground">Mode</span>
-                  <strong class="block text-sm font-semibold">{row.mode}</strong>
-                </div>
-                <div class="grid grid-cols-3 gap-3 text-sm">
-                  <div>
-                    <span class="text-xs text-muted-foreground">Passed</span>
-                    <strong class="block font-mono">{row.passed}</strong>
-                  </div>
-                  <div>
-                    <span class="text-xs text-muted-foreground">Total Tokens</span>
-                    <strong class="block font-mono">{row.tokens}</strong>
-                  </div>
-                  <div>
-                    <span class="text-xs text-muted-foreground">Tool Surface Tokens</span>
-                    <strong class="block font-mono">{row.surfaceTokens}</strong>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-border/70 bg-background/65 p-3">
+              <strong class="min-w-0 truncate text-sm font-semibold">{row.mode}</strong>
+              <span class="font-mono text-xs font-semibold text-primary-accent">{row.passed}</span>
+              <span class="font-mono text-xs text-muted-foreground">{row.tokens} tokens</span>
+              <span class="font-mono text-xs text-muted-foreground">{row.surfaceTokens} surface</span>
+            </div>
           ))
         }
       </div>

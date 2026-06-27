@@ -7,8 +7,8 @@ import Select from "@astrojs/starlight/components/Select.astro";
     icon="sun"
     label={Astro.locals.t("themeSelect.accessibleLabel")}
     options={[
-      { label: Astro.locals.t("themeSelect.dark"), selected: false, value: "dark" },
-      { label: Astro.locals.t("themeSelect.light"), selected: true, value: "light" },
+      { label: Astro.locals.t("themeSelect.dark"), selected: true, value: "dark" },
+      { label: Astro.locals.t("themeSelect.light"), selected: false, value: "light" },
       { label: Astro.locals.t("themeSelect.auto"), selected: false, value: "auto" },
     ]}
     width="6.25em"
@@ -33,7 +33,7 @@ import Select from "@astrojs/starlight/components/Select.astro";
   const storageKey = "starlight-theme";
 
   const parseTheme = (theme: unknown): Theme =>
-    theme === "auto" || theme === "dark" || theme === "light" ? theme : "light";
+    theme === "auto" || theme === "dark" || theme === "light" ? theme : "dark";
 
   const loadTheme = (): Theme =>
     parseTheme(typeof localStorage !== "undefined" && localStorage.getItem(storageKey));

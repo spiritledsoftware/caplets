@@ -7,6 +7,7 @@ export function catalogSearchRowFixture(input: CatalogSearchRowFixture): Catalog
   const tags = input.tags ?? [];
   const installCommandText =
     input.installCommandText ?? `caplets install spiritledsoftware/caplets ${input.id}`;
+  const installCommandPreview = input.installCommandPreview ?? `install ${input.id}`;
   return {
     description,
     tags,
@@ -26,6 +27,7 @@ export function catalogSearchRowFixture(input: CatalogSearchRowFixture): Catalog
       .join(" ")
       .toLowerCase(),
     ...input,
+    installCommandPreview,
   };
 }
 

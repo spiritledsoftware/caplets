@@ -43,11 +43,6 @@ export default defineConfig({
             { label: "Code Mode", link: "/code-mode/" },
             { label: "Add capabilities", link: "/capabilities/" },
             { label: "Catalog", link: "/catalog/" },
-            {
-              label: "Browse catalog",
-              link: "https://catalog.caplets.dev",
-              attrs: { target: "_blank", rel: "noopener noreferrer" },
-            },
             { label: "Caplets Vault", link: "/vault/" },
             { label: "Agent integrations", link: "/agent-integrations/" },
             { label: "Remote attach", link: "/remote-attach/" },

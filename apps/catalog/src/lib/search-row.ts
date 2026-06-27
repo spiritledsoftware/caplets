@@ -24,6 +24,7 @@ export type CatalogSearchRow = {
   projectBindingReadiness: string;
   detailHref: string;
   installCommandText: string;
+  installCommandPreview: string;
   installCommandCopyable: boolean;
   statuses: CatalogSearchStatus[];
   searchText: string;
@@ -36,6 +37,7 @@ export function catalogSearchRowFromEntry(entry: CatalogEntryRecord): CatalogSea
     severity: warning.severity,
   }));
   const installCommandText = entry.installCommand.text || "Install command unavailable";
+  const installCommandPreview = previewInstallCommand(installCommandText);
   const row: Omit<CatalogSearchRow, "searchText"> = {
     id: entry.entryKey,
     name: entry.name,
@@ -51,6 +53,7 @@ export function catalogSearchRowFromEntry(entry: CatalogEntryRecord): CatalogSea
     projectBindingReadiness: entry.projectBindingReadiness,
     detailHref: `/caplets/${encodeURIComponent(entry.entryKey)}/`,
     installCommandText,
+    installCommandPreview,
     installCommandCopyable: entry.installCommand.copyable,
     statuses,
   };
@@ -71,4 +74,15 @@ export function catalogSearchRowFromEntry(entry: CatalogEntryRecord): CatalogSea
 
 export function catalogSearchRowsFromEntries(entries: CatalogEntryRecord[]): CatalogSearchRow[] {
   return entries.map(catalogSearchRowFromEntry);
+}
+
+function previewInstallCommand(command: string): string {
+  const normalized = command.trim();
+  const capletsInstallPrefix = /^caplets\s+install\s+/;
+  if (capletsInstallPrefix.test(normalized)) {
+    const target = normalized.replace(capletsInstallPrefix, "");
+    const slug = target.split(/\s+/).filter(Boolean).at(-1);
+    return slug ? `Caplet: ${slug}` : "Install available";
+  }
+  return normalized ? "Install available" : "Install unavailable";
 }

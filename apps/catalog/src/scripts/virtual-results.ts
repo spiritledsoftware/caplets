@@ -7,15 +7,12 @@ import {
 } from "@tanstack/virtual-core";
 import { filterCatalogSearchRecords, type CatalogSearchFilters } from "../lib/search-filter";
 import type { CatalogSearchRow } from "../lib/search-row";
-import {
-  AlertCircleIcon,
-  catalogStatusIcons,
-  Copy01Icon,
-  type IconSvgObject,
-} from "../lib/status-icons";
+import { AlertCircleIcon, catalogStatusIcons, type IconSvgObject } from "../lib/status-icons";
 
 const rowHeight = 72;
-const mobileRowHeight = 184;
+const compactRowHeight = 168;
+const mobileRowHeight = 188;
+const narrowRowHeight = 320;
 const overscan = 8;
 
 export type VirtualCatalogSearch = {
@@ -31,6 +28,7 @@ export function initVirtualCatalogSearch(
   const input = root.querySelector("[data-search-input]") as HTMLInputElement | null;
   const resultList = root.querySelector("[data-result-list]") as HTMLElement | null;
   const resultSpacer = root.querySelector("[data-result-spacer]") as HTMLElement | null;
+  const resultTable = root.querySelector("[data-result-table]") as HTMLElement | null;
   const resultStatus = root.querySelector("[data-result-status]") as HTMLElement | null;
   const emptyState = root.querySelector("[data-empty-state]") as HTMLElement | null;
   const reset = root.querySelector("[data-reset-search]") as HTMLButtonElement | null;
@@ -54,8 +52,7 @@ export function initVirtualCatalogSearch(
   const virtualizer = new Virtualizer<Window, HTMLElement>({
     count: visibleRows.length,
     getScrollElement: () => window,
-    estimateSize: () =>
-      window.matchMedia("(max-width: 680px)").matches ? mobileRowHeight : rowHeight,
+    estimateSize: estimateRowHeight,
     overscan,
     scrollToFn: windowScroll,
     observeElementRect: observeWindowRect,
@@ -107,8 +104,9 @@ export function initVirtualCatalogSearch(
     visibleRows = filterCatalogSearchRecords(rows, filters()) as CatalogSearchRow[];
     virtualizer.setOptions({ ...virtualizer.options, count: visibleRows.length });
     resultStatusEl.textContent = `${visibleRows.length} ${visibleRows.length === 1 ? "Caplet" : "Caplets"}`;
+    resultTable?.setAttribute("aria-rowcount", String(visibleRows.length + 1));
     emptyStateEl.hidden = visibleRows.length > 0;
-    resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? rowHeight : 1)}px`;
+    resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? estimateRowHeight() : 1)}px`;
     if (options.writeUrl !== false) writeUrlState();
     if (options.resetScroll !== false) virtualizer.scrollToIndex(0, { align: "start" });
     renderVirtualRows();
@@ -122,7 +120,7 @@ export function initVirtualCatalogSearch(
 
   function renderVirtualRows(): void {
     const items = virtualizer.getVirtualItems();
-    resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? rowHeight : 1)}px`;
+    resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? estimateRowHeight() : 1)}px`;
     resultListEl.replaceChildren(...items.map((item) => renderRow(item, visibleRows[item.index])));
   }
 
@@ -170,12 +168,20 @@ function parseRows(value: string): CatalogSearchRow[] {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+function estimateRowHeight(): number {
+  if (window.matchMedia("(max-width: 420px)").matches) return narrowRowHeight;
+  if (window.matchMedia("(max-width: 640px)").matches) return mobileRowHeight;
+  if (window.matchMedia("(max-width: 900px)").matches) return compactRowHeight;
+  return rowHeight;
+}
+
 function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLElement {
   const element = document.createElement("article");
   element.className = "catalog-result-row";
   element.role = "row";
   element.dataset.resultRow = "";
   element.dataset.index = String(item.index);
+  element.setAttribute("aria-rowindex", String(item.index + 2));
   element.style.transform = `translateY(${item.start}px)`;
   if (!row) return element;
   element.innerHTML = `
@@ -187,19 +193,20 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
     </div>
     <p class="catalog-result-row__description" role="cell">${escapeHtml(row.description)}</p>
     <div class="catalog-result-row__installs" role="cell">${escapeHtml(row.installCountDisplay)}</div>
-    <div class="catalog-result-row__command" role="cell">
-      <code title="${escapeAttribute(row.installCommandText)}">${escapeHtml(row.installCommandText)}</code>
-      ${row.installCommandCopyable ? `<button class="catalog-result-row__copy" type="button" aria-label="Copy install command for ${escapeAttribute(row.name)}" data-copy-command="${escapeAttribute(row.installCommandText)}">${renderIcon(Copy01Icon, "Copy")}</button>` : `<span class="catalog-result-row__copy-unavailable">Copy unavailable</span>`}
-    </div>
     <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
-      ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(catalogStatusIcons[status.code] ?? AlertCircleIcon, status.label)}</span>`).join("")}
+      ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(catalogStatusIcons[status.code] ?? AlertCircleIcon, status.label, "catalog-result-row__status-icon")}<span class="catalog-result-row__status-label">${escapeHtml(status.label)}</span></span>`).join("")}
+    </div>
+    <div class="catalog-result-row__actions" role="cell">
+      <a class="catalog-result-row__inspect" href="${escapeAttribute(row.detailHref)}">Inspect</a>
+      <code class="catalog-result-row__command" title="${escapeAttribute(row.installCommandText)}">${escapeHtml(row.installCommandPreview)}</code>
     </div>
   `;
   return element;
 }
 
-function renderIcon(icon: IconSvgObject, label: string): string {
-  return `<svg aria-label="${escapeAttribute(label)}" role="img" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">${icon
+function renderIcon(icon: IconSvgObject, label: string, className = ""): string {
+  const classAttribute = className ? ` class="${escapeAttribute(className)}"` : "";
+  return `<svg${classAttribute} aria-label="${escapeAttribute(label)}" role="img" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">${icon
     .map(
       ([, attrs]) =>
         `<path ${Object.entries(attrs)

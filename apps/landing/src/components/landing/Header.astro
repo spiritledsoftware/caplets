@@ -17,7 +17,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
       <span class="site-header__brand-text">Caplets</span>
     </a>
 
-    <nav class="site-header__primary-nav hidden items-center gap-1 text-sm font-medium text-muted-foreground md:flex" aria-label="Landing page sections">
+    <nav class="site-header__primary-nav hidden items-center gap-1 text-sm font-medium text-muted-foreground lg:flex" aria-label="Landing page sections">
       <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#trace">How</a>
       <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#why">Why</a>
       <a class="site-header__section-link inline-flex min-h-11 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="#install">Setup</a>
@@ -34,15 +34,15 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
     </nav>
 
     <div class="site-header__actions flex items-center gap-2" aria-label="Project links">
-      <Button class="hidden md:inline-flex" href="https://github.com/spiritledsoftware/caplets" variant="outline" size="icon" aria-label="Caplets on GitHub">
+      <Button class="hidden lg:inline-flex" href="https://github.com/spiritledsoftware/caplets" variant="outline" size="icon" aria-label="Caplets on GitHub">
         <BrandGithub class="size-4" aria-hidden="true" />
       </Button>
-      <Button class="hidden md:inline-flex" href="https://www.npmjs.com/package/caplets" variant="outline" size="icon" aria-label="Caplets on npm">
+      <Button class="hidden lg:inline-flex" href="https://www.npmjs.com/package/caplets" variant="outline" size="icon" aria-label="Caplets on npm">
         <BrandNpm class="size-4" aria-hidden="true" />
       </Button>
 
       <Sheet>
-        <SheetTrigger class="inline-flex size-11 items-center justify-center rounded-md border border-border bg-background text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none md:hidden" aria-label="Open navigation menu">
+        <SheetTrigger class="inline-flex size-11 items-center justify-center rounded-md border border-border bg-background text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none lg:hidden" aria-label="Open navigation menu">
           <Menu class="size-4" aria-hidden="true" />
         </SheetTrigger>
         <SheetContent

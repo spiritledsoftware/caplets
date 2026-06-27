@@ -40,9 +40,6 @@ const detailCommand = hasReadableContent
       <h1 class="mt-2 max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">{entry.name}</h1>
       <p class="mt-2.5 max-w-[68ch] text-muted-foreground">{entry.description}</p>
     </div>
-    <div class="grid content-start gap-2.5">
-      <InstallCommand command={detailCommand} detail />
-    </div>
   </header>
 
   <section class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_330px]">
@@ -59,8 +56,8 @@ const detailCommand = hasReadableContent
               {frontmatterRows.length > 0 && (
                 <section class="mb-6 grid gap-2.5" aria-labelledby="frontmatter-heading">
                   <h3 class="font-mono text-xs font-bold text-muted-foreground" id="frontmatter-heading">Frontmatter</h3>
-                  <div class="overflow-x-auto rounded-md border border-border bg-muted/40">
-                    <Table class="min-w-[560px]">
+                  <div class="overflow-hidden rounded-md border border-border bg-muted/40">
+                    <Table class="frontmatter-table">
                       <TableHeader>
                         <TableRow>
                           <TableHead scope="col">Field</TableHead>
@@ -92,6 +89,7 @@ const detailCommand = hasReadableContent
         }
         </CardContent>
       </Card>
+      <InstallCommand command={detailCommand} detail />
     </div>
     <aside aria-label="Catalog record">
       <Card class="record-panel">

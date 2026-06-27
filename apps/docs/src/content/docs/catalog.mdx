@@ -3,9 +3,20 @@ title: Catalog
 description: Search public Caplets and inspect installable catalog entries.
 ---
 
-[catalog.caplets.dev](https://catalog.caplets.dev) is the public search surface for
-Caplets. It lists official Caplets from this repository and public community Caplets
-discovered from successful public external installs.
+<a href="https://catalog.caplets.dev" target="_blank" rel="noopener noreferrer">
+  catalog.caplets.dev
+</a>
+is the public search surface for Caplets. It lists official Caplets from this repository and public
+community Caplets discovered from successful public external installs.
+
+<a
+  class="caplets-docs-cta"
+  href="https://catalog.caplets.dev"
+  target="_blank"
+  rel="noopener noreferrer"
+>
+  Browse public catalog <span aria-hidden="true">↗</span>
+</a>
 
 Catalog entries show the Caplet name, description, tags, source repository, setup and auth
 readiness, warning labels, aggregate install counts, readable `CAPLET.md` content, and a
@@ -35,10 +46,8 @@ content hash, the catalog hides copy actions and shows recovery guidance instead
 
 Agents and tools should use the structured read API rather than scraping HTML:
 
-```text
-https://catalog.caplets.dev/api/v1/catalog
-https://catalog.caplets.dev/api/v1/catalog/entries/<entryKey>
-```
+- `https://catalog.caplets.dev/api/v1/catalog`
+- `https://catalog.caplets.dev/api/v1/catalog/entries/<entryKey>`
 
 The API returns the same shared catalog entry model used by the site and CLI indexing
 statuses. The npm subpath `@caplets/core/catalog` exposes worker-safe implementation
