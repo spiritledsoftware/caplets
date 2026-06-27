@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "github",
+      "destination": "github",
+      "kind": "directory",
+      "source": {
+        "type": "local",
+        "path": "/tmp/caplets-cli-remote-install-explicit-project-0UFEXG/project/.caplets/repo/caplets/github",
+        "portability": "non_portable"
+      },
+      "installedHash": "sha256:73c123669a3f22f683156dc2746d8b21442078be5e7463686506ae9057381cd6",
+      "installedAt": "2026-06-26T19:27:24.767Z",
+      "updatedAt": "2026-06-26T19:27:24.809Z",
+      "risk": {
+        "backendFamilies": ["mcp"],
+        "safety": "local_control",
+        "projectBindingRequired": false,
+        "mutating": false,
+        "destructive": false,
+        "bodyHash": "sha256:73c123669a3f22f683156dc2746d8b21442078be5e7463686506ae9057381cd6"
+      }
+    }
+  ]
+}
