@@ -41,6 +41,8 @@ export const catalogDatabase = await D1Database("catalog-database", {
 });
 export const catalogPage = await Astro("catalog-page", {
   cwd: "apps/catalog",
+  entrypoint: "dist/server/entry.mjs",
+  assets: "dist/client",
   dev: {
     command: "pnpm run dev --port 4323" + hostSuffix,
   },
