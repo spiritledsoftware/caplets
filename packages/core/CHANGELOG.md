@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.30.0
+
+### Minor Changes
+
+- 931f18e: Add lockfile-aware Caplet install, restore, and update workflows, including `caplets update`, JSON lifecycle output, remote-global catalog mutations, derived update risk checks, and new public catalog entries for browser, desktop, observability, and Google Workspace integrations.
+
 ## 0.29.3
 
 ### Patch Changes
