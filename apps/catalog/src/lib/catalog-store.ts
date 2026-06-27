@@ -15,13 +15,22 @@ export type CatalogStoreEnv = {
 
 export async function listCatalogEntries(env: CatalogStoreEnv = {}): Promise<CatalogEntryRecord[]> {
   const db = env.CATALOG_DB;
-  const [overlays, suppressed, communityEntries] = db
-    ? await Promise.all([
+  let overlays = new Map<string, number>();
+  let suppressed = new Set<string>();
+  let communityEntries: CatalogEntry[] = [];
+  if (db) {
+    try {
+      [overlays, suppressed, communityEntries] = await Promise.all([
         readCountOverlays(db),
         readSuppressedEntryKeys(db),
         readCommunityEntries(db),
-      ])
-    : [new Map<string, number>(), new Set<string>(), []];
+      ]);
+    } catch {
+      overlays = new Map<string, number>();
+      suppressed = new Set<string>();
+      communityEntries = [];
+    }
+  }
   return [...(officialEntries as CatalogEntry[]), ...communityEntries]
     .filter((entry) => !suppressed.has(entry.entryKey))
     .map((entry) => withCount(entry, overlays.get(entry.entryKey) ?? 0))

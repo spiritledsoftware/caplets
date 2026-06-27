@@ -3948,7 +3948,7 @@ function isInstallSourceArgument(
   if (isExplicitLocalPath(value)) return true;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return true;
   if (/^[^@\s]+@[^:\s]+:.+/.test(value)) return true;
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(value)) return true;
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:#[^\s#]+)?$/.test(value)) return true;
   return (
     options.allowImplicitLocalPath !== false &&
     existsSync(value) &&

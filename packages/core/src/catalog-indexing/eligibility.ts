@@ -59,19 +59,27 @@ export function catalogIndexingCandidateForLockEntry(
   if (!entry.source.resolvedRevision) {
     return skip("revision_unavailable", "revision_unavailable");
   }
+  const sourcePath = catalogSourcePathForLockPath(entry.source.path);
   const entryKey = catalogEntryKey({
     source: source.source,
-    sourcePath: entry.source.path,
+    sourcePath,
     capletId: entry.id,
   });
   return {
     id: entry.id,
     source: source.source,
-    sourcePath: entry.source.path,
+    sourcePath,
     resolvedRevision: entry.source.resolvedRevision,
     installedHash: entry.installedHash,
     entryKey,
   };
+}
+
+function catalogSourcePathForLockPath(path: string): string {
+  return path
+    .replace(/\\/g, "/")
+    .replace(/^\.\//u, "")
+    .replace(/^caplets\//iu, "");
 }
 
 function skip(status: CatalogIndexingStatus, reason: string): CatalogIndexingResult {

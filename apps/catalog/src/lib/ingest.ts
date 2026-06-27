@@ -16,7 +16,6 @@ import {
 } from "@caplets/core/catalog";
 import type { D1Database } from "@cloudflare/workers-types";
 import { publicCatalogSourceEligibility } from "./public-source";
-import { refractoryWindowAllows } from "./rate-limit";
 import { isSuppressed } from "./suppression";
 
 const maxBodyBytes = 16 * 1024;
@@ -37,6 +36,12 @@ export type CatalogInstallSignal = {
 export type CatalogInstallSignalResult = {
   status: CatalogIndexingStatus;
   entryKey?: string | undefined;
+};
+
+type SignalReservation = {
+  entryKey: string;
+  signalFingerprint: string;
+  windowStartMs: number;
 };
 
 export async function parseInstallSignalRequest(request: Request): Promise<CatalogInstallSignal> {
@@ -84,59 +89,44 @@ export async function acceptInstallSignal(input: {
     return { status: "ineligible" };
   }
 
-  const previous = await input.db
-    .prepare("select accepted_at_ms from catalog_signal_dedupe where entry_key = ? limit 1")
-    .bind(entryKey)
-    .first<{ accepted_at_ms: number }>();
   const nowMs = input.now?.getTime() ?? Date.now();
-  const decision = refractoryWindowAllows({
-    nowMs,
-    previousAcceptedAtMs: previous?.accepted_at_ms,
-    windowMs: refractoryWindowMs,
-  });
-  if (!decision.allowed) {
-    return { status: "rate_limited", entryKey };
-  }
-  if (!(await repositoryWindowAllows(input.db, eligibility.source, nowMs))) {
-    return { status: "rate_limited", entryKey };
-  }
-
-  await recordAcceptedSignal(input.db, {
-    entry: await canonicalEntryForAcceptedSignal(
-      input.signal,
-      eligibility.source,
-      entryKey,
-      input.fetch ?? globalThis.fetch,
-    ),
+  const reservation = await reserveAcceptedSignal(input.db, {
     entryKey,
     source: eligibility.source,
     nowMs,
     signal: input.signal,
   });
-  return { status: previous ? "counted" : "accepted", entryKey };
+  if (!reservation) {
+    return { status: "rate_limited", entryKey };
+  }
+
+  const entry = await canonicalEntryForAcceptedSignal(
+    input.signal,
+    eligibility.source,
+    entryKey,
+    input.fetch ?? globalThis.fetch,
+  );
+  if (!entry) {
+    await releaseAcceptedSignal(input.db, reservation);
+    return { status: "rejected", entryKey };
+  }
+
+  const previousInstallCount = await readExistingInstallCount(input.db, entryKey);
+  await recordAcceptedSignal(input.db, {
+    entry,
+    entryKey,
+    source: eligibility.source,
+    nowMs,
+    signal: input.signal,
+  });
+  return { status: previousInstallCount > 0 ? "counted" : "accepted", entryKey };
 }
 
 async function readLimitedRequestText(request: Request): Promise<string> {
   if (!request.body) {
     throw new Error("invalid_install_signal");
   }
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalBytes += value.byteLength;
-      if (totalBytes > maxBodyBytes) {
-        throw new Error("request_body_too_large");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return new TextDecoder().decode(concatChunks(chunks, totalBytes));
+  return readLimitedStreamText(request.body, maxBodyBytes, "request_body_too_large");
 }
 
 function concatChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
@@ -149,22 +139,71 @@ function concatChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
   return output;
 }
 
-async function repositoryWindowAllows(
+async function readExistingInstallCount(db: D1Database, entryKey: string): Promise<number> {
+  const record = await db
+    .prepare("select install_count as installCount from catalog_counts where entry_key = ? limit 1")
+    .bind(entryKey)
+    .first<{ installCount: number }>();
+  return Number(record?.installCount) || 0;
+}
+
+async function reserveAcceptedSignal(
   db: D1Database,
-  source: CatalogSourceIdentity,
-  nowMs: number,
-): Promise<boolean> {
-  const windowStartMs = Math.floor(nowMs / refractoryWindowMs) * refractoryWindowMs;
-  const existing = await db
+  input: {
+    entryKey: string;
+    source: CatalogSourceIdentity;
+    nowMs: number;
+    signal: CatalogInstallSignal;
+  },
+): Promise<SignalReservation | undefined> {
+  const windowStartMs = Math.floor(input.nowMs / refractoryWindowMs) * refractoryWindowMs;
+  const fingerprint = signalFingerprint(input.signal);
+  const result = await db
     .prepare(
-      `select accepted_count as acceptedCount
-       from catalog_signal_repository_windows
-       where provider = ? and repository = ? and window_start_ms = ?
-       limit 1`,
+      `insert into catalog_signal_dedupe (
+         entry_key, signal_fingerprint, provider, repository, window_start_ms, accepted_at_ms
+       )
+       select ?, ?, ?, ?, ?, ?
+       where not exists (
+         select 1 from catalog_signal_dedupe
+         where entry_key = ? and accepted_at_ms > ?
+       )
+       and (
+         select count(*) from catalog_signal_dedupe
+         where provider = ? and repository = ? and window_start_ms = ?
+       ) < ?`,
     )
-    .bind(source.provider, source.repository, windowStartMs)
-    .first<{ acceptedCount: number }>();
-  return (existing?.acceptedCount ?? 0) < maxRepositorySignalsPerWindow;
+    .bind(
+      input.entryKey,
+      fingerprint,
+      input.source.provider,
+      input.source.repository,
+      windowStartMs,
+      input.nowMs,
+      input.entryKey,
+      input.nowMs - refractoryWindowMs,
+      input.source.provider,
+      input.source.repository,
+      windowStartMs,
+      maxRepositorySignalsPerWindow,
+    )
+    .run();
+  return d1ChangedRows(result) > 0
+    ? { entryKey: input.entryKey, signalFingerprint: fingerprint, windowStartMs }
+    : undefined;
+}
+
+async function releaseAcceptedSignal(
+  db: D1Database,
+  reservation: SignalReservation,
+): Promise<void> {
+  await db
+    .prepare(
+      `delete from catalog_signal_dedupe
+       where entry_key = ? and signal_fingerprint = ? and window_start_ms = ?`,
+    )
+    .bind(reservation.entryKey, reservation.signalFingerprint, reservation.windowStartMs)
+    .run();
 }
 
 function isInstallSignal(value: unknown): value is CatalogInstallSignal {
@@ -197,7 +236,7 @@ function isCatalogEntry(value: unknown): value is CatalogEntry {
 async function recordAcceptedSignal(
   db: D1Database,
   input: {
-    entry?: CatalogEntry | undefined;
+    entry: CatalogEntry;
     entryKey: string;
     source: CatalogSourceIdentity;
     nowMs: number;
@@ -214,54 +253,33 @@ async function recordAcceptedSignal(
            updated_at_ms = excluded.updated_at_ms`,
       )
       .bind(input.entryKey, input.nowMs),
+  ];
+  statements.push(
     db
       .prepare(
-        `insert into catalog_signal_dedupe (entry_key, provider, repository, accepted_at_ms)
-         values (?, ?, ?, ?)
-         on conflict(entry_key) do update set accepted_at_ms = excluded.accepted_at_ms`,
-      )
-      .bind(input.entryKey, input.source.provider, input.source.repository, input.nowMs),
-    db
-      .prepare(
-        `insert into catalog_signal_repository_windows (provider, repository, window_start_ms, accepted_count)
-         values (?, ?, ?, 1)
-         on conflict(provider, repository, window_start_ms) do update set
-           accepted_count = accepted_count + 1`,
+        `insert into catalog_entries (
+           entry_key, provider, repository, source_path, caplet_id,
+           resolved_revision, content_hash, entry_json, updated_at_ms
+         )
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         on conflict(entry_key) do update set
+           resolved_revision = excluded.resolved_revision,
+           content_hash = excluded.content_hash,
+           entry_json = excluded.entry_json,
+           updated_at_ms = excluded.updated_at_ms`,
       )
       .bind(
+        input.entryKey,
         input.source.provider,
         input.source.repository,
-        Math.floor(input.nowMs / refractoryWindowMs) * refractoryWindowMs,
+        input.signal.sourcePath,
+        input.signal.capletId,
+        input.signal.resolvedRevision,
+        input.signal.contentHash,
+        JSON.stringify(input.entry),
+        input.nowMs,
       ),
-  ];
-  if (input.entry) {
-    statements.push(
-      db
-        .prepare(
-          `insert into catalog_entries (
-             entry_key, provider, repository, source_path, caplet_id,
-             resolved_revision, content_hash, entry_json, updated_at_ms
-           )
-           values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-           on conflict(entry_key) do update set
-             resolved_revision = excluded.resolved_revision,
-             content_hash = excluded.content_hash,
-             entry_json = excluded.entry_json,
-             updated_at_ms = excluded.updated_at_ms`,
-        )
-        .bind(
-          input.entryKey,
-          input.source.provider,
-          input.source.repository,
-          input.signal.sourcePath,
-          input.signal.capletId,
-          input.signal.resolvedRevision,
-          input.signal.contentHash,
-          JSON.stringify(input.entry),
-          input.nowMs,
-        ),
-    );
-  }
+  );
   await db.batch(statements);
 }
 
@@ -318,10 +336,7 @@ async function fetchPublicCapletMarkdown(
         signal: controller.signal,
       });
       if (!response.ok) continue;
-      const text = await response.text();
-      if (new TextEncoder().encode(text).byteLength <= maxFetchedCapletBytes) {
-        return text;
-      }
+      return await readLimitedResponseText(response, maxFetchedCapletBytes);
     } catch {
       continue;
     } finally {
@@ -337,8 +352,11 @@ function candidateRawCapletPaths(sourcePath: string): string[] {
   if (segments.some((segment) => segment === "." || segment === "..")) return [];
   const normalized = segments.join("/");
   if (!normalized) return [];
-  if (/\.md$/iu.test(normalized)) return [normalized];
-  return [`${normalized}/CAPLET.md`];
+  const candidates = /\.md$/iu.test(normalized) ? [normalized] : [`${normalized}/CAPLET.md`];
+  if (!normalized.toLowerCase().startsWith("caplets/")) {
+    candidates.push(...candidates.map((candidate) => `caplets/${candidate}`));
+  }
+  return [...new Set(candidates)];
 }
 
 function rawGithubUrl(
@@ -350,4 +368,55 @@ function rawGithubUrl(
   return `https://raw.githubusercontent.com/${source.owner}/${source.repo}/${encodeURIComponent(
     resolvedRevision,
   )}/${path}`;
+}
+
+async function readLimitedResponseText(response: Response, limitBytes: number): Promise<string> {
+  if (!response.body) {
+    throw new Error("empty_response_body");
+  }
+  return readLimitedStreamText(response.body, limitBytes, "fetched_caplet_too_large");
+}
+
+async function readLimitedStreamText(
+  body: ReadableStream<Uint8Array>,
+  limitBytes: number,
+  tooLargeMessage: string,
+): Promise<string> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limitBytes) {
+        throw new Error(tooLargeMessage);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(concatChunks(chunks, totalBytes));
+}
+
+function signalFingerprint(signal: CatalogInstallSignal): string {
+  return JSON.stringify([
+    signal.source,
+    signal.capletId,
+    signal.sourcePath,
+    signal.resolvedRevision ?? "",
+    signal.contentHash ?? "",
+  ]);
+}
+
+function d1ChangedRows(result: unknown): number {
+  const meta = isRecord(result) ? result.meta : undefined;
+  const changes = isRecord(meta) ? meta.changes : undefined;
+  return typeof changes === "number" ? changes : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

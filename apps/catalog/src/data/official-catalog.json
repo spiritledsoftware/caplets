@@ -80,7 +80,14 @@
       "copyable": true,
       "revisionBound": false
     },
-    "warnings": []
+    "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      }
+    ]
   },
   {
     "entryKey": "github:spiritledsoftware:caplets:coding-agent-toolkit%2Fcaplet.md:coding-agent-toolkit",
@@ -150,7 +157,14 @@
       "copyable": true,
       "revisionBound": false
     },
-    "warnings": []
+    "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      }
+    ]
   },
   {
     "entryKey": "github:spiritledsoftware:caplets:context7%2Fcaplet.md:context7",
@@ -187,12 +201,6 @@
       "revisionBound": false
     },
     "warnings": [
-      {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
       {
         "code": "auth_required",
         "severity": "caution",
@@ -272,12 +280,6 @@
       "revisionBound": false
     },
     "warnings": [
-      {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
       {
         "code": "auth_required",
         "severity": "caution",
@@ -467,12 +469,6 @@
     },
     "warnings": [
       {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
-      {
         "code": "auth_required",
         "severity": "caution",
         "label": "Authentication required",
@@ -564,7 +560,14 @@
       "copyable": true,
       "revisionBound": false
     },
-    "warnings": []
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      }
+    ]
   },
   {
     "entryKey": "github:spiritledsoftware:caplets:osv%2Fcaplet.md:osv",
@@ -600,7 +603,14 @@
       "copyable": true,
       "revisionBound": false
     },
-    "warnings": []
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      }
+    ]
   },
   {
     "entryKey": "github:spiritledsoftware:caplets:playwright%2Fcaplet.md:playwright",
@@ -637,6 +647,12 @@
       "revisionBound": false
     },
     "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      },
       {
         "code": "setup_required",
         "severity": "info",
@@ -681,12 +697,6 @@
     },
     "warnings": [
       {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
-      {
         "code": "auth_required",
         "severity": "caution",
         "label": "Authentication required",
@@ -729,7 +739,14 @@
       "copyable": true,
       "revisionBound": false
     },
-    "warnings": []
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      }
+    ]
   },
   {
     "entryKey": "github:spiritledsoftware:caplets:repo-cli%2Fcaplet.md:repo-cli",
@@ -769,6 +786,12 @@
         "severity": "danger",
         "label": "Local control",
         "message": "This Caplet can operate against local project or machine state."
+      },
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
       },
       {
         "code": "project_binding_required",
@@ -814,12 +837,6 @@
     },
     "warnings": [
       {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
-      {
         "code": "auth_required",
         "severity": "caution",
         "label": "Authentication required",
@@ -861,12 +878,6 @@
       "revisionBound": false
     },
     "warnings": [
-      {
-        "code": "mutating_saas",
-        "severity": "caution",
-        "label": "Can change external services",
-        "message": "This Caplet may perform mutating operations against an external service."
-      },
       {
         "code": "auth_required",
         "severity": "caution",

@@ -20,10 +20,10 @@ describe("catalog indexing", () => {
     expect(catalogIndexingPayloadForLockEntry(lockEntry())).toEqual({
       source: "community/tools",
       capletId: "deploy",
-      sourcePath: "caplets/deploy/CAPLET.md",
+      sourcePath: "deploy/CAPLET.md",
       resolvedRevision: "abc123",
       contentHash: "sha256-installed",
-      entryKey: "github:community:tools:caplets%2Fdeploy%2Fcaplet.md:deploy",
+      entryKey: "github:community:tools:deploy%2Fcaplet.md:deploy",
     });
   });
 
@@ -145,7 +145,25 @@ describe("catalog indexing", () => {
       entry: {
         setupReadiness: "required",
         authReadiness: "required",
+        sourcePath: "deploy/CAPLET.md",
+        installCommand: {
+          text: "caplets install community/tools#abc123 deploy",
+          copyable: true,
+          revisionBound: true,
+        },
       },
+    });
+  });
+
+  it("keeps catalog indexing best-effort when a lockfile cannot be read", async () => {
+    const results = await indexInstalledCapletsFromLockfile(
+      [{ id: "deploy", lockfile: "/missing/.caplets.lock.json" }],
+      { endpoint: "https://catalog.example.test/install-signals", fetch: vi.fn() },
+    );
+
+    expect(results.get("deploy")).toEqual({
+      status: "unavailable",
+      reason: "lockfile_unavailable",
     });
   });
 

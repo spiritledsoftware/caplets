@@ -25,8 +25,7 @@ export function catalogSetupRequiredFromFrontmatter(frontmatter: Record<string, 
 }
 
 export function catalogAuthRequiredFromFrontmatter(frontmatter: Record<string, unknown>): boolean {
-  const auth = catalogCapletAuth(frontmatter);
-  return auth !== undefined && auth.type !== "none";
+  return catalogCapletAuthBlocks(frontmatter).some((auth) => auth.type !== "none");
 }
 
 export function catalogProjectBindingRequiredFromFrontmatter(
@@ -91,9 +90,10 @@ function catalogBackendFamilies(frontmatter: Record<string, unknown>): string[] 
   return families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family]));
 }
 
-function catalogCapletAuth(
+function catalogCapletAuthBlocks(
   frontmatter: Record<string, unknown>,
-): Record<string, unknown> | undefined {
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [];
   for (const key of [
     "mcpServer",
     "openapiEndpoint",
@@ -102,9 +102,9 @@ function catalogCapletAuth(
     "httpApi",
   ]) {
     const backend = frontmatter[key];
-    if (isRecord(backend) && isRecord(backend.auth)) return backend.auth;
+    if (isRecord(backend) && isRecord(backend.auth)) blocks.push(backend.auth);
   }
-  return undefined;
+  return blocks;
 }
 
 function isLocalMcpServer(frontmatter: Record<string, unknown>): boolean {

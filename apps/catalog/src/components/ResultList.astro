@@ -1,11 +1,14 @@
 ---
+import HugeIcon from "./HugeIcon.astro";
 import type { CatalogSearchRow } from "../lib/search-row";
+import { AlertCircleIcon, catalogStatusIcons, Copy01Icon } from "../lib/status-icons";
 
 type Props = {
   rows: CatalogSearchRow[];
 };
 
 const { rows } = Astro.props;
+const initialRows = rows.slice(0, 24);
 ---
 
 <section aria-label="Catalog results">
@@ -22,7 +25,56 @@ const { rows } = Astro.props;
       data-result-spacer
       style={`height:${Math.max(rows.length, 1) * 72}px`}
     >
-      <div class="catalog-result-grid__rows" data-result-list role="rowgroup"></div>
+      <div class="catalog-result-grid__rows" data-result-list role="rowgroup">
+        {initialRows.map((row, index) => (
+          <article
+            class="catalog-result-row"
+            data-result-row
+            data-index={index}
+            role="row"
+            style={`transform:translateY(${index * 72}px)`}
+          >
+            <div class="catalog-result-row__name" role="cell">
+              <div class="catalog-result-row__heading">
+                <a class="catalog-result-row__title" href={row.detailHref}>{row.name}</a>
+                <span class="catalog-result-row__trust">{row.trust}</span>
+              </div>
+            </div>
+            <p class="catalog-result-row__description" role="cell">{row.description}</p>
+            <div class="catalog-result-row__installs" role="cell">{row.installCountDisplay}</div>
+            <div class="catalog-result-row__command" role="cell">
+              <code title={row.installCommandText}>{row.installCommandText}</code>
+              {row.installCommandCopyable ? (
+                <button
+                  class="catalog-result-row__copy"
+                  type="button"
+                  aria-label={`Copy install command for ${row.name}`}
+                  data-copy-command={row.installCommandText}
+                >
+                  <HugeIcon class="size-[18px]" icon={Copy01Icon} label="Copy" />
+                </button>
+              ) : (
+                <span class="catalog-result-row__copy-unavailable">Copy unavailable</span>
+              )}
+            </div>
+            <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
+              {row.statuses.map((status) => (
+                <span
+                  class={`catalog-result-row__status catalog-result-row__status--${status.severity}`}
+                  title={status.label}
+                  aria-label={status.label}
+                >
+                  <HugeIcon
+                    class="size-[18px]"
+                    icon={catalogStatusIcons[status.code] ?? AlertCircleIcon}
+                    label={status.label}
+                  />
+                </span>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
   </div>
   <div class="m-3 rounded-lg border border-border bg-background p-6 text-center" data-empty-state hidden>

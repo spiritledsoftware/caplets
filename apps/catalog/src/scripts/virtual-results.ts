@@ -1,14 +1,4 @@
 import {
-  AlertCircleIcon,
-  ComputerUserIcon,
-  Copy01Icon,
-  DatabaseSyncIcon,
-  Key01Icon,
-  Link01Icon,
-  Settings02Icon,
-  Shield01Icon,
-} from "@hugeicons/core-free-icons";
-import {
   observeWindowOffset,
   observeWindowRect,
   Virtualizer,
@@ -16,24 +6,17 @@ import {
   type VirtualItem,
 } from "@tanstack/virtual-core";
 import { filterCatalogSearchRecords, type CatalogSearchFilters } from "../lib/search-filter";
-import type { CatalogSearchRow, CatalogSearchStatusCode } from "../lib/search-row";
-
-type IconNode = readonly [string, Readonly<Record<string, string | number>>];
-type IconSvgObject = readonly IconNode[];
+import type { CatalogSearchRow } from "../lib/search-row";
+import {
+  AlertCircleIcon,
+  catalogStatusIcons,
+  Copy01Icon,
+  type IconSvgObject,
+} from "../lib/status-icons";
 
 const rowHeight = 72;
 const mobileRowHeight = 148;
 const overscan = 8;
-const statusIcons: Record<CatalogSearchStatusCode, IconSvgObject> = {
-  unverified_community: Shield01Icon,
-  local_control: ComputerUserIcon,
-  mutating_saas: DatabaseSyncIcon,
-  auth_required: Key01Icon,
-  setup_required: Settings02Icon,
-  project_binding_required: Link01Icon,
-  readiness_unknown: AlertCircleIcon,
-  vault_required: Key01Icon,
-};
 
 export type VirtualCatalogSearch = {
   applySearch(): void;
@@ -209,7 +192,7 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
       ${row.installCommandCopyable ? `<button class="catalog-result-row__copy" type="button" aria-label="Copy install command for ${escapeAttribute(row.name)}" data-copy-command="${escapeAttribute(row.installCommandText)}">${renderIcon(Copy01Icon, "Copy")}</button>` : `<span class="catalog-result-row__copy-unavailable">Copy unavailable</span>`}
     </div>
     <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
-      ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(statusIcons[status.code] ?? AlertCircleIcon, status.label)}</span>`).join("")}
+      ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(catalogStatusIcons[status.code] ?? AlertCircleIcon, status.label)}</span>`).join("")}
     </div>
   `;
   return element;

@@ -4,8 +4,17 @@ import { acceptInstallSignal, parseInstallSignalRequest } from "../../../../lib/
 import { jsonResponse } from "../../../../lib/catalog-response";
 
 export async function POST(context: APIContext): Promise<Response> {
+  let signal: Awaited<ReturnType<typeof parseInstallSignalRequest>>;
   try {
-    const signal = await parseInstallSignalRequest(context.request);
+    signal = await parseInstallSignalRequest(context.request);
+  } catch {
+    return jsonResponse(
+      { ok: false, error: { code: "invalid_request", message: "Invalid catalog signal." } },
+      { status: 400 },
+    );
+  }
+
+  try {
     const result = await acceptInstallSignal({
       signal,
       db: getCatalogEnv().CATALOG_DB,
@@ -29,8 +38,11 @@ export async function POST(context: APIContext): Promise<Response> {
     );
   } catch {
     return jsonResponse(
-      { ok: false, error: { code: "invalid_request", message: "Invalid catalog signal." } },
-      { status: 400 },
+      {
+        ok: false,
+        error: { code: "internal_error", message: "Catalog signal ingestion failed." },
+      },
+      { status: 500, headers: { "cache-control": "no-store" } },
     );
   }
 }

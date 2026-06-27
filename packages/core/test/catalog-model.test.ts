@@ -32,11 +32,22 @@ describe("catalog model", () => {
         resolvedRevision: "abc123def456",
       }),
     ).toEqual({
-      text: "caplets install spiritledsoftware/caplets sentry",
-      copyable: false,
-      revisionBound: false,
-      reason: "revision_install_unsupported",
+      text: "caplets install spiritledsoftware/caplets#abc123def456 sentry",
+      copyable: true,
+      revisionBound: true,
     });
+  });
+
+  it("quotes generated install command words for POSIX shells", () => {
+    const normalized = normalizeCatalogSourceIdentity("community/tools");
+    if (!normalized.eligible) throw new Error("expected shorthand source to be eligible");
+
+    expect(
+      generateCatalogInstallCommand({
+        source: normalized.source,
+        capletId: "$(touch /tmp/pwn)'",
+      }).text,
+    ).toBe(`caplets install community/tools '$(touch /tmp/pwn)'"'"''`);
   });
 
   it("keeps official install commands in the supported shorthand shape when no revision is required", () => {

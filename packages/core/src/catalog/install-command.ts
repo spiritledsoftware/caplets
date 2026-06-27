@@ -15,13 +15,15 @@ export function generateCatalogInstallCommand(input: {
     };
   }
 
-  const base = `caplets install ${input.source.repository} ${shellWord(input.capletId)}`;
+  const repo = input.resolvedRevision
+    ? `${input.source.repository}#${input.resolvedRevision}`
+    : input.source.repository;
+  const base = `caplets install ${shellWord(repo)} ${shellWord(input.capletId)}`;
   if (input.resolvedRevision) {
     return {
       text: base,
-      copyable: false,
-      revisionBound: false,
-      reason: "revision_install_unsupported",
+      copyable: true,
+      revisionBound: true,
     };
   }
 
@@ -34,5 +36,5 @@ export function generateCatalogInstallCommand(input: {
 }
 
 function shellWord(value: string): string {
-  return /^[A-Za-z0-9._/-]+$/u.test(value) ? value : JSON.stringify(value);
+  return /^[A-Za-z0-9._/#-]+$/u.test(value) ? value : `'${value.replace(/'/g, `'"'"'`)}'`;
 }

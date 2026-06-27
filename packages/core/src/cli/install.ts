@@ -28,6 +28,14 @@ import { CapletsError, toSafeError } from "../errors";
 import type { CatalogIndexingResult } from "../catalog-indexing/payload";
 import { catalogIndexingPayloadForLockEntry } from "../catalog-indexing/eligibility";
 import {
+  catalogAuthRequiredFromFrontmatter,
+  catalogMutatesExternalStateFromFrontmatter,
+  catalogProjectBindingRequiredFromFrontmatter,
+  catalogSetupRequiredFromFrontmatter,
+  catalogStringArrayFromFrontmatter,
+  catalogStringFromFrontmatter,
+  catalogUsesLocalControlFromFrontmatter,
+  catalogWorkflowSummaryFromFrontmatter,
   catalogWorkflowSummaryForBackendFamily,
   createCatalogEntry,
   normalizeCatalogSourceIdentity,
@@ -419,7 +427,15 @@ export async function indexInstalledCapletsFromLockfile(
 
   const results = new Map<string, CatalogIndexingResult>();
   for (const [lockfilePath, ids] of byLockfile) {
-    const lockfile = readCapletsLockfile(lockfilePath);
+    let lockfile: ReturnType<typeof readCapletsLockfile>;
+    try {
+      lockfile = readCapletsLockfile(lockfilePath);
+    } catch {
+      for (const id of ids) {
+        results.set(id, { status: "unavailable", reason: "lockfile_unavailable" });
+      }
+      continue;
+    }
     const destinations = new Map(
       installed
         .filter((candidate) => candidate.lockfile === lockfilePath && candidate.destination)
@@ -433,7 +449,11 @@ export async function indexInstalledCapletsFromLockfile(
           if ("status" in payload) {
             return [entry.id, payload] as const;
           }
-          payload.entry = catalogEntryForInstalledLockEntry(entry, destinations.get(entry.id));
+          payload.entry = catalogEntryForInstalledLockEntry(
+            entry,
+            destinations.get(entry.id),
+            payload.sourcePath,
+          );
           return [entry.id, await submitCatalogIndexingPayload(payload, options)] as const;
         }),
     );
@@ -496,6 +516,7 @@ async function submitCatalogIndexingPayload(
 function catalogEntryForInstalledLockEntry(
   entry: CapletsLockEntry,
   destination: string | undefined,
+  sourcePath: string,
 ): CatalogEntry | undefined {
   if (entry.source.type !== "git" || !destination) return undefined;
   const source = normalizeCatalogSourceIdentity(entry.source.repository);
@@ -508,37 +529,31 @@ function catalogEntryForInstalledLockEntry(
     const frontmatter = readCapletFrontmatterFromText(contentMarkdown);
     return createCatalogEntry({
       id: entry.id,
-      name: stringFromFrontmatter(frontmatter.name) ?? entry.id,
+      name: catalogStringFromFrontmatter(frontmatter.name) ?? entry.id,
       description:
-        stringFromFrontmatter(frontmatter.description) ?? `Community Caplet ${entry.id}.`,
+        catalogStringFromFrontmatter(frontmatter.description) ?? `Community Caplet ${entry.id}.`,
       source: source.source,
-      sourcePath: entry.source.path,
+      sourcePath,
       trustLevel: "community",
       resolvedRevision: entry.source.resolvedRevision,
       indexedContentHash: entry.installedHash,
       contentMarkdown,
-      tags: stringArrayFromFrontmatter(frontmatter.tags),
-      useWhen: stringFromFrontmatter(frontmatter.useWhen),
-      avoidWhen: stringFromFrontmatter(frontmatter.avoidWhen),
-      setupRequired: frontmatter.setup !== undefined,
-      authRequired: capletAuthRequired(frontmatter),
-      projectBindingRequired: entry.risk.projectBindingRequired,
-      workflow: workflowSummaryFromRisk(entry.risk),
-      mutatesExternalState: entry.risk.mutating || entry.risk.destructive,
-      localControl: entry.risk.safety === "local_control",
+      tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
+      useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
+      avoidWhen: catalogStringFromFrontmatter(frontmatter.avoidWhen),
+      setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
+      authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
+      projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
+      workflow: catalogWorkflowSummaryFromFrontmatter(
+        frontmatter,
+        workflowSummaryFromRisk(entry.risk),
+      ),
+      mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
+      localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
     });
   } catch {
     return undefined;
   }
-}
-
-function stringFromFrontmatter(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function stringArrayFromFrontmatter(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function workflowSummaryFromRisk(risk: CapletsLockEntry["risk"]): CatalogWorkflowSummary {
@@ -610,25 +625,76 @@ function resolveInstallSource(repo: string): {
   }
 
   const normalizedRepo = normalizeGitRepo(repo);
+  const installSource = splitInstallSourceRef(normalizedRepo);
   const repoRoot = mkdtempSync(join(tmpdir(), "caplets-install-"));
   try {
-    execFileSync("git", ["clone", "--depth", "1", "--", normalizedRepo, repoRoot], {
-      env: externalGitEnv(),
-      stdio: "ignore",
-      timeout: 60_000,
-    });
+    cloneInstallSource(installSource, repoRoot);
     const resolvedRevision = gitRevision(repoRoot);
     return {
-      id: normalizedRepo,
+      id: installSource.repository,
       repoRoot,
       sourceKind: "git",
-      repository: normalizedRepo,
+      repository: installSource.repository,
       resolvedRevision,
       cleanup: () => removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true),
     };
   } catch (error) {
     removeInstallPath(repoRoot, `temporary install source ${repoRoot}`, true);
     throw new CapletsError("CONFIG_NOT_FOUND", `Could not clone repo ${repo}`, toSafeError(error));
+  }
+}
+
+function cloneInstallSource(
+  source: { repository: string; ref?: string | undefined },
+  repoRoot: string,
+): void {
+  if (!source.ref) {
+    execFileSync("git", ["clone", "--depth", "1", "--", source.repository, repoRoot], {
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    return;
+  }
+
+  try {
+    execFileSync("git", ["init", repoRoot], {
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    execFileSync("git", ["remote", "add", "origin", source.repository], {
+      cwd: repoRoot,
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    execFileSync("git", ["fetch", "--depth", "1", "origin", source.ref], {
+      cwd: repoRoot,
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    execFileSync("git", ["checkout", "--detach", "FETCH_HEAD"], {
+      cwd: repoRoot,
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+  } catch {
+    rmSync(repoRoot, { recursive: true, force: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync("git", ["clone", "--", source.repository, repoRoot], {
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
+    execFileSync("git", ["checkout", "--detach", source.ref], {
+      cwd: repoRoot,
+      env: externalGitEnv(),
+      stdio: "ignore",
+      timeout: 60_000,
+    });
   }
 }
 
@@ -850,11 +916,6 @@ function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknow
     if (isRecord(backend) && isRecord(backend.auth)) return backend.auth;
   }
   return undefined;
-}
-
-function capletAuthRequired(frontmatter: Record<string, unknown>): boolean {
-  const auth = capletAuth(frontmatter);
-  return auth !== undefined && auth.type !== "none";
 }
 
 function derivedSafety(input: {
@@ -1100,11 +1161,24 @@ function externalGitEnv(): NodeJS.ProcessEnv {
 }
 
 export function normalizeGitRepo(repo: string): string {
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
-    const normalized = repo.endsWith(".git") ? repo.slice(0, -4) : repo;
-    return `https://github.com/${normalized}.git`;
+  const source = splitInstallSourceRef(repo);
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(source.repository)) {
+    const normalized = source.repository.endsWith(".git")
+      ? source.repository.slice(0, -4)
+      : source.repository;
+    return withInstallSourceRef(`https://github.com/${normalized}.git`, source.ref);
   }
   return repo;
+}
+
+function splitInstallSourceRef(repo: string): { repository: string; ref?: string | undefined } {
+  const index = repo.lastIndexOf("#");
+  if (index <= 0 || index === repo.length - 1) return { repository: repo };
+  return { repository: repo.slice(0, index), ref: repo.slice(index + 1) };
+}
+
+function withInstallSourceRef(repository: string, ref: string | undefined): string {
+  return ref ? `${repository}#${ref}` : repository;
 }
 
 function preflightInstallCaplets(

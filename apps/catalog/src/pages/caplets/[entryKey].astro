@@ -12,6 +12,9 @@ export const prerender = false;
 
 const entryKey = Astro.params.entryKey ? decodeEntryRouteKey(Astro.params.entryKey) : undefined;
 const entry = entryKey ? await getCatalogEntry(entryKey, getCatalogEnv()) : undefined;
+if (!entry) {
+  Astro.response.status = 404;
+}
 ---
 
 <!doctype html>

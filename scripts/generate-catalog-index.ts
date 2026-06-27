@@ -7,9 +7,15 @@ import {
   type ParsedCapletSourceCaplet,
 } from "../packages/core/src/caplet-source/parse";
 import {
+  catalogAuthRequiredFromFrontmatter,
+  catalogMutatesExternalStateFromFrontmatter,
+  catalogProjectBindingRequiredFromFrontmatter,
+  catalogSetupRequiredFromFrontmatter,
+  catalogUsesLocalControlFromFrontmatter,
   catalogWorkflowSummaryForBackendFamily,
   createCatalogEntry,
   normalizeCatalogSourceIdentity,
+  readCatalogCapletFrontmatterFromMarkdown,
   type CatalogEntry,
   type CatalogWorkflowSummary,
 } from "../packages/core/src/catalog";
@@ -53,6 +59,7 @@ export async function generateOfficialCatalogEntries(root: string): Promise<Cata
   const entries = await Promise.all(
     parsed.resolvedCaplets.map(async (caplet) => {
       const file = await source.readFile(caplet.sourcePath);
+      const frontmatter = readCatalogCapletFrontmatterFromMarkdown(file?.content ?? "");
       return createCatalogEntry({
         id: caplet.id,
         name: caplet.name,
@@ -64,12 +71,12 @@ export async function generateOfficialCatalogEntries(root: string): Promise<Cata
         tags: caplet.config.tags,
         useWhen: caplet.config.useWhen,
         avoidWhen: caplet.config.avoidWhen,
-        setupRequired: caplet.setupRequired,
-        authRequired: caplet.authRequired,
-        projectBindingRequired: caplet.projectBindingRequired,
+        setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
+        authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
+        projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
         workflow: workflowSummary(caplet),
-        mutatesExternalState: caplet.authRequired,
-        localControl: caplet.projectBindingRequired || caplet.backend === "cli",
+        mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
+        localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
       });
     }),
   );

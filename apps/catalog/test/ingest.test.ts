@@ -1,4 +1,5 @@
 import type { D1Database } from "@cloudflare/workers-types";
+import type { CatalogEntry } from "@caplets/core/catalog";
 import type { APIContext } from "astro";
 import { describe, expect, it } from "vitest";
 import { acceptInstallSignal, parseInstallSignalRequest } from "../src/lib/ingest";
@@ -10,11 +11,13 @@ describe("catalog install signal ingestion", () => {
     await expect(
       acceptInstallSignal({
         db,
+        fetch: rawCapletFetch(),
         signal: {
           source: "https://github.com/Community/Tools.git",
           capletId: "deploy",
           sourcePath: "caplets/deploy/CAPLET.md",
           resolvedRevision: "abc123",
+          entry: submittedEntry(),
         },
       }),
     ).resolves.toEqual({
@@ -22,6 +25,26 @@ describe("catalog install signal ingestion", () => {
       entryKey: "github:community:tools:caplets%2Fdeploy%2Fcaplet.md:deploy",
     });
     expect(db.executedWrites.length).toBeGreaterThan(0);
+  });
+
+  it("rejects install signals that cannot be canonicalized before counting", async () => {
+    const db = fakeD1();
+
+    await expect(
+      acceptInstallSignal({
+        db,
+        signal: {
+          source: "community/tools",
+          capletId: "deploy",
+          sourcePath: "caplets/deploy/CAPLET.md",
+          resolvedRevision: "abc123",
+        },
+      }),
+    ).resolves.toEqual({
+      status: "rejected",
+      entryKey: "github:community:tools:caplets%2Fdeploy%2Fcaplet.md:deploy",
+    });
+    expect(db.executedWrites.join("\n")).not.toContain("catalog_counts");
   });
 
   it("skips private or unpinned signals with categorical statuses only", async () => {
@@ -82,7 +105,7 @@ describe("catalog install signal ingestion", () => {
         },
       }),
     ).resolves.toEqual({ status: "ineligible" });
-    expect(db.executedWrites).toHaveLength(0);
+    expect(db.executedWrites.join("\n")).not.toContain("catalog_counts");
   });
 
   it("does not let direct signals create community records for official Caplets", async () => {
@@ -102,7 +125,7 @@ describe("catalog install signal ingestion", () => {
       status: "already_current",
       entryKey: "github:spiritledsoftware:caplets:caplets%2Fgithub%2Fcaplet.md:github",
     });
-    expect(db.executedWrites).toHaveLength(0);
+    expect(db.executedWrites.join("\n")).not.toContain("catalog_counts");
   });
 
   it("persists submitted community entries when D1 is available", async () => {
@@ -140,10 +163,9 @@ describe("catalog install signal ingestion", () => {
           projectBindingReadiness: "ready",
           workflow: { kind: "cli", label: "CLI tools" },
           installCommand: {
-            text: "caplets install community/tools deploy",
-            copyable: false,
-            revisionBound: false,
-            reason: "revision_install_unsupported",
+            text: "caplets install community/tools#abc123 deploy",
+            copyable: true,
+            revisionBound: true,
           },
           warnings: [],
         },
@@ -151,6 +173,29 @@ describe("catalog install signal ingestion", () => {
     });
 
     expect(db.executedWrites.some((statement) => statement.includes("catalog_entries"))).toBe(true);
+  });
+
+  it("does not buffer oversized fetched CAPLET markdown before rejecting", async () => {
+    const db = fakeD1();
+
+    await expect(
+      acceptInstallSignal({
+        db,
+        fetch: rawCapletFetch("x".repeat(128 * 1024 + 1)),
+        signal: {
+          source: "community/tools",
+          capletId: "deploy",
+          sourcePath: "caplets/deploy/CAPLET.md",
+          resolvedRevision: "abc123",
+          contentHash: "sha256:abc",
+          entry: submittedEntry(),
+        },
+      }),
+    ).resolves.toEqual({
+      status: "rejected",
+      entryKey: "github:community:tools:caplets%2Fdeploy%2Fcaplet.md:deploy",
+    });
+    expect(db.executedWrites.join("\n")).not.toContain("catalog_counts");
   });
 
   it("canonicalizes submitted community entries before storing them", async () => {
@@ -225,7 +270,7 @@ describe("catalog install signal ingestion", () => {
     expect(writes).toContain('"sourcePath":"caplets/deploy/CAPLET.md"');
     expect(writes).toContain('"resolvedRevision":"abc123"');
     expect(writes).toContain('"indexedContentHash":"sha256:abc"');
-    expect(writes).toContain('"text":"caplets install community/tools deploy"');
+    expect(writes).toContain('"text":"caplets install community/tools#abc123 deploy"');
     expect(writes).not.toContain("curl https://example.invalid/install.sh");
     expect(writes).not.toContain('"name":"Deploy"');
     expect(writes).not.toContain("spiritledsoftware/caplets");
@@ -255,7 +300,14 @@ describe("catalog install signal ingestion", () => {
   });
 });
 
-function fakeD1(input: { suppressedEntryKeys?: Set<string> } = {}) {
+function fakeD1(
+  input: {
+    suppressedEntryKeys?: Set<string>;
+    reservationChanges?: number;
+    existingInstallCount?: number;
+    previousAcceptedAtMs?: number;
+  } = {},
+) {
   const suppressedEntryKeys = input.suppressedEntryKeys ?? new Set<string>();
   const db = {
     executedWrites: [] as string[],
@@ -268,7 +320,21 @@ function fakeD1(input: { suppressedEntryKeys?: Set<string> } = {}) {
               if (sql.includes("catalog_suppressions")) {
                 return suppressedEntryKeys.has(String(values[0])) ? { entry_key: values[0] } : null;
               }
+              if (sql.includes("catalog_counts")) {
+                return input.existingInstallCount === undefined
+                  ? null
+                  : { installCount: input.existingInstallCount };
+              }
+              if (sql.includes("catalog_signal_dedupe")) {
+                return input.previousAcceptedAtMs === undefined
+                  ? null
+                  : { acceptedAtMs: input.previousAcceptedAtMs };
+              }
               return null;
+            },
+            run: async () => {
+              db.executedWrites.push(statement);
+              return { meta: { changes: input.reservationChanges ?? 1 } };
             },
             toString: () => statement,
           };
@@ -285,4 +351,35 @@ function fakeD1(input: { suppressedEntryKeys?: Set<string> } = {}) {
 
 function rawCapletFetch(markdown = "# Deploy\n"): typeof fetch {
   return (async () => new Response(markdown)) as typeof fetch;
+}
+
+function submittedEntry(): CatalogEntry {
+  return {
+    entryKey: "github:community:tools:caplets%2Fdeploy%2Fcaplet.md:deploy",
+    id: "deploy",
+    name: "Deploy",
+    description: "Deploy projects.",
+    source: {
+      provider: "github",
+      owner: "community",
+      repo: "tools",
+      repository: "community/tools",
+      canonicalUrl: "https://github.com/community/tools",
+    },
+    sourcePath: "caplets/deploy/CAPLET.md",
+    trustLevel: "community",
+    contentMarkdown: "# Deploy",
+    tags: ["deploy"],
+    intendedTask: "Deploy projects.",
+    setupReadiness: "ready",
+    authReadiness: "ready",
+    projectBindingReadiness: "ready",
+    workflow: { kind: "cli", label: "CLI tools" },
+    installCommand: {
+      text: "caplets install community/tools#abc123 deploy",
+      copyable: true,
+      revisionBound: true,
+    },
+    warnings: [],
+  };
 }
