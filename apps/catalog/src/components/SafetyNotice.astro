@@ -1,0 +1,33 @@
+---
+import type { CatalogWarning } from "@caplets/core/catalog";
+import { AlertCircleIcon } from "@hugeicons/core-free-icons";
+import HugeIcon from "./HugeIcon.astro";
+
+type Props = {
+  warnings: CatalogWarning[];
+  compact?: boolean;
+};
+
+const { compact = false, warnings } = Astro.props;
+---
+
+{
+  warnings.length > 0 && (
+    <section class:list={["rounded-lg border border-border bg-card text-card-foreground", compact ? "p-2.5" : "p-3.5"]} aria-label="Safety warnings">
+      <div class="flex items-center gap-2">
+        <span class="grid size-5 place-items-center rounded-full bg-error text-error-foreground" aria-hidden="true">
+          <HugeIcon icon={AlertCircleIcon} />
+        </span>
+        <h2 class="text-sm font-semibold tracking-[-0.01em]">{compact ? "Warnings" : "Inspect before installing"}</h2>
+      </div>
+      <ul class="mt-2.5 grid gap-2 p-0 list-none">
+        {warnings.map((warning) => (
+          <li class="grid gap-1 rounded-md bg-warning p-2 text-warning-foreground">
+            <strong>{warning.label}</strong>
+            {!compact && <span class="text-muted-foreground">{warning.message}</span>}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}

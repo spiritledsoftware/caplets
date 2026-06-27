@@ -7,21 +7,10 @@ tags:
   - libraries
   - frameworks
   - api-reference
-setup:
-  commands:
-    - label: Install Context7 MCP
-      command: npm
-      args: ["install", "-g", "@upstash/context7-mcp"]
-      timeoutMs: 120000
-      maxOutputBytes: 200000
-  verify:
-    - label: Check Context7 MCP
-      command: context7-mcp
-      args: ["--help"]
-      timeoutMs: 10000
-      maxOutputBytes: 20000
 mcpServer:
-  command: context7-mcp
+  url: https://mcp.context7.com/mcp/oauth
+  auth:
+    type: oauth2
 ---
 
 # Context7 Documentation
@@ -41,9 +30,3 @@ documentation before writing code or giving technical instructions.
 - Prefer primary documentation over snippets when implementation risk is high.
 - Record the library or package name clearly before searching.
 - Do not use this as a substitute for project-local types and tests.
-
-## Setup
-
-This Caplet installs `@upstash/context7-mcp` globally with npm, then verifies the installed
-`context7-mcp` binary with `--help`. Setup is explicit so hosted and local stdio runtimes start a
-known binary without running `npx` package downloads on every agent session.

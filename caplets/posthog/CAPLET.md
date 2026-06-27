@@ -8,7 +8,6 @@ tags:
   - product
   - feature-flags
 mcpServer:
-  transport: http
   url: https://mcp.posthog.com/mcp
   auth:
     type: oauth2

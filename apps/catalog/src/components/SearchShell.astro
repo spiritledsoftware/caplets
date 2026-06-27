@@ -1,0 +1,68 @@
+---
+import type { CatalogEntryRecord } from "../lib/catalog-store";
+import { catalogSearchRowsFromEntries } from "../lib/search-row";
+import FilterBar from "./FilterBar.astro";
+import ResultList from "./ResultList.astro";
+import HugeIcon from "./HugeIcon.astro";
+import {
+  AlertCircleIcon,
+  ComputerUserIcon,
+  DatabaseSyncIcon,
+  Key01Icon,
+  Link01Icon,
+  Settings02Icon,
+  Shield01Icon,
+} from "@hugeicons/core-free-icons";
+
+type Props = {
+  entries: CatalogEntryRecord[];
+};
+
+const { entries } = Astro.props;
+const rows = catalogSearchRowsFromEntries(entries);
+const tags = [...new Set(rows.flatMap((entry) => entry.tags))].sort((left, right) =>
+  left.localeCompare(right),
+);
+const indexJson = JSON.stringify(rows).replace(/</g, "\\u003c");
+const legend = [
+  { label: "Community", icon: Shield01Icon },
+  { label: "Local control", icon: ComputerUserIcon },
+  { label: "External changes", icon: DatabaseSyncIcon },
+  { label: "Auth", icon: Key01Icon },
+  { label: "Setup", icon: Settings02Icon },
+  { label: "Project Binding", icon: Link01Icon },
+  { label: "Unknown readiness", icon: AlertCircleIcon },
+];
+---
+
+<section class="catalog-search" data-search-shell>
+  <div class="catalog-search__toolbar">
+    <div class="catalog-search__topline">
+      <label class="catalog-search__field">
+        <span class="font-mono text-xs font-bold text-muted-foreground">Search Caplets</span>
+        <input
+          class="catalog-search__input"
+          data-search-input
+          type="search"
+          name="q"
+          autocomplete="off"
+          placeholder="Search service, task, backend, or tag"
+        />
+      </label>
+      <div class="catalog-search__status" aria-live="polite" data-result-status>
+        {rows.length} Caplets
+      </div>
+    </div>
+    <FilterBar tags={tags} />
+    <div class="catalog-search__legend" aria-label="Status legend">
+      {legend.map((item) => (
+        <span class="catalog-search__legend-item" title={item.label}>
+          <HugeIcon class="size-4" icon={item.icon} />
+          <span>{item.label}</span>
+        </span>
+      ))}
+    </div>
+  </div>
+  <script is:inline type="application/json" data-search-index set:html={indexJson} />
+  <ResultList rows={rows} />
+</section>

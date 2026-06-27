@@ -47,6 +47,10 @@
       "types": "./dist/caplet-source/filesystem.d.ts",
       "default": "./dist/caplet-source/filesystem.js"
     },
+    "./catalog": {
+      "types": "./dist/catalog/index.d.ts",
+      "default": "./dist/catalog.js"
+    },
     "./code-mode": {
       "types": "./dist/code-mode/index.d.ts",
       "default": "./dist/code-mode.js"

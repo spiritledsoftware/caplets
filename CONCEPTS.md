@@ -16,6 +16,18 @@ The Prebuilt Caplets Catalog is curated as a Code Mode-first capability catalog,
 
 Install-ready catalog entries have an explicit verification status, a reproducible validation path, and a named primary Code Mode workflow. Unverified entries may exist as drafts or recipes, but they do not count as install-ready catalog coverage.
 
+### Catalog Search Site
+
+The public search surface for installable Caplets at `catalog.caplets.dev`.
+
+The Catalog Search Site is separate from the landing page and docs site. It indexes official Caplets from this repo and community Caplets discovered through public external installs, with search, readable Caplet content, source labels, install-count popularity signals, warnings, and inspection-first copyable install commands as the primary user flow.
+
+### Public Catalog Indexing Signal
+
+The public-source install signal that lets `catalog.caplets.dev` discover and rank community Caplets.
+
+Public Catalog Indexing is not ordinary anonymous telemetry. It may publish public Caplet content, normalized install command, source identity needed to reproduce install, and aggregate install count; it must not publish installer identity, private source URLs, local paths, config, credentials, prompts, tool arguments, tool outputs, or hostnames. Catalog install counts are popularity and ranking signals, not safety signals, and public entries can be suppressed when automatic indexing creates stale, abusive, leaked, or high-risk catalog records.
+
 ### Catalog-Grade Caplet
 
 A Caplet that is ready to live in the Prebuilt Caplets Catalog.

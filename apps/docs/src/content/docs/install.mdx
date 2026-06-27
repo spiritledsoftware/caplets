@@ -55,6 +55,19 @@ caplets update sentry github
 Install, restore, and update refuse to overwrite local edits unless you pass `--force`.
 Use `--json` when a script needs per-entry statuses and machine-readable errors.
 
+For public external sources, install, restore, and update also attempt best-effort catalog
+indexing after the local mutation succeeds. Human output prints a short notice when a
+public Caplet source may be indexed. JSON output includes per-entry `catalogIndexing`
+status values. Indexing failures never block install/update/restore, and private or local
+sources are skipped with redacted categorical statuses.
+
+Set `CAPLETS_DISABLE_CATALOG_INDEXING=1` to skip catalog indexing network requests
+entirely.
+
+If an installed Caplet references unresolved Vault values, output includes immediate
+recovery guidance. JSON rows include `vaultSetup` with recovery commands; human output
+prints the relevant `caplets vault set` or `caplets vault access grant` command.
+
 For explicit remote catalog lifecycle operations, `--remote` targets the remote machine's
 global Caplets root and global lockfile:
 

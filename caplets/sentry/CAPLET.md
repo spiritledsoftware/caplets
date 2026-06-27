@@ -8,7 +8,6 @@ tags:
   - errors
   - tracing
 mcpServer:
-  transport: http
   url: https://mcp.sentry.dev/mcp
   auth:
     type: oauth2

@@ -13,19 +13,11 @@ googleDiscoveryApi:
     issuer: https://accounts.google.com
     clientId: $vault:GOOGLE_CLIENT_ID
     clientSecret: $vault:GOOGLE_CLIENT_SECRET
-    scopes:
-      - https://www.googleapis.com/auth/gmail.metadata
-      - https://www.googleapis.com/auth/gmail.readonly
-      - https://www.googleapis.com/auth/gmail.modify
 ---
 
 # Gmail
 
 Use this Caplet when an agent needs Gmail context for support, scheduling, customer communication, or inbox triage.
-
-## Scope Guidance
-
-Start with metadata or readonly access when possible. Add `gmail.modify` only when the workflow needs labels, archive, trash, drafts, or sending. Avoid the broad `https://mail.google.com/` scope unless a separate reviewed local Caplet genuinely needs permanent delete access.
 
 ## Use Carefully
 

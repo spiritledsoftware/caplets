@@ -18,11 +18,6 @@ openapiEndpoint:
 Use this Caplet to inspect npm registry operations through npm's published
 OpenAPI description of the public registry API.
 
-## Spec
-
-The OpenAPI spec is loaded from npm's public API documentation repository:
-<https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml>.
-
 ## Usage Notes
 
 - Use `get_package` to fetch packument metadata for a package, including versions and dist-tags.

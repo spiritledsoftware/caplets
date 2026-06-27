@@ -1,7 +1,7 @@
 ---
 # yaml-language-server: $schema=https://caplets.dev/caplet.schema.json
 name: Browser Use
-description: Drive a local Playwright browser through the Playwright MCP server for web inspection and browser workflows.
+description: Drive the user's real browser through Playwright MCP for local control.
 tags:
   - browser
   - playwright
@@ -11,7 +11,7 @@ mcpServer:
   args:
     - -y
     - "@playwright/mcp@latest"
-    - --browser=chromium
+    - --extension
 ---
 
 # Browser Use

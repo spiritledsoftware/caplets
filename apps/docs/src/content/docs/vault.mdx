@@ -214,3 +214,19 @@ caplets vault access grant GH_TOKEN github
 
 If the Caplet starts through an agent harness, restart the agent after setting or granting
 Vault values so the Caplets runtime reloads clean config.
+
+## Install-time setup guidance
+
+After `caplets install`, lockfile restore, or `caplets update`, Caplets checks the runtime
+config for unresolved Vault references on affected Caplets. The install lifecycle remains
+successful, but output includes recovery guidance when a key is missing or ungranted.
+
+Human output names only the command to run:
+
+```sh
+caplets vault set GH_TOKEN
+caplets vault access grant GH_TOKEN github
+```
+
+`--json` includes a per-entry `vaultSetup` object with `status`, `messages`, and
+`recoveryCommands`. It does not include raw secret values.

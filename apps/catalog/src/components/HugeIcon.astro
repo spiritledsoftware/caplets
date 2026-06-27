@@ -1,0 +1,39 @@
+---
+type IconNode = readonly [string, Readonly<Record<string, string | number>>];
+
+type Props = {
+  icon: readonly IconNode[];
+  label?: string;
+  class?: string;
+};
+
+const { icon, label, class: className } = Astro.props;
+
+function svgAttrs(attrs: IconNode[1]): Record<string, string | number> {
+  const normalized: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "key") continue;
+    normalized[key.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)] = value;
+  }
+  return normalized;
+}
+---
+
+<svg
+  class={className}
+  aria-hidden={label ? undefined : "true"}
+  aria-label={label}
+  fill="none"
+  height="20"
+  role={label ? "img" : undefined}
+  viewBox="0 0 24 24"
+  width="20"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  {
+    icon.map(([, attrs]) => {
+      const pathAttrs = svgAttrs(attrs);
+      return <path {...pathAttrs} />;
+    })
+  }
+</svg>

@@ -9,7 +9,6 @@ tags:
   - issues
   - reviews
 mcpServer:
-  transport: http
   url: https://api.githubcopilot.com/mcp
   auth:
     type: bearer
@@ -35,21 +34,3 @@ issues, pull requests, branches, commits, or review feedback.
 - Store a least-privilege `GH_TOKEN` in the Caplets Vault for the runtime where GitHub runs.
 - Do not ask the agent to expose token values, repository secrets, or private issue contents outside
   the intended conversation.
-
-## Setup
-
-Create a GitHub token with the minimum repository scopes needed for your workflow, then store it in
-the local/global Vault and grant this Caplet access:
-
-```sh
-caplets vault set GH_TOKEN --grant github
-caplets serve
-```
-
-For a self-hosted remote or hosted Cloud-backed runtime, write the value to that runtime instead:
-
-```sh
-caplets vault set GH_TOKEN --remote --grant github
-```
-
-This Caplet uses GitHub's hosted MCP endpoint at `https://api.githubcopilot.com/mcp`.

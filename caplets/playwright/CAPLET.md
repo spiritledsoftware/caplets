@@ -11,12 +11,12 @@ setup:
   commands:
     - label: Install Playwright MCP
       command: npm
-      args: ["install", "-g", "@playwright/mcp@0.0.75"]
+      args: ["install", "-g", "@playwright/mcp@latest"]
       timeoutMs: 120000
       maxOutputBytes: 200000
     - label: Install Chromium browser
       command: npx
-      args: ["playwright", "install", "chromium"]
+      args: ["-y", "playwright@latest", "install", "chromium"]
       timeoutMs: 180000
       maxOutputBytes: 200000
   verify:

@@ -1,0 +1,51 @@
+---
+title: Catalog indexing privacy
+description: What public catalog indexing can and cannot publish.
+---
+
+Catalog indexing is separate from anonymous telemetry.
+
+Set `CAPLETS_DISABLE_CATALOG_INDEXING=1` to disable catalog indexing submissions.
+
+Anonymous telemetry intentionally excludes source URLs, Caplet IDs, hostnames, local paths,
+tool arguments, tool outputs, and raw config. Public catalog indexing needs different data:
+it publishes public-source metadata so other users can search for public Caplets.
+
+## What can become public
+
+After a successful install, restore, or update of an eligible public external Caplet,
+Caplets may submit:
+
+- Normalized public provider and repository identity, such as `github.com/owner/repo`.
+- Caplet ID and source path inside the public repository.
+- Resolved revision or content hash when available.
+- Installed content hash.
+- Generated install command metadata.
+- Safe derived catalog metadata, warnings, and aggregate install counts.
+
+## What must not be sent
+
+Catalog indexing must not send installer identity, local paths, private config, credentials,
+raw agent prompts, tool arguments, tool outputs, hostnames for private sources, private
+source URLs, Vault secret values, raw environment values, or individual install-event
+identity.
+
+Ineligible sources return categorical statuses such as `ineligible`,
+`revision_unavailable`, or `unavailable` without echoing raw private source values.
+
+## Nonblocking behavior
+
+Indexing is best effort. If the catalog indexer is unavailable, rate-limited, or rejects a
+source, install/update/restore still succeeds or fails based on the local lifecycle result,
+not on catalog reporting.
+
+## Vault values
+
+Vault references are local or remote runtime setup. Vault values are never written to the
+catalog, lockfiles, install-count events, logs, or JSON output. When install/update finds
+unresolved Vault setup, CLI output provides recovery commands such as:
+
+```sh
+caplets vault set GH_TOKEN
+caplets vault access grant GH_TOKEN github
+```

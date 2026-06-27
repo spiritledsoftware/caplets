@@ -12,7 +12,7 @@ projectBinding:
   required: true
 mcpServer:
   command: npx
-  args: [-y, language-server-mcp]
+  args: [-y, language-server-mcp@latest]
 ---
 
 # LSP

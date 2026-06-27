@@ -7,7 +7,6 @@ tags:
   - code-search
   - mcp
 mcpServer:
-  transport: http
   url: https://sourcegraph.com/.api/mcp
   auth:
     type: oauth2

@@ -1,0 +1,65 @@
+---
+import ThemeToggle from "./ThemeToggle.astro";
+
+type NavLink = {
+  href: string;
+  label: string;
+};
+
+type Props = {
+  links: NavLink[];
+};
+
+const { links } = Astro.props;
+---
+
+<header class="catalog-header">
+  <a
+    class="flex min-h-11 items-center gap-3 font-semibold text-foreground no-underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+    href="/"
+    aria-label="Caplets Catalog home"
+  >
+    <span class="grid size-9 place-items-center overflow-hidden rounded-lg border border-border bg-[oklch(14%_0.025_98)]" aria-hidden="true">
+      <img class="size-full object-cover" src="/icon-header-dark.png" alt="" width="36" height="36" />
+    </span>
+    <span>Caplets Catalog</span>
+  </a>
+  <div class="flex flex-wrap items-center justify-end gap-2 max-sm:justify-start">
+    <nav class="flex items-center gap-1 text-sm font-medium text-muted-foreground" aria-label="Catalog navigation">
+      {
+        links.map((link) => (
+          <a
+            class="inline-flex min-h-10 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+            href={link.href}
+          >
+            {link.label}
+          </a>
+        ))
+      }
+    </nav>
+    <ThemeToggle />
+  </div>
+</header>
+
+<style>
+  .catalog-header {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklch, var(--background), transparent 8%);
+    padding: 0.75rem max(1rem, calc((100vw - 1180px) / 2));
+    backdrop-filter: blur(12px);
+  }
+
+  @media (max-width: 560px) {
+    .catalog-header {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+  }
+</style>

@@ -42,6 +42,7 @@ export default defineConfig({
           items: [
             { label: "Code Mode", link: "/code-mode/" },
             { label: "Add capabilities", link: "/capabilities/" },
+            { label: "Catalog", link: "/catalog/" },
             { label: "Caplets Vault", link: "/vault/" },
             { label: "Agent integrations", link: "/agent-integrations/" },
             { label: "Remote attach", link: "/remote-attach/" },
@@ -54,6 +55,7 @@ export default defineConfig({
             { label: "Configuration schema", link: "/reference/config/" },
             { label: "Code Mode API", link: "/reference/code-mode-api/" },
             { label: "Caplet files", link: "/reference/caplet-files/" },
+            { label: "Catalog indexing privacy", link: "/privacy/indexing/" },
             {
               label: "GitHub releases",
               link: "https://github.com/spiritledsoftware/caplets/releases",

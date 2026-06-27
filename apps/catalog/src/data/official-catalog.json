@@ -1,0 +1,878 @@
+[
+  {
+    "entryKey": "github:spiritledsoftware:caplets:ast-grep%2Fcaplet.md:ast-grep",
+    "id": "ast-grep",
+    "name": "ast-grep",
+    "description": "Search, scan, test, rewrite, and scaffold ast-grep rules through curated MCP tools.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "ast-grep/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: ast-grep\ndescription: Search, scan, test, rewrite, and scaffold ast-grep rules through curated MCP tools.\ntags:\n  - mcp\n  - code\n  - search\nprojectBinding:\n  required: true\nmcpServer:\n  command: npx\n  args: [-y, ast-grep-mcp@latest]\n---\n\n# AST Grep\n\nUse this Caplet to expose ast-grep's structural search, scan, rule testing, rewrite, and scaffold workflows without giving an agent unrestricted shell access.\n\nThe manifest uses the full `ast-grep-mcp` MCP server.\n\nProject Binding is required because ast-grep reads and may rewrite files in the attached repository. The bound root defines the workspace that search and rewrite operations are allowed to target.\n\n## Safety\n\nRead-only search, scan, and normal test actions set `readOnlyHint: true`. Apply-all rewrite, snapshot-update, and scaffolding actions set `destructiveHint: true` because they can modify files.\n",
+    "tags": [
+      "code",
+      "mcp",
+      "search"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "required",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets ast-grep",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      },
+      {
+        "code": "project_binding_required",
+        "severity": "caution",
+        "label": "Project Binding required",
+        "message": "This Caplet needs a Project Binding before it can run in the intended environment."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:browser-use%2Fcaplet.md:browser-use",
+    "id": "browser-use",
+    "name": "Browser Use",
+    "description": "Drive the user's real browser through Playwright MCP for local control.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "browser-use/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Browser Use\ndescription: Drive the user's real browser through Playwright MCP for local control.\ntags:\n  - browser\n  - playwright\n  - mcp\nmcpServer:\n  command: npx\n  args:\n    - -y\n    - \"@playwright/mcp@latest\"\n    - --extension\n---\n\n# Browser Use\n\nUse this Caplet when an agent needs a local browser to inspect pages, gather current web context, or exercise browser-based workflows.\n\n## Setup\n\nInstall Playwright browser dependencies for the runtime where this Caplet runs. If you need a specific browser executable or profile, create a private variant that uses environment variables such as `DEFAULT_BROWSER_EXECUTABLE_PATH` and `DEFAULT_BROWSER_USER_DATA_DIR`.\n\n## Safety\n\nThis is a local-control Caplet. Browser actions can sign in, submit forms, trigger purchases, or change account data. Prefer navigation, reading, and screenshots first; review mutating interactions before execution.\n",
+    "tags": [
+      "browser",
+      "mcp",
+      "playwright"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets browser-use",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:coding-agent-toolkit%2Fcaplet.md:coding-agent-toolkit",
+    "id": "coding-agent-toolkit",
+    "name": "Coding Agent Toolkit",
+    "description": "self-contained nested toolkit of high-value Caplets for coding agents.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "coding-agent-toolkit/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Coding Agent Toolkit\ndescription: self-contained nested toolkit of high-value Caplets for coding agents.\ntags:\n  - coding-agent\n  - toolkit\n  - caplets\ncapletSet:\n  capletsRoot: ./caplets\n---\n\n# Coding Agent Toolkit\n\nUse this CapletSet to give coding agents a focused bundle of high-value Caplets for repository inspection, code search, package metadata, vulnerability lookup, hosted documentation, and browser automation.\n\nThe source repository keeps the child Caplets in this toolkit as symlinks to the canonical top-level examples. That avoids duplicate maintenance while keeping one curated toolkit entry point.\n\nWhen a directory Caplet is installed, Caplets materializes those symlinked children as real files and directories. Installed copies are self-contained and do not depend on the source repository symlink layout.\n",
+    "tags": [
+      "caplets",
+      "coding-agent",
+      "toolkit"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "set",
+      "label": "Caplet set"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets coding-agent-toolkit",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:computer-use%2Fcaplet.md:computer-use",
+    "id": "computer-use",
+    "name": "Computer Use",
+    "description": "Control local desktop applications and windows through open-computer-use for explicit desktop automation workflows.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "computer-use/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Computer Use\ndescription: Control local desktop applications and windows through open-computer-use for explicit desktop automation workflows.\ntags:\n  - computer-use\n  - desktop\n  - local-control\nmcpServer:\n  command: npx\n  args:\n    - -y\n    - open-computer-use@latest\n    - mcp\n---\n\n# Computer Use\n\nUse this Caplet only when an agent needs explicit access to the local desktop, application windows, or GUI workflows that cannot be completed through APIs or CLI tools.\n\n## Safety\n\nThis is a high-risk local-control Caplet. It can operate real applications and may expose private screen content. Keep tasks narrow, identify the target application before acting, and do not use it for credential entry, payment flows, or irreversible actions without direct user instruction.\n",
+    "tags": [
+      "computer-use",
+      "desktop",
+      "local-control"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets computer-use",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:context7%2Fcaplet.md:context7",
+    "id": "context7",
+    "name": "Context7 Documentation",
+    "description": "Fetch current library and framework documentation through Context7 before using version-sensitive APIs.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "context7/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Context7 Documentation\ndescription: Fetch current library and framework documentation through Context7 before using version-sensitive APIs.\ntags:\n  - docs\n  - libraries\n  - frameworks\n  - api-reference\nmcpServer:\n  url: https://mcp.context7.com/mcp/oauth\n  auth:\n    type: oauth2\n---\n\n# Context7 Documentation\n\nUse this Caplet when the agent needs up-to-date library, SDK, framework, CLI, or cloud-service\ndocumentation before writing code or giving technical instructions.\n\n## Good Fits\n\n- Check current API signatures for fast-moving JavaScript, TypeScript, Python, or cloud libraries.\n- Look up migration notes before changing framework configuration.\n- Retrieve official examples for a specific package version.\n- Resolve uncertainty about CLI flags, config files, or SDK initialization.\n\n## Use Carefully\n\n- Prefer primary documentation over snippets when implementation risk is high.\n- Record the library or package name clearly before searching.\n- Do not use this as a substitute for project-local types and tests.\n",
+    "tags": [
+      "api-reference",
+      "docs",
+      "frameworks",
+      "libraries"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets context7",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:deepwiki%2Fcaplet.md:deepwiki",
+    "id": "deepwiki",
+    "name": "DeepWiki",
+    "description": "Query repository-focused documentation and codebase explanations through DeepWiki's MCP service.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "deepwiki/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: DeepWiki\ndescription: Query repository-focused documentation and codebase explanations through DeepWiki's MCP service.\ntags:\n  - docs\n  - code\n  - mcp\nmcpServer:\n  url: https://mcp.deepwiki.com/mcp\n---\n\n# DeepWiki\n\nUse this Caplet when the agent needs repository documentation, architecture explanations, or codebase\ncontext from DeepWiki before making implementation decisions.\n\n## Good Fits\n\n- Research how an unfamiliar open source repository is structured.\n- Find documentation-backed explanations for framework, package, or service behavior.\n- Cross-check implementation details before modifying code that depends on another project.\n- Summarize repository concepts for planning, code review, or onboarding notes.\n",
+    "tags": [
+      "code",
+      "docs",
+      "mcp"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets deepwiki",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:github%2Fcaplet.md:github",
+    "id": "github",
+    "name": "GitHub",
+    "description": "Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "github/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: GitHub\ndescription: Inspect and manage GitHub repositories, issues, pull requests, branches, commits, and code review workflows.\ntags:\n  - code\n  - github\n  - pull-requests\n  - issues\n  - reviews\nmcpServer:\n  url: https://api.githubcopilot.com/mcp\n  auth:\n    type: bearer\n    token: $vault:GH_TOKEN\n---\n\n# GitHub\n\nUse this Caplet when the agent needs live GitHub repository context or needs to act on\nissues, pull requests, branches, commits, or review feedback.\n\n## Good Fits\n\n- Summarize recent pull request activity before a code review.\n- Inspect open issues and identify implementation work.\n- Create or update issues from an implementation plan.\n- Compare branches, inspect commits, or review pull request files.\n- Leave review comments after the agent has inspected the relevant diff.\n\n## Use Carefully\n\n- Mutating operations can affect real repositories. Prefer read operations first.\n- Store a least-privilege `GH_TOKEN` in the Caplets Vault for the runtime where GitHub runs.\n- Do not ask the agent to expose token values, repository secrets, or private issue contents outside\n  the intended conversation.\n",
+    "tags": [
+      "code",
+      "github",
+      "issues",
+      "pull-requests",
+      "reviews"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets github",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:gmail%2Fcaplet.md:gmail",
+    "id": "gmail",
+    "name": "Gmail",
+    "description": "Search, read, label, draft, and send Gmail messages through the Gmail API Discovery document.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "gmail/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Gmail\ndescription: Search, read, label, draft, and send Gmail messages through the Gmail API Discovery document.\ntags:\n  - google\n  - gmail\n  - email\ngoogleDiscoveryApi:\n  discoveryUrl: https://gmail.googleapis.com/$discovery/rest?version=v1\n  auth:\n    type: oauth2\n    issuer: https://accounts.google.com\n    clientId: $vault:GOOGLE_CLIENT_ID\n    clientSecret: $vault:GOOGLE_CLIENT_SECRET\n---\n\n# Gmail\n\nUse this Caplet when an agent needs Gmail context for support, scheduling, customer communication, or inbox triage.\n\n## Use Carefully\n\nEmail often contains private or regulated content. Keep queries narrow, summarize minimally, and require explicit user intent before sending, modifying, trashing, or deleting messages.\n",
+    "tags": [
+      "email",
+      "gmail",
+      "google"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "google_discovery",
+      "label": "Google Discovery API"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets gmail",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:google-drive%2Fcaplet.md:google-drive",
+    "id": "google-drive",
+    "name": "Google Drive",
+    "description": "Search, read, download, upload, and manage Google Drive files through the Drive API Discovery document.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "google-drive/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Google Drive\ndescription: Search, read, download, upload, and manage Google Drive files through the Drive API Discovery document.\ntags:\n  - google\n  - drive\n  - files\ngoogleDiscoveryApi:\n  discoveryUrl: https://www.googleapis.com/discovery/v1/apis/drive/v3/rest\n  auth:\n    type: oauth2\n    issuer: https://accounts.google.com\n    clientId: $vault:GOOGLE_CLIENT_ID\n    clientSecret: $vault:GOOGLE_CLIENT_SECRET\n---\n\n# Google Drive\n\nUse this Caplet when an agent needs Drive files as context or needs to create/update files with explicit user direction.\n\n## Use Carefully\n\nSearch metadata before reading content. Confirm file IDs and names before upload, update, trash, or delete operations, especially on shared drives.\n",
+    "tags": [
+      "drive",
+      "files",
+      "google"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "google_discovery",
+      "label": "Google Discovery API"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets google-drive",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:google-tasks%2Fcaplet.md:google-tasks",
+    "id": "google-tasks",
+    "name": "Google Tasks",
+    "description": "Read, create, update, organize, and complete Google Tasks through the Google Tasks API Discovery document.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "google-tasks/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Google Tasks\ndescription: Read, create, update, organize, and complete Google Tasks through the Google Tasks API Discovery document.\ntags:\n  - google\n  - tasks\n  - productivity\ngoogleDiscoveryApi:\n  discoveryUrl: https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest\n  auth:\n    type: oauth2\n    issuer: https://accounts.google.com\n    clientId: $vault:GOOGLE_CLIENT_ID\n    clientSecret: $vault:GOOGLE_CLIENT_SECRET\n---\n\n# Google Tasks\n\nUse this Caplet when an agent needs to inspect or manage Google Tasks during planning, follow-up, or personal workflow coordination.\n\n## Use Carefully\n\nList existing tasklists and tasks before mutating. Confirm task names, due dates, and tasklist IDs before creating, completing, moving, or deleting tasks.\n",
+    "tags": [
+      "google",
+      "productivity",
+      "tasks"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "google_discovery",
+      "label": "Google Discovery API"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets google-tasks",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:linear%2Fcaplet.md:linear",
+    "id": "linear",
+    "name": "Linear",
+    "description": "Plan and track product work in Linear by reading teams, projects, cycles, issues, comments, and workflow state.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "linear/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Linear\ndescription: Plan and track product work in Linear by reading teams, projects, cycles, issues, comments, and workflow state.\ntags:\n  - planning\n  - linear\n  - issues\n  - projects\n  - triage\nmcpServer:\n  url: https://mcp.linear.app/mcp\n  auth:\n    type: oauth2\n---\n\n# Linear\n\nUse this Caplet when the agent needs live product planning context from Linear or needs to keep\nimplementation work synchronized with issues, projects, and team workflows.\n\n## Good Fits\n\n- Find the current issue or project that matches a requested feature.\n- Summarize open work by team, project, cycle, label, or assignee.\n- Draft issue breakdowns from a technical plan.\n- Add implementation notes or status comments after code changes.\n- Check whether a bug or feature already has active work before creating a new issue.\n\n## Reference Files\n\n- [Workflows](./workflows.md): recommended lookup, planning, status update, and triage flows.\n\n## Use Carefully\n\n- Linear issue updates are visible to teammates. Read first, then write deliberately.\n- Keep issue titles and comments concise; use links to detailed implementation artifacts when useful.\n- Avoid broad, noisy searches when a team key, issue ID, project, or label is available.\n",
+    "tags": [
+      "issues",
+      "linear",
+      "planning",
+      "projects",
+      "triage"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets linear",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:lsp%2Fcaplet.md:lsp",
+    "id": "lsp",
+    "name": "LSP",
+    "description": "Language Server Protocol tools for project-aware code intelligence through language-server-mcp.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "lsp/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: LSP\ndescription: Language Server Protocol tools for project-aware code intelligence through language-server-mcp.\ntags:\n  - mcp\n  - code\n  - lsp\n  - language-server\n  - diagnostics\nprojectBinding:\n  required: true\nmcpServer:\n  command: npx\n  args: [-y, language-server-mcp@latest]\n---\n\n# LSP\n\nUse this Caplet to expose Language Server Protocol capabilities through `language-server-mcp` without handing every language-server operation to an agent up front.\n\nThe server runs over stdio, starts local language servers lazily, and gives agents project-aware code intelligence for repositories that have LSP configuration or supported built-in language servers.\n\nProject Binding is required because all useful LSP operations need a trustworthy bound project root for workspace-relative files, language-server startup, diagnostics, and edit containment.\n\n## Good Fits\n\n- Inspect hover/type information before editing unfamiliar code.\n- Jump to definitions, declarations, implementations, and type definitions.\n- Find references and document/workspace symbols during refactors.\n- Read diagnostics from configured language servers before proposing fixes.\n- Request formatting, code actions, rename edits, and workspace edits.\n- Cross-check code review or planning assumptions with language-server-backed facts.\n\n## Setup\n\nCreate a project-level `.lsp-mcp.jsonc` when the defaults are not enough:\n\n```jsonc\n{\n  \"lsp\": {\n    \"servers\": {\n      \"typescript\": {\n        \"registry\": \"typescript\",\n      },\n    },\n  },\n}\n```\n\nFor file-targeted tools, pass absolute or workspace-relative paths that resolve inside the workspace. A typical request includes `workspaceRoot`, `filePath`, `line`, and `character`:\n\n```json\n{\n  \"workspaceRoot\": \"/absolute/path/to/project\",\n  \"filePath\": \"/absolute/path/to/project/src/index.ts\",\n  \"line\": 3,\n  \"character\": 12\n}\n```\n\n`serverId` is optional for file-targeted tools. When omitted, `language-server-mcp` runs against configured or built-in servers whose language IDs or file extensions match the file. Add `\"serverId\": \"typescript\"` to force a specific server.\n\nBuilt-in registry IDs include common servers such as `typescript`, `deno`, `eslint`, `json`, `pyright`, `gopls`, `rust`, `svelte`, `vue`, `yaml-ls`, `bash`, `clangd`, `lua-ls`, and `terraform`. Mason and nvim-lspconfig aliases such as `ts_ls`, `denols`, `yamlls`, `bashls`, `rust_analyzer`, and compatibility aliases such as `python`, `go`, and `yaml` are also accepted by the downstream server.\n\n## Safety\n\n`language-server-mcp` defaults to conservative behavior for file modification and process execution:\n\n- Edit-producing tools return edits by default and do not write files unless `apply: true` is passed.\n- `apply: true` requires `serverId` when more than one matching LSP server would produce edits.\n- Applied edits are restricted to the workspace root unless the downstream server is configured with `security.allowExternalFiles: true`.\n- `workspace/executeCommand` is enabled by default, but can be disabled globally or restricted with per-server command allowlists.\n- LSP servers start lazily on first use and stop after an idle timeout by default.\n- Managed downloads are available only for supported built-ins and can be disabled with `downloads.enabled: false`.\n\n## Examples\n\nAsk for hover information at a symbol:\n\n```json\n{\n  \"workspaceRoot\": \"/absolute/path/to/project\",\n  \"filePath\": \"/absolute/path/to/project/src/index.ts\",\n  \"line\": 10,\n  \"character\": 18,\n  \"serverId\": \"typescript\"\n}\n```\n\nRead diagnostics for a source file:\n\n```json\n{\n  \"workspaceRoot\": \"/absolute/path/to/project\",\n  \"filePath\": \"/absolute/path/to/project/src/index.ts\"\n}\n```\n\nRequest code actions without applying edits immediately:\n\n```json\n{\n  \"workspaceRoot\": \"/absolute/path/to/project\",\n  \"filePath\": \"/absolute/path/to/project/src/index.ts\",\n  \"range\": {\n    \"start\": { \"line\": 12, \"character\": 0 },\n    \"end\": { \"line\": 12, \"character\": 24 }\n  },\n  \"apply\": false,\n  \"serverId\": \"typescript\"\n}\n```\n",
+    "tags": [
+      "code",
+      "diagnostics",
+      "language-server",
+      "lsp",
+      "mcp"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "required",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets lsp",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      },
+      {
+        "code": "project_binding_required",
+        "severity": "caution",
+        "label": "Project Binding required",
+        "message": "This Caplet needs a Project Binding before it can run in the intended environment."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:npm%2Fcaplet.md:npm",
+    "id": "npm",
+    "name": "npm Registry",
+    "description": "Query package metadata, versions, dist-tags, and search results from the public npm registry.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "npm/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: npm Registry\ndescription: Query package metadata, versions, dist-tags, and search results from the public npm registry.\ntags:\n  - openapi\n  - npm\n  - packages\n  - code\nopenapiEndpoint:\n  specUrl: https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml\n  auth:\n    type: none\n---\n\n# npm Registry\n\nUse this Caplet to inspect npm registry operations through npm's published\nOpenAPI description of the public registry API.\n\n## Usage Notes\n\n- Use `get_package` to fetch packument metadata for a package, including versions and dist-tags.\n- Use `get_package_version` when you need metadata for one exact published version.\n- Use `get_dist_tags` to read the package's current dist-tags without fetching the full packument.\n- Use `search_packages` to find packages by npm registry search text and ranking weights.\n\n## Examples\n\n- Fetch React packument metadata: `packageName: react`.\n- Fetch TypeScript version metadata: `packageName: typescript`, `version: 5.8.3`.\n- Search packages: `text: keywords:react hooks`, `size: 10`.\n",
+    "tags": [
+      "code",
+      "npm",
+      "openapi",
+      "packages"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "openapi",
+      "label": "OpenAPI"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets npm",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:osv%2Fcaplet.md:osv",
+    "id": "osv",
+    "name": "OSV Vulnerabilities",
+    "description": "Query OSV.dev vulnerability data through explicit HTTP actions.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "osv/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: OSV Vulnerabilities\ndescription: Query OSV.dev vulnerability data through explicit HTTP actions.\ntags:\n  - security\n  - vulnerabilities\n  - http\n  - code\nhttpApi:\n  baseUrl: https://api.osv.dev\n  auth:\n    type: none\n  actions:\n    query_package_version:\n      description: Read-only OSV query for vulnerabilities affecting one package ecosystem/name/version tuple.\n      method: POST\n      path: /v1/query\n      inputSchema:\n        type: object\n        properties:\n          name:\n            type: string\n            description: Package name, such as lodash, requests, or openssl.\n          ecosystem:\n            type: string\n            description: OSV ecosystem, such as npm, PyPI, Maven, Go, crates.io, Packagist, RubyGems, NuGet, Debian, or Alpine.\n          version:\n            type: string\n            description: Package version to query.\n          page_token:\n            type: string\n            description: Optional pagination token returned by OSV.\n        required:\n          - name\n          - ecosystem\n          - version\n      jsonBody:\n        package:\n          name: $input.name\n          ecosystem: $input.ecosystem\n        version: $input.version\n        page_token: $input.page_token\n    query_purl:\n      description: Read-only OSV query for vulnerabilities affecting one package URL (purl).\n      method: POST\n      path: /v1/query\n      inputSchema:\n        type: object\n        properties:\n          purl:\n            type: string\n            description: Package URL, such as pkg:npm/lodash@4.17.20 or pkg:pypi/requests@2.19.0.\n          page_token:\n            type: string\n            description: Optional pagination token returned by OSV.\n        required:\n          - purl\n      jsonBody:\n        package:\n          purl: $input.purl\n        page_token: $input.page_token\n    query_commit:\n      description: Read-only OSV query for vulnerabilities associated with one source commit hash.\n      method: POST\n      path: /v1/query\n      inputSchema:\n        type: object\n        properties:\n          commit:\n            type: string\n            description: Source commit hash to query.\n          page_token:\n            type: string\n            description: Optional pagination token returned by OSV.\n        required:\n          - commit\n      jsonBody:\n        commit: $input.commit\n        page_token: $input.page_token\n    query_batch:\n      description: Read-only OSV batch query for multiple package, purl, commit, or version requests.\n      method: POST\n      path: /v1/querybatch\n      inputSchema:\n        type: object\n        properties:\n          queries:\n            type: array\n            description: OSV query objects accepted by /v1/querybatch.\n            items:\n              type: object\n              additionalProperties: true\n        required:\n          - queries\n      jsonBody:\n        queries: $input.queries\n    get_vulnerability:\n      description: Read-only OSV lookup for one vulnerability record by OSV, CVE, or GHSA identifier.\n      method: GET\n      path: /v1/vulns/{id}\n      inputSchema:\n        type: object\n        properties:\n          id:\n            type: string\n            description: Vulnerability identifier, such as OSV-2020-744, CVE-2021-44228, or GHSA-jfh8-c2jp-5v3q.\n        required:\n          - id\n---\n\n# OSV Vulnerabilities\n\nUse this Caplet to query OSV.dev for known vulnerabilities affecting package\nversions, package URLs, source commits, or known vulnerability IDs.\n\n## Usage Notes\n\n- All actions are read-only HTTP requests against the public OSV API.\n- Use `query_package_version` when you know the package ecosystem, name, and exact version.\n- Use `query_purl` when tooling already produced a package URL such as `pkg:npm/lodash@4.17.20`.\n- Use `query_commit` for source-level checks against a commit hash.\n- Use `query_batch` to check multiple packages or commits in one request.\n- Use `get_vulnerability` when you already have an OSV, CVE, or GHSA identifier.\n\n## Ecosystems\n\nCommon OSV ecosystems include `npm`, `PyPI`, `Maven`, `Go`, `crates.io`,\n`Packagist`, `RubyGems`, `NuGet`, `Debian`, `Alpine`, and `OSS-Fuzz`.\n\n## Examples\n\n- Query npm package version: `name: lodash`, `ecosystem: npm`, `version: 4.17.20`.\n- Query Python package version: `name: requests`, `ecosystem: PyPI`, `version: 2.19.0`.\n- Query a purl: `purl: pkg:npm/lodash@4.17.20`.\n- Fetch a vulnerability: `id: CVE-2021-44228`.\n",
+    "tags": [
+      "code",
+      "http",
+      "security",
+      "vulnerabilities"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "http",
+      "label": "HTTP API"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets osv",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:playwright%2Fcaplet.md:playwright",
+    "id": "playwright",
+    "name": "Playwright",
+    "description": "Drive a browser through Playwright MCP for frontend testing, inspection, and automation workflows.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "playwright/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Playwright\ndescription: Drive a browser through Playwright MCP for frontend testing, inspection, and automation workflows.\ntags:\n  - browser\n  - testing\n  - mcp\n  - frontend\nsetup:\n  commands:\n    - label: Install Playwright MCP\n      command: npm\n      args: [\"install\", \"-g\", \"@playwright/mcp@latest\"]\n      timeoutMs: 120000\n      maxOutputBytes: 200000\n    - label: Install Chromium browser\n      command: npx\n      args: [\"-y\", \"playwright@latest\", \"install\", \"chromium\"]\n      timeoutMs: 180000\n      maxOutputBytes: 200000\n  verify:\n    - label: Check Playwright MCP\n      command: playwright-mcp\n      args: [\"--help\"]\n      timeoutMs: 10000\n      maxOutputBytes: 20000\nmcpServer:\n  command: playwright-mcp\n  args:\n    - --headless\n---\n\n# Playwright\n\nUse this Caplet when the agent needs browser automation for frontend debugging, accessibility checks,\nvisual inspection, or end-to-end testing workflows.\n\n## Good Fits\n\n- Reproduce frontend bugs in a real browser context.\n- Inspect pages, forms, navigation, and interactive states.\n- Validate user flows before or after UI changes.\n- Gather browser evidence for debugging layout, hydration, or client-side behavior.\n\n## Setup\n\nThis Caplet installs `@playwright/mcp@0.0.75` globally with npm, installs the Chromium browser\nruntime with `npx playwright install chromium`, then verifies `playwright-mcp --help`. Setup is\nexplicit because browser automation needs both a stable MCP binary and a browser runtime before the\nhosted or local stdio server starts.\n\nRemove `--headless`, or set `PLAYWRIGHT_MCP_HEADLESS=false` in a custom MCP\nenvironment, to use a visible browser. For advanced settings, create a\nPlaywright MCP JSON config file in your project (for example,\n`.caplets/playwright-mcp.json`) and add `--config .caplets/playwright-mcp.json`\nto the args.\n",
+    "tags": [
+      "browser",
+      "frontend",
+      "mcp",
+      "testing"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "required",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets playwright",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "setup_required",
+        "severity": "info",
+        "label": "Setup required",
+        "message": "This Caplet includes setup steps that should be completed before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:posthog%2Fcaplet.md:posthog",
+    "id": "posthog",
+    "name": "PostHog",
+    "description": "Inspect PostHog analytics, feature flags, experiments, session replay, and product telemetry through PostHog's hosted MCP server.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "posthog/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: PostHog\ndescription: Inspect PostHog analytics, feature flags, experiments, session replay, and product telemetry through PostHog's hosted MCP server.\ntags:\n  - analytics\n  - posthog\n  - product\n  - feature-flags\nmcpServer:\n  url: https://mcp.posthog.com/mcp\n  auth:\n    type: oauth2\n---\n\n# PostHog\n\nUse this Caplet when an agent needs product analytics or feature-flag context from PostHog before planning, debugging, or validating a change.\n\n## Good Fits\n\n- Query trends, funnels, retention, or HogQL for a product question.\n- Inspect feature flags, experiments, or rollout state before changing code.\n- Search session replays and event data while investigating user-reported behavior.\n\n## Use Carefully\n\nPostHog MCP includes mutating tools for flags, insights, dashboards, and other project state. Prefer read-only inspection first, review planned mutations, and keep OAuth access scoped to the PostHog organization and project you intend to expose.\n",
+    "tags": [
+      "analytics",
+      "feature-flags",
+      "posthog",
+      "product"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets posthog",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:pypi%2Fcaplet.md:pypi",
+    "id": "pypi",
+    "name": "PyPI",
+    "description": "Query Python package metadata, releases, files, vulnerabilities, and Simple API project details from PyPI.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "pypi/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: PyPI\ndescription: Query Python package metadata, releases, files, vulnerabilities, and Simple API project details from PyPI.\ntags:\n  - openapi\n  - pypi\n  - python\n  - packages\n  - code\nopenapiEndpoint:\n  specPath: ./pypi.openapi.yaml\n  auth:\n    type: none\n---\n\n# PyPI\n\nUse this Caplet to inspect Python package metadata through a compact, read-only\nOpenAPI description of public PyPI endpoints.\n\n## Spec\n\nThe local OpenAPI spec is [pypi.openapi.yaml](./pypi.openapi.yaml).\n\n## API Coverage\n\n- The PyPI JSON API endpoints return project and release metadata, including package info, release files, download URLs, vulnerability records, and maintainer or author ownership fields when PyPI includes them.\n- The Simple Repository API endpoint uses PyPI's JSON representation for project file listings. The curated OpenAPI spec supplies `Accept: application/vnd.pypi.simple.v1+json` automatically for `get_simple_project`, so callers only provide `project`.\n- Deprecated XML-RPC APIs are intentionally excluded; use these JSON endpoints for agent workflows.\n\n## Usage Notes\n\n- Use `get_project` to fetch current project metadata, releases, URLs, and vulnerability records.\n- Use `get_release` when you need metadata for one exact published version.\n- Use `get_simple_project` when dependency tooling needs Simple API file links and hashes.\n\n## Examples\n\n- Fetch Requests project metadata: `project: requests`.\n- Fetch Django release metadata: `project: django`, `version: 5.0.6`.\n- Fetch Simple API JSON: `project: pytest`.\n",
+    "tags": [
+      "code",
+      "openapi",
+      "packages",
+      "pypi",
+      "python"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "openapi",
+      "label": "OpenAPI"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets pypi",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": []
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:repo-cli%2Fcaplet.md:repo-cli",
+    "id": "repo-cli",
+    "name": "Repository CLI",
+    "description": "Inspect and run common local repository workflows through curated CLI tools.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "repo-cli/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Repository CLI\ndescription: Inspect and run common local repository workflows through curated CLI tools.\ntags:\n  - cli\n  - code\nprojectBinding:\n  required: true\ncliTools:\n  actions:\n    git_status:\n      description: Show concise Git working tree status.\n      command: git\n      args:\n        - status\n        - --short\n      annotations:\n        readOnlyHint: true\n    git_current_branch:\n      description: Print the current Git branch name.\n      command: git\n      args:\n        - branch\n        - --show-current\n      annotations:\n        readOnlyHint: true\n    package_test:\n      description: Run the repository test script with pnpm.\n      command: pnpm\n      args:\n        - run\n        - test\n      timeoutMs: 120000\n---\n\n# Repository CLI\n\nUse this Caplet to expose a small, typed set of local repository commands without giving an agent arbitrary shell access.\n\nProject Binding is required because every command is meant to run against the attached repository. The bound root prevents the agent from accidentally treating an unrelated working directory as the target project.\n",
+    "tags": [
+      "cli",
+      "code"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "ready",
+    "projectBindingReadiness": "required",
+    "workflow": {
+      "kind": "cli",
+      "label": "CLI tools"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets repo-cli",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "local_control",
+        "severity": "danger",
+        "label": "Local control",
+        "message": "This Caplet can operate against local project or machine state."
+      },
+      {
+        "code": "project_binding_required",
+        "severity": "caution",
+        "label": "Project Binding required",
+        "message": "This Caplet needs a Project Binding before it can run in the intended environment."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:sentry%2Fcaplet.md:sentry",
+    "id": "sentry",
+    "name": "Sentry",
+    "description": "Inspect Sentry issues, events, traces, releases, and AI debugging context through Sentry's hosted MCP server.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "sentry/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Sentry\ndescription: Inspect Sentry issues, events, traces, releases, and AI debugging context through Sentry's hosted MCP server.\ntags:\n  - observability\n  - sentry\n  - errors\n  - tracing\nmcpServer:\n  url: https://mcp.sentry.dev/mcp\n  auth:\n    type: oauth2\n---\n\n# Sentry\n\nUse this Caplet when an agent needs live Sentry context while debugging production errors, investigating traces, or checking release health.\n\n## Good Fits\n\n- Find the highest-impact issues for a project and time range.\n- Inspect event details, stack traces, tags, breadcrumbs, and suspect commits.\n- Correlate deploys or releases with new errors before changing code.\n\n## Use Carefully\n\nSentry data can contain user, request, and environment details. Ask for narrow projects and time windows, summarize only the needed debugging context, and review any mutating tool calls before applying changes to Sentry state.\n",
+    "tags": [
+      "errors",
+      "observability",
+      "sentry",
+      "tracing"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets sentry",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  },
+  {
+    "entryKey": "github:spiritledsoftware:caplets:sourcegraph%2Fcaplet.md:sourcegraph",
+    "id": "sourcegraph",
+    "name": "Sourcegraph",
+    "description": "Search and inspect code across Sourcegraph using its MCP endpoint for repository-aware coding workflows.",
+    "source": {
+      "provider": "github",
+      "owner": "spiritledsoftware",
+      "repo": "caplets",
+      "repository": "spiritledsoftware/caplets",
+      "canonicalUrl": "https://github.com/spiritledsoftware/caplets"
+    },
+    "sourcePath": "sourcegraph/CAPLET.md",
+    "trustLevel": "official",
+    "contentMarkdown": "---\n# yaml-language-server: $schema=https://caplets.dev/caplet.schema.json\nname: Sourcegraph\ndescription: Search and inspect code across Sourcegraph using its MCP endpoint for repository-aware coding workflows.\ntags:\n  - sourcegraph\n  - code-search\n  - mcp\nmcpServer:\n  url: https://sourcegraph.com/.api/mcp\n  auth:\n    type: oauth2\n---\n\n# Sourcegraph\n\nUse this Caplet when the agent needs broad code search, repository navigation, or cross-repository\ncontext from Sourcegraph.\n\n## Good Fits\n\n- Find examples of an API, class, or migration pattern across indexed repositories.\n- Trace references before changing shared interfaces.\n- Compare implementations across services or packages.\n- Gather code-search evidence for debugging, review, or planning.\n\n## Setup\n\nThis Caplet targets Sourcegraph Cloud at `https://sourcegraph.com/.api/mcp` and uses OAuth.\n\nSelf-managed Sourcegraph users should change the URL to\n`https://<sourcegraph-host>/.api/mcp`. OAuth/DCR support or access-token headers depend on the\ninstance setup, so configure authentication to match your deployment.\n",
+    "tags": [
+      "code-search",
+      "mcp",
+      "sourcegraph"
+    ],
+    "intendedTask": "unknown",
+    "setupReadiness": "ready",
+    "authReadiness": "required",
+    "projectBindingReadiness": "ready",
+    "workflow": {
+      "kind": "mcp",
+      "label": "MCP server"
+    },
+    "installCommand": {
+      "text": "caplets install spiritledsoftware/caplets sourcegraph",
+      "copyable": true,
+      "revisionBound": false
+    },
+    "warnings": [
+      {
+        "code": "mutating_saas",
+        "severity": "caution",
+        "label": "Can change external services",
+        "message": "This Caplet may perform mutating operations against an external service."
+      },
+      {
+        "code": "auth_required",
+        "severity": "caution",
+        "label": "Authentication required",
+        "message": "This Caplet needs credentials or an auth flow before use."
+      }
+    ]
+  }
+]

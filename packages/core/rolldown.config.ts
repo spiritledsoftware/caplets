@@ -21,6 +21,7 @@ export default defineConfig([
     input: {
       "caplet-source": "src/caplet-source/index.ts",
       "code-mode": "src/code-mode/index.ts",
+      catalog: "src/catalog/index.ts",
       "observed-output-shapes/pure": "src/observed-output-shapes/pure.ts",
       "project-binding": "src/project-binding/index.ts",
       redaction: "src/redaction.ts",

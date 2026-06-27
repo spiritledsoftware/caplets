@@ -25,6 +25,15 @@ import { discoverCapletFiles, validateCapletFile } from "../caplet-files";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError, toSafeError } from "../errors";
+import type { CatalogIndexingResult } from "../catalog-indexing/payload";
+import { catalogIndexingPayloadForLockEntry } from "../catalog-indexing/eligibility";
+import {
+  catalogWorkflowSummaryForBackendFamily,
+  createCatalogEntry,
+  normalizeCatalogSourceIdentity,
+  type CatalogEntry,
+  type CatalogWorkflowSummary,
+} from "../catalog";
 import {
   readCapletsLockfile,
   validateLockfileDestination,
@@ -41,6 +50,8 @@ type InstallableCaplet = {
   hash?: string | undefined;
   status?: "installed" | "restored" | "updated" | "noop" | undefined;
   lockfile?: string | undefined;
+  catalogIndexing?: CatalogIndexingResult | undefined;
+  vaultSetup?: unknown;
 };
 
 type InstallPlan = InstallableCaplet & {
@@ -384,6 +395,161 @@ export function updateCapletsFromLockfile(options: {
   return { installed: results };
 }
 
+export async function indexInstalledCapletsFromLockfile(
+  installed: Array<{ id: string; destination?: string | undefined; lockfile?: string | undefined }>,
+  options: {
+    disableCatalogIndexing?: boolean | undefined;
+    endpoint?: string | undefined;
+    fetch?: typeof fetch | undefined;
+  } = {},
+): Promise<Map<string, CatalogIndexingResult>> {
+  const byLockfile = new Map<string, Set<string>>();
+  if (options.disableCatalogIndexing || process.env.CAPLETS_DISABLE_CATALOG_INDEXING === "1") {
+    return new Map(
+      installed.map((entry) => [
+        entry.id,
+        { status: "ineligible", reason: "catalog_indexing_disabled" },
+      ]),
+    );
+  }
+  for (const entry of installed) {
+    if (!entry.lockfile) continue;
+    byLockfile.set(entry.lockfile, (byLockfile.get(entry.lockfile) ?? new Set()).add(entry.id));
+  }
+
+  const results = new Map<string, CatalogIndexingResult>();
+  for (const [lockfilePath, ids] of byLockfile) {
+    const lockfile = readCapletsLockfile(lockfilePath);
+    const destinations = new Map(
+      installed
+        .filter((candidate) => candidate.lockfile === lockfilePath && candidate.destination)
+        .map((candidate) => [candidate.id, candidate.destination!]),
+    );
+    const indexed = await Promise.all(
+      lockfile.entries
+        .filter((candidate) => ids.has(candidate.id))
+        .map(async (entry) => {
+          const payload = catalogIndexingPayloadForLockEntry(entry);
+          if ("status" in payload) {
+            return [entry.id, payload] as const;
+          }
+          payload.entry = catalogEntryForInstalledLockEntry(entry, destinations.get(entry.id));
+          return [entry.id, await submitCatalogIndexingPayload(payload, options)] as const;
+        }),
+    );
+    for (const [id, result] of indexed) {
+      results.set(id, result);
+    }
+  }
+  return results;
+}
+
+async function submitCatalogIndexingPayload(
+  payload: {
+    source: string;
+    capletId: string;
+    sourcePath: string;
+    resolvedRevision?: string | undefined;
+    contentHash?: string | undefined;
+    entryKey: string;
+    entry?: CatalogEntry | undefined;
+  },
+  options: {
+    endpoint?: string | undefined;
+    fetch?: typeof fetch | undefined;
+  },
+): Promise<CatalogIndexingResult> {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  if (!fetchImpl) {
+    return { status: "unavailable", entryKey: payload.entryKey, reason: "fetch_unavailable" };
+  }
+  const endpoint =
+    options.endpoint ??
+    process.env.CAPLETS_CATALOG_INDEX_URL ??
+    "https://catalog.caplets.dev/api/v1/catalog/install-signals";
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return { status: "unavailable", entryKey: payload.entryKey, reason: "indexer_unavailable" };
+    }
+    const parsed = (await response.json().catch(() => undefined)) as
+      | { result?: CatalogIndexingResult }
+      | undefined;
+    return parsed?.result?.status
+      ? { ...parsed.result, entryKey: parsed.result.entryKey ?? payload.entryKey }
+      : { status: "accepted", entryKey: payload.entryKey };
+  } catch {
+    return { status: "unavailable", entryKey: payload.entryKey, reason: "indexer_unavailable" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function catalogEntryForInstalledLockEntry(
+  entry: CapletsLockEntry,
+  destination: string | undefined,
+): CatalogEntry | undefined {
+  if (entry.source.type !== "git" || !destination) return undefined;
+  const source = normalizeCatalogSourceIdentity(entry.source.repository);
+  if (!source.eligible) return undefined;
+  try {
+    const capletFile = lstatSync(destination).isDirectory()
+      ? join(destination, "CAPLET.md")
+      : destination;
+    const contentMarkdown = readFileSync(capletFile, "utf8");
+    const frontmatter = readCapletFrontmatterFromText(contentMarkdown);
+    return createCatalogEntry({
+      id: entry.id,
+      name: stringFromFrontmatter(frontmatter.name) ?? entry.id,
+      description:
+        stringFromFrontmatter(frontmatter.description) ?? `Community Caplet ${entry.id}.`,
+      source: source.source,
+      sourcePath: entry.source.path,
+      trustLevel: "community",
+      resolvedRevision: entry.source.resolvedRevision,
+      indexedContentHash: entry.installedHash,
+      contentMarkdown,
+      tags: stringArrayFromFrontmatter(frontmatter.tags),
+      useWhen: stringFromFrontmatter(frontmatter.useWhen),
+      avoidWhen: stringFromFrontmatter(frontmatter.avoidWhen),
+      setupRequired: frontmatter.setup !== undefined,
+      authRequired: capletAuthRequired(frontmatter),
+      projectBindingRequired: entry.risk.projectBindingRequired,
+      workflow: workflowSummaryFromRisk(entry.risk),
+      mutatesExternalState: entry.risk.mutating || entry.risk.destructive,
+      localControl: entry.risk.safety === "local_control",
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function stringFromFrontmatter(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArrayFromFrontmatter(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function workflowSummaryFromRisk(risk: CapletsLockEntry["risk"]): CatalogWorkflowSummary {
+  return (
+    catalogWorkflowSummaryForBackendFamily(risk.backendFamilies[0]) ?? {
+      kind: "set",
+      label: "Caplet",
+    }
+  );
+}
+
 function refreshedLockSource(
   source: CapletsLockSource,
   lockedSource: LockedSourceResolution,
@@ -647,6 +813,10 @@ function readCapletFrontmatter(sourcePath: string): Record<string, unknown> {
     ? join(sourcePath, "CAPLET.md")
     : sourcePath;
   const text = readFileSync(capletFile, "utf8");
+  return readCapletFrontmatterFromText(text);
+}
+
+function readCapletFrontmatterFromText(text: string): Record<string, unknown> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(text);
   if (!match) return {};
   const yaml = match[1];
@@ -680,6 +850,11 @@ function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknow
     if (isRecord(backend) && isRecord(backend.auth)) return backend.auth;
   }
   return undefined;
+}
+
+function capletAuthRequired(frontmatter: Record<string, unknown>): boolean {
+  const auth = capletAuth(frontmatter);
+  return auth !== undefined && auth.type !== "none";
 }
 
 function derivedSafety(input: {

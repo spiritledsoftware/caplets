@@ -1,0 +1,34 @@
+---
+import type { CatalogInstallCommand } from "@caplets/core/catalog";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
+import HugeIcon from "./HugeIcon.astro";
+import { Button } from "./starwind/button";
+
+type Props = {
+  command: CatalogInstallCommand;
+  detail?: boolean;
+};
+
+const { command, detail = false } = Astro.props;
+---
+
+<div
+  class:list={[
+    "grid gap-2 rounded-md border border-border bg-[var(--code-surface)] p-2.5 text-[var(--code-ink)]",
+    detail && "items-center sm:grid-cols-[minmax(0,1fr)_auto]",
+  ]}
+>
+  <code class="font-mono text-sm [overflow-wrap:anywhere]">{command.text || "Install command unavailable"}</code>
+  {
+    detail && command.copyable ? (
+      <Button class="bg-card text-card-foreground hover:bg-muted" variant="outline" size="sm" type="button" data-copy-command={command.text}>
+        <HugeIcon class="size-4" icon={Copy01Icon} />
+        <span>Copy</span>
+      </Button>
+    ) : detail ? (
+      <span class="font-mono text-xs font-bold text-[color-mix(in_oklch,var(--code-ink),var(--code-surface)_18%)]">Copy unavailable</span>
+    ) : (
+      <span class="font-mono text-xs font-bold text-[color-mix(in_oklch,var(--code-ink),var(--code-surface)_18%)]">Preview</span>
+    )
+  }
+</div>

@@ -9,7 +9,6 @@ tags:
   - projects
   - triage
 mcpServer:
-  transport: http
   url: https://mcp.linear.app/mcp
   auth:
     type: oauth2
@@ -37,14 +36,3 @@ implementation work synchronized with issues, projects, and team workflows.
 - Linear issue updates are visible to teammates. Read first, then write deliberately.
 - Keep issue titles and comments concise; use links to detailed implementation artifacts when useful.
 - Avoid broad, noisy searches when a team key, issue ID, project, or label is available.
-
-## Setup
-
-Authenticate once through Caplets:
-
-```sh
-caplets auth login linear
-```
-
-The Linear MCP endpoint supports OAuth. Caplets stores the resulting token bundle in your local
-Caplets auth store.
