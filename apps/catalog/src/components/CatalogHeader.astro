@@ -1,42 +1,55 @@
 ---
 import ThemeToggle from "./ThemeToggle.astro";
 
-type NavLink = {
-  href: string;
-  label: string;
+type SearchProps = {
+  count?: number;
+  value?: string;
 };
 
 type Props = {
-  links: NavLink[];
+  search?: SearchProps;
 };
 
-const { links } = Astro.props;
+const { search } = Astro.props;
 ---
 
 <header class="catalog-header">
   <a
-    class="flex min-h-11 items-center gap-3 font-semibold text-foreground no-underline focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+    class="catalog-header__brand"
     href="/"
     aria-label="Caplets Catalog home"
   >
     <span class="grid size-9 place-items-center overflow-hidden rounded-lg border border-border bg-[oklch(14%_0.025_98)]" aria-hidden="true">
       <img class="size-full object-cover" src="/icon-header-dark.png" alt="" width="36" height="36" />
     </span>
-    <span>Caplets Catalog</span>
+    <span class="catalog-header__brand-label">Caplets Catalog</span>
   </a>
-  <div class="flex flex-wrap items-center justify-end gap-2 max-sm:justify-start">
-    <nav class="flex items-center gap-1 text-sm font-medium text-muted-foreground" aria-label="Catalog navigation">
-      {
-        links.map((link) => (
-          <a
-            class="inline-flex min-h-10 items-center rounded-md px-3 py-2 transition hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
-            href={link.href}
-          >
-            {link.label}
-          </a>
-        ))
-      }
-    </nav>
+  {
+    search ? (
+      <form class="catalog-header__search" action="/" method="get" role="search">
+        <label class="catalog-header__search-label" for="catalog-header-search">
+          Search
+        </label>
+        <input
+          class="catalog-header__input"
+          id="catalog-header-search"
+          data-search-input
+          type="search"
+          name="q"
+          autocomplete="off"
+          placeholder="Search Caplets"
+          value={search.value ?? ""}
+          aria-label="Search Caplets"
+        />
+        {typeof search.count === "number" ? (
+          <span class="catalog-header__status" aria-live="polite" data-result-status>
+            {search.count} Caplets
+          </span>
+        ) : null}
+      </form>
+    ) : null
+  }
+  <div class="catalog-header__actions">
     <ThemeToggle />
   </div>
 </header>
@@ -46,20 +59,111 @@ const { links } = Astro.props;
     position: sticky;
     z-index: 40;
     top: 0;
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(13rem, 38rem) auto;
     align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
+    gap: 0.75rem;
     border-bottom: 1px solid var(--border);
     background: color-mix(in oklch, var(--background), transparent 8%);
-    padding: 0.75rem max(1rem, calc((100vw - 1180px) / 2));
+    padding: 0.6rem max(1rem, calc((100vw - 1180px) / 2));
     backdrop-filter: blur(12px);
+  }
+
+  .catalog-header__brand {
+    display: inline-flex;
+    min-height: 2.75rem;
+    min-width: 0;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--foreground);
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .catalog-header__brand:focus-visible,
+  .catalog-header__input:focus-visible {
+    outline: 2px solid var(--outline);
+    outline-offset: 2px;
+  }
+
+  .catalog-header__brand-label {
+    white-space: nowrap;
+  }
+
+  .catalog-header__search {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .catalog-header__search-label,
+  .catalog-header__status {
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .catalog-header__input {
+    min-height: 2.45rem;
+    min-width: 0;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    padding: 0 0.75rem;
+  }
+
+  .catalog-header__input::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .catalog-header__input:focus {
+    border-color: var(--outline);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--outline), transparent 70%);
+  }
+
+  .catalog-header__status {
+    min-width: max-content;
+  }
+
+  .catalog-header__actions {
+    display: flex;
+    justify-content: flex-end;
   }
 
   @media (max-width: 560px) {
     .catalog-header {
-      align-items: flex-start;
-      flex-direction: column;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 0.5rem;
+      padding-block: 0.5rem;
+    }
+
+    .catalog-header__brand {
+      min-height: 2.5rem;
+    }
+
+    .catalog-header__brand-label,
+    .catalog-header__search-label,
+    .catalog-header__status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+
+    .catalog-header__search {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .catalog-header__input {
+      min-height: 2.35rem;
+      padding-inline: 0.65rem;
     }
   }
 </style>

@@ -92,7 +92,7 @@ describe("virtual catalog results", () => {
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
     initVirtualCatalogSearch();
 
-    expect(resultSpacer().style.height).toBe("1480px");
+    expect(resultSpacer().style.height).toBe("1840px");
   });
 
   it("uses delegated copy handling for virtual rows", async () => {

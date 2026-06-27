@@ -27,27 +27,11 @@ const entries = await listCatalogEntries(getCatalogEnv());
   </head>
   <body>
     <a class="skip-link" href="#catalog-results">Skip to results</a>
-    <CatalogHeader
-      links={[
-        { href: "https://caplets.dev", label: "Caplets" },
-        { href: "https://docs.caplets.dev", label: "Docs" },
-        { href: "/api/v1/catalog", label: "API" },
-      ]}
-    />
-    <main class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-7 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-5">
-      <section class="grid items-end gap-6 py-6 md:grid-cols-[minmax(0,1fr)_minmax(280px,390px)]">
-        <div>
-          <h1 class="max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">
-            Find a capability before you install it.
-          </h1>
-          <p class="mt-2.5 max-w-[68ch] text-muted-foreground">
-            Search indexed Caplets, inspect source content, check setup readiness, and treat install counts as popularity only.
-          </p>
-        </div>
-        <div class="rounded-lg border border-border bg-card p-4 text-card-foreground" role="note">
-          <strong class="block">Public catalog entries are not security reviews.</strong>
-          <span class="text-muted-foreground">Examine the Caplet and source before installing, especially for community entries.</span>
-        </div>
+    <CatalogHeader search={{ count: entries.length, value: Astro.url.searchParams.get("q") ?? "" }} />
+    <main class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-4 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-3">
+      <section class="catalog-intro" role="note">
+        <strong>Not security-reviewed.</strong>
+        <span>Inspect Caplets before installing.</span>
       </section>
       <div id="catalog-results">
         <SearchShell entries={entries} />

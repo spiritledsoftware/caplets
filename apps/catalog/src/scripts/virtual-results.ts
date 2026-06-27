@@ -15,7 +15,7 @@ import {
 } from "../lib/status-icons";
 
 const rowHeight = 72;
-const mobileRowHeight = 148;
+const mobileRowHeight = 184;
 const overscan = 8;
 
 export type VirtualCatalogSearch = {

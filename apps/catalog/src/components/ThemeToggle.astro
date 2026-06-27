@@ -32,7 +32,7 @@ const options = [
         ))
       }
     </span>
-    <span data-theme-label>System</span>
+    <span class="theme-label" data-theme-label>System</span>
     <HugeIcon class="theme-chevron size-4 text-muted-foreground transition" icon={ArrowDown01Icon} />
   </button>
 
@@ -73,5 +73,24 @@ const options = [
 
   .theme-option[aria-checked="false"] .theme-check {
     visibility: hidden;
+  }
+
+  @media (max-width: 560px) {
+    .theme-trigger {
+      min-width: 2.5rem;
+      justify-content: center;
+      gap: 0;
+      padding-inline: 0.65rem;
+    }
+
+    .theme-label,
+    :global(.theme-chevron) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
   }
 </style>

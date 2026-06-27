@@ -36,24 +36,6 @@ const legend = [
 ---
 
 <section class="catalog-search" data-search-shell>
-  <div class="catalog-search__toolbar">
-    <div class="catalog-search__topline">
-      <label class="catalog-search__field">
-        <span class="font-mono text-xs font-bold text-muted-foreground">Search Caplets</span>
-        <input
-          class="catalog-search__input"
-          data-search-input
-          type="search"
-          name="q"
-          autocomplete="off"
-          placeholder="Search service, task, backend, or tag"
-        />
-      </label>
-      <div class="catalog-search__status" aria-live="polite" data-result-status>
-        {rows.length} Caplets
-      </div>
-    </div>
-  </div>
   <div class="catalog-search__controls">
     <FilterBar tags={tags} />
     <div class="catalog-search__legend" aria-label="Status legend">

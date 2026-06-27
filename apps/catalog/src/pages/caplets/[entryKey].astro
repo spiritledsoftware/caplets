@@ -34,13 +34,7 @@ if (!entry) {
   </head>
   <body>
     <a class="skip-link" href="#detail">Skip to detail</a>
-    <CatalogHeader
-      links={[
-        { href: "/", label: "Search" },
-        { href: "https://docs.caplets.dev", label: "Docs" },
-        { href: "/api/v1/catalog", label: "API" },
-      ]}
-    />
+    <CatalogHeader search={{ value: "" }} />
     <main id="detail" class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-7 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-5">
       {
         entry ? (
