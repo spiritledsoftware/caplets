@@ -95,6 +95,18 @@ describe("catalog search filtering", () => {
     ).toEqual(["community-search"]);
   });
 
+  it("matches partial tag text for searchable tag filters", () => {
+    expect(
+      filterCatalogSearchRecords(records, {
+        query: "",
+        trust: "all",
+        setup: "all",
+        tag: "play",
+        sort: "rank",
+      }).map((record) => record.id),
+    ).toEqual(["browser-use"]);
+  });
+
   it("sorts by rank or name", () => {
     expect(
       filterCatalogSearchRecords(records, {

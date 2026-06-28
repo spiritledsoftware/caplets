@@ -39,7 +39,7 @@ export function initVirtualCatalogSearch(
   const reset = root.querySelector("[data-reset-search]") as HTMLButtonElement | null;
   const trust = root.querySelector('[data-filter="trust"]') as HTMLSelectElement | null;
   const setup = root.querySelector('[data-filter="setup"]') as HTMLSelectElement | null;
-  const tag = root.querySelector('[data-filter="tag"]') as HTMLSelectElement | null;
+  const tag = root.querySelector('[data-filter="tag"]') as HTMLInputElement | null;
   const sort = root.querySelector("[data-sort]") as HTMLSelectElement | null;
   const index = root.querySelector("[data-search-index]") as HTMLScriptElement | null;
   if (!shell || !input || !resultList || !resultSpacer || !resultStatus || !emptyState || !index) {
@@ -77,7 +77,7 @@ export function initVirtualCatalogSearch(
       query: inputEl.value,
       trust: trust?.value ?? "all",
       setup: setup?.value ?? "all",
-      tag: tag?.value ?? "all",
+      tag: tag?.value.trim() || "all",
       sort: sort?.value === "name" ? "name" : "rank",
     };
   }
@@ -87,7 +87,7 @@ export function initVirtualCatalogSearch(
     inputEl.value = params.get("q") ?? "";
     if (trust) trust.value = params.get("scope") ?? "all";
     if (setup) setup.value = params.get("setup") ?? "all";
-    if (tag) tag.value = params.get("tag") ?? "all";
+    if (tag) tag.value = params.get("tag") ?? "";
     if (sort) sort.value = params.get("sort") === "name" ? "name" : "rank";
   }
 
@@ -96,7 +96,7 @@ export function initVirtualCatalogSearch(
     if (inputEl.value.trim()) params.set("q", inputEl.value.trim());
     if (trust && trust.value !== "all") params.set("scope", trust.value);
     if (setup && setup.value !== "all") params.set("setup", setup.value);
-    if (tag && tag.value !== "all") params.set("tag", tag.value);
+    if (tag?.value.trim()) params.set("tag", tag.value.trim());
     if (sort && sort.value !== "rank") params.set("sort", sort.value);
     const query = params.toString();
     const next = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
@@ -157,9 +157,10 @@ export function initVirtualCatalogSearch(
     "click",
     () => {
       inputEl.value = "";
-      for (const select of [trust, setup, tag]) {
+      for (const select of [trust, setup]) {
         if (select) select.value = "all";
       }
+      if (tag) tag.value = "";
       if (sort) sort.value = "rank";
       applySearch();
       inputEl.focus();

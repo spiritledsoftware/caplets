@@ -90,7 +90,7 @@ describe("virtual catalog results", () => {
     expect(input().value).toBe("");
     expect(select("trust").value).toBe("all");
     expect(select("setup").value).toBe("all");
-    expect(select("tag").value).toBe("all");
+    expect(tagInput().value).toBe("");
     expect(sort().value).toBe("rank");
   });
 
@@ -127,6 +127,18 @@ describe("virtual catalog results", () => {
     initVirtualCatalogSearch();
 
     expect(resultSpacer().style.height).toBe("1880px");
+  });
+
+  it("filters by searchable tag text", async () => {
+    mountSearchShell(manyCatalogSearchRows(20));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    tagInput().value = "od";
+    tagInput().dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(document.querySelector("[data-result-status]")?.textContent).toBe("10 Caplets");
+    expect(resultRows()[0]?.textContent).toContain("Caplet 1");
   });
 
   it("uses the narrow row estimate when mobile rows stack", async () => {
@@ -223,11 +235,11 @@ function mountSearchShell(rows: CatalogSearchRow[], url = "http://localhost:3000
         <option value="required">Required</option>
         <option value="unknown">Unknown</option>
       </select>
-      <select data-filter="tag">
-        <option value="all">Any tag</option>
-        <option value="even">Even</option>
-        <option value="odd">Odd</option>
-      </select>
+      <input data-filter="tag" list="catalog-tag-options" type="search" />
+      <datalist id="catalog-tag-options">
+        <option value="even"></option>
+        <option value="odd"></option>
+      </datalist>
       <select data-sort>
         <option value="rank">Rank</option>
         <option value="name">Name</option>
@@ -249,8 +261,12 @@ function input(): HTMLInputElement {
   return document.querySelector("[data-search-input]") as HTMLInputElement;
 }
 
-function select(name: "trust" | "setup" | "tag"): HTMLSelectElement {
+function select(name: "trust" | "setup"): HTMLSelectElement {
   return document.querySelector(`[data-filter="${name}"]`) as HTMLSelectElement;
+}
+
+function tagInput(): HTMLInputElement {
+  return document.querySelector('[data-filter="tag"]') as HTMLInputElement;
 }
 
 function sort(): HTMLSelectElement {

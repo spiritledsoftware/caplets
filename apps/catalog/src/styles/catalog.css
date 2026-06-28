@@ -116,7 +116,8 @@
   gap: 0.3rem;
 }
 
-.catalog-filterbar select {
+.catalog-filterbar select,
+.catalog-filterbar input {
   min-height: 2.75rem;
   width: 100%;
   border-color: var(--border);
@@ -126,7 +127,13 @@
   font-size: 0.9rem;
 }
 
-.catalog-filterbar select:focus {
+.catalog-filterbar input::placeholder {
+  color: var(--muted-foreground);
+  opacity: 1;
+}
+
+.catalog-filterbar select:focus,
+.catalog-filterbar input:focus {
   border-color: var(--outline);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--outline), transparent 70%);
 }
@@ -453,7 +460,8 @@
     white-space: nowrap;
   }
 
-  .catalog-filterbar select {
+  .catalog-filterbar select,
+  .catalog-filterbar input {
     font-size: 0.84rem;
   }
 

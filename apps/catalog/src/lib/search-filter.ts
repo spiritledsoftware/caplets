@@ -22,7 +22,9 @@ export function filterCatalogSearchRecords(
   filters: CatalogSearchFilters,
 ): CatalogSearchRecord[] {
   const query = filters.query.trim().toLowerCase();
+  const tag = filters.tag.trim().toLowerCase();
   const normalizedQuery = normalizeSearchText(query);
+  const normalizedTag = normalizeSearchText(tag);
   return records
     .filter((record) => {
       const searchable =
@@ -35,7 +37,9 @@ export function filterCatalogSearchRecords(
           normalizedSearchable.includes(normalizedQuery)) &&
         (filters.trust === "all" || record.trust === filters.trust) &&
         (filters.setup === "all" || record.setup === filters.setup) &&
-        (filters.tag === "all" || record.tags.includes(filters.tag))
+        (!tag ||
+          tag === "all" ||
+          record.tags.some((recordTag) => tagMatches(recordTag, tag, normalizedTag)))
       );
     })
     .sort((left, right) => {
@@ -43,6 +47,15 @@ export function filterCatalogSearchRecords(
       const rank = right.count - left.count;
       return rank === 0 ? left.name.localeCompare(right.name) : rank;
     });
+}
+
+function tagMatches(recordTag: string, tag: string, normalizedTag: string): boolean {
+  const lowerTag = recordTag.toLowerCase();
+  return (
+    lowerTag === tag ||
+    lowerTag.includes(tag) ||
+    normalizeSearchText(lowerTag).includes(normalizedTag)
+  );
 }
 
 function normalizeSearchText(value: string): string {
