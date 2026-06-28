@@ -18,7 +18,7 @@ const initialRows = rows.slice(0, 24);
       <span role="columnheader">Description</span>
       <span role="columnheader">Installs</span>
       <span role="columnheader">Status</span>
-      <span role="columnheader">Actions</span>
+      <span role="columnheader">Install</span>
     </div>
     <div
       class="catalog-result-grid__spacer"
@@ -30,6 +30,7 @@ const initialRows = rows.slice(0, 24);
           <article
             class="catalog-result-row"
             data-result-row
+            data-detail-href={row.detailHref}
             data-index={index}
             role="row"
             aria-rowindex={index + 2}
@@ -60,20 +61,20 @@ const initialRows = rows.slice(0, 24);
               ))}
             </div>
             <div class="catalog-result-row__actions" role="cell">
-              <a class="catalog-result-row__inspect" href={row.detailHref}>Inspect</a>
-              <code class="catalog-result-row__command" title={row.installCommandText}>{row.installCommandPreview}</code>
               {row.installCommandCopyable ? (
                 <button
-                  class="catalog-result-row__copy"
+                  class="catalog-result-row__command catalog-result-row__command--copy"
                   type="button"
                   data-copy-command={row.installCommandText}
+                  data-row-action
                   aria-label={`Copy install command for ${row.name}`}
                   title="Copy install command"
                 >
-                  <HugeIcon class="size-4" icon={Copy01Icon} />
+                  <code class="catalog-result-row__command-text">{row.installCommandPreview}</code>
+                  <HugeIcon class="catalog-result-row__command-copy-icon size-4" icon={Copy01Icon} />
                 </button>
               ) : (
-                <span class="catalog-result-row__copy-unavailable">Copy unavailable</span>
+                <code class="catalog-result-row__command catalog-result-row__command--unavailable" title={row.installCommandText}>{row.installCommandPreview}</code>
               )}
             </div>
           </article>

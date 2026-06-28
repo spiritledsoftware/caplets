@@ -129,6 +129,24 @@ export function initVirtualCatalogSearch(
     resultListEl.replaceChildren(...items.map((item) => renderRow(item, visibleRows[item.index])));
   }
 
+  function navigateFromRowClick(event: MouseEvent): void {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    const target = event.target as Element | null;
+    if (!target || target.closest("[data-row-action]") || target.closest("a")) return;
+    const row = target.closest<HTMLElement>("[data-result-row]");
+    const href = row?.dataset.detailHref;
+    if (href) window.location.href = href;
+  }
+
   const events = new AbortController();
   for (const control of controls()) {
     control?.addEventListener("input", () => applySearch(), { signal: events.signal });
@@ -166,6 +184,7 @@ export function initVirtualCatalogSearch(
     },
     { signal: events.signal },
   );
+  resultListEl.addEventListener("click", navigateFromRowClick, { signal: events.signal });
 
   applyUrlState();
   applySearch({ writeUrl: false, resetScroll: false });
@@ -199,6 +218,7 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
   element.className = "catalog-result-row";
   element.role = "row";
   element.dataset.resultRow = "";
+  element.dataset.detailHref = row?.detailHref ?? "";
   element.dataset.index = String(item.index);
   element.setAttribute("aria-rowindex", String(item.index + 2));
   element.style.transform = `translateY(${item.start}px)`;
@@ -216,12 +236,10 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
       ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(catalogStatusIcons[status.code] ?? AlertCircleIcon, status.label, "catalog-result-row__status-icon")}<span class="catalog-result-row__status-label">${escapeHtml(status.label)}</span></span>`).join("")}
     </div>
     <div class="catalog-result-row__actions" role="cell">
-      <a class="catalog-result-row__inspect" href="${escapeAttribute(row.detailHref)}">Inspect</a>
-      <code class="catalog-result-row__command" title="${escapeAttribute(row.installCommandText)}">${escapeHtml(row.installCommandPreview)}</code>
       ${
         row.installCommandCopyable
-          ? `<button class="catalog-result-row__copy" type="button" data-copy-command="${escapeAttribute(row.installCommandText)}" aria-label="Copy install command for ${escapeAttribute(row.name)}" title="Copy install command">${renderIcon(Copy01Icon, "", "catalog-result-row__copy-icon")}</button>`
-          : `<span class="catalog-result-row__copy-unavailable">Copy unavailable</span>`
+          ? `<button class="catalog-result-row__command catalog-result-row__command--copy" type="button" data-copy-command="${escapeAttribute(row.installCommandText)}" data-row-action aria-label="Copy install command for ${escapeAttribute(row.name)}" title="Copy install command"><code class="catalog-result-row__command-text">${escapeHtml(row.installCommandPreview)}</code>${renderIcon(Copy01Icon, "", "catalog-result-row__command-copy-icon")}</button>`
+          : `<code class="catalog-result-row__command catalog-result-row__command--unavailable" title="${escapeAttribute(row.installCommandText)}">${escapeHtml(row.installCommandPreview)}</code>`
       }
     </div>
   `;

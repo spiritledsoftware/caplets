@@ -170,6 +170,20 @@ describe("virtual catalog results", () => {
     expect(resultSpacer().style.height).toBe("1680px");
   });
 
+  it("opens the detail page when a result row is clicked outside the command", async () => {
+    mountSearchShell(manyCatalogSearchRows(20));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    const row = document.querySelector("[data-result-row]") as HTMLElement;
+
+    row
+      .querySelector(".catalog-result-row__description")
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+
+    expect(window.location.pathname).toBe("/caplets/caplet-0/");
+  });
+
   it("copies supported install commands from result rows", async () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
@@ -189,6 +203,7 @@ describe("virtual catalog results", () => {
     expect(document.querySelector("[data-copy-status]")?.textContent).toBe(
       "Install command copied.",
     );
+    expect(window.location.pathname).toBe("/");
   });
 });
 
