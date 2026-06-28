@@ -41,3 +41,6 @@ benchmark-results/
 
 # brag
 brag-output/
+
+# wrangler
+.wrangler/
