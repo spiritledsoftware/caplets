@@ -7,7 +7,12 @@ import {
 } from "@tanstack/virtual-core";
 import { filterCatalogSearchRecords, type CatalogSearchFilters } from "../lib/search-filter";
 import type { CatalogSearchRow } from "../lib/search-row";
-import { AlertCircleIcon, catalogStatusIcons, type IconSvgObject } from "../lib/status-icons";
+import {
+  AlertCircleIcon,
+  catalogStatusIcons,
+  Copy01Icon,
+  type IconSvgObject,
+} from "../lib/status-icons";
 
 const rowHeight = 72;
 const compactRowHeight = 168;
@@ -213,6 +218,11 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
     <div class="catalog-result-row__actions" role="cell">
       <a class="catalog-result-row__inspect" href="${escapeAttribute(row.detailHref)}">Inspect</a>
       <code class="catalog-result-row__command" title="${escapeAttribute(row.installCommandText)}">${escapeHtml(row.installCommandPreview)}</code>
+      ${
+        row.installCommandCopyable
+          ? `<button class="catalog-result-row__copy" type="button" data-copy-command="${escapeAttribute(row.installCommandText)}" aria-label="Copy install command for ${escapeAttribute(row.name)}" title="Copy install command">${renderIcon(Copy01Icon, "", "catalog-result-row__copy-icon")}</button>`
+          : `<span class="catalog-result-row__copy-unavailable">Copy unavailable</span>`
+      }
     </div>
   `;
   return element;
@@ -220,7 +230,10 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
 
 function renderIcon(icon: IconSvgObject, label: string, className = ""): string {
   const classAttribute = className ? ` class="${escapeAttribute(className)}"` : "";
-  return `<svg${classAttribute} aria-label="${escapeAttribute(label)}" role="img" fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">${icon
+  const accessibilityAttributes = label
+    ? ` aria-label="${escapeAttribute(label)}" role="img"`
+    : ` aria-hidden="true"`;
+  return `<svg${classAttribute}${accessibilityAttributes} fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">${icon
     .map(
       ([, attrs]) =>
         `<path ${Object.entries(attrs)

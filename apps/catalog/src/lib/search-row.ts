@@ -78,11 +78,5 @@ export function catalogSearchRowsFromEntries(entries: CatalogEntryRecord[]): Cat
 
 function previewInstallCommand(command: string): string {
   const normalized = command.trim();
-  const capletsInstallPrefix = /^caplets\s+install\s+/;
-  if (capletsInstallPrefix.test(normalized)) {
-    const target = normalized.replace(capletsInstallPrefix, "");
-    const slug = target.split(/\s+/).filter(Boolean).at(-1);
-    return slug ? `Caplet: ${slug}` : "Install available";
-  }
-  return normalized ? "Install available" : "Install unavailable";
+  return normalized || "Install command unavailable";
 }

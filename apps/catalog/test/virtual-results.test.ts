@@ -170,15 +170,25 @@ describe("virtual catalog results", () => {
     expect(resultSpacer().style.height).toBe("1680px");
   });
 
-  it("keeps search result rows preview-only", async () => {
+  it("copies supported install commands from result rows", async () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     await import("../src/scripts/copy");
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
     initVirtualCatalogSearch();
+    const button = document.querySelector("[data-copy-command]") as HTMLButtonElement;
 
-    expect(document.querySelector("[data-copy-command]")).toBeNull();
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(button).toBeTruthy();
+    button.click();
+    await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      "caplets install spiritledsoftware/caplets caplet-0",
+    );
+    expect(document.querySelector("[data-copy-status]")?.textContent).toBe(
+      "Install command copied.",
+    );
   });
 });
 

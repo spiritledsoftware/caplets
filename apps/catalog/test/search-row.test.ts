@@ -29,6 +29,7 @@ describe("catalog search rows", () => {
       detailHref:
         "/caplets/github%3Aspiritledsoftware%3Acaplets%3Acaplets%252Fast-grep%252Fcaplet.md%3Aast-grep/",
       installCommandText: "caplets install spiritledsoftware/caplets ast-grep",
+      installCommandPreview: "caplets install spiritledsoftware/caplets ast-grep",
       installCommandCopyable: true,
     });
     expect(row.statuses.map((status) => status.code)).toEqual([

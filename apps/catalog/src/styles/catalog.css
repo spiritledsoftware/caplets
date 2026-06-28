@@ -263,7 +263,7 @@
 
 .catalog-result-row__actions {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.35rem;
   align-items: center;
 }
@@ -311,6 +311,15 @@
   border-radius: 0.45rem;
   background: var(--card);
   color: var(--foreground);
+}
+
+.catalog-result-row__copy:hover {
+  background: var(--muted);
+}
+
+.catalog-result-row__copy-unavailable {
+  align-self: center;
+  white-space: nowrap;
 }
 
 .catalog-result-row__copy:hover {
