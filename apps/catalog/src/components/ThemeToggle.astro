@@ -1,0 +1,96 @@
+---
+import {
+  ArrowDown01Icon,
+  ComputerIcon,
+  Moon02Icon,
+  Sun01Icon,
+  Tick02Icon,
+} from "@hugeicons/core-free-icons";
+import HugeIcon from "./HugeIcon.astro";
+
+const options = [
+  { value: "light", label: "Light", icon: Sun01Icon },
+  { value: "dark", label: "Dark", icon: Moon02Icon },
+  { value: "system", label: "System", icon: ComputerIcon },
+];
+---
+
+<div class="relative" data-theme-menu-root>
+  <button
+    class="theme-trigger inline-flex min-h-11 items-center gap-2 rounded-md border border-border bg-card px-3 font-mono text-xs font-bold text-card-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+    type="button"
+    aria-expanded="false"
+    aria-haspopup="menu"
+    data-theme-trigger
+  >
+    <span class="grid size-4 place-items-center" aria-hidden="true">
+      {
+        options.map((option) => (
+          <span class="grid size-4 place-items-center [&_svg]:size-4" data-theme-current-icon={option.value} hidden={option.value !== "system"}>
+            <HugeIcon icon={option.icon} />
+          </span>
+        ))
+      }
+    </span>
+    <span class="theme-label" data-theme-label>System</span>
+    <HugeIcon class="theme-chevron size-4 text-muted-foreground transition" icon={ArrowDown01Icon} />
+  </button>
+
+  <div
+    class="absolute right-0 top-[calc(100%+0.5rem)] z-50 grid min-w-44 gap-1 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg shadow-black/10 dark:shadow-black/35"
+    role="menu"
+    aria-label="Color scheme"
+    data-theme-menu
+    hidden
+  >
+    {
+      options.map((option) => (
+        <button
+          class="theme-option grid min-h-11 w-full grid-cols-[1.25rem_minmax(0,1fr)_1.125rem] items-center gap-2 rounded-md border border-transparent px-2 text-left font-mono text-xs font-bold transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none aria-checked:bg-info"
+          type="button"
+          role="menuitemradio"
+          aria-checked="false"
+          data-theme-option={option.value}
+          data-theme-label-value={option.label}
+        >
+          <HugeIcon class="size-4 text-muted-foreground" icon={option.icon} />
+          <span>{option.label}</span>
+          <HugeIcon class="theme-check size-4 text-primary-accent" icon={Tick02Icon} />
+        </button>
+      ))
+    }
+  </div>
+</div>
+
+<script>
+  import "../scripts/theme";
+</script>
+
+<style>
+  .theme-trigger[aria-expanded="true"] .theme-chevron {
+    transform: rotate(180deg);
+  }
+
+  .theme-option[aria-checked="false"] .theme-check {
+    visibility: hidden;
+  }
+
+  @media (max-width: 560px) {
+    .theme-trigger {
+      min-width: 2.75rem;
+      justify-content: center;
+      gap: 0;
+      padding-inline: 0.65rem;
+    }
+
+    .theme-label,
+    :global(.theme-chevron) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+  }
+</style>

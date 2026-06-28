@@ -507,6 +507,60 @@ describe("dispatchRemoteCliRequest", () => {
     });
   });
 
+  it("honors remote catalog indexing opt-out from the client request", async () => {
+    const context = testContext();
+    const sourceRepo = join(context.tempRoot, "source-disabled-indexing");
+    const sourceCaplets = join(sourceRepo, "caplets");
+    mkdirSync(sourceCaplets, { recursive: true });
+    writeFileSync(
+      join(sourceCaplets, "sample.md"),
+      [
+        "---",
+        "name: Sample",
+        "description: Sample Caplet.",
+        "httpApi:",
+        "  baseUrl: http://127.0.0.1:1",
+        "  auth:",
+        "    type: none",
+        "  actions:",
+        "    check:",
+        "      method: GET",
+        "      path: /check",
+        "---",
+        "",
+        "# Sample",
+        "",
+      ].join("\n"),
+    );
+
+    const response = await dispatchRemoteCliRequest(
+      {
+        command: "install",
+        arguments: {
+          repo: sourceRepo,
+          capletIds: ["sample"],
+          disableCatalogIndexing: true,
+        },
+      },
+      context,
+    );
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: {
+        installed: [
+          expect.objectContaining({
+            id: "sample",
+            catalogIndexing: {
+              status: "ineligible",
+              reason: "catalog_indexing_disabled",
+            },
+          }),
+        ],
+      },
+    });
+  });
+
   it("dispatches complete_cli using server-owned config", async () => {
     const context = testContext();
     writeFileSync(

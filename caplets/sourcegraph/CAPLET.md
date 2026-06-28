@@ -6,8 +6,9 @@ tags:
   - sourcegraph
   - code-search
   - mcp
+catalog:
+  icon: https://sourcegraph.com/favicon.ico
 mcpServer:
-  transport: http
   url: https://sourcegraph.com/.api/mcp
   auth:
     type: oauth2
@@ -15,20 +16,17 @@ mcpServer:
 
 # Sourcegraph
 
-Use this Caplet when the agent needs broad code search, repository navigation, or cross-repository
-context from Sourcegraph.
+Use this Caplet when the agent needs broad code search, repository navigation, or cross-repository context from Sourcegraph.
 
-## Good Fits
+## First Workflow
 
-- Find examples of an API, class, or migration pattern across indexed repositories.
-- Trace references before changing shared interfaces.
-- Compare implementations across services or packages.
-- Gather code-search evidence for debugging, review, or planning.
+1. Start with a precise symbol, file path, package name, migration pattern, or repository filter.
+2. Inspect representative matches before generalizing across repositories.
+3. Use references and examples to guide local implementation, then verify against the target repo.
+4. Bring back code-search evidence with enough source context for review or planning.
 
-## Setup
+## Operate Carefully
 
-This Caplet targets Sourcegraph Cloud at `https://sourcegraph.com/.api/mcp` and uses OAuth.
-
-Self-managed Sourcegraph users should change the URL to
-`https://<sourcegraph-host>/.api/mcp`. OAuth/DCR support or access-token headers depend on the
-instance setup, so configure authentication to match your deployment.
+- Sourcegraph answers are only as current as the indexed repositories.
+- Do not use broad search as a substitute for reading the local repository when it is available.
+- For self-managed Sourcegraph, make sure the runtime is pointed at the intended host before using private code search.

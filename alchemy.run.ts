@@ -1,5 +1,5 @@
 import alchemy from "alchemy";
-import { Astro } from "alchemy/cloudflare";
+import { Astro, D1Database } from "alchemy/cloudflare";
 import { GitHubComment } from "alchemy/github";
 import { CloudflareStateStore } from "alchemy/state";
 
@@ -10,28 +10,52 @@ const app = await alchemy("caplets", {
   password: process.env.ALCHEMY_PASSWORD!,
 });
 
-const { docsPageDomain, docsPageUrl, landingPageDomain, landingPageUrl } = buildAlchemyDomains(
-  app.stage,
-  { local: app.local },
-);
+const {
+  catalogPageDomain,
+  catalogPageUrl,
+  docsPageDomain,
+  docsPageUrl,
+  landingPageDomain,
+  landingPageUrl,
+} = buildAlchemyDomains(app.stage, { local: app.local });
+const hostSuffix = process.env.SSH_CONNECTION ? " --host 0.0.0.0" : "";
 export const landingPage = await Astro("landing-page", {
   cwd: "apps/landing",
   dev: {
-    command: "pnpm run dev" + (process.env.SSH_CONNECTION ? " --host 0.0.0.0" : ""),
+    command: "pnpm run dev --port 4321" + hostSuffix,
   },
   domains: [landingPageDomain, `www.${landingPageDomain}`],
 });
 export const docsPage = await Astro("docs-page", {
   cwd: "apps/docs",
   dev: {
-    command: "pnpm run dev -- --port 4322" + (process.env.SSH_CONNECTION ? " --host 0.0.0.0" : ""),
+    command: "pnpm run dev --port 4322" + hostSuffix,
   },
   domains: [docsPageDomain],
+});
+export const catalogDatabase = await D1Database("catalog-database", {
+  name: `caplets-${app.stage}-catalog`,
+  migrationsDir: "apps/catalog/migrations",
+  adopt: true,
+  delete: false,
+});
+export const catalogPage = await Astro("catalog-page", {
+  cwd: "apps/catalog",
+  entrypoint: "dist/server/entry.mjs",
+  assets: "dist/client",
+  dev: {
+    command: "pnpm run dev --port 4323" + hostSuffix,
+  },
+  bindings: {
+    CATALOG_DB: catalogDatabase,
+  },
+  domains: [catalogPageDomain],
 });
 
 console.log({
   "Landing Page URL": landingPageUrl,
   "Docs Page URL": docsPageUrl,
+  "Catalog Page URL": catalogPageUrl,
 });
 
 const [repositoryOwnerFromSlug, repositoryNameFromSlug] =
@@ -55,6 +79,7 @@ if (pullRequestNumber) {
 
 Landing: ${landingPageUrl}
 Docs: ${docsPageUrl}
+Catalog: ${catalogPageUrl}
 
 Built from commit ${shortSha}`,
   });

@@ -7,6 +7,8 @@ tags:
   - vulnerabilities
   - http
   - code
+catalog:
+  icon: https://osv.dev/favicon.ico
 httpApi:
   baseUrl: https://api.osv.dev
   auth:
@@ -111,26 +113,17 @@ httpApi:
 
 # OSV Vulnerabilities
 
-Use this Caplet to query OSV.dev for known vulnerabilities affecting package
-versions, package URLs, source commits, or known vulnerability IDs.
+Use this Caplet when the agent needs known vulnerability data for package versions, package URLs, source commits, or vulnerability identifiers.
 
-## Usage Notes
+## First Workflow
 
-- All actions are read-only HTTP requests against the public OSV API.
-- Use `query_package_version` when you know the package ecosystem, name, and exact version.
-- Use `query_purl` when tooling already produced a package URL such as `pkg:npm/lodash@4.17.20`.
-- Use `query_commit` for source-level checks against a commit hash.
-- Use `query_batch` to check multiple packages or commits in one request.
-- Use `get_vulnerability` when you already have an OSV, CVE, or GHSA identifier.
+1. Prefer exact ecosystem, package name, and version when checking a dependency.
+2. Use purls when dependency tooling already produced normalized package URLs.
+3. Batch related dependency checks instead of issuing many single-package calls.
+4. Fetch the vulnerability record when an OSV, CVE, or GHSA ID needs explanation or remediation context.
 
-## Ecosystems
+## Operate Carefully
 
-Common OSV ecosystems include `npm`, `PyPI`, `Maven`, `Go`, `crates.io`,
-`Packagist`, `RubyGems`, `NuGet`, `Debian`, `Alpine`, and `OSS-Fuzz`.
-
-## Examples
-
-- Query npm package version: `name: lodash`, `ecosystem: npm`, `version: 4.17.20`.
-- Query Python package version: `name: requests`, `ecosystem: PyPI`, `version: 2.19.0`.
-- Query a purl: `purl: pkg:npm/lodash@4.17.20`.
-- Fetch a vulnerability: `id: CVE-2021-44228`.
+- OSV results are read-only and public, but absence of a result is not proof that a dependency is safe.
+- Match ecosystem names exactly, such as `npm`, `PyPI`, `Maven`, `Go`, `crates.io`, `Packagist`, `RubyGems`, `NuGet`, `Debian`, `Alpine`, or `OSS-Fuzz`.
+- Use package registry Caplets for release metadata and local project tooling for the actual installed version.

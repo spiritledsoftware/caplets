@@ -33,12 +33,9 @@ caplets doctor
 `doctor` should identify the active Caplets config path and report the checks it can run
 for your configured integrations. Fix any failed check before testing through an agent.
 
-Then ask your agent:
-
-```text
-Use Caplets Code Mode to query OSV for npm react 18.2.0. Return the package,
-version, vulnerability count, and advisory IDs as compact JSON.
-```
+Then ask your agent to use Caplets Code Mode to query OSV for `npm` package
+`react@18.2.0`, returning the package, version, vulnerability count, and advisory IDs
+as compact JSON.
 
 A successful agent run should use the visible <code className="caplets-token">{"caplets\_\_code_mode"}</code> tool and inspect an
 OSV handle such as `caplets.osv`. If the agent cannot see that tool, go to

@@ -1,0 +1,46 @@
+---
+import { Select, SelectContent, SelectItem, SelectSearch, SelectTrigger, SelectValue } from "./starwind/select";
+
+const tags = Astro.props.tags as string[];
+---
+
+<section class="catalog-filterbar" aria-label="Catalog filters">
+  <label class="grid gap-1.5">
+    <span class="font-mono text-xs font-bold text-muted-foreground">Scope</span>
+    <select class="min-h-10 w-full rounded-md border-border bg-card text-card-foreground focus:border-outline focus:ring-3 focus:ring-outline/30" data-filter="trust">
+      <option value="all">All sources</option>
+      <option value="official">Official</option>
+      <option value="community">Community</option>
+    </select>
+  </label>
+  <label class="grid gap-1.5">
+    <span class="font-mono text-xs font-bold text-muted-foreground">Setup</span>
+    <select class="min-h-10 w-full rounded-md border-border bg-card text-card-foreground focus:border-outline focus:ring-3 focus:ring-outline/30" data-filter="setup">
+      <option value="all">Any setup</option>
+      <option value="ready">Ready</option>
+      <option value="required">Setup required</option>
+      <option value="unknown">Unknown</option>
+    </select>
+  </label>
+  <div class="grid gap-1.5">
+    <span class="font-mono text-xs font-bold text-muted-foreground">Tag</span>
+    <input data-filter="tag" type="hidden" value="" />
+    <Select class="catalog-tag-select" id="catalog-tag-select" name="catalog-tag">
+      <SelectTrigger class="min-h-10 w-full bg-card text-card-foreground" aria-label="Filter by tag">
+        <SelectValue placeholder="Any tag" />
+      </SelectTrigger>
+      <SelectContent class="catalog-tag-select__content">
+        <SelectSearch placeholder="Search tags" emptyText="No matching tags." />
+        <SelectItem value="all">Any tag</SelectItem>
+        {tags.map((tag) => <SelectItem value={tag}>{tag}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  </div>
+  <label class="grid gap-1.5">
+    <span class="font-mono text-xs font-bold text-muted-foreground">Sort</span>
+    <select class="min-h-10 w-full rounded-md border-border bg-card text-card-foreground focus:border-outline focus:ring-3 focus:ring-outline/30" data-sort>
+      <option value="rank">Rank</option>
+      <option value="name">Name</option>
+    </select>
+  </label>
+</section>

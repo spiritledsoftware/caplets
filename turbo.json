@@ -11,6 +11,9 @@
       "persistent": true,
       "cache": false
     },
+    "catalog:check": {
+      "outputs": []
+    },
     "typecheck": {
       "dependsOn": ["^build", "^typecheck"]
     }

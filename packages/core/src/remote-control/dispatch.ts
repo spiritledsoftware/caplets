@@ -18,9 +18,11 @@ import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
 import {
   installCaplets,
+  indexInstalledCapletsFromLockfile,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
 } from "./../cli/install";
+import type { CatalogIndexingResult } from "../catalog-indexing/payload";
 import { listCaplets } from "./../cli/inspection";
 import {
   loadConfigWithSources,
@@ -139,7 +141,7 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   if (request.command === "install") {
     const repo = optionalString(request.arguments, "repo");
     if (!repo) {
-      return {
+      const result = {
         remote: true,
         ...restoreCapletsFromLockfile({
           ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
@@ -147,8 +149,13 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
           ...optionalProp("force", optionalBoolean(request.arguments, "force")),
         }),
       };
+      await attachRemoteCatalogIndexingResults(
+        result.installed,
+        optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
+      );
+      return result;
     }
-    return {
+    const result = {
       remote: true,
       ...installCaplets(repo, {
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
@@ -156,10 +163,15 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
+    await attachRemoteCatalogIndexingResults(
+      result.installed,
+      optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
+    );
+    return result;
   }
 
   if (request.command === "update") {
-    return {
+    const result = {
       remote: true,
       ...updateCapletsFromLockfile({
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
@@ -167,6 +179,11 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       }),
     };
+    await attachRemoteCatalogIndexingResults(
+      result.installed,
+      optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
+    );
+    return result;
   }
 
   if (request.command === "complete_cli") {
@@ -221,6 +238,20 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     "UNKNOWN_OPERATION",
     `Unsupported remote control command ${request.command}`,
   );
+}
+
+async function attachRemoteCatalogIndexingResults(
+  installed: Array<{
+    id: string;
+    lockfile?: string | undefined;
+    catalogIndexing?: CatalogIndexingResult | undefined;
+  }>,
+  disableCatalogIndexing: boolean,
+): Promise<void> {
+  const results = await indexInstalledCapletsFromLockfile(installed, { disableCatalogIndexing });
+  for (const entry of installed) {
+    entry.catalogIndexing = results.get(entry.id);
+  }
 }
 
 function dispatchVault(request: RemoteCliRequest, context: RemoteControlDispatchContext) {

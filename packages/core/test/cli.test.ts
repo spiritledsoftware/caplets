@@ -3384,6 +3384,21 @@ describe("cli init", () => {
     }
   });
 
+  it("rejects option-like install source refs before invoking Git", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeInstallableRepo(repo);
+
+      expect(() => installCaplets(`${repo}#-upload-pack=touch`, { destinationRoot })).toThrow(
+        expect.objectContaining({ code: "CONFIG_NOT_FOUND" }) as CapletsError,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects selected Caplets that are not in the repo", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");

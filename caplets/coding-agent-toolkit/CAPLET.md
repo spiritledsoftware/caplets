@@ -6,14 +6,24 @@ tags:
   - coding-agent
   - toolkit
   - caplets
+catalog:
+  icon: https://caplets.dev/icon.png
 capletSet:
   capletsRoot: ./caplets
 ---
 
 # Coding Agent Toolkit
 
-Use this CapletSet to give coding agents a focused bundle of high-value Caplets for repository inspection, code search, package metadata, vulnerability lookup, hosted documentation, and browser automation.
+Use this CapletSet when the agent needs a compact default toolkit for coding work rather than a large bespoke integration list.
 
-The source repository keeps the child Caplets in this toolkit as symlinks to the canonical top-level examples. That avoids duplicate maintenance while keeping one curated toolkit entry point.
+## First Workflow
 
-When a directory Caplet is installed, Caplets materializes those symlinked children as real files and directories. Installed copies are self-contained and do not depend on the source repository symlink layout.
+1. Use repository and code-intelligence Caplets for local facts before making implementation claims.
+2. Use package, vulnerability, and documentation Caplets to verify external dependency assumptions.
+3. Use browser automation only when rendered behavior or live web context is part of the task.
+
+## Operate Carefully
+
+- This set is a convenience bundle; prefer a narrower individual Caplet when the user asks for a specific provider or capability.
+- Some child Caplets require Project Binding, setup, or local-control awareness. Inspect the child Caplet before using high-risk or project-bound capabilities.
+- Do not assume every child is available at runtime; availability depends on installation scope, setup state, and binding state.

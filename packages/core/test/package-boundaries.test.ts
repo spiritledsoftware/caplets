@@ -98,6 +98,7 @@ describe("package boundaries", () => {
   it("keeps Worker-safe core exports on dedicated bundles", () => {
     const dedicatedExports = [
       "./caplet-source",
+      "./catalog",
       "./observed-output-shapes/pure",
       "./project-binding",
       "./redaction",

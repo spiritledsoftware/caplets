@@ -5,6 +5,7 @@ function settleHashAnchor() {
   const targetId = window.location.hash.slice(1);
   const target = targetId ? document.getElementById(targetId) : null;
   if (target instanceof HTMLElement) {
+    target.classList.add("is-visible");
     target.scrollIntoView({ block: "start", behavior: "instant" });
   }
 }
@@ -39,6 +40,9 @@ if (canAnimate && "IntersectionObserver" in window) {
     );
 
     for (const target of revealTargets) {
+      if (target.id && window.location.hash === `#${target.id}`) {
+        target.classList.add("is-visible");
+      }
       revealObserver.observe(target);
     }
 

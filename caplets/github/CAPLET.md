@@ -8,8 +8,9 @@ tags:
   - pull-requests
   - issues
   - reviews
+catalog:
+  icon: https://github.githubassets.com/favicons/favicon.svg
 mcpServer:
-  transport: http
   url: https://api.githubcopilot.com/mcp
   auth:
     type: bearer
@@ -18,38 +19,18 @@ mcpServer:
 
 # GitHub
 
-Use this Caplet when the agent needs live GitHub repository context or needs to act on
-issues, pull requests, branches, commits, or review feedback.
+Use this Caplet when the agent needs live GitHub repository context or needs to act on issues, pull requests, branches, commits, or review feedback.
 
-## Good Fits
+## First Workflow
 
-- Summarize recent pull request activity before a code review.
-- Inspect open issues and identify implementation work.
-- Create or update issues from an implementation plan.
-- Compare branches, inspect commits, or review pull request files.
-- Leave review comments after the agent has inspected the relevant diff.
+1. Read the relevant repository, issue, pull request, branch, or commit before taking action.
+2. Narrow by repo, PR number, issue number, branch, label, or author whenever possible.
+3. For reviews, inspect changed files and relevant discussion before commenting.
+4. For issue creation or updates, draft concise content tied to the current implementation evidence.
 
-## Use Carefully
+## Operate Carefully
 
 - Mutating operations can affect real repositories. Prefer read operations first.
-- Store a least-privilege `GH_TOKEN` in the Caplets Vault for the runtime where GitHub runs.
-- Do not ask the agent to expose token values, repository secrets, or private issue contents outside
-  the intended conversation.
-
-## Setup
-
-Create a GitHub token with the minimum repository scopes needed for your workflow, then store it in
-the local/global Vault and grant this Caplet access:
-
-```sh
-caplets vault set GH_TOKEN --grant github
-caplets serve
-```
-
-For a self-hosted remote or hosted Cloud-backed runtime, write the value to that runtime instead:
-
-```sh
-caplets vault set GH_TOKEN --remote --grant github
-```
-
-This Caplet uses GitHub's hosted MCP endpoint at `https://api.githubcopilot.com/mcp`.
+- Confirm target repository, branch, issue, or pull request before creating comments, labels, branches, or updates.
+- Do not expose token values, repository secrets, or private issue contents outside the intended conversation.
+- Prefer local Git and project files for workspace state; use GitHub for remote truth.

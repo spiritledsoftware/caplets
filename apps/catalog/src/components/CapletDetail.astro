@@ -1,0 +1,134 @@
+---
+import { ChevronRightIcon } from "@hugeicons/core-free-icons";
+import type { CatalogEntryRecord } from "../lib/catalog-store";
+import { renderCatalogMarkdown, splitCatalogMarkdown } from "../lib/markdown";
+import HugeIcon from "./HugeIcon.astro";
+import InstallCommand from "./InstallCommand.astro";
+import SafetyNotice from "./SafetyNotice.astro";
+import { Badge } from "./starwind/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "./starwind/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./starwind/table";
+
+type Props = {
+  entry: CatalogEntryRecord;
+};
+
+const { entry } = Astro.props;
+const markdownParts = entry.contentMarkdown ? splitCatalogMarkdown(entry.contentMarkdown) : undefined;
+const renderedContent = markdownParts?.bodyMarkdown
+  ? await renderCatalogMarkdown(markdownParts.bodyMarkdown)
+  : undefined;
+const frontmatterRows = markdownParts?.frontmatterRows ?? [];
+const hasReadableContent = Boolean(renderedContent) || frontmatterRows.length > 0;
+const detailCommand = hasReadableContent
+  ? entry.installCommand
+  : { ...entry.installCommand, copyable: false };
+---
+
+<article>
+  <nav class="flex items-center gap-2 font-mono text-xs font-bold text-muted-foreground" aria-label="Breadcrumb">
+    <a class="rounded-sm no-underline hover:text-foreground focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="/">Catalog</a>
+    <HugeIcon class="size-3.5" icon={ChevronRightIcon} />
+    <span>{entry.id}</span>
+  </nav>
+  <header class="grid gap-6 py-5 md:grid-cols-[minmax(0,1fr)_minmax(340px,480px)]">
+    <div class="flex min-w-0 items-start gap-4">
+      {entry.icon ? (
+        <img
+          class="size-14 shrink-0 rounded-lg border border-border bg-white object-contain p-2"
+          src={entry.icon.url}
+          alt=""
+          width="56"
+          height="56"
+          decoding="async"
+          referrerpolicy="no-referrer"
+        />
+      ) : (
+        <span class="grid size-14 shrink-0 place-items-center rounded-lg border border-border bg-muted font-mono text-xl font-extrabold text-muted-foreground" aria-hidden="true">
+          {entry.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant={entry.trustLevel === "official" ? "success" : "warning"} size="sm">{entry.trustLevel}</Badge>
+          <span>{entry.source.repository}</span>
+        </div>
+        <h1 class="mt-2 max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">{entry.name}</h1>
+        <p class="mt-2.5 max-w-[68ch] text-muted-foreground">{entry.description}</p>
+      </div>
+    </div>
+    <div class="grid content-start gap-2 self-start" aria-label="Install command">
+      <span class="font-mono text-xs font-bold text-muted-foreground">Install</span>
+      <InstallCommand command={detailCommand} detail />
+    </div>
+  </header>
+
+  <section class="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_330px]">
+    <div class="grid gap-3.5">
+      <SafetyNotice warnings={entry.warnings} />
+      <Card>
+        <CardHeader>
+          <CardTitle>CAPLET.md</CardTitle>
+        </CardHeader>
+        <CardContent>
+        {
+          hasReadableContent ? (
+            <>
+              {frontmatterRows.length > 0 && (
+                <section class="mb-6 grid gap-2.5" aria-labelledby="frontmatter-heading">
+                  <h3 class="font-mono text-xs font-bold text-muted-foreground" id="frontmatter-heading">Frontmatter</h3>
+                  <div class="overflow-hidden rounded-md border border-border bg-muted/40">
+                    <Table class="frontmatter-table">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead scope="col">Field</TableHead>
+                          <TableHead scope="col">Value</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {frontmatterRows.map((row) => (
+                          <TableRow>
+                            <th class="w-[32%] px-2 py-2 text-left align-top font-mono text-xs font-semibold whitespace-nowrap text-muted-foreground" scope="row">
+                              <code>{row.key}</code>
+                            </th>
+                            <TableCell class="whitespace-normal [overflow-wrap:anywhere]">{row.value}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </section>
+              )}
+              {renderedContent && <div class="markdown-body" set:html={renderedContent} />}
+            </>
+          ) : (
+            <div class="rounded-lg border border-border bg-muted p-5">
+              <h3 class="text-lg font-semibold tracking-[-0.01em]">Content unavailable</h3>
+              <p class="mt-2 text-muted-foreground">This entry cannot be installed from the catalog until readable Caplet content is available for inspection.</p>
+            </div>
+          )
+        }
+        </CardContent>
+      </Card>
+    </div>
+    <aside aria-label="Catalog record">
+      <Card class="record-panel">
+        <CardHeader>
+          <CardTitle>Record</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl class="grid gap-3">
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Source path</dt><dd class="m-0 [overflow-wrap:anywhere]"><code>{entry.sourcePath}</code></dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Workflow</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.workflow.label}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Installs</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.installCountDisplay}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Revision</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.resolvedRevision ?? "Not indexed"}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Content hash</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.indexedContentHash ?? "Not indexed"}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Auth</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.authReadiness}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Setup</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.setupReadiness}</dd></div>
+            <div class="grid gap-1"><dt class="font-mono text-xs font-bold text-muted-foreground">Project Binding</dt><dd class="m-0 [overflow-wrap:anywhere]">{entry.projectBindingReadiness}</dd></div>
+          </dl>
+        </CardContent>
+      </Card>
+    </aside>
+  </section>
+</article>

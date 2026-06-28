@@ -47,7 +47,7 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
-      - name: Deploy landing page
+      - name: Deploy sites
         run: pnpm run alchemy:deploy
         env:
           ALCHEMY_STAGE: prod

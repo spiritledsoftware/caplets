@@ -6,26 +6,24 @@ tags:
   - docs
   - code
   - mcp
+catalog:
+  icon: https://deepwiki.com/favicon.ico
 mcpServer:
-  transport: http
   url: https://mcp.deepwiki.com/mcp
-  auth:
-    type: none
 ---
 
 # DeepWiki
 
-Use this Caplet when the agent needs repository documentation, architecture explanations, or codebase
-context from DeepWiki before making implementation decisions.
+Use this Caplet when the agent needs repository-level explanations or architecture context for an unfamiliar codebase before making implementation decisions.
 
-## Good Fits
+## First Workflow
 
-- Research how an unfamiliar open source repository is structured.
-- Find documentation-backed explanations for framework, package, or service behavior.
-- Cross-check implementation details before modifying code that depends on another project.
-- Summarize repository concepts for planning, code review, or onboarding notes.
+1. Ask about a specific repository, subsystem, file, or concept rather than the whole project.
+2. Use DeepWiki to build orientation, then verify critical claims against source code or official docs.
+3. Bring back concise architecture facts, terminology, and code pointers that affect the task.
 
-## Setup
+## Operate Carefully
 
-This Caplet uses the hosted DeepWiki MCP endpoint at `https://mcp.deepwiki.com/mcp` with no
-configured authentication. Hosted endpoint availability may depend on DeepWiki's current MCP service.
+- Treat DeepWiki as a research and orientation source, not final proof for code changes.
+- Do not use it when the local repository is already available and direct code search or tests can answer the question.
+- Re-check version-sensitive details against the current upstream repository when correctness matters.

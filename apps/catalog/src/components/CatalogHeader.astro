@@ -1,0 +1,235 @@
+---
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import HugeIcon from "./HugeIcon.astro";
+import ThemeToggle from "./ThemeToggle.astro";
+
+type SearchProps = {
+  count?: number;
+  value?: string;
+};
+
+type Props = {
+  search?: SearchProps;
+};
+
+const { search } = Astro.props;
+---
+
+<header class="catalog-header">
+  <a
+    class="catalog-header__brand"
+    href="/"
+    aria-label="Caplets Catalog home"
+  >
+    <span class="grid size-9 place-items-center overflow-hidden rounded-lg border border-border bg-[oklch(14%_0.025_98)]" aria-hidden="true">
+      <img class="size-full object-cover" src="/icon-header-dark.png" alt="" width="36" height="36" />
+    </span>
+    <span class="catalog-header__brand-label">Caplets Catalog</span>
+  </a>
+  {
+    search ? (
+      <form class="catalog-header__search" action="/" method="get" role="search">
+        <label class="catalog-header__search-label" for="catalog-header-search">
+          Search
+        </label>
+        <div class="catalog-header__input-wrap">
+          <input
+            class="catalog-header__input"
+            id="catalog-header-search"
+            data-search-input
+            type="search"
+            name="q"
+            autocomplete="off"
+            placeholder="Search Caplets"
+            value={search.value ?? ""}
+            aria-label="Search Caplets"
+          />
+          <button
+            class="catalog-header__clear"
+            type="button"
+            aria-label="Clear search"
+            data-clear-search
+            hidden={!search.value}
+          >
+            <HugeIcon class="size-4" icon={Cancel01Icon} />
+          </button>
+        </div>
+        {typeof search.count === "number" ? (
+          <span class="catalog-header__status" aria-live="polite" data-result-status>
+            {search.count} Caplets
+          </span>
+        ) : null}
+      </form>
+    ) : null
+  }
+  <div class="catalog-header__actions">
+    <ThemeToggle />
+  </div>
+</header>
+
+<script>
+  for (const header of document.querySelectorAll<HTMLElement>(".catalog-header")) {
+    const input = header.querySelector<HTMLInputElement>("[data-search-input]");
+    const clear = header.querySelector<HTMLButtonElement>("[data-clear-search]");
+    if (!input || !clear) continue;
+
+    const syncClearButton = (): void => {
+      clear.hidden = input.value.length === 0;
+    };
+
+    input.addEventListener("input", syncClearButton);
+    clear.addEventListener("click", () => {
+      input.value = "";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+      input.focus();
+      syncClearButton();
+    });
+    syncClearButton();
+  }
+</script>
+
+<style>
+  .catalog-header {
+    position: sticky;
+    z-index: 40;
+    top: 0;
+    display: grid;
+    grid-template-columns: auto minmax(13rem, 38rem) auto;
+    align-items: center;
+    gap: 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in oklch, var(--background), transparent 8%);
+    padding: 0.6rem max(1rem, calc((100vw - 1180px) / 2));
+    backdrop-filter: blur(12px);
+  }
+
+  .catalog-header__brand {
+    display: inline-flex;
+    min-height: 2.75rem;
+    min-width: 0;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--foreground);
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .catalog-header__brand:focus-visible,
+  .catalog-header__input:focus-visible {
+    outline: 2px solid var(--outline);
+    outline-offset: 2px;
+  }
+
+  .catalog-header__brand-label {
+    white-space: nowrap;
+  }
+
+  .catalog-header__search {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .catalog-header__search-label,
+  .catalog-header__status {
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+
+  .catalog-header__input {
+    min-height: 2.75rem;
+    min-width: 0;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    padding: 0 2.35rem 0 0.75rem;
+  }
+
+  .catalog-header__input::placeholder {
+    color: var(--muted-foreground);
+  }
+
+  .catalog-header__input:focus {
+    border-color: var(--outline);
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--outline), transparent 70%);
+  }
+
+  .catalog-header__input-wrap {
+    position: relative;
+    min-width: 0;
+  }
+
+  .catalog-header__clear {
+    position: absolute;
+    top: 50%;
+    right: 0.25rem;
+    display: inline-grid;
+    width: 2.75rem;
+    height: 2.75rem;
+    place-items: center;
+    transform: translateY(-50%);
+    border: 1px solid transparent;
+    border-radius: 0.4rem;
+    background: transparent;
+    color: var(--muted-foreground);
+  }
+
+  .catalog-header__clear:hover {
+    border-color: var(--border);
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  .catalog-header__clear:focus-visible {
+    outline: 2px solid var(--outline);
+    outline-offset: 2px;
+  }
+
+  .catalog-header__status {
+    min-width: max-content;
+  }
+
+  .catalog-header__actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  @media (max-width: 560px) {
+    .catalog-header {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 0.5rem;
+      padding-block: 0.5rem;
+    }
+
+    .catalog-header__brand {
+      min-height: 2.75rem;
+      min-width: 2.75rem;
+    }
+
+    .catalog-header__brand-label,
+    .catalog-header__search-label,
+    .catalog-header__status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+
+    .catalog-header__search {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .catalog-header__input {
+      min-height: 2.75rem;
+      padding-inline: 0.65rem 2.25rem;
+    }
+  }
+</style>

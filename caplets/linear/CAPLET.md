@@ -8,8 +8,9 @@ tags:
   - issues
   - projects
   - triage
+catalog:
+  icon: https://linear.app/favicon.ico
 mcpServer:
-  transport: http
   url: https://mcp.linear.app/mcp
   auth:
     type: oauth2
@@ -17,34 +18,21 @@ mcpServer:
 
 # Linear
 
-Use this Caplet when the agent needs live product planning context from Linear or needs to keep
-implementation work synchronized with issues, projects, and team workflows.
+Use this Caplet when the agent needs live product planning context from Linear or needs to keep implementation work synchronized with issues, projects, and team workflows.
 
-## Good Fits
+## First Workflow
 
-- Find the current issue or project that matches a requested feature.
-- Summarize open work by team, project, cycle, label, or assignee.
-- Draft issue breakdowns from a technical plan.
-- Add implementation notes or status comments after code changes.
-- Check whether a bug or feature already has active work before creating a new issue.
+1. Search by issue ID, team key, project, cycle, label, or assignee before using broad queries.
+2. Read the current issue, linked project, comments, and workflow state before planning or updating.
+3. Draft issue breakdowns or status comments from concrete implementation evidence.
+4. Write updates only after confirming the target issue and the intended team-visible effect.
 
 ## Reference Files
 
 - [Workflows](./workflows.md): recommended lookup, planning, status update, and triage flows.
 
-## Use Carefully
+## Operate Carefully
 
 - Linear issue updates are visible to teammates. Read first, then write deliberately.
 - Keep issue titles and comments concise; use links to detailed implementation artifacts when useful.
 - Avoid broad, noisy searches when a team key, issue ID, project, or label is available.
-
-## Setup
-
-Authenticate once through Caplets:
-
-```sh
-caplets auth login linear
-```
-
-The Linear MCP endpoint supports OAuth. Caplets stores the resulting token bundle in your local
-Caplets auth store.

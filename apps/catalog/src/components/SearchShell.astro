@@ -1,0 +1,53 @@
+---
+import type { CatalogEntryRecord } from "../lib/catalog-store";
+import { catalogSearchRowsFromEntries } from "../lib/search-row";
+import { catalogTrustIcons } from "../lib/status-icons";
+import FilterBar from "./FilterBar.astro";
+import ResultList from "./ResultList.astro";
+import HugeIcon from "./HugeIcon.astro";
+import {
+  AlertCircleIcon,
+  ComputerUserIcon,
+  DatabaseSyncIcon,
+  Key01Icon,
+  Link01Icon,
+  Settings02Icon,
+} from "@hugeicons/core-free-icons";
+
+type Props = {
+  entries: CatalogEntryRecord[];
+};
+
+const { entries } = Astro.props;
+const rows = catalogSearchRowsFromEntries(entries);
+const tags = [...new Set(rows.flatMap((entry) => entry.tags))].sort((left, right) =>
+  left.localeCompare(right),
+);
+const indexJson = JSON.stringify(rows).replace(/</g, "\\u003c");
+const legend = [
+  { label: "Official", icon: catalogTrustIcons.official },
+  { label: "Community", icon: catalogTrustIcons.community },
+  { label: "Local control", icon: ComputerUserIcon },
+  { label: "External changes", icon: DatabaseSyncIcon },
+  { label: "Auth", icon: Key01Icon },
+  { label: "Setup", icon: Settings02Icon },
+  { label: "Binding", icon: Link01Icon },
+  { label: "Unknown readiness", icon: AlertCircleIcon },
+];
+---
+
+<section class="catalog-search" data-search-shell>
+  <div class="catalog-search__controls">
+    <FilterBar tags={tags} />
+    <div class="catalog-search__legend" aria-label="Status legend">
+      {legend.map((item) => (
+        <span class="catalog-search__legend-item" title={item.label}>
+          <HugeIcon class="size-4" icon={item.icon} />
+          <span>{item.label}</span>
+        </span>
+      ))}
+    </div>
+  </div>
+  <script is:inline type="application/json" data-search-index set:html={indexJson} />
+  <ResultList rows={rows} />
+</section>

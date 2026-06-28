@@ -56,9 +56,11 @@ import {
 } from "./cli/vault";
 import {
   installCaplets,
+  indexInstalledCapletsFromLockfile,
   restoreCapletsFromLockfile,
   updateCapletsFromLockfile,
 } from "./cli/install";
+import type { CatalogIndexingResult } from "./catalog-indexing/payload";
 import { readCapletsLockfile } from "./cli/lockfile";
 import {
   formatSetupMenu,
@@ -2942,13 +2944,28 @@ export function createProgram(io: CliIO = {}): Command {
             ...(installSource ? { repo: installSource } : {}),
             capletIds: selectedCapletIds,
             force: Boolean(options.force),
-          })) as { installed: Array<{ id: string; destination: string }> };
+            ...(catalogIndexingDisabled(env) ? { disableCatalogIndexing: true } : {}),
+          })) as {
+            installed: Array<{
+              id: string;
+              destination: string;
+              status?: "installed" | "restored" | "updated" | "noop" | undefined;
+              catalogIndexing?: CatalogIndexingResult | undefined;
+            }>;
+          };
           if (options.json) {
             writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
             return;
           }
           for (const caplet of result.installed) {
-            writeOut(`Installed ${caplet.id} to remote ${caplet.destination}\n`);
+            const action =
+              caplet.status === "noop"
+                ? "Already installed"
+                : caplet.status === "restored"
+                  ? "Restored"
+                  : "Installed";
+            writeOut(`${action} ${caplet.id} to remote ${caplet.destination}\n`);
+            writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           }
           return;
         }
@@ -2964,6 +2981,8 @@ export function createProgram(io: CliIO = {}): Command {
             destinationRoot,
             lockfilePath,
           });
+          await attachCatalogIndexingResults(result.installed, env);
+          attachVaultSetupResults(result.installed, target, io);
           if (options.json) {
             writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
             return;
@@ -2972,6 +2991,8 @@ export function createProgram(io: CliIO = {}): Command {
             writeOut(
               `${caplet.status === "noop" ? "Already installed" : "Restored"} ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
             );
+            writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
+            writeVaultSetupNotice(caplet.vaultSetup, writeOut);
           }
           return;
         }
@@ -2981,6 +3002,8 @@ export function createProgram(io: CliIO = {}): Command {
           destinationRoot,
           lockfilePath,
         });
+        await attachCatalogIndexingResults(result.installed, env);
+        attachVaultSetupResults(result.installed, target, io);
         if (options.json) {
           writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
           return;
@@ -2989,6 +3012,8 @@ export function createProgram(io: CliIO = {}): Command {
           writeOut(
             `Installed ${caplet.id} to ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
           );
+          writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
+          writeVaultSetupNotice(caplet.vaultSetup, writeOut);
         }
       },
     );
@@ -3014,7 +3039,15 @@ export function createProgram(io: CliIO = {}): Command {
           const result = (await remote.request("update", {
             capletIds,
             force: Boolean(options.force),
-          })) as { installed: Array<{ id: string; destination: string; status?: string }> };
+            ...(catalogIndexingDisabled(env) ? { disableCatalogIndexing: true } : {}),
+          })) as {
+            installed: Array<{
+              id: string;
+              destination: string;
+              status?: string;
+              catalogIndexing?: CatalogIndexingResult | undefined;
+            }>;
+          };
           if (options.json) {
             writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
             return;
@@ -3023,6 +3056,7 @@ export function createProgram(io: CliIO = {}): Command {
             writeOut(
               `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at remote ${caplet.destination}\n`,
             );
+            writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
           }
           return;
         }
@@ -3040,6 +3074,8 @@ export function createProgram(io: CliIO = {}): Command {
           destinationRoot,
           lockfilePath,
         });
+        await attachCatalogIndexingResults(result.installed, env);
+        attachVaultSetupResults(result.installed, target, io);
         if (options.json) {
           writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
           return;
@@ -3048,6 +3084,8 @@ export function createProgram(io: CliIO = {}): Command {
           writeOut(
             `${caplet.status === "noop" ? "Already current" : "Updated"} ${caplet.id} at ${localMutationTargetLabel(target, io)}${caplet.destination}\n`,
           );
+          writeCatalogIndexingNotice(caplet.catalogIndexing, writeOut);
+          writeVaultSetupNotice(caplet.vaultSetup, writeOut);
         }
       },
     );
@@ -3910,7 +3948,7 @@ function isInstallSourceArgument(
   if (isExplicitLocalPath(value)) return true;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return true;
   if (/^[^@\s]+@[^:\s]+:.+/.test(value)) return true;
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(value)) return true;
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?(?:#[^\s#]+)?$/.test(value)) return true;
   return (
     options.allowImplicitLocalPath !== false &&
     existsSync(value) &&
@@ -4134,6 +4172,8 @@ function installJsonResult(
     hash?: string | undefined;
     lockfile?: string | undefined;
     source?: string | undefined;
+    catalogIndexing?: CatalogIndexingResult | undefined;
+    vaultSetup?: unknown;
   }>,
 ) {
   return {
@@ -4144,8 +4184,116 @@ function installJsonResult(
       ...(entry.lockfile ? { lockfile: entry.lockfile } : {}),
       ...(entry.hash ? { hash: entry.hash } : {}),
       ...(entry.source ? { source: entry.source } : {}),
+      ...(entry.catalogIndexing ? { catalogIndexing: entry.catalogIndexing } : {}),
+      ...(entry.vaultSetup ? { vaultSetup: entry.vaultSetup } : {}),
     })),
   };
+}
+
+type VaultSetupStatus = {
+  status: "ready" | "unresolved" | "unknown";
+  recoveryCommands: string[];
+  messages: string[];
+};
+
+async function attachCatalogIndexingResults(
+  installed: Array<{
+    id: string;
+    lockfile?: string | undefined;
+    catalogIndexing?: CatalogIndexingResult | undefined;
+  }>,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): Promise<void> {
+  const results = await indexInstalledCapletsFromLockfile(installed, {
+    disableCatalogIndexing: catalogIndexingDisabled(env),
+  });
+  for (const entry of installed) {
+    entry.catalogIndexing = results.get(entry.id);
+  }
+}
+
+function catalogIndexingDisabled(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
+  return env.CAPLETS_DISABLE_CATALOG_INDEXING === "1";
+}
+
+function writeCatalogIndexingNotice(
+  result: CatalogIndexingResult | undefined,
+  writeOut: (value: string) => void,
+): void {
+  if (!result) return;
+  if (result.status === "accepted" || result.status === "counted") {
+    writeOut(
+      "Catalog indexing: public Caplet source and content metadata may appear on catalog.caplets.dev.\n",
+    );
+  } else if (result.status === "unavailable") {
+    writeOut("Catalog indexing: skipped because the catalog indexer was unavailable.\n");
+  }
+}
+
+function attachVaultSetupResults(
+  installed: Array<{ id: string; vaultSetup?: unknown }>,
+  target: Exclude<MutationTarget, "remote">,
+  io: CliIO,
+): void {
+  const statuses = vaultSetupStatusesForInstalled(
+    installed.map((entry) => entry.id),
+    target,
+    io,
+  );
+  for (const entry of installed) {
+    entry.vaultSetup = statuses.get(entry.id);
+  }
+}
+
+function vaultSetupStatusesForInstalled(
+  ids: string[],
+  target: Exclude<MutationTarget, "remote">,
+  io: CliIO,
+): Map<string, VaultSetupStatus> {
+  const statuses = new Map<string, VaultSetupStatus>(
+    ids.map((id) => [id, { status: "ready", recoveryCommands: [], messages: [] }]),
+  );
+  try {
+    const env = io.env ?? process.env;
+    const configPath = resolveConfigPath(envConfigPath(env));
+    const projectConfigPath = envProjectConfigPath(env);
+    const result = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    for (const warning of result.warnings) {
+      if (!warning.recoverable || !warning.message.includes("Vault key")) continue;
+      const id = /^Caplet ([^ ]+) references /u.exec(warning.message)?.[1];
+      if (!id || !statuses.has(id)) continue;
+      const status = statuses.get(id);
+      if (!status) continue;
+      status.status = "unresolved";
+      status.messages.push(warning.message);
+      const command = /run `([^`]+)`/u.exec(warning.message)?.[1];
+      if (command && !status.recoveryCommands.includes(command)) {
+        status.recoveryCommands.push(command);
+      }
+    }
+  } catch {
+    for (const status of statuses.values()) {
+      status.status = "unknown";
+    }
+  }
+  return statuses;
+}
+
+function writeVaultSetupNotice(result: unknown, writeOut: (value: string) => void): void {
+  if (!isVaultSetupStatus(result) || result.status !== "unresolved") return;
+  for (const command of result.recoveryCommands) {
+    writeOut(`Vault setup: run \`${command}\`.\n`);
+  }
+}
+
+function isVaultSetupStatus(value: unknown): value is VaultSetupStatus {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    Array.isArray((value as { recoveryCommands?: unknown }).recoveryCommands)
+  );
 }
 
 function parseAuthFlagTarget(options: AuthTargetOptions): AuthTarget | undefined {

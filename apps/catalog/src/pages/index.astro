@@ -1,0 +1,46 @@
+---
+import CatalogHeader from "../components/CatalogHeader.astro";
+import SearchShell from "../components/SearchShell.astro";
+import ThemeInit from "../components/ThemeInit.astro";
+import { getCatalogEnv } from "../lib/catalog-env";
+import { listCatalogEntries } from "../lib/catalog-store";
+import "../styles/starwind.css";
+import "../styles/catalog.css";
+
+export const prerender = false;
+
+const entries = await listCatalogEntries(getCatalogEnv());
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Caplets Catalog</title>
+    <meta
+      name="description"
+      content="Search official and community Caplets, inspect source content, and copy supported install commands."
+    />
+    <ThemeInit />
+    <link rel="icon" type="image/png" href="/icon.png" />
+  </head>
+  <body>
+    <a class="skip-link" href="#catalog-results">Skip to results</a>
+    <CatalogHeader search={{ count: entries.length, value: Astro.url.searchParams.get("q") ?? "" }} />
+    <main class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-4 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-3">
+      <section class="catalog-intro" role="note">
+        <strong>Not security-reviewed.</strong>
+        <span>Inspect Caplets before installing.</span>
+      </section>
+      <div id="catalog-results">
+        <SearchShell entries={entries} />
+      </div>
+    </main>
+    <div class="copy-status" aria-live="polite" data-copy-status></div>
+    <script>
+      import "../scripts/copy";
+      import "../scripts/search";
+    </script>
+  </body>
+</html>

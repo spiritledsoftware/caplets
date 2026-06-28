@@ -16,11 +16,29 @@ The Prebuilt Caplets Catalog is curated as a Code Mode-first capability catalog,
 
 Install-ready catalog entries have an explicit verification status, a reproducible validation path, and a named primary Code Mode workflow. Unverified entries may exist as drafts or recipes, but they do not count as install-ready catalog coverage.
 
+### Catalog Search Site
+
+The public search surface for installable Caplets at `catalog.caplets.dev`.
+
+The Catalog Search Site is separate from the landing page and docs site. It indexes official Caplets from this repo and community Caplets discovered through public external installs, with search, readable Caplet content, source labels, install-count popularity signals, warnings, and inspection-first copyable install commands as the primary user flow.
+
+### Public Catalog Indexing Signal
+
+The public-source install signal that lets `catalog.caplets.dev` discover and rank community Caplets.
+
+Public Catalog Indexing is not ordinary anonymous telemetry. It may publish public Caplet content, normalized install command, source identity needed to reproduce install, and aggregate install count; it must not publish installer identity, private source URLs, local paths, config, credentials, prompts, tool arguments, tool outputs, or hostnames. Catalog install counts are popularity and ranking signals, not safety signals, and public entries can be suppressed when automatic indexing creates stale, abusive, leaked, or high-risk catalog records.
+
 ### Catalog-Grade Caplet
 
 A Caplet that is ready to live in the Prebuilt Caplets Catalog.
 
 Catalog-Grade Caplets include enough frontmatter, setup or verification guidance, auth handling, least-privilege scope notes, safety notes, Code Mode workflow guidance, and local/project/runtime metadata for agents to use them without rediscovering private assumptions from the author's environment.
+
+### Catalog Presentation Metadata
+
+Optional Caplet frontmatter that improves how a Caplet appears in public catalog surfaces without changing runtime behavior, trust, safety status, ranking, or install readiness.
+
+In v1, Catalog Presentation Metadata is limited to `catalog.icon`, which may identify a safe HTTPS icon URL or a bundled icon path relative to the Caplet directory.
 
 ### Caplets Lockfile
 

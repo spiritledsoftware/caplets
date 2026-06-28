@@ -1,0 +1,50 @@
+---
+import type { CatalogEntryRecord } from "../lib/catalog-store";
+import InstallCommand from "./InstallCommand.astro";
+import SafetyNotice from "./SafetyNotice.astro";
+import { Badge } from "./starwind/badge";
+import { Button } from "./starwind/button";
+
+type Props = {
+  entry: CatalogEntryRecord;
+};
+
+const { entry } = Astro.props;
+const detailHref = `/caplets/${encodeURIComponent(entry.entryKey)}/`;
+---
+
+<article
+  class="grid gap-4 rounded-lg border border-transparent p-4 transition hover:border-border hover:bg-muted/50 md:grid-cols-[minmax(0,1fr)_280px]"
+  data-result
+  data-result-id={entry.entryKey}
+  data-name={entry.name.toLowerCase()}
+  data-description={entry.description.toLowerCase()}
+  data-tags={entry.tags.join(" ")}
+  data-trust={entry.trustLevel}
+  data-setup={entry.setupReadiness}
+  data-count={entry.rankScore}
+>
+  <div class="min-w-0">
+    <div class="flex flex-wrap items-center gap-2">
+      <a class="text-lg font-semibold tracking-[-0.01em] no-underline transition hover:text-primary-accent focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href={detailHref}>{entry.name}</a>
+      <Badge variant={entry.trustLevel === "official" ? "success" : "warning"} size="sm">{entry.trustLevel}</Badge>
+    </div>
+    <p class="mt-2 max-w-[72ch] text-muted-foreground">{entry.description}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" aria-label="Catalog metadata">
+      <span>{entry.source.repository}</span>
+      <span>{entry.workflow.label}</span>
+      <span>{entry.installCountDisplay} installs</span>
+      <span>{entry.authReadiness === "required" ? "auth required" : "auth ready"}</span>
+    </div>
+    {entry.tags.length > 0 && (
+      <div class="mt-2 flex flex-wrap items-center gap-1.5">
+        {entry.tags.map((tag) => <Badge variant="secondary" size="sm">{tag}</Badge>)}
+      </div>
+    )}
+  </div>
+  <div class="grid content-start gap-2.5">
+    <SafetyNotice warnings={entry.warnings.slice(0, 3)} compact />
+    <InstallCommand command={entry.installCommand} />
+    <Button href={detailHref} variant="outline" size="sm">Inspect</Button>
+  </div>
+</article>

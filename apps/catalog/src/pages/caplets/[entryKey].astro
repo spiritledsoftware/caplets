@@ -1,0 +1,56 @@
+---
+import CatalogHeader from "../../components/CatalogHeader.astro";
+import CapletDetail from "../../components/CapletDetail.astro";
+import ThemeInit from "../../components/ThemeInit.astro";
+import { getCatalogEnv } from "../../lib/catalog-env";
+import { decodeEntryRouteKey } from "../../lib/entry-route";
+import { getCatalogEntry } from "../../lib/catalog-store";
+import "../../styles/starwind.css";
+import "../../styles/catalog.css";
+
+export const prerender = false;
+
+const entryKey = Astro.params.entryKey ? decodeEntryRouteKey(Astro.params.entryKey) : undefined;
+const entry = entryKey ? await getCatalogEntry(entryKey, getCatalogEnv()) : undefined;
+if (!entry) {
+  Astro.response.status = 404;
+}
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{entry ? `${entry.name} - Caplets Catalog` : "Caplet unavailable"}</title>
+    <meta
+      name="description"
+      content={entry
+        ? entry.description
+        : "This catalog entry is unavailable, suppressed, or no longer indexed."}
+    />
+    <ThemeInit />
+    <link rel="icon" type="image/png" href="/icon.png" />
+  </head>
+  <body>
+    <a class="skip-link" href="#detail">Skip to detail</a>
+    <CatalogHeader search={{ value: "" }} />
+    <main id="detail" class="mx-auto w-[min(1180px,calc(100vw_-_2rem))] py-7 max-sm:w-[min(1180px,calc(100vw_-_1.25rem))] max-sm:py-5">
+      {
+        entry ? (
+          <CapletDetail entry={entry} />
+        ) : (
+          <section class="mx-auto mt-20 max-w-xl rounded-lg border border-border bg-card p-7 text-card-foreground">
+            <h1 class="text-2xl font-semibold tracking-[-0.025em]">Caplet unavailable</h1>
+            <p class="mt-2 text-muted-foreground">This catalog entry is unavailable, suppressed, or no longer indexed.</p>
+            <a class="mt-5 inline-flex min-h-10 items-center justify-center rounded-md border border-border bg-card px-4 font-mono text-xs font-bold transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href="/">Back to search</a>
+          </section>
+        )
+      }
+    </main>
+    <div class="copy-status" aria-live="polite" data-copy-status></div>
+    <script>
+      import "../../scripts/copy";
+    </script>
+  </body>
+</html>

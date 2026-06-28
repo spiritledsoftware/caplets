@@ -4,7 +4,7 @@
     const storedTheme =
       typeof localStorage !== "undefined" && localStorage.getItem("starlight-theme");
     const parseTheme = (theme) =>
-      theme === "dark" || theme === "auto" || theme === "light" ? theme : "light";
+      theme === "dark" || theme === "auto" || theme === "light" ? theme : "dark";
     const theme = parseTheme(storedTheme);
     const resolvedTheme =
       theme === "auto"
@@ -14,7 +14,7 @@
         : theme;
     document.documentElement.dataset.theme = resolvedTheme;
     return {
-      updatePickers(theme = storedTheme || "light") {
+      updatePickers(theme = storedTheme || "dark") {
         theme = parseTheme(theme);
         document.querySelectorAll("starlight-theme-select").forEach((picker) => {
           const select = picker.querySelector("select");
