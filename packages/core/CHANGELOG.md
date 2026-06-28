@@ -1,5 +1,13 @@
 # @caplets/core
 
+## 0.31.0
+
+### Minor Changes
+
+- 988edbb: Add optional `catalog.icon` metadata to Caplet files and catalog entries so catalog surfaces can show provider icons.
+- 988edbb: Add shared catalog primitives, official catalog generation, public catalog indexing statuses,
+  and install-time Vault setup recovery metadata for Caplets install/update flows.
+
 ## 0.30.0
 
 ### Minor Changes
