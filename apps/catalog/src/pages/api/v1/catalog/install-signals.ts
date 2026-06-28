@@ -10,7 +10,7 @@ export async function POST(context: APIContext): Promise<Response> {
   } catch {
     return jsonResponse(
       { ok: false, error: { code: "invalid_request", message: "Invalid catalog signal." } },
-      { status: 400 },
+      { status: 400, headers: { "cache-control": "no-store" } },
     );
   }
 
@@ -34,7 +34,10 @@ export async function POST(context: APIContext): Promise<Response> {
     }
     return jsonResponse(
       { ok: true, result },
-      { status: result.status === "ineligible" ? 202 : 200 },
+      {
+        status: result.status === "ineligible" ? 202 : 200,
+        headers: { "cache-control": "no-store" },
+      },
     );
   } catch {
     return jsonResponse(

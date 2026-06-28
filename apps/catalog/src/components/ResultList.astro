@@ -68,7 +68,7 @@ const initialRows = rows.slice(0, 24);
       </div>
     </div>
   </div>
-  <div class="m-3 rounded-lg border border-border bg-background p-6 text-center" data-empty-state hidden>
+  <div class="m-3 rounded-lg border border-border bg-background p-6 text-center" data-empty-state hidden={rows.length > 0}>
     <h2 class="text-lg font-semibold tracking-[-0.01em]">No matching Caplets</h2>
     <p class="mx-auto mt-2 max-w-prose text-muted-foreground">Reset filters or search for the service, workflow, or setup requirement you need.</p>
     <button class="mt-4 inline-flex min-h-10 items-center justify-center rounded-md border border-border bg-card px-4 font-mono text-xs font-bold transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" type="button" data-reset-search>Reset filters</button>

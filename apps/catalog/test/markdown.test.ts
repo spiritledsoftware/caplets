@@ -13,6 +13,17 @@ describe("catalog Markdown rendering", () => {
     expect(html).toContain('href="https://example.com"');
   });
 
+  it("keeps safe relative and hash links in indexed content", async () => {
+    const html = await renderCatalogMarkdown(
+      "[setup](#setup) [docs](./README.md) [parent](../CAPLET.md) [root](/docs)",
+    );
+
+    expect(html).toContain('href="#setup"');
+    expect(html).toContain('href="./README.md"');
+    expect(html).toContain('href="../CAPLET.md"');
+    expect(html).toContain('href="/docs"');
+  });
+
   it("extracts CAPLET frontmatter into flattened table rows", () => {
     const parts = splitCatalogMarkdown(
       [

@@ -76,6 +76,40 @@ describe("virtual catalog results", () => {
     expect(resultRows()[0]?.textContent).toContain("Caplet 70");
   });
 
+  it("resets missing url params to default control values on history navigation", async () => {
+    mountSearchShell(
+      manyCatalogSearchRows(80),
+      "http://localhost:3000/?q=caplet&scope=official&setup=ready&tag=even&sort=name",
+    );
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    window.history.pushState(null, "", "http://localhost:3000/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    expect(input().value).toBe("");
+    expect(select("trust").value).toBe("all");
+    expect(select("setup").value).toBe("all");
+    expect(select("tag").value).toBe("all");
+    expect(sort().value).toBe("rank");
+  });
+
+  it("removes module event listeners on destroy", async () => {
+    mountSearchShell(manyCatalogSearchRows(20));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    const search = initVirtualCatalogSearch();
+    expect(document.querySelector("[data-result-status]")?.textContent).toBe("20 Caplets");
+
+    search?.destroy();
+    input().value = "Caplet 19";
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+    window.history.pushState(null, "", "http://localhost:3000/?q=Caplet%2019");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    expect(document.querySelector("[data-result-status]")?.textContent).toBe("20 Caplets");
+  });
+
   it("uses the mobile row estimate when the compact layout is active", async () => {
     window.matchMedia = vi.fn((query) => ({
       matches: query === "(max-width: 640px)" || query === "(max-width: 900px)",
@@ -188,6 +222,14 @@ function mountSearchShell(rows: CatalogSearchRow[], url = "http://localhost:3000
 
 function input(): HTMLInputElement {
   return document.querySelector("[data-search-input]") as HTMLInputElement;
+}
+
+function select(name: "trust" | "setup" | "tag"): HTMLSelectElement {
+  return document.querySelector(`[data-filter="${name}"]`) as HTMLSelectElement;
+}
+
+function sort(): HTMLSelectElement {
+  return document.querySelector("[data-sort]") as HTMLSelectElement;
 }
 
 function resultSpacer(): HTMLElement {

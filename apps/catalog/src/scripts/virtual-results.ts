@@ -80,10 +80,10 @@ export function initVirtualCatalogSearch(
   function applyUrlState(): void {
     const params = new URLSearchParams(window.location.search);
     inputEl.value = params.get("q") ?? "";
-    if (trust && params.has("scope")) trust.value = params.get("scope") ?? "all";
-    if (setup && params.has("setup")) setup.value = params.get("setup") ?? "all";
-    if (tag && params.has("tag")) tag.value = params.get("tag") ?? "all";
-    if (sort && params.has("sort")) sort.value = params.get("sort") === "name" ? "name" : "rank";
+    if (trust) trust.value = params.get("scope") ?? "all";
+    if (setup) setup.value = params.get("setup") ?? "all";
+    if (tag) tag.value = params.get("tag") ?? "all";
+    if (sort) sort.value = params.get("sort") === "name" ? "name" : "rank";
   }
 
   function writeUrlState(): void {
@@ -124,30 +124,43 @@ export function initVirtualCatalogSearch(
     resultListEl.replaceChildren(...items.map((item) => renderRow(item, visibleRows[item.index])));
   }
 
+  const events = new AbortController();
   for (const control of controls()) {
-    control?.addEventListener("input", () => applySearch());
-    control?.addEventListener("change", () => applySearch());
+    control?.addEventListener("input", () => applySearch(), { signal: events.signal });
+    control?.addEventListener("change", () => applySearch(), { signal: events.signal });
   }
 
-  reset?.addEventListener("click", () => {
-    inputEl.value = "";
-    for (const select of [trust, setup, tag]) {
-      if (select) select.value = "all";
-    }
-    if (sort) sort.value = "rank";
-    applySearch();
-    inputEl.focus();
-  });
+  reset?.addEventListener(
+    "click",
+    () => {
+      inputEl.value = "";
+      for (const select of [trust, setup, tag]) {
+        if (select) select.value = "all";
+      }
+      if (sort) sort.value = "rank";
+      applySearch();
+      inputEl.focus();
+    },
+    { signal: events.signal },
+  );
 
-  window.addEventListener("popstate", () => {
-    applyUrlState();
-    applySearch({ writeUrl: false });
-  });
+  window.addEventListener(
+    "popstate",
+    () => {
+      applyUrlState();
+      applySearch({ writeUrl: false });
+    },
+    { signal: events.signal },
+  );
 
-  window.addEventListener("resize", () => {
-    virtualizer.measure();
-    renderVirtualRows();
-  });
+  window.addEventListener(
+    "resize",
+    () => {
+      virtualizer.measure();
+      renderVirtualRows();
+    },
+    { signal: events.signal },
+  );
 
   applyUrlState();
   applySearch({ writeUrl: false, resetScroll: false });
@@ -155,6 +168,7 @@ export function initVirtualCatalogSearch(
   return {
     applySearch,
     destroy() {
+      events.abort();
       cleanupVirtualizer();
     },
     renderedRowCount() {

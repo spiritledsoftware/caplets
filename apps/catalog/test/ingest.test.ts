@@ -298,6 +298,37 @@ describe("catalog install signal ingestion", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("marks install signal route parse failures as no-store", async () => {
+    const response = await postInstallSignal({
+      request: new Request("https://catalog.caplets.dev/api/v1/catalog/install-signals", {
+        method: "POST",
+        body: "{",
+      }),
+      locals: {},
+    } as APIContext);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("marks install signal route accepted responses as no-store", async () => {
+    const response = await postInstallSignal({
+      request: new Request("https://catalog.caplets.dev/api/v1/catalog/install-signals", {
+        method: "POST",
+        body: JSON.stringify({
+          source: "../private",
+          capletId: "secret",
+          sourcePath: "secret/CAPLET.md",
+          resolvedRevision: "abc123",
+        }),
+      }),
+      locals: {},
+    } as APIContext);
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
 });
 
 function fakeD1(

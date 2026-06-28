@@ -648,6 +648,7 @@ function cloneInstallSource(
   source: { repository: string; ref?: string | undefined },
   repoRoot: string,
 ): void {
+  rejectOptionLikeInstallSourceRef(source.ref);
   if (!source.ref) {
     execFileSync("git", ["clone", "--depth", "1", "--", source.repository, repoRoot], {
       env: externalGitEnv(),
@@ -695,6 +696,12 @@ function cloneInstallSource(
       stdio: "ignore",
       timeout: 60_000,
     });
+  }
+}
+
+function rejectOptionLikeInstallSourceRef(ref: string | undefined): void {
+  if (ref?.startsWith("-")) {
+    throw new CapletsError("CONFIG_NOT_FOUND", "Install source refs cannot start with '-'.");
   }
 }
 

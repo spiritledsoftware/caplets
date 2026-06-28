@@ -136,12 +136,22 @@ function renderInline(value: string): string {
 }
 
 function isAllowedHref(value: string): boolean {
+  if (!value || hasControlCharacter(value)) return false;
+  if (value.startsWith("#")) return true;
+  if (!value.startsWith("//") && !/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)) return true;
   try {
     const url = new URL(value);
     return allowedProtocols.includes(url.protocol.replace(":", ""));
   } catch {
     return false;
   }
+}
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  });
 }
 
 function flattenFrontmatterRows(value: unknown, prefix: string[] = []): CatalogFrontmatterRow[] {
