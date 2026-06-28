@@ -31,7 +31,7 @@ const detailCommand = hasReadableContent
     <HugeIcon class="size-3.5" icon={ChevronRightIcon} />
     <span>{entry.id}</span>
   </nav>
-  <header class="grid gap-6 py-5 md:grid-cols-[minmax(0,1fr)_minmax(300px,440px)]">
+  <header class="grid gap-6 py-5 md:grid-cols-[minmax(0,1fr)_minmax(340px,480px)]">
     <div>
       <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
         <Badge variant={entry.trustLevel === "official" ? "success" : "warning"} size="sm">{entry.trustLevel}</Badge>
@@ -39,6 +39,10 @@ const detailCommand = hasReadableContent
       </div>
       <h1 class="mt-2 max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">{entry.name}</h1>
       <p class="mt-2.5 max-w-[68ch] text-muted-foreground">{entry.description}</p>
+    </div>
+    <div class="grid content-start gap-2 self-start" aria-label="Install command">
+      <span class="font-mono text-xs font-bold text-muted-foreground">Install</span>
+      <InstallCommand command={detailCommand} detail />
     </div>
   </header>
 
@@ -89,7 +93,6 @@ const detailCommand = hasReadableContent
         }
         </CardContent>
       </Card>
-      <InstallCommand command={detailCommand} detail />
     </div>
     <aside aria-label="Catalog record">
       <Card class="record-panel">
