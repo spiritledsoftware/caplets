@@ -1,4 +1,4 @@
-import type { CatalogWarning, CatalogWarningSeverity } from "@caplets/core/catalog";
+import type { CatalogIcon, CatalogWarning, CatalogWarningSeverity } from "@caplets/core/catalog";
 import type { CatalogEntryRecord } from "./catalog-store";
 
 export type CatalogSearchStatusCode = CatalogWarning["code"] | "vault_required";
@@ -14,6 +14,7 @@ export type CatalogSearchRow = {
   name: string;
   description: string;
   tags: string[];
+  icon?: CatalogIcon | undefined;
   trust: string;
   setup: string;
   count: number;
@@ -43,6 +44,7 @@ export function catalogSearchRowFromEntry(entry: CatalogEntryRecord): CatalogSea
     name: entry.name,
     description: entry.description,
     tags: entry.tags,
+    ...(entry.icon ? { icon: entry.icon } : {}),
     trust: entry.trustLevel,
     setup: entry.setupReadiness,
     count: entry.rankScore,

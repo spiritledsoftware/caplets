@@ -10,6 +10,7 @@ import type { CatalogSearchRow } from "../lib/search-row";
 import {
   AlertCircleIcon,
   catalogStatusIcons,
+  catalogTrustIcons,
   Copy01Icon,
   type IconSvgObject,
 } from "../lib/status-icons";
@@ -40,6 +41,7 @@ export function initVirtualCatalogSearch(
   const trust = root.querySelector('[data-filter="trust"]') as HTMLSelectElement | null;
   const setup = root.querySelector('[data-filter="setup"]') as HTMLSelectElement | null;
   const tag = root.querySelector('[data-filter="tag"]') as HTMLInputElement | null;
+  const tagSelect = root.querySelector("#catalog-tag-select") as HTMLElement | null;
   const sort = root.querySelector("[data-sort]") as HTMLSelectElement | null;
   const index = root.querySelector("[data-search-index]") as HTMLScriptElement | null;
   if (!shell || !input || !resultList || !resultSpacer || !resultStatus || !emptyState || !index) {
@@ -87,7 +89,7 @@ export function initVirtualCatalogSearch(
     inputEl.value = params.get("q") ?? "";
     if (trust) trust.value = params.get("scope") ?? "all";
     if (setup) setup.value = params.get("setup") ?? "all";
-    if (tag) tag.value = params.get("tag") ?? "";
+    setTagValue(params.get("tag") ?? "all");
     if (sort) sort.value = params.get("sort") === "name" ? "name" : "rank";
   }
 
@@ -152,6 +154,15 @@ export function initVirtualCatalogSearch(
     control?.addEventListener("input", () => applySearch(), { signal: events.signal });
     control?.addEventListener("change", () => applySearch(), { signal: events.signal });
   }
+  tagSelect?.addEventListener(
+    "starwind-select:change",
+    (event) => {
+      const customEvent = event as CustomEvent<{ value?: string }>;
+      setTagValue(customEvent.detail.value ?? "all", { syncSelect: false });
+      applySearch();
+    },
+    { signal: events.signal },
+  );
 
   reset?.addEventListener(
     "click",
@@ -160,7 +171,7 @@ export function initVirtualCatalogSearch(
       for (const select of [trust, setup]) {
         if (select) select.value = "all";
       }
-      if (tag) tag.value = "";
+      setTagValue("all");
       if (sort) sort.value = "rank";
       applySearch();
       inputEl.focus();
@@ -202,6 +213,25 @@ export function initVirtualCatalogSearch(
   };
 }
 
+function setTagValue(value: string, options: { syncSelect?: boolean } = {}): void {
+  const syncSelect = options.syncSelect ?? true;
+  const normalizedValue = value.trim() || "all";
+  const tagInput = document.querySelector('[data-filter="tag"]') as HTMLInputElement | null;
+  const tagSelect = document.querySelector("#catalog-tag-select") as HTMLElement | null;
+  if (tagInput) tagInput.value = normalizedValue === "all" ? "" : normalizedValue;
+  if (!tagSelect || !syncSelect) return;
+
+  document.dispatchEvent(
+    new CustomEvent("starwind-select:select", {
+      detail: { selectId: tagSelect.id, value: normalizedValue },
+    }),
+  );
+
+  const triggerValue = tagSelect.querySelector('[data-slot="select-value"]');
+  if (triggerValue)
+    triggerValue.textContent = normalizedValue === "all" ? "Any tag" : normalizedValue;
+}
+
 function parseRows(value: string): CatalogSearchRow[] {
   const parsed = JSON.parse(value) as CatalogSearchRow[];
   return Array.isArray(parsed) ? parsed : [];
@@ -226,14 +256,15 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
   if (!row) return element;
   element.innerHTML = `
     <div class="catalog-result-row__name" role="cell">
+      ${renderCapletIcon(row)}
       <div class="catalog-result-row__heading">
         <a class="catalog-result-row__title" href="${escapeAttribute(row.detailHref)}">${escapeHtml(row.name)}</a>
-        <span class="catalog-result-row__trust">${escapeHtml(row.trust)}</span>
       </div>
     </div>
     <p class="catalog-result-row__description" role="cell">${escapeHtml(row.description)}</p>
     <div class="catalog-result-row__installs" role="cell">${escapeHtml(row.installCountDisplay)}</div>
     <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
+      <span class="catalog-result-row__trust catalog-result-row__trust--${escapeAttribute(row.trust)}" title="${escapeAttribute(row.trust)}" aria-label="${escapeAttribute(row.trust)}">${renderIcon(catalogTrustIcons[row.trust] ?? AlertCircleIcon, row.trust, "catalog-result-row__trust-icon")}</span>
       ${row.statuses.map((status) => `<span class="catalog-result-row__status catalog-result-row__status--${escapeAttribute(status.severity)}" title="${escapeAttribute(status.label)}" aria-label="${escapeAttribute(status.label)}">${renderIcon(catalogStatusIcons[status.code] ?? AlertCircleIcon, status.label, "catalog-result-row__status-icon")}<span class="catalog-result-row__status-label">${escapeHtml(status.label)}</span></span>`).join("")}
     </div>
     <div class="catalog-result-row__actions" role="cell">
@@ -245,6 +276,13 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
     </div>
   `;
   return element;
+}
+
+function renderCapletIcon(row: CatalogSearchRow): string {
+  if (!row.icon) {
+    return `<span class="catalog-result-row__icon catalog-result-row__icon--fallback" aria-hidden="true">${escapeHtml(row.name.slice(0, 1).toUpperCase())}</span>`;
+  }
+  return `<img class="catalog-result-row__icon" src="${escapeAttribute(row.icon.url)}" alt="" width="32" height="32" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
 }
 
 function renderIcon(icon: IconSvgObject, label: string, className = ""): string {

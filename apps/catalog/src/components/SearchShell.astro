@@ -1,6 +1,7 @@
 ---
 import type { CatalogEntryRecord } from "../lib/catalog-store";
 import { catalogSearchRowsFromEntries } from "../lib/search-row";
+import { catalogTrustIcons } from "../lib/status-icons";
 import FilterBar from "./FilterBar.astro";
 import ResultList from "./ResultList.astro";
 import HugeIcon from "./HugeIcon.astro";
@@ -11,7 +12,6 @@ import {
   Key01Icon,
   Link01Icon,
   Settings02Icon,
-  Shield01Icon,
 } from "@hugeicons/core-free-icons";
 
 type Props = {
@@ -25,7 +25,8 @@ const tags = [...new Set(rows.flatMap((entry) => entry.tags))].sort((left, right
 );
 const indexJson = JSON.stringify(rows).replace(/</g, "\\u003c");
 const legend = [
-  { label: "Community", icon: Shield01Icon },
+  { label: "Official", icon: catalogTrustIcons.official },
+  { label: "Community", icon: catalogTrustIcons.community },
   { label: "Local control", icon: ComputerUserIcon },
   { label: "External changes", icon: DatabaseSyncIcon },
   { label: "Auth", icon: Key01Icon },

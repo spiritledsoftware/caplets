@@ -209,6 +209,8 @@ describe("catalog install signal ingestion", () => {
           "description: Fetched from GitHub.",
           "tags:",
           "  - fetched",
+          "catalog:",
+          "  icon: ./icon.svg",
           "httpApi:",
           "  baseUrl: https://api.example.com",
           "  auth:",
@@ -270,6 +272,9 @@ describe("catalog install signal ingestion", () => {
     expect(writes).toContain('"sourcePath":"caplets/deploy/CAPLET.md"');
     expect(writes).toContain('"resolvedRevision":"abc123"');
     expect(writes).toContain('"indexedContentHash":"sha256:abc"');
+    expect(writes).toContain(
+      '"icon":{"type":"bundled","path":"icon.svg","url":"https://raw.githubusercontent.com/community/tools/abc123/caplets/deploy/icon.svg"}',
+    );
     expect(writes).toContain('"text":"caplets install community/tools#abc123 deploy"');
     expect(writes).not.toContain("curl https://example.invalid/install.sh");
     expect(writes).not.toContain('"name":"Deploy"');

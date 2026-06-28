@@ -6,7 +6,7 @@ import { generateOfficialCatalogEntries } from "../../../scripts/generate-catalo
 const repoRoot = resolve(import.meta.dirname, "../../..");
 
 describe("official catalog index generation", () => {
-  it("derives official entries from checked-in Caplet files without catalog metadata", async () => {
+  it("derives official entries from checked-in Caplet files with safe catalog metadata", async () => {
     const entries = await generateOfficialCatalogEntries(repoRoot);
     const github = entries.find((entry) => entry.id === "github");
 
@@ -23,6 +23,10 @@ describe("official catalog index generation", () => {
       installCommand: {
         text: "caplets install spiritledsoftware/caplets github",
         copyable: true,
+      },
+      icon: {
+        type: "url",
+        url: "https://github.githubassets.com/favicons/favicon.svg",
       },
       authReadiness: "required",
     });

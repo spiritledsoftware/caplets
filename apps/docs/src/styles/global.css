@@ -122,6 +122,49 @@ li {
   color: var(--sl-color-gray-2);
 }
 
+:root:not([data-theme="dark"]) .sidebar-content a:hover,
+:root:not([data-theme="dark"]) .sidebar-content a:focus-visible,
+:root:not([data-theme="dark"]) .sidebar-content summary:hover,
+:root:not([data-theme="dark"]) .sidebar-content summary:focus-visible,
+:root:not([data-theme="dark"]) .right-sidebar a:hover,
+:root:not([data-theme="dark"]) .right-sidebar a:focus-visible,
+:root:not([data-theme="dark"]) mobile-starlight-toc a:hover,
+:root:not([data-theme="dark"]) mobile-starlight-toc a:focus-visible {
+  background-color: color-mix(in oklch, var(--sl-color-accent-low), transparent 35%);
+  color: var(--sl-color-gray-1);
+}
+
+:root:not([data-theme="dark"]) .sidebar-content a[aria-current="page"]:hover,
+:root:not([data-theme="dark"]) .sidebar-content a[aria-current="true"]:hover,
+:root:not([data-theme="dark"]) .sidebar-content a[aria-current="page"]:focus-visible,
+:root:not([data-theme="dark"]) .sidebar-content a[aria-current="true"]:focus-visible,
+:root:not([data-theme="dark"]) .right-sidebar a[aria-current="page"]:hover,
+:root:not([data-theme="dark"]) .right-sidebar a[aria-current="true"]:hover,
+:root:not([data-theme="dark"]) .right-sidebar a[aria-current="page"]:focus-visible,
+:root:not([data-theme="dark"]) .right-sidebar a[aria-current="true"]:focus-visible,
+:root:not([data-theme="dark"]) mobile-starlight-toc a[aria-current="page"]:hover,
+:root:not([data-theme="dark"]) mobile-starlight-toc a[aria-current="true"]:hover,
+:root:not([data-theme="dark"]) mobile-starlight-toc a[aria-current="page"]:focus-visible,
+:root:not([data-theme="dark"]) mobile-starlight-toc a[aria-current="true"]:focus-visible {
+  background-color: var(--sl-color-accent);
+  color: var(--caplets-paper);
+}
+
+:root:not([data-theme="dark"]) starlight-theme-select select:hover,
+:root:not([data-theme="dark"]) starlight-theme-select select:focus,
+:root:not([data-theme="dark"]) starlight-theme-select select:focus-visible {
+  border-color: var(--sl-color-accent);
+  background-color: color-mix(in oklch, var(--sl-color-accent-low), transparent 20%);
+  color: var(--sl-color-gray-1);
+}
+
+:root:not([data-theme="dark"]) starlight-theme-select select:hover option,
+:root:not([data-theme="dark"]) starlight-theme-select select:focus option,
+:root:not([data-theme="dark"]) starlight-theme-select select:focus-visible option {
+  background-color: var(--sl-color-white);
+  color: var(--sl-color-gray-1);
+}
+
 @media (max-width: 44rem) {
   html,
   body {

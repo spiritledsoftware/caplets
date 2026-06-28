@@ -203,6 +203,18 @@
       "additionalProperties": false,
       "description": "Runtime feature and resource requirements for hosted execution."
     },
+    "catalog": {
+      "type": "object",
+      "properties": {
+        "icon": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional catalog presentation icon. Use an HTTPS image URL or a bundled image path relative to this Caplet directory. Values must not use credentials, local or absolute paths, path traversal, query strings, fragments, or private hosts."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Optional presentation metadata for public catalog surfaces."
+    },
     "mcpServer": {
       "type": "object",
       "properties": {

@@ -97,6 +97,8 @@ describe("catalog indexing", () => {
         "---",
         "name: Deploy",
         "description: Deploy projects.",
+        "catalog:",
+        "  icon: ./icon.svg",
         "setup:",
         "  steps:",
         "    - run: npm install",
@@ -145,6 +147,11 @@ describe("catalog indexing", () => {
       entry: {
         setupReadiness: "required",
         authReadiness: "required",
+        icon: {
+          type: "bundled",
+          path: "icon.svg",
+          url: "https://raw.githubusercontent.com/community/tools/abc123/deploy/icon.svg",
+        },
         sourcePath: "deploy/CAPLET.md",
         installCommand: {
           text: "caplets install community/tools#abc123 deploy",

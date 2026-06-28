@@ -10,6 +10,7 @@ import {
   isUrl,
   validateHttpActionHeaders,
 } from "./config/validation";
+import { isSafeCatalogIconValue } from "./catalog";
 import { CapletsError, redactSecrets } from "./errors";
 import { nestedSchema, schemaPath } from "./schema-utils";
 
@@ -689,6 +690,24 @@ const capletSetSchema = z
     }
   });
 
+const capletCatalogSchema = z
+  .object({
+    icon: z
+      .string()
+      .trim()
+      .min(1)
+      .refine(
+        isSafeCatalogIconValue,
+        "catalog.icon must be an HTTPS image URL or a bundled image path relative to the Caplet directory",
+      )
+      .describe(
+        "Optional catalog presentation icon. Use an HTTPS image URL or a bundled image path relative to this Caplet directory. Values must not use credentials, local or absolute paths, path traversal, query strings, fragments, or private hosts.",
+      )
+      .optional(),
+  })
+  .strict()
+  .describe("Optional presentation metadata for public catalog surfaces.");
+
 export const capletFileSchema = z
   .object({
     $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
@@ -711,6 +730,7 @@ export const capletFileSchema = z
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
     runtime: capletRuntimeRequirementsSchema.optional(),
+    catalog: capletCatalogSchema.optional(),
     mcpServer: capletMcpServerSchema
       .describe("MCP server backend configuration for this Caplet.")
       .optional(),

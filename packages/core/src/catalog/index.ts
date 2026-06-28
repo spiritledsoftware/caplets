@@ -5,6 +5,7 @@ export {
 } from "./entry";
 export {
   catalogAuthRequiredFromFrontmatter,
+  catalogIconFromFrontmatter,
   catalogMutatesExternalStateFromFrontmatter,
   catalogProjectBindingRequiredFromFrontmatter,
   catalogSetupRequiredFromFrontmatter,
@@ -16,6 +17,13 @@ export {
 } from "./caplet-markdown";
 export { generateCatalogInstallCommand } from "./install-command";
 export {
+  catalogIconReferenceFromValue,
+  isSafeCatalogIconValue,
+  officialCatalogIconUrl,
+  resolveCatalogIcon,
+  sourceRelativeBundledPath,
+} from "./icon";
+export {
   catalogEntryKey,
   normalizeCatalogId,
   normalizeCatalogPath,
@@ -26,6 +34,7 @@ export type {
   CatalogEntry,
   CatalogEntryInput,
   CatalogEntryKey,
+  CatalogIcon,
   CatalogIndexingEligibility,
   CatalogIndexingIneligibleReason,
   CatalogIndexingStatus,

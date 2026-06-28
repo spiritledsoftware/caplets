@@ -18,6 +18,8 @@
     <a href="https://caplets.dev"><strong>caplets.dev</strong></a>
     ·
     <a href="https://docs.caplets.dev"><strong>docs.caplets.dev</strong></a>
+    ·
+    <a href="https://catalog.caplets.dev"><strong>catalog.caplets.dev</strong></a>
   </p>
 </div>
 

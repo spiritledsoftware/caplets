@@ -5,6 +5,8 @@ description: Inspect and run common local repository workflows through curated C
 tags:
   - cli
   - code
+catalog:
+  icon: https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png
 projectBinding:
   required: true
 cliTools:

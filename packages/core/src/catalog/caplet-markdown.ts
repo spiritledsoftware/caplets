@@ -1,6 +1,12 @@
 import { parse as parseYaml } from "yaml";
 import { catalogWorkflowSummaryForBackendFamily } from "./entry";
-import type { CatalogWorkflowSummary } from "./types";
+import { catalogIconReferenceFromValue, resolveCatalogIcon } from "./icon";
+import type {
+  CatalogIcon,
+  CatalogSourceIdentity,
+  CatalogTrustLevel,
+  CatalogWorkflowSummary,
+} from "./types";
 
 export function readCatalogCapletFrontmatterFromMarkdown(
   markdown: string,
@@ -18,6 +24,23 @@ export function catalogStringFromFrontmatter(value: unknown): string | undefined
 export function catalogStringArrayFromFrontmatter(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+export function catalogIconFromFrontmatter(
+  frontmatter: Record<string, unknown>,
+  context: {
+    id: string;
+    source: CatalogSourceIdentity;
+    sourcePath: string;
+    trustLevel: CatalogTrustLevel;
+    resolvedRevision?: string | undefined;
+  },
+): CatalogIcon | undefined {
+  const catalog = isRecord(frontmatter.catalog) ? frontmatter.catalog : undefined;
+  return resolveCatalogIcon({
+    ...context,
+    reference: catalogIconReferenceFromValue(catalog?.icon),
+  });
 }
 
 export function catalogSetupRequiredFromFrontmatter(frontmatter: Record<string, unknown>): boolean {

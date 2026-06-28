@@ -111,6 +111,56 @@ mcpServer:
     );
   });
 
+  it("accepts catalog icon metadata without exposing it to runtime config", () => {
+    const result = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "github/CAPLET.md",
+          content: `---
+name: GitHub
+description: Manage GitHub repositories.
+catalog:
+  icon: ./icon.svg
+mcpServer:
+  command: github-mcp
+---
+
+# GitHub
+`,
+        },
+      ],
+    });
+
+    expect(result?.config.mcpServers?.github).toEqual(
+      expect.not.objectContaining({
+        catalog: expect.anything(),
+      }),
+    );
+  });
+
+  it("rejects unsafe catalog icon metadata", () => {
+    expect(() =>
+      loadCapletFilesFromMap({
+        files: [
+          {
+            path: "github/CAPLET.md",
+            content: `---
+name: GitHub
+description: Manage GitHub repositories.
+catalog:
+  icon: http://example.com/icon.svg
+mcpServer:
+  command: github-mcp
+---
+
+# GitHub
+`,
+          },
+        ],
+      }),
+    ).toThrow(/invalid frontmatter/);
+  });
+
   it("rejects duplicate in-memory caplet ids", () => {
     expect(() =>
       loadCapletFilesFromMap({

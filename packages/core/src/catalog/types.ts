@@ -77,6 +77,17 @@ export type CatalogWorkflowSummary = {
   label: string;
 };
 
+export type CatalogIcon =
+  | {
+      type: "url";
+      url: string;
+    }
+  | {
+      type: "bundled";
+      path: string;
+      url: string;
+    };
+
 export type CatalogEntryInput = {
   id: string;
   name: string;
@@ -87,6 +98,7 @@ export type CatalogEntryInput = {
   resolvedRevision?: string | undefined;
   indexedContentHash?: string | undefined;
   contentMarkdown?: string | undefined;
+  icon?: CatalogIcon | undefined;
   tags?: string[] | undefined;
   useWhen?: string | undefined;
   avoidWhen?: string | undefined;
@@ -109,6 +121,7 @@ export type CatalogEntry = {
   resolvedRevision?: string | undefined;
   indexedContentHash?: string | undefined;
   contentMarkdown?: string | undefined;
+  icon?: CatalogIcon | undefined;
   tags: string[];
   intendedTask: string | "unknown";
   avoidWhen?: string | undefined;

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { manyCatalogSearchRows } from "./fixtures/catalog-search-rows";
+import { catalogSearchRowFixture, manyCatalogSearchRows } from "./fixtures/catalog-search-rows";
 import type { CatalogSearchRow } from "../src/lib/search-row";
 
 describe("virtual catalog results", () => {
@@ -63,6 +63,25 @@ describe("virtual catalog results", () => {
     expect(resultRows().map((row) => row.textContent ?? "")).toEqual([
       expect.stringContaining("Caplet 199"),
     ]);
+  });
+
+  it("renders catalog icons with remote image privacy controls", async () => {
+    mountSearchShell([
+      catalogSearchRowFixture({
+        id: "ast-grep",
+        name: "ast-grep",
+        icon: { type: "url", url: "https://example.com/ast-grep.svg" },
+      }),
+    ]);
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    const icon = document.querySelector(".catalog-result-row__icon") as HTMLImageElement;
+
+    expect(icon).toBeInstanceOf(HTMLImageElement);
+    expect(icon.getAttribute("src")).toBe("https://example.com/ast-grep.svg");
+    expect(icon.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(icon.getAttribute("loading")).toBe("lazy");
   });
 
   it("hydrates filters from the url and resets to the first row", async () => {
@@ -139,6 +158,24 @@ describe("virtual catalog results", () => {
 
     expect(document.querySelector("[data-result-status]")?.textContent).toBe("10 Caplets");
     expect(resultRows()[0]?.textContent).toContain("Caplet 1");
+  });
+
+  it("filters when the Starwind tag combobox changes", async () => {
+    mountSearchShell(manyCatalogSearchRows(20));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    tagSelect().dispatchEvent(
+      new CustomEvent("starwind-select:change", {
+        bubbles: true,
+        detail: { value: "even" },
+      }),
+    );
+
+    expect(tagInput().value).toBe("even");
+    expect(document.querySelector("[data-result-status]")?.textContent).toBe("10 Caplets");
+    expect(resultRows()[0]?.textContent).toContain("Caplet 0");
+    expect(window.location.search).toBe("?tag=even");
   });
 
   it("uses the narrow row estimate when mobile rows stack", async () => {
@@ -235,11 +272,17 @@ function mountSearchShell(rows: CatalogSearchRow[], url = "http://localhost:3000
         <option value="required">Required</option>
         <option value="unknown">Unknown</option>
       </select>
-      <input data-filter="tag" list="catalog-tag-options" type="search" />
-      <datalist id="catalog-tag-options">
-        <option value="even"></option>
-        <option value="odd"></option>
-      </datalist>
+      <input data-filter="tag" type="hidden" />
+      <div id="catalog-tag-select" class="starwind-select">
+        <button type="button" class="starwind-select-trigger">
+          <span data-slot="select-value">Any tag</span>
+        </button>
+        <div class="starwind-select-content" role="listbox">
+          <div role="option" data-value="all">Any tag</div>
+          <div role="option" data-value="even">even</div>
+          <div role="option" data-value="odd">odd</div>
+        </div>
+      </div>
       <select data-sort>
         <option value="rank">Rank</option>
         <option value="name">Name</option>
@@ -267,6 +310,10 @@ function select(name: "trust" | "setup"): HTMLSelectElement {
 
 function tagInput(): HTMLInputElement {
   return document.querySelector('[data-filter="tag"]') as HTMLInputElement;
+}
+
+function tagSelect(): HTMLElement {
+  return document.querySelector("#catalog-tag-select") as HTMLElement;
 }
 
 function sort(): HTMLSelectElement {

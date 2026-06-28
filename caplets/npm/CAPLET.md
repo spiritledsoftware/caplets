@@ -7,6 +7,8 @@ tags:
   - npm
   - packages
   - code
+catalog:
+  icon: https://raw.githubusercontent.com/npm/logos/master/npm%20logo/npm-logo-red.svg
 openapiEndpoint:
   specUrl: https://raw.githubusercontent.com/npm/api-documentation/main/api/base.yaml
   auth:
@@ -15,18 +17,17 @@ openapiEndpoint:
 
 # npm Registry
 
-Use this Caplet to inspect npm registry operations through npm's published
-OpenAPI description of the public registry API.
+Use this Caplet when the agent needs public npm package facts before choosing dependencies, checking versions, comparing package health, or validating registry metadata.
 
-## Usage Notes
+## First Workflow
 
-- Use `get_package` to fetch packument metadata for a package, including versions and dist-tags.
-- Use `get_package_version` when you need metadata for one exact published version.
-- Use `get_dist_tags` to read the package's current dist-tags without fetching the full packument.
-- Use `search_packages` to find packages by npm registry search text and ranking weights.
+1. Use `get_dist_tags` or `get_package_version` when the package name and version are known.
+2. Use `get_package` when you need release history, maintainers, versions, and package metadata together.
+3. Use `search_packages` for discovery, then inspect exact packages before recommending one.
+4. Pair package facts with local lockfile and test evidence before changing dependencies.
 
-## Examples
+## Operate Carefully
 
-- Fetch React packument metadata: `packageName: react`.
-- Fetch TypeScript version metadata: `packageName: typescript`, `version: 5.8.3`.
-- Search packages: `text: keywords:react hooks`, `size: 10`.
+- Registry metadata can be stale relative to the local lockfile. Check the project dependency state before editing.
+- Package search ranking is not a safety signal. Inspect maintainers, versions, and vulnerability context before suggesting adoption.
+- Use OSV for vulnerability lookups; this Caplet provides package metadata, not a complete security review.

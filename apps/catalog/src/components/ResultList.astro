@@ -1,7 +1,7 @@
 ---
 import HugeIcon from "./HugeIcon.astro";
 import type { CatalogSearchRow } from "../lib/search-row";
-import { AlertCircleIcon, catalogStatusIcons, Copy01Icon } from "../lib/status-icons";
+import { AlertCircleIcon, catalogStatusIcons, catalogTrustIcons, Copy01Icon } from "../lib/status-icons";
 
 type Props = {
   rows: CatalogSearchRow[];
@@ -37,14 +37,36 @@ const initialRows = rows.slice(0, 24);
             style={`--result-index:${index}`}
           >
             <div class="catalog-result-row__name" role="cell">
+              {row.icon ? (
+                <img
+                  class="catalog-result-row__icon"
+                  src={row.icon.url}
+                  alt=""
+                  width="32"
+                  height="32"
+                  loading="lazy"
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                />
+              ) : (
+                <span class="catalog-result-row__icon catalog-result-row__icon--fallback" aria-hidden="true">
+                  {row.name.slice(0, 1).toUpperCase()}
+                </span>
+              )}
               <div class="catalog-result-row__heading">
                 <a class="catalog-result-row__title" href={row.detailHref}>{row.name}</a>
-                <span class="catalog-result-row__trust">{row.trust}</span>
               </div>
             </div>
             <p class="catalog-result-row__description" role="cell">{row.description}</p>
             <div class="catalog-result-row__installs" role="cell">{row.installCountDisplay}</div>
             <div class="catalog-result-row__statuses" role="cell" aria-label="Status">
+              <span class={`catalog-result-row__trust catalog-result-row__trust--${row.trust}`} title={row.trust} aria-label={row.trust}>
+                <HugeIcon
+                  class="catalog-result-row__trust-icon size-[18px]"
+                  icon={catalogTrustIcons[row.trust] ?? AlertCircleIcon}
+                  label={row.trust}
+                />
+              </span>
               {row.statuses.map((status) => (
                 <span
                   class={`catalog-result-row__status catalog-result-row__status--${status.severity}`}

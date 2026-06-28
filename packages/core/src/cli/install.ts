@@ -29,6 +29,7 @@ import type { CatalogIndexingResult } from "../catalog-indexing/payload";
 import { catalogIndexingPayloadForLockEntry } from "../catalog-indexing/eligibility";
 import {
   catalogAuthRequiredFromFrontmatter,
+  catalogIconFromFrontmatter,
   catalogMutatesExternalStateFromFrontmatter,
   catalogProjectBindingRequiredFromFrontmatter,
   catalogSetupRequiredFromFrontmatter,
@@ -538,6 +539,13 @@ function catalogEntryForInstalledLockEntry(
       resolvedRevision: entry.source.resolvedRevision,
       indexedContentHash: entry.installedHash,
       contentMarkdown,
+      icon: catalogIconFromFrontmatter(frontmatter, {
+        id: entry.id,
+        source: source.source,
+        sourcePath,
+        trustLevel: "community",
+        resolvedRevision: entry.source.resolvedRevision,
+      }),
       tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
       useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
       avoidWhen: catalogStringFromFrontmatter(frontmatter.avoidWhen),

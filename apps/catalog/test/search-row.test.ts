@@ -11,6 +11,7 @@ describe("catalog search rows", () => {
         name: "ast-grep",
         description: "Search and rewrite code structurally.",
         tags: ["search", "code"],
+        icon: { type: "url", url: "https://example.com/ast-grep.svg" },
         setupRequired: true,
         projectBindingRequired: true,
         localControl: true,
@@ -31,6 +32,7 @@ describe("catalog search rows", () => {
       installCommandText: "caplets install spiritledsoftware/caplets ast-grep",
       installCommandPreview: "caplets install spiritledsoftware/caplets ast-grep",
       installCommandCopyable: true,
+      icon: { type: "url", url: "https://example.com/ast-grep.svg" },
     });
     expect(row.statuses.map((status) => status.code)).toEqual([
       "local_control",
@@ -76,6 +78,7 @@ function catalogRecord(input: {
   name: string;
   description: string;
   tags: string[];
+  icon?: CatalogEntryRecord["icon"] | undefined;
   trustLevel?: "official" | "community" | undefined;
   setupRequired?: boolean | undefined;
   authRequired?: boolean | undefined;
@@ -107,6 +110,7 @@ function catalogRecord(input: {
       source,
       sourcePath: `caplets/${input.id}/CAPLET.md`,
       trustLevel,
+      icon: input.icon,
       tags: input.tags,
       workflow: { kind: "mcp", label: "MCP server" },
       setupRequired: input.setupRequired,

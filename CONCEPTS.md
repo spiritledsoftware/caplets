@@ -34,6 +34,12 @@ A Caplet that is ready to live in the Prebuilt Caplets Catalog.
 
 Catalog-Grade Caplets include enough frontmatter, setup or verification guidance, auth handling, least-privilege scope notes, safety notes, Code Mode workflow guidance, and local/project/runtime metadata for agents to use them without rediscovering private assumptions from the author's environment.
 
+### Catalog Presentation Metadata
+
+Optional Caplet frontmatter that improves how a Caplet appears in public catalog surfaces without changing runtime behavior, trust, safety status, ranking, or install readiness.
+
+In v1, Catalog Presentation Metadata is limited to `catalog.icon`, which may identify a safe HTTPS icon URL or a bundled icon path relative to the Caplet directory.
+
 ### Caplets Lockfile
 
 A `caplets.lock.json` file that records installed catalog Caplets, their source repository, source path, destination, tracked source channel, resolved revision when available, content hash, and portability status.

@@ -6,6 +6,8 @@ tags:
   - browser
   - playwright
   - mcp
+catalog:
+  icon: https://playwright.dev/img/playwright-logo.svg
 mcpServer:
   command: npx
   args:
@@ -16,12 +18,17 @@ mcpServer:
 
 # Browser Use
 
-Use this Caplet when an agent needs a local browser to inspect pages, gather current web context, or exercise browser-based workflows.
+Use this Caplet when the agent needs the user's real local browser context: signed-in web apps, current tabs, extension-backed inspection, or browser workflows that a headless test browser cannot reproduce.
 
-## Setup
+## First Workflow
 
-Install Playwright browser dependencies for the runtime where this Caplet runs. If you need a specific browser executable or profile, create a private variant that uses environment variables such as `DEFAULT_BROWSER_EXECUTABLE_PATH` and `DEFAULT_BROWSER_USER_DATA_DIR`.
+1. Identify the target page, tab, or workflow before interacting.
+2. Read page state with navigation, screenshots, accessibility snapshots, or DOM inspection first.
+3. Keep interactions minimal and reversible until the user asks for a concrete action.
+4. Capture the evidence needed for the coding or debugging task, then stop.
 
-## Safety
+## Operate Carefully
 
-This is a local-control Caplet. Browser actions can sign in, submit forms, trigger purchases, or change account data. Prefer navigation, reading, and screenshots first; review mutating interactions before execution.
+- Browser actions can sign in, submit forms, trigger purchases, or change account data in the user's real browser.
+- Do not enter credentials, approve payments, submit destructive forms, or change account settings without explicit user direction.
+- Prefer Playwright for isolated frontend testing; use this Caplet when the real browser environment matters.

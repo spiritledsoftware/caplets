@@ -32,13 +32,30 @@ const detailCommand = hasReadableContent
     <span>{entry.id}</span>
   </nav>
   <header class="grid gap-6 py-5 md:grid-cols-[minmax(0,1fr)_minmax(340px,480px)]">
-    <div>
-      <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        <Badge variant={entry.trustLevel === "official" ? "success" : "warning"} size="sm">{entry.trustLevel}</Badge>
-        <span>{entry.source.repository}</span>
+    <div class="flex min-w-0 items-start gap-4">
+      {entry.icon ? (
+        <img
+          class="size-14 shrink-0 rounded-lg border border-border bg-white object-contain p-2"
+          src={entry.icon.url}
+          alt=""
+          width="56"
+          height="56"
+          decoding="async"
+          referrerpolicy="no-referrer"
+        />
+      ) : (
+        <span class="grid size-14 shrink-0 place-items-center rounded-lg border border-border bg-muted font-mono text-xl font-extrabold text-muted-foreground" aria-hidden="true">
+          {entry.name.slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant={entry.trustLevel === "official" ? "success" : "warning"} size="sm">{entry.trustLevel}</Badge>
+          <span>{entry.source.repository}</span>
+        </div>
+        <h1 class="mt-2 max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">{entry.name}</h1>
+        <p class="mt-2.5 max-w-[68ch] text-muted-foreground">{entry.description}</p>
       </div>
-      <h1 class="mt-2 max-w-[760px] text-[2rem] leading-[1.08] font-semibold text-balance tracking-[-0.025em] max-sm:text-[1.625rem]">{entry.name}</h1>
-      <p class="mt-2.5 max-w-[68ch] text-muted-foreground">{entry.description}</p>
     </div>
     <div class="grid content-start gap-2 self-start" aria-label="Install command">
       <span class="font-mono text-xs font-bold text-muted-foreground">Install</span>

@@ -1,5 +1,6 @@
 import {
   AlertCircleIcon,
+  BadgeCheckIcon,
   ComputerUserIcon,
   DatabaseSyncIcon,
   Key01Icon,
@@ -21,6 +22,11 @@ export const catalogStatusIcons: Record<CatalogSearchStatusCode, IconSvgObject> 
   project_binding_required: Link01Icon,
   readiness_unknown: AlertCircleIcon,
   vault_required: Key01Icon,
+};
+
+export const catalogTrustIcons: Record<string, IconSvgObject> = {
+  official: BadgeCheckIcon,
+  community: Shield01Icon,
 };
 
 export { AlertCircleIcon, Copy01Icon } from "@hugeicons/core-free-icons";

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  catalogIconReferenceFromValue,
   catalogEntryKey,
   createCatalogEntry,
   formatCatalogInstallCount,
   generateCatalogInstallCommand,
   normalizeCatalogSourceIdentity,
+  resolveCatalogIcon,
 } from "../src/catalog";
 
 describe("catalog model", () => {
@@ -151,5 +153,67 @@ describe("catalog model", () => {
     expect(formatCatalogInstallCount(0)).toBe("<10");
     expect(formatCatalogInstallCount(9)).toBe("<10");
     expect(formatCatalogInstallCount(1234)).toBe("1,234");
+  });
+
+  it("preserves normalized catalog icons on entries", () => {
+    const source = normalizeCatalogSourceIdentity("community/tools");
+    if (!source.eligible) throw new Error("expected source to be eligible");
+
+    const icon = resolveCatalogIcon({
+      id: "deploy",
+      source: source.source,
+      sourcePath: "caplets/deploy/CAPLET.md",
+      trustLevel: "community",
+      reference: catalogIconReferenceFromValue("https://example.com/icon.svg"),
+    });
+
+    const entry = createCatalogEntry({
+      id: "deploy",
+      name: "Deploy",
+      description: "Deploys a project.",
+      source: source.source,
+      sourcePath: "caplets/deploy/CAPLET.md",
+      trustLevel: "community",
+      icon,
+    });
+
+    expect(entry.icon).toEqual({ type: "url", url: "https://example.com/icon.svg" });
+  });
+
+  it("resolves bundled catalog icons without absolute paths", () => {
+    const source = normalizeCatalogSourceIdentity("community/tools");
+    if (!source.eligible) throw new Error("expected source to be eligible");
+
+    const icon = resolveCatalogIcon({
+      id: "deploy",
+      source: source.source,
+      sourcePath: "caplets/deploy/CAPLET.md",
+      trustLevel: "community",
+      resolvedRevision: "abc123",
+      reference: catalogIconReferenceFromValue("./icons/deploy.svg"),
+    });
+
+    expect(icon).toEqual({
+      type: "bundled",
+      path: "icons/deploy.svg",
+      url: "https://raw.githubusercontent.com/community/tools/abc123/caplets/deploy/icons/deploy.svg",
+    });
+    expect(JSON.stringify(icon)).not.toContain(process.cwd());
+  });
+
+  it("omits unsafe catalog icon references", () => {
+    const source = normalizeCatalogSourceIdentity("community/tools");
+    if (!source.eligible) throw new Error("expected source to be eligible");
+
+    expect(
+      resolveCatalogIcon({
+        id: "deploy",
+        source: source.source,
+        sourcePath: "caplets/deploy/CAPLET.md",
+        trustLevel: "community",
+        reference: catalogIconReferenceFromValue("../private/icon.svg"),
+      }),
+    ).toBeUndefined();
+    expect(catalogIconReferenceFromValue("https://token@example.com/icon.svg")).toBeUndefined();
   });
 });

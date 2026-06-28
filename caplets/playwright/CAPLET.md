@@ -7,6 +7,8 @@ tags:
   - testing
   - mcp
   - frontend
+catalog:
+  icon: https://playwright.dev/img/playwright-logo.svg
 setup:
   commands:
     - label: Install Playwright MCP
@@ -33,25 +35,17 @@ mcpServer:
 
 # Playwright
 
-Use this Caplet when the agent needs browser automation for frontend debugging, accessibility checks,
-visual inspection, or end-to-end testing workflows.
+Use this Caplet when the agent needs an isolated browser automation surface for frontend debugging, accessibility checks, visual inspection, or end-to-end testing workflows.
 
-## Good Fits
+## First Workflow
 
-- Reproduce frontend bugs in a real browser context.
-- Inspect pages, forms, navigation, and interactive states.
-- Validate user flows before or after UI changes.
-- Gather browser evidence for debugging layout, hydration, or client-side behavior.
+1. Open the target local or preview URL and wait for the page to settle.
+2. Inspect visible state, accessibility tree, console errors, network behavior, or screenshots before acting.
+3. Reproduce the smallest user flow that proves or disproves the issue.
+4. Capture concise evidence for the code change or review.
 
-## Setup
+## Operate Carefully
 
-This Caplet installs `@playwright/mcp@0.0.75` globally with npm, installs the Chromium browser
-runtime with `npx playwright install chromium`, then verifies `playwright-mcp --help`. Setup is
-explicit because browser automation needs both a stable MCP binary and a browser runtime before the
-hosted or local stdio server starts.
-
-Remove `--headless`, or set `PLAYWRIGHT_MCP_HEADLESS=false` in a custom MCP
-environment, to use a visible browser. For advanced settings, create a
-Playwright MCP JSON config file in your project (for example,
-`.caplets/playwright-mcp.json`) and add `--config .caplets/playwright-mcp.json`
-to the args.
+- This Caplet runs a browser runtime. Keep tests scoped to the target app and avoid unrelated browsing.
+- Prefer this over Browser Use for isolated test flows; use Browser Use only when the user's real signed-in browser context matters.
+- If browser setup is missing, treat the Caplet as unavailable until setup verification succeeds rather than improvising shell installs.

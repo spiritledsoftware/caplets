@@ -111,13 +111,14 @@
   gap: 0.55rem;
 }
 
-.catalog-filterbar label {
+.catalog-filterbar label,
+.catalog-filterbar > div {
   display: grid;
   gap: 0.3rem;
 }
 
-.catalog-filterbar select,
-.catalog-filterbar input {
+.catalog-filterbar label > select,
+.catalog-filterbar label > input {
   min-height: 2.75rem;
   width: 100%;
   border-color: var(--border);
@@ -127,13 +128,33 @@
   font-size: 0.9rem;
 }
 
-.catalog-filterbar input::placeholder {
+.catalog-tag-select {
+  min-width: 0;
+}
+
+.catalog-tag-select__content {
+  max-width: min(22rem, calc(100vw - 2rem));
+}
+
+.catalog-tag-select__content [data-slot="select-search-wrapper"] {
+  margin-bottom: 0.2rem;
+  border-color: var(--border);
+  background: color-mix(in oklch, var(--popover) 88%, var(--muted));
+}
+
+.catalog-tag-select__content [data-slot="select-search"] {
+  min-height: 2.25rem;
+  color: var(--popover-foreground);
+  font-size: 0.9rem;
+}
+
+.catalog-filterbar label > input::placeholder {
   color: var(--muted-foreground);
   opacity: 1;
 }
 
-.catalog-filterbar select:focus,
-.catalog-filterbar input:focus {
+.catalog-filterbar label > select:focus,
+.catalog-filterbar label > input:focus {
   border-color: var(--outline);
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--outline), transparent 70%);
 }
@@ -166,7 +187,7 @@
 .catalog-result-grid__header,
 .catalog-result-row {
   display: grid;
-  grid-template-columns: minmax(10rem, 1.1fr) minmax(14rem, 1.7fr) 5rem 7.5rem minmax(13rem, 1.2fr);
+  grid-template-columns: minmax(10rem, 1.1fr) minmax(14rem, 1.7fr) 5rem 9.25rem minmax(12rem, 1.2fr);
   gap: 0.75rem;
   align-items: center;
 }
@@ -214,6 +235,37 @@
   min-width: 0;
 }
 
+.catalog-result-row__name {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.catalog-result-row__icon {
+  box-sizing: border-box;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: #fff;
+  object-fit: contain;
+  padding: 0.25rem;
+}
+
+.catalog-result-row__icon--fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0;
+}
+
 .catalog-result-row__heading {
   display: flex;
   min-width: 0;
@@ -242,7 +294,6 @@
   outline-offset: 2px;
 }
 
-.catalog-result-row__trust,
 .catalog-result-row__installs {
   color: var(--muted-foreground);
   font-family: var(--font-mono);
@@ -251,11 +302,23 @@
 }
 
 .catalog-result-row__trust {
+  display: inline-flex;
   flex: 0 0 auto;
+  min-width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
   border-radius: 999px;
+  border: 1px solid transparent;
   background: var(--success);
   color: var(--success-foreground);
-  padding: 0.12rem 0.4rem;
+  padding-inline: 0.4rem;
+}
+
+.catalog-result-row__trust--community {
+  border-color: var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .catalog-result-row__description {
@@ -332,9 +395,11 @@
 
 .catalog-result-row__statuses {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.25rem;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .catalog-result-row__status {
@@ -420,6 +485,8 @@
 
   .catalog-result-row__statuses {
     grid-area: statuses;
+    flex-wrap: wrap;
+    overflow: visible;
     justify-self: end;
   }
 
@@ -447,11 +514,13 @@
     gap: 0.4rem;
   }
 
-  .catalog-filterbar label {
+  .catalog-filterbar label,
+  .catalog-filterbar > div {
     gap: 0.2rem;
   }
 
-  .catalog-filterbar label > span {
+  .catalog-filterbar label > span,
+  .catalog-filterbar > div > span {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -460,8 +529,9 @@
     white-space: nowrap;
   }
 
-  .catalog-filterbar select,
-  .catalog-filterbar input {
+  .catalog-filterbar label > select,
+  .catalog-filterbar label > input,
+  .catalog-tag-select [data-slot="select-trigger"] {
     font-size: 0.84rem;
   }
 
@@ -488,7 +558,6 @@
 
   .catalog-result-row__heading {
     align-items: flex-start;
-    flex-direction: column;
   }
 
   .catalog-result-row__title {
