@@ -84,6 +84,18 @@ describe("virtual catalog results", () => {
     expect(icon.getAttribute("loading")).toBe("lazy");
   });
 
+  it("reuses row nodes that remain visible while scrolling", async () => {
+    mountSearchShell(manyCatalogSearchRows(200));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    initVirtualCatalogSearch();
+    const firstRow = resultRows()[0];
+
+    window.scrollTo({ top: 72 });
+
+    expect(resultRows()).toContain(firstRow);
+  });
+
   it("hydrates filters from the url and resets to the first row", async () => {
     mountSearchShell(manyCatalogSearchRows(80), "http://localhost:3000/?q=caplet-70");
 

@@ -56,6 +56,7 @@ export function initVirtualCatalogSearch(
   const rows = parseRows(index.textContent ?? "[]");
   let visibleRows = [...rows];
   let lastFocusedControl: HTMLElement | null = null;
+  const renderedRows = new Map<string, HTMLElement>();
   const virtualizer = new Virtualizer<Window, HTMLElement>({
     count: visibleRows.length,
     getScrollElement: () => window,
@@ -128,7 +129,36 @@ export function initVirtualCatalogSearch(
   function renderVirtualRows(): void {
     const items = virtualizer.getVirtualItems();
     resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? estimateRowHeight() : 1)}px`;
-    resultListEl.replaceChildren(...items.map((item) => renderRow(item, visibleRows[item.index])));
+    const nextKeys = new Set<string>();
+    let cursor: ChildNode | null = resultListEl.firstChild;
+
+    for (const item of items) {
+      const row = visibleRows[item.index];
+      const key = virtualRowKey(item, row);
+      nextKeys.add(key);
+
+      let element = renderedRows.get(key);
+      if (!element) {
+        element = renderRow(item, row);
+        renderedRows.set(key, element);
+      } else {
+        updateRowPosition(element, item, row);
+      }
+
+      if (element !== cursor) {
+        resultListEl.insertBefore(element, cursor);
+      }
+      cursor = element.nextSibling;
+    }
+
+    for (const element of Array.from(
+      resultListEl.querySelectorAll<HTMLElement>("[data-result-row]"),
+    )) {
+      const key = element.dataset.virtualKey;
+      if (key && nextKeys.has(key)) continue;
+      element.remove();
+      if (key) renderedRows.delete(key);
+    }
   }
 
   function navigateFromRowClick(event: MouseEvent): void {
@@ -249,10 +279,7 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
   element.className = "catalog-result-row";
   element.role = "row";
   element.dataset.resultRow = "";
-  element.dataset.detailHref = row?.detailHref ?? "";
-  element.dataset.index = String(item.index);
-  element.setAttribute("aria-rowindex", String(item.index + 2));
-  element.style.transform = `translateY(${item.start}px)`;
+  updateRowPosition(element, item, row);
   if (!row) return element;
   element.innerHTML = `
     <div class="catalog-result-row__name" role="cell">
@@ -276,6 +303,22 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
     </div>
   `;
   return element;
+}
+
+function updateRowPosition(
+  element: HTMLElement,
+  item: VirtualItem,
+  row: CatalogSearchRow | undefined,
+): void {
+  element.dataset.virtualKey = virtualRowKey(item, row);
+  element.dataset.detailHref = row?.detailHref ?? "";
+  element.dataset.index = String(item.index);
+  element.setAttribute("aria-rowindex", String(item.index + 2));
+  element.style.transform = `translateY(${item.start}px)`;
+}
+
+function virtualRowKey(item: VirtualItem, row: CatalogSearchRow | undefined): string {
+  return row?.id ?? String(item.key);
 }
 
 function renderCapletIcon(row: CatalogSearchRow): string {
