@@ -31,7 +31,9 @@ vi.mock("@opencode-ai/plugin", () => ({
         options,
         optional: () => ({ type: "union", options, optional: true }),
       }),
-      array: () => ({ min: () => ({ optional: () => ({ type: "array", optional: true }) }) }),
+      array: (item: unknown) => ({
+        min: () => ({ optional: () => ({ type: "array", item, optional: true }) }),
+      }),
     },
   }),
 }));
@@ -184,7 +186,10 @@ describe("@caplets/opencode", () => {
           promptGuidance: ["Use caplets__status__ping."],
           inputSchema: {
             type: "object",
-            properties: { verbose: { type: "boolean" } },
+            properties: {
+              verbose: { type: "boolean" },
+              tags: { type: "array", items: { type: "string" } },
+            },
           },
         },
       ],
@@ -200,7 +205,10 @@ describe("@caplets/opencode", () => {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
-    expect(directTool.args).toEqual({ verbose: { type: "boolean" } });
+    expect(directTool.args).toMatchObject({
+      verbose: { type: "boolean" },
+      tags: { type: "array", item: { type: "string" }, optional: true },
+    });
     await directTool.execute({ verbose: true }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("status__ping", { verbose: true });
   });

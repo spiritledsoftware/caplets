@@ -1,6 +1,8 @@
 import { tool } from "@opencode-ai/plugin";
 import { operations } from "@caplets/core/generated-tool-input-schema";
 
+type OpenCodeSchema = Parameters<typeof tool>[0]["args"][string];
+
 export function capletsOpenCodeArgs(operationNames: string[] = [...operations]) {
   const enumValues = operationNames.length > 0 ? operationNames : [...operations];
   return {
@@ -52,28 +54,47 @@ export function capletsOpenCodeJsonSchemaArgs(schema: Record<string, unknown> | 
     return {};
   }
   return Object.fromEntries(
-    Object.entries(properties).map(([key, value]) => [key, jsonSchemaPropertyToOpenCode(value)]),
+    Object.entries(properties).map(([key, value]) => [
+      key,
+      jsonSchemaPropertyToOpenCode(value, { optional: true }),
+    ]),
   );
 }
 
-function jsonSchemaPropertyToOpenCode(value: unknown) {
+function jsonSchemaPropertyToOpenCode(
+  value: unknown,
+  options: { optional: boolean },
+): OpenCodeSchema {
   if (!value || typeof value !== "object" || Array.isArray(value)) return tool.schema.unknown();
   const schema = value as Record<string, unknown>;
   if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "string")) {
     return tool.schema.enum(schema.enum as [string, ...string[]]);
   }
-  if (schema.type === "string") return tool.schema.string().optional();
+  if (schema.type === "string") {
+    const stringSchema = tool.schema.string();
+    return options.optional ? stringSchema.optional() : stringSchema;
+  }
   if (schema.type === "number" || schema.type === "integer") {
-    return tool.schema.number().int().positive().optional();
+    const numberSchema = tool.schema.number().int().positive();
+    return options.optional ? numberSchema.optional() : numberSchema;
   }
   if (schema.type === "boolean" && "boolean" in tool.schema) {
-    return (tool.schema as typeof tool.schema & { boolean: () => unknown }).boolean();
+    return (tool.schema as typeof tool.schema & { boolean: () => OpenCodeSchema }).boolean();
   }
   if (schema.type === "object") {
-    return tool.schema.record(tool.schema.string(), tool.schema.unknown()).optional();
+    const objectSchema = tool.schema.record(tool.schema.string(), tool.schema.unknown());
+    return options.optional ? objectSchema.optional() : objectSchema;
   }
   if (schema.type === "array") {
-    return tool.schema.array(tool.schema.unknown()).min(1).optional();
+    const itemSchema =
+      schema.items &&
+      typeof schema.items === "object" &&
+      !Array.isArray(schema.items) &&
+      Object.keys(schema.items).length > 0
+        ? jsonSchemaPropertyToOpenCode(schema.items, { optional: false })
+        : tool.schema.string();
+    const arraySchema = tool.schema.array(itemSchema).min(1);
+    return options.optional ? arraySchema.optional() : arraySchema;
   }
   return tool.schema.unknown();
 }
