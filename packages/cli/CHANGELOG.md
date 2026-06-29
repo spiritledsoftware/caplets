@@ -1,5 +1,13 @@
 # caplets
 
+## 0.25.1
+
+### Patch Changes
+
+- e517938: Add privacy-gated anonymous telemetry, Sentry source-map uploads for runtime packages, and observability wiring for the public sites.
+- Updated dependencies [e517938]
+  - @caplets/core@0.31.1
+
 ## 0.25.0
 
 ### Minor Changes
