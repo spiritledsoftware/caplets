@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.32.0
+
+### Minor Changes
+
+- b371d0b: Add multi-backend Markdown Caplet files that expand plural backend maps into parent-scoped runtime child handles.
+
 ## 0.31.1
 
 ### Patch Changes
