@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadCapletFilesFromMap } from "../src/caplet-files";
+import { CapletsError } from "../src/errors";
 
 describe("in-memory Caplet files", () => {
   it("loads directory CAPLET.md files from an in-memory map", () => {
@@ -293,6 +294,46 @@ mcpServers:
         ],
       }),
     ).toThrow(/invalid frontmatter/);
+  });
+
+  it("rejects duplicate child ids across plural backend maps", () => {
+    try {
+      loadCapletFilesFromMap({
+        files: [
+          {
+            path: "workspace/CAPLET.md",
+            content: `---
+name: Workspace
+description: Invalid duplicate child IDs.
+auth:
+  type: none
+googleDiscoveryApis:
+  api:
+    name: Google API
+    description: Search Google metadata.
+    discoveryPath: ./google.discovery.json
+httpApis:
+  api:
+    name: HTTP API
+    description: Search HTTP metadata.
+    baseUrl: https://api.example.com
+    actions:
+      list:
+        method: GET
+        path: /items
+---
+`,
+          },
+        ],
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(CapletsError);
+      expect(JSON.stringify((error as CapletsError).details)).toContain(
+        "plural backend child ID api is already used by googleDiscoveryApis",
+      );
+      return;
+    }
+    throw new Error("Expected duplicate plural child IDs to be rejected");
   });
 
   it("rejects actions as a plural cliTools child id", () => {

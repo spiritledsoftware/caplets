@@ -884,6 +884,19 @@ export const capletFileSchema = z
       frontmatter.cliTools && !cliToolsIsSingular ? "cliTools" : undefined,
       frontmatter.capletSets ? "capletSets" : undefined,
     ].filter((family): family is string => Boolean(family));
+    const childIdFamilies = new Map<string, string>();
+    for (const { family, childId } of pluralBackendChildIds(frontmatter, cliToolsIsSingular)) {
+      const previousFamily = childIdFamilies.get(childId);
+      if (previousFamily) {
+        ctx.addIssue({
+          code: "custom",
+          path: [family, childId],
+          message: `plural backend child ID ${childId} is already used by ${previousFamily}; child IDs must be unique across plural backend maps`,
+        });
+        continue;
+      }
+      childIdFamilies.set(childId, family);
+    }
     if (singularBackendCount > 0 && pluralBackendFamilies.length > 0) {
       ctx.addIssue({
         code: "custom",
@@ -933,6 +946,30 @@ export const capletFileSchema = z
   });
 
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
+
+function pluralBackendChildIds(
+  frontmatter: CapletFileFrontmatter,
+  cliToolsIsSingular: boolean,
+): Array<{ family: string; childId: string }> {
+  const entries: Array<{ family: string; backends: Record<string, unknown> | undefined }> = [
+    { family: "mcpServers", backends: frontmatter.mcpServers },
+    { family: "openapiEndpoints", backends: frontmatter.openapiEndpoints },
+    { family: "googleDiscoveryApis", backends: frontmatter.googleDiscoveryApis },
+    { family: "graphqlEndpoints", backends: frontmatter.graphqlEndpoints },
+    { family: "httpApis", backends: frontmatter.httpApis },
+    {
+      family: "cliTools",
+      backends:
+        frontmatter.cliTools && !cliToolsIsSingular
+          ? (frontmatter.cliTools as Record<string, unknown>)
+          : undefined,
+    },
+    { family: "capletSets", backends: frontmatter.capletSets },
+  ];
+  return entries.flatMap(({ family, backends }) =>
+    Object.keys(backends ?? {}).map((childId) => ({ family, childId })),
+  );
+}
 
 type CapletFileBackendFamily =
   | "mcp"
