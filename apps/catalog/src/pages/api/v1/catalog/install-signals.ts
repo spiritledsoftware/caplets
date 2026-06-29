@@ -42,7 +42,7 @@ export async function POST(context: APIContext): Promise<Response> {
       },
     );
   } catch (error) {
-    await captureCatalogServerError(error, env);
+    scheduleCatalogServerError(context, error, env);
     return jsonResponse(
       {
         ok: false,
@@ -51,4 +51,19 @@ export async function POST(context: APIContext): Promise<Response> {
       { status: 500, headers: { "cache-control": "no-store" } },
     );
   }
+}
+
+function scheduleCatalogServerError(
+  context: APIContext,
+  error: unknown,
+  env: ReturnType<typeof getCatalogEnv>,
+): void {
+  const pending = captureCatalogServerError(error, env).catch(() => undefined);
+  const waitUntil = (context.locals as { runtime?: { ctx?: { waitUntil?: unknown } } }).runtime?.ctx
+    ?.waitUntil;
+  if (typeof waitUntil === "function") {
+    waitUntil(pending);
+    return;
+  }
+  void pending;
 }

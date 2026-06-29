@@ -4,7 +4,6 @@ import {
   attributionMarkerForSurface,
   buildWebEvent,
   bucketResultCount,
-  bucketScrollDepth,
   bucketSearchTerm,
   classifyRouteFamily,
   filterPostHogProperties,
@@ -19,9 +18,11 @@ describe("web observability contract", () => {
         properties: {
           surface: "catalog",
           route_family: "catalog",
+          page_family: "catalog",
+          section_category: "search",
           search_length_bucket: bucketSearchTerm("google docs"),
           result_count_bucket: bucketResultCount(4),
-          scroll_depth_bucket: bucketScrollDepth(80),
+          filter_category: "unknown",
           empty_state_category: "unknown",
         },
       }),
@@ -30,12 +31,44 @@ describe("web observability contract", () => {
       properties: {
         surface: "catalog",
         route_family: "catalog",
+        page_family: "catalog",
+        section_category: "search",
         search_length_bucket: "medium",
         result_count_bucket: "few",
-        scroll_depth_bucket: "gte_75",
+        filter_category: "unknown",
         empty_state_category: "unknown",
       },
     });
+  });
+
+  it("rejects event-specific property mixes at the shared boundary", () => {
+    expect(() =>
+      buildWebEvent({
+        name: "caplets_catalog_search",
+        properties: {
+          surface: "catalog",
+          route_family: "catalog",
+          page_family: "catalog",
+          section_category: "search",
+          cta_category: "install",
+        } as never,
+      }),
+    ).toThrow(/web telemetry property .* is not allowed/u);
+
+    expect(() =>
+      buildWebEvent({
+        name: "caplets_catalog_search",
+        properties: {
+          surface: "catalog",
+          route_family: "catalog",
+          page_family: "catalog",
+          section_category: "search",
+          result_count_bucket: "few",
+          filter_category: "unknown",
+          empty_state_category: "unknown",
+        } as never,
+      }),
+    ).toThrow(/missing web telemetry property: search_length_bucket/u);
   });
 
   it("rejects raw URLs, selectors, and unknown web properties", () => {
@@ -62,8 +95,16 @@ describe("web observability contract", () => {
   it("creates short nonsecret install attribution markers", () => {
     expect(attributionMarkerForSurface("landing")).toBe("landing_install");
     expect(attributedInstallCommand("pnpm dlx caplets setup", "docs")).toBe(
-      "CAPLETS_INSTALL_ATTRIBUTION=docs_install pnpm dlx caplets setup",
+      "pnpm dlx caplets telemetry attribution docs_install\npnpm dlx caplets setup",
     );
+    expect(
+      attributedInstallCommand("caplets install spiritledsoftware/caplets osv", "catalog"),
+    ).toBe(
+      "caplets telemetry attribution catalog_install\ncaplets install spiritledsoftware/caplets osv",
+    );
+    expect(
+      attributedInstallCommand("caplets telemetry attribution docs_install\ncaplets setup", "docs"),
+    ).toBe("caplets telemetry attribution docs_install\ncaplets setup");
   });
 
   it("filters PostHog SDK properties down to allowed categories", () => {
@@ -78,7 +119,7 @@ describe("web observability contract", () => {
     ).toEqual({ surface: "landing", route_family: "home" });
   });
 
-  it("filters Sentry browser events without user, request body, analytics id, or extra payloads", () => {
+  it("filters Sentry browser events without raw messages, urls, user, request, or extra payloads", () => {
     expect(
       filterSentryBrowserEvent({
         release: "landing@1",
@@ -91,13 +132,40 @@ describe("web observability contract", () => {
           route_family: "home",
           unsafe: "https://example.com/raw",
         },
-        exception: { values: [{ type: "Error", stacktrace: { frames: [] } }] },
+        exception: {
+          values: [
+            {
+              type: "Error",
+              value: "fetch failed for https://example.com/?token=secret",
+              stacktrace: {
+                frames: [
+                  {
+                    filename: "https://caplets.ai/assets/app.js?token=secret",
+                    function: "handleClick",
+                    lineno: 12,
+                    colno: 3,
+                    vars: { token: "secret" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
       }),
     ).toEqual({
       release: "landing@1",
       environment: "production",
       tags: { surface: "landing", route_family: "home" },
-      exception: { values: [{ type: "Error", stacktrace: { frames: [] } }] },
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: [{ filename: "app.js", function: "handleClick", lineno: 12, colno: 3 }],
+            },
+          },
+        ],
+      },
     });
   });
 });

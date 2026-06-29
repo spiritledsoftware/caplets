@@ -5,6 +5,8 @@ export {
 } from "./context";
 export {
   consumeTelemetryAttribution,
+  acknowledgeTelemetryAttributionClaim,
+  claimTelemetryAttribution,
   deleteTelemetryAttribution,
   deleteTelemetryIdentity,
   readTelemetryAttribution,
@@ -13,6 +15,7 @@ export {
   readTelemetryNotice,
   recordTelemetryDrop,
   recordTelemetryNoticeShown,
+  releaseTelemetryAttributionClaim,
   rotateTelemetryIdentity,
   telemetryAttributionPath,
   telemetryDeliveryHealthPath,
@@ -21,6 +24,7 @@ export {
   telemetryStateDir,
   writeTelemetryAttribution,
   type TelemetryAttribution,
+  type TelemetryAttributionClaim,
   type TelemetryAttributionIntent,
   type TelemetryAttributionMarker,
   type TelemetryAttributionSource,

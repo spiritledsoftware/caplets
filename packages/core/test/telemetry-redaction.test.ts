@@ -83,4 +83,38 @@ describe("telemetry privacy guard", () => {
       },
     });
   });
+
+  it("does not preserve traversal inside workspace-looking frame paths", () => {
+    const event = stripSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: [
+                {
+                  filename: "/tmp/packages/../../secret/config.ts",
+                  function: "loadConfig",
+                  lineno: 7,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(JSON.stringify(event)).not.toContain("packages/../../secret");
+    expect(event).toMatchObject({
+      exception: {
+        values: [
+          {
+            stacktrace: {
+              frames: [{ filename: "config.ts", function: "loadConfig", lineno: 7 }],
+            },
+          },
+        ],
+      },
+    });
+  });
 });

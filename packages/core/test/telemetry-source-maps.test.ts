@@ -31,9 +31,10 @@ describe("Sentry source-map readiness", () => {
     for (const config of [coreConfig, cliConfig, opencodeConfig, piConfig]) {
       expect(config).toContain("runtimeSentryPlugins");
       expect(config).toContain("sentryConfigured");
+      expect(config).toMatch(/sourcemap:\s*sentryConfigured\(\)/u);
     }
-    expect(coreConfig).toContain('runtimeSentryPlugins("core", { disable: "disable-upload" })');
     expect(coreConfig).toContain('runtimeSentryPlugins("core")');
+    expect(coreConfig).not.toContain('disable: "disable-upload"');
     expect(cliConfig).toContain('runtimeSentryPlugins("cli")');
     expect(opencodeConfig).toContain('runtimeSentryPlugins("opencode")');
     expect(piConfig).toContain('runtimeSentryPlugins("pi")');

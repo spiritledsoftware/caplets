@@ -119,6 +119,63 @@ describe("telemetry runtime helpers", () => {
     expect(readTelemetryAttribution({ stateDir })).toBeUndefined();
   });
 
+  it("keeps stored install attribution when product delivery fails", async () => {
+    const stateDir = tempRoot();
+    writeTelemetryAttribution({ stateDir, marker: "catalog_install" });
+
+    await expect(
+      captureRuntimeTelemetryEvent(
+        {
+          config: parseConfig({ telemetry: true }),
+          env: { CI: "true" },
+          stateDir,
+          surface: "cli",
+          visibility: "hidden",
+          dispatcher: {
+            capture: vi.fn().mockRejectedValue(new Error("send failed")),
+            shutdown: vi.fn(),
+          },
+        },
+        "caplets_cli_command",
+        {
+          command_family: "setup",
+          outcome: "success",
+        },
+      ),
+    ).rejects.toThrow(/send failed/u);
+
+    expect(readTelemetryAttribution({ stateDir })).toMatchObject({ source: "catalog" });
+  });
+
+  it("attaches env install attribution to only one successful runtime event", async () => {
+    const stateDir = tempRoot();
+    const capture = vi.fn();
+    const env = { CI: "true", CAPLETS_INSTALL_ATTRIBUTION: "landing_install" };
+    const context = {
+      config: parseConfig({ telemetry: true }),
+      env,
+      stateDir,
+      surface: "cli" as const,
+      visibility: "hidden" as const,
+      dispatcher: { capture, shutdown: vi.fn() },
+    };
+
+    await captureRuntimeTelemetryEvent(context, "caplets_cli_command", {
+      command_family: "setup",
+      outcome: "success",
+    });
+    await captureRuntimeTelemetryEvent(context, "caplets_cli_command", {
+      command_family: "setup",
+      outcome: "success",
+    });
+
+    expect(capture.mock.calls[0]?.[1].properties).toMatchObject({
+      attribution_source: "landing",
+      first_activation: true,
+    });
+    expect(capture.mock.calls[1]?.[1].properties).not.toHaveProperty("attribution_source");
+  });
+
   it("does not leak install attribution through local telemetry debug output", async () => {
     const stateDir = tempRoot();
     const sink = new TelemetryDebugSink();

@@ -4,6 +4,7 @@ import {
   classifyRouteFamily,
   filterSentryBrowserEvent,
   type WebEventName,
+  type WebEventPropertySet,
   type WebEventProperties,
 } from "@caplets/web-observability";
 import posthog from "posthog-js";
@@ -69,14 +70,17 @@ document.addEventListener("click", (event) => {
           ? "external"
           : "unknown",
     outbound_action_category: category,
-    install_intent_category: installIntent ? "copy" : "unknown",
+    ...(installIntent ? { install_intent_category: "copy" as const } : {}),
   });
 });
 
-function captureDocsEvent(name: WebEventName, properties: WebEventProperties): void {
+function captureDocsEvent(name: WebEventName, properties: WebEventPropertySet): void {
   if (!posthogEnabled) return;
   try {
-    const event = buildWebEvent({ name, properties: { surface, ...properties } });
+    const event = buildWebEvent({
+      name,
+      properties: { surface, ...properties } as WebEventProperties<typeof name>,
+    });
     posthog.capture(event.name, {
       ...event.properties,
       $process_person_profile: false,
@@ -87,7 +91,7 @@ function captureDocsEvent(name: WebEventName, properties: WebEventProperties): v
   }
 }
 
-function referrerCategory(referrer: string): WebEventProperties["referrer_category"] {
+function referrerCategory(referrer: string): WebEventPropertySet["referrer_category"] {
   if (!referrer) return "direct";
   try {
     const host = new URL(referrer).hostname;
@@ -105,12 +109,14 @@ function referrerCategory(referrer: string): WebEventProperties["referrer_catego
 
 function linkCategory(
   link: HTMLAnchorElement,
-): NonNullable<WebEventProperties["outbound_action_category"]> {
+): NonNullable<WebEventPropertySet["outbound_action_category"]> {
   const href = link.getAttribute("href") ?? "";
   if (href.includes("github.com")) return "github";
   if (href.includes("npmjs.com")) return "npm";
+  if (href === "/caplets" || href.startsWith("/caplets/") || href.includes("catalog.caplets")) {
+    return "catalog";
+  }
   if (href.startsWith("/") || href.includes("docs.caplets")) return "docs";
-  if (href.includes("catalog.caplets")) return "catalog";
   return "unknown";
 }
 

@@ -18,7 +18,9 @@ import { TelemetryDebugSink } from "./debug";
 import { createTelemetryDispatcher, type TelemetryDispatcher } from "./providers";
 import { resolveTelemetryState } from "./context";
 import {
-  consumeTelemetryAttribution,
+  acknowledgeTelemetryAttributionClaim,
+  claimTelemetryAttribution,
+  releaseTelemetryAttributionClaim,
   type TelemetryAttribution,
   readTelemetryIdentity,
   type TelemetrySurface,
@@ -68,29 +70,41 @@ export async function captureRuntimeTelemetryEvent(
   }
   const identity =
     state.identity ?? readTelemetryIdentity({ stateDir: context.stateDir, create: false });
-  const attribution =
+  const attributionClaim =
     state.status === "enabled" && properties.outcome === "success"
-      ? consumeTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
+      ? claimTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
       : undefined;
-  const event = buildProductTelemetryEvent({
-    name,
-    distinctId: identity.id,
-    properties: {
-      package: "@caplets/core",
-      version: packageJsonVersion,
-      surface: context.surface,
-      runtime_mode: context.runtimeMode ?? "unknown",
-      execution_context: state.executionContext,
-      ...(context.integration ? { integration: context.integration } : {}),
-      ...properties,
-      ...attributionTelemetryProperties(attribution),
-    },
-  });
-  if (state.status === "debug") {
-    context.debugSink?.capture("debug", event);
-    return;
+  try {
+    const event = buildProductTelemetryEvent({
+      name,
+      distinctId: identity.id,
+      properties: {
+        package: "@caplets/core",
+        version: packageJsonVersion,
+        surface: context.surface,
+        runtime_mode: context.runtimeMode ?? "unknown",
+        execution_context: state.executionContext,
+        ...(context.integration ? { integration: context.integration } : {}),
+        ...properties,
+        ...attributionTelemetryProperties(attributionClaim?.attribution),
+      },
+    });
+    if (state.status === "debug") {
+      context.debugSink?.capture("debug", event);
+      return;
+    }
+    await context.dispatcher.capture(state, event);
+    if (attributionClaim) {
+      acknowledgeTelemetryAttributionClaim({
+        stateDir: context.stateDir,
+        env: context.env,
+        claim: attributionClaim,
+      });
+    }
+  } catch (error) {
+    if (attributionClaim) releaseTelemetryAttributionClaim(attributionClaim);
+    throw error;
   }
-  await context.dispatcher.capture(state, event);
 }
 
 export async function captureRuntimeReliabilityEvent(
@@ -119,7 +133,7 @@ export async function captureRuntimeReliabilityEvent(
       execution_context: state.executionContext,
       ...(context.integration ? { integration: context.integration } : {}),
       os_family: platform(),
-      arch: arch(),
+      arch: architectureForTelemetry(),
       node_major: Number(process.versions.node.split(".")[0] ?? 0),
       ...properties,
     },
@@ -130,6 +144,29 @@ export async function captureRuntimeReliabilityEvent(
     return;
   }
   await context.dispatcher.capture(state, event);
+}
+
+const TELEMETRY_ARCHITECTURES = new Set([
+  "arm",
+  "arm64",
+  "ia32",
+  "loong64",
+  "mips",
+  "mipsel",
+  "ppc",
+  "ppc64",
+  "riscv64",
+  "s390",
+  "s390x",
+  "x64",
+  "x32",
+]);
+
+function architectureForTelemetry(): NonNullable<TelemetryProperties["arch"]> {
+  const value = arch();
+  return TELEMETRY_ARCHITECTURES.has(value)
+    ? (value as NonNullable<TelemetryProperties["arch"]>)
+    : "unknown";
 }
 
 export function attributionTelemetryProperties(

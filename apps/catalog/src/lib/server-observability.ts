@@ -15,9 +15,12 @@ export async function captureCatalogServerError(error: unknown, env: CatalogEnv)
 
 function sentryEnvelopeUrl(dsn: string): string {
   const url = new URL(dsn);
-  const projectId = url.pathname.split("/").filter(Boolean).at(-1);
+  const pathSegments = url.pathname.split("/").filter(Boolean);
+  const projectId = pathSegments.at(-1);
   if (!projectId) throw new Error("invalid catalog worker Sentry DSN");
-  return `${url.protocol}//${url.host}/api/${projectId}/envelope/`;
+  const pathPrefix = pathSegments.slice(0, -1).join("/");
+  const envelopePath = `${pathPrefix ? `/${pathPrefix}` : ""}/api/${projectId}/envelope/`;
+  return `${url.protocol}//${url.host}${envelopePath}`;
 }
 
 function sentryEnvelopeBody(error: unknown, env: CatalogEnv): string {

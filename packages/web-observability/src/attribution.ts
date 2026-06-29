@@ -11,6 +11,19 @@ export function attributionMarkerForSurface(surface: WebSurface): WebAttribution
 export function attributedInstallCommand(command: string, surface: WebSurface): string {
   const trimmed = command.trim();
   if (!trimmed) return trimmed;
-  if (trimmed.includes("CAPLETS_INSTALL_ATTRIBUTION=")) return trimmed;
-  return `CAPLETS_INSTALL_ATTRIBUTION=${attributionMarkerForSurface(surface)} ${trimmed}`;
+  if (
+    trimmed.includes(" telemetry attribution ") ||
+    trimmed.includes("CAPLETS_INSTALL_ATTRIBUTION=")
+  ) {
+    return trimmed;
+  }
+  const runner = capletsRunnerForCommand(trimmed);
+  return `${runner} telemetry attribution ${attributionMarkerForSurface(surface)}\n${trimmed}`;
+}
+
+function capletsRunnerForCommand(command: string): string {
+  const words = command.split(/\s+/u);
+  const capletsIndex = words.indexOf("caplets");
+  if (capletsIndex <= 0) return "caplets";
+  return words.slice(0, capletsIndex + 1).join(" ");
 }

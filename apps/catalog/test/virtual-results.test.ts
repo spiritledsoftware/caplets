@@ -1,8 +1,27 @@
 // @vitest-environment happy-dom
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { catalogSearchRowFixture, manyCatalogSearchRows } from "./fixtures/catalog-search-rows";
 import type { CatalogSearchRow } from "../src/lib/search-row";
+
+const captureCatalogSearch = vi.hoisted(() => vi.fn());
+const captureCatalogResultOpen = vi.hoisted(() => vi.fn());
+const captureCatalogInstallCopy = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/scripts/observability", () => ({
+  attributedCatalogCommand: (command: string) =>
+    `caplets telemetry attribution catalog_install\n${command}`,
+  captureCatalogInstallCopy,
+  captureCatalogResultOpen,
+  captureCatalogSearch,
+}));
+
+const activeSearches: Array<{ destroy(): void }> = [];
+
+function trackSearch<T extends { destroy(): void } | undefined>(search: T): T {
+  if (search) activeSearches.push(search);
+  return search;
+}
 
 describe("virtual catalog results", () => {
   beforeEach(() => {
@@ -36,13 +55,28 @@ describe("virtual catalog results", () => {
         writeText: vi.fn().mockResolvedValue(undefined),
       },
     });
+    captureCatalogSearch.mockClear();
+    captureCatalogResultOpen.mockClear();
+    captureCatalogInstallCopy.mockClear();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    for (const search of activeSearches.splice(0)) {
+      try {
+        search.destroy();
+      } catch {
+        // Tests may explicitly destroy a search instance before cleanup.
+      }
+    }
+    vi.useRealTimers();
   });
 
   it("renders a bounded row window for large result sets", async () => {
     mountSearchShell(manyCatalogSearchRows(10_000));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    const search = initVirtualCatalogSearch();
+    const search = trackSearch(initVirtualCatalogSearch());
 
     expect(search).toBeDefined();
     expect(document.querySelector("[data-result-status]")?.textContent).toBe("10000 Caplets");
@@ -55,7 +89,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(200));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     input().value = "Caplet 199";
     input().dispatchEvent(new Event("input", { bubbles: true }));
 
@@ -63,6 +97,51 @@ describe("virtual catalog results", () => {
     expect(resultRows().map((row) => row.textContent ?? "")).toEqual([
       expect.stringContaining("Caplet 199"),
     ]);
+  });
+
+  it("debounces search telemetry for typed queries", async () => {
+    vi.useFakeTimers();
+    mountSearchShell(manyCatalogSearchRows(200));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    trackSearch(initVirtualCatalogSearch());
+    captureCatalogSearch.mockClear();
+
+    input().value = "c";
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+    input().value = "ca";
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+    input().value = "caplet 19";
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(captureCatalogSearch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(449);
+    expect(captureCatalogSearch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(captureCatalogSearch).toHaveBeenCalledTimes(1);
+    expect(captureCatalogSearch).toHaveBeenCalledWith({
+      query: "caplet 19",
+      resultCount: 11,
+      filterChanged: undefined,
+    });
+  });
+
+  it("emits one search telemetry event for paired filter input and change events", async () => {
+    mountSearchShell(manyCatalogSearchRows(20));
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    trackSearch(initVirtualCatalogSearch());
+    captureCatalogSearch.mockClear();
+
+    select("trust").value = "official";
+    select("trust").dispatchEvent(new Event("input", { bubbles: true }));
+    select("trust").dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(captureCatalogSearch).toHaveBeenCalledTimes(1);
+    expect(captureCatalogSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ filterChanged: "trust" }),
+    );
   });
 
   it("renders catalog icons with remote image privacy controls", async () => {
@@ -75,7 +154,7 @@ describe("virtual catalog results", () => {
     ]);
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     const icon = document.querySelector(".catalog-result-row__icon") as HTMLImageElement;
 
     expect(icon).toBeInstanceOf(HTMLImageElement);
@@ -88,7 +167,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(200));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     const firstRow = resultRows()[0];
 
     window.scrollTo({ top: 72 });
@@ -100,7 +179,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(80), "http://localhost:3000/?q=caplet-70");
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
 
     expect(input().value).toBe("caplet-70");
     expect(document.querySelector("[data-result-status]")?.textContent).toBe("1 Caplet");
@@ -114,7 +193,7 @@ describe("virtual catalog results", () => {
     );
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     window.history.pushState(null, "", "http://localhost:3000/");
     window.dispatchEvent(new PopStateEvent("popstate"));
 
@@ -129,7 +208,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    const search = initVirtualCatalogSearch();
+    const search = trackSearch(initVirtualCatalogSearch());
     expect(document.querySelector("[data-result-status]")?.textContent).toBe("20 Caplets");
 
     search?.destroy();
@@ -155,7 +234,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(10));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
 
     expect(resultSpacer().style.height).toBe("1880px");
   });
@@ -164,7 +243,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     tagInput().value = "od";
     tagInput().dispatchEvent(new Event("input", { bubbles: true }));
 
@@ -176,7 +255,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     tagSelect().dispatchEvent(
       new CustomEvent("starwind-select:change", {
         bubbles: true,
@@ -207,7 +286,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(10));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
 
     expect(resultSpacer().style.height).toBe("3200px");
   });
@@ -226,7 +305,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(10));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
 
     expect(resultSpacer().style.height).toBe("1680px");
   });
@@ -235,7 +314,7 @@ describe("virtual catalog results", () => {
     mountSearchShell(manyCatalogSearchRows(20));
 
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     const row = document.querySelector("[data-result-row]") as HTMLElement;
 
     row
@@ -250,7 +329,7 @@ describe("virtual catalog results", () => {
 
     await import("../src/scripts/copy");
     const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
-    initVirtualCatalogSearch();
+    trackSearch(initVirtualCatalogSearch());
     const button = document.querySelector("[data-copy-command]") as HTMLButtonElement;
 
     expect(button).toBeTruthy();
@@ -259,7 +338,7 @@ describe("virtual catalog results", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "CAPLETS_INSTALL_ATTRIBUTION=catalog_install caplets install spiritledsoftware/caplets caplet-0",
+      "caplets telemetry attribution catalog_install\ncaplets install spiritledsoftware/caplets caplet-0",
     );
     expect(document.querySelector("[data-copy-status]")?.textContent).toBe(
       "Install command copied.",

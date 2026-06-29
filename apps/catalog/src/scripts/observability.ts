@@ -7,6 +7,7 @@ import {
   classifyRouteFamily,
   filterSentryBrowserEvent,
   type WebEventName,
+  type WebEventPropertySet,
   type WebEventProperties,
 } from "@caplets/web-observability";
 import posthog from "posthog-js";
@@ -95,10 +96,13 @@ export function captureCatalogSearch(input: {
   });
 }
 
-function captureCatalogEvent(name: WebEventName, properties: WebEventProperties): void {
+function captureCatalogEvent(name: WebEventName, properties: WebEventPropertySet): void {
   if (!posthogEnabled) return;
   try {
-    const event = buildWebEvent({ name, properties: { surface, ...properties } });
+    const event = buildWebEvent({
+      name,
+      properties: { surface, ...properties } as WebEventProperties<typeof name>,
+    });
     posthog.capture(event.name, {
       ...event.properties,
       $process_person_profile: false,
@@ -109,7 +113,7 @@ function captureCatalogEvent(name: WebEventName, properties: WebEventProperties)
   }
 }
 
-function referrerCategory(referrer: string): WebEventProperties["referrer_category"] {
+function referrerCategory(referrer: string): WebEventPropertySet["referrer_category"] {
   if (!referrer) return "direct";
   try {
     const host = new URL(referrer).hostname;
@@ -127,7 +131,7 @@ function referrerCategory(referrer: string): WebEventProperties["referrer_catego
 
 function filterCategory(
   changed: "trust" | "setup" | "tag" | "reset" | undefined,
-): NonNullable<WebEventProperties["filter_category"]> {
+): NonNullable<WebEventPropertySet["filter_category"]> {
   if (changed === "reset") return "clear";
   if (changed === "tag") return "tag";
   if (changed === "trust") return "source";

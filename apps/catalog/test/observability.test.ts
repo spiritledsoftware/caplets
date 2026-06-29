@@ -24,7 +24,7 @@ describe("catalog observability", () => {
     await Promise.resolve();
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "CAPLETS_INSTALL_ATTRIBUTION=catalog_install caplets add npm",
+      "caplets telemetry attribution catalog_install\ncaplets add npm",
     );
   });
 
@@ -39,13 +39,13 @@ describe("catalog observability", () => {
     const { captureCatalogServerError } = await import("../src/lib/server-observability");
 
     await captureCatalogServerError(new Error("raw /home/alex/secret"), {
-      CAPLETS_CATALOG_SENTRY_DSN: "https://public@example.ingest.sentry.io/123",
+      CAPLETS_CATALOG_SENTRY_DSN: "https://public@example.ingest.sentry.io/sentry/123",
       PUBLIC_CAPLETS_ENVIRONMENT: "production",
       PUBLIC_CAPLETS_RELEASE: "sites@test",
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "https://example.ingest.sentry.io/api/123/envelope/",
+      "https://example.ingest.sentry.io/sentry/api/123/envelope/",
       expect.objectContaining({
         method: "POST",
         headers: { "content-type": "application/x-sentry-envelope" },

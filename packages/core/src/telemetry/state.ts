@@ -28,6 +28,11 @@ export type TelemetryAttribution = {
   createdAt: string;
 };
 
+export type TelemetryAttributionClaim = {
+  attribution: TelemetryAttribution;
+  key: string;
+};
+
 export type TelemetryState = {
   status: TelemetryStateStatus;
   decider: TelemetryStateDecider;
@@ -117,17 +122,44 @@ export function writeTelemetryAttribution(
 export function consumeTelemetryAttribution(
   options: TelemetryStateOptions & { env?: NodeJS.ProcessEnv | undefined } = {},
 ): TelemetryAttribution | undefined {
-  const envMarker = options.env?.CAPLETS_INSTALL_ATTRIBUTION;
-  const envAttribution =
-    typeof envMarker === "string" ? attributionFromMarker(envMarker) : undefined;
-  if (envAttribution) {
-    return envAttribution;
-  }
-  const stored = readTelemetryAttribution(options);
-  if (stored) {
+  const claim = claimTelemetryAttribution(options);
+  if (!claim) return undefined;
+  acknowledgeTelemetryAttributionClaim({ ...options, claim });
+  return claim.attribution;
+}
+
+export function claimTelemetryAttribution(
+  options: TelemetryStateOptions & { env?: NodeJS.ProcessEnv | undefined } = {},
+): TelemetryAttributionClaim | undefined {
+  const attribution = readPendingTelemetryAttribution(options);
+  if (!attribution) return undefined;
+  const key = telemetryAttributionClaimKey(options, attribution);
+  if (claimedTelemetryAttributionKeys.has(key)) return undefined;
+  claimedTelemetryAttributionKeys.add(key);
+  return { attribution, key };
+}
+
+export function acknowledgeTelemetryAttributionClaim(
+  options: TelemetryStateOptions & {
+    env?: NodeJS.ProcessEnv | undefined;
+    claim: TelemetryAttributionClaim;
+  },
+): void {
+  try {
+    const envMarker = options.env?.CAPLETS_INSTALL_ATTRIBUTION;
+    const envAttribution =
+      typeof envMarker === "string" ? attributionFromMarker(envMarker) : undefined;
+    if (envAttribution?.marker === options.claim.attribution.marker && options.env) {
+      delete options.env.CAPLETS_INSTALL_ATTRIBUTION;
+    }
     deleteTelemetryAttribution(options);
+  } finally {
+    releaseTelemetryAttributionClaim(options.claim);
   }
-  return stored;
+}
+
+export function releaseTelemetryAttributionClaim(claim: TelemetryAttributionClaim): void {
+  claimedTelemetryAttributionKeys.delete(claim.key);
 }
 
 export function deleteTelemetryAttribution(options: TelemetryStateOptions = {}): void {
@@ -204,6 +236,24 @@ function readJson<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+const claimedTelemetryAttributionKeys = new Set<string>();
+
+function readPendingTelemetryAttribution(
+  options: TelemetryStateOptions & { env?: NodeJS.ProcessEnv | undefined },
+): TelemetryAttribution | undefined {
+  const envMarker = options.env?.CAPLETS_INSTALL_ATTRIBUTION;
+  const envAttribution =
+    typeof envMarker === "string" ? attributionFromMarker(envMarker) : undefined;
+  return envAttribution ?? readTelemetryAttribution(options);
+}
+
+function telemetryAttributionClaimKey(
+  options: TelemetryStateOptions,
+  attribution: TelemetryAttribution,
+): string {
+  return `${telemetryStateDir(options)}:${attribution.marker}`;
 }
 
 function stableId(): string {

@@ -84,6 +84,30 @@ describe("telemetry release environment", () => {
     expect(checkSentrySourceMapEnv(env)).toEqual([]);
   });
 
+  it("rejects insecure web observability endpoints and release-gate placeholders", () => {
+    expect(
+      checkWebObservabilityEnv({
+        PUBLIC_CAPLETS_POSTHOG_TOKEN: "change-me",
+        PUBLIC_CAPLETS_POSTHOG_HOST: "http://us.i.posthog.com",
+        PUBLIC_CAPLETS_LANDING_SENTRY_DSN: "http://public@example.ingest.sentry.io/1",
+        PUBLIC_CAPLETS_DOCS_SENTRY_DSN: "https://public@example.ingest.sentry.io/2",
+        PUBLIC_CAPLETS_CATALOG_SENTRY_DSN: "https://public@example.ingest.sentry.io/3",
+        SENTRY_AUTH_TOKEN: "todo before release",
+        SENTRY_ORG: "spirit-led-software",
+        CAPLETS_LANDING_SENTRY_PROJECT: "caplets-landing",
+        CAPLETS_DOCS_SENTRY_PROJECT: "caplets-docs",
+        CAPLETS_CATALOG_SENTRY_PROJECT: "caplets-catalog",
+        PUBLIC_CAPLETS_RELEASE: "sites@abc123",
+        PUBLIC_CAPLETS_ENVIRONMENT: "production",
+      }),
+    ).toEqual([
+      "PUBLIC_CAPLETS_POSTHOG_TOKEN must be a valid public PostHog project token; placeholders are not allowed.",
+      "PUBLIC_CAPLETS_POSTHOG_HOST must be a valid public PostHog host; placeholders are not allowed.",
+      "PUBLIC_CAPLETS_LANDING_SENTRY_DSN must be a valid landing Sentry DSN; placeholders are not allowed.",
+      "SENTRY_AUTH_TOKEN must be a valid Sentry source-map auth token; placeholders are not allowed.",
+    ]);
+  });
+
   it("wires telemetry secrets into the release workflow", () => {
     const packageJson = read("package.json");
     const workflow = read(".github/workflows/release.yml");

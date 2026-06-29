@@ -12,7 +12,7 @@ export type ScrollDepthBucket = "lt_25" | "lt_50" | "lt_75" | "gte_75";
 export type SearchLengthBucket = "empty" | "short" | "medium" | "long";
 export type ResultCountBucket = "zero" | "one" | "few" | "many";
 
-export type WebEventProperties = Partial<{
+export type WebEventPropertySet = Partial<{
   surface: WebSurface;
   route_family: RouteFamily;
   page_family: RouteFamily;
@@ -31,6 +31,54 @@ export type WebEventProperties = Partial<{
   repeated_intent_bucket: "first" | "repeat" | "many";
 }>;
 
+type WebEventPropertyKey = keyof WebEventPropertySet;
+
+type StrictEventProperties<
+  RequiredProperties extends WebEventPropertyKey,
+  OptionalProperties extends WebEventPropertyKey = never,
+> = Required<Pick<WebEventPropertySet, RequiredProperties>> &
+  Partial<Pick<WebEventPropertySet, OptionalProperties>> &
+  Partial<Record<Exclude<WebEventPropertyKey, RequiredProperties | OptionalProperties>, never>>;
+
+export type WebEventPropertiesByName = {
+  caplets_site_pageview: StrictEventProperties<
+    "surface" | "route_family" | "page_family" | "referrer_category",
+    "scroll_depth_bucket"
+  >;
+  caplets_site_intent: StrictEventProperties<
+    "surface" | "route_family" | "section_category",
+    | "page_family"
+    | "navigation_path_category"
+    | "outbound_action_category"
+    | "cta_category"
+    | "result_interaction_category"
+    | "scroll_depth_bucket"
+    | "repeated_intent_bucket"
+  >;
+  caplets_catalog_search: StrictEventProperties<
+    | "surface"
+    | "route_family"
+    | "page_family"
+    | "section_category"
+    | "search_length_bucket"
+    | "filter_category"
+    | "result_count_bucket"
+    | "empty_state_category"
+  >;
+  caplets_install_intent: StrictEventProperties<
+    "surface" | "route_family" | "section_category" | "install_intent_category",
+    | "page_family"
+    | "navigation_path_category"
+    | "outbound_action_category"
+    | "cta_category"
+    | "result_interaction_category"
+    | "repeated_intent_bucket"
+  >;
+};
+
+export type WebEventProperties<Name extends WebEventName = WebEventName> =
+  WebEventPropertiesByName[Name];
+
 const WEB_EVENTS = new Set<WebEventName>([
   "caplets_site_pageview",
   "caplets_site_intent",
@@ -43,18 +91,77 @@ export type WebEvent = {
   properties: WebEventProperties;
 };
 
-export function buildWebEvent(input: {
-  name: WebEventName;
-  properties: WebEventProperties;
-}): WebEvent {
+const REQUIRED_EVENT_PROPERTIES: Record<WebEventName, ReadonlySet<WebEventPropertyKey>> = {
+  caplets_site_pageview: new Set(["surface", "route_family", "page_family", "referrer_category"]),
+  caplets_site_intent: new Set(["surface", "route_family", "section_category"]),
+  caplets_catalog_search: new Set([
+    "surface",
+    "route_family",
+    "page_family",
+    "section_category",
+    "search_length_bucket",
+    "filter_category",
+    "result_count_bucket",
+    "empty_state_category",
+  ]),
+  caplets_install_intent: new Set([
+    "surface",
+    "route_family",
+    "section_category",
+    "install_intent_category",
+  ]),
+};
+
+const OPTIONAL_EVENT_PROPERTIES: Record<WebEventName, ReadonlySet<WebEventPropertyKey>> = {
+  caplets_site_pageview: new Set(["scroll_depth_bucket"]),
+  caplets_site_intent: new Set([
+    "page_family",
+    "navigation_path_category",
+    "outbound_action_category",
+    "cta_category",
+    "result_interaction_category",
+    "scroll_depth_bucket",
+    "repeated_intent_bucket",
+  ]),
+  caplets_catalog_search: new Set([]),
+  caplets_install_intent: new Set([
+    "page_family",
+    "navigation_path_category",
+    "outbound_action_category",
+    "cta_category",
+    "result_interaction_category",
+    "repeated_intent_bucket",
+  ]),
+};
+
+export function buildWebEvent<Name extends WebEventName>(input: {
+  name: Name;
+  properties: WebEventProperties<Name>;
+}): { name: Name; properties: WebEventProperties<Name> } {
   if (!WEB_EVENTS.has(input.name)) {
     throw new Error(`unknown web telemetry event: ${input.name}`);
   }
   assertWebEventSafeProperties(input.properties);
+  assertEventSpecificProperties(input.name, input.properties);
   return {
     name: input.name,
     properties: input.properties,
   };
+}
+
+function assertEventSpecificProperties(name: WebEventName, properties: WebEventPropertySet): void {
+  const required = REQUIRED_EVENT_PROPERTIES[name];
+  const optional = OPTIONAL_EVENT_PROPERTIES[name];
+  for (const key of Object.keys(properties) as WebEventPropertyKey[]) {
+    if (!required.has(key) && !optional.has(key)) {
+      throw new Error(`web telemetry property ${key} is not allowed for ${name}`);
+    }
+  }
+  for (const key of required) {
+    if (properties[key] === undefined) {
+      throw new Error(`missing web telemetry property: ${key}`);
+    }
+  }
 }
 
 export function classifyRouteFamily(pathname: string): RouteFamily {

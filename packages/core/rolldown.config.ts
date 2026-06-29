@@ -16,7 +16,7 @@ export default defineConfig([
       format: "esm",
       sourcemap: sentryConfigured(),
     },
-    plugins: runtimeSentryPlugins("core", { disable: "disable-upload" }),
+    plugins: runtimeSentryPlugins("core"),
     external: ["quickjs-emscripten", "typescript"],
     platform: "node",
   },

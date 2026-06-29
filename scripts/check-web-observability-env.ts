@@ -41,13 +41,21 @@ function isValidValue(name: string, value: string): boolean {
 }
 
 function isNonPlaceholder(value: string): boolean {
-  return !["", "todo", "changeme", "placeholder", "example"].includes(value.trim().toLowerCase());
+  return ![
+    "",
+    "todo",
+    "todo before release",
+    "changeme",
+    "change-me",
+    "placeholder",
+    "example",
+  ].includes(value.trim().toLowerCase());
 }
 
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return (url.protocol === "https:" || url.protocol === "http:") && url.hostname.length > 0;
+    return url.protocol === "https:" && url.hostname.length > 0;
   } catch {
     return false;
   }
@@ -57,7 +65,7 @@ function isSentryDsn(value: string): boolean {
   try {
     const url = new URL(value);
     return (
-      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.protocol === "https:" &&
       url.username.length > 0 &&
       url.hostname.length > 0 &&
       url.pathname !== "" &&

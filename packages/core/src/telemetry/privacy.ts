@@ -239,12 +239,24 @@ function relativeSafePath(value: string): string | undefined {
     return ["node_modules", nodeModules[1], nodeModules[2]].filter(Boolean).join("/");
   }
   const workspace = value.match(/(?:^|\/)((?:packages|apps)\/[A-Za-z0-9._/-]+)$/u);
-  if (workspace) return workspace[1];
+  const workspacePath = workspace?.[1];
+  if (workspacePath) {
+    return isSafeRelativePath(workspacePath) ? workspacePath : safeBasename(value);
+  }
   if (value.startsWith("node:")) return value;
   const basename = value.split("/").filter(Boolean).at(-1);
   if (!basename || !/^[A-Za-z0-9@._:-]{1,120}$/u.test(basename)) return undefined;
   if (SUSPICIOUS_VALUE.some((pattern) => pattern.test(basename))) return undefined;
   return basename;
+}
+
+function safeBasename(value: string): string | undefined {
+  const basename = value.split("/").filter(Boolean).at(-1);
+  return basename && /^[A-Za-z0-9@._:-]{1,120}$/u.test(basename) ? basename : undefined;
+}
+
+function isSafeRelativePath(value: string): boolean {
+  return value.split("/").every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}$/u.test(segment));
 }
 
 function sanitizeFunctionName(value: string): string | undefined {

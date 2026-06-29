@@ -1,4 +1,4 @@
-import type { WebEventProperties } from "./events";
+import type { WebEventPropertySet } from "./events";
 
 const ALLOWED_WEB_KEYS = new Set([
   "surface",
@@ -48,7 +48,7 @@ const RAW_VALUE_PATTERNS = [
 ];
 
 export function assertWebEventSafeProperties(
-  properties: WebEventProperties & Record<string, unknown>,
+  properties: WebEventPropertySet & Record<string, unknown>,
 ): void {
   for (const [key, value] of Object.entries(properties)) {
     if (!ALLOWED_WEB_KEYS.has(key)) {
@@ -66,8 +66,8 @@ export function assertWebEventSafeProperties(
   }
 }
 
-export function filterPostHogProperties(input: Record<string, unknown>): WebEventProperties {
-  const properties: WebEventProperties = {};
+export function filterPostHogProperties(input: Record<string, unknown>): WebEventPropertySet {
+  const properties: WebEventPropertySet = {};
   for (const [key, value] of Object.entries(input)) {
     if (!ALLOWED_WEB_KEYS.has(key) || typeof value !== "string") continue;
     try {
@@ -85,11 +85,105 @@ export function filterSentryBrowserEvent(event: Record<string, unknown>): Record
   if (typeof event.release === "string") filtered.release = event.release;
   if (typeof event.environment === "string") filtered.environment = event.environment;
   if (event.level) filtered.level = event.level;
-  if (event.exception) filtered.exception = event.exception;
+  const exception = sanitizeBrowserException(event.exception);
+  if (exception) filtered.exception = exception;
   if (event.tags && typeof event.tags === "object" && !Array.isArray(event.tags)) {
     filtered.tags = filterSentryTags(event.tags as Record<string, unknown>);
   }
   return filtered;
+}
+
+function sanitizeBrowserException(value: unknown):
+  | {
+      values: Array<{
+        type: string;
+        stacktrace: { frames: SanitizedBrowserFrame[] };
+      }>;
+    }
+  | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const values = (value as { values?: unknown }).values;
+  if (!Array.isArray(values)) return undefined;
+  for (const entry of values) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as { type?: unknown; stacktrace?: unknown };
+    const type =
+      typeof record.type === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/u.test(record.type)
+        ? record.type
+        : "Error";
+    const stacktrace = record.stacktrace;
+    if (!stacktrace || typeof stacktrace !== "object" || Array.isArray(stacktrace)) continue;
+    const frames = (stacktrace as { frames?: unknown }).frames;
+    if (!Array.isArray(frames)) continue;
+    const sanitizedFrames = frames.flatMap(sanitizeBrowserFrame).slice(-20);
+    return { values: [{ type, stacktrace: { frames: sanitizedFrames } }] };
+  }
+  return undefined;
+}
+
+type SanitizedBrowserFrame = {
+  filename: string;
+  function?: string;
+  lineno?: number;
+  colno?: number;
+  in_app?: boolean;
+};
+
+function sanitizeBrowserFrame(value: unknown): SanitizedBrowserFrame[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  const filename =
+    typeof record.filename === "string" ? sanitizeBrowserFilename(record.filename) : undefined;
+  if (!filename) return [];
+  const functionName =
+    typeof record.function === "string" ? sanitizeBrowserFunction(record.function) : undefined;
+  const lineno = typeof record.lineno === "number" ? safeFrameNumber(record.lineno) : undefined;
+  const colno = typeof record.colno === "number" ? safeFrameNumber(record.colno) : undefined;
+  return [
+    {
+      filename,
+      ...(functionName ? { function: functionName } : {}),
+      ...(lineno ? { lineno } : {}),
+      ...(colno ? { colno } : {}),
+      ...(typeof record.in_app === "boolean" ? { in_app: record.in_app } : {}),
+    },
+  ];
+}
+
+function sanitizeBrowserFilename(value: string): string | undefined {
+  let normalized = value.replaceAll("\\", "/");
+  try {
+    const url = new URL(normalized);
+    normalized = url.pathname;
+  } catch {
+    normalized = normalized.replace(/^file:\/\//u, "");
+  }
+  const workspace = workspaceSafePath(normalized);
+  if (workspace) return workspace;
+  const basename = normalized.split("/").filter(Boolean).at(-1);
+  if (!basename || !/^[A-Za-z0-9@._:-]{1,120}$/u.test(basename)) return undefined;
+  return basename;
+}
+
+function workspaceSafePath(value: string): string | undefined {
+  const match = value.match(/(?:^|\/)((?:packages|apps)\/.+)$/u);
+  const path = match?.[1];
+  if (!path) return undefined;
+  const segments = path.split("/");
+  if (!segments.every((segment) => /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,119}$/u.test(segment))) {
+    return undefined;
+  }
+  return path;
+}
+
+function sanitizeBrowserFunction(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || RAW_VALUE_PATTERNS.some((pattern) => pattern.test(trimmed))) return undefined;
+  return /^[A-Za-z0-9_$.[\]<>:/ -]{1,120}$/u.test(trimmed) ? trimmed : undefined;
+}
+
+function safeFrameNumber(value: number): number | undefined {
+  return Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function filterSentryTags(tags: Record<string, unknown>): Record<string, string> {

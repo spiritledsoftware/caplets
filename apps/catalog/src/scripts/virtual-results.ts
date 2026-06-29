@@ -57,6 +57,8 @@ export function initVirtualCatalogSearch(
   const rows = parseRows(index.textContent ?? "[]");
   let visibleRows = [...rows];
   let lastFocusedControl: HTMLElement | null = null;
+  let searchTelemetryTimer: number | undefined;
+  let lastSearchTelemetrySignature = "";
   const renderedRows = new Map<string, HTMLElement>();
   const virtualizer = new Virtualizer<Window, HTMLElement>({
     count: visibleRows.length,
@@ -112,6 +114,7 @@ export function initVirtualCatalogSearch(
       writeUrl?: boolean;
       resetScroll?: boolean;
       filterChanged?: "trust" | "setup" | "tag" | "reset" | undefined;
+      trackSearch?: "immediate" | "debounced" | false | undefined;
     } = {},
   ): void {
     lastFocusedControl =
@@ -131,11 +134,37 @@ export function initVirtualCatalogSearch(
     ) {
       lastFocusedControl.focus();
     }
-    captureCatalogSearch({
+    emitSearchTelemetry(options);
+  }
+
+  function emitSearchTelemetry(options: {
+    filterChanged?: "trust" | "setup" | "tag" | "reset" | undefined;
+    trackSearch?: "immediate" | "debounced" | false | undefined;
+  }): void {
+    if (options.trackSearch === false) return;
+    if (options.trackSearch === "debounced") {
+      if (searchTelemetryTimer) window.clearTimeout(searchTelemetryTimer);
+      searchTelemetryTimer = window.setTimeout(() => {
+        searchTelemetryTimer = undefined;
+        captureSearchTelemetry(options.filterChanged);
+      }, 450);
+      return;
+    }
+    captureSearchTelemetry(options.filterChanged);
+  }
+
+  function captureSearchTelemetry(
+    filterChanged: "trust" | "setup" | "tag" | "reset" | undefined,
+  ): void {
+    const payload = {
       query: inputEl.value,
       resultCount: visibleRows.length,
-      filterChanged: options.filterChanged,
-    });
+      filterChanged,
+    };
+    const signature = JSON.stringify(payload);
+    if (signature === lastSearchTelemetrySignature) return;
+    lastSearchTelemetrySignature = signature;
+    captureCatalogSearch(payload);
   }
 
   function renderVirtualRows(): void {
@@ -195,11 +224,10 @@ export function initVirtualCatalogSearch(
   }
 
   const events = new AbortController();
-  inputEl.addEventListener("input", () => applySearch(), { signal: events.signal });
+  inputEl.addEventListener("input", () => applySearch({ trackSearch: "debounced" }), {
+    signal: events.signal,
+  });
   for (const control of [trust, setup, sort]) {
-    control?.addEventListener("input", () => applySearch({ filterChanged: filterName(control) }), {
-      signal: events.signal,
-    });
     control?.addEventListener("change", () => applySearch({ filterChanged: filterName(control) }), {
       signal: events.signal,
     });
@@ -239,7 +267,7 @@ export function initVirtualCatalogSearch(
     "popstate",
     () => {
       applyUrlState();
-      applySearch({ writeUrl: false });
+      applySearch({ writeUrl: false, trackSearch: false });
     },
     { signal: events.signal },
   );
@@ -255,11 +283,12 @@ export function initVirtualCatalogSearch(
   resultListEl.addEventListener("click", navigateFromRowClick, { signal: events.signal });
 
   applyUrlState();
-  applySearch({ writeUrl: false, resetScroll: false });
+  applySearch({ writeUrl: false, resetScroll: false, trackSearch: false });
 
   return {
     applySearch,
     destroy() {
+      if (searchTelemetryTimer) window.clearTimeout(searchTelemetryTimer);
       events.abort();
       cleanupVirtualizer();
     },

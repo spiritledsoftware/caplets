@@ -129,7 +129,8 @@ import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./
 import { DEFAULT_AUTH_DIR, defaultTelemetryStateDir } from "./config/paths";
 import { appendBasePath } from "./server/options";
 import {
-  consumeTelemetryAttribution,
+  acknowledgeTelemetryAttributionClaim,
+  claimTelemetryAttribution,
   deleteTelemetryIdentity,
   buildProductTelemetryEvent,
   buildReliabilityTelemetryEvent,
@@ -139,13 +140,16 @@ import {
   readTelemetryDeliveryHealth,
   readTelemetryIdentity,
   readTelemetryNotice,
+  releaseTelemetryAttributionClaim,
   resolveTelemetryState,
   rotateTelemetryIdentity,
   TelemetryDebugSink,
   type CommandFamily,
   type DiagnosticCategory,
   type TelemetryDispatcher,
+  type TelemetryProperties,
   type TelemetrySurface,
+  writeTelemetryAttribution,
 } from "./telemetry";
 import { maybePrintUpdateNotice } from "./update-check";
 import { FileVaultStore, VAULT_MAX_VALUE_BYTES, validateVaultKeyName } from "./vault";
@@ -528,37 +532,49 @@ async function captureCliTelemetry(
       ? readTelemetryIdentity({ stateDir: context.stateDir, create: false })
       : (state.identity ?? readTelemetryIdentity({ stateDir: context.stateDir, create: true }));
   if (options.productEvent !== false) {
-    const attribution =
+    const attributionClaim =
       state.status === "enabled" && options.outcome === "success"
-        ? consumeTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
+        ? claimTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
         : undefined;
-    const product = buildProductTelemetryEvent({
-      name: "caplets_cli_command",
-      distinctId: identity.id,
-      properties: {
-        package: "@caplets/core",
-        version: packageJsonVersion,
-        surface: options.surface ?? "cli",
-        runtime_mode: runtimeModeForEnv(context.env),
-        execution_context: state.executionContext,
-        command_family: options.commandFamily,
-        outcome: options.outcome,
-        duration_bucket: durationBucket(Date.now() - options.startedAt),
-        ...(attribution
-          ? {
-              attribution_source: attribution.source,
-              attribution_intent: attribution.intent,
-              first_activation: true,
-            }
-          : {}),
-      },
-    });
-    if (state.status === "debug") {
-      options.debugSink?.capture("debug", product);
-    } else {
-      await (
-        options.dispatcher ?? createTelemetryDispatcher({ stateDir: context.stateDir })
-      ).capture(state, product);
+    try {
+      const product = buildProductTelemetryEvent({
+        name: "caplets_cli_command",
+        distinctId: identity.id,
+        properties: {
+          package: "@caplets/core",
+          version: packageJsonVersion,
+          surface: options.surface ?? "cli",
+          runtime_mode: runtimeModeForEnv(context.env),
+          execution_context: state.executionContext,
+          command_family: options.commandFamily,
+          outcome: options.outcome,
+          duration_bucket: durationBucket(Date.now() - options.startedAt),
+          ...(attributionClaim
+            ? {
+                attribution_source: attributionClaim.attribution.source,
+                attribution_intent: attributionClaim.attribution.intent,
+                first_activation: true,
+              }
+            : {}),
+        },
+      });
+      if (state.status === "debug") {
+        options.debugSink?.capture("debug", product);
+      } else {
+        await (
+          options.dispatcher ?? createTelemetryDispatcher({ stateDir: context.stateDir })
+        ).capture(state, product);
+        if (attributionClaim) {
+          acknowledgeTelemetryAttributionClaim({
+            stateDir: context.stateDir,
+            env: context.env,
+            claim: attributionClaim,
+          });
+        }
+      }
+    } catch (error) {
+      if (attributionClaim) releaseTelemetryAttributionClaim(attributionClaim);
+      throw error;
     }
   }
 
@@ -575,7 +591,7 @@ async function captureCliTelemetry(
       error_code: errorCodeForTelemetry(options.error),
       diagnostic_category: diagnosticCategoryForError(options.error),
       os_family: platform(),
-      arch: arch(),
+      arch: architectureForTelemetry(),
       node_major: Number(process.versions.node.split(".")[0] ?? 0),
     },
     error: options.error,
@@ -605,6 +621,29 @@ function readUserConfigObject(path: string): Record<string, unknown> {
 function runtimeModeForEnv(env: NodeJS.ProcessEnv | Record<string, string | undefined>) {
   const mode = env.CAPLETS_MODE;
   return mode === "remote" || mode === "cloud" || mode === "local" ? mode : "unknown";
+}
+
+const TELEMETRY_ARCHITECTURES = new Set([
+  "arm",
+  "arm64",
+  "ia32",
+  "loong64",
+  "mips",
+  "mipsel",
+  "ppc",
+  "ppc64",
+  "riscv64",
+  "s390",
+  "s390x",
+  "x64",
+  "x32",
+]);
+
+function architectureForTelemetry(): NonNullable<TelemetryProperties["arch"]> {
+  const value = arch();
+  return TELEMETRY_ARCHITECTURES.has(value)
+    ? (value as NonNullable<TelemetryProperties["arch"]>)
+    : "unknown";
 }
 
 function errorCodeForTelemetry(error: unknown): string {
@@ -1529,6 +1568,20 @@ export function createProgram(io: CliIO = {}): Command {
       writeOut(
         "Rotated the local anonymous telemetry ID. This does not delete provider-side historical anonymous events; provider retention controls historical data.\n",
       );
+    });
+
+  telemetry
+    .command("attribution")
+    .description("Record a categorical install attribution marker.")
+    .argument("<marker>", "install attribution marker")
+    .action((marker: string) => {
+      const attribution = writeTelemetryAttribution({
+        stateDir: telemetryContext().stateDir,
+        marker,
+      });
+      if (!attribution) {
+        throw new CapletsError("REQUEST_INVALID", "Unknown install attribution marker.");
+      }
     });
 
   telemetry

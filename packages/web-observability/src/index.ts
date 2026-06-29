@@ -6,6 +6,7 @@ export {
   classifyRouteFamily,
   type WebEvent,
   type WebEventName,
+  type WebEventPropertySet,
   type WebEventProperties,
   type WebSurface,
 } from "./events";

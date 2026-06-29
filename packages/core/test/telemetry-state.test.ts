@@ -206,13 +206,15 @@ describe("telemetry state", () => {
 
   it("prefers a safe env attribution marker without persisting raw values", () => {
     const stateDir = tempRoot();
+    const env = { CAPLETS_INSTALL_ATTRIBUTION: "landing_install" };
 
     expect(
       consumeTelemetryAttribution({
         stateDir,
-        env: { CAPLETS_INSTALL_ATTRIBUTION: "landing_install" },
+        env,
       }),
     ).toMatchObject({ source: "landing", intent: "install_run" });
+    expect(consumeTelemetryAttribution({ stateDir, env })).toBeUndefined();
     expect(existsSync(telemetryAttributionPath({ stateDir }))).toBe(false);
 
     expect(
@@ -222,6 +224,15 @@ describe("telemetry state", () => {
       }),
     ).toBeUndefined();
     expect(existsSync(telemetryAttributionPath({ stateDir }))).toBe(false);
+  });
+
+  it("clears stored attribution when env attribution wins", () => {
+    const stateDir = tempRoot();
+    const env = { CAPLETS_INSTALL_ATTRIBUTION: "docs_install" };
+    writeTelemetryAttribution({ stateDir, marker: "catalog_install" });
+
+    expect(consumeTelemetryAttribution({ stateDir, env })).toMatchObject({ source: "docs" });
+    expect(readTelemetryAttribution({ stateDir })).toBeUndefined();
   });
 
   it("does not create state files while merely resolving disabled telemetry", () => {

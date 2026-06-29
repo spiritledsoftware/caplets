@@ -5,6 +5,7 @@ import {
   classifyRouteFamily,
   filterSentryBrowserEvent,
   type WebEventName,
+  type WebEventPropertySet,
   type WebEventProperties,
 } from "@caplets/web-observability";
 import posthog from "posthog-js";
@@ -83,10 +84,13 @@ export function captureLandingInstallCopy(): void {
   });
 }
 
-function captureLandingEvent(name: WebEventName, properties: WebEventProperties): void {
+function captureLandingEvent(name: WebEventName, properties: WebEventPropertySet): void {
   if (!posthogEnabled) return;
   try {
-    const event = buildWebEvent({ name, properties: { surface, ...properties } });
+    const event = buildWebEvent({
+      name,
+      properties: { surface, ...properties } as WebEventProperties<typeof name>,
+    });
     posthog.capture(event.name, {
       ...event.properties,
       $process_person_profile: false,
@@ -97,7 +101,7 @@ function captureLandingEvent(name: WebEventName, properties: WebEventProperties)
   }
 }
 
-function referrerCategory(referrer: string): WebEventProperties["referrer_category"] {
+function referrerCategory(referrer: string): WebEventPropertySet["referrer_category"] {
   if (!referrer) return "direct";
   try {
     const host = new URL(referrer).hostname;
@@ -115,18 +119,25 @@ function referrerCategory(referrer: string): WebEventProperties["referrer_catego
 
 function linkCategory(
   link: HTMLAnchorElement,
-): NonNullable<WebEventProperties["outbound_action_category"]> {
+): NonNullable<WebEventPropertySet["outbound_action_category"]> {
   const href = link.getAttribute("href") ?? "";
   if (href.includes("github.com")) return "github";
   if (href.includes("npmjs.com")) return "npm";
   if (href.startsWith("/docs") || href.includes("docs.caplets")) return "docs";
-  if (href.startsWith("/catalog") || href.includes("catalog.caplets")) return "catalog";
+  if (
+    href.startsWith("/catalog") ||
+    href === "/caplets" ||
+    href.startsWith("/caplets/") ||
+    href.includes("catalog.caplets")
+  ) {
+    return "catalog";
+  }
   return "unknown";
 }
 
 function sectionCategory(
   element: HTMLElement,
-): NonNullable<WebEventProperties["section_category"]> {
+): NonNullable<WebEventPropertySet["section_category"]> {
   const section = element.closest<HTMLElement>("section, header, footer");
   if (section?.tagName.toLowerCase() === "footer") return "footer";
   const text = `${section?.id ?? ""} ${section?.className ?? ""}`.toLowerCase();
@@ -137,7 +148,7 @@ function sectionCategory(
   return "unknown";
 }
 
-function ctaCategory(element: HTMLElement): NonNullable<WebEventProperties["cta_category"]> {
+function ctaCategory(element: HTMLElement): NonNullable<WebEventPropertySet["cta_category"]> {
   const text = element.textContent?.toLowerCase() ?? "";
   if (text.includes("install") || text.includes("copy")) return "install";
   if (text.includes("docs")) return "docs";
