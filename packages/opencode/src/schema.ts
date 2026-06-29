@@ -68,7 +68,8 @@ function jsonSchemaPropertyToOpenCode(
   if (!value || typeof value !== "object" || Array.isArray(value)) return tool.schema.unknown();
   const schema = value as Record<string, unknown>;
   if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "string")) {
-    return tool.schema.enum(schema.enum as [string, ...string[]]);
+    const enumSchema = tool.schema.enum(schema.enum as [string, ...string[]]);
+    return options.optional ? enumSchema.optional() : enumSchema;
   }
   if (schema.type === "string") {
     const stringSchema = tool.schema.string();
@@ -91,15 +92,27 @@ function jsonSchemaPropertyToOpenCode(
     return options.optional ? objectSchema.optional() : objectSchema;
   }
   if (schema.type === "array") {
-    const itemSchema =
-      schema.items &&
-      typeof schema.items === "object" &&
-      !Array.isArray(schema.items) &&
-      Object.keys(schema.items).length > 0
-        ? jsonSchemaPropertyToOpenCode(schema.items, { optional: false })
-        : tool.schema.string();
+    const itemSchema = isSupportedOpenCodeJsonSchema(schema.items)
+      ? jsonSchemaPropertyToOpenCode(schema.items, { optional: false })
+      : tool.schema.string();
     const arraySchema = tool.schema.array(itemSchema).min(1);
     return options.optional ? arraySchema.optional() : arraySchema;
   }
   return tool.schema.unknown();
+}
+
+function isSupportedOpenCodeJsonSchema(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const schema = value as Record<string, unknown>;
+  if (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "string")) {
+    return schema.enum.length > 0;
+  }
+  return (
+    schema.type === "string" ||
+    schema.type === "number" ||
+    schema.type === "integer" ||
+    schema.type === "boolean" ||
+    schema.type === "object" ||
+    schema.type === "array"
+  );
 }
