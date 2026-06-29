@@ -128,6 +128,58 @@ describe("telemetry release environment", () => {
     );
   });
 
+  it("wires runtime telemetry and current workspace packages into Docker image builds", () => {
+    const dockerfile = read("Dockerfile");
+    const compose = read("docker-compose.yml");
+    const workflow = read(".github/workflows/release.yml");
+    const packageJson = JSON.parse(read("package.json")) as { packageManager: string };
+    const catalogPackageJson = JSON.parse(read("apps/catalog/package.json")) as {
+      packageManager: string;
+    };
+    const docsPackageJson = JSON.parse(read("apps/docs/package.json")) as {
+      packageManager: string;
+    };
+
+    expect(dockerfile).toContain(`ARG PNPM_VERSION=${packageJson.packageManager.slice(5)}`);
+    expect(catalogPackageJson.packageManager).toBe(packageJson.packageManager);
+    expect(docsPackageJson.packageManager).toBe(packageJson.packageManager);
+    for (const manifest of [
+      "apps/catalog/package.json",
+      "apps/docs/package.json",
+      "apps/landing/package.json",
+      "packages/core/package.json",
+      "packages/cli/package.json",
+      "packages/opencode/package.json",
+      "packages/pi/package.json",
+      "packages/benchmarks/package.json",
+      "packages/web-observability/package.json",
+    ]) {
+      expect(dockerfile).toContain(`COPY ${manifest} ${manifest}`);
+    }
+
+    expect(dockerfile).toContain("ARG CAPLETS_POSTHOG_TOKEN");
+    expect(dockerfile).toContain("ARG CAPLETS_RUNTIME_SENTRY_DSN");
+    expect(dockerfile).toContain("ARG CAPLETS_SENTRY_RELEASE");
+    expect(dockerfile).toContain(
+      "CAPLETS_REMOTE_SERVER_STATE_DIR=/data/state/caplets/remote-server",
+    );
+    expect(dockerfile).toContain("pnpm --filter caplets deploy --prod --legacy /deploy");
+    expect(dockerfile).toContain("COPY --from=build --chown=node:root /deploy ./");
+    expect(dockerfile).toContain("http://127.0.0.1:5387/v1/healthz");
+    expect(dockerfile).toContain("node dist/index.js init --global");
+    expect(dockerfile).toContain("node dist/index.js serve --transport http --host 0.0.0.0");
+    expect(compose).toContain("CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server");
+    expect(compose).toContain("http://127.0.0.1:5387/v1/healthz");
+    expect(compose).not.toContain("CAPLETS_SERVER_USER");
+    expect(compose).not.toContain("CAPLETS_SERVER_PASSWORD");
+    expect(workflow).toContain("CAPLETS_POSTHOG_TOKEN=${{ secrets.CAPLETS_POSTHOG_TOKEN }}");
+    expect(workflow).toContain(
+      "CAPLETS_RUNTIME_SENTRY_DSN=${{ secrets.CAPLETS_RUNTIME_SENTRY_DSN }}",
+    );
+    expect(workflow).toContain("CAPLETS_SENTRY_RELEASE=caplets-runtime@${{ github.sha }}");
+    expect(workflow).toContain("CAPLETS_SENTRY_ENVIRONMENT=production");
+  });
+
   it("wires web observability env into deploy and preview workflows", () => {
     const deploy = read(".github/workflows/deploy.yml");
     const preview = read(".github/workflows/pr-preview-deploy.yml");

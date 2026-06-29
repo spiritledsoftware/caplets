@@ -128,3 +128,8 @@ jobs:
           push: true
           tags: ${{ steps.docker-meta.outputs.tags }}
           labels: ${{ steps.docker-meta.outputs.labels }}
+          build-args: |
+            CAPLETS_POSTHOG_TOKEN=${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+            CAPLETS_RUNTIME_SENTRY_DSN=${{ secrets.CAPLETS_RUNTIME_SENTRY_DSN }}
+            CAPLETS_SENTRY_RELEASE=caplets-runtime@${{ github.sha }}
+            CAPLETS_SENTRY_ENVIRONMENT=production
