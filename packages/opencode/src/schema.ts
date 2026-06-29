@@ -79,7 +79,12 @@ function jsonSchemaPropertyToOpenCode(
     return options.optional ? numberSchema.optional() : numberSchema;
   }
   if (schema.type === "boolean" && "boolean" in tool.schema) {
-    return (tool.schema as typeof tool.schema & { boolean: () => OpenCodeSchema }).boolean();
+    const booleanSchema = (
+      tool.schema as typeof tool.schema & {
+        boolean: () => OpenCodeSchema & { optional: () => OpenCodeSchema };
+      }
+    ).boolean();
+    return options.optional ? booleanSchema.optional() : booleanSchema;
   }
   if (schema.type === "object") {
     const objectSchema = tool.schema.record(tool.schema.string(), tool.schema.unknown());

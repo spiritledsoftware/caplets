@@ -9,7 +9,10 @@ vi.mock("@opencode-ai/plugin", () => ({
         optional: () => ({ type: "string", optional: true }),
         min: () => ({ type: "string" }),
       }),
-      boolean: () => ({ type: "boolean" }),
+      boolean: () => ({
+        type: "boolean",
+        optional: () => ({ type: "boolean", optional: true }),
+      }),
       number: () => ({
         int: () => ({ positive: () => ({ optional: () => ({ type: "number", optional: true }) }) }),
       }),
@@ -206,7 +209,7 @@ describe("@caplets/opencode", () => {
     };
 
     expect(directTool.args).toMatchObject({
-      verbose: { type: "boolean" },
+      verbose: { type: "boolean", optional: true },
       tags: { type: "array", item: { type: "string" }, optional: true },
     });
     await directTool.execute({ verbose: true }, {} as never);
