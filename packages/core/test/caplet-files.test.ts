@@ -171,6 +171,177 @@ mcpServer:
       }),
     ).toThrow(/Duplicate Caplet ID search/);
   });
+
+  it("expands plural backend maps into runtime child ids with inherited metadata", () => {
+    const result = loadCapletFilesFromMap({
+      files: [
+        {
+          path: "google-workspace/CAPLET.md",
+          content: `---
+name: Google Workspace
+description: Work with Google Workspace APIs.
+tags: [google, workspace]
+runtime:
+  features: [browser]
+setup:
+  commands:
+    - label: Parent setup
+      command: parent-setup
+auth:
+  type: oauth2
+  issuer: https://accounts.google.com
+  scopes:
+    - https://www.googleapis.com/auth/drive.metadata.readonly
+googleDiscoveryApis:
+  drive:
+    name: Google Drive
+    description: Search and inspect Google Drive files.
+    tags: [drive]
+    runtime:
+      features: [docker]
+      resources:
+        class: large
+    setup:
+      verify:
+        - label: Verify Drive
+          command: drive-verify
+    discoveryPath: ./drive.discovery.json
+    includeOperations: [files.list]
+  gmail:
+    name: Gmail
+    description: Read Gmail metadata and message headers.
+    discoveryPath: ./gmail.discovery.json
+    auth:
+      type: oauth2
+      issuer: https://accounts.google.com
+      scopes:
+        - https://www.googleapis.com/auth/gmail.readonly
+---
+
+# Google Workspace
+`,
+        },
+      ],
+    });
+
+    expect(result?.paths).toEqual({
+      "google-workspace__drive": "google-workspace/CAPLET.md",
+      "google-workspace__gmail": "google-workspace/CAPLET.md",
+    });
+    expect(result?.metadata).toEqual({
+      "google-workspace__drive": {
+        path: "google-workspace/CAPLET.md",
+        parentId: "google-workspace",
+        childId: "drive",
+        backend: "googleDiscovery",
+      },
+      "google-workspace__gmail": {
+        path: "google-workspace/CAPLET.md",
+        parentId: "google-workspace",
+        childId: "gmail",
+        backend: "googleDiscovery",
+      },
+    });
+    expect(result?.config.googleDiscoveryApis?.["google-workspace__drive"]).toMatchObject({
+      name: "Google Drive",
+      description: "Search and inspect Google Drive files.",
+      tags: ["google", "workspace", "drive"],
+      discoveryPath: "google-workspace/drive.discovery.json",
+      auth: {
+        type: "oauth2",
+        issuer: "https://accounts.google.com",
+        scopes: ["https://www.googleapis.com/auth/drive.metadata.readonly"],
+      },
+      runtime: {
+        features: ["browser", "docker"],
+        resources: { class: "large" },
+      },
+      setup: {
+        commands: [{ label: "Parent setup", command: "parent-setup" }],
+        verify: [{ label: "Verify Drive", command: "drive-verify" }],
+      },
+      body: "\n# Google Workspace\n",
+    });
+    expect(result?.config.googleDiscoveryApis?.["google-workspace__gmail"]).toMatchObject({
+      name: "Gmail",
+      discoveryPath: "google-workspace/gmail.discovery.json",
+      auth: {
+        type: "oauth2",
+        issuer: "https://accounts.google.com",
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      },
+    });
+  });
+
+  it("rejects files that mix singular and plural backend syntax", () => {
+    expect(() =>
+      loadCapletFilesFromMap({
+        files: [
+          {
+            path: "mixed/CAPLET.md",
+            content: `---
+name: Mixed
+description: Invalid mixed backend syntax.
+mcpServer:
+  command: single
+mcpServers:
+  child:
+    command: child
+---
+`,
+          },
+        ],
+      }),
+    ).toThrow(/invalid frontmatter/);
+  });
+
+  it("rejects actions as a plural cliTools child id", () => {
+    expect(() =>
+      loadCapletFilesFromMap({
+        files: [
+          {
+            path: "tools/CAPLET.md",
+            content: `---
+name: Tools
+description: Invalid plural CLI child id.
+cliTools:
+  actions:
+    actions:
+      list:
+        command: node
+---
+`,
+          },
+        ],
+      }),
+    ).toThrow(/invalid frontmatter/);
+  });
+
+  it("validates plural child entries against their backend schema", () => {
+    expect(() =>
+      loadCapletFilesFromMap({
+        files: [
+          {
+            path: "workspace/CAPLET.md",
+            content: `---
+name: Workspace
+description: Invalid plural child backend fields.
+auth:
+  type: oauth2
+  issuer: https://accounts.google.com
+googleDiscoveryApis:
+  drive:
+    name: Drive
+    description: Search Drive metadata.
+    discoveryPath: ./drive.discovery.json
+    unsupportedBackendField: true
+---
+`,
+          },
+        ],
+      }),
+    ).toThrow(/invalid frontmatter/);
+  });
 });
 
 function caplet(name: string): string {

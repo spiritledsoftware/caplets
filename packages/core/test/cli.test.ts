@@ -24,6 +24,7 @@ import {
 } from "../src/cli";
 import { loadConfig, parseConfig } from "../src/config";
 import type { CapletsError } from "../src/errors";
+import { readCapletsLockfile } from "../src/cli/lockfile";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { FileVaultStore } from "../src/vault";
@@ -3384,6 +3385,58 @@ describe("cli init", () => {
     }
   });
 
+  it("guides selected runtime child IDs to the parent Caplet install ID", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-child-guidance-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeWorkspaceSuiteRepo(repo);
+
+      expect(() =>
+        installCaplets(repo, { capletIds: ["workspace__drive"], destinationRoot }),
+      ).toThrow(/runtime child of workspace; install parent Caplet workspace instead/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("locks plural Caplet suites by parent ID with combined risk metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-suite-lock-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    const lockfilePath = join(dir, ".caplets.lock.json");
+    try {
+      writeWorkspaceSuiteRepo(repo);
+
+      installCaplets(repo, {
+        capletIds: ["workspace"],
+        destinationRoot,
+        lockfilePath,
+        now: new Date("2026-06-29T00:00:00.000Z"),
+      });
+
+      expect(readCapletsLockfile(lockfilePath).entries).toEqual([
+        expect.objectContaining({
+          id: "workspace",
+          destination: "workspace",
+          kind: "directory",
+          risk: expect.objectContaining({
+            backendFamilies: ["googleDiscovery", "http"],
+            safety: "mutating_saas",
+            authScopes: [
+              "https://www.googleapis.com/auth/drive.metadata.readonly",
+              "https://www.googleapis.com/auth/gmail.readonly",
+            ],
+            mutating: true,
+            destructive: true,
+          }),
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects option-like install source refs before invoking Git", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-"));
     const repo = join(dir, "repo");
@@ -4711,6 +4764,51 @@ function writeInstallableRepo(repo: string): void {
     join(root, "github", "README.md"),
     "Extra files are copied with directory Caplets.\n",
   );
+}
+
+function writeWorkspaceSuiteRepo(repo: string): void {
+  const root = join(repo, "caplets", "workspace");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, "CAPLET.md"),
+    [
+      "---",
+      "name: Workspace",
+      "description: Work with workspace APIs.",
+      "auth:",
+      "  type: oauth2",
+      "  issuer: https://accounts.google.com",
+      "  scopes:",
+      "    - https://www.googleapis.com/auth/drive.metadata.readonly",
+      "googleDiscoveryApis:",
+      "  drive:",
+      "    name: Drive",
+      "    description: Search Drive files and folders.",
+      "    discoveryPath: ./drive.discovery.json",
+      "  gmail:",
+      "    name: Gmail",
+      "    description: Search Gmail messages and labels.",
+      "    discoveryPath: ./gmail.discovery.json",
+      "    auth:",
+      "      type: oauth2",
+      "      issuer: https://accounts.google.com",
+      "      scopes:",
+      "        - https://www.googleapis.com/auth/gmail.readonly",
+      "httpApis:",
+      "  admin:",
+      "    name: Workspace Admin",
+      "    description: Manage workspace admin records.",
+      "    baseUrl: https://workspace.example.com",
+      "    actions:",
+      "      delete_record:",
+      "        method: DELETE",
+      "        path: /records/{id}",
+      "---",
+      "# Workspace",
+    ].join("\n"),
+  );
+  writeFileSync(join(root, "drive.discovery.json"), "{}");
+  writeFileSync(join(root, "gmail.discovery.json"), "{}");
 }
 
 function capletsRestoreTempDirs(): string[] {

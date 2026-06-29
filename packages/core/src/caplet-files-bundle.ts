@@ -708,6 +708,74 @@ const capletCatalogSchema = z
   .strict()
   .describe("Optional presentation metadata for public catalog surfaces.");
 
+const capletFileChildSharedFields = {
+  name: z.string().trim().min(1).max(80).optional(),
+  description: z
+    .string()
+    .refine(
+      (value) => value.trim().length >= 10,
+      "description must contain at least 10 non-whitespace characters",
+    )
+    .refine((value) => value.length <= 1500, "description must be at most 1500 characters")
+    .optional(),
+  tags: z.array(z.string().trim().min(1).max(80)).optional(),
+  exposure: capletExposureSchema.optional(),
+  shadowing: capletShadowingSchema.optional(),
+  ...capletAgentSelectionHintsSchema,
+  setup: capletSetupSchema.optional(),
+  projectBinding: capletProjectBindingSchema.optional(),
+  runtime: capletRuntimeRequirementsSchema.optional(),
+};
+
+const capletFileChildSharedSchema = z.object(capletFileChildSharedFields).strict();
+
+const capletOptionalEndpointAuthSchema =
+  capletEndpointAuthSchema.optional() as unknown as typeof capletEndpointAuthSchema;
+
+const capletMcpServerChildSchema = capletMcpServerSchema.safeExtend(capletFileChildSharedFields);
+const capletOpenApiEndpointChildSchema = capletOpenApiEndpointSchema.safeExtend({
+  ...capletFileChildSharedFields,
+  auth: capletOptionalEndpointAuthSchema,
+});
+const capletGoogleDiscoveryApiChildSchema = capletGoogleDiscoveryApiSchema.safeExtend({
+  ...capletFileChildSharedFields,
+  auth: capletOptionalEndpointAuthSchema,
+});
+const capletGraphQlEndpointChildSchema = capletGraphQlEndpointSchema.safeExtend({
+  ...capletFileChildSharedFields,
+  auth: capletOptionalEndpointAuthSchema,
+});
+const capletHttpApiChildSchema = capletHttpApiSchema.safeExtend({
+  ...capletFileChildSharedFields,
+  auth: capletOptionalEndpointAuthSchema,
+});
+const capletCliToolsChildSchema = capletCliToolsSchema.safeExtend(capletFileChildSharedFields);
+const capletSetChildSchema = capletSetSchema.safeExtend(capletFileChildSharedFields);
+
+function capletPluralBackendMapSchema<T extends z.ZodTypeAny>(valueSchema: T) {
+  return z
+    .record(z.string().regex(SERVER_ID_PATTERN), valueSchema)
+    .refine(
+      (backends) => Object.keys(backends).length > 0,
+      "plural backend maps must not be empty",
+    );
+}
+
+const capletMcpServersFileSchema = capletPluralBackendMapSchema(capletMcpServerChildSchema);
+const capletOpenApiEndpointsFileSchema = capletPluralBackendMapSchema(
+  capletOpenApiEndpointChildSchema,
+);
+const capletGoogleDiscoveryApisFileSchema = capletPluralBackendMapSchema(
+  capletGoogleDiscoveryApiChildSchema,
+);
+const capletGraphQlEndpointsFileSchema = capletPluralBackendMapSchema(
+  capletGraphQlEndpointChildSchema,
+);
+const capletHttpApisFileSchema = capletPluralBackendMapSchema(capletHttpApiChildSchema);
+const capletCliToolsPluralFileSchema = capletPluralBackendMapSchema(capletCliToolsChildSchema);
+const capletCapletSetsFileSchema = capletPluralBackendMapSchema(capletSetChildSchema);
+const capletCliToolsFileSchema = z.union([capletCliToolsSchema, capletCliToolsPluralFileSchema]);
+
 export const capletFileSchema = z
   .object({
     $schema: z.string().optional().describe("Optional JSON Schema for editor validation."),
@@ -730,49 +798,146 @@ export const capletFileSchema = z
     setup: capletSetupSchema.optional(),
     projectBinding: capletProjectBindingSchema.optional(),
     runtime: capletRuntimeRequirementsSchema.optional(),
+    auth: capletEndpointAuthSchema
+      .optional()
+      .describe("Shared auth inherited by plural remote backend entries."),
     catalog: capletCatalogSchema.optional(),
     mcpServer: capletMcpServerSchema
       .describe("MCP server backend configuration for this Caplet.")
       .optional(),
+    mcpServers: capletMcpServersFileSchema
+      .describe("Multiple MCP server backend configurations keyed by child ID.")
+      .optional(),
     openapiEndpoint: capletOpenApiEndpointSchema
       .describe("OpenAPI endpoint backend configuration for this Caplet.")
+      .optional(),
+    openapiEndpoints: capletOpenApiEndpointsFileSchema
+      .describe("Multiple OpenAPI endpoint backend configurations keyed by child ID.")
       .optional(),
     googleDiscoveryApi: capletGoogleDiscoveryApiSchema
       .describe("Google Discovery API backend configuration for this Caplet.")
       .optional(),
+    googleDiscoveryApis: capletGoogleDiscoveryApisFileSchema
+      .describe("Multiple Google Discovery API backend configurations keyed by child ID.")
+      .optional(),
     graphqlEndpoint: capletGraphQlEndpointSchema
       .describe("GraphQL endpoint backend configuration for this Caplet.")
+      .optional(),
+    graphqlEndpoints: capletGraphQlEndpointsFileSchema
+      .describe("Multiple GraphQL endpoint backend configurations keyed by child ID.")
       .optional(),
     httpApi: capletHttpApiSchema
       .describe("HTTP API backend configuration for this Caplet.")
       .optional(),
-    cliTools: capletCliToolsSchema
-      .describe("CLI tools backend configuration for this Caplet.")
+    httpApis: capletHttpApisFileSchema
+      .describe("Multiple HTTP API backend configurations keyed by child ID.")
+      .optional(),
+    cliTools: capletCliToolsFileSchema
+      .describe("CLI tools backend configuration, or plural CLI backend configurations.")
       .optional(),
     capletSet: capletSetSchema
       .describe("Nested Caplet collection backend configuration for this Caplet.")
       .optional(),
+    capletSets: capletCapletSetsFileSchema
+      .describe("Multiple nested Caplet collection backend configurations keyed by child ID.")
+      .optional(),
   })
   .strict()
   .superRefine((frontmatter, ctx) => {
-    const backendCount =
+    const cliToolsIsSingular = isSingularCliToolsFrontmatter(frontmatter.cliTools);
+    const singularBackendCount =
       Number(Boolean(frontmatter.mcpServer)) +
       Number(Boolean(frontmatter.openapiEndpoint)) +
       Number(Boolean(frontmatter.googleDiscoveryApi)) +
       Number(Boolean(frontmatter.graphqlEndpoint)) +
       Number(Boolean(frontmatter.httpApi)) +
-      Number(Boolean(frontmatter.cliTools)) +
+      Number(Boolean(frontmatter.cliTools) && cliToolsIsSingular) +
       Number(Boolean(frontmatter.capletSet));
-    if (backendCount !== 1) {
+    const pluralBackendFamilies = [
+      frontmatter.mcpServers ? "mcpServers" : undefined,
+      frontmatter.openapiEndpoints ? "openapiEndpoints" : undefined,
+      frontmatter.googleDiscoveryApis ? "googleDiscoveryApis" : undefined,
+      frontmatter.graphqlEndpoints ? "graphqlEndpoints" : undefined,
+      frontmatter.httpApis ? "httpApis" : undefined,
+      frontmatter.cliTools && !cliToolsIsSingular ? "cliTools" : undefined,
+      frontmatter.capletSets ? "capletSets" : undefined,
+    ].filter((family): family is string => Boolean(family));
+    if (singularBackendCount > 0 && pluralBackendFamilies.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Caplet file must define either one singular backend or one or more plural backend maps, not both",
+      });
+    }
+    if (singularBackendCount === 0 && pluralBackendFamilies.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Caplet file must define exactly one singular backend or at least one plural backend map",
+      });
+    }
+    if (singularBackendCount > 1) {
       ctx.addIssue({
         code: "custom",
         message:
           "Caplet file must define exactly one backend: mcpServer, openapiEndpoint, googleDiscoveryApi, graphqlEndpoint, httpApi, cliTools, or capletSet",
       });
     }
+    if (
+      frontmatter.cliTools &&
+      !cliToolsIsSingular &&
+      Object.hasOwn(frontmatter.cliTools, "actions")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["cliTools", "actions"],
+        message:
+          "actions is reserved for singular cliTools and cannot be a plural cliTools child ID",
+      });
+    }
+    if (
+      frontmatter.auth &&
+      (singularBackendCount > 0 ||
+        pluralBackendFamilies.includes("cliTools") ||
+        pluralBackendFamilies.includes("capletSets"))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["auth"],
+        message:
+          "top-level auth is only supported by plural mcpServers, openapiEndpoints, googleDiscoveryApis, graphqlEndpoints, and httpApis",
+      });
+    }
   });
 
 type CapletFileFrontmatter = z.infer<typeof capletFileSchema>;
+
+type CapletFileBackendFamily =
+  | "mcp"
+  | "openapi"
+  | "googleDiscovery"
+  | "graphql"
+  | "http"
+  | "cli"
+  | "caplets";
+
+type ExpandedCapletFileChild = {
+  childId: string;
+  backend: CapletFileBackendFamily;
+  config: unknown;
+};
+
+type ExpandedCapletFileConfig = {
+  kind: "expanded-caplet-file";
+  children: ExpandedCapletFileChild[];
+};
+
+export type CapletFileSourceMetadata = {
+  path: string;
+  parentId: string;
+  childId?: string | undefined;
+  backend: CapletFileBackendFamily;
+};
 
 export function capletJsonSchema(): unknown {
   return patchCapletJsonSchema({
@@ -797,6 +962,7 @@ export type CapletFileConfig = {
 export type CapletFileLoadResult = {
   config: CapletFileConfig;
   paths: Record<string, string>;
+  metadata?: Record<string, CapletFileSourceMetadata> | undefined;
 };
 
 export type CapletFileMapInput = {
@@ -851,6 +1017,8 @@ export function buildCapletFileLoadResultFromEntries(
   const cliTools: Record<string, unknown> = {};
   const capletSets: Record<string, unknown> = {};
   const paths: Record<string, string> = {};
+  const metadata: Record<string, CapletFileSourceMetadata> = {};
+  const parentIds = new Set<string>();
 
   function hasId(id: string): boolean {
     return Boolean(
@@ -864,8 +1032,42 @@ export function buildCapletFileLoadResultFromEntries(
     );
   }
 
+  function addConfig(
+    id: string,
+    config: unknown,
+    path: string,
+    entryMetadata: CapletFileSourceMetadata,
+  ): void {
+    if (hasId(id)) {
+      throw new CapletsError("CONFIG_INVALID", `Duplicate Caplet ID ${id} under ${root}`);
+    }
+    paths[id] = path;
+    metadata[id] = entryMetadata;
+    if (isPlainObject(config) && config.backend === "openapi") {
+      const { backend: _backend, ...endpoint } = config;
+      openapiEndpoints[id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "googleDiscovery") {
+      const { backend: _backend, ...api } = config;
+      googleDiscoveryApis[id] = api;
+    } else if (isPlainObject(config) && config.backend === "graphql") {
+      const { backend: _backend, ...endpoint } = config;
+      graphqlEndpoints[id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "http") {
+      const { backend: _backend, ...endpoint } = config;
+      httpApis[id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "cli") {
+      const { backend: _backend, ...endpoint } = config;
+      cliTools[id] = endpoint;
+    } else if (isPlainObject(config) && config.backend === "caplets") {
+      const { backend: _backend, ...endpoint } = config;
+      capletSets[id] = endpoint;
+    } else {
+      servers[id] = config;
+    }
+  }
+
   for (const candidate of candidates) {
-    if (hasId(candidate.id)) {
+    if (parentIds.has(candidate.id)) {
       const message = `Duplicate Caplet ID ${candidate.id} under ${root}`;
       if (!warnings) {
         throw new CapletsError("CONFIG_INVALID", message);
@@ -876,6 +1078,7 @@ export function buildCapletFileLoadResultFromEntries(
       });
       continue;
     }
+    parentIds.add(candidate.id);
 
     let config: unknown;
     try {
@@ -891,27 +1094,33 @@ export function buildCapletFileLoadResultFromEntries(
       continue;
     }
 
-    paths[candidate.id] = candidate.path;
-    if (isPlainObject(config) && config.backend === "openapi") {
-      const { backend: _backend, ...endpoint } = config;
-      openapiEndpoints[candidate.id] = endpoint;
-    } else if (isPlainObject(config) && config.backend === "googleDiscovery") {
-      const { backend: _backend, ...api } = config;
-      googleDiscoveryApis[candidate.id] = api;
-    } else if (isPlainObject(config) && config.backend === "graphql") {
-      const { backend: _backend, ...endpoint } = config;
-      graphqlEndpoints[candidate.id] = endpoint;
-    } else if (isPlainObject(config) && config.backend === "http") {
-      const { backend: _backend, ...endpoint } = config;
-      httpApis[candidate.id] = endpoint;
-    } else if (isPlainObject(config) && config.backend === "cli") {
-      const { backend: _backend, ...endpoint } = config;
-      cliTools[candidate.id] = endpoint;
-    } else if (isPlainObject(config) && config.backend === "caplets") {
-      const { backend: _backend, ...endpoint } = config;
-      capletSets[candidate.id] = endpoint;
+    if (isExpandedCapletFileConfig(config)) {
+      for (const child of config.children) {
+        const childRuntimeId = `${candidate.id}__${child.childId}`;
+        validateCapletId(childRuntimeId, candidate.path);
+        try {
+          addConfig(childRuntimeId, child.config, candidate.path, {
+            path: candidate.path,
+            parentId: candidate.id,
+            childId: child.childId,
+            backend: child.backend,
+          });
+        } catch (error) {
+          if (!warnings) {
+            throw error;
+          }
+          warnings.push({
+            path: candidate.path,
+            message: `Skipping invalid Caplet child ${childRuntimeId} at ${candidate.path}: ${errorMessage(error)}`,
+          });
+        }
+      }
     } else {
-      servers[candidate.id] = config;
+      addConfig(candidate.id, config, candidate.path, {
+        path: candidate.path,
+        parentId: candidate.id,
+        backend: configBackend(config),
+      });
     }
   }
 
@@ -936,7 +1145,12 @@ export function buildCapletFileLoadResultFromEntries(
     return undefined;
   }
 
-  return { config, paths, warnings: warnings ?? [] };
+  return {
+    config,
+    paths,
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    warnings: warnings ?? [],
+  };
 }
 
 function discoverCapletFileMapCandidates(paths: string[]): Array<{ id: string; path: string }> {
@@ -1004,6 +1218,14 @@ function capletToServerConfig(
   baseDir: string,
   normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
 ): unknown {
+  const expanded = capletToExpandedServerConfigs(frontmatter, body, baseDir, normalizePath);
+  if (expanded.length > 0) {
+    return {
+      kind: "expanded-caplet-file",
+      children: expanded,
+    } satisfies ExpandedCapletFileConfig;
+  }
+
   if (frontmatter.openapiEndpoint) {
     return {
       ...frontmatter.openapiEndpoint,
@@ -1056,11 +1278,12 @@ function capletToServerConfig(
     };
   }
 
-  if (frontmatter.cliTools) {
+  if (frontmatter.cliTools && isSingularCliToolsFrontmatter(frontmatter.cliTools)) {
+    const cliTools = frontmatter.cliTools as z.infer<typeof capletCliToolsSchema>;
     return {
-      ...frontmatter.cliTools,
-      cwd: normalizePath(frontmatter.cliTools.cwd, baseDir),
-      actions: normalizeCliToolActions(frontmatter.cliTools.actions, baseDir, normalizePath),
+      ...cliTools,
+      cwd: normalizePath(cliTools.cwd, baseDir),
+      actions: normalizeCliToolActions(cliTools.actions, baseDir, normalizePath),
       backend: "cli",
       name: frontmatter.name,
       description: frontmatter.description,
@@ -1089,6 +1312,407 @@ function capletToServerConfig(
     ...sharedCapletFields(frontmatter),
     body,
   };
+}
+
+type SharedCapletFields = {
+  name?: string | undefined;
+  description?: string | undefined;
+  tags?: string[] | undefined;
+  exposure?: z.infer<typeof capletExposureSchema> | undefined;
+  shadowing?: z.infer<typeof capletShadowingSchema> | undefined;
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
+  setup?: z.infer<typeof capletSetupSchema> | undefined;
+  projectBinding?: z.infer<typeof capletProjectBindingSchema> | undefined;
+  runtime?: z.infer<typeof capletRuntimeRequirementsSchema> | undefined;
+};
+
+const CHILD_SHARED_FIELD_KEYS = new Set([
+  "name",
+  "description",
+  "tags",
+  "exposure",
+  "shadowing",
+  "useWhen",
+  "avoidWhen",
+  "setup",
+  "projectBinding",
+  "runtime",
+]);
+
+function capletToExpandedServerConfigs(
+  frontmatter: CapletFileFrontmatter,
+  body: string,
+  baseDir: string,
+  normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
+): ExpandedCapletFileChild[] {
+  const parentShared = parentSharedFields(frontmatter);
+  const children: ExpandedCapletFileChild[] = [];
+
+  addExpandedChildren(
+    children,
+    "mcp",
+    frontmatter.mcpServers,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+  addExpandedChildren(
+    children,
+    "openapi",
+    frontmatter.openapiEndpoints,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+  addExpandedChildren(
+    children,
+    "googleDiscovery",
+    frontmatter.googleDiscoveryApis,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+  addExpandedChildren(
+    children,
+    "graphql",
+    frontmatter.graphqlEndpoints,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+  addExpandedChildren(
+    children,
+    "http",
+    frontmatter.httpApis,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+  if (frontmatter.cliTools && !isSingularCliToolsFrontmatter(frontmatter.cliTools)) {
+    addExpandedChildren(
+      children,
+      "cli",
+      frontmatter.cliTools as Record<string, Record<string, unknown>>,
+      frontmatter,
+      parentShared,
+      body,
+      baseDir,
+      normalizePath,
+    );
+  }
+  addExpandedChildren(
+    children,
+    "caplets",
+    frontmatter.capletSets,
+    frontmatter,
+    parentShared,
+    body,
+    baseDir,
+    normalizePath,
+  );
+
+  return children;
+}
+
+function addExpandedChildren(
+  children: ExpandedCapletFileChild[],
+  backend: CapletFileBackendFamily,
+  childMap: Record<string, Record<string, unknown>> | undefined,
+  frontmatter: CapletFileFrontmatter,
+  parentShared: SharedCapletFields,
+  body: string,
+  baseDir: string,
+  normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
+): void {
+  if (!childMap) {
+    return;
+  }
+
+  for (const [childId, rawChild] of Object.entries(childMap)) {
+    const { shared, backendConfig } = splitChildBackendConfig(rawChild);
+    const mergedShared = mergeSharedCapletFields(parentShared, shared);
+    const validatedBackend = validateExpandedBackendConfig(
+      backend,
+      backendConfig,
+      frontmatter.auth,
+      mergedShared,
+      childId,
+    );
+    children.push({
+      childId,
+      backend,
+      config: normalizeExpandedBackendConfig(
+        backend,
+        validatedBackend,
+        mergedShared,
+        body,
+        baseDir,
+        normalizePath,
+      ),
+    });
+  }
+}
+
+function splitChildBackendConfig(rawChild: Record<string, unknown>): {
+  shared: SharedCapletFields;
+  backendConfig: Record<string, unknown>;
+} {
+  const rawShared: Record<string, unknown> = {};
+  const backendConfig: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawChild)) {
+    if (CHILD_SHARED_FIELD_KEYS.has(key)) {
+      rawShared[key] = value;
+    } else {
+      backendConfig[key] = value;
+    }
+  }
+  const parsed = capletFileChildSharedSchema.safeParse(rawShared);
+  if (!parsed.success) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Caplet file child has invalid inherited fields",
+      parsed.error.issues,
+    );
+  }
+  return { shared: parsed.data, backendConfig };
+}
+
+function parentSharedFields(frontmatter: CapletFileFrontmatter): SharedCapletFields {
+  return {
+    name: frontmatter.name,
+    description: frontmatter.description,
+    tags: frontmatter.tags,
+    exposure: frontmatter.exposure,
+    shadowing: frontmatter.shadowing,
+    useWhen: frontmatter.useWhen,
+    avoidWhen: frontmatter.avoidWhen,
+    setup: frontmatter.setup,
+    projectBinding: frontmatter.projectBinding,
+    runtime: frontmatter.runtime,
+  };
+}
+
+function mergeSharedCapletFields(
+  parent: SharedCapletFields,
+  child: SharedCapletFields,
+): SharedCapletFields {
+  return {
+    name: child.name ?? parent.name,
+    description: child.description ?? parent.description,
+    tags: mergeTags(parent.tags, child.tags),
+    exposure: child.exposure ?? parent.exposure,
+    shadowing: child.shadowing ?? parent.shadowing,
+    useWhen: child.useWhen ?? parent.useWhen,
+    avoidWhen: child.avoidWhen ?? parent.avoidWhen,
+    setup: mergeSetup(parent.setup, child.setup),
+    projectBinding: child.projectBinding ?? parent.projectBinding,
+    runtime: mergeRuntime(parent.runtime, child.runtime),
+  };
+}
+
+function mergeTags(
+  parent: string[] | undefined,
+  child: string[] | undefined,
+): string[] | undefined {
+  if (!parent && !child) {
+    return undefined;
+  }
+  return [...new Set([...(parent ?? []), ...(child ?? [])])];
+}
+
+function mergeSetup(
+  parent: z.infer<typeof capletSetupSchema> | undefined,
+  child: z.infer<typeof capletSetupSchema> | undefined,
+): z.infer<typeof capletSetupSchema> | undefined {
+  if (!parent) {
+    return child;
+  }
+  if (!child) {
+    return parent;
+  }
+  return {
+    ...(parent.commands || child.commands
+      ? { commands: [...(parent.commands ?? []), ...(child.commands ?? [])] }
+      : {}),
+    ...(parent.verify || child.verify
+      ? { verify: [...(parent.verify ?? []), ...(child.verify ?? [])] }
+      : {}),
+  };
+}
+
+function mergeRuntime(
+  parent: z.infer<typeof capletRuntimeRequirementsSchema> | undefined,
+  child: z.infer<typeof capletRuntimeRequirementsSchema> | undefined,
+): z.infer<typeof capletRuntimeRequirementsSchema> | undefined {
+  if (!parent) {
+    return child;
+  }
+  if (!child) {
+    return parent;
+  }
+  const features = [...new Set([...(parent.features ?? []), ...(child.features ?? [])])];
+  return {
+    ...(features.length > 0 ? { features } : {}),
+    ...(parent.resources || child.resources
+      ? { resources: { ...parent.resources, ...child.resources } }
+      : {}),
+  };
+}
+
+function validateExpandedBackendConfig(
+  backend: CapletFileBackendFamily,
+  backendConfig: Record<string, unknown>,
+  parentAuth: z.infer<typeof capletEndpointAuthSchema> | undefined,
+  shared: SharedCapletFields,
+  childId: string,
+): Record<string, unknown> {
+  const configWithInheritedFields = {
+    ...backendConfig,
+    ...(parentAuth && backendSupportsParentAuth(backend) && backendConfig.auth === undefined
+      ? { auth: parentAuth }
+      : {}),
+    ...(shared.projectBinding ? { projectBinding: shared.projectBinding } : {}),
+    ...(shared.runtime ? { runtime: shared.runtime } : {}),
+  };
+  const schema = schemaForBackend(backend);
+  const parsed = schema.safeParse(configWithInheritedFields);
+  if (!parsed.success) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplet file child ${childId} has invalid ${backend} backend`,
+      parsed.error.issues,
+    );
+  }
+  return parsed.data as Record<string, unknown>;
+}
+
+function normalizeExpandedBackendConfig(
+  backend: CapletFileBackendFamily,
+  config: Record<string, unknown>,
+  shared: SharedCapletFields,
+  body: string,
+  baseDir: string,
+  normalizePath: (value: string | undefined, baseDir: string) => string | undefined,
+): unknown {
+  const common = normalizedSharedOutput(shared);
+  if (backend === "openapi") {
+    return {
+      ...config,
+      specPath: normalizePath(config.specPath as string | undefined, baseDir),
+      backend: "openapi",
+      ...common,
+      body,
+    };
+  }
+  if (backend === "googleDiscovery") {
+    return {
+      ...config,
+      discoveryPath: normalizePath(config.discoveryPath as string | undefined, baseDir),
+      backend: "googleDiscovery",
+      ...common,
+      body,
+    };
+  }
+  if (backend === "graphql") {
+    return {
+      ...config,
+      schemaPath: normalizePath(config.schemaPath as string | undefined, baseDir),
+      operations: normalizeGraphQlOperations(
+        config.operations as z.infer<typeof capletGraphQlEndpointSchema>["operations"],
+        baseDir,
+        normalizePath,
+      ),
+      backend: "graphql",
+      ...common,
+      body,
+    };
+  }
+  if (backend === "http") {
+    return {
+      ...config,
+      backend: "http",
+      ...common,
+      body,
+    };
+  }
+  if (backend === "cli") {
+    return {
+      ...config,
+      cwd: normalizePath(config.cwd as string | undefined, baseDir),
+      actions: normalizeCliToolActions(
+        config.actions as z.infer<typeof capletCliToolsSchema>["actions"],
+        baseDir,
+        normalizePath,
+      ),
+      backend: "cli",
+      ...common,
+      body,
+    };
+  }
+  if (backend === "caplets") {
+    return {
+      ...config,
+      configPath: normalizePath(config.configPath as string | undefined, baseDir),
+      capletsRoot: normalizePath(config.capletsRoot as string | undefined, baseDir),
+      backend: "caplets",
+      ...common,
+      body,
+    };
+  }
+  return {
+    ...config,
+    ...common,
+    body,
+  };
+}
+
+function normalizedSharedOutput(shared: SharedCapletFields): Record<string, unknown> {
+  return {
+    ...(shared.name ? { name: shared.name } : {}),
+    ...(shared.description ? { description: shared.description } : {}),
+    ...(shared.tags ? { tags: shared.tags } : {}),
+    ...(shared.exposure ? { exposure: shared.exposure } : {}),
+    ...(shared.shadowing ? { shadowing: shared.shadowing } : {}),
+    ...(shared.useWhen ? { useWhen: shared.useWhen } : {}),
+    ...(shared.avoidWhen ? { avoidWhen: shared.avoidWhen } : {}),
+    ...(shared.setup ? { setup: shared.setup } : {}),
+    ...(shared.projectBinding ? { projectBinding: shared.projectBinding } : {}),
+    ...(shared.runtime ? { runtime: shared.runtime } : {}),
+  };
+}
+
+function schemaForBackend(backend: CapletFileBackendFamily): z.ZodTypeAny {
+  switch (backend) {
+    case "openapi":
+      return capletOpenApiEndpointSchema;
+    case "googleDiscovery":
+      return capletGoogleDiscoveryApiSchema;
+    case "graphql":
+      return capletGraphQlEndpointSchema;
+    case "http":
+      return capletHttpApiSchema;
+    case "cli":
+      return capletCliToolsSchema;
+    case "caplets":
+      return capletSetSchema;
+    case "mcp":
+      return capletMcpServerSchema;
+  }
+}
+
+function backendSupportsParentAuth(backend: CapletFileBackendFamily): boolean {
+  return backend !== "cli" && backend !== "caplets";
 }
 
 function sharedCapletFields(frontmatter: CapletFileFrontmatter): Record<string, unknown> {
@@ -1256,6 +1880,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isExpandedCapletFileConfig(value: unknown): value is ExpandedCapletFileConfig {
+  return (
+    isPlainObject(value) && value.kind === "expanded-caplet-file" && Array.isArray(value.children)
+  );
+}
+
+function isSingularCliToolsFrontmatter(value: unknown): boolean {
+  return capletCliToolsSchema.safeParse(value).success;
+}
+
+function configBackend(config: unknown): CapletFileBackendFamily {
+  if (isPlainObject(config)) {
+    if (config.backend === "openapi") {
+      return "openapi";
+    }
+    if (config.backend === "googleDiscovery") {
+      return "googleDiscovery";
+    }
+    if (config.backend === "graphql") {
+      return "graphql";
+    }
+    if (config.backend === "http") {
+      return "http";
+    }
+    if (config.backend === "cli") {
+      return "cli";
+    }
+    if (config.backend === "caplets") {
+      return "caplets";
+    }
+  }
+  return "mcp";
+}
+
 export function validateCapletId(id: string, path: string): void {
   if (!SERVER_ID_PATTERN.test(id)) {
     throw new CapletsError(
@@ -1285,6 +1943,16 @@ function patchCapletJsonSchema<T>(schema: T): T {
   if (actions) {
     actions.minProperties = 1;
   }
+  const httpApisProperties = schemaPath<Record<string, unknown>>(schema, [
+    "properties",
+    "httpApis",
+    "additionalProperties",
+    "properties",
+  ]);
+  const pluralHttpActions = nestedSchema<Record<string, unknown>>(httpApisProperties, "actions");
+  if (pluralHttpActions) {
+    pluralHttpActions.minProperties = 1;
+  }
   const baseUrl = nestedSchema<Record<string, unknown>>(httpApiProperties, "baseUrl");
   if (baseUrl) {
     baseUrl.format = "uri";
@@ -1294,9 +1962,39 @@ function patchCapletJsonSchema<T>(schema: T): T {
     "cliTools",
     "properties",
   ]);
-  const cliActions = nestedSchema<Record<string, unknown>>(cliToolsProperties, "actions");
+  const cliActions =
+    nestedSchema<Record<string, unknown>>(cliToolsProperties, "actions") ??
+    cliToolsUnionActionsSchema(schema);
   if (cliActions) {
     cliActions.minProperties = 1;
   }
+  for (const pluralCliActions of cliToolsPluralActionsSchemas(schema)) {
+    pluralCliActions.minProperties = 1;
+  }
   return schema;
+}
+
+function cliToolsUnionActionsSchema(schema: unknown): Record<string, unknown> | undefined {
+  return cliToolsPluralActionsSchemas(schema)[0];
+}
+
+function cliToolsPluralActionsSchemas(schema: unknown): Array<Record<string, unknown>> {
+  const cliTools = schemaPath<Record<string, unknown>>(schema, ["properties", "cliTools"]);
+  const variants = [
+    ...(Array.isArray(cliTools?.anyOf) ? cliTools.anyOf : []),
+    ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
+  ];
+  const actionsSchemas: Array<Record<string, unknown>> = [];
+  for (const variant of variants) {
+    const properties = schemaPath<Record<string, unknown>>(variant, ["properties"]);
+    const actions = nestedSchema<Record<string, unknown>>(properties, "actions");
+    if (actions) actionsSchemas.push(actions);
+    const childProperties = schemaPath<Record<string, unknown>>(variant, [
+      "additionalProperties",
+      "properties",
+    ]);
+    const childActions = nestedSchema<Record<string, unknown>>(childProperties, "actions");
+    if (childActions) actionsSchemas.push(childActions);
+  }
+  return actionsSchemas;
 }

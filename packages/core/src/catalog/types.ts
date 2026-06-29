@@ -108,6 +108,15 @@ export type CatalogEntryInput = {
   workflow?: CatalogWorkflowSummary | undefined;
   mutatesExternalState?: boolean | undefined;
   localControl?: boolean | undefined;
+  children?: CatalogEntryChild[] | undefined;
+};
+
+export type CatalogEntryChild = {
+  id: string;
+  childId?: string | undefined;
+  name: string;
+  backend: string;
+  workflow: CatalogWorkflowSummary | { kind: "unknown"; label: "Unknown" };
 };
 
 export type CatalogEntry = {
@@ -129,6 +138,7 @@ export type CatalogEntry = {
   authReadiness: CatalogReadiness;
   projectBindingReadiness: CatalogReadiness;
   workflow: CatalogWorkflowSummary | { kind: "unknown"; label: "Unknown" };
+  children?: CatalogEntryChild[] | undefined;
   installCommand: CatalogInstallCommand;
   warnings: CatalogWarning[];
 };

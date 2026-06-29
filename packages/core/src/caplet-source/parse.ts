@@ -10,6 +10,8 @@ export type CapletSourceReference = {
 
 export type ParsedCapletSourceCaplet = {
   id: string;
+  parentId: string;
+  childId?: string | undefined;
   name: string;
   description: string;
   backend: CapletConfig["backend"];
@@ -84,12 +86,15 @@ export async function parseCapletSource(source: CapletSource): Promise<CapletSou
   );
   const caplets = configCaplets.map((caplet) => {
     const plan = plansById.get(caplet.server);
+    const sourceMetadata = loaded.metadata?.[caplet.server];
     return {
       id: caplet.server,
+      parentId: sourceMetadata?.parentId ?? caplet.server,
+      ...(sourceMetadata?.childId ? { childId: sourceMetadata.childId } : {}),
       name: caplet.name,
       description: caplet.description,
       backend: caplet.backend,
-      sourcePath: loaded.paths[caplet.server] ?? "CAPLET.md",
+      sourcePath: sourceMetadata?.path ?? loaded.paths[caplet.server] ?? "CAPLET.md",
       setupRequired: Boolean(caplet.setup),
       authRequired: authRequired("auth" in caplet ? caplet.auth : undefined),
       projectBindingRequired: plan?.projectBindingRequired ?? false,

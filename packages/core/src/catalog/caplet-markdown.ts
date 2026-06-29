@@ -44,7 +44,7 @@ export function catalogIconFromFrontmatter(
 }
 
 export function catalogSetupRequiredFromFrontmatter(frontmatter: Record<string, unknown>): boolean {
-  return frontmatter.setup !== undefined;
+  return frontmatter.setup !== undefined || catalogPluralBackends(frontmatter).some(hasSetup);
 }
 
 export function catalogAuthRequiredFromFrontmatter(frontmatter: Record<string, unknown>): boolean {
@@ -54,7 +54,10 @@ export function catalogAuthRequiredFromFrontmatter(frontmatter: Record<string, u
 export function catalogProjectBindingRequiredFromFrontmatter(
   frontmatter: Record<string, unknown>,
 ): boolean {
-  return isRecord(frontmatter.projectBinding) && frontmatter.projectBinding.required === true;
+  return (
+    (isRecord(frontmatter.projectBinding) && frontmatter.projectBinding.required === true) ||
+    catalogPluralBackends(frontmatter).some(hasProjectBinding)
+  );
 }
 
 export function catalogWorkflowSummaryFromFrontmatter(
@@ -67,8 +70,15 @@ export function catalogWorkflowSummaryFromFrontmatter(
 export function catalogMutatesExternalStateFromFrontmatter(
   frontmatter: Record<string, unknown>,
 ): boolean {
-  if (frontmatter.graphqlEndpoint !== undefined) return true;
-  if (frontmatter.openapiEndpoint !== undefined || frontmatter.googleDiscoveryApi !== undefined) {
+  if (frontmatter.graphqlEndpoint !== undefined || frontmatter.graphqlEndpoints !== undefined) {
+    return true;
+  }
+  if (
+    frontmatter.openapiEndpoint !== undefined ||
+    frontmatter.googleDiscoveryApi !== undefined ||
+    frontmatter.openapiEndpoints !== undefined ||
+    frontmatter.googleDiscoveryApis !== undefined
+  ) {
     return true;
   }
   const httpApi = frontmatter.httpApi;
@@ -84,6 +94,24 @@ export function catalogMutatesExternalStateFromFrontmatter(
       return action.annotations.readOnlyHint !== true;
     });
   }
+  for (const httpApi of catalogPluralBackendValues(frontmatter.httpApis)) {
+    if (isRecord(httpApi.actions)) {
+      const mutates = Object.values(httpApi.actions).some((action) => {
+        if (!isRecord(action)) return false;
+        return typeof action.method === "string" && action.method.toUpperCase() !== "GET";
+      });
+      if (mutates) return true;
+    }
+  }
+  if (isRecord(frontmatter.cliTools) && !isRecord(frontmatter.cliTools.actions)) {
+    return catalogPluralBackendValues(frontmatter.cliTools).some((cliTools) => {
+      if (!isRecord(cliTools.actions)) return false;
+      return Object.values(cliTools.actions).some((action) => {
+        if (!isRecord(action) || !isRecord(action.annotations)) return true;
+        return action.annotations.readOnlyHint !== true;
+      });
+    });
+  }
   return false;
 }
 
@@ -96,19 +124,29 @@ export function catalogUsesLocalControlFromFrontmatter(
     catalogProjectBindingRequiredFromFrontmatter(frontmatter) ||
     runtimeFeatures.length > 0 ||
     frontmatter.cliTools !== undefined ||
-    isLocalMcpServer(frontmatter)
+    isLocalMcpServer(frontmatter) ||
+    catalogPluralBackends(frontmatter).some(hasRuntimeFeatures) ||
+    catalogPluralBackendValues(frontmatter.mcpServers).some(
+      (server) => typeof server.command === "string",
+    )
   );
 }
 
 function catalogBackendFamilies(frontmatter: Record<string, unknown>): string[] {
   const families: Array<readonly [string, string]> = [
     ["mcp", "mcpServer"],
+    ["mcp", "mcpServers"],
     ["openapi", "openapiEndpoint"],
+    ["openapi", "openapiEndpoints"],
     ["googleDiscovery", "googleDiscoveryApi"],
+    ["googleDiscovery", "googleDiscoveryApis"],
     ["graphql", "graphqlEndpoint"],
+    ["graphql", "graphqlEndpoints"],
     ["http", "httpApi"],
+    ["http", "httpApis"],
     ["cli", "cliTools"],
     ["caplets", "capletSet"],
+    ["caplets", "capletSets"],
   ];
   return families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family]));
 }
@@ -127,6 +165,18 @@ function catalogCapletAuthBlocks(
     const backend = frontmatter[key];
     if (isRecord(backend) && isRecord(backend.auth)) blocks.push(backend.auth);
   }
+  if (isRecord(frontmatter.auth)) blocks.push(frontmatter.auth);
+  for (const key of [
+    "mcpServers",
+    "openapiEndpoints",
+    "googleDiscoveryApis",
+    "graphqlEndpoints",
+    "httpApis",
+  ]) {
+    for (const backend of catalogPluralBackendValues(frontmatter[key])) {
+      if (isRecord(backend.auth)) blocks.push(backend.auth);
+    }
+  }
   return blocks;
 }
 
@@ -137,4 +187,36 @@ function isLocalMcpServer(frontmatter: Record<string, unknown>): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function catalogPluralBackendValues(value: unknown): Record<string, unknown>[] {
+  if (!isRecord(value)) return [];
+  return Object.values(value).filter(isRecord);
+}
+
+function catalogPluralBackends(frontmatter: Record<string, unknown>): Record<string, unknown>[] {
+  return [
+    ...catalogPluralBackendValues(frontmatter.mcpServers),
+    ...catalogPluralBackendValues(frontmatter.openapiEndpoints),
+    ...catalogPluralBackendValues(frontmatter.googleDiscoveryApis),
+    ...catalogPluralBackendValues(frontmatter.graphqlEndpoints),
+    ...catalogPluralBackendValues(frontmatter.httpApis),
+    ...(isRecord(frontmatter.cliTools) && !isRecord(frontmatter.cliTools.actions)
+      ? catalogPluralBackendValues(frontmatter.cliTools)
+      : []),
+    ...catalogPluralBackendValues(frontmatter.capletSets),
+  ];
+}
+
+function hasSetup(value: Record<string, unknown>): boolean {
+  return value.setup !== undefined;
+}
+
+function hasProjectBinding(value: Record<string, unknown>): boolean {
+  return isRecord(value.projectBinding) && value.projectBinding.required === true;
+}
+
+function hasRuntimeFeatures(value: Record<string, unknown>): boolean {
+  const runtime = isRecord(value.runtime) ? value.runtime : undefined;
+  return Array.isArray(runtime?.features) && runtime.features.length > 0;
 }

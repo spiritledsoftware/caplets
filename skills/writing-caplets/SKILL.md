@@ -26,23 +26,30 @@ Before editing, discover the user's environment:
    - Prefer MCP when the provider's MCP server is the official curated agent surface or handles workflow/auth better than the raw API.
    - Prefer CLI/local backends when the capability is inherently local or project-bound.
    - Do not choose MCP only because an MCP server exists.
-3. Keep checked-in Caplets safe for their audience:
+3. Use a multi-backend Caplet file when one provider-scale capability needs several child surfaces under one catalog card and install unit:
+   - Use plural maps such as `mcpServers`, `openapiEndpoints`, `googleDiscoveryApis`, `graphqlEndpoints`, `httpApis`, `cliTools`, or `capletSets`.
+   - Runtime child handles are `parent__child`, based on the file ID and child map key. Users install the parent ID, not the child handle.
+   - Put shared guidance, tags, setup, runtime requirements, and provider-level auth at the parent when they truly apply to every child. Child fields override parent scalars; child auth should stay least-privilege when scopes differ.
+   - Keep singular `cliTools.actions` for one CLI backend. In plural `cliTools`, `actions` is reserved and cannot be a child ID.
+   - Use `capletSet` or `capletSets` only for nesting or composing another Caplets collection, not as the default shape for a single provider suite.
+4. Keep checked-in Caplets safe for their audience:
    - For public Caplets, never include tokens, credential-bearing URLs, private provider IDs, browser profiles, user home paths, local absolute paths, or account-specific values.
    - For private Caplets, still isolate secrets and account-specific values so the Caplet can be reviewed and moved safely.
-4. Use `$vault:NAME` or `${vault:NAME}` for secrets the runtime should resolve. Use `$env:NAME` only for non-secret machine-local paths, feature flags, or runtime toggles.
-5. Add `projectBinding.required: true` when the Caplet reads, searches, executes against, or mutates project files. Explain in the body why the bound project root is required.
-6. Add `setup.commands` and `setup.verify` when the backend needs local binaries, browser dependencies, generated specs, provider setup, or a repeatable readiness check.
-7. Add `runtime.features` only for real runtime requirements such as `browser` or `docker`.
-8. Add optional `catalog.icon` only when it improves public catalog presentation:
+5. Use `$vault:NAME` or `${vault:NAME}` for secrets the runtime should resolve. Use `$env:NAME` only for non-secret machine-local paths, feature flags, or runtime toggles.
+6. Add `projectBinding.required: true` when the Caplet reads, searches, executes against, or mutates project files. Explain in the body why the bound project root is required.
+7. Add `setup.commands` and `setup.verify` when the backend needs local binaries, browser dependencies, generated specs, provider setup, or a repeatable readiness check.
+8. Add `runtime.features` only for real runtime requirements such as `browser` or `docker`.
+9. Add optional `catalog.icon` only when it improves public catalog presentation:
    - Use a safe HTTPS image URL or a bundled image path relative to the Caplet directory.
    - Prefer a real provider, project, or capability icon from a license-safe public source when publishing public Caplets.
    - Do not use catalog metadata to imply trust, safety, setup readiness, endorsement, or runtime behavior.
-9. Write the Markdown body for agents that will use the Caplet:
-   - Lead with when to use the Caplet and the first workflow to try.
-   - Explain how to narrow queries, inspect before mutating, interpret results, and recover from common ambiguity.
-   - Include provider-specific caveats and "avoid when" guidance when misuse is likely.
-   - Mention setup only as runtime readiness context for the agent; keep installation instructions, auth wiring, command names, and verification commands in structured metadata when the schema supports them.
-   - Keep the body short enough to behave like a skill, not a provider README.
+10. Write the Markdown body for agents that will use the Caplet:
+
+- Lead with when to use the Caplet and the first workflow to try.
+- Explain how to narrow queries, inspect before mutating, interpret results, and recover from common ambiguity.
+- Include provider-specific caveats and "avoid when" guidance when misuse is likely.
+- Mention setup only as runtime readiness context for the agent; keep installation instructions, auth wiring, command names, and verification commands in structured metadata when the schema supports them.
+- Keep the body short enough to behave like a skill, not a provider README.
 
 ## Body Shape
 
@@ -82,6 +89,7 @@ Do not use the body as the primary place for install commands, setup command tra
 - Project-bound Caplets do not hardcode local absolute paths.
 - Public Caplets do not rely on private machines, private browser profiles, unshared config files, or account-specific defaults.
 - Caplet sets are self-contained enough that installed copies do not depend on source-repository-only symlinks or layout assumptions unless documented.
+- Multi-backend Caplets use child IDs that are short, stable, and provider-meaningful; the parent body explains when to use each child surface.
 
 ## Validation
 

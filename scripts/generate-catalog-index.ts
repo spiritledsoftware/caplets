@@ -12,6 +12,8 @@ import {
   catalogMutatesExternalStateFromFrontmatter,
   catalogProjectBindingRequiredFromFrontmatter,
   catalogSetupRequiredFromFrontmatter,
+  catalogStringArrayFromFrontmatter,
+  catalogStringFromFrontmatter,
   catalogUsesLocalControlFromFrontmatter,
   catalogWorkflowSummaryForBackendFamily,
   createCatalogEntry,
@@ -66,32 +68,50 @@ export async function generateOfficialCatalogEntries(root: string): Promise<Cata
   }
 
   const entries = await Promise.all(
-    parsed.resolvedCaplets.map(async (caplet) => {
+    groupedCatalogCaplets(parsed.resolvedCaplets).map(async (caplets) => {
+      const caplet = caplets[0]!;
       const file = await source.readFile(caplet.sourcePath);
       const frontmatter = readCatalogCapletFrontmatterFromMarkdown(file?.content ?? "");
+      const isSuite = caplets.some((candidate) => candidate.childId);
+      const id = isSuite ? caplet.parentId : caplet.id;
       return createCatalogEntry({
-        id: caplet.id,
-        name: caplet.name,
-        description: caplet.description,
+        id,
+        name: (isSuite ? catalogStringFromFrontmatter(frontmatter.name) : undefined) ?? caplet.name,
+        description:
+          (isSuite ? catalogStringFromFrontmatter(frontmatter.description) : undefined) ??
+          caplet.description,
         source: officialSource.source,
         sourcePath: caplet.sourcePath,
         trustLevel: "official",
         contentMarkdown: file?.content,
         icon: catalogIconFromFrontmatter(frontmatter, {
-          id: caplet.id,
+          id,
           source: officialSource.source,
           sourcePath: caplet.sourcePath,
           trustLevel: "official",
         }),
-        tags: caplet.config.tags,
-        useWhen: caplet.config.useWhen,
-        avoidWhen: caplet.config.avoidWhen,
+        tags: isSuite ? catalogStringArrayFromFrontmatter(frontmatter.tags) : caplet.config.tags,
+        useWhen:
+          (isSuite ? catalogStringFromFrontmatter(frontmatter.useWhen) : undefined) ??
+          caplet.config.useWhen,
+        avoidWhen:
+          (isSuite ? catalogStringFromFrontmatter(frontmatter.avoidWhen) : undefined) ??
+          caplet.config.avoidWhen,
         setupRequired: catalogSetupRequiredFromFrontmatter(frontmatter),
         authRequired: catalogAuthRequiredFromFrontmatter(frontmatter),
         projectBindingRequired: catalogProjectBindingRequiredFromFrontmatter(frontmatter),
-        workflow: workflowSummary(caplet),
+        workflow: workflowSummary(caplets),
         mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
         localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
+        children: isSuite
+          ? caplets.map((child) => ({
+              id: child.id,
+              ...(child.childId ? { childId: child.childId } : {}),
+              name: child.name,
+              backend: child.backend,
+              workflow: workflowSummary([child]),
+            }))
+          : undefined,
       });
     }),
   );
@@ -141,9 +161,29 @@ function officialCatalogBundledIconSourcePath(
   return sourceRelative ? join(root, "caplets", sourceRelative) : undefined;
 }
 
-function workflowSummary(caplet: ParsedCapletSourceCaplet): CatalogWorkflowSummary {
+function groupedCatalogCaplets(caplets: ParsedCapletSourceCaplet[]): ParsedCapletSourceCaplet[][] {
+  const groups = new Map<string, ParsedCapletSourceCaplet[]>();
+  for (const caplet of caplets) {
+    const key = `${caplet.sourcePath}\0${caplet.parentId}`;
+    const group = groups.get(key);
+    if (group) {
+      group.push(caplet);
+    } else {
+      groups.set(key, [caplet]);
+    }
+  }
+  return [...groups.values()].map((group) =>
+    group.sort((left, right) => left.id.localeCompare(right.id)),
+  );
+}
+
+function workflowSummary(caplets: ParsedCapletSourceCaplet[]): CatalogWorkflowSummary {
+  if (caplets.length > 1 || caplets.some((caplet) => caplet.childId)) {
+    return { kind: "set", label: "Capability suite" };
+  }
+  const caplet = caplets[0];
   return (
-    catalogWorkflowSummaryForBackendFamily(caplet.backend) ?? {
+    catalogWorkflowSummaryForBackendFamily(caplet?.backend) ?? {
       kind: "set",
       label: "Caplet set",
     }

@@ -3280,8 +3280,23 @@ function findCliActionsSchema(value: unknown): { minProperties?: number } | unde
       "additionalProperties",
       "properties",
       "actions",
-    ]) ?? schemaPath(value, ["properties", "cliTools", "properties", "actions"])
+    ]) ??
+    schemaPath(value, ["properties", "cliTools", "properties", "actions"]) ??
+    findUnionCliActionsSchema(value)
   );
+}
+
+function findUnionCliActionsSchema(value: unknown): { minProperties?: number } | undefined {
+  const cliTools = schemaPath<Record<string, unknown>>(value, ["properties", "cliTools"]);
+  const variants = [
+    ...(Array.isArray(cliTools?.anyOf) ? cliTools.anyOf : []),
+    ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
+  ];
+  for (const variant of variants) {
+    const actions = schemaPath<{ minProperties?: number }>(variant, ["properties", "actions"]);
+    if (actions) return actions;
+  }
+  return undefined;
 }
 
 function schemaPath<T>(value: unknown, path: string[]): T | undefined {

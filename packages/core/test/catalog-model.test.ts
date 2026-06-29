@@ -135,6 +135,7 @@ describe("catalog model", () => {
     expect(entry.authReadiness).toBe("required");
     expect(entry.projectBindingReadiness).toBe("required");
     expect(entry.workflow).toEqual({ kind: "code_mode", label: "Code Mode" });
+    expect(entry.children ?? []).toEqual([]);
     expect(entry.intendedTask).toBe("Deploy the current project.");
     expect(entry.installCommand).toEqual({
       text: "caplets install community/tools deploy",
@@ -178,6 +179,41 @@ describe("catalog model", () => {
     });
 
     expect(entry.icon).toEqual({ type: "url", url: "https://example.com/icon.svg" });
+  });
+
+  it("preserves child Caplet summaries for capability suites", () => {
+    const source = normalizeCatalogSourceIdentity("community/tools");
+    if (!source.eligible) throw new Error("expected GitHub source to be eligible");
+
+    const entry = createCatalogEntry({
+      id: "google-workspace",
+      name: "Google Workspace",
+      description: "Work with Google Workspace APIs.",
+      source: source.source,
+      sourcePath: "caplets/google-workspace/CAPLET.md",
+      trustLevel: "community",
+      workflow: { kind: "set", label: "Capability suite" },
+      children: [
+        {
+          id: "google-workspace__drive",
+          childId: "drive",
+          name: "Google Drive",
+          backend: "googleDiscovery",
+          workflow: { kind: "google_discovery", label: "Google Discovery API" },
+        },
+      ],
+    });
+
+    expect(entry.children).toEqual([
+      {
+        id: "google-workspace__drive",
+        childId: "drive",
+        name: "Google Drive",
+        backend: "googleDiscovery",
+        workflow: { kind: "google_discovery", label: "Google Discovery API" },
+      },
+    ]);
+    expect(entry.installCommand.text).toBe("caplets install community/tools google-workspace");
   });
 
   it("resolves bundled catalog icons without absolute paths", () => {

@@ -32,6 +32,7 @@ export function createCatalogEntry(input: CatalogEntryInput): CatalogEntry {
     authReadiness: readiness(input.authRequired),
     projectBindingReadiness: readiness(input.projectBindingRequired),
     workflow: input.workflow ?? { kind: "unknown", label: "Unknown" },
+    ...(input.children && input.children.length > 0 ? { children: input.children } : {}),
     installCommand: generateCatalogInstallCommand({
       source: input.source,
       capletId: input.id,
