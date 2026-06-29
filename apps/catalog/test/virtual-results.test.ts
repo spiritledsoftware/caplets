@@ -259,7 +259,7 @@ describe("virtual catalog results", () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-      "caplets install spiritledsoftware/caplets caplet-0",
+      "CAPLETS_INSTALL_ATTRIBUTION=catalog_install caplets install spiritledsoftware/caplets caplet-0",
     );
     expect(document.querySelector("[data-copy-status]")?.textContent).toBe(
       "Install command copied.",

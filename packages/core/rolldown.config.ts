@@ -1,4 +1,5 @@
 import { defineConfig } from "rolldown";
+import { runtimeSentryPlugins, sentryConfigured } from "../../scripts/runtime-sentry-rolldown";
 
 export default defineConfig([
   {
@@ -13,7 +14,9 @@ export default defineConfig([
     output: {
       dir: "./dist",
       format: "esm",
+      sourcemap: sentryConfigured(),
     },
+    plugins: runtimeSentryPlugins("core", { disable: "disable-upload" }),
     external: ["quickjs-emscripten", "typescript"],
     platform: "node",
   },
@@ -31,7 +34,9 @@ export default defineConfig([
     output: {
       dir: "./dist",
       format: "esm",
+      sourcemap: sentryConfigured(),
     },
+    plugins: runtimeSentryPlugins("core"),
     platform: "browser",
   },
 ]);

@@ -31,12 +31,14 @@
     "lint:fix": "oxlint --fix .",
     "lint:staged": "lint-staged",
     "prepare": "husky",
-    "release": "turbo build && changeset publish",
+    "release": "turbo build --force && changeset publish",
     "release:publish": "pnpm telemetry:prepare-release-env && pnpm release",
     "schema:check": "tsx ./scripts/generate-config-schema.ts --check",
     "schema:generate": "tsx ./scripts/generate-config-schema.ts",
     "test": "vitest run",
     "telemetry:check-release-env": "tsx ./scripts/check-telemetry-release-env.ts",
+    "telemetry:check-source-maps": "tsx ./scripts/check-sentry-source-maps.ts",
+    "telemetry:check-web-env": "tsx ./scripts/check-web-observability-env.ts",
     "telemetry:prepare-release-env": "tsx ./scripts/check-telemetry-release-env.ts --write-bundled-intake",
     "typecheck": "tsgo --noEmit && turbo typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm code-mode:check-api && pnpm schema:check && pnpm docs:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm build",
@@ -45,6 +47,8 @@
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
     "@cloudflare/workers-types": "^4.20260613.1",
+    "@sentry/rollup-plugin": "^5.3.0",
+    "@sentry/vite-plugin": "^5.3.0",
     "@types/node": "^25.9.3",
     "@typescript/native-preview": "7.0.0-dev.20260613.1",
     "alchemy": "0.93.12",
@@ -63,5 +67,5 @@
     "bun": ">=1",
     "node": ">=22"
   },
-  "packageManager": "pnpm@11.7.0"
+  "packageManager": "pnpm@11.9.0"
 }

@@ -91,6 +91,11 @@ caplets telemetry debug -- doctor
 `caplets telemetry rotate-id` and `caplets telemetry delete-id` affect only the local anonymous ID.
 They do not delete provider-side historical anonymous events.
 
+Copied install commands from Caplets sites may include a categorical marker such as
+`CAPLETS_INSTALL_ATTRIBUTION=catalog_install`. The marker is nonsecret, contains no browser
+identifier, and is consumed only as anonymous first-activation attribution. Remove the
+environment assignment before running the command if you do not want that attribution.
+
 ### Code Mode returns `ok: false`
 
 Expected symptom: a Code Mode call returns an error envelope instead of tool data.

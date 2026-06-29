@@ -61,7 +61,12 @@ jobs:
           title: "chore: version packages"
         env:
           CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
-          CAPLETS_SENTRY_DSN: ${{ secrets.CAPLETS_SENTRY_DSN }}
+          CAPLETS_RUNTIME_SENTRY_DSN: ${{ secrets.CAPLETS_RUNTIME_SENTRY_DSN }}
+          CAPLETS_SENTRY_AUTH_TOKEN: ${{ secrets.CAPLETS_SENTRY_AUTH_TOKEN }}
+          CAPLETS_SENTRY_ORG: ${{ secrets.CAPLETS_SENTRY_ORG }}
+          CAPLETS_RUNTIME_SENTRY_PROJECT: ${{ secrets.CAPLETS_RUNTIME_SENTRY_PROJECT }}
+          CAPLETS_SENTRY_RELEASE: caplets-runtime@${{ github.sha }}
+          CAPLETS_SENTRY_ENVIRONMENT: production
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check whether CLI package was published

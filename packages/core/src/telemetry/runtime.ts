@@ -17,7 +17,13 @@ import {
 import { TelemetryDebugSink } from "./debug";
 import { createTelemetryDispatcher, type TelemetryDispatcher } from "./providers";
 import { resolveTelemetryState } from "./context";
-import { readTelemetryIdentity, type TelemetrySurface, type TelemetryVisibility } from "./state";
+import {
+  consumeTelemetryAttribution,
+  type TelemetryAttribution,
+  readTelemetryIdentity,
+  type TelemetrySurface,
+  type TelemetryVisibility,
+} from "./state";
 
 export type RuntimeTelemetryOptions = {
   config: CapletsConfig;
@@ -62,6 +68,10 @@ export async function captureRuntimeTelemetryEvent(
   }
   const identity =
     state.identity ?? readTelemetryIdentity({ stateDir: context.stateDir, create: false });
+  const attribution =
+    state.status === "enabled" && properties.outcome === "success"
+      ? consumeTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
+      : undefined;
   const event = buildProductTelemetryEvent({
     name,
     distinctId: identity.id,
@@ -73,6 +83,7 @@ export async function captureRuntimeTelemetryEvent(
       execution_context: state.executionContext,
       ...(context.integration ? { integration: context.integration } : {}),
       ...properties,
+      ...attributionTelemetryProperties(attribution),
     },
   });
   if (state.status === "debug") {
@@ -85,6 +96,7 @@ export async function captureRuntimeTelemetryEvent(
 export async function captureRuntimeReliabilityEvent(
   context: RuntimeTelemetryContext,
   properties: TelemetryProperties,
+  error?: unknown,
 ): Promise<void> {
   const state = resolveTelemetryState({
     config: context.config,
@@ -111,12 +123,24 @@ export async function captureRuntimeReliabilityEvent(
       node_major: Number(process.versions.node.split(".")[0] ?? 0),
       ...properties,
     },
+    error,
   });
   if (state.status === "debug") {
     context.debugSink?.capture("debug", event);
     return;
   }
   await context.dispatcher.capture(state, event);
+}
+
+export function attributionTelemetryProperties(
+  attribution: TelemetryAttribution | undefined,
+): TelemetryProperties {
+  if (!attribution) return {};
+  return {
+    attribution_source: attribution.source,
+    attribution_intent: attribution.intent,
+    first_activation: true,
+  };
 }
 
 export function backendFamilyCounts(config: CapletsConfig): TelemetryProperties {

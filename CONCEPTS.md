@@ -152,6 +152,18 @@ Opt-out Caplets usage and reliability reporting that uses a stable anonymous ins
 
 Anonymous Telemetry is split by purpose: PostHog receives product usage events, while Sentry receives sanitized reliability events. It must not collect raw config, prompts, Code Mode code, tool arguments, tool outputs, paths, URLs, hostnames, Caplet IDs, credentials, or unsanitized error payloads.
 
+### Telemetry Observability Loop
+
+The combined PostHog and Sentry feedback loop that connects public-site intent, runtime usage, provider delivery health, and debuggable release errors into maintainable product readouts.
+
+Telemetry Observability Loop keeps PostHog as the usage and conversion system, keeps Sentry as the reliability system, and preserves Anonymous Telemetry boundaries by separating public catalog indexing and avoiding known-user attribution.
+
+### Anonymous Install Attribution
+
+A short nonsecret categorical marker generated from public-site install intent and optionally reported by the CLI on first activation.
+
+Anonymous Install Attribution connects landing, docs, and catalog intent to activation readouts without carrying browser visitor identities, account identities, raw source URLs, or hidden user identifiers into runtime telemetry.
+
 ## Remote Attach
 
 ### Remote Attach

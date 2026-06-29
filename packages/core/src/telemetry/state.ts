@@ -18,6 +18,15 @@ export type TelemetryNoticeState =
   | { shown: true; shownAt: string; surface: TelemetrySurface };
 
 export type TelemetryDeliveryHealth = Record<string, Record<string, number>>;
+export type TelemetryAttributionMarker = "landing_install" | "docs_install" | "catalog_install";
+export type TelemetryAttributionSource = "landing" | "docs" | "catalog";
+export type TelemetryAttributionIntent = "install_run";
+export type TelemetryAttribution = {
+  source: TelemetryAttributionSource;
+  intent: TelemetryAttributionIntent;
+  marker: TelemetryAttributionMarker;
+  createdAt: string;
+};
 
 export type TelemetryState = {
   status: TelemetryStateStatus;
@@ -48,6 +57,10 @@ export function telemetryNoticePath(options: TelemetryStateOptions = {}): string
 
 export function telemetryDeliveryHealthPath(options: TelemetryStateOptions = {}): string {
   return join(telemetryStateDir(options), "delivery-health.json");
+}
+
+export function telemetryAttributionPath(options: TelemetryStateOptions = {}): string {
+  return join(telemetryStateDir(options), "attribution.json");
 }
 
 export function readTelemetryIdentity(
@@ -81,6 +94,45 @@ export function rotateTelemetryIdentity(options: TelemetryStateOptions = {}): Te
 export function deleteTelemetryIdentity(options: TelemetryStateOptions = {}): void {
   try {
     rmSync(telemetryIdentityPath(options), { force: true });
+  } catch {
+    // Telemetry state operations are best effort.
+  }
+}
+
+export function readTelemetryAttribution(
+  options: TelemetryStateOptions = {},
+): TelemetryAttribution | undefined {
+  return normalizeTelemetryAttribution(readJson<unknown>(telemetryAttributionPath(options)));
+}
+
+export function writeTelemetryAttribution(
+  options: TelemetryStateOptions & { marker: string },
+): TelemetryAttribution | undefined {
+  const attribution = attributionFromMarker(options.marker);
+  if (!attribution) return undefined;
+  if (!writePrivateJson(telemetryAttributionPath(options), attribution)) return undefined;
+  return attribution;
+}
+
+export function consumeTelemetryAttribution(
+  options: TelemetryStateOptions & { env?: NodeJS.ProcessEnv | undefined } = {},
+): TelemetryAttribution | undefined {
+  const envMarker = options.env?.CAPLETS_INSTALL_ATTRIBUTION;
+  const envAttribution =
+    typeof envMarker === "string" ? attributionFromMarker(envMarker) : undefined;
+  if (envAttribution) {
+    return envAttribution;
+  }
+  const stored = readTelemetryAttribution(options);
+  if (stored) {
+    deleteTelemetryAttribution(options);
+  }
+  return stored;
+}
+
+export function deleteTelemetryAttribution(options: TelemetryStateOptions = {}): void {
+  try {
+    rmSync(telemetryAttributionPath(options), { force: true });
   } catch {
     // Telemetry state operations are best effort.
   }
@@ -171,6 +223,53 @@ function isTelemetrySurface(value: unknown): value is TelemetrySurface {
     value === "native" ||
     value === "code_mode"
   );
+}
+
+function attributionFromMarker(marker: string): TelemetryAttribution | undefined {
+  if (marker === "landing_install") return newTelemetryAttribution("landing", marker);
+  if (marker === "docs_install") return newTelemetryAttribution("docs", marker);
+  if (marker === "catalog_install") return newTelemetryAttribution("catalog", marker);
+  return undefined;
+}
+
+function normalizeTelemetryAttribution(value: unknown): TelemetryAttribution | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    !isTelemetryAttributionSource(record.source) ||
+    record.intent !== "install_run" ||
+    !isTelemetryAttributionMarker(record.marker) ||
+    typeof record.createdAt !== "string"
+  ) {
+    return undefined;
+  }
+  if (attributionFromMarker(record.marker)?.source !== record.source) return undefined;
+  return {
+    source: record.source,
+    intent: "install_run",
+    marker: record.marker,
+    createdAt: record.createdAt,
+  };
+}
+
+function newTelemetryAttribution(
+  source: TelemetryAttributionSource,
+  marker: TelemetryAttributionMarker,
+): TelemetryAttribution {
+  return {
+    source,
+    intent: "install_run",
+    marker,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function isTelemetryAttributionMarker(value: unknown): value is TelemetryAttributionMarker {
+  return value === "landing_install" || value === "docs_install" || value === "catalog_install";
+}
+
+function isTelemetryAttributionSource(value: unknown): value is TelemetryAttributionSource {
+  return value === "landing" || value === "docs" || value === "catalog";
 }
 
 function isDeliveryHealth(value: unknown): value is TelemetryDeliveryHealth {

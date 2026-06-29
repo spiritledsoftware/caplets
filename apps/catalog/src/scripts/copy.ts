@@ -1,3 +1,5 @@
+import { attributedCatalogCommand, captureCatalogInstallCopy } from "./observability";
+
 const copyStatus = document.querySelector("[data-copy-status]") as HTMLElement | null;
 let clearCopyStatusTimer = 0;
 
@@ -16,7 +18,8 @@ function announceCopyStatus(message: string): void {
 async function copyCommand(button: HTMLButtonElement): Promise<void> {
   const command = button.dataset.copyCommand ?? "";
   try {
-    await navigator.clipboard.writeText(command);
+    await navigator.clipboard.writeText(attributedCatalogCommand(command));
+    captureCatalogInstallCopy();
     announceCopyStatus("Install command copied.");
   } catch {
     announceCopyStatus("Copy failed. Select the command text manually.");

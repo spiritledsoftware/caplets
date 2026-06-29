@@ -1,12 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { parseConfig } from "../src/config";
 import {
+  captureRuntimeTelemetryEvent,
   codeModeTelemetryProperties,
   operationFamilyFromOperation,
   outcomeFromResult,
+  readTelemetryAttribution,
   runtimeFailureTelemetryProperties,
+  TelemetryDebugSink,
+  writeTelemetryAttribution,
 } from "../src/telemetry";
 
+const roots: string[] = [];
+
+function tempRoot(): string {
+  const root = join(mkdtempSync(join(tmpdir(), "caplets-telemetry-runtime-")), "state");
+  roots.push(root);
+  return root;
+}
+
 describe("telemetry runtime helpers", () => {
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("maps current runtime operation names into stable families", () => {
     expect(operationFamilyFromOperation("describe_tool")).toBe("tools");
     expect(operationFamilyFromOperation("search_resources")).toBe("resources");
@@ -66,5 +88,60 @@ describe("telemetry runtime helpers", () => {
         },
       }),
     ).toMatchObject({ error_code: "REQUEST_INVALID", diagnostic_category: "validation" });
+  });
+
+  it("attaches stored install attribution to the first successful enabled product event", async () => {
+    const stateDir = tempRoot();
+    const capture = vi.fn();
+    writeTelemetryAttribution({ stateDir, marker: "docs_install" });
+
+    await captureRuntimeTelemetryEvent(
+      {
+        config: parseConfig({ telemetry: true }),
+        env: { CI: "true" },
+        stateDir,
+        surface: "cli",
+        visibility: "hidden",
+        dispatcher: { capture, shutdown: vi.fn() },
+      },
+      "caplets_cli_command",
+      {
+        command_family: "setup",
+        outcome: "success",
+      },
+    );
+
+    expect(capture.mock.calls[0]?.[1].properties).toMatchObject({
+      attribution_source: "docs",
+      attribution_intent: "install_run",
+      first_activation: true,
+    });
+    expect(readTelemetryAttribution({ stateDir })).toBeUndefined();
+  });
+
+  it("does not leak install attribution through local telemetry debug output", async () => {
+    const stateDir = tempRoot();
+    const sink = new TelemetryDebugSink();
+    writeTelemetryAttribution({ stateDir, marker: "landing_install" });
+
+    await captureRuntimeTelemetryEvent(
+      {
+        config: parseConfig({ telemetry: true }),
+        env: { CAPLETS_TELEMETRY_DEBUG: "1" },
+        stateDir,
+        surface: "cli",
+        visibility: "visible",
+        debugSink: sink,
+        dispatcher: { capture: vi.fn(), shutdown: vi.fn() },
+      },
+      "caplets_cli_command",
+      {
+        command_family: "setup",
+        outcome: "success",
+      },
+    );
+
+    expect(JSON.stringify(sink.records)).not.toContain("attribution");
+    expect(readTelemetryAttribution({ stateDir })).toMatchObject({ source: "landing" });
   });
 });

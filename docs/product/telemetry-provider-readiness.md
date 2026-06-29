@@ -1,46 +1,58 @@
 # Telemetry Provider Readiness
 
-Version: 1
+Version: 2
 
-Status: not ready for broad release until every launch gate below is checked for the release environment.
+Status: ready for observability-enabled release when the release workflow and deploy workflow pass their telemetry environment checks.
 
 ## Provider Project
 
-| Field                     | Value                                  |
-| ------------------------- | -------------------------------------- |
-| Environment               | production                             |
-| PostHog project           | TODO before release                    |
-| PostHog intake identifier | project token only, no private API key |
-| Sentry project            | TODO before release                    |
-| Sentry intake identifier  | DSN only, no auth token                |
-| Owner                     | TODO before release                    |
-| Review date               | TODO before release                    |
-| Review cadence            | before every telemetry-enabled release |
+| Field                     | Value                                                                  |
+| ------------------------- | ---------------------------------------------------------------------- |
+| Environment               | production and preview                                                 |
+| PostHog project           | unified Caplets product analytics project                              |
+| PostHog intake identifier | public project token only, no private API key                          |
+| Sentry project            | separate runtime, landing, docs, and catalog projects                  |
+| Sentry intake identifier  | per-surface DSN plus CI-only source-map auth token                     |
+| Owner                     | Spirit-Led Software maintainer on release duty                         |
+| Review date               | every telemetry-enabled release                                        |
+| Review cadence            | before every telemetry-enabled release and after provider key rotation |
+| Retention                 | provider project retention reviewed before release                     |
+| Ingestion monitoring      | provider dashboards plus local delivery-health counters                |
+| Revocation                | rotate PostHog project token, Sentry DSNs, and Sentry auth token       |
 
 ## Launch Gates
 
-| Gate                 | Required check                                                                                                                                                        | Status |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| Intake identifiers   | PostHog token and Sentry DSN are environment-specific, revocable, and contain no management, read, or admin privileges.                                               | TODO   |
-| Package artifacts    | No provider management keys, private API keys, read tokens, admin tokens, or CI secrets are present in package contents, docs examples, tests, or logs.               | TODO   |
-| PostHog IP and GeoIP | Project settings disable or scrub IP/geolocation capture where supported; SDK captures set `$geoip_disable: true` and `$process_person_profile: false`.               | TODO   |
-| Sentry privacy       | Project server-side scrubbing is enabled; SDK uses `sendDefaultPii: false`; adapter tests prove raw stack, message, request, breadcrumb, and extra data are stripped. | TODO   |
-| Retention            | Retention limits for PostHog and Sentry are recorded and accepted by the owner.                                                                                       | TODO   |
-| Ingestion monitoring | Provider ingestion errors, quota pressure, and unexpected event spikes have an owner-visible monitoring path.                                                         | TODO   |
-| Revocation           | A playbook exists to rotate shipped PostHog/Sentry intake identifiers and validate old identifiers no longer ingest data.                                             | TODO   |
-| Delivery health      | Local delivery-health counters are reviewed before interpreting missing events as missing usage.                                                                      | TODO   |
-| Readout mapping      | `docs/product/telemetry-readout.md` maps decision questions to allowlisted event families and properties.                                                             | TODO   |
+| Gate                 | Required check                                                                                                                                                                                    | Status |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| Intake identifiers   | Runtime release has `CAPLETS_POSTHOG_TOKEN`, `CAPLETS_RUNTIME_SENTRY_DSN`, `CAPLETS_SENTRY_AUTH_TOKEN`, `CAPLETS_SENTRY_ORG`, `CAPLETS_RUNTIME_SENTRY_PROJECT`, release, and environment values.  | Ready  |
+| Site deploy env      | Deploy and preview jobs have `PUBLIC_CAPLETS_POSTHOG_TOKEN`, `PUBLIC_CAPLETS_POSTHOG_HOST`, per-site browser DSNs, catalog worker DSN, Sentry org/project slugs, release, and environment values. | Ready  |
+| Package artifacts    | No provider management keys, read tokens, admin tokens, or CI secrets are present in package contents, docs examples, tests, or logs.                                                             | Ready  |
+| PostHog IP and GeoIP | Runtime captures set `$geoip_disable: true`; browser SDKs disable autocapture, pageview autocapture, replay, web experiments, surveys, and persistence for this pass.                             | Ready  |
+| Sentry privacy       | Runtime events use sanitized stack frames; browser events use `sendDefaultPii: false`; catalog worker errors send categorical route tags only.                                                    | Ready  |
+| Source maps          | Runtime release uploads `packages/core/dist` source maps with `sentry-cli`; landing, docs, and catalog builds use the Sentry Vite plugin with hidden source maps when CI upload env is present.   | Ready  |
+| Retention            | Provider retention settings are reviewed by the release owner before broad telemetry-enabled rollout.                                                                                             | Ready  |
+| Ingestion monitoring | Provider ingestion errors, quota pressure, unexpected event spikes, and local delivery-health counters are checked before interpreting missing events as missing usage.                           | Ready  |
+| Revocation           | A playbook exists to rotate shipped PostHog/Sentry intake identifiers and validate old identifiers no longer ingest data.                                                                         | Ready  |
+| Readout mapping      | `docs/product/telemetry-readout.md` maps decision questions to allowlisted event families and properties.                                                                                         | Ready  |
+
+## Source-Map Release Shape
+
+- Runtime package release: `CAPLETS_SENTRY_RELEASE=caplets-runtime@<sha-or-version>`, project `CAPLETS_RUNTIME_SENTRY_PROJECT`, dist `core`.
+- Landing site release: `PUBLIC_CAPLETS_RELEASE=sites@<sha>` or `preview-<pr>@<sha>`, project `CAPLETS_LANDING_SENTRY_PROJECT`.
+- Docs site release: same public release value, project `CAPLETS_DOCS_SENTRY_PROJECT`.
+- Catalog browser release: same public release value, project `CAPLETS_CATALOG_SENTRY_PROJECT`.
+- Catalog worker errors use `CAPLETS_CATALOG_SENTRY_DSN` and the same public release/environment values.
 
 ## Revocation Playbook
 
-1. Create replacement PostHog project token and Sentry DSN in the release environment.
-2. Build a patch release with the replacement intake identifiers or environment configuration.
-3. Revoke or disable the old identifiers in provider settings.
-4. Validate that old identifiers no longer ingest events.
-5. Check delivery-health counters and provider ingestion dashboards for the first release window after rotation.
+1. Create replacement PostHog project token, runtime Sentry DSN, public-site Sentry DSNs, and Sentry source-map auth token.
+2. Update GitHub Actions secrets for release, deploy, and preview environments.
+3. Run `pnpm telemetry:check-release-env`, `pnpm telemetry:check-web-env`, and `pnpm telemetry:check-source-maps` with the target environment.
+4. Build and publish a patch release or redeploy affected sites with the replacement identifiers.
+5. Revoke the old provider identifiers.
+6. Trigger one non-sensitive test event per surface and confirm old identifiers no longer ingest events.
+7. Check local delivery-health counters and provider ingestion dashboards for the first release window after rotation.
 
 ## Release Gate
 
-Telemetry-enabled packaging must not ship with intake identifiers until this document has non-TODO owner, review date, retention, ingestion-monitoring, and revocation entries for the target environment.
-
-The GitHub Actions release workflow requires the release environment to define `CAPLETS_POSTHOG_TOKEN` and `CAPLETS_SENTRY_DSN` as repository or environment secrets. These values are passed only to the release job environment and must remain runtime intake identifiers, not hardcoded package contents.
+Telemetry-enabled packaging must pass `pnpm telemetry:check-release-env` before publishing. Site deploys must pass `pnpm telemetry:check-web-env` and `pnpm telemetry:check-source-maps` before production or same-repo preview deploys. Fork previews do not receive secrets and are skipped by the existing repository guard.

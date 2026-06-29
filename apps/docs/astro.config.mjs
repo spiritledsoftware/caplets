@@ -1,7 +1,14 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
+
+const sentryProject = process.env.CAPLETS_DOCS_SENTRY_PROJECT;
+const sentryRelease = process.env.PUBLIC_CAPLETS_RELEASE;
+const sentryConfigured = Boolean(
+  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && sentryProject && sentryRelease,
+);
 
 export default defineConfig({
   site: "https://docs.caplets.dev",
@@ -66,6 +73,24 @@ export default defineConfig({
     }),
   ],
   vite: {
-    plugins: [tailwindcss()],
+    build: {
+      sourcemap: sentryConfigured ? "hidden" : false,
+    },
+    plugins: [
+      tailwindcss(),
+      ...(sentryConfigured
+        ? [
+            sentryVitePlugin({
+              authToken: process.env.SENTRY_AUTH_TOKEN,
+              org: process.env.SENTRY_ORG,
+              project: sentryProject,
+              release: { name: sentryRelease },
+              sourcemaps: {
+                filesToDeleteAfterUpload: ["./dist/**/*.map"],
+              },
+            }),
+          ]
+        : []),
+    ],
   },
 });

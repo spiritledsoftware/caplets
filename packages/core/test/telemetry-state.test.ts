@@ -17,6 +17,8 @@ import {
   defaultTelemetryNoticePath,
 } from "../src/config/paths";
 import {
+  consumeTelemetryAttribution,
+  readTelemetryAttribution,
   readTelemetryDeliveryHealth,
   readTelemetryIdentity,
   readTelemetryNotice,
@@ -24,6 +26,8 @@ import {
   recordTelemetryNoticeShown,
   resolveTelemetryState,
   rotateTelemetryIdentity,
+  telemetryAttributionPath,
+  writeTelemetryAttribution,
 } from "../src/telemetry";
 
 const roots: string[] = [];
@@ -174,6 +178,50 @@ describe("telemetry state", () => {
       posthog: { send_failed: 2 },
       sentry: { disabled: 1 },
     });
+  });
+
+  it("stores and consumes only categorical install attribution", () => {
+    const stateDir = tempRoot();
+
+    expect(
+      writeTelemetryAttribution({ stateDir, marker: "https://example.com/install" }),
+    ).toBeUndefined();
+    expect(readTelemetryAttribution({ stateDir })).toBeUndefined();
+
+    expect(writeTelemetryAttribution({ stateDir, marker: "catalog_install" })).toMatchObject({
+      source: "catalog",
+      intent: "install_run",
+    });
+    expect(readTelemetryAttribution({ stateDir })).toMatchObject({
+      source: "catalog",
+      intent: "install_run",
+    });
+
+    expect(consumeTelemetryAttribution({ stateDir })).toMatchObject({
+      source: "catalog",
+      intent: "install_run",
+    });
+    expect(readTelemetryAttribution({ stateDir })).toBeUndefined();
+  });
+
+  it("prefers a safe env attribution marker without persisting raw values", () => {
+    const stateDir = tempRoot();
+
+    expect(
+      consumeTelemetryAttribution({
+        stateDir,
+        env: { CAPLETS_INSTALL_ATTRIBUTION: "landing_install" },
+      }),
+    ).toMatchObject({ source: "landing", intent: "install_run" });
+    expect(existsSync(telemetryAttributionPath({ stateDir }))).toBe(false);
+
+    expect(
+      consumeTelemetryAttribution({
+        stateDir,
+        env: { CAPLETS_INSTALL_ATTRIBUTION: "https://example.com/path" },
+      }),
+    ).toBeUndefined();
+    expect(existsSync(telemetryAttributionPath({ stateDir }))).toBe(false);
   });
 
   it("does not create state files while merely resolving disabled telemetry", () => {

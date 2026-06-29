@@ -8,14 +8,18 @@
     "build": "astro build",
     "dev": "astro dev",
     "preview": "astro preview",
+    "test": "vitest run test",
     "typecheck": "astro check"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",
+    "@caplets/web-observability": "workspace:*",
+    "@sentry/browser": "^10.62.0",
     "@tabler/icons": "^3.44.0",
     "@tailwindcss/forms": "^0.5.11",
     "@tailwindcss/vite": "^4.3.1",
     "astro": "^6.4.6",
+    "posthog-js": "^1.395.0",
     "tailwind-merge": "^3.6.0",
     "tailwind-variants": "^3.2.2",
     "tailwindcss": "^4.3.1",
@@ -25,6 +29,8 @@
   },
   "devDependencies": {
     "@types/three": "^0.184.1",
-    "vite": "^7.3.5"
+    "happy-dom": "^20.10.6",
+    "vite": "^7.3.5",
+    "vitest": "^4.1.9"
   }
 }

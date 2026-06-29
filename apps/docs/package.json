@@ -8,19 +8,25 @@
     "build": "astro build",
     "dev": "astro dev",
     "preview": "astro preview",
+    "test": "vitest run test",
     "typecheck": "astro check"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",
     "@astrojs/starlight": "^0.40.0",
+    "@caplets/web-observability": "workspace:*",
+    "@sentry/browser": "^10.62.0",
     "@tailwindcss/vite": "^4.3.1",
     "astro": "^6.4.6",
+    "posthog-js": "^1.395.0",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.3.1",
     "typescript": "^6.0.3"
   },
   "devDependencies": {
-    "vite": "^7.3.5"
+    "happy-dom": "^20.10.6",
+    "vite": "^7.3.5",
+    "vitest": "^4.1.9"
   },
   "packageManager": "pnpm@11.7.0"
 }

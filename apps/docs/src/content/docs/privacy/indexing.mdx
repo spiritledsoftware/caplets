@@ -11,6 +11,11 @@ Anonymous telemetry intentionally excludes source URLs, Caplet IDs, hostnames, l
 tool arguments, tool outputs, and raw config. Public catalog indexing needs different data:
 it publishes public-source metadata so other users can search for public Caplets.
 
+Landing, docs, and catalog analytics are anonymous telemetry, not public catalog indexing.
+They use categorical page, search, filter, and install-intent events. They do not publish
+source identity, Caplet identity, browser identity, raw URLs, raw search text, session
+replay, or known-user profiles.
+
 ## What can become public
 
 After a successful install, restore, or update of an eligible public external Caplet,

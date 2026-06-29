@@ -23,9 +23,12 @@ describe("telemetry product docs", () => {
       "Ingestion monitoring",
       "Revocation",
       "Release Gate",
+      "Source maps",
+      "CAPLETS_CATALOG_SENTRY_PROJECT",
     ]) {
       expect(text).toContain(expected);
     }
+    expect(text).not.toContain("TODO");
   });
 
   it("maps decision questions to allowlisted event families", () => {
@@ -44,8 +47,27 @@ describe("telemetry product docs", () => {
       "caplets_tool_activation",
       "caplets_code_mode_outcome",
       "caplets_reliability_error",
+      "caplets_site_pageview",
+      "caplets_site_intent",
+      "caplets_catalog_search",
+      "caplets_install_intent",
+      "attribution_source",
+      "first_activation",
     ]) {
       expect(text).toContain(expected);
     }
+    expect(text).not.toMatch(/session replay.*in scope/iu);
+    expect(text).not.toMatch(/known-user.*in scope/iu);
+  });
+
+  it("keeps public catalog indexing separate from anonymous telemetry", () => {
+    const telemetry = read("docs/product/anonymous-telemetry.md");
+    const indexing = read("apps/docs/src/content/docs/privacy/indexing.mdx");
+
+    expect(telemetry).toContain(
+      "Catalog public indexing remains separate from anonymous telemetry",
+    );
+    expect(indexing).toContain("Landing, docs, and catalog analytics are anonymous telemetry");
+    expect(indexing).toContain("They do not publish");
   });
 });

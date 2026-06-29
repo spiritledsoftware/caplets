@@ -1,3 +1,5 @@
+import { attributedLandingCommand, captureLandingInstallCopy } from "./observability";
+
 const copyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-copy-value]"));
 const copyStatus = document.querySelector<HTMLElement>("[data-copy-status]");
 let copyFeedbackTimer = 0;
@@ -25,6 +27,7 @@ async function copyValue(button: HTMLButtonElement) {
       ? mobileValue
       : button.dataset.copyValue;
   if (!value) return;
+  const copyValue = attributedLandingCommand(value);
 
   if (!navigator.clipboard?.writeText) {
     setCopyFeedback(button, "Copy unavailable", 2200);
@@ -32,7 +35,8 @@ async function copyValue(button: HTMLButtonElement) {
   }
 
   try {
-    await navigator.clipboard.writeText(value);
+    await navigator.clipboard.writeText(copyValue);
+    captureLandingInstallCopy();
     setCopyFeedback(button, "Copied");
   } catch {
     setCopyFeedback(button, "Copy unavailable", 2200);

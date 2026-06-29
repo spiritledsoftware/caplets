@@ -129,6 +129,7 @@ import { resolveServeOptions, serveResolvedCaplets, type ServeOptions } from "./
 import { DEFAULT_AUTH_DIR, defaultTelemetryStateDir } from "./config/paths";
 import { appendBasePath } from "./server/options";
 import {
+  consumeTelemetryAttribution,
   deleteTelemetryIdentity,
   buildProductTelemetryEvent,
   buildReliabilityTelemetryEvent,
@@ -527,6 +528,10 @@ async function captureCliTelemetry(
       ? readTelemetryIdentity({ stateDir: context.stateDir, create: false })
       : (state.identity ?? readTelemetryIdentity({ stateDir: context.stateDir, create: true }));
   if (options.productEvent !== false) {
+    const attribution =
+      state.status === "enabled" && options.outcome === "success"
+        ? consumeTelemetryAttribution({ stateDir: context.stateDir, env: context.env })
+        : undefined;
     const product = buildProductTelemetryEvent({
       name: "caplets_cli_command",
       distinctId: identity.id,
@@ -539,6 +544,13 @@ async function captureCliTelemetry(
         command_family: options.commandFamily,
         outcome: options.outcome,
         duration_bucket: durationBucket(Date.now() - options.startedAt),
+        ...(attribution
+          ? {
+              attribution_source: attribution.source,
+              attribution_intent: attribution.intent,
+              first_activation: true,
+            }
+          : {}),
       },
     });
     if (state.status === "debug") {
@@ -566,6 +578,7 @@ async function captureCliTelemetry(
       arch: arch(),
       node_major: Number(process.versions.node.split(".")[0] ?? 0),
     },
+    error: options.error,
   });
   if (state.status === "debug") {
     options.debugSink?.capture("debug", reliability);
