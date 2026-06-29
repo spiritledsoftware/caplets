@@ -164,12 +164,15 @@ ${rows.map((row) => `| \`${escapeTable(row.name)}\` | ${row.status} | ${escapeTa
 
 ## Major sections
 
-${majorSections.map((row) => sectionDetails(row.name, schema.properties?.[row.name])).join("\n\n")}
+${majorSections.map((row) => sectionDetails(row.name, schema.properties?.[row.name], sourcePath)).join("\n\n")}
 `;
 }
 
-function sectionDetails(name: string, schema: JsonSchema | undefined): string {
+function sectionDetails(name: string, schema: JsonSchema | undefined, sourcePath: string): string {
   if (!schema) return `### \`${name}\`\n\nNo generated details are available.`;
+  if (sourcePath === "schemas/caplet.schema.json" && name === "cliTools") {
+    return cliToolsCapletFileSection(schema);
+  }
 
   const nested =
     schema.properties ??
@@ -202,6 +205,40 @@ ${schema.description ?? "Nested fields from the canonical schema."}
 | Field | Status | Type | Description |
 | --- | --- | --- | --- |
 ${rows.join("\n")}`;
+}
+
+function cliToolsCapletFileSection(schema: JsonSchema): string {
+  return `### \`cliTools\`
+
+${schema.description ?? "CLI tools backend configuration, or plural CLI backend configurations."}
+
+Singular form:
+
+| Field | Status | Type | Description |
+| --- | --- | --- | --- |
+| \`actions\` | Required | object | Configured CLI actions keyed by stable tool name. |
+| \`disabled\` | Optional | boolean | When true, omit this Caplet from discovery. |
+| \`projectBinding\` | Optional | object | Project Binding requirements for Caplets that need an attached project. |
+| \`runtime\` | Optional | object | Runtime feature and resource requirements for hosted execution. |
+
+Plural form child fields:
+
+| Field | Status | Type | Description |
+| --- | --- | --- | --- |
+| \`actions\` | Required | object | Configured CLI actions keyed by stable tool name. |
+| \`disabled\` | Optional | boolean | When true, omit this Caplet from discovery. |
+| \`projectBinding\` | Optional | object | Project Binding requirements for Caplets that need an attached project. |
+| \`runtime\` | Optional | object | Runtime feature and resource requirements for hosted execution. |
+| \`name\` | Optional | string | See the canonical schema for details. |
+| \`description\` | Optional | string | See the canonical schema for details. |
+| \`tags\` | Optional | array | Optional tags for grouping or searching Caplets. |
+| \`exposure\` | Optional | "direct" \\| "progressive" \\| "code_mode" \\| "direct_and_code_mode" \\| "progressive_and_code_mode" | How this Caplet is exposed to agents. |
+| \`shadowing\` | Optional | "forbid" \\| "allow" \\| "namespace" | Whether attached local Caplets may shadow this remote Caplet ID. |
+| \`useWhen\` | Optional | string | When agents should prefer this Caplet or configured action. |
+| \`avoidWhen\` | Optional | string | When agents should avoid this Caplet or configured action. |
+| \`setup\` | Optional | object | Optional explicit setup and verification metadata for this Caplet. |
+
+Plural \`cliTools\` is recognized only when the value is a child-ID map. \`actions\` is reserved for the singular form and cannot be used as a plural child ID.`;
 }
 
 function commonSchemaRecipes(sourcePath: string): string {
@@ -304,6 +341,47 @@ function commonSchemaRecipes(sourcePath: string): string {
       "",
       "Use this Caplet when an agent needs the current repository's local test signal.",
       "```",
+      "",
+      "Provider suite with multiple runtime children:",
+      "",
+      "```md",
+      "---",
+      "name: Google Workspace",
+      "description: Work with Gmail and Drive from one installable capability.",
+      "tags: [google, workspace]",
+      "auth:",
+      "  type: oauth2",
+      "  issuer: https://accounts.google.com",
+      "googleDiscoveryApis:",
+      "  drive:",
+      "    name: Google Drive",
+      "    description: Search and inspect Drive files.",
+      "    discoveryPath: ./drive.discovery.json",
+      "    includeOperations: [drive.files.list, drive.files.get]",
+      "    auth:",
+      "      type: oauth2",
+      "      issuer: https://accounts.google.com",
+      "      scopes:",
+      "        - https://www.googleapis.com/auth/drive.metadata.readonly",
+      "  gmail:",
+      "    name: Gmail",
+      "    description: Search and inspect Gmail messages.",
+      "    discoveryPath: ./gmail.discovery.json",
+      "    includeOperations: [gmail.users.messages.list, gmail.users.messages.get]",
+      "    auth:",
+      "      type: oauth2",
+      "      issuer: https://accounts.google.com",
+      "      scopes:",
+      "        - https://www.googleapis.com/auth/gmail.readonly",
+      "---",
+      "",
+      "Use this Caplet when an agent needs Workspace context across mail and files.",
+      "```",
+      "",
+      "Installing the parent `google-workspace` copies the whole suite. Runtime handles are",
+      "`google-workspace__drive` and `google-workspace__gmail`; child IDs are not installed",
+      "directly. Use plural backend maps for one authored provider suite, and use `capletSet`",
+      "or `capletSets` only when composing or nesting another Caplets collection.",
     ].join("\n");
   }
 

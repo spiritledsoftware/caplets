@@ -34,6 +34,12 @@ A Caplet that is ready to live in the Prebuilt Caplets Catalog.
 
 Catalog-Grade Caplets include enough frontmatter, setup or verification guidance, auth handling, least-privilege scope notes, safety notes, Code Mode workflow guidance, and local/project/runtime metadata for agents to use them without rediscovering private assumptions from the author's environment.
 
+### Multi-Backend Caplet File
+
+A Markdown Caplet file that describes one provider-scale capability while declaring multiple child backend entries in frontmatter.
+
+Multi-Backend Caplet Files are for suites such as Google Workspace where one catalog card, install unit, setup flow, auth story, and operating guide should expand into several stable runtime child Caplets. They compile into the existing backend maps rather than introducing a new runtime backend kind.
+
 ### Catalog Presentation Metadata
 
 Optional Caplet frontmatter that improves how a Caplet appears in public catalog surfaces without changing runtime behavior, trust, safety status, ranking, or install readiness.

@@ -32,6 +32,7 @@ export {
 export { catalogWarningsForEntry } from "./warnings";
 export type {
   CatalogEntry,
+  CatalogEntryChild,
   CatalogEntryInput,
   CatalogEntryKey,
   CatalogIcon,

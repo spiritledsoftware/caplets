@@ -59,6 +59,7 @@ export function initVirtualCatalogSearch(
   let lastFocusedControl: HTMLElement | null = null;
   let searchTelemetryTimer: number | undefined;
   let lastSearchTelemetrySignature = "";
+  let destroyed = false;
   const renderedRows = new Map<string, HTMLElement>();
   const virtualizer = new Virtualizer<Window, HTMLElement>({
     count: visibleRows.length,
@@ -69,7 +70,9 @@ export function initVirtualCatalogSearch(
     observeElementRect: observeWindowRect,
     observeElementOffset: observeWindowOffset,
     getItemKey: (index) => visibleRows[index]?.id ?? index,
-    onChange: () => renderVirtualRows(),
+    onChange: () => {
+      if (!destroyed) renderVirtualRows();
+    },
   });
   const cleanupVirtualizer = virtualizer._didMount();
   virtualizer._willUpdate();
@@ -168,6 +171,7 @@ export function initVirtualCatalogSearch(
   }
 
   function renderVirtualRows(): void {
+    if (destroyed) return;
     const items = virtualizer.getVirtualItems();
     resultSpacerEl.style.height = `${Math.max(virtualizer.getTotalSize(), visibleRows.length ? estimateRowHeight() : 1)}px`;
     const nextKeys = new Set<string>();
@@ -288,6 +292,7 @@ export function initVirtualCatalogSearch(
   return {
     applySearch,
     destroy() {
+      destroyed = true;
       if (searchTelemetryTimer) window.clearTimeout(searchTelemetryTimer);
       events.abort();
       cleanupVirtualizer();

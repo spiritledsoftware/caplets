@@ -21,7 +21,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { discoverCapletFiles, validateCapletFile } from "../caplet-files";
+import { discoverCapletFiles, loadCapletFilesWithPaths, validateCapletFile } from "../caplet-files";
+import type { CapletFileConfig } from "../caplet-files";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError, toSafeError } from "../errors";
@@ -41,6 +42,7 @@ import {
   createCatalogEntry,
   normalizeCatalogSourceIdentity,
   type CatalogEntry,
+  type CatalogEntryChild,
   type CatalogWorkflowSummary,
 } from "../catalog";
 import {
@@ -103,9 +105,10 @@ export function installCaplets(
     );
     const missing = [...selectedIds].filter((id) => !available.some((caplet) => caplet.id === id));
     if (missing.length > 0) {
+      const childGuidance = selectedChildInstallGuidance(sourceRoot, missing);
       throw new CapletsError(
         "CONFIG_NOT_FOUND",
-        `Caplet ${missing.join(", ")} not found in ${sourceRoot}`,
+        childGuidance ?? `Caplet ${missing.join(", ")} not found in ${sourceRoot}`,
       );
     }
     if (selected.length === 0) {
@@ -558,10 +561,63 @@ function catalogEntryForInstalledLockEntry(
       ),
       mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
       localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
+      children: catalogChildrenForInstalledLockEntry(entry, destination),
     });
   } catch {
     return undefined;
   }
+}
+
+function catalogChildrenForInstalledLockEntry(
+  entry: CapletsLockEntry,
+  destination: string,
+): CatalogEntryChild[] | undefined {
+  try {
+    const loaded = loadCapletFilesWithPaths(dirname(destination));
+    const children = Object.entries(loaded?.metadata ?? {}).flatMap(([id, metadata]) => {
+      if (metadata.parentId !== entry.id || !metadata.childId) {
+        return [];
+      }
+      const config = capletConfigForMetadata(loaded?.config, metadata.backend, id);
+      return [
+        {
+          id,
+          childId: metadata.childId,
+          name: catalogStringFromFrontmatter(config?.name) ?? metadata.childId,
+          backend: metadata.backend,
+          workflow: catalogWorkflowSummaryForBackendFamily(metadata.backend) ?? {
+            kind: "unknown",
+            label: "Unknown" as const,
+          },
+        },
+      ];
+    });
+    return children.length > 0
+      ? children.sort((left, right) => left.id.localeCompare(right.id))
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function capletConfigForMetadata(
+  config: CapletFileConfig | undefined,
+  backend: string,
+  id: string,
+): Record<string, unknown> | undefined {
+  const mapKey = {
+    mcp: "mcpServers",
+    openapi: "openapiEndpoints",
+    googleDiscovery: "googleDiscoveryApis",
+    graphql: "graphqlEndpoints",
+    http: "httpApis",
+    cli: "cliTools",
+    caplets: "capletSets",
+  }[backend];
+  if (!mapKey) return undefined;
+  const backends = config?.[mapKey as keyof NonNullable<typeof config>];
+  const value = isRecord(backends) ? backends[id] : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function workflowSummaryFromRisk(risk: CapletsLockEntry["risk"]): CatalogWorkflowSummary {
@@ -618,6 +674,42 @@ function discoverSelectedCapletFiles(
     }
   }
   return candidates.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function selectedChildInstallGuidance(
+  sourceRoot: string,
+  missingIds: string[],
+): string | undefined {
+  let loaded: ReturnType<typeof loadCapletFilesWithPaths>;
+  try {
+    loaded = loadCapletFilesWithPaths(sourceRoot);
+  } catch {
+    return undefined;
+  }
+  if (!loaded?.metadata) {
+    return undefined;
+  }
+
+  const matches = missingIds.flatMap((id) => {
+    const metadata = loaded?.metadata?.[id];
+    return metadata?.childId
+      ? [{ id, parentId: metadata.parentId, childId: metadata.childId }]
+      : [];
+  });
+  if (matches.length === 0) {
+    return undefined;
+  }
+  if (matches.length === 1 && missingIds.length === 1) {
+    const match = matches[0]!;
+    return `Caplet ${match.id} is a runtime child of ${match.parentId}; install parent Caplet ${match.parentId} instead.`;
+  }
+  const matchedIds = new Set(matches.map((match) => match.id));
+  const unmatched = missingIds.filter((id) => !matchedIds.has(id));
+  const missingSuffix =
+    unmatched.length > 0 ? ` Also not found: ${unmatched.join(", ")} in ${sourceRoot}.` : "";
+  return `Caplet child IDs are runtime-only and cannot be installed directly: ${matches
+    .map((match) => `${match.id} -> ${match.parentId}`)
+    .join(", ")}. Install the parent Caplet ID instead.${missingSuffix}`;
 }
 
 function resolveInstallSource(repo: string): {
@@ -848,12 +940,17 @@ function riskSummaryForSourcePath(sourcePath: string): CapletsLockEntry["risk"] 
   const frontmatter = readCapletFrontmatter(sourcePath);
   const backendFamilies = capletBackendFamilies(frontmatter);
   const auth = capletAuth(frontmatter);
+  const authScopes = capletAuthScopes(frontmatter);
   const runtime = isRecord(frontmatter.runtime) ? frontmatter.runtime : undefined;
   const projectBindingRequired =
-    isRecord(frontmatter.projectBinding) && frontmatter.projectBinding.required === true;
-  const runtimeFeatures = Array.isArray(runtime?.features)
-    ? runtime.features.filter((feature): feature is string => typeof feature === "string")
-    : undefined;
+    (isRecord(frontmatter.projectBinding) && frontmatter.projectBinding.required === true) ||
+    capletPluralBackends(frontmatter).some(hasProjectBinding);
+  const runtimeFeatures = [
+    ...(Array.isArray(runtime?.features)
+      ? runtime.features.filter((feature): feature is string => typeof feature === "string")
+      : []),
+    ...capletPluralBackends(frontmatter).flatMap((backend) => runtimeFeaturesForBackend(backend)),
+  ];
   const mutating = capletCanMutate(frontmatter);
   const destructive = capletCanDestroy(frontmatter);
   return {
@@ -862,16 +959,14 @@ function riskSummaryForSourcePath(sourcePath: string): CapletsLockEntry["risk"] 
       backendFamilies,
       auth,
       projectBindingRequired,
-      runtimeFeatures: runtimeFeatures ?? [],
+      runtimeFeatures,
       mutating,
       destructive,
       frontmatter,
     }),
     projectBindingRequired,
-    authScopes: Array.isArray(auth?.scopes)
-      ? auth.scopes.filter((scope): scope is string => typeof scope === "string")
-      : undefined,
-    runtimeFeatures,
+    authScopes: authScopes.length > 0 ? authScopes : undefined,
+    runtimeFeatures: runtimeFeatures.length > 0 ? [...new Set(runtimeFeatures)] : undefined,
     mutating,
     destructive,
     bodyHash: hashInstalledArtifact(sourcePath),
@@ -909,17 +1004,46 @@ function readCapletFrontmatterFromText(text: string): Record<string, unknown> {
 function capletBackendFamilies(frontmatter: Record<string, unknown>): string[] {
   const families: Array<readonly [string, string]> = [
     ["mcp", "mcpServer"],
+    ["mcp", "mcpServers"],
     ["openapi", "openapiEndpoint"],
+    ["openapi", "openapiEndpoints"],
     ["googleDiscovery", "googleDiscoveryApi"],
+    ["googleDiscovery", "googleDiscoveryApis"],
     ["graphql", "graphqlEndpoint"],
+    ["graphql", "graphqlEndpoints"],
     ["http", "httpApi"],
+    ["http", "httpApis"],
     ["cli", "cliTools"],
     ["caplets", "capletSet"],
+    ["caplets", "capletSets"],
   ];
-  return families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family]));
+  return [
+    ...new Set(
+      families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family])),
+    ),
+  ];
 }
 
 function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknown> | undefined {
+  const blocks = capletAuthBlocks(frontmatter);
+  return blocks.find((auth) => auth.type !== "none") ?? blocks[0];
+}
+
+function capletAuthScopes(frontmatter: Record<string, unknown>): string[] {
+  return [
+    ...new Set(
+      capletAuthBlocks(frontmatter).flatMap((auth) =>
+        Array.isArray(auth.scopes)
+          ? auth.scopes.filter((scope): scope is string => typeof scope === "string")
+          : [],
+      ),
+    ),
+  ];
+}
+
+function capletAuthBlocks(frontmatter: Record<string, unknown>): Record<string, unknown>[] {
+  const blocks: Record<string, unknown>[] = [];
+  if (isRecord(frontmatter.auth)) blocks.push(frontmatter.auth);
   for (const key of [
     "mcpServer",
     "openapiEndpoint",
@@ -928,9 +1052,20 @@ function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknow
     "httpApi",
   ]) {
     const backend = frontmatter[key];
-    if (isRecord(backend) && isRecord(backend.auth)) return backend.auth;
+    if (isRecord(backend) && isRecord(backend.auth)) blocks.push(backend.auth);
   }
-  return undefined;
+  for (const key of [
+    "mcpServers",
+    "openapiEndpoints",
+    "googleDiscoveryApis",
+    "graphqlEndpoints",
+    "httpApis",
+  ]) {
+    for (const backend of capletPluralBackendValues(frontmatter[key])) {
+      if (isRecord(backend.auth)) blocks.push(backend.auth);
+    }
+  }
+  return blocks;
 }
 
 function derivedSafety(input: {
@@ -965,12 +1100,24 @@ function derivedSafety(input: {
 
 function isLocalMcpServer(frontmatter: Record<string, unknown>): boolean {
   const mcpServer = frontmatter.mcpServer;
-  return isRecord(mcpServer) && typeof mcpServer.command === "string";
+  return (
+    (isRecord(mcpServer) && typeof mcpServer.command === "string") ||
+    capletPluralBackendValues(frontmatter.mcpServers).some(
+      (server) => typeof server.command === "string",
+    )
+  );
 }
 
 function capletCanMutate(frontmatter: Record<string, unknown>): boolean {
-  if (frontmatter.graphqlEndpoint !== undefined) return true;
-  if (frontmatter.openapiEndpoint !== undefined || frontmatter.googleDiscoveryApi !== undefined) {
+  if (frontmatter.graphqlEndpoint !== undefined || frontmatter.graphqlEndpoints !== undefined) {
+    return true;
+  }
+  if (
+    frontmatter.openapiEndpoint !== undefined ||
+    frontmatter.googleDiscoveryApi !== undefined ||
+    frontmatter.openapiEndpoints !== undefined ||
+    frontmatter.googleDiscoveryApis !== undefined
+  ) {
     return true;
   }
   const httpApi = frontmatter.httpApi;
@@ -984,6 +1131,24 @@ function capletCanMutate(frontmatter: Record<string, unknown>): boolean {
     return Object.values(frontmatter.cliTools.actions).some((action) => {
       if (!isRecord(action) || !isRecord(action.annotations)) return true;
       return action.annotations.readOnlyHint !== true;
+    });
+  }
+  for (const httpApi of capletPluralBackendValues(frontmatter.httpApis)) {
+    if (isRecord(httpApi.actions)) {
+      const mutates = Object.values(httpApi.actions).some((action) => {
+        if (!isRecord(action)) return false;
+        return typeof action.method === "string" && action.method.toUpperCase() !== "GET";
+      });
+      if (mutates) return true;
+    }
+  }
+  if (isRecord(frontmatter.cliTools) && !isRecord(frontmatter.cliTools.actions)) {
+    return capletPluralBackendValues(frontmatter.cliTools).some((cliTools) => {
+      if (!isRecord(cliTools.actions)) return false;
+      return Object.values(cliTools.actions).some((action) => {
+        if (!isRecord(action) || !isRecord(action.annotations)) return true;
+        return action.annotations.readOnlyHint !== true;
+      });
     });
   }
   return false;
@@ -1006,6 +1171,28 @@ function capletCanDestroy(frontmatter: Record<string, unknown>): boolean {
         isRecord(action.annotations) &&
         action.annotations.destructiveHint === true,
     );
+  }
+  for (const httpApi of capletPluralBackendValues(frontmatter.httpApis)) {
+    if (isRecord(httpApi.actions)) {
+      const destroys = Object.values(httpApi.actions).some(
+        (action) =>
+          isRecord(action) &&
+          typeof action.method === "string" &&
+          action.method.toUpperCase() === "DELETE",
+      );
+      if (destroys) return true;
+    }
+  }
+  if (isRecord(frontmatter.cliTools) && !isRecord(frontmatter.cliTools.actions)) {
+    return capletPluralBackendValues(frontmatter.cliTools).some((cliTools) => {
+      if (!isRecord(cliTools.actions)) return false;
+      return Object.values(cliTools.actions).some(
+        (action) =>
+          isRecord(action) &&
+          isRecord(action.annotations) &&
+          action.annotations.destructiveHint === true,
+      );
+    });
   }
   return false;
 }
@@ -1030,6 +1217,36 @@ function isSubset(previous: string[], next: string[]): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function capletPluralBackendValues(value: unknown): Record<string, unknown>[] {
+  if (!isRecord(value)) return [];
+  return Object.values(value).filter(isRecord);
+}
+
+function capletPluralBackends(frontmatter: Record<string, unknown>): Record<string, unknown>[] {
+  return [
+    ...capletPluralBackendValues(frontmatter.mcpServers),
+    ...capletPluralBackendValues(frontmatter.openapiEndpoints),
+    ...capletPluralBackendValues(frontmatter.googleDiscoveryApis),
+    ...capletPluralBackendValues(frontmatter.graphqlEndpoints),
+    ...capletPluralBackendValues(frontmatter.httpApis),
+    ...(isRecord(frontmatter.cliTools) && !isRecord(frontmatter.cliTools.actions)
+      ? capletPluralBackendValues(frontmatter.cliTools)
+      : []),
+    ...capletPluralBackendValues(frontmatter.capletSets),
+  ];
+}
+
+function hasProjectBinding(value: Record<string, unknown>): boolean {
+  return isRecord(value.projectBinding) && value.projectBinding.required === true;
+}
+
+function runtimeFeaturesForBackend(value: Record<string, unknown>): string[] {
+  const runtime = isRecord(value.runtime) ? value.runtime : undefined;
+  return Array.isArray(runtime?.features)
+    ? runtime.features.filter((feature): feature is string => typeof feature === "string")
+    : [];
 }
 
 function lockSourceDisplay(source: CapletsLockSource): string {

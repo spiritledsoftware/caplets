@@ -7,8 +7,9 @@ services:
     restart: unless-stopped
     environment:
       CAPLETS_SERVER_URL: ${CAPLETS_SERVER_URL:-http://127.0.0.1:5387}
-      CAPLETS_SERVER_USER: ${CAPLETS_SERVER_USER:-caplets}
-      CAPLETS_SERVER_PASSWORD: ${CAPLETS_SERVER_PASSWORD:-}
+      CAPLETS_REMOTE_SERVER_STATE_DIR: /data/state/caplets/remote-server
+      CAPLETS_SENTRY_RELEASE: ${CAPLETS_SENTRY_RELEASE:-caplets-docker-local}
+      CAPLETS_SENTRY_ENVIRONMENT: ${CAPLETS_SENTRY_ENVIRONMENT:-development}
       XDG_CONFIG_HOME: /data/config
       XDG_STATE_HOME: /data/state
     env_file:
@@ -22,7 +23,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          node -e "fetch('http://127.0.0.1:5387/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+          node -e "fetch('http://127.0.0.1:5387/v1/healthz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 5

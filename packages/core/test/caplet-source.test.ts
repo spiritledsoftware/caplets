@@ -201,6 +201,69 @@ describe("CapletSource adapters", () => {
       /weather\/openapi\.yaml/,
     );
   });
+
+  it("preserves parent and child source metadata for plural Caplet files", async () => {
+    const result = await parseCapletSource(
+      new BundleCapletSource([
+        {
+          path: "workspace/CAPLET.md",
+          content: `---
+name: Workspace
+description: Work with several workspace APIs.
+auth:
+  type: oauth2
+  issuer: https://accounts.google.com
+googleDiscoveryApis:
+  drive:
+    name: Drive
+    description: Search Drive files and folders.
+    discoveryPath: ./drive.discovery.json
+  gmail:
+    name: Gmail
+    description: Search Gmail messages and labels.
+    discoveryPath: ./gmail.discovery.json
+---
+
+# Workspace
+`,
+        },
+        {
+          path: "workspace/drive.discovery.json",
+          content: `{"kind":"discovery#restDescription","name":"drive","version":"v3"}`,
+        },
+        {
+          path: "workspace/gmail.discovery.json",
+          content: `{"kind":"discovery#restDescription","name":"gmail","version":"v1"}`,
+        },
+      ]),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(
+      result.resolvedCaplets.map((caplet) => ({
+        id: caplet.id,
+        parentId: caplet.parentId,
+        childId: caplet.childId,
+        sourcePath: caplet.sourcePath,
+        localReferences: caplet.localReferences,
+      })),
+    ).toEqual([
+      {
+        id: "workspace__drive",
+        parentId: "workspace",
+        childId: "drive",
+        sourcePath: "workspace/CAPLET.md",
+        localReferences: [{ path: "workspace/drive.discovery.json", exists: true }],
+      },
+      {
+        id: "workspace__gmail",
+        parentId: "workspace",
+        childId: "gmail",
+        sourcePath: "workspace/CAPLET.md",
+        localReferences: [{ path: "workspace/gmail.discovery.json", exists: true }],
+      },
+    ]);
+  });
 });
 
 function summary(result: Awaited<ReturnType<typeof parseCapletSource>>) {
