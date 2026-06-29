@@ -1,5 +1,18 @@
 # caplets
 
+## 0.25.0
+
+### Minor Changes
+
+- 988edbb: Add shared catalog primitives, official catalog generation, public catalog indexing statuses,
+  and install-time Vault setup recovery metadata for Caplets install/update flows.
+
+### Patch Changes
+
+- Updated dependencies [988edbb]
+- Updated dependencies [988edbb]
+  - @caplets/core@0.31.0
+
 ## 0.24.0
 
 ### Minor Changes
