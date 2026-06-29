@@ -48,6 +48,15 @@ export const catalogPage = await Astro("catalog-page", {
   },
   bindings: {
     CATALOG_DB: catalogDatabase,
+    ...(process.env.CAPLETS_CATALOG_SENTRY_DSN
+      ? { CAPLETS_CATALOG_SENTRY_DSN: process.env.CAPLETS_CATALOG_SENTRY_DSN }
+      : {}),
+    ...(process.env.PUBLIC_CAPLETS_ENVIRONMENT
+      ? { PUBLIC_CAPLETS_ENVIRONMENT: process.env.PUBLIC_CAPLETS_ENVIRONMENT }
+      : {}),
+    ...(process.env.PUBLIC_CAPLETS_RELEASE
+      ? { PUBLIC_CAPLETS_RELEASE: process.env.PUBLIC_CAPLETS_RELEASE }
+      : {}),
   },
   domains: [catalogPageDomain],
 });

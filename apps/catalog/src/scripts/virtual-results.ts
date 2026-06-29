@@ -7,6 +7,7 @@ import {
 } from "@tanstack/virtual-core";
 import { filterCatalogSearchRecords, type CatalogSearchFilters } from "../lib/search-filter";
 import type { CatalogSearchRow } from "../lib/search-row";
+import { captureCatalogResultOpen, captureCatalogSearch } from "./observability";
 import {
   AlertCircleIcon,
   catalogStatusIcons,
@@ -56,6 +57,8 @@ export function initVirtualCatalogSearch(
   const rows = parseRows(index.textContent ?? "[]");
   let visibleRows = [...rows];
   let lastFocusedControl: HTMLElement | null = null;
+  let searchTelemetryTimer: number | undefined;
+  let lastSearchTelemetrySignature = "";
   const renderedRows = new Map<string, HTMLElement>();
   const virtualizer = new Virtualizer<Window, HTMLElement>({
     count: visibleRows.length,
@@ -106,7 +109,14 @@ export function initVirtualCatalogSearch(
     window.history.replaceState(null, "", next);
   }
 
-  function applySearch(options: { writeUrl?: boolean; resetScroll?: boolean } = {}): void {
+  function applySearch(
+    options: {
+      writeUrl?: boolean;
+      resetScroll?: boolean;
+      filterChanged?: "trust" | "setup" | "tag" | "reset" | undefined;
+      trackSearch?: "immediate" | "debounced" | false | undefined;
+    } = {},
+  ): void {
     lastFocusedControl =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     visibleRows = filterCatalogSearchRecords(rows, filters()) as CatalogSearchRow[];
@@ -124,6 +134,37 @@ export function initVirtualCatalogSearch(
     ) {
       lastFocusedControl.focus();
     }
+    emitSearchTelemetry(options);
+  }
+
+  function emitSearchTelemetry(options: {
+    filterChanged?: "trust" | "setup" | "tag" | "reset" | undefined;
+    trackSearch?: "immediate" | "debounced" | false | undefined;
+  }): void {
+    if (options.trackSearch === false) return;
+    if (options.trackSearch === "debounced") {
+      if (searchTelemetryTimer) window.clearTimeout(searchTelemetryTimer);
+      searchTelemetryTimer = window.setTimeout(() => {
+        searchTelemetryTimer = undefined;
+        captureSearchTelemetry(options.filterChanged);
+      }, 450);
+      return;
+    }
+    captureSearchTelemetry(options.filterChanged);
+  }
+
+  function captureSearchTelemetry(
+    filterChanged: "trust" | "setup" | "tag" | "reset" | undefined,
+  ): void {
+    const payload = {
+      query: inputEl.value,
+      resultCount: visibleRows.length,
+      filterChanged,
+    };
+    const signature = JSON.stringify(payload);
+    if (signature === lastSearchTelemetrySignature) return;
+    lastSearchTelemetrySignature = signature;
+    captureCatalogSearch(payload);
   }
 
   function renderVirtualRows(): void {
@@ -176,20 +217,33 @@ export function initVirtualCatalogSearch(
     if (!target || target.closest("[data-row-action]") || target.closest("a")) return;
     const row = target.closest<HTMLElement>("[data-result-row]");
     const href = row?.dataset.detailHref;
-    if (href) window.location.href = href;
+    if (href) {
+      captureCatalogResultOpen();
+      window.location.href = href;
+    }
   }
 
   const events = new AbortController();
-  for (const control of controls()) {
-    control?.addEventListener("input", () => applySearch(), { signal: events.signal });
-    control?.addEventListener("change", () => applySearch(), { signal: events.signal });
+  inputEl.addEventListener("input", () => applySearch({ trackSearch: "debounced" }), {
+    signal: events.signal,
+  });
+  for (const control of [trust, setup, sort]) {
+    control?.addEventListener("change", () => applySearch({ filterChanged: filterName(control) }), {
+      signal: events.signal,
+    });
   }
+  tag?.addEventListener("input", () => applySearch({ filterChanged: "tag" }), {
+    signal: events.signal,
+  });
+  tag?.addEventListener("change", () => applySearch({ filterChanged: "tag" }), {
+    signal: events.signal,
+  });
   tagSelect?.addEventListener(
     "starwind-select:change",
     (event) => {
       const customEvent = event as CustomEvent<{ value?: string }>;
       setTagValue(customEvent.detail.value ?? "all", { syncSelect: false });
-      applySearch();
+      applySearch({ filterChanged: "tag" });
     },
     { signal: events.signal },
   );
@@ -203,7 +257,7 @@ export function initVirtualCatalogSearch(
       }
       setTagValue("all");
       if (sort) sort.value = "rank";
-      applySearch();
+      applySearch({ filterChanged: "reset" });
       inputEl.focus();
     },
     { signal: events.signal },
@@ -213,7 +267,7 @@ export function initVirtualCatalogSearch(
     "popstate",
     () => {
       applyUrlState();
-      applySearch({ writeUrl: false });
+      applySearch({ writeUrl: false, trackSearch: false });
     },
     { signal: events.signal },
   );
@@ -229,11 +283,12 @@ export function initVirtualCatalogSearch(
   resultListEl.addEventListener("click", navigateFromRowClick, { signal: events.signal });
 
   applyUrlState();
-  applySearch({ writeUrl: false, resetScroll: false });
+  applySearch({ writeUrl: false, resetScroll: false, trackSearch: false });
 
   return {
     applySearch,
     destroy() {
+      if (searchTelemetryTimer) window.clearTimeout(searchTelemetryTimer);
       events.abort();
       cleanupVirtualizer();
     },
@@ -241,6 +296,13 @@ export function initVirtualCatalogSearch(
       return resultListEl.querySelectorAll("[data-result-row]").length;
     },
   };
+}
+
+function filterName(
+  control: HTMLInputElement | HTMLSelectElement,
+): "trust" | "setup" | "tag" | undefined {
+  const name = control.dataset.filter;
+  return name === "trust" || name === "setup" || name === "tag" ? name : undefined;
 }
 
 function setTagValue(value: string, options: { syncSelect?: boolean } = {}): void {

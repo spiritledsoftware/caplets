@@ -91,7 +91,56 @@ describe("telemetry event builders", () => {
     }
   });
 
-  it("builds reliability events without raw message, stack, or details", () => {
+  it("allows one-shot categorical attribution fields on product events", () => {
+    const event = buildProductTelemetryEvent({
+      name: "caplets_cli_command",
+      distinctId: "anon_1234567890abcdef1234567890abcdef",
+      properties: {
+        surface: "cli",
+        command_family: "setup",
+        outcome: "success",
+        attribution_source: "landing",
+        attribution_intent: "install_run",
+        first_activation: true,
+      },
+    });
+
+    expect(event.properties).toMatchObject({
+      attribution_source: "landing",
+      attribution_intent: "install_run",
+      first_activation: true,
+    });
+  });
+
+  it("rejects unknown or raw attribution values", () => {
+    expect(() =>
+      buildProductTelemetryEvent({
+        name: "caplets_cli_command",
+        distinctId: "anon_1234567890abcdef1234567890abcdef",
+        properties: {
+          attribution_source: "https://landing.example/install",
+          attribution_intent: "install_run",
+        } as never,
+      }),
+    ).toThrow(/unsafe telemetry property/u);
+    expect(() =>
+      buildProductTelemetryEvent({
+        name: "caplets_cli_command",
+        distinctId: "anon_1234567890abcdef1234567890abcdef",
+        properties: { attribution_campaign: "launch" } as never,
+      }),
+    ).toThrow(/unknown telemetry property/u);
+  });
+
+  it("builds reliability events with sanitized stack frames but no raw message or details", () => {
+    const error = new Error("CONFIG_INVALID at /home/alex/project/.caplets/config.json");
+    error.stack = [
+      "Error: CONFIG_INVALID at /home/alex/project/.caplets/config.json",
+      "    at loadConfig (/home/alex/caplets/packages/core/src/config/index.ts:12:5)",
+      "    at request (https://api.internal.example.com/token?value=sk-secret:8:9)",
+      "    at runner (/home/alex/caplets/node_modules/@scope/pkg/dist/index.js:2:3)",
+    ].join("\n");
+
     expect(
       buildReliabilityTelemetryEvent({
         name: "caplets_reliability_error",
@@ -107,8 +156,9 @@ describe("telemetry event builders", () => {
           arch: "x64",
           node_major: 22,
         },
+        error,
       }),
-    ).toEqual({
+    ).toMatchObject({
       provider: "sentry",
       name: "caplets_reliability_error",
       fingerprint: ["@caplets/core", "cli", "serve", "local", "CONFIG_INVALID", "config"],
@@ -124,7 +174,47 @@ describe("telemetry event builders", () => {
         arch: "x64",
         node_major: "22",
       },
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: expect.arrayContaining([
+                expect.objectContaining({
+                  filename: "packages/core/src/config/index.ts",
+                  function: "loadConfig",
+                  lineno: 12,
+                  colno: 5,
+                }),
+                expect.objectContaining({
+                  filename: "node_modules/@scope/pkg/dist/index.js",
+                  function: "runner",
+                }),
+              ]),
+            },
+          },
+        ],
+      },
     });
+    const serialized = JSON.stringify(
+      buildReliabilityTelemetryEvent({
+        name: "caplets_reliability_error",
+        properties: {
+          package: "@caplets/core",
+          version: "0.27.0",
+          surface: "cli",
+          runtime_mode: "local",
+          command_family: "serve",
+          error_code: "CONFIG_INVALID",
+          diagnostic_category: "config",
+        },
+        error,
+      }),
+    );
+    expect(serialized).not.toContain("/home/alex");
+    expect(serialized).not.toContain("api.internal.example.com");
+    expect(serialized).not.toContain("sk-secret");
+    expect(serialized).not.toContain("CONFIG_INVALID at");
   });
 
   it("buckets duration and timeout values", () => {

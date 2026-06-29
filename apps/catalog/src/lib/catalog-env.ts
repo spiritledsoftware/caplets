@@ -4,6 +4,9 @@ import { env } from "cloudflare:workers";
 
 export type CatalogEnv = {
   CATALOG_DB?: D1Database;
+  CAPLETS_CATALOG_SENTRY_DSN?: string;
+  PUBLIC_CAPLETS_ENVIRONMENT?: string;
+  PUBLIC_CAPLETS_RELEASE?: string;
 };
 
 export function getCatalogEnv(): CatalogEnv {

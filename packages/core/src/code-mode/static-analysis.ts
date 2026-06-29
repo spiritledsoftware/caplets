@@ -15,7 +15,8 @@ const PARSER_OPTIONS: ParserOptions = {
   sourceType: "module",
   errorRecovery: true,
   allowReturnOutsideFunction: true,
-  plugins: ["typescript", "topLevelAwait", "importAttributes"],
+  allowAwaitOutsideFunction: true,
+  plugins: ["typescript"],
 };
 
 export function hasDirectFetchCall(code: string): boolean {
@@ -52,6 +53,7 @@ function parseCode(code: string): AstNode | undefined {
 function isExecutableImportNode(node: AstNode): boolean {
   if (
     node.type === "ImportDeclaration" ||
+    node.type === "ImportExpression" ||
     node.type === "TSImportEqualsDeclaration" ||
     (isExportDeclaration(node) && node.source != null)
   ) {

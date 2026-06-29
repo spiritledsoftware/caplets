@@ -1,5 +1,9 @@
 import type { TelemetryExecutionContext, TelemetrySurface } from "./state";
-import { assertTelemetrySafeProperties } from "./privacy";
+import {
+  assertTelemetrySafeProperties,
+  sanitizeRuntimeException,
+  type SanitizedRuntimeException,
+} from "./privacy";
 
 export type RuntimeMode = "local" | "remote" | "cloud" | "unknown";
 export type CommandFamily =
@@ -35,6 +39,8 @@ export type DiagnosticCategory =
   | "code_mode"
   | "provider"
   | "unknown";
+export type AttributionSource = "landing" | "docs" | "catalog" | "unknown";
+export type AttributionIntent = "install_run" | "unknown";
 
 export type TelemetryProductEventName =
   | "caplets_cli_command"
@@ -75,6 +81,9 @@ export type TelemetryProperties = Partial<{
   count_bucket: string;
   error_code: string;
   diagnostic_category: DiagnosticCategory;
+  attribution_source: AttributionSource;
+  attribution_intent: AttributionIntent;
+  first_activation: boolean;
   os_family: NodeJS.Platform | "unknown";
   arch: NodeJS.Architecture | "unknown";
   node_major: number;
@@ -92,6 +101,7 @@ export type ReliabilityTelemetryEvent = {
   name: TelemetryReliabilityEventName;
   tags: Record<string, string>;
   fingerprint: string[];
+  exception?: SanitizedRuntimeException | undefined;
 };
 
 export type TelemetryEvent = ProductTelemetryEvent | ReliabilityTelemetryEvent;
@@ -127,12 +137,14 @@ export function buildProductTelemetryEvent(input: {
 export function buildReliabilityTelemetryEvent(input: {
   name: TelemetryReliabilityEventName;
   properties: TelemetryProperties;
+  error?: unknown;
 }): ReliabilityTelemetryEvent {
   if (!RELIABILITY_EVENTS.has(input.name)) {
     throw new Error(`unknown telemetry event: ${input.name}`);
   }
   assertTelemetrySafeProperties(input.properties);
   const tags = tagsFor(input.properties);
+  const exception = sanitizeRuntimeException(input.error);
   return {
     provider: "sentry",
     name: input.name,
@@ -145,6 +157,7 @@ export function buildReliabilityTelemetryEvent(input: {
       tags.error_code ?? "unknown",
       tags.diagnostic_category ?? "unknown",
     ],
+    ...(exception ? { exception } : {}),
   };
 }
 

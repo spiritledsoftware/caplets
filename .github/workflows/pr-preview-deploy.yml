@@ -53,6 +53,24 @@ jobs:
         if: ${{ github.event.action != 'closed' }}
         run: pnpm verify
 
+      - name: Check observability preview env
+        if: ${{ github.event.action != 'closed' }}
+        run: pnpm telemetry:check-web-env && pnpm telemetry:check-source-maps
+        env:
+          PUBLIC_CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+          PUBLIC_CAPLETS_POSTHOG_HOST: ${{ secrets.CAPLETS_POSTHOG_HOST }}
+          PUBLIC_CAPLETS_LANDING_SENTRY_DSN: ${{ secrets.CAPLETS_LANDING_SENTRY_DSN }}
+          PUBLIC_CAPLETS_DOCS_SENTRY_DSN: ${{ secrets.CAPLETS_DOCS_SENTRY_DSN }}
+          PUBLIC_CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.CAPLETS_SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.CAPLETS_SENTRY_ORG }}
+          CAPLETS_LANDING_SENTRY_PROJECT: ${{ secrets.CAPLETS_LANDING_SENTRY_PROJECT }}
+          CAPLETS_DOCS_SENTRY_PROJECT: ${{ secrets.CAPLETS_DOCS_SENTRY_PROJECT }}
+          CAPLETS_CATALOG_SENTRY_PROJECT: ${{ secrets.CAPLETS_CATALOG_SENTRY_PROJECT }}
+          PUBLIC_CAPLETS_RELEASE: preview-${{ github.event.pull_request.number }}@${{ github.sha }}
+          PUBLIC_CAPLETS_ENVIRONMENT: preview
+
       - name: Deploy preview
         if: ${{ github.event.action != 'closed' }}
         run: pnpm run alchemy:deploy
@@ -66,6 +84,19 @@ jobs:
           GITHUB_REPOSITORY_NAME: ${{ github.event.repository.name }}
           GITHUB_TOKEN: ${{ github.token }}
           PULL_REQUEST: ${{ github.event.pull_request.number }}
+          PUBLIC_CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+          PUBLIC_CAPLETS_POSTHOG_HOST: ${{ secrets.CAPLETS_POSTHOG_HOST }}
+          PUBLIC_CAPLETS_LANDING_SENTRY_DSN: ${{ secrets.CAPLETS_LANDING_SENTRY_DSN }}
+          PUBLIC_CAPLETS_DOCS_SENTRY_DSN: ${{ secrets.CAPLETS_DOCS_SENTRY_DSN }}
+          PUBLIC_CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.CAPLETS_SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.CAPLETS_SENTRY_ORG }}
+          CAPLETS_LANDING_SENTRY_PROJECT: ${{ secrets.CAPLETS_LANDING_SENTRY_PROJECT }}
+          CAPLETS_DOCS_SENTRY_PROJECT: ${{ secrets.CAPLETS_DOCS_SENTRY_PROJECT }}
+          CAPLETS_CATALOG_SENTRY_PROJECT: ${{ secrets.CAPLETS_CATALOG_SENTRY_PROJECT }}
+          PUBLIC_CAPLETS_RELEASE: preview-${{ github.event.pull_request.number }}@${{ github.sha }}
+          PUBLIC_CAPLETS_ENVIRONMENT: preview
 
       - name: Destroy preview
         if: ${{ github.event.action == 'closed' }}

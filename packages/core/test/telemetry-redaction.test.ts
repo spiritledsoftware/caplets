@@ -27,11 +27,33 @@ describe("telemetry privacy guard", () => {
     ).toThrow(/unsafe telemetry property/u);
   });
 
-  it("strips Sentry event message, exception, breadcrumbs, request, and extra data", () => {
+  it("strips Sentry event message, unsafe exception frames, breadcrumbs, request, and extra data", () => {
     expect(
       stripSentryEvent({
         message: "Raw /tmp/path message",
-        exception: { values: [{ stacktrace: { frames: [{ filename: "/tmp/x.ts" }] } }] },
+        exception: {
+          values: [
+            {
+              type: "Error",
+              stacktrace: {
+                frames: [
+                  {
+                    filename: "/tmp/x.ts",
+                    function: "leak",
+                    lineno: 1,
+                  },
+                  {
+                    filename: "packages/core/src/config/index.ts",
+                    function: "loadConfig",
+                    lineno: 12,
+                    colno: 5,
+                    in_app: true,
+                  },
+                ],
+              },
+            },
+          ],
+        },
         request: { url: "https://example.com" },
         breadcrumbs: [{ message: "secret" }],
         extra: { args: ["--token", "secret"] },
@@ -41,6 +63,58 @@ describe("telemetry privacy guard", () => {
     ).toEqual({
       tags: { surface: "cli" },
       fingerprint: ["@caplets/core", "cli"],
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: [
+                {
+                  filename: "packages/core/src/config/index.ts",
+                  function: "loadConfig",
+                  lineno: 12,
+                  colno: 5,
+                  in_app: true,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it("does not preserve traversal inside workspace-looking frame paths", () => {
+    const event = stripSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: [
+                {
+                  filename: "/tmp/packages/../../secret/config.ts",
+                  function: "loadConfig",
+                  lineno: 7,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+
+    expect(JSON.stringify(event)).not.toContain("packages/../../secret");
+    expect(event).toMatchObject({
+      exception: {
+        values: [
+          {
+            stacktrace: {
+              frames: [{ filename: "config.ts", function: "loadConfig", lineno: 7 }],
+            },
+          },
+        ],
+      },
     });
   });
 });

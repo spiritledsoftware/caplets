@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli";
-import { readTelemetryIdentity, readTelemetryNotice, TelemetryDebugSink } from "../src/telemetry";
+import {
+  readTelemetryAttribution,
+  readTelemetryIdentity,
+  readTelemetryNotice,
+  TelemetryDebugSink,
+} from "../src/telemetry";
 
 const dirs: string[] = [];
 
@@ -109,6 +114,21 @@ describe("telemetry CLI", () => {
       writeOut: (value) => out.push(value),
     });
     expect(readTelemetryIdentity({ stateDir, create: false }).kind).toBe("ephemeral");
+  });
+
+  it("records install attribution through a cross-shell telemetry subcommand", async () => {
+    const dir = tempDir();
+    const stateDir = join(dir, "state");
+
+    await runCli(["telemetry", "attribution", "catalog_install"], {
+      telemetryStateDir: stateDir,
+      writeOut: () => {},
+    });
+
+    expect(readTelemetryAttribution({ stateDir })).toMatchObject({
+      source: "catalog",
+      intent: "install_run",
+    });
   });
 
   it("prints first-run notice to stderr only for eligible TTY commands", async () => {

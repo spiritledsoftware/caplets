@@ -19,10 +19,10 @@
     "js-tiktoken": "^1.0.21"
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
-    "@typescript/native-preview": "7.0.0-dev.20260613.1",
+    "@types/node": "^22.18.0",
+    "@typescript/native-preview": "7.0.0-dev.20260628.1",
     "caplets": "workspace:*",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.9"
   }
 }

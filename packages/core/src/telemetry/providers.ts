@@ -40,7 +40,7 @@ export function createTelemetryDispatcher(
   }
 
   async function sentryClient(): Promise<SentryClient | undefined> {
-    const dsn = options.sentryDsn ?? process.env.CAPLETS_SENTRY_DSN ?? BUNDLED_SENTRY_DSN;
+    const dsn = options.sentryDsn ?? process.env.CAPLETS_RUNTIME_SENTRY_DSN ?? BUNDLED_SENTRY_DSN;
     if (!dsn) return undefined;
     sentry ??= Promise.resolve((options.factories?.createSentry ?? defaultSentryFactory)(dsn));
     return sentry;
@@ -112,6 +112,7 @@ async function captureSentry(
     level: "error",
     tags: event.tags,
     fingerprint: event.fingerprint,
+    ...(event.exception ? { exception: event.exception } : {}),
   });
 }
 
@@ -129,6 +130,8 @@ async function defaultSentryFactory(dsn: string): Promise<SentryClient> {
   const sentry = await import("@sentry/node");
   const options = {
     dsn,
+    release: process.env.CAPLETS_SENTRY_RELEASE,
+    environment: process.env.CAPLETS_SENTRY_ENVIRONMENT,
     sendDefaultPii: false,
     defaultIntegrations: false,
     integrations: [],

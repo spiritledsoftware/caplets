@@ -110,6 +110,11 @@ describe("telemetry providers", () => {
 
   it("captures Sentry reliability events with categorical tags and fingerprint", async () => {
     const captureEvent = vi.fn();
+    const error = new Error("Bad /home/alex/.caplets/config.json");
+    error.stack = [
+      "Error: Bad /home/alex/.caplets/config.json",
+      "    at loadConfig (/home/alex/caplets/packages/core/src/config/index.ts:12:5)",
+    ].join("\n");
     const dispatcher = createTelemetryDispatcher({
       posthogToken: "",
       sentryDsn: "https://public@sentry.example/1",
@@ -136,6 +141,7 @@ describe("telemetry providers", () => {
           error_code: "CONFIG_INVALID",
           diagnostic_category: "config",
         },
+        error,
       }),
     );
 
@@ -150,6 +156,24 @@ describe("telemetry providers", () => {
         diagnostic_category: "config",
       },
       fingerprint: ["@caplets/core", "cli", "serve", "local", "CONFIG_INVALID", "config"],
+      exception: {
+        values: [
+          {
+            type: "Error",
+            stacktrace: {
+              frames: [
+                {
+                  filename: "packages/core/src/config/index.ts",
+                  function: "loadConfig",
+                  lineno: 12,
+                  colno: 5,
+                  in_app: true,
+                },
+              ],
+            },
+          },
+        ],
+      },
     });
   });
 

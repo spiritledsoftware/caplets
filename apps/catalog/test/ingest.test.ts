@@ -1,11 +1,18 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CatalogEntry } from "@caplets/core/catalog";
 import type { APIContext } from "astro";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+// @ts-expect-error @astrojs/cloudflare provides this virtual module at runtime.
+import { env as workerEnv } from "cloudflare:workers";
 import { acceptInstallSignal, parseInstallSignalRequest } from "../src/lib/ingest";
 import { POST as postInstallSignal } from "../src/pages/api/v1/catalog/install-signals";
 
 describe("catalog install signal ingestion", () => {
+  afterEach(() => {
+    for (const key of Object.keys(workerEnv)) delete (workerEnv as Record<string, unknown>)[key];
+    vi.unstubAllGlobals();
+  });
+
   it("accepts revision-bound public GitHub signals without echoing raw private values", async () => {
     const db = fakeD1();
     await expect(
@@ -333,6 +340,47 @@ describe("catalog install signal ingestion", () => {
 
     expect(response.status).toBe(202);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("returns internal errors without awaiting best-effort Sentry capture", async () => {
+    Object.assign(workerEnv, {
+      CATALOG_DB: {
+        prepare() {
+          throw new Error("database unavailable");
+        },
+      },
+      CAPLETS_CATALOG_SENTRY_DSN: "https://public@example.ingest.sentry.io/123",
+      PUBLIC_CAPLETS_ENVIRONMENT: "production",
+      PUBLIC_CAPLETS_RELEASE: "sites@test",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    );
+
+    const response = await Promise.race([
+      postInstallSignal({
+        request: new Request("https://catalog.caplets.dev/api/v1/catalog/install-signals", {
+          method: "POST",
+          body: JSON.stringify({
+            source: "community/tools",
+            capletId: "deploy",
+            sourcePath: "caplets/deploy/CAPLET.md",
+            resolvedRevision: "abc123",
+          }),
+        }),
+        locals: {},
+      } as APIContext),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+    ]);
+
+    expect(response).toBeInstanceOf(Response);
+    if (!(response instanceof Response)) return;
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal_error" },
+    });
   });
 });
 

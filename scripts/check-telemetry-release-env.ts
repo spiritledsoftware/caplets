@@ -7,9 +7,34 @@ const REQUIRED_TELEMETRY_RELEASE_ENV = [
     validate: isNonPlaceholderSecret,
   },
   {
-    name: "CAPLETS_SENTRY_DSN",
+    name: "CAPLETS_RUNTIME_SENTRY_DSN",
     label: "Sentry DSN",
     validate: isSentryDsn,
+  },
+  {
+    name: "CAPLETS_SENTRY_AUTH_TOKEN",
+    label: "Sentry auth token",
+    validate: isNonPlaceholderSecret,
+  },
+  {
+    name: "CAPLETS_SENTRY_ORG",
+    label: "Sentry org slug",
+    validate: isSafeSlug,
+  },
+  {
+    name: "CAPLETS_RUNTIME_SENTRY_PROJECT",
+    label: "runtime Sentry project slug",
+    validate: isSafeSlug,
+  },
+  {
+    name: "CAPLETS_SENTRY_RELEASE",
+    label: "runtime Sentry release",
+    validate: isNonPlaceholderSecret,
+  },
+  {
+    name: "CAPLETS_SENTRY_ENVIRONMENT",
+    label: "runtime Sentry environment",
+    validate: isSafeSlug,
   },
 ] as const;
 
@@ -38,7 +63,7 @@ export function checkTelemetryReleaseEnv(env: TelemetryReleaseEnv): string[] {
 
 export function writeBundledTelemetryIntake(env: TelemetryReleaseEnv): void {
   const posthogToken = env.CAPLETS_POSTHOG_TOKEN;
-  const sentryDsn = env.CAPLETS_SENTRY_DSN;
+  const sentryDsn = env.CAPLETS_RUNTIME_SENTRY_DSN;
   writeFileSync(
     BUNDLED_INTAKE_PATH,
     [
@@ -80,6 +105,10 @@ function isSentryDsn(value: string): boolean {
   }
 }
 
+function isSafeSlug(value: string): boolean {
+  return isNonPlaceholderSecret(value) && /^[a-zA-Z0-9._-]{1,80}$/u.test(value.trim());
+}
+
 if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
   const failures = checkTelemetryReleaseEnv(process.env);
   if (failures.length > 0) {
@@ -88,7 +117,7 @@ if (import.meta.url === new URL(process.argv[1] ?? "", "file:").href) {
       console.error(`- ${failure}`);
     }
     console.error(
-      "Configure GitHub Actions secrets CAPLETS_POSTHOG_TOKEN and CAPLETS_SENTRY_DSN before publishing.",
+      "Configure GitHub Actions secrets for PostHog, Sentry DSN, Sentry auth, org, project, release, and environment before publishing.",
     );
     process.exit(1);
   }

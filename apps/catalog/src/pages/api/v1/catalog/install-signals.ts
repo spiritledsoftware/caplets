@@ -2,6 +2,7 @@ import type { APIContext } from "astro";
 import { getCatalogEnv } from "../../../../lib/catalog-env";
 import { acceptInstallSignal, parseInstallSignalRequest } from "../../../../lib/ingest";
 import { jsonResponse } from "../../../../lib/catalog-response";
+import { captureCatalogServerError } from "../../../../lib/server-observability";
 
 export async function POST(context: APIContext): Promise<Response> {
   let signal: Awaited<ReturnType<typeof parseInstallSignalRequest>>;
@@ -14,10 +15,11 @@ export async function POST(context: APIContext): Promise<Response> {
     );
   }
 
+  const env = getCatalogEnv();
   try {
     const result = await acceptInstallSignal({
       signal,
-      db: getCatalogEnv().CATALOG_DB,
+      db: env.CATALOG_DB,
     });
     if (result.status === "unavailable") {
       return jsonResponse(
@@ -39,7 +41,8 @@ export async function POST(context: APIContext): Promise<Response> {
         headers: { "cache-control": "no-store" },
       },
     );
-  } catch {
+  } catch (error) {
+    scheduleCatalogServerError(context, error, env);
     return jsonResponse(
       {
         ok: false,
@@ -48,4 +51,19 @@ export async function POST(context: APIContext): Promise<Response> {
       { status: 500, headers: { "cache-control": "no-store" } },
     );
   }
+}
+
+function scheduleCatalogServerError(
+  context: APIContext,
+  error: unknown,
+  env: ReturnType<typeof getCatalogEnv>,
+): void {
+  const pending = captureCatalogServerError(error, env).catch(() => undefined);
+  const waitUntil = (context.locals as { runtime?: { ctx?: { waitUntil?: unknown } } }).runtime?.ctx
+    ?.waitUntil;
+  if (typeof waitUntil === "function") {
+    waitUntil(pending);
+    return;
+  }
+  void pending;
 }

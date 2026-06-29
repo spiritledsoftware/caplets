@@ -5,6 +5,8 @@ packages:
 
 allowBuilds:
   "@google/genai": true
+  "@sentry/cli": true
+  core-js: true
   esbuild: true
   koffi: true
   msgpackr-extract: true

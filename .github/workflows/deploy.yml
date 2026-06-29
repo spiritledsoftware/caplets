@@ -47,6 +47,23 @@ jobs:
       - name: Run quality gates
         run: pnpm verify
 
+      - name: Check observability deploy env
+        run: pnpm telemetry:check-web-env && pnpm telemetry:check-source-maps
+        env:
+          PUBLIC_CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+          PUBLIC_CAPLETS_POSTHOG_HOST: ${{ secrets.CAPLETS_POSTHOG_HOST }}
+          PUBLIC_CAPLETS_LANDING_SENTRY_DSN: ${{ secrets.CAPLETS_LANDING_SENTRY_DSN }}
+          PUBLIC_CAPLETS_DOCS_SENTRY_DSN: ${{ secrets.CAPLETS_DOCS_SENTRY_DSN }}
+          PUBLIC_CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.CAPLETS_SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.CAPLETS_SENTRY_ORG }}
+          CAPLETS_LANDING_SENTRY_PROJECT: ${{ secrets.CAPLETS_LANDING_SENTRY_PROJECT }}
+          CAPLETS_DOCS_SENTRY_PROJECT: ${{ secrets.CAPLETS_DOCS_SENTRY_PROJECT }}
+          CAPLETS_CATALOG_SENTRY_PROJECT: ${{ secrets.CAPLETS_CATALOG_SENTRY_PROJECT }}
+          PUBLIC_CAPLETS_RELEASE: sites@${{ github.sha }}
+          PUBLIC_CAPLETS_ENVIRONMENT: production
+
       - name: Deploy sites
         run: pnpm run alchemy:deploy
         env:
@@ -56,3 +73,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_EMAIL: ${{ secrets.CLOUDFLARE_EMAIL }}
+          PUBLIC_CAPLETS_POSTHOG_TOKEN: ${{ secrets.CAPLETS_POSTHOG_TOKEN }}
+          PUBLIC_CAPLETS_POSTHOG_HOST: ${{ secrets.CAPLETS_POSTHOG_HOST }}
+          PUBLIC_CAPLETS_LANDING_SENTRY_DSN: ${{ secrets.CAPLETS_LANDING_SENTRY_DSN }}
+          PUBLIC_CAPLETS_DOCS_SENTRY_DSN: ${{ secrets.CAPLETS_DOCS_SENTRY_DSN }}
+          PUBLIC_CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          CAPLETS_CATALOG_SENTRY_DSN: ${{ secrets.CAPLETS_CATALOG_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.CAPLETS_SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.CAPLETS_SENTRY_ORG }}
+          CAPLETS_LANDING_SENTRY_PROJECT: ${{ secrets.CAPLETS_LANDING_SENTRY_PROJECT }}
+          CAPLETS_DOCS_SENTRY_PROJECT: ${{ secrets.CAPLETS_DOCS_SENTRY_PROJECT }}
+          CAPLETS_CATALOG_SENTRY_PROJECT: ${{ secrets.CAPLETS_CATALOG_SENTRY_PROJECT }}
+          PUBLIC_CAPLETS_RELEASE: sites@${{ github.sha }}
+          PUBLIC_CAPLETS_ENVIRONMENT: production
