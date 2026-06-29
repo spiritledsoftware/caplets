@@ -7,7 +7,7 @@ import {
   Link01Icon,
   Settings02Icon,
   Shield01Icon,
-} from "@hugeicons/core-free-icons";
+} from "./hugeicons";
 import type { CatalogSearchStatusCode } from "./search-row";
 
 type IconNode = readonly [string, Readonly<Record<string, string | number>>];
@@ -29,4 +29,4 @@ export const catalogTrustIcons: Record<string, IconSvgObject> = {
   community: Shield01Icon,
 };
 
-export { AlertCircleIcon, Copy01Icon } from "@hugeicons/core-free-icons";
+export { AlertCircleIcon, Copy01Icon } from "./hugeicons";
