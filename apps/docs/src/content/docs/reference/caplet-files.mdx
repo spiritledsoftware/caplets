@@ -229,7 +229,7 @@ Multiple OpenAPI endpoint backend configurations keyed by child ID.
 | `specPath`            | Optional | string                                                                                            | Local OpenAPI specification path.                                                 |
 | `specUrl`             | Optional | string                                                                                            | Remote OpenAPI specification URL.                                                 |
 | `baseUrl`             | Optional | string                                                                                            | Override base URL for OpenAPI requests.                                           |
-| `auth`                | Optional | object                                                                                            | Authentication settings for an OpenAPI or GraphQL endpoint.                       |
+| `auth`                | Optional | object                                                                                            | Explicit OpenAPI request auth config.                                             |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for OpenAPI HTTP requests.                                |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds OpenAPI operation metadata stays fresh. Set 0 to refresh every time. |
 | `disabled`            | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                                       |
@@ -271,7 +271,7 @@ Multiple Google Discovery API backend configurations keyed by child ID.
 | `discoveryPath`       | Optional | string                                                                                            | Local Google Discovery document path.                                                      |
 | `discoveryUrl`        | Optional | string                                                                                            | Remote Google Discovery document URL.                                                      |
 | `baseUrl`             | Optional | string                                                                                            | Override base URL for Google API requests.                                                 |
-| `auth`                | Optional | object                                                                                            | Authentication settings for an OpenAPI or GraphQL endpoint.                                |
+| `auth`                | Optional | object                                                                                            | Explicit Google API request auth config.                                                   |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for Google API HTTP requests.                                      |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds Google Discovery operation metadata stays fresh. Set 0 to refresh every time. |
 | `includeOperations`   | Optional | array                                                                                             | Optional list of includeOperations.                                                        |
@@ -318,7 +318,7 @@ Multiple GraphQL endpoint backend configurations keyed by child ID.
 | `schemaUrl`           | Optional | string                                                                                            | Remote GraphQL SDL or introspection URL.                                          |
 | `introspection`       | Optional | boolean                                                                                           | Load schema through endpoint introspection.                                       |
 | `operations`          | Optional | object                                                                                            | Configured GraphQL operations keyed by stable tool name.                          |
-| `auth`                | Optional | object                                                                                            | Authentication settings for an OpenAPI or GraphQL endpoint.                       |
+| `auth`                | Optional | object                                                                                            | Explicit GraphQL request auth config.                                             |
 | `requestTimeoutMs`    | Optional | integer                                                                                           | Timeout in milliseconds for GraphQL HTTP requests.                                |
 | `operationCacheTtlMs` | Optional | integer                                                                                           | Milliseconds GraphQL operation metadata stays fresh. Set 0 to refresh every time. |
 | `selectionDepth`      | Optional | integer                                                                                           | Maximum depth for auto-generated GraphQL selection sets.                          |
@@ -356,7 +356,7 @@ Multiple HTTP API backend configurations keyed by child ID.
 | Field              | Status   | Type                                                                                              | Description                                                             |
 | ------------------ | -------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `baseUrl`          | Required | string                                                                                            | Base URL for HTTP action requests.                                      |
-| `auth`             | Optional | object                                                                                            | Authentication settings for an OpenAPI or GraphQL endpoint.             |
+| `auth`             | Optional | object                                                                                            | Explicit HTTP API request auth config.                                  |
 | `actions`          | Required | object                                                                                            | Configured HTTP actions keyed by stable tool name.                      |
 | `requestTimeoutMs` | Optional | integer                                                                                           | Timeout in milliseconds for HTTP action requests.                       |
 | `maxResponseBytes` | Optional | integer                                                                                           | Maximum HTTP action response body bytes to read.                        |
@@ -375,6 +375,34 @@ Multiple HTTP API backend configurations keyed by child ID.
 ### `cliTools`
 
 CLI tools backend configuration, or plural CLI backend configurations.
+
+Singular form:
+
+| Field            | Status   | Type    | Description                                                             |
+| ---------------- | -------- | ------- | ----------------------------------------------------------------------- |
+| `actions`        | Required | object  | Configured CLI actions keyed by stable tool name.                       |
+| `disabled`       | Optional | boolean | When true, omit this Caplet from discovery.                             |
+| `projectBinding` | Optional | object  | Project Binding requirements for Caplets that need an attached project. |
+| `runtime`        | Optional | object  | Runtime feature and resource requirements for hosted execution.         |
+
+Plural form child fields:
+
+| Field            | Status   | Type                                                                                              | Description                                                             |
+| ---------------- | -------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `actions`        | Required | object                                                                                            | Configured CLI actions keyed by stable tool name.                       |
+| `disabled`       | Optional | boolean                                                                                           | When true, omit this Caplet from discovery.                             |
+| `projectBinding` | Optional | object                                                                                            | Project Binding requirements for Caplets that need an attached project. |
+| `runtime`        | Optional | object                                                                                            | Runtime feature and resource requirements for hosted execution.         |
+| `name`           | Optional | string                                                                                            | See the canonical schema for details.                                   |
+| `description`    | Optional | string                                                                                            | See the canonical schema for details.                                   |
+| `tags`           | Optional | array                                                                                             | Optional tags for grouping or searching Caplets.                        |
+| `exposure`       | Optional | "direct" \| "progressive" \| "code_mode" \| "direct_and_code_mode" \| "progressive_and_code_mode" | How this Caplet is exposed to agents.                                   |
+| `shadowing`      | Optional | "forbid" \| "allow" \| "namespace"                                                                | Whether attached local Caplets may shadow this remote Caplet ID.        |
+| `useWhen`        | Optional | string                                                                                            | When agents should prefer this Caplet or configured action.             |
+| `avoidWhen`      | Optional | string                                                                                            | When agents should avoid this Caplet or configured action.              |
+| `setup`          | Optional | object                                                                                            | Optional explicit setup and verification metadata for this Caplet.      |
+
+Plural `cliTools` is recognized only when the value is a child-ID map. `actions` is reserved for the singular form and cannot be used as a plural child ID.
 
 ### `capletSet`
 

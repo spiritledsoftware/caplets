@@ -90,7 +90,9 @@ export async function generateOfficialCatalogEntries(root: string): Promise<Cata
           sourcePath: caplet.sourcePath,
           trustLevel: "official",
         }),
-        tags: isSuite ? catalogStringArrayFromFrontmatter(frontmatter.tags) : caplet.config.tags,
+        tags:
+          (isSuite ? nonEmpty(catalogStringArrayFromFrontmatter(frontmatter.tags)) : undefined) ??
+          caplet.config.tags,
         useWhen:
           (isSuite ? catalogStringFromFrontmatter(frontmatter.useWhen) : undefined) ??
           caplet.config.useWhen,
@@ -188,6 +190,10 @@ function workflowSummary(caplets: ParsedCapletSourceCaplet[]): CatalogWorkflowSu
       label: "Caplet set",
     }
   );
+}
+
+function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
+  return values && values.length > 0 ? values : undefined;
 }
 
 function findRepoRoot(start: string): string {

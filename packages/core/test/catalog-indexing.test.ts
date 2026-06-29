@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -158,6 +158,97 @@ describe("catalog indexing", () => {
           copyable: true,
           revisionBound: true,
         },
+      },
+    });
+  });
+
+  it("submits community suite workflow and child summaries", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-catalog-suite-indexing-"));
+    tempDirs.push(dir);
+    const lockfilePath = join(dir, ".caplets.lock.json");
+    const capletRoot = join(dir, "user", "workspace");
+    mkdirSync(capletRoot, { recursive: true });
+    writeFileSync(
+      join(capletRoot, "CAPLET.md"),
+      [
+        "---",
+        "name: Workspace",
+        "description: Work with workspace APIs.",
+        "tags:",
+        "  - workspace",
+        "auth:",
+        "  type: oauth2",
+        "  issuer: https://accounts.google.com",
+        "googleDiscoveryApis:",
+        "  drive:",
+        "    name: Drive",
+        "    description: Search Drive files and folders.",
+        "    discoveryPath: ./drive.discovery.json",
+        "  gmail:",
+        "    name: Gmail",
+        "    description: Search Gmail messages and labels.",
+        "    discoveryPath: ./gmail.discovery.json",
+        "---",
+        "",
+        "# Workspace",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(capletRoot, "drive.discovery.json"), "{}");
+    writeFileSync(join(capletRoot, "gmail.discovery.json"), "{}");
+    writeCapletsLockfile(lockfilePath, {
+      version: 1,
+      entries: [
+        {
+          ...lockEntry({ id: "workspace" }),
+          destination: "workspace",
+          kind: "directory",
+          source: {
+            ...lockEntry({ id: "workspace" }).source,
+            path: "caplets/workspace/CAPLET.md",
+          },
+          risk: {
+            ...lockEntry().risk,
+            backendFamilies: ["googleDiscovery"],
+            safety: "mutating_saas",
+            mutating: true,
+          },
+        },
+      ],
+    });
+    let submitted: unknown;
+    const fetchImpl = vi.fn(
+      async (_request: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        submitted = JSON.parse(String(init?.body));
+        return Response.json({ result: { status: "accepted" } });
+      },
+    );
+
+    await indexInstalledCapletsFromLockfile(
+      [{ id: "workspace", destination: capletRoot, lockfile: lockfilePath }],
+      { endpoint: "https://catalog.example.test/install-signals", fetch: fetchImpl },
+    );
+
+    expect(submitted).toMatchObject({
+      entry: {
+        id: "workspace",
+        workflow: { kind: "set", label: "Capability suite" },
+        children: [
+          {
+            id: "workspace__drive",
+            childId: "drive",
+            name: "Drive",
+            backend: "googleDiscovery",
+            workflow: { kind: "google_discovery", label: "Google Discovery API" },
+          },
+          {
+            id: "workspace__gmail",
+            childId: "gmail",
+            name: "Gmail",
+            backend: "googleDiscovery",
+            workflow: { kind: "google_discovery", label: "Google Discovery API" },
+          },
+        ],
       },
     });
   });

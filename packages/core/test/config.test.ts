@@ -2873,6 +2873,17 @@ describe("config", () => {
     expect(findHttpActionsSchema(capletSchema)?.minProperties).toBe(1);
     expect(findCliActionsSchema(configSchema)?.minProperties).toBe(1);
     expect(findCliActionsSchema(capletSchema)?.minProperties).toBe(1);
+    for (const pluralBackend of [
+      "mcpServers",
+      "openapiEndpoints",
+      "googleDiscoveryApis",
+      "graphqlEndpoints",
+      "httpApis",
+      "capletSets",
+    ]) {
+      expect(findTopLevelSchema(capletSchema, pluralBackend)?.minProperties).toBe(1);
+    }
+    expect(findPluralCliToolsMapSchema(capletSchema)?.minProperties).toBe(1);
   });
 
   it("rejects unsupported versions and unknown keys", () => {
@@ -3286,6 +3297,24 @@ function findCliActionsSchema(value: unknown): { minProperties?: number } | unde
   );
 }
 
+function findTopLevelSchema(
+  value: unknown,
+  property: string,
+): { minProperties?: number } | undefined {
+  return schemaPath(value, ["properties", property]);
+}
+
+function findPluralCliToolsMapSchema(value: unknown): { minProperties?: number } | undefined {
+  const cliTools = schemaPath<Record<string, unknown>>(value, ["properties", "cliTools"]);
+  const variants = [
+    ...(Array.isArray(cliTools?.anyOf) ? cliTools.anyOf : []),
+    ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
+  ];
+  return variants.find((variant) => schemaPath(variant, ["additionalProperties", "properties"])) as
+    | { minProperties?: number }
+    | undefined;
+}
+
 function findUnionCliActionsSchema(value: unknown): { minProperties?: number } | undefined {
   const cliTools = schemaPath<Record<string, unknown>>(value, ["properties", "cliTools"]);
   const variants = [
@@ -3293,7 +3322,12 @@ function findUnionCliActionsSchema(value: unknown): { minProperties?: number } |
     ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
   ];
   for (const variant of variants) {
-    const actions = schemaPath<{ minProperties?: number }>(variant, ["properties", "actions"]);
+    const actions =
+      schemaPath<{ minProperties?: number }>(variant, [
+        "additionalProperties",
+        "properties",
+        "actions",
+      ]) ?? schemaPath<{ minProperties?: number }>(variant, ["properties", "actions"]);
     if (actions) return actions;
   }
   return undefined;

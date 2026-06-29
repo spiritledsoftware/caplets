@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { discoverCapletFiles, loadCapletFilesWithPaths, validateCapletFile } from "../caplet-files";
+import type { CapletFileConfig } from "../caplet-files";
 import { resolveProjectCapletsRoot } from "../config";
 import { SERVER_ID_PATTERN } from "../config/validation";
 import { CapletsError, toSafeError } from "../errors";
@@ -41,6 +42,7 @@ import {
   createCatalogEntry,
   normalizeCatalogSourceIdentity,
   type CatalogEntry,
+  type CatalogEntryChild,
   type CatalogWorkflowSummary,
 } from "../catalog";
 import {
@@ -559,10 +561,63 @@ function catalogEntryForInstalledLockEntry(
       ),
       mutatesExternalState: catalogMutatesExternalStateFromFrontmatter(frontmatter),
       localControl: catalogUsesLocalControlFromFrontmatter(frontmatter),
+      children: catalogChildrenForInstalledLockEntry(entry, destination),
     });
   } catch {
     return undefined;
   }
+}
+
+function catalogChildrenForInstalledLockEntry(
+  entry: CapletsLockEntry,
+  destination: string,
+): CatalogEntryChild[] | undefined {
+  try {
+    const loaded = loadCapletFilesWithPaths(dirname(destination));
+    const children = Object.entries(loaded?.metadata ?? {}).flatMap(([id, metadata]) => {
+      if (metadata.parentId !== entry.id || !metadata.childId) {
+        return [];
+      }
+      const config = capletConfigForMetadata(loaded?.config, metadata.backend, id);
+      return [
+        {
+          id,
+          childId: metadata.childId,
+          name: catalogStringFromFrontmatter(config?.name) ?? metadata.childId,
+          backend: metadata.backend,
+          workflow: catalogWorkflowSummaryForBackendFamily(metadata.backend) ?? {
+            kind: "unknown",
+            label: "Unknown" as const,
+          },
+        },
+      ];
+    });
+    return children.length > 0
+      ? children.sort((left, right) => left.id.localeCompare(right.id))
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function capletConfigForMetadata(
+  config: CapletFileConfig | undefined,
+  backend: string,
+  id: string,
+): Record<string, unknown> | undefined {
+  const mapKey = {
+    mcp: "mcpServers",
+    openapi: "openapiEndpoints",
+    googleDiscovery: "googleDiscoveryApis",
+    graphql: "graphqlEndpoints",
+    http: "httpApis",
+    cli: "cliTools",
+    caplets: "capletSets",
+  }[backend];
+  if (!mapKey) return undefined;
+  const backends = config?.[mapKey as keyof NonNullable<typeof config>];
+  const value = isRecord(backends) ? backends[id] : undefined;
+  return isRecord(value) ? value : undefined;
 }
 
 function workflowSummaryFromRisk(risk: CapletsLockEntry["risk"]): CatalogWorkflowSummary {
@@ -648,9 +703,13 @@ function selectedChildInstallGuidance(
     const match = matches[0]!;
     return `Caplet ${match.id} is a runtime child of ${match.parentId}; install parent Caplet ${match.parentId} instead.`;
   }
+  const matchedIds = new Set(matches.map((match) => match.id));
+  const unmatched = missingIds.filter((id) => !matchedIds.has(id));
+  const missingSuffix =
+    unmatched.length > 0 ? ` Also not found: ${unmatched.join(", ")} in ${sourceRoot}.` : "";
   return `Caplet child IDs are runtime-only and cannot be installed directly: ${matches
     .map((match) => `${match.id} -> ${match.parentId}`)
-    .join(", ")}. Install the parent Caplet ID instead.`;
+    .join(", ")}. Install the parent Caplet ID instead.${missingSuffix}`;
 }
 
 function resolveInstallSource(repo: string): {
@@ -966,7 +1025,8 @@ function capletBackendFamilies(frontmatter: Record<string, unknown>): string[] {
 }
 
 function capletAuth(frontmatter: Record<string, unknown>): Record<string, unknown> | undefined {
-  return capletAuthBlocks(frontmatter)[0];
+  const blocks = capletAuthBlocks(frontmatter);
+  return blocks.find((auth) => auth.type !== "none") ?? blocks[0];
 }
 
 function capletAuthScopes(frontmatter: Record<string, unknown>): string[] {

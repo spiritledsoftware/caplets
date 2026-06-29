@@ -729,26 +729,48 @@ const capletFileChildSharedFields = {
 
 const capletFileChildSharedSchema = z.object(capletFileChildSharedFields).strict();
 
-const capletOptionalEndpointAuthSchema =
-  capletEndpointAuthSchema.optional() as unknown as typeof capletEndpointAuthSchema;
+const capletOptionalOpenApiAuthSchema = capletEndpointAuthSchema
+  .optional()
+  .describe("Explicit OpenAPI request auth config.");
+const capletOptionalGoogleDiscoveryAuthSchema = capletEndpointAuthSchema
+  .optional()
+  .describe("Explicit Google API request auth config.");
+const capletOptionalGraphQlAuthSchema = capletEndpointAuthSchema
+  .optional()
+  .describe("Explicit GraphQL request auth config.");
+const capletOptionalHttpAuthSchema = capletEndpointAuthSchema
+  .optional()
+  .describe("Explicit HTTP API request auth config.");
 
 const capletMcpServerChildSchema = capletMcpServerSchema.safeExtend(capletFileChildSharedFields);
-const capletOpenApiEndpointChildSchema = capletOpenApiEndpointSchema.safeExtend({
-  ...capletFileChildSharedFields,
-  auth: capletOptionalEndpointAuthSchema,
-});
-const capletGoogleDiscoveryApiChildSchema = capletGoogleDiscoveryApiSchema.safeExtend({
-  ...capletFileChildSharedFields,
-  auth: capletOptionalEndpointAuthSchema,
-});
-const capletGraphQlEndpointChildSchema = capletGraphQlEndpointSchema.safeExtend({
-  ...capletFileChildSharedFields,
-  auth: capletOptionalEndpointAuthSchema,
-});
-const capletHttpApiChildSchema = capletHttpApiSchema.safeExtend({
-  ...capletFileChildSharedFields,
-  auth: capletOptionalEndpointAuthSchema,
-});
+const capletOpenApiEndpointChildSchema = z
+  .object({
+    ...capletOpenApiEndpointSchema.shape,
+    ...capletFileChildSharedFields,
+    auth: capletOptionalOpenApiAuthSchema,
+  })
+  .strict();
+const capletGoogleDiscoveryApiChildSchema = z
+  .object({
+    ...capletGoogleDiscoveryApiSchema.shape,
+    ...capletFileChildSharedFields,
+    auth: capletOptionalGoogleDiscoveryAuthSchema,
+  })
+  .strict();
+const capletGraphQlEndpointChildSchema = z
+  .object({
+    ...capletGraphQlEndpointSchema.shape,
+    ...capletFileChildSharedFields,
+    auth: capletOptionalGraphQlAuthSchema,
+  })
+  .strict();
+const capletHttpApiChildSchema = z
+  .object({
+    ...capletHttpApiSchema.shape,
+    ...capletFileChildSharedFields,
+    auth: capletOptionalHttpAuthSchema,
+  })
+  .strict();
 const capletCliToolsChildSchema = capletCliToolsSchema.safeExtend(capletFileChildSharedFields);
 const capletSetChildSchema = capletSetSchema.safeExtend(capletFileChildSharedFields);
 
@@ -1097,8 +1119,8 @@ export function buildCapletFileLoadResultFromEntries(
     if (isExpandedCapletFileConfig(config)) {
       for (const child of config.children) {
         const childRuntimeId = `${candidate.id}__${child.childId}`;
-        validateCapletId(childRuntimeId, candidate.path);
         try {
+          validateCapletId(childRuntimeId, candidate.path);
           addConfig(childRuntimeId, child.config, candidate.path, {
             path: candidate.path,
             parentId: candidate.id,
@@ -1116,11 +1138,21 @@ export function buildCapletFileLoadResultFromEntries(
         }
       }
     } else {
-      addConfig(candidate.id, config, candidate.path, {
-        path: candidate.path,
-        parentId: candidate.id,
-        backend: configBackend(config),
-      });
+      try {
+        addConfig(candidate.id, config, candidate.path, {
+          path: candidate.path,
+          parentId: candidate.id,
+          backend: configBackend(config),
+        });
+      } catch (error) {
+        if (!warnings) {
+          throw error;
+        }
+        warnings.push({
+          path: candidate.path,
+          message: `Skipping invalid Caplet file at ${candidate.path}: ${errorMessage(error)}`,
+        });
+      }
     }
   }
 
@@ -1934,6 +1966,19 @@ function hasInterpolationReference(value: string): boolean {
 }
 
 function patchCapletJsonSchema<T>(schema: T): T {
+  for (const pluralBackend of [
+    "mcpServers",
+    "openapiEndpoints",
+    "googleDiscoveryApis",
+    "graphqlEndpoints",
+    "httpApis",
+    "capletSets",
+  ]) {
+    const backendMap = schemaPath<Record<string, unknown>>(schema, ["properties", pluralBackend]);
+    if (backendMap) {
+      backendMap.minProperties = 1;
+    }
+  }
   const httpApiProperties = schemaPath<Record<string, unknown>>(schema, [
     "properties",
     "httpApi",
@@ -1971,30 +2016,44 @@ function patchCapletJsonSchema<T>(schema: T): T {
   for (const pluralCliActions of cliToolsPluralActionsSchemas(schema)) {
     pluralCliActions.minProperties = 1;
   }
+  for (const pluralCliSchema of cliToolsPluralMapSchemas(schema)) {
+    pluralCliSchema.minProperties = 1;
+  }
   return schema;
 }
 
 function cliToolsUnionActionsSchema(schema: unknown): Record<string, unknown> | undefined {
-  return cliToolsPluralActionsSchemas(schema)[0];
-}
-
-function cliToolsPluralActionsSchemas(schema: unknown): Array<Record<string, unknown>> {
   const cliTools = schemaPath<Record<string, unknown>>(schema, ["properties", "cliTools"]);
   const variants = [
     ...(Array.isArray(cliTools?.anyOf) ? cliTools.anyOf : []),
     ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
   ];
-  const actionsSchemas: Array<Record<string, unknown>> = [];
   for (const variant of variants) {
     const properties = schemaPath<Record<string, unknown>>(variant, ["properties"]);
     const actions = nestedSchema<Record<string, unknown>>(properties, "actions");
-    if (actions) actionsSchemas.push(actions);
+    if (actions) return actions;
+  }
+  return undefined;
+}
+
+function cliToolsPluralActionsSchemas(schema: unknown): Array<Record<string, unknown>> {
+  return cliToolsPluralMapSchemas(schema).flatMap((variant) => {
     const childProperties = schemaPath<Record<string, unknown>>(variant, [
       "additionalProperties",
       "properties",
     ]);
     const childActions = nestedSchema<Record<string, unknown>>(childProperties, "actions");
-    if (childActions) actionsSchemas.push(childActions);
-  }
-  return actionsSchemas;
+    return childActions ? [childActions] : [];
+  });
+}
+
+function cliToolsPluralMapSchemas(schema: unknown): Array<Record<string, unknown>> {
+  const cliTools = schemaPath<Record<string, unknown>>(schema, ["properties", "cliTools"]);
+  const variants = [
+    ...(Array.isArray(cliTools?.anyOf) ? cliTools.anyOf : []),
+    ...(Array.isArray(cliTools?.oneOf) ? cliTools.oneOf : []),
+  ];
+  return variants.filter((variant): variant is Record<string, unknown> =>
+    Boolean(schemaPath<Record<string, unknown>>(variant, ["additionalProperties", "properties"])),
+  );
 }

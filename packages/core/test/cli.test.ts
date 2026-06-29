@@ -3400,6 +3400,24 @@ describe("cli init", () => {
     }
   });
 
+  it("includes unmatched IDs alongside selected runtime child install guidance", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-install-child-guidance-"));
+    const repo = join(dir, "repo");
+    const destinationRoot = join(dir, "user");
+    try {
+      writeWorkspaceSuiteRepo(repo);
+
+      expect(() =>
+        installCaplets(repo, {
+          capletIds: ["workspace__drive", "missing"],
+          destinationRoot,
+        }),
+      ).toThrow(/workspace__drive -> workspace.*Also not found: missing in .*caplets/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("locks plural Caplet suites by parent ID with combined risk metadata", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-install-suite-lock-"));
     const repo = join(dir, "repo");

@@ -64,6 +64,9 @@ export function catalogWorkflowSummaryFromFrontmatter(
   frontmatter: Record<string, unknown>,
   fallback: CatalogWorkflowSummary,
 ): CatalogWorkflowSummary {
+  if (catalogHasPluralBackendMap(frontmatter)) {
+    return { kind: "set", label: "Capability suite" };
+  }
   return catalogWorkflowSummaryForBackendFamily(catalogBackendFamilies(frontmatter)[0]) ?? fallback;
 }
 
@@ -151,6 +154,19 @@ function catalogBackendFamilies(frontmatter: Record<string, unknown>): string[] 
   return families.flatMap(([family, key]) => (frontmatter[key] === undefined ? [] : [family]));
 }
 
+function catalogHasPluralBackendMap(frontmatter: Record<string, unknown>): boolean {
+  return (
+    [
+      frontmatter.mcpServers,
+      frontmatter.openapiEndpoints,
+      frontmatter.googleDiscoveryApis,
+      frontmatter.graphqlEndpoints,
+      frontmatter.httpApis,
+      frontmatter.capletSets,
+    ].some(hasBackendMapEntries) || isPluralCliToolsMap(frontmatter.cliTools)
+  );
+}
+
 function catalogCapletAuthBlocks(
   frontmatter: Record<string, unknown>,
 ): Array<Record<string, unknown>> {
@@ -192,6 +208,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function catalogPluralBackendValues(value: unknown): Record<string, unknown>[] {
   if (!isRecord(value)) return [];
   return Object.values(value).filter(isRecord);
+}
+
+function hasBackendMapEntries(value: unknown): boolean {
+  return isRecord(value) && Object.keys(value).length > 0;
+}
+
+function isPluralCliToolsMap(value: unknown): boolean {
+  return isRecord(value) && !isRecord(value.actions) && Object.keys(value).length > 0;
 }
 
 function catalogPluralBackends(frontmatter: Record<string, unknown>): Record<string, unknown>[] {
