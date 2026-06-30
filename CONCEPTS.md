@@ -66,6 +66,12 @@ A per-user native service managed by `caplets daemon` that runs local HTTP `capl
 
 The Caplets Daemon is installed and updated through an install-time service contract. Runtime lifecycle commands operate on the installed service rather than changing its persisted serve or environment configuration.
 
+### Daemon-First Setup
+
+The local onboarding path where `caplets setup` prepares the user config and a healthy Caplets Daemon before configuring agent integrations.
+
+Daemon-First Setup points MCP clients at `caplets attach <local-daemon-url>` and points native integrations at the local daemon runtime, so backend execution uses the daemon-owned environment instead of depending on MCP client environment passthrough.
+
 ### Caplets Vault
 
 A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
