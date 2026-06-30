@@ -1,5 +1,11 @@
 # @caplets/opencode
 
+## 0.8.10
+
+### Patch Changes
+
+- 2e2e258: Preserve JSON Schema array item types when registering direct native tools with OpenCode.
+
 ## 0.8.9
 
 ### Patch Changes
