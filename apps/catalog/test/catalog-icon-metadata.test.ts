@@ -6,7 +6,7 @@ import type { CatalogEntryRecord } from "../src/lib/catalog-store";
 const catalogPath = join(import.meta.dirname, "../src/data/official-catalog.json");
 
 const stableIconUrls = new Map([
-  ["Neon", "https://neon.tech/favicon.ico"],
+  ["Neon", "https://neon.com/apple-touch-icon.png"],
   ["Notion", "https://www.notion.so/images/favicon.ico"],
   ["Sourcegraph", "https://sourcegraph.com/.assets/img/sourcegraph-mark.svg"],
   ["Supabase", "https://supabase.com/favicon/favicon-32x32.png"],

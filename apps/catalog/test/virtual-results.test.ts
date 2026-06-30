@@ -163,7 +163,7 @@ describe("virtual catalog results", () => {
     expect(icon.getAttribute("loading")).toBe("lazy");
   });
 
-  it("shows the official trust icon next to the caplet title", async () => {
+  it("shows the official trust icon next to the caplet title without repeating the status label", async () => {
     mountSearchShell([
       catalogSearchRowFixture({
         id: "ast-grep",
@@ -180,7 +180,8 @@ describe("virtual catalog results", () => {
     );
 
     expect(titleTrustIcon).toBeTruthy();
-    expect(titleTrustIcon?.getAttribute("aria-label")).toBe("official");
+    expect(titleTrustIcon?.getAttribute("aria-hidden")).toBe("true");
+    expect(titleTrustIcon?.getAttribute("aria-label")).toBeNull();
   });
 
   it("reuses row nodes that remain visible while scrolling", async () => {

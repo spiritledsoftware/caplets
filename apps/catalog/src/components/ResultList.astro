@@ -58,13 +58,11 @@ const initialRows = rows.slice(0, 24);
                 {row.trust === "official" && (
                   <span
                     class="catalog-result-row__trust catalog-result-row__trust--official catalog-result-row__trust--title"
-                    title="official"
-                    aria-label="official"
+                    aria-hidden="true"
                   >
                     <HugeIcon
                       class="catalog-result-row__trust-icon size-[14px]"
                       icon={catalogTrustIcons.official ?? AlertCircleIcon}
-                      label="official"
                     />
                   </span>
                 )}

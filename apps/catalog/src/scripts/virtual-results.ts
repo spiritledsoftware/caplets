@@ -398,7 +398,7 @@ function renderCapletIcon(row: CatalogSearchRow): string {
 
 function renderTitleTrustIcon(row: CatalogSearchRow): string {
   if (row.trust !== "official") return "";
-  return `<span class="catalog-result-row__trust catalog-result-row__trust--official catalog-result-row__trust--title" title="official" aria-label="official">${renderIcon(catalogTrustIcons.official ?? AlertCircleIcon, "official", "catalog-result-row__trust-icon")}</span>`;
+  return `<span class="catalog-result-row__trust catalog-result-row__trust--official catalog-result-row__trust--title" aria-hidden="true">${renderIcon(catalogTrustIcons.official ?? AlertCircleIcon, "", "catalog-result-row__trust-icon")}</span>`;
 }
 
 function renderIcon(icon: IconSvgObject, label: string, className = ""): string {
