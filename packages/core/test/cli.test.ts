@@ -632,6 +632,36 @@ describe("cli init", () => {
     }
   });
 
+  it("resolves HTTP serve defaults from the default user config path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-default-path-"));
+    const configPath = join(dir, "config", "caplets", "config.json");
+    const served: unknown[] = [];
+    try {
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481, path: "/default-path" } }));
+      delete process.env.CAPLETS_CONFIG;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http"], {
+        env: { ...process.env, CAPLETS_CONFIG: undefined, XDG_CONFIG_HOME: join(dir, "config") },
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          port: 5481,
+          path: "/default-path",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("lets HTTP serve CLI flags override global config defaults", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-serve-config-cli-"));
     const configPath = join(dir, "config.json");

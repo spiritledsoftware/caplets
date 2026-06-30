@@ -8,8 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { loadGlobalConfig } from "../config";
-import { defaultConfigPath } from "../config/paths";
+import { loadGlobalServeDefaults } from "../config";
 import { CapletsError } from "../errors";
 import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { daemonHostPath } from "./host-path";
@@ -55,17 +54,12 @@ export function daemonClientBaseUrl(config: Pick<DaemonConfig, "serve">): URL {
 }
 
 function daemonClientHost(host: string): string {
-  if (isWildcardHost(host)) return "127.0.0.1";
+  if (isWildcardBindHost(host)) return "127.0.0.1";
   if (isLoopbackHost(host)) return host;
   throw new CapletsError(
     "REQUEST_INVALID",
     `Default Caplets daemon client URL must use a loopback host; daemon is configured for ${host}.`,
   );
-}
-
-function isWildcardHost(host: string): boolean {
-  const normalized = host.toLocaleLowerCase();
-  return normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]";
 }
 
 function formatDaemonClientHost(host: string): string {
@@ -690,49 +684,49 @@ function mergeServeOverrides(
   const existingOverrides = existing
     ? (existing.serveOverrides ?? legacyServeOverrides(existing))
     : undefined;
-  return {
-    ...(install.host !== undefined
-      ? { host: install.host }
-      : existingOverrides?.host !== undefined
-        ? { host: existingOverrides.host }
-        : {}),
-    ...(install.port !== undefined
-      ? { port: install.port }
-      : existingOverrides?.port !== undefined
-        ? { port: existingOverrides.port }
-        : {}),
-    ...(install.path !== undefined
-      ? { path: install.path }
-      : existingOverrides?.path !== undefined
-        ? { path: existingOverrides.path }
-        : {}),
-    ...(install.remoteStatePath !== undefined
-      ? { remoteStatePath: install.remoteStatePath }
-      : existingOverrides?.remoteStatePath !== undefined
-        ? { remoteStatePath: existingOverrides.remoteStatePath }
-        : {}),
-    ...(install.upstreamUrl !== undefined
-      ? { upstreamUrl: install.upstreamUrl }
-      : existingOverrides?.upstreamUrl !== undefined
-        ? { upstreamUrl: existingOverrides.upstreamUrl }
-        : {}),
-    ...(install.allowUnauthenticatedHttp !== undefined
-      ? { allowUnauthenticatedHttp: install.allowUnauthenticatedHttp }
-      : existingOverrides?.allowUnauthenticatedHttp !== undefined
-        ? { allowUnauthenticatedHttp: existingOverrides.allowUnauthenticatedHttp }
-        : {}),
-    ...(install.trustProxy !== undefined
-      ? { trustProxy: install.trustProxy }
-      : existingOverrides?.trustProxy !== undefined
-        ? { trustProxy: existingOverrides.trustProxy }
-        : {}),
-    ...(existing &&
+  const overrides: RawDaemonServeOptions = {};
+  setDefinedServeOverride(overrides, "host", install.host ?? existingOverrides?.host);
+  setDefinedServeOverride(overrides, "port", install.port ?? existingOverrides?.port);
+  setDefinedServeOverride(overrides, "path", install.path ?? existingOverrides?.path);
+  setDefinedServeOverride(
+    overrides,
+    "remoteStatePath",
+    install.remoteStatePath ?? existingOverrides?.remoteStatePath,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "upstreamUrl",
+    install.upstreamUrl ?? existingOverrides?.upstreamUrl,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "allowUnauthenticatedHttp",
+    install.allowUnauthenticatedHttp ?? existingOverrides?.allowUnauthenticatedHttp,
+  );
+  setDefinedServeOverride(
+    overrides,
+    "trustProxy",
+    install.trustProxy ?? existingOverrides?.trustProxy,
+  );
+  if (
+    existing &&
     existing.serve.auth.type === "development_unauthenticated" &&
     existing.serveOverrides === undefined &&
     install.allowUnauthenticatedHttp === undefined
-      ? { preserveUnauthenticatedAuth: true }
-      : {}),
-  };
+  ) {
+    overrides.preserveUnauthenticatedAuth = true;
+  }
+  return overrides;
+}
+
+function setDefinedServeOverride<K extends keyof RawDaemonServeOptions>(
+  overrides: RawDaemonServeOptions,
+  key: K,
+  value: RawDaemonServeOptions[K] | undefined,
+): void {
+  if (value !== undefined) {
+    overrides[key] = value;
+  }
 }
 
 function legacyServeOverrides(existing: DaemonConfig): RawDaemonServeOptions {
@@ -778,17 +772,6 @@ function refreshDaemonServeConfig(
     command,
     updatedAt: (options.now ?? new Date()).toISOString(),
   };
-}
-
-function loadGlobalServeDefaults(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
-  options: Pick<DaemonOperationOptions, "home" | "platform">,
-) {
-  const explicitPath = env.CAPLETS_CONFIG?.trim();
-  const configPath =
-    explicitPath || defaultConfigPath(env as NodeJS.ProcessEnv, options.home, options.platform);
-  if (!existsSync(configPath)) return undefined;
-  return loadGlobalConfig(configPath).serve;
 }
 
 type PersistenceBackup = { path: string; existed: boolean; contents?: Buffer; mode?: number };

@@ -2,7 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { loadCapletFilesWithPaths, loadCapletFilesWithPathsBestEffort } from "./caplet-files";
-import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths";
+import {
+  defaultConfigPath,
+  resolveCapletsRoot,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+} from "./config/paths";
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
@@ -1233,6 +1238,8 @@ const serveConfigSchema = z
   })
   .strict();
 
+const serveDefaultsFileSchema = z.object({ serve: serveConfigSchema.optional() }).passthrough();
+
 type MissingEnvReference = {
   name: string;
   path: string;
@@ -1788,6 +1795,17 @@ export function loadGlobalConfig(
     undefined,
     options,
   ).config;
+}
+
+export function loadGlobalServeDefaults(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  options: { home?: string | undefined; platform?: NodeJS.Platform | undefined } = {},
+): ServeConfig | undefined {
+  const explicitPath = env.CAPLETS_CONFIG?.trim();
+  const configPath =
+    explicitPath || defaultConfigPath(env as NodeJS.ProcessEnv, options.home, options.platform);
+  if (!existsSync(configPath)) return undefined;
+  return readServeDefaultsInput(configPath);
 }
 
 export function loadProjectConfig(
@@ -2398,6 +2416,33 @@ function readPublicConfigInput(path: string): ConfigInput {
   }
 }
 
+function readServeDefaultsInput(path: string): ServeConfig | undefined {
+  try {
+    const input = JSON.parse(readFileSync(path, "utf8"));
+    const validationOptions = { sources: {}, vaultResolver: vaultBootstrapResolver };
+    const parsed = serveDefaultsFileSchema.safeParse(
+      interpolateConfig(input as ConfigInput, [], validationOptions),
+    );
+    if (!parsed.success) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplets config at ${path} has invalid serve defaults`,
+        parsed.error.issues,
+      );
+    }
+    return parsed.data.serve ? normalizeServeConfig(parsed.data.serve) : undefined;
+  } catch (error) {
+    if (error instanceof CapletsError) {
+      throw error;
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplets config at ${path} is not valid JSON`,
+      redactSecrets(error),
+    );
+  }
+}
+
 function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
   return stripUndefined({
     ...input,
@@ -2851,16 +2896,8 @@ function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConf
 }
 
 function isAllowedServePublicOrigin(value: string): boolean {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return false;
-  }
-  if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) {
-    return false;
-  }
-  return isAllowedRemoteUrl(value);
+  if (!isAllowedHttpBaseUrl(value)) return false;
+  return new URL(value).pathname === "/";
 }
 
 function normalizePublicOrigin(value: string): string {
