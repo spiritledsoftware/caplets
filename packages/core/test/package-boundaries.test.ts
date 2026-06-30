@@ -90,6 +90,10 @@ describe("package boundaries", () => {
     expect(missingTypeDefinitions).toEqual([]);
   });
 
+  it("pins add-mcp to the validated programmatic contract", () => {
+    expect(corePackage.dependencies["add-mcp"]).toBe("1.13.0");
+  });
+
   it("does not publish obsolete Cloud-specific runtime exports", () => {
     expect(Object.keys(corePackage.exports)).not.toContain("./cloud-runtime");
     expect(Object.keys(corePackage.exports)).not.toContain("./cloud/bundle-runtime");
