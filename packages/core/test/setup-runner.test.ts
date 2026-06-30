@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapletConfig } from "../src/config";
 import { runSetup } from "../src/cli/setup";
 import { capletSetupContentHash } from "../src/setup/hash";
@@ -10,6 +10,10 @@ import { runCapletSetup, type SetupSpawn } from "../src/setup/runner";
 import type { SetupAttempt, SetupTargetKind } from "../src/setup/types";
 
 describe("setup runner", () => {
+  afterEach(() => {
+    vi.doUnmock("../src/daemon");
+  });
+
   it("accepts only local_host, remote_host, and hosted_sandbox setup targets", async () => {
     const accepted: SetupTargetKind[] = ["local_host", "remote_host", "hosted_sandbox"];
     expect([...accepted].sort()).toEqual(["hosted_sandbox", "local_host", "remote_host"]);
@@ -265,6 +269,142 @@ describe("setup runner", () => {
       expect(upserts).toEqual([
         { clientId: "codex", daemonBaseUrl: "http://127.0.0.1:5387/caplets", local: true },
       ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("installs default local setup daemons as credential-free loopback services", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-local-daemon-auth-"));
+    const daemon = mockDaemonModule();
+    daemon.daemonStatus.mockResolvedValueOnce({ installed: false, running: false });
+    daemon.installDaemon.mockResolvedValueOnce(
+      daemonInstallResult({
+        allowUnauthenticatedHttp: true,
+        auth: { type: "development_unauthenticated" },
+      }),
+    );
+    vi.resetModules();
+    vi.doMock("../src/daemon", () => daemon);
+    const { runSetup: mockedRunSetup } = await import("../src/cli/setup");
+    try {
+      await mockedRunSetup("mcp-client", {
+        client: "zed",
+        env: { CAPLETS_CONFIG: join(dir, "config.json") },
+        mcpOperations: {
+          listSupportedClients: () => fakeMcpClients(),
+          upsertServer: async () => ({
+            clientId: "zed",
+            success: true,
+            path: join(dir, "zed.json"),
+          }),
+        },
+      });
+
+      expect(daemon.installDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          start: true,
+          host: "127.0.0.1",
+          allowUnauthenticatedHttp: true,
+        }),
+        expect.anything(),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates healthy loopback daemons before local setup when they still require remote credentials", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-local-daemon-repair-auth-"));
+    const daemon = mockDaemonModule();
+    daemon.daemonStatus.mockResolvedValueOnce({
+      installed: true,
+      running: true,
+      health: { ok: true },
+      config: daemonConfig({
+        allowUnauthenticatedHttp: false,
+        auth: { type: "remote_credentials" },
+      }),
+    });
+    daemon.installDaemon.mockResolvedValueOnce(
+      daemonInstallResult({
+        allowUnauthenticatedHttp: true,
+        auth: { type: "development_unauthenticated" },
+      }),
+    );
+    vi.resetModules();
+    vi.doMock("../src/daemon", () => daemon);
+    const { runSetup: mockedRunSetup } = await import("../src/cli/setup");
+    try {
+      const result = JSON.parse(
+        await mockedRunSetup("mcp-client", {
+          client: "zed",
+          format: "json",
+          env: { CAPLETS_CONFIG: join(dir, "config.json") },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => ({
+              clientId: "zed",
+              success: true,
+              path: join(dir, "zed.json"),
+            }),
+          },
+        }),
+      );
+
+      expect(daemon.installDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          start: true,
+          host: "127.0.0.1",
+          allowUnauthenticatedHttp: true,
+        }),
+        expect.anything(),
+      );
+      expect(result.phases).toMatchObject([
+        { phase: "config", status: "completed" },
+        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "integration", status: "completed" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects existing non-loopback daemons before making local setup credential-free", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-local-daemon-network-auth-"));
+    const daemon = mockDaemonModule();
+    daemon.daemonStatus.mockResolvedValueOnce({
+      installed: true,
+      running: true,
+      health: { ok: true },
+      config: daemonConfig({
+        host: "0.0.0.0",
+        allowUnauthenticatedHttp: false,
+        auth: { type: "remote_credentials" },
+      }),
+    });
+    vi.resetModules();
+    vi.doMock("../src/daemon", () => daemon);
+    const { runSetup: mockedRunSetup } = await import("../src/cli/setup");
+    try {
+      await expect(
+        mockedRunSetup("mcp-client", {
+          client: "zed",
+          env: { CAPLETS_CONFIG: join(dir, "config.json") },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => ({
+              clientId: "zed",
+              success: true,
+              path: join(dir, "zed.json"),
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "REQUEST_INVALID",
+        message: expect.stringContaining("cannot configure credential-free local attach"),
+      });
+      expect(daemon.installDaemon).not.toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -769,6 +909,52 @@ function fakeMcpClients() {
       supportsStdio: true,
     },
   ];
+}
+
+function mockDaemonModule() {
+  return {
+    daemonStatus: vi.fn(),
+    installDaemon: vi.fn(),
+    daemonClientBaseUrl: vi.fn(
+      (config: { serve: { host: string; port: number; path: string } }) =>
+        new URL(`http://${config.serve.host}:${config.serve.port}${config.serve.path}`),
+    ),
+  };
+}
+
+function daemonInstallResult(serve: {
+  host?: string;
+  allowUnauthenticatedHttp: boolean;
+  auth: { type: "development_unauthenticated" | "remote_credentials" };
+}) {
+  const config = daemonConfig(serve);
+  return {
+    status: { running: true, health: { ok: true }, config },
+    config,
+    validation: { ok: true },
+    plannedActions: ["install", "start"],
+  };
+}
+
+function daemonConfig(serve: {
+  host?: string;
+  allowUnauthenticatedHttp: boolean;
+  auth: { type: "development_unauthenticated" | "remote_credentials" };
+}) {
+  return {
+    version: 1,
+    id: "default",
+    serve: {
+      transport: "http",
+      host: "127.0.0.1",
+      port: 5387,
+      path: "/caplets",
+      loopback: true,
+      warnUnauthenticatedNetwork: false,
+      trustProxy: false,
+      ...serve,
+    },
+  };
 }
 
 function caplet(command: string, args: string[]): CapletConfig {

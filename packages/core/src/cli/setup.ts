@@ -4,9 +4,10 @@ import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
 import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
-import type { DaemonOperationOptions } from "../daemon/types";
+import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { isCapletsCloudUrl } from "../remote/options";
+import { isLoopbackHost } from "../server/options";
 import {
   detectAddMcpClients,
   listSupportedAddMcpClients,
@@ -458,7 +459,11 @@ function defaultEnsureUserConfig(context: SetupPhaseContext): SetupPhaseResult {
 async function defaultEnsureDaemon(context: SetupPhaseContext): Promise<SetupPhaseResult> {
   const operation = daemonOperationOptions(context.env);
   const status = await daemonStatus(operation);
+  if (status.config) assertCredentialFreeLocalSetupDaemonHost(status.config);
   if (status.installed && status.running && status.health?.ok && status.config) {
+    if (!isCredentialFreeLocalSetupDaemon(status.config)) {
+      return await installCredentialFreeLocalSetupDaemon(operation);
+    }
     return {
       phase: "daemon",
       label: "Reuse local Caplets daemon",
@@ -468,8 +473,18 @@ async function defaultEnsureDaemon(context: SetupPhaseContext): Promise<SetupPha
     };
   }
 
-  const result = await installDaemon({ start: true }, operation);
+  return await installCredentialFreeLocalSetupDaemon(operation);
+}
+
+async function installCredentialFreeLocalSetupDaemon(
+  operation: DaemonOperationOptions,
+): Promise<SetupPhaseResult> {
+  const result = await installDaemon(
+    { start: true, host: "127.0.0.1", allowUnauthenticatedHttp: true },
+    operation,
+  );
   const config = result.status.config ?? result.config;
+  assertCredentialFreeLocalSetupDaemonHost(config);
   const health = result.status.health ?? result.validation;
   if (!result.status.running || health?.ok !== true) {
     throw new CapletsError(
@@ -485,6 +500,22 @@ async function defaultEnsureDaemon(context: SetupPhaseContext): Promise<SetupPha
     daemonBaseUrl: daemonClientBaseUrl(config).toString(),
     message: result.plannedActions.join(", "),
   };
+}
+
+function isCredentialFreeLocalSetupDaemon(config: Pick<DaemonConfig, "serve">): boolean {
+  return (
+    config.serve.allowUnauthenticatedHttp === true &&
+    config.serve.auth.type === "development_unauthenticated"
+  );
+}
+
+function assertCredentialFreeLocalSetupDaemonHost(config: Pick<DaemonConfig, "serve">): void {
+  if (!isLoopbackHost(config.serve.host)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `caplets setup cannot configure credential-free local attach for daemon host ${config.serve.host}. Reinstall the local daemon on 127.0.0.1 or use remote setup.`,
+    );
+  }
 }
 
 function setupEnv(options: SetupOptions): NodeJS.ProcessEnv | Record<string, string | undefined> {
