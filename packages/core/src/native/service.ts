@@ -1040,7 +1040,7 @@ function remoteOptionsFromSelection(
     requestInit: selection.remote.requestInit,
     ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
     ...(cloudPresence ? { cloud: cloudPresence } : {}),
-    ...(selection.credentialExpiresAt
+    ...("credentialExpiresAt" in selection && selection.credentialExpiresAt
       ? { credentialExpiresAt: selection.credentialExpiresAt }
       : {}),
   } satisfies ProfileResolvedNativeRemoteOptions;

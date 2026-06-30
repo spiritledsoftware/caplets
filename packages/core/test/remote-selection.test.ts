@@ -24,6 +24,19 @@ describe("resolveRemoteSelection", () => {
     await expect(resolveRemoteSelection({}, {})).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
   });
 
+  it("resolves loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+    await expect(
+      resolveRemoteSelection({ remoteUrl: "http://127.0.0.1:5387/caplets" }, {}),
+    ).resolves.toMatchObject({
+      kind: "local_daemon",
+      remote: {
+        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        attachUrl: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        auth: { type: "none" },
+      },
+    });
+  });
+
   it("resolves self-hosted remote auth from a stored Remote Profile", async () => {
     const authDir = tempDir("caplets-remote-selection-auth-");
     await new FileRemoteProfileStore({

@@ -3,7 +3,7 @@ import type { CloudAuthCredentials } from "../cloud-auth/store";
 import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
 import { CapletsError } from "../errors";
 import { ProjectBindingError, projectBindingError } from "../project-binding/errors";
-import { appendBasePath } from "../server/options";
+import { appendBasePath, isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
   normalizeRemoteProfileHostUrl,
@@ -25,6 +25,10 @@ export type RemoteSelectionInput = {
 };
 
 export type ResolvedRemoteSelection =
+  | {
+      kind: "local_daemon";
+      remote: ResolvedCapletsRemote;
+    }
   | {
       kind: "self_hosted_remote";
       remote: ResolvedCapletsRemote;
@@ -67,6 +71,18 @@ export async function resolveRemoteSelection(
     const remoteUrl = input.remoteUrl ?? env.CAPLETS_REMOTE_URL;
     if (!remoteUrl) {
       throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
+    }
+    if (isLocalDaemonRemoteUrl(remoteUrl)) {
+      return {
+        kind: "local_daemon",
+        remote: resolveCapletsRemote(
+          {
+            url: remoteUrl,
+            ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
+          },
+          {},
+        ),
+      };
     }
     const store = createRemoteProfileStore({ authDir: input.authDir, env });
     const refreshed = await store.refreshSelfHostedProfileIfNeeded({
@@ -249,6 +265,11 @@ export async function resolveRemoteSelection(
       workspaceId: credentials.workspaceId,
     },
   };
+}
+
+function isLocalDaemonRemoteUrl(value: string): boolean {
+  const url = parseServerBaseUrl(value);
+  return url.protocol === "http:" && isLoopbackHost(url.hostname);
 }
 
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {

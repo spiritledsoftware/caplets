@@ -18,6 +18,7 @@ import {
   createNativeDaemonManager,
   daemonServeArgs,
   daemonLogs,
+  daemonClientBaseUrl,
   daemonStatus,
   installDaemon,
   resolveDaemonHttpServeOptions,
@@ -85,6 +86,33 @@ describe("caplets daemon CLI", () => {
       ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
 
       expect(existsSync(join(dir, "config", "caplets", "daemon", "default.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derives daemon client base URLs from loopback and wildcard HTTP config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-client-url-"));
+    try {
+      const loopback = await installDaemon(
+        { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false },
+        { env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() },
+      );
+      expect(daemonClientBaseUrl(loopback.config)).toEqual(
+        new URL("http://127.0.0.1:5387/caplets"),
+      );
+
+      const wildcard = {
+        ...loopback.config,
+        serve: { ...loopback.config.serve, host: "0.0.0.0" },
+      };
+      expect(daemonClientBaseUrl(wildcard)).toEqual(new URL("http://127.0.0.1:5387/caplets"));
+
+      const network = {
+        ...loopback.config,
+        serve: { ...loopback.config.serve, host: "192.0.2.10" },
+      };
+      expect(() => daemonClientBaseUrl(network)).toThrow(/loopback/u);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

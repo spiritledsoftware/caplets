@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { CapletsError } from "../errors";
+import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { daemonHostPath } from "./host-path";
 import {
   mergeDaemonEnv,
@@ -43,6 +44,31 @@ import type {
   DaemonUninstallResult,
   RawDaemonServeOptions,
 } from "./types";
+
+export function daemonClientBaseUrl(config: Pick<DaemonConfig, "serve">): URL {
+  const host = daemonClientHost(config.serve.host);
+  return parseServerBaseUrl(
+    `http://${formatDaemonClientHost(host)}:${config.serve.port}${config.serve.path}`,
+  );
+}
+
+function daemonClientHost(host: string): string {
+  if (isWildcardHost(host)) return "127.0.0.1";
+  if (isLoopbackHost(host)) return host;
+  throw new CapletsError(
+    "REQUEST_INVALID",
+    `Default Caplets daemon client URL must use a loopback host; daemon is configured for ${host}.`,
+  );
+}
+
+function isWildcardHost(host: string): boolean {
+  const normalized = host.toLocaleLowerCase();
+  return normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]";
+}
+
+function formatDaemonClientHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
 
 export async function installDaemon(
   install: DaemonInstallOptions = {},

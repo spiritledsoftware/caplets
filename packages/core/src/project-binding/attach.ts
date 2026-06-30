@@ -27,7 +27,7 @@ export type ResolvedAttachOptions = {
   verbose: boolean;
   once: boolean;
   remote: ResolvedCapletsRemote;
-  authMode: "self_hosted_remote" | "hosted_cloud";
+  authMode: "local_daemon" | "self_hosted_remote" | "hosted_cloud";
   syncPolicy: MutagenSyncPolicy;
   selectedWorkspace?: string | undefined;
 };
