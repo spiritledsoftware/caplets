@@ -72,18 +72,7 @@ export async function resolveRemoteSelection(
     if (!remoteUrl) {
       throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
     }
-    if (isLocalDaemonRemoteUrl(remoteUrl)) {
-      return {
-        kind: "local_daemon",
-        remote: resolveCapletsRemote(
-          {
-            url: remoteUrl,
-            ...(input.fetch !== undefined ? { fetch: input.fetch } : {}),
-          },
-          {},
-        ),
-      };
-    }
+    const localDaemonFallback = isLocalDaemonRemoteUrl(remoteUrl);
     const store = createRemoteProfileStore({ authDir: input.authDir, env });
     const refreshed = await store.refreshSelfHostedProfileIfNeeded({
       hostUrl: remoteUrl,
@@ -113,6 +102,9 @@ export async function resolveRemoteSelection(
     });
     const credential = refreshed?.credential;
     if (!credential?.accessToken) {
+      if (localDaemonFallback && !refreshed) {
+        return localDaemonRemoteSelection(remoteUrl, input.fetch);
+      }
       const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
       throw new ProjectBindingError({
         code: "remote_credentials_required",
@@ -264,6 +256,22 @@ export async function resolveRemoteSelection(
       accessToken: credentials.accessToken,
       workspaceId: credentials.workspaceId,
     },
+  };
+}
+
+function localDaemonRemoteSelection(
+  remoteUrl: string,
+  fetch: typeof globalThis.fetch | undefined,
+): ResolvedRemoteSelection {
+  return {
+    kind: "local_daemon",
+    remote: resolveCapletsRemote(
+      {
+        url: remoteUrl,
+        ...(fetch !== undefined ? { fetch } : {}),
+      },
+      {},
+    ),
   };
 }
 

@@ -37,6 +37,39 @@ describe("resolveRemoteSelection", () => {
     });
   });
 
+  it("prefers a stored self-hosted Remote Profile over local daemon classification for loopback URLs", async () => {
+    const authDir = tempDir("caplets-remote-selection-loopback-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387/caplets",
+      clientId: "rcli_loopback",
+      clientLabel: "Loopback Test Device",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+        },
+      ),
+    ).resolves.toMatchObject({
+      kind: "self_hosted_remote",
+      remote: {
+        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        auth: { type: "bearer", token: "profile-access-token" },
+      },
+    });
+  });
+
   it("resolves self-hosted remote auth from a stored Remote Profile", async () => {
     const authDir = tempDir("caplets-remote-selection-auth-");
     await new FileRemoteProfileStore({
