@@ -21,6 +21,7 @@ export { generatedToolInputSchema } from "./tools";
 export { generatedToolInputJsonSchema } from "./generated-tool-input-schema";
 export {
   resolveNativeCapletsServiceOptions,
+  hasNativeRuntimeSelectionEnv,
   type NativeCapletsEnv,
   type NativeCapletsMode,
   type NativeDaemonCapletsOptions,

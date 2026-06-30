@@ -1,6 +1,7 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import {
   createNativeCapletsService,
+  hasNativeRuntimeSelectionEnv,
   readNativeDefaults,
   registerNativeCapletsProcessCleanup,
   type NativeCapletsServiceOptions,
@@ -29,6 +30,7 @@ function normalizeOpenCodeConfig(config: CapletsOpenCodeConfig | undefined): Cap
       ...(config.daemon ? { daemon: config.daemon } : {}),
     };
   }
+  if (hasNativeRuntimeSelectionEnv()) return {};
   const defaults = readNativeDefaults();
   return defaults ? { mode: "daemon", daemon: { url: defaults.daemon.url } } : {};
 }

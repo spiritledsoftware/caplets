@@ -46,6 +46,7 @@ export type NativeCapletsServiceResolutionInput = {
 export type NativeCapletsEnv = CapletsRemoteEnv &
   Partial<
     Record<
+      | "CAPLETS_MODE"
       | "CAPLETS_CLOUD_URL"
       | "CAPLETS_CLOUD_TOKEN"
       | "CAPLETS_CLOUD_WORKSPACE_ID"
@@ -54,6 +55,19 @@ export type NativeCapletsEnv = CapletsRemoteEnv &
       string
     >
   >;
+
+const NATIVE_RUNTIME_SELECTION_ENV_KEYS: Array<keyof NativeCapletsEnv> = [
+  "CAPLETS_MODE",
+  "CAPLETS_REMOTE_URL",
+  "CAPLETS_DAEMON_URL",
+  "CAPLETS_CLOUD_URL",
+  "CAPLETS_CLOUD_TOKEN",
+  "CAPLETS_CLOUD_WORKSPACE_ID",
+];
+
+export function hasNativeRuntimeSelectionEnv(env: NativeCapletsEnv = process.env): boolean {
+  return NATIVE_RUNTIME_SELECTION_ENV_KEYS.some((key) => Boolean(env[key]?.trim()));
+}
 
 export type NativeRemoteAuthOptions =
   | { enabled: false; user: string }

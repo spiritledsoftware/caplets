@@ -11,6 +11,7 @@ import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import {
   createNativeCapletsService,
+  hasNativeRuntimeSelectionEnv,
   readNativeDefaults,
   registerNativeCapletsProcessCleanup,
   type NativeCapletTool,
@@ -111,7 +112,10 @@ async function registerCapletsPiExtension(
       ? await loadPiSettingsArgs(options)
       : undefined;
   const defaultsArgs =
-    ownsService && !explicitNativeOptions
+    ownsService &&
+    !explicitNativeOptions &&
+    !hasNativeRuntimeSettings(settingsArgs) &&
+    !hasNativeRuntimeSelectionEnv()
       ? nativeDefaultsServiceOptions(options.writeWarning)
       : undefined;
   const serviceOptions =
@@ -356,6 +360,10 @@ function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOption
     ...(options.remote ? { remote: options.remote } : {}),
     ...(options.daemon ? { daemon: options.daemon } : {}),
   };
+}
+
+function hasNativeRuntimeSettings(options: PiCapletsSettings | undefined): boolean {
+  return Boolean(options?.mode || options?.remote || options?.daemon);
 }
 
 function nativeDefaultsServiceOptions(

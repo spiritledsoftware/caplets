@@ -15,6 +15,7 @@ import capletsPiExtension, {
 const nativeMocks = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn(),
   registerNativeCapletsProcessCleanup: vi.fn(),
+  hasNativeRuntimeSelectionEnv: vi.fn<() => boolean>(() => false),
   readNativeDefaults: vi.fn<() => unknown>(() => undefined),
 }));
 
@@ -86,6 +87,10 @@ type MockService = NativeCapletsService & {
 describe("@caplets/pi", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    nativeMocks.hasNativeRuntimeSelectionEnv.mockReset();
+    nativeMocks.hasNativeRuntimeSelectionEnv.mockReturnValue(false);
+    nativeMocks.readNativeDefaults.mockReset();
+    nativeMocks.readNativeDefaults.mockReturnValue(undefined);
     fsMocks.readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
   });
   it("uses the core generated schema as Pi tool parameters", () => {
@@ -1235,6 +1240,29 @@ describe("@caplets/pi", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       mode: "daemon",
       daemon: { url: "http://127.0.0.1:5387/caplets" },
+      telemetryIntegration: "pi",
+    });
+  });
+
+  it("lets native environment selectors override Caplets native defaults when Pi settings are missing", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.hasNativeRuntimeSelectionEnv.mockReturnValueOnce(true);
+    nativeMocks.readNativeDefaults.mockReturnValueOnce({
+      version: 1,
+      source: "setup",
+      updatedAt: "2026-06-30T00:00:00.000Z",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+    });
+    fsMocks.readFile
+      .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }))
+      .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.readNativeDefaults).not.toHaveBeenCalled();
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
       telemetryIntegration: "pi",
     });
   });
