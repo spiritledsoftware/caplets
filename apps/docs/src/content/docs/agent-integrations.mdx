@@ -6,20 +6,26 @@ description: Use Caplets with Codex, Claude, OpenCode, and Pi.
 Caplets works with Codex, Claude, OpenCode, Pi, and other MCP clients. Code Mode is the
 default surface for configured capabilities.
 
+Local setup is daemon-first: `caplets setup` initializes user Caplets config, installs or
+starts the local Caplets daemon, verifies daemon health, and then configures the selected
+agent as a thin `caplets attach <local-daemon-url>` or native client. This solves the
+environment passthrough problem in clients that do not launch MCP servers with the same
+shell environment as your terminal; backend execution happens in the Caplets daemon.
+
 ## Codex
 
 Run setup:
 
 ```sh
-caplets setup
+caplets setup codex
 ```
 
-Manual local MCP config:
+Equivalent daemon-backed local MCP config:
 
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["serve"]
+args = ["attach", "http://127.0.0.1:5387/"]
 ```
 
 ## Claude
@@ -27,13 +33,13 @@ args = ["serve"]
 Run setup:
 
 ```sh
-caplets setup
+caplets setup claude-code
 ```
 
-Manual setup uses Claude's MCP command:
+Manual setup should still point Claude at the daemon-backed attach client:
 
 ```sh
-claude mcp add --transport stdio --scope user caplets -- caplets serve
+claude mcp add --transport stdio --scope user caplets -- caplets attach http://127.0.0.1:5387/
 ```
 
 ## OpenCode
@@ -41,19 +47,34 @@ claude mcp add --transport stdio --scope user caplets -- caplets serve
 OpenCode can use Caplets through MCP or the native OpenCode integration. Native mode exposes
 `caplets__code_mode` for Code Mode, plus progressive or direct tools only when configured.
 
+```sh
+caplets setup opencode
+```
+
+Local setup installs the native plugin and writes non-secret daemon defaults. Explicit
+OpenCode plugin config still wins over those defaults.
+
 Native integrations use the shared anonymous telemetry controls and do not send telemetry on a
 native-first run until a visible CLI telemetry notice has already been recorded.
 
 Remote native usage:
 
 ```sh
+caplets remote login https://caplets.example.com/caplets
 CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
 ```
 
 ## Pi
 
-Pi can use Caplets through MCP or the native Pi integration. Native mode uses the same local
-and remote selection rules as OpenCode.
+Pi can use Caplets through MCP or the native Pi integration. Native mode uses the same local,
+daemon, remote, and Cloud selection rules as OpenCode.
+
+```sh
+caplets setup pi
+```
+
+Local setup installs the Pi extension and writes non-secret daemon defaults. Explicit Pi
+settings still win over those defaults.
 
 Native integrations use the shared anonymous telemetry controls and do not send telemetry on a
 native-first run until a visible CLI telemetry notice has already been recorded.
@@ -61,28 +82,38 @@ native-first run until a visible CLI telemetry notice has already been recorded.
 Remote native usage:
 
 ```sh
+caplets remote login https://caplets.example.com/caplets
 CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
 ```
 
 ## Other MCP clients
 
-Use:
+Use the `add-mcp` client catalog through Caplets setup:
+
+```sh
+caplets setup mcp-client --client <client-id>
+```
+
+If you write config manually, keep the agent as a thin daemon client:
 
 ```json
 {
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["serve"]
+      "args": ["attach", "http://127.0.0.1:5387/"]
     }
   }
 }
 ```
 
-For remote-backed MCP, use `caplets attach` instead of `caplets serve`.
+For remote-backed MCP, use `caplets attach <remote-url>` after `caplets remote login
+<remote-url>`. Agent configs should not contain Caplets remote tokens, passwords, or
+provider environment variables.
 
-`caplets attach <url>` is stdio-only. If you want one local HTTP runtime to own environment,
-Vault, Remote Login, reloads, and logs while still composing an upstream host, run:
+As an advanced manual fallback, `caplets serve` can still run a foreground HTTP or stdio
+runtime. If you want one local HTTP runtime to own environment, Vault, Remote Login,
+reloads, and logs while composing an upstream host, run:
 
 ```sh
 caplets serve --transport http --upstream-url https://caplets.example.com/caplets

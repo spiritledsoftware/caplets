@@ -30,6 +30,11 @@ caplets install spiritledsoftware/caplets osv
 caplets doctor
 ```
 
+`caplets setup` is daemon-first: it initializes Caplets config, starts or reuses the
+local Caplets daemon, and configures your agent as a thin `caplets attach
+<local-daemon-url>` or native client. The daemon owns backend execution and environment
+passthrough, so agent configs do not need secrets or provider-specific environment values.
+
 `doctor` should identify the active Caplets config path and report the checks it can run
 for your configured integrations. Fix any failed check before testing through an agent.
 

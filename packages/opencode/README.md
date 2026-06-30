@@ -22,12 +22,13 @@ rebuilt from current Caplets state for the tools registered when the plugin load
 current plugin API snapshots `Hooks.tool` at plugin load, so adding, removing, or renaming native
 tools still requires restarting OpenCode; newly added tools are not advertised until restart.
 
-## Remote Selection
+## Runtime Selection
 
-By default the plugin reads local Caplets config. Use `CAPLETS_MODE` and `CAPLETS_REMOTE_*` to select local, self-hosted remote, or Caplets Cloud behavior:
+`caplets setup opencode` installs the plugin and writes non-secret daemon defaults so the plugin connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_*` to select local in-process, daemon, self-hosted remote, or Caplets Cloud behavior:
 
 ```sh
 CAPLETS_MODE=local opencode
+CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387/ opencode
 CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets opencode
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev opencode
 ```
@@ -60,7 +61,7 @@ export default {
 };
 ```
 
-Plugin config overrides environment variables. The explicit config shape is `{ mode, remote: { url, pollIntervalMs } }`; credentials come from `caplets remote login <url>`.
+Plugin config overrides environment variables and setup-written daemon defaults. The explicit config shape is `{ mode, daemon: { url, pollIntervalMs }, remote: { url, pollIntervalMs } }`; daemon mode is credential-free loopback, and remote credentials come from `caplets remote login <url>`.
 
 ## Anonymous Telemetry
 

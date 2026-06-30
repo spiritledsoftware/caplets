@@ -34,15 +34,15 @@ caplets doctor
 
 Codex, Claude, OpenCode, and Pi usually read MCP or native plugin configuration at agent
 startup. If `doctor` is clean but the agent still cannot see Caplets, inspect the agent's
-configured MCP servers and confirm the command is `caplets serve` or the equivalent `npx`
-stdio command from [Install](/install/#manual-mcp-setup).
+configured MCP servers and confirm daemon-first local setup wrote `caplets attach
+<local-daemon-url>`. `caplets serve` should appear only in manual fallback configs.
 
-| Agent                | Verify registration                                                                                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Codex                | Run `codex mcp list`, then `codex mcp get caplets`; confirm `caplets serve` or `npx --yes caplets serve`.                                               |
-| Claude               | Run `claude mcp list`, then `claude mcp get caplets`; confirm the same command shape.                                                                   |
-| Other MCP clients    | Inspect the client MCP JSON and confirm the `caplets` server command and args from [Install](/install/#manual-mcp-setup).                               |
-| OpenCode / Pi native | Confirm the native integration starts with `CAPLETS_MODE` or remote values and exposes <code className="caplets-token">{"caplets\_\_code_mode"}</code>. |
+| Agent                | Verify registration                                                                                                                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex                | Run `codex mcp list`, then `codex mcp get caplets`; confirm `caplets attach http://127.0.0.1:5387/` or your configured local daemon URL.                                                          |
+| Claude               | Run `claude mcp list`, then `claude mcp get caplets`; confirm the same daemon-backed attach command shape.                                                                                        |
+| Other MCP clients    | Inspect the client MCP JSON and confirm the `caplets` server command and args from [Install](/install/#manual-mcp-setup).                                                                         |
+| OpenCode / Pi native | Confirm the native integration is using daemon defaults, explicit `mode: "daemon"`, `CAPLETS_MODE`, or remote values and exposes <code className="caplets-token">{"caplets\_\_code_mode"}</code>. |
 
 ### Wrong config is loading
 

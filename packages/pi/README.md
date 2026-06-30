@@ -35,12 +35,13 @@ running without `getActiveTools()` / `setActiveTools()`, stale tools may remain 
 Pi reloads extensions or restarts, but calls to removed Caplets return Caplets' normal structured
 "server not found" error.
 
-## Remote Selection
+## Runtime Selection
 
-By default the extension uses the local Caplets native service. Use `CAPLETS_MODE` and `CAPLETS_REMOTE_*` to select local, self-hosted remote, or Caplets Cloud behavior:
+`caplets setup pi` installs the extension and writes non-secret daemon defaults so the extension connects to the local Caplets daemon by default. Use `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_*` to select local in-process, daemon, self-hosted remote, or Caplets Cloud behavior:
 
 ```sh
 CAPLETS_MODE=local pi
+CAPLETS_MODE=daemon CAPLETS_DAEMON_URL=http://127.0.0.1:5387/ pi
 CAPLETS_MODE=remote CAPLETS_REMOTE_URL=https://caplets.example.com/caplets pi
 CAPLETS_MODE=cloud CAPLETS_REMOTE_URL=https://cloud.caplets.dev pi
 ```
@@ -89,8 +90,7 @@ export default createCapletsPiExtension({
 });
 ```
 
-The explicit config shape is `{ mode, remote: { url, pollIntervalMs } }`. Credentials come from
-`caplets remote login <url>`, not settings files or source code.
+Explicit args override Pi settings, and Pi settings override setup-written daemon defaults. The explicit config shape is `{ mode, daemon: { url, pollIntervalMs }, remote: { url, pollIntervalMs } }`. Daemon mode is credential-free loopback. Remote credentials come from `caplets remote login <url>`, not settings files or source code.
 
 ## Anonymous Telemetry
 

@@ -65,14 +65,19 @@ caplets install
 caplets update osv
 ```
 
-Or add Caplets manually to any MCP client:
+`caplets setup` is the recommended local path. It creates or reuses your Caplets config,
+starts the local Caplets daemon, and configures the agent as a thin client that runs
+`caplets attach <local-daemon-url>`. The daemon owns backend execution, environment,
+Vault values, reloads, and health while the agent config stays stable and secret-free.
+
+Manual daemon-backed MCP config looks like this:
 
 ```json
 {
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["serve"]
+      "args": ["attach", "http://127.0.0.1:5387/"]
     }
   }
 }
@@ -107,32 +112,40 @@ handles so discovery, execution, filtering, and synthesis can happen in one call
 
 ## Agent Surfaces
 
-Caplets works as a regular MCP server through `caplets serve`. By default, that server exposes
-Code Mode for the configured backends. Caplets also has native integrations for agents that can
-load packages directly:
+Caplets' default local agent setup is daemon-first. `caplets setup` initializes user
+configuration, installs or starts the local Caplets daemon, checks health, and then
+configures the selected agent as a thin attach/native client. This avoids relying on
+each MCP client to inherit the same shell environment as your terminal; backend
+execution happens in the Caplets daemon instead.
 
-| Agent                                     | Setup                                                                                           |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Codex, Claude Code, and other MCP clients | `caplets setup` or `caplets serve`                                                              |
-| OpenCode                                  | [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
-| Pi                                        | [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)             |
+| Agent                                     | Recommended local setup                                                                                                     |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Codex, Claude Code, and other MCP clients | `caplets setup` or `caplets setup mcp-client --client codex` for an explicit add-mcp client target                          |
+| OpenCode                                  | `caplets setup opencode` or [`@caplets/opencode`](https://github.com/spiritledsoftware/caplets/tree/main/packages/opencode) |
+| Pi                                        | `caplets setup pi` or [`@caplets/pi`](https://github.com/spiritledsoftware/caplets/tree/main/packages/pi)                   |
 
-`caplets setup` uses each harness's MCP configuration command:
-
-```sh
-codex mcp add caplets -- caplets serve
-claude mcp add --transport stdio --scope user caplets -- caplets serve
-```
-
-Equivalent local Codex config:
+For MCP clients, setup uses the `add-mcp` client catalog under the hood and writes a
+Caplets server command shaped like this:
 
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["serve"]
+args = ["attach", "http://127.0.0.1:5387/"]
 ```
 
-For a remote or Cloud-backed MCP server, point the client at `caplets attach` instead:
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["attach", "http://127.0.0.1:5387/"]
+    }
+  }
+}
+```
+
+For a remote or Cloud-backed MCP server, keep the same thin-client shape and point
+`caplets attach` at the remote URL after Remote Login:
 
 ```toml
 [mcp_servers.caplets]
@@ -151,9 +164,9 @@ args = ["attach", "https://caplets.example.com/caplets"]
 }
 ```
 
-`caplets attach <url>` is always the stdio client command for MCP configs. To run a
-long-lived local HTTP runtime that composes local and project Caplets with an upstream
-host, start the runtime separately:
+`caplets attach <url>` is always the stdio client command for MCP configs. As an
+advanced manual fallback, you can still run a foreground HTTP runtime yourself, for
+example to compose local/project Caplets with an upstream host:
 
 ```sh
 caplets serve --transport http --upstream-url https://caplets.example.com/caplets
@@ -163,7 +176,8 @@ Then point agents at that local runtime with `caplets attach <local-runtime-url>
 
 Native integrations expose `caplets__code_mode` for multi-step TypeScript workflows over
 generated `caplets.<id>` handles. Progressive exposure adds `caplets__<id>` tools; direct
-exposure adds operation-level tools such as `caplets__<id>__<operation>`.
+exposure adds operation-level tools such as `caplets__<id>__<operation>`. `caplets setup`
+writes non-secret daemon defaults for OpenCode and Pi; explicit plugin settings still win.
 
 Remote mode uses Remote Login for both self-hosted Caplets and Caplets Cloud. Trust the
 host once, then launch attach or a native integration with only non-secret selectors:

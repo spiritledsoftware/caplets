@@ -4,7 +4,7 @@ export const heroCommands = [
     command: "npm install -g caplets",
   },
   {
-    label: "Wire up your agent",
+    label: "Wire up your agent through the local daemon",
     command: "caplets setup",
   },
 ] as const;
@@ -86,7 +86,7 @@ export const whyCapletsProblems = [
   {
     label: "Too much setup",
     before: "Every agent repeats provider wiring, OAuth, secrets, and MCP config.",
-    after: "One Caplets surface can be reused locally or from a remote server.",
+    after: "One daemon-backed Caplets surface can be reused locally or from a remote server.",
   },
 ] as const;
 

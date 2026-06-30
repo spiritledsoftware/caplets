@@ -4550,6 +4550,8 @@ describe("cli setup", () => {
       expect(text, relativePath).not.toMatch(/CAPLETS_REMOTE_(TOKEN|USER|PASSWORD)/u);
       expect(text, relativePath).not.toMatch(/Basic Auth/u);
       expect(text, relativePath).not.toMatch(/add-mcp --env/u);
+      expect(text, relativePath).not.toMatch(/codex mcp add caplets -- caplets serve/u);
+      expect(text, relativePath).not.toMatch(/claude mcp add[^\n]*caplets serve/u);
     }
   });
 
