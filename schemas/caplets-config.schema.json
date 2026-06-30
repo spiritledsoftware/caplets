@@ -33,6 +33,44 @@
       "description": "Set false to disable anonymous Caplets telemetry for this user config.",
       "type": "boolean"
     },
+    "serve": {
+      "description": "User-owned HTTP serve defaults. Ignored from project config for security.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "path": {
+          "type": "string"
+        },
+        "remoteStatePath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "upstreamUrl": {
+          "type": "string"
+        },
+        "allowUnauthenticatedHttp": {
+          "type": "boolean"
+        },
+        "trustProxy": {
+          "type": "boolean"
+        },
+        "publicOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "completion": {
       "default": {
         "discoveryTimeoutMs": 750,

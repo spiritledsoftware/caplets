@@ -187,6 +187,108 @@ describe("config", () => {
     expect(schema).toContain('"upstreams"');
   });
 
+  it("accepts global serve defaults and exposes them in parsed config", () => {
+    const config = parseConfig({
+      serve: {
+        host: "127.0.0.1",
+        port: 5480,
+        path: "/caplets",
+        remoteStatePath: "/var/lib/caplets/remote-auth",
+        upstreamUrl: "https://upstream.example.com/caplets",
+        allowUnauthenticatedHttp: true,
+        trustProxy: true,
+        publicOrigins: ["https://caplets.example.com"],
+      },
+    });
+
+    expect(config).toMatchObject({
+      serve: {
+        host: "127.0.0.1",
+        port: 5480,
+        path: "/caplets",
+        remoteStatePath: "/var/lib/caplets/remote-auth",
+        upstreamUrl: "https://upstream.example.com/caplets",
+        allowUnauthenticatedHttp: true,
+        trustProxy: true,
+        publicOrigins: ["https://caplets.example.com"],
+      },
+    });
+  });
+
+  it("rejects transport and non-origin values in global serve config", () => {
+    expect(() => parseConfig({ serve: { transport: "http" } })).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { publicOrigins: ["https://caplets.example.com/path"] } }),
+    ).toThrow(CapletsError);
+    expect(() =>
+      parseConfig({ serve: { publicOrigins: ["https://user:pass@caplets.example.com"] } }),
+    ).toThrow(CapletsError);
+  });
+
+  it("warns and ignores project serve config without dropping project Caplets", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-project-serve-warning-"));
+    try {
+      const userRoot = join(dir, "user");
+      const projectRoot = join(dir, "project", ".caplets");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(projectRoot, "config.json");
+      const projectFilePath = join(projectRoot, "linear.md");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          serve: { port: 5480 },
+          mcpServers: {
+            global: {
+              name: "Global Server",
+              description: "A useful global downstream server.",
+              command: "global-server",
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          serve: { allowUnauthenticatedHttp: true, port: 9999 },
+        }),
+      );
+      writeFileSync(
+        projectFilePath,
+        [
+          "---",
+          "name: Linear",
+          "description: Use Linear from the project Caplet file.",
+          "mcpServer:",
+          "  command: project-linear",
+          "---",
+          "# Linear",
+        ].join("\n"),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+      );
+
+      expect(config).toMatchObject({ serve: { port: 5480 } });
+      expect(config.mcpServers.linear?.command).toBe("project-linear");
+      expect(sources.linear).toEqual({ kind: "project-file", path: projectFilePath });
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          kind: "project-config",
+          path: projectConfigPath,
+          recoverable: true,
+        }),
+      ]);
+      expect(warnings[0]?.message).toContain("serve");
+      expect(warnings[0]?.message).toContain("ignored");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unsafe or duplicate namespace aliases", () => {
     expect(() =>
       parseConfig({

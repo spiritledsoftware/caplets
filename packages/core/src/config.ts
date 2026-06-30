@@ -339,6 +339,17 @@ export type CapletsOptions = {
   completion: CompletionConfig;
 };
 
+export type ServeConfig = {
+  host?: string | undefined;
+  port?: number | undefined;
+  path?: string | undefined;
+  remoteStatePath?: string | undefined;
+  upstreamUrl?: string | undefined;
+  allowUnauthenticatedHttp?: boolean | undefined;
+  trustProxy?: boolean | undefined;
+  publicOrigins: string[];
+};
+
 export type CompletionConfig = {
   discoveryTimeoutMs: number;
   overallTimeoutMs: number;
@@ -349,6 +360,7 @@ export type CompletionConfig = {
 export type CapletsConfig = {
   version: 1;
   telemetry?: boolean | undefined;
+  serve?: ServeConfig | undefined;
   options: CapletsOptions;
   namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
@@ -1151,6 +1163,7 @@ type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
   telemetry?: unknown;
+  serve?: unknown;
   namespaceAliases?: unknown;
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
@@ -1173,6 +1186,32 @@ const CAPLET_BACKEND_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ConfigInput>;
 
 const CAPLET_BACKEND_KEY_SET = new Set<string>(CAPLET_BACKEND_KEYS);
+
+const publicOriginSchema = z
+  .string()
+  .refine(isAllowedServePublicOrigin, {
+    message:
+      "public origin must be an http(s) origin without credentials, path, query, or fragment; http is only allowed for loopback development origins",
+  })
+  .transform(normalizePublicOrigin);
+
+const serveConfigSchema = z
+  .object({
+    host: z.string().trim().min(1).optional(),
+    port: z.number().int().min(1).max(65_535).optional(),
+    path: z
+      .string()
+      .refine((value) => value.startsWith("/") && !value.includes("?") && !value.includes("#"), {
+        message: "serve path must start with / and must not include query or fragment",
+      })
+      .optional(),
+    remoteStatePath: z.string().trim().min(1).optional(),
+    upstreamUrl: z.string().refine(isAllowedHttpBaseUrl).optional(),
+    allowUnauthenticatedHttp: z.boolean().optional(),
+    trustProxy: z.boolean().optional(),
+    publicOrigins: z.array(publicOriginSchema).default([]),
+  })
+  .strict();
 
 type MissingEnvReference = {
   name: string;
@@ -1209,6 +1248,9 @@ function configSchemaFor(
         .boolean()
         .optional()
         .describe("Set false to disable anonymous Caplets telemetry for this user config."),
+      serve: serveConfigSchema
+        .optional()
+        .describe("User-owned HTTP serve defaults. Ignored from project config for security."),
       completion: z
         .object({
           discoveryTimeoutMs: z.number().int().positive().default(750),
@@ -1678,7 +1720,10 @@ export function loadConfigWithSources(
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
   const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
   const projectConfig = hasProjectConfig
-    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
@@ -1730,7 +1775,10 @@ export function loadProjectConfig(
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): CapletsConfig {
   const projectConfig = existsSync(projectPath)
-    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
@@ -1818,7 +1866,11 @@ export function loadLocalOverlayConfigWithSources(
         projectPath,
         "project-config",
         warnings,
-        (input) => rejectProjectConfigExecutableBackendMaps(input, projectPath),
+        (input) =>
+          rejectProjectConfigExecutableBackendMaps(
+            stripProjectServeConfig(input, projectPath, warnings),
+            projectPath,
+          ),
         parseOptions,
       )
     : undefined;
@@ -2498,6 +2550,7 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       ...merged,
       ...input,
       telemetry: input.telemetry === undefined ? merged?.telemetry : input.telemetry,
+      serve: input.serve === undefined ? merged?.serve : input.serve,
       namespaceAliases: mergeNamespaceAliases(merged?.namespaceAliases, input.namespaceAliases),
       mcpServers: {
         ...merged?.mcpServers,
@@ -2586,7 +2639,25 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
 }
 
 function stripUserOnlyConfig(input: ConfigInput): ConfigInput {
-  const { telemetry: _telemetry, ...rest } = input;
+  const { telemetry: _telemetry, serve: _serve, ...rest } = input;
+  return rest;
+}
+
+function stripProjectServeConfig(
+  input: ConfigInput,
+  path: string,
+  warnings?: LocalOverlayConfigWarning[],
+): ConfigInput {
+  if (input.serve === undefined) {
+    return input;
+  }
+  warnings?.push({
+    kind: "project-config",
+    path,
+    message: `Project config at ${path} cannot define user-owned serve settings; serve was ignored for security reasons`,
+    recoverable: true,
+  });
+  const { serve: _serve, ...rest } = input;
   return rest;
 }
 
@@ -2723,6 +2794,7 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
   return {
     version: parsed.data.version,
     telemetry: parsed.data.telemetry,
+    ...(parsed.data.serve ? { serve: normalizeServeConfig(parsed.data.serve) } : {}),
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,
@@ -2743,6 +2815,36 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
     cliTools,
     capletSets,
   };
+}
+
+function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConfig {
+  return stripUndefined({
+    host: raw.host,
+    port: raw.port,
+    path: raw.path,
+    remoteStatePath: raw.remoteStatePath,
+    upstreamUrl: raw.upstreamUrl,
+    allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp,
+    trustProxy: raw.trustProxy,
+    publicOrigins: raw.publicOrigins,
+  }) as ServeConfig;
+}
+
+function isAllowedServePublicOrigin(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) {
+    return false;
+  }
+  return isAllowedRemoteUrl(value);
+}
+
+function normalizePublicOrigin(value: string): string {
+  return new URL(value).origin;
 }
 
 function validateEndpointAuthHeaders(
