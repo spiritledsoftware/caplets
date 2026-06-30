@@ -677,6 +677,38 @@ describe("daemon paths and config", () => {
     }
   });
 
+  it("lets setup-style explicit loopback unauthenticated daemon options override unsafe globals", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-safe-setup-globals-"));
+    try {
+      const env = testEnv(dir);
+      const configPath = join(env.XDG_CONFIG_HOME!, "caplets", "config.json");
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: { host: "0.0.0.0", port: 5480, allowUnauthenticatedHttp: false },
+        }),
+      );
+
+      const installed = await installDaemon(
+        { validate: false, host: "127.0.0.1", allowUnauthenticatedHttp: true },
+        {
+          env,
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner({ active: true }),
+        },
+      );
+
+      expect(installed.config.serve.host).toBe("127.0.0.1");
+      expect(installed.config.serve.port).toBe(5480);
+      expect(installed.config.serve.allowUnauthenticatedHttp).toBe(true);
+      expect(installed.config.serve.auth.type).toBe("development_unauthenticated");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("emits remote credential state and no Basic Auth flags for default daemon serve", () => {
     const serve = resolveDaemonHttpServeOptions({});
 

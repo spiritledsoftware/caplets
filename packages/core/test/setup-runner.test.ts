@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapletConfig } from "../src/config";
-import { runSetup } from "../src/cli/setup";
+import { runSetup, type SetupMcpUpsertOptions } from "../src/cli/setup";
 import { capletSetupContentHash } from "../src/setup/hash";
 import { LocalSetupStore } from "../src/setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../src/setup/runner";
@@ -309,6 +309,64 @@ describe("setup runner", () => {
         }),
         expect.anything(),
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores unsafe global serve defaults when preparing local setup daemons", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-local-daemon-global-defaults-"));
+    const configPath = join(dir, "config.json");
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcpServers: {
+          noop: {
+            name: "Noop",
+            description: "A harmless placeholder MCP server.",
+            command: "node",
+          },
+        },
+        serve: { host: "0.0.0.0", allowUnauthenticatedHttp: false },
+      }),
+    );
+    const daemon = mockDaemonModule();
+    daemon.daemonStatus.mockResolvedValueOnce({ installed: false, running: false });
+    daemon.installDaemon.mockResolvedValueOnce(
+      daemonInstallResult({
+        allowUnauthenticatedHttp: true,
+        auth: { type: "development_unauthenticated" },
+      }),
+    );
+    const upserts: SetupMcpUpsertOptions[] = [];
+    vi.resetModules();
+    vi.doMock("../src/daemon", () => daemon);
+    const { runSetup: mockedRunSetup } = await import("../src/cli/setup");
+    try {
+      await mockedRunSetup("mcp-client", {
+        client: "zed",
+        env: { CAPLETS_CONFIG: configPath },
+        mcpOperations: {
+          listSupportedClients: () => fakeMcpClients(),
+          upsertServer: async (options) => {
+            upserts.push(options);
+            return { clientId: "zed", success: true, path: join(dir, "zed.json") };
+          },
+        },
+      });
+
+      expect(daemon.installDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          start: true,
+          host: "127.0.0.1",
+          allowUnauthenticatedHttp: true,
+        }),
+        expect.anything(),
+      );
+      expect(upserts).toEqual([
+        { clientId: "zed", daemonBaseUrl: "http://127.0.0.1:5387/caplets", local: true },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
