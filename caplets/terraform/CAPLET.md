@@ -9,7 +9,7 @@ tags:
   - registry
   - hcp
 catalog:
-  icon: https://www.terraform.io/favicon.ico
+  icon: https://developer.hashicorp.com/favicon.ico
 setup:
   verify:
     - label: Check Docker is available

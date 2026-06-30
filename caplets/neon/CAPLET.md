@@ -9,7 +9,7 @@ tags:
   - branches
   - sql
 catalog:
-  icon: https://neon.com/favicon.ico
+  icon: https://neon.tech/favicon.ico
 mcpServer:
   url: https://mcp.neon.tech/mcp
   auth:

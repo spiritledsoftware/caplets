@@ -321,6 +321,17 @@
   color: var(--muted-foreground);
 }
 
+.catalog-result-row__trust--title {
+  min-width: 1.35rem;
+  min-height: 1.35rem;
+  padding-inline: 0;
+}
+
+.catalog-result-row__trust--title svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
 .catalog-result-row__description {
   display: -webkit-box;
   overflow: hidden;

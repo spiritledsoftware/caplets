@@ -9,7 +9,7 @@ tags:
   - tasks
   - workspace
 catalog:
-  icon: https://www.notion.com/images/notion-logo-block-main.svg
+  icon: https://www.notion.so/images/favicon.ico
 mcpServer:
   url: https://mcp.notion.com/mcp
   auth:

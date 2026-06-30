@@ -353,6 +353,7 @@ function renderRow(item: VirtualItem, row: CatalogSearchRow | undefined): HTMLEl
       ${renderCapletIcon(row)}
       <div class="catalog-result-row__heading">
         <a class="catalog-result-row__title" href="${escapeAttribute(row.detailHref)}">${escapeHtml(row.name)}</a>
+        ${renderTitleTrustIcon(row)}
       </div>
     </div>
     <p class="catalog-result-row__description" role="cell">${escapeHtml(row.description)}</p>
@@ -393,6 +394,11 @@ function renderCapletIcon(row: CatalogSearchRow): string {
     return `<span class="catalog-result-row__icon catalog-result-row__icon--fallback" aria-hidden="true">${escapeHtml(row.name.slice(0, 1).toUpperCase())}</span>`;
   }
   return `<img class="catalog-result-row__icon" src="${escapeAttribute(row.icon.url)}" alt="" width="32" height="32" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+}
+
+function renderTitleTrustIcon(row: CatalogSearchRow): string {
+  if (row.trust !== "official") return "";
+  return `<span class="catalog-result-row__trust catalog-result-row__trust--official catalog-result-row__trust--title" title="official" aria-label="official">${renderIcon(catalogTrustIcons.official ?? AlertCircleIcon, "official", "catalog-result-row__trust-icon")}</span>`;
 }
 
 function renderIcon(icon: IconSvgObject, label: string, className = ""): string {

@@ -9,7 +9,7 @@ tags:
   - backend
   - storage
 catalog:
-  icon: https://supabase.com/favicon.ico
+  icon: https://supabase.com/favicon/favicon-32x32.png
 mcpServer:
   url: https://mcp.supabase.com/mcp
   auth:
