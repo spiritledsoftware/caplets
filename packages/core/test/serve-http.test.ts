@@ -2265,6 +2265,31 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("allows authenticated attach requests through additional configured public origin hosts", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const credentials = pairedClient(store, "https://secondary.example.com/");
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://primary.example.com",
+        publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+        auth: { type: "remote_credentials" },
+      }),
+      engine,
+      { writeErr: () => {}, remoteCredentialStore: store },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: {
+        host: "secondary.example.com",
+        authorization: `Bearer ${credentials.accessToken}`,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    await engine.close();
+  });
+
   it("rejects unauthenticated MCP requests through public origin host by default", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(
