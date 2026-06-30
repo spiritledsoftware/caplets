@@ -37,6 +37,72 @@ describe("resolveServeOptions", () => {
     });
   });
 
+  it("uses global serve config defaults for HTTP serving", () => {
+    const resolved = resolveServeOptions(
+      { transport: "http" },
+      {},
+      {
+        host: "0.0.0.0",
+        port: 5480,
+        path: "/caplets",
+        remoteStatePath: "/configured/remote-auth",
+        upstreamUrl: "https://upstream.example.com/caplets",
+        allowUnauthenticatedHttp: true,
+        trustProxy: true,
+        publicOrigins: ["https://caplets.example.com"],
+      },
+    );
+    expect(resolved).toMatchObject({
+      transport: "http",
+      host: "0.0.0.0",
+      port: 5480,
+      path: "/caplets",
+      auth: { type: "development_unauthenticated" },
+      allowUnauthenticatedHttp: true,
+      upstreamUrl: "https://upstream.example.com/caplets",
+      trustProxy: true,
+      publicOrigin: "https://caplets.example.com",
+    });
+    expect("remoteCredentialStateDir" in resolved).toBe(false);
+  });
+
+  it("keeps global HTTP serve defaults from affecting stdio", () => {
+    expect(resolveServeOptions({ transport: "stdio" }, {}, { port: 5480 })).toEqual({
+      transport: "stdio",
+    });
+  });
+
+  it("applies CLI and environment values before global serve config defaults", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", port: 6000 },
+        { CAPLETS_SERVER_URL: "http://localhost:7000/env" },
+        { host: "0.0.0.0", port: 5480, path: "/configured" },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      host: "localhost",
+      port: 6000,
+      path: "/env",
+      publicOrigin: "http://localhost:7000",
+    });
+  });
+
+  it("lets explicit false command booleans override true global serve defaults", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http", allowUnauthenticatedHttp: false, trustProxy: false },
+        {},
+        { allowUnauthenticatedHttp: true, trustProxy: true },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      auth: { type: "remote_credentials" },
+      allowUnauthenticatedHttp: false,
+      trustProxy: false,
+    });
+  });
+
   it("preserves HTTPS CAPLETS_SERVER_URL as the public origin", () => {
     expect(
       resolveServeOptions(

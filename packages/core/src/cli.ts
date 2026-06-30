@@ -80,6 +80,7 @@ import {
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
   defaultCapletsLockfilePath,
+  loadGlobalConfig,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
   resolveCapletsRoot,
@@ -1413,6 +1414,11 @@ export function createProgram(io: CliIO = {}): Command {
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
   const env = io.env ?? process.env;
   const currentConfigPath = () => envConfigPath(env);
+  const currentServeDefaults = () => {
+    const configPath = currentConfigPath();
+    if (!configPath || !existsSync(configPath)) return undefined;
+    return loadGlobalConfig(configPath).serve;
+  };
   const telemetryContext = (): TelemetryCliContext => ({
     env,
     configPath: currentConfigPath(),
@@ -1731,7 +1737,7 @@ export function createProgram(io: CliIO = {}): Command {
         trustProxy?: boolean;
       }) => {
         printTelemetryNotice("serve");
-        const resolved = resolveServeOptions(options);
+        const resolved = resolveServeOptions(options, env, currentServeDefaults());
         const configPath = currentConfigPath();
         const runner =
           io.serve ??

@@ -592,6 +592,80 @@ describe("cli init", () => {
     ]);
   });
 
+  it("resolves HTTP serve with global config defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-config-defaults-"));
+    const configPath = join(dir, "config.json");
+    const served: unknown[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: {
+            host: "0.0.0.0",
+            port: 5480,
+            path: "/configured",
+            allowUnauthenticatedHttp: true,
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http"], {
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          host: "0.0.0.0",
+          port: 5480,
+          path: "/configured",
+          auth: { type: "development_unauthenticated" },
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets HTTP serve CLI flags override global config defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-config-cli-"));
+    const configPath = join(dir, "config.json");
+    const served: unknown[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: { host: "0.0.0.0", port: 5480, path: "/configured" },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http", "--port", "6000", "--path", "/cli"], {
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          host: "0.0.0.0",
+          port: 6000,
+          path: "/cli",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves HTTP serve with an upstream URL", async () => {
     const served: unknown[] = [];
 
