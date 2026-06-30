@@ -225,6 +225,16 @@ describe("config", () => {
     ).toThrow(CapletsError);
   });
 
+  it("publishes origin-only validation for serve public origins", () => {
+    const schema = configJsonSchema() as {
+      properties: {
+        serve: { properties: { publicOrigins: { items: { pattern?: string } } } };
+      };
+    };
+
+    expect(schema.properties.serve.properties.publicOrigins.items.pattern).toBeDefined();
+  });
+
   it("warns and ignores project serve config without dropping project Caplets", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-project-serve-warning-"));
     try {

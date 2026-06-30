@@ -25,7 +25,7 @@ Equivalent daemon-backed local MCP config:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "http://127.0.0.1:5387/"]
+args = ["attach", "<local-daemon-url>"]
 ```
 
 ## Claude
@@ -101,7 +101,7 @@ If you write config manually, keep the agent as a thin daemon client:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "http://127.0.0.1:5387/"]
+      "args": ["attach", "<local-daemon-url>"]
     }
   }
 }

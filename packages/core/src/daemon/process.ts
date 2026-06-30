@@ -30,6 +30,12 @@ export function resolveDaemonHttpServeOptions(
     );
   }
   const serveRaw = { ...raw };
+  if (
+    serveRaw.preserveUnauthenticatedAuth === true &&
+    serveRaw.allowUnauthenticatedHttp === undefined
+  ) {
+    serveRaw.allowUnauthenticatedHttp = true;
+  }
   delete serveRaw.preserveUnauthenticatedAuth;
   return resolveServeOptions({ ...serveRaw, transport: "http" }, env, defaults) as HttpServeOptions;
 }

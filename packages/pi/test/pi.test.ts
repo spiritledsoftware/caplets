@@ -1114,6 +1114,30 @@ describe("@caplets/pi", () => {
     );
   });
 
+  it("rejects daemon poll intervals that core will reject", async () => {
+    const writeWarning = vi.fn();
+    fsMocks.readFile.mockResolvedValueOnce(
+      JSON.stringify({
+        packages: ["npm:@caplets/pi"],
+        caplets: {
+          mode: "daemon",
+          daemon: {
+            url: "http://127.0.0.1:5387/caplets",
+            pollIntervalMs: 999,
+          },
+        },
+      }),
+    );
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+
+    const args = await loadPiSettingsArgs({ writeWarning });
+
+    expect(args).toEqual({});
+    expect(writeWarning).toHaveBeenCalledWith(
+      expect.stringContaining("Ignoring Pi settings args: invalid"),
+    );
+  });
+
   it("rejects malformed legacy remote and server settings in Pi config", async () => {
     const writeWarning = vi.fn();
     fsMocks.readFile.mockResolvedValueOnce(
@@ -1334,6 +1358,31 @@ describe("@caplets/pi", () => {
       placement: "belowEditor",
     });
     expect(renderStatusWidget(setWidget)).toBe("<success>󰖟 caplets ✓</success>");
+  });
+
+  it("shows the status widget when daemon mode is selected through env", async () => {
+    const previousDaemonUrl = process.env.CAPLETS_DAEMON_URL;
+    process.env.CAPLETS_DAEMON_URL = "http://127.0.0.1:5387/caplets";
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.hasNativeRuntimeSelectionEnv.mockReturnValueOnce(true);
+    fsMocks.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+    const setWidget = vi.fn();
+    try {
+      await capletsPiExtension(api as unknown as PiExtensionApi);
+      triggerSessionStart(api, { ui: { setWidget } });
+
+      expect(setWidget).toHaveBeenCalledWith("caplets", expect.any(Function), {
+        placement: "belowEditor",
+      });
+    } finally {
+      if (previousDaemonUrl === undefined) {
+        delete process.env.CAPLETS_DAEMON_URL;
+      } else {
+        process.env.CAPLETS_DAEMON_URL = previousDaemonUrl;
+      }
+    }
   });
 
   it("can disable nerd font icons in the remote status widget", async () => {

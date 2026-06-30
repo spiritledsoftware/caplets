@@ -104,6 +104,21 @@ describe("resolveServeOptions", () => {
     });
   });
 
+  it("keeps configured secondary public origins when CAPLETS_SERVER_URL is set", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        { CAPLETS_SERVER_URL: "https://primary.example.com/caplets" },
+        {
+          publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+        },
+      ),
+    ).toMatchObject({
+      publicOrigin: "https://primary.example.com",
+      publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+    });
+  });
+
   it("lets explicit false command booleans override true global serve defaults", () => {
     expect(
       resolveServeOptions(
@@ -116,6 +131,19 @@ describe("resolveServeOptions", () => {
       auth: { type: "remote_credentials" },
       allowUnauthenticatedHttp: false,
       trustProxy: false,
+    });
+  });
+
+  it("preserves legacy credential-free daemon auth before applying global defaults", () => {
+    expect(
+      resolveDaemonHttpServeOptions(
+        { preserveUnauthenticatedAuth: true },
+        {},
+        { allowUnauthenticatedHttp: false },
+      ),
+    ).toMatchObject({
+      auth: { type: "development_unauthenticated" },
+      allowUnauthenticatedHttp: true,
     });
   });
 

@@ -44,7 +44,9 @@ const optionValueSuggestions: Record<string, Record<string, string[]>> = {
 };
 
 function setupMcpClientIds(): string[] {
-  return listSupportedAddMcpClients().map((client) => client.id);
+  return listSupportedAddMcpClients()
+    .filter((client) => client.supportsStdio)
+    .map((client) => client.id);
 }
 
 export function completionScript(shell: CompletionShell): string {

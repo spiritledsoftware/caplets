@@ -437,6 +437,7 @@ function defaultEnsureUserConfig(context: SetupPhaseContext): SetupPhaseResult {
   const path = userConfigPath(context.env);
   if (!existsSync(path)) {
     initConfig({ path });
+    loadConfig(path, projectConfigPath(context.env));
     return {
       phase: "config",
       label: "Initialize user Caplets config",
@@ -537,9 +538,7 @@ function userConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefin
 }
 
 function projectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
-  return (
-    nonEmpty(env.CAPLETS_PROJECT_CONFIG) ?? resolveProjectConfigPath(dirname(userConfigPath(env)))
-  );
+  return nonEmpty(env.CAPLETS_PROJECT_CONFIG) ?? resolveProjectConfigPath();
 }
 
 function nativeDefaultsPathForSetup(options: SetupOptions): string {
@@ -685,7 +684,7 @@ async function promptForMcpClient(
   readPrompt: SetupPromptReader,
 ): Promise<string> {
   const operations = mcpOperations(options);
-  const detected = await operations.detectClients();
+  const detected = (await operations.detectClients()).filter((client) => client.supportsStdio);
   const supported = operations.listSupportedClients().filter((client) => client.supportsStdio);
   const primary = detected.length > 0 ? detected : supported;
   const answer = nonEmpty(await readPrompt(formatMcpClientPrompt(primary, detected.length > 0)));

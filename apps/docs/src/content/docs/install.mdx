@@ -99,11 +99,14 @@ If you need to write a config by hand, keep it daemon-backed and secret-free:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "http://127.0.0.1:5387/"]
+      "args": ["attach", "<local-daemon-url>"]
     }
   }
 }
 ```
+
+Replace `<local-daemon-url>` with the loopback daemon URL reported by `caplets setup` or
+`caplets daemon status`; the default is usually `http://127.0.0.1:5387/`.
 
 For an advanced manual fallback where the agent intentionally launches a foreground
 process instead of attaching to the daemon, configure `caplets serve` directly:

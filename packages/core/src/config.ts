@@ -1191,10 +1191,15 @@ const CAPLET_BACKEND_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ConfigInput>;
 
 const CAPLET_BACKEND_KEY_SET = new Set<string>(CAPLET_BACKEND_KEYS);
+const SERVE_PUBLIC_ORIGIN_PATTERN = /^https?:\/\/(?![^/?#]*@)[^/?#]+\/?$/u;
 
 const publicOriginSchema = z
   .string()
   .describe("Public HTTP(S) origin for DNS rebinding and credential audience checks.")
+  .regex(SERVE_PUBLIC_ORIGIN_PATTERN, {
+    message:
+      "public origin must be an http(s) origin without credentials, path, query, or fragment",
+  })
   .refine(isAllowedServePublicOrigin, {
     message:
       "public origin must be an http(s) origin without credentials, path, query, or fragment; http is only allowed for loopback development origins",

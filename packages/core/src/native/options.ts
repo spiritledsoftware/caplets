@@ -94,7 +94,12 @@ export function resolveNativeCapletsServiceOptions(
   input: NativeCapletsServiceResolutionInput = {},
   env: NativeCapletsEnv = process.env,
 ): ResolvedNativeCapletsServiceOptions {
-  if (input.mode === "daemon" || env.CAPLETS_MODE === "daemon") {
+  const explicitMode = input.mode ?? env.CAPLETS_MODE;
+  const daemonUrl = input.daemon?.url ?? env.CAPLETS_DAEMON_URL;
+  if (explicitMode === "daemon") {
+    return resolveNativeDaemonOptions(input, env);
+  }
+  if ((explicitMode === undefined || explicitMode === "auto") && daemonUrl?.trim()) {
     return resolveNativeDaemonOptions(input, env);
   }
 

@@ -15,6 +15,7 @@ import {
 import { cloudCredentialsFromRemoteProfile, createRemoteProfileStore } from "./profile-store";
 
 const SELF_HOSTED_REFRESH_TIMEOUT_MS = 15_000;
+const LOCAL_DAEMON_DISCOVERY_TIMEOUT_MS = 2_000;
 
 export type RemoteSelectionInput = {
   mode?: string;
@@ -102,7 +103,11 @@ export async function resolveRemoteSelection(
     });
     const credential = refreshed?.credential;
     if (!credential?.accessToken) {
-      if (localDaemonFallback && !refreshed) {
+      if (
+        localDaemonFallback &&
+        !refreshed &&
+        (await isCapletsLocalDaemon(remoteUrl, input.fetch))
+      ) {
         return localDaemonRemoteSelection(remoteUrl, input.fetch);
       }
       const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
@@ -278,6 +283,41 @@ function localDaemonRemoteSelection(
 function isLocalDaemonRemoteUrl(value: string): boolean {
   const url = parseServerBaseUrl(value);
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
+}
+
+async function isCapletsLocalDaemon(
+  value: string,
+  fetchInput: typeof globalThis.fetch | undefined,
+): Promise<boolean> {
+  const fetchImpl = fetchInput ?? globalThis.fetch;
+  if (!fetchImpl) return false;
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const discovery = Promise.resolve(
+      fetchImpl(parseServerBaseUrl(value), { signal: controller.signal }),
+    ).catch(() => undefined);
+    const timedOut = new Promise<undefined>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        resolve(undefined);
+      }, LOCAL_DAEMON_DISCOVERY_TIMEOUT_MS);
+    });
+    const response = await Promise.race([discovery, timedOut]);
+    if (!response?.ok) return false;
+    const parsed = await response.json();
+    return isCapletsHttpDiscovery(parsed);
+  } catch {
+    return false;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function isCapletsHttpDiscovery(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.name === "caplets" && record.transport === "http";
 }
 
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {

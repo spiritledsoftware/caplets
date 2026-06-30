@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { resolveRemoteSelection } from "../src/remote/selection";
@@ -25,8 +25,18 @@ describe("resolveRemoteSelection", () => {
   });
 
   it("resolves loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+    const fetched: string[] = [];
     await expect(
-      resolveRemoteSelection({ remoteUrl: "http://127.0.0.1:5387/caplets" }, {}),
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:5387/caplets",
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ name: "caplets", transport: "http" });
+          },
+        },
+        {},
+      ),
     ).resolves.toMatchObject({
       kind: "local_daemon",
       remote: {
@@ -35,6 +45,52 @@ describe("resolveRemoteSelection", () => {
         auth: { type: "none" },
       },
     });
+    expect(fetched).toEqual(["http://127.0.0.1:5387/caplets"]);
+  });
+
+  it("does not classify loopback URLs as local daemons without Caplets discovery", async () => {
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:9999/caplets",
+          fetch: async () => Response.json({ status: "ok" }),
+        },
+        {},
+      ),
+    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
+  });
+
+  it("bounds loopback daemon discovery probes before falling back to Remote Login", async () => {
+    vi.useFakeTimers();
+    let aborted = false;
+    try {
+      const selection = resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:9999/caplets",
+          fetch: async (_url, init) => {
+            const signal = init?.signal;
+            if (!signal) return Response.json({ status: "ok" });
+            return await new Promise<Response>((_resolve, reject) => {
+              signal.addEventListener("abort", () => {
+                aborted = true;
+                reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+              });
+            });
+          },
+        },
+        {},
+      );
+      const selectionResult = expect(selection).rejects.toMatchObject({
+        projectBindingCode: "remote_credentials_required",
+      });
+
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await selectionResult;
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("prefers a stored self-hosted Remote Profile over local daemon classification for loopback URLs", async () => {

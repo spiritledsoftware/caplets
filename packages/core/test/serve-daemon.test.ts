@@ -1812,6 +1812,32 @@ describe("daemon lifecycle and logs", () => {
     }
   });
 
+  it("stops native services when persisted daemon config is missing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-stale-config-stop-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      rmSync(installed.config.paths.configFile, { force: true });
+      runner.commands.length = 0;
+
+      await stopDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "stop",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("start restarts when the installed daemon is already running", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-restart-"));
     try {

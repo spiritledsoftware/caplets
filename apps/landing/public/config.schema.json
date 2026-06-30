@@ -74,6 +74,7 @@
           "type": "array",
           "items": {
             "type": "string",
+            "pattern": "^https?:\\/\\/(?![^/?#]*@)[^/?#]+\\/?$",
             "description": "Public HTTP(S) origin for DNS rebinding and credential audience checks."
           }
         }

@@ -633,17 +633,38 @@ async function daemonLifecycle(
 ): Promise<DaemonLifecycleResult> {
   const paths = resolveDaemonPaths(options);
   const persisted = readDaemonConfig(paths);
+  const manager = options.manager ?? createNativeDaemonManager(options);
+  if (action === "stop") {
+    const before = await manager.status(persisted, paths);
+    if (before.state === "not_installed") {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Caplets daemon is not installed. Run caplets daemon install first.",
+      );
+    }
+    const native = await manager.stop(persisted);
+    writeDaemonState(paths, {
+      instance: "default",
+      installed: native.native.installed,
+      running: native.native.running,
+      nativeState: native.native.state,
+      updatedAt: (options.now ?? new Date()).toISOString(),
+      ...(native.native.pid === undefined ? {} : { pid: native.native.pid }),
+    });
+    const status = await daemonStatus({ ...options, manager });
+    return { action, native, status };
+  }
+
   if (!persisted) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `Caplets daemon is not installed. Run caplets daemon install${action === "start" || action === "restart" ? " --start" : ""} first.`,
     );
   }
-  const config = action === "stop" ? persisted : refreshDaemonServeConfig(persisted, options);
+  const config = refreshDaemonServeConfig(persisted, options);
   if (config !== persisted) {
     writeDaemonConfig(paths, config);
   }
-  const manager = options.manager ?? createNativeDaemonManager(options);
   const before = await manager.status(config, paths);
   if (before.state === "not_installed") {
     throw new CapletsError(
@@ -653,11 +674,7 @@ async function daemonLifecycle(
   }
   const effectiveAction = action === "start" && before.running ? "restart" : action;
   const native =
-    effectiveAction === "start"
-      ? await manager.start(config)
-      : effectiveAction === "restart"
-        ? await manager.restart(config)
-        : await manager.stop(config);
+    effectiveAction === "start" ? await manager.start(config) : await manager.restart(config);
   writeDaemonState(paths, {
     instance: "default",
     installed: native.native.installed,

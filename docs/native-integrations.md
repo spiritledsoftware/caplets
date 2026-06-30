@@ -18,7 +18,7 @@ OpenCode and Pi use the same resolver as `caplets attach`.
 - `CAPLETS_MODE=cloud` requires `CAPLETS_REMOTE_URL` pointing at Caplets Cloud and uses the saved Remote Profile from `caplets remote login <cloud-url>`.
 - `CAPLETS_MODE=auto` treats Cloud URLs as Cloud, non-Cloud remote URLs as self-hosted, setup-written daemon defaults as daemon mode, and no remote URL/default as local.
 
-`caplets setup opencode` and `caplets setup pi` write a non-secret native defaults file with the local daemon URL after the daemon is healthy. Explicit integration config wins over Pi settings, Pi settings win over native defaults, and malformed defaults are ignored with a warning.
+`caplets setup opencode` and `caplets setup pi` write a non-secret native defaults file with the local daemon URL after the daemon is healthy. Explicit integration config wins first, Pi settings win next, runtime environment selectors such as `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_URL` override setup-written native defaults, and malformed defaults are ignored with a warning.
 
 Cloud mode starts Project Binding automatically for the current project and overlays local/project Caplets over the remote workspace. A stacked HTTP runtime started with `caplets serve --transport http --upstream-url <url>` also attempts upstream Project Binding for each attach or native session that supplies a project root. Upstream file propagation uses Mutagen after sync filters and size limits are translated into an enforceable policy. If the upstream binding path is unavailable or quarantined, local project Caplets and non-project upstream Caplets remain available and the diagnostic points to `caplets doctor`.
 

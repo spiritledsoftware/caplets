@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveCapletsRoot, resolveConfigPath } from "../config";
+import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 
 export type NativeDefaults = {
   version: 1;
@@ -50,12 +51,20 @@ export function readNativeDefaults(
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!isNativeDefaults(parsed)) throw new Error("invalid native defaults shape");
+    validateNativeDefaultsDaemonUrl(parsed.daemon.url);
     return parsed;
   } catch (error) {
     options.writeWarning?.(
       `Ignoring Caplets native defaults at ${path}: ${error instanceof Error ? error.message : "invalid file"}`,
     );
     return undefined;
+  }
+}
+
+function validateNativeDefaultsDaemonUrl(value: string): void {
+  const url = parseServerBaseUrl(value);
+  if (url.protocol !== "http:" || !isLoopbackHost(url.hostname)) {
+    throw new Error("daemon.url must be a loopback HTTP URL");
   }
 }
 

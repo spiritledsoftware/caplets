@@ -42,6 +42,27 @@ describe("resolveNativeCapletsServiceOptions", () => {
     });
   });
 
+  it("uses CAPLETS_DAEMON_URL as daemon mode when no explicit non-daemon mode is set", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        {},
+        { CAPLETS_DAEMON_URL: "http://127.0.0.1:5387/caplets" },
+      ),
+    ).toMatchObject({
+      mode: "daemon",
+      remote: {
+        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        auth: { enabled: false, user: "caplets" },
+      },
+    });
+  });
+
+  it("uses input daemon URL as daemon mode when no explicit non-daemon mode is set", () => {
+    expect(
+      resolveNativeCapletsServiceOptions({ daemon: { url: "http://127.0.0.1:5387/caplets" } }, {}),
+    ).toMatchObject({ mode: "daemon" });
+  });
+
   it("rejects daemon mode URLs that are not loopback HTTP", () => {
     expect(() =>
       resolveNativeCapletsServiceOptions(
@@ -268,6 +289,29 @@ describe("native defaults store", () => {
         readNativeDefaults({ path, writeWarning: (message) => warnings.push(message) }),
       ).toBeUndefined();
       expect(warnings.join("\n")).toContain("Ignoring Caplets native defaults");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns and ignores native defaults with non-loopback daemon URLs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-native-defaults-unsafe-"));
+    const path = join(dir, "native-defaults.json");
+    const warnings: string[] = [];
+    try {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          version: 1,
+          source: "setup",
+          updatedAt: "2026-06-30T00:00:00.000Z",
+          daemon: { url: "https://caplets.example.com/caplets" },
+        }),
+      );
+      expect(
+        readNativeDefaults({ path, writeWarning: (message) => warnings.push(message) }),
+      ).toBeUndefined();
+      expect(warnings.join("\n")).toContain("loopback HTTP URL");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

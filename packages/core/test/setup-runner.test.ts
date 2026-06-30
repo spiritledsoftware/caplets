@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CapletConfig } from "../src/config";
-import { runSetup, type SetupMcpUpsertOptions } from "../src/cli/setup";
+import { runInteractiveSetup, runSetup, type SetupMcpUpsertOptions } from "../src/cli/setup";
 import { capletSetupContentHash } from "../src/setup/hash";
 import { LocalSetupStore } from "../src/setup/local-store";
 import { runCapletSetup, type SetupSpawn } from "../src/setup/runner";
@@ -473,12 +473,20 @@ describe("setup runner", () => {
     const configPath = join(dir, "config.json");
     const commands: Array<{ command: string; args: string[] }> = [];
     let daemonCalled = false;
+    let upsertCalled = false;
     try {
       writeFileSync(configPath, "{ not json");
 
       await expect(
         runSetup("codex", {
           env: { CAPLETS_CONFIG: configPath },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
+          },
           runCommand: async (command, args) => {
             commands.push({ command, args });
             return { stdout: "", stderr: "" };
@@ -497,8 +505,100 @@ describe("setup runner", () => {
         }),
       ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
       expect(daemonCalled).toBe(false);
+      expect(upsertCalled).toBe(false);
       expect(commands).toEqual([]);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates the working tree project config before daemon or integration work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-project-config-"));
+    const configPath = join(dir, "user-config.json");
+    const projectDir = join(dir, "project");
+    const projectConfigPath = join(projectDir, ".caplets", "config.json");
+    const previousCwd = process.cwd();
+    let daemonCalled = false;
+    let upsertCalled = false;
+    try {
+      writeFileSync(configPath, "{}\n");
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(projectConfigPath, "{ not json");
+      process.chdir(projectDir);
+
+      await expect(
+        runSetup("codex", {
+          env: { CAPLETS_CONFIG: configPath },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              daemonCalled = true;
+              return {
+                phase: "daemon",
+                label: "Start local Caplets daemon",
+                status: "completed",
+                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              };
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+
+      expect(daemonCalled).toBe(false);
+      expect(upsertCalled).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates the working tree project config during first-run setup before daemon work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-new-user-project-config-"));
+    const configPath = join(dir, "user-config.json");
+    const projectDir = join(dir, "project");
+    const projectConfigPath = join(projectDir, ".caplets", "config.json");
+    const previousCwd = process.cwd();
+    let daemonCalled = false;
+    let upsertCalled = false;
+    try {
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(projectConfigPath, "{ not json");
+      process.chdir(projectDir);
+
+      await expect(
+        runSetup("codex", {
+          env: { CAPLETS_CONFIG: configPath },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              daemonCalled = true;
+              return {
+                phase: "daemon",
+                label: "Start local Caplets daemon",
+                status: "completed",
+                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              };
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+
+      expect(daemonCalled).toBe(false);
+      expect(upsertCalled).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -539,10 +639,18 @@ describe("setup runner", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-daemon-failure-"));
     const configPath = join(dir, "config.json");
     const commands: Array<{ command: string; args: string[] }> = [];
+    let upsertCalled = false;
     try {
       await expect(
         runSetup("codex", {
           env: { CAPLETS_CONFIG: configPath },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
+          },
           runCommand: async (command, args) => {
             commands.push({ command, args });
             return { stdout: "", stderr: "" };
@@ -558,6 +666,7 @@ describe("setup runner", () => {
         message: expect.stringContaining("daemon health probe failed"),
       });
       expect(commands).toEqual([]);
+      expect(upsertCalled).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -568,12 +677,20 @@ describe("setup runner", () => {
     const configPath = join(dir, "config.json");
     const commands: Array<{ command: string; args: string[] }> = [];
     let daemonCalled = false;
+    let upsertCalled = false;
     try {
       const result = JSON.parse(
         await runSetup("codex", {
           dryRun: true,
           format: "json",
           env: { CAPLETS_CONFIG: configPath },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
+          },
           runCommand: async (command, args) => {
             commands.push({ command, args });
             return { stdout: "", stderr: "" };
@@ -594,6 +711,7 @@ describe("setup runner", () => {
 
       expect(existsSync(configPath)).toBe(false);
       expect(daemonCalled).toBe(false);
+      expect(upsertCalled).toBe(false);
       expect(commands).toEqual([]);
       expect(result.phases).toMatchObject([
         { phase: "config", status: "planned", path: configPath },
@@ -753,6 +871,51 @@ describe("setup runner", () => {
           path: join(dir, "zed.json"),
         },
       ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("filters detected MCP clients to stdio-capable choices before prompting", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-detected-stdio-"));
+    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const clients = [
+      {
+        id: "vscode",
+        displayName: "VS Code",
+        configPath: join(dir, "vscode.json"),
+        supportsStdio: false,
+      },
+      {
+        id: "zed",
+        displayName: "Zed",
+        configPath: join(dir, "zed.json"),
+        supportsStdio: true,
+      },
+    ];
+    const prompts: string[] = [];
+    const upserts: unknown[] = [];
+    try {
+      await runInteractiveSetup({
+        env: { CAPLETS_CONFIG: join(dir, "config.json") },
+        setupOperations: fakeSetupPhases(daemonBaseUrl),
+        mcpOperations: {
+          listSupportedClients: () => clients,
+          detectClients: () => clients,
+          upsertServer: async (options) => {
+            upserts.push(options);
+            return { clientId: "zed", success: true, path: join(dir, "zed.json") };
+          },
+        },
+        readPrompt: async (prompt) => {
+          prompts.push(prompt);
+          return prompts.length === 1 ? "mcp-client" : "";
+        },
+      });
+
+      expect(prompts[1]).toContain("Zed (zed)");
+      expect(prompts[1]).not.toContain("VS Code (vscode)");
+      expect(upserts).toEqual([{ clientId: "zed", daemonBaseUrl, local: true }]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

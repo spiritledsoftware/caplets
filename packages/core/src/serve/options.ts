@@ -89,8 +89,11 @@ export function resolveServeOptions(
   const serverUrl = env.CAPLETS_SERVER_URL
     ? parseServeServerUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
     : undefined;
-  const publicOrigins = serverUrl ? [serverUrl.origin] : (defaults?.publicOrigins ?? []);
-  const publicOrigin = publicOrigins[0];
+  const configuredPublicOrigins = defaults?.publicOrigins ?? [];
+  const publicOrigin = serverUrl?.origin ?? configuredPublicOrigins[0];
+  const publicOrigins = publicOrigin
+    ? [publicOrigin, ...configuredPublicOrigins.filter((origin) => origin !== publicOrigin)]
+    : configuredPublicOrigins;
   const host =
     nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? defaults?.host ?? "127.0.0.1";
   const port = parsePort(

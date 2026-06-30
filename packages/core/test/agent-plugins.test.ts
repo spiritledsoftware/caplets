@@ -23,7 +23,7 @@ describe("Codex and Claude manual MCP setup", () => {
     expect(readme).toContain("caplets setup mcp-client --client codex");
     expect(readme).toContain("local Caplets daemon");
     expect(readme).toContain('"command": "caplets"');
-    expect(readme).toContain('"args": ["attach", "http://127.0.0.1:5387/"]');
+    expect(readme).toContain('"args": ["attach", "<local-daemon-url>"]');
     expect(readme).toContain('"args": ["attach", "https://caplets.example.com/caplets"]');
     expect(readme).toContain("[mcp_servers.caplets]");
     expect(readme).not.toContain("codex mcp add caplets -- caplets serve");

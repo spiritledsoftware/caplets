@@ -23,13 +23,14 @@ const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
 }) as Plugin;
 
 function normalizeOpenCodeConfig(config: CapletsOpenCodeConfig | undefined): CapletsOpenCodeConfig {
-  if (config) {
-    return {
-      ...(config.mode ? { mode: config.mode } : {}),
-      ...(config.remote ? { remote: config.remote } : {}),
-      ...(config.daemon ? { daemon: config.daemon } : {}),
-    };
-  }
+  const explicitConfig = config
+    ? {
+        ...(config.mode ? { mode: config.mode } : {}),
+        ...(config.remote ? { remote: config.remote } : {}),
+        ...(config.daemon ? { daemon: config.daemon } : {}),
+      }
+    : undefined;
+  if (explicitConfig && Object.keys(explicitConfig).length > 0) return explicitConfig;
   if (hasNativeRuntimeSelectionEnv()) return {};
   const defaults = readNativeDefaults();
   return defaults ? { mode: "daemon", daemon: { url: defaults.daemon.url } } : {};

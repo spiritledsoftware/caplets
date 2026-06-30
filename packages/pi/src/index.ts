@@ -318,7 +318,7 @@ function parsePiNativeOptions(
     }
     const pollIntervalMs = remote.pollIntervalMs;
     if (pollIntervalMs !== undefined) {
-      if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
+      if (!isValidNativePollIntervalMs(pollIntervalMs)) return undefined;
       parsedRemote.pollIntervalMs = pollIntervalMs;
     }
     result.remote = parsedRemote;
@@ -336,7 +336,7 @@ function parsePiNativeOptions(
     }
     const pollIntervalMs = daemon.pollIntervalMs;
     if (pollIntervalMs !== undefined) {
-      if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
+      if (!isValidNativePollIntervalMs(pollIntervalMs)) return undefined;
       parsedDaemon.pollIntervalMs = pollIntervalMs;
     }
     result.daemon = parsedDaemon;
@@ -345,6 +345,12 @@ function parsePiNativeOptions(
     return undefined;
   }
   return result;
+}
+
+function isValidNativePollIntervalMs(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 1_000
+  );
 }
 
 function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {
@@ -400,7 +406,9 @@ function shouldShowStatusWidget(
     options.mode === "cloud" ||
     options.mode === "daemon" ||
     !!options.remote?.url ||
-    process.env.CAPLETS_REMOTE_URL !== undefined
+    process.env.CAPLETS_REMOTE_URL !== undefined ||
+    process.env.CAPLETS_MODE === "daemon" ||
+    process.env.CAPLETS_DAEMON_URL !== undefined
   );
 }
 

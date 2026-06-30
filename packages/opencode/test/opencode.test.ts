@@ -407,6 +407,37 @@ describe("@caplets/opencode", () => {
     });
   });
 
+  it("uses Caplets native defaults when OpenCode passes an empty config object", async () => {
+    vi.resetModules();
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => ({
+        listTools: () => [],
+        execute: vi.fn(async () => ({})),
+        reload: vi.fn(async () => true),
+        onToolsChanged: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      })),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => ({
+        version: 1,
+        source: "setup",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+        daemon: { url: "http://127.0.0.1:5387/caplets" },
+      })),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index")).default;
+
+    await plugin({} as never, {} as never);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      mode: "daemon",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+      telemetryIntegration: "opencode",
+    });
+  });
+
   it("lets native environment selectors override Caplets native defaults", async () => {
     vi.resetModules();
     const nativeMocks = {

@@ -77,7 +77,7 @@ Manual daemon-backed MCP config looks like this:
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "http://127.0.0.1:5387/"]
+      "args": ["attach", "<local-daemon-url>"]
     }
   }
 }
@@ -149,7 +149,7 @@ Caplets server command shaped like this:
 ```toml
 [mcp_servers.caplets]
 command = "caplets"
-args = ["attach", "http://127.0.0.1:5387/"]
+args = ["attach", "<local-daemon-url>"]
 ```
 
 ```json
@@ -157,7 +157,7 @@ args = ["attach", "http://127.0.0.1:5387/"]
   "mcpServers": {
     "caplets": {
       "command": "caplets",
-      "args": ["attach", "http://127.0.0.1:5387/"]
+      "args": ["attach", "<local-daemon-url>"]
     }
   }
 }
