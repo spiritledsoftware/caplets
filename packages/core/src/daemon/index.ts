@@ -8,6 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { loadGlobalConfig } from "../config";
+import { defaultConfigPath } from "../config/paths";
 import { CapletsError } from "../errors";
 import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { daemonHostPath } from "./host-path";
@@ -85,7 +87,12 @@ export async function installDaemon(
     existing?.serve.publicOrigin && env.CAPLETS_SERVER_URL === undefined
       ? { ...env, CAPLETS_SERVER_URL: existing.serve.publicOrigin }
       : env;
-  const serve = resolveDaemonHttpServeOptions(mergeServeOptions(existing, install), serveEnv);
+  const serveOverrides = mergeServeOverrides(existing, install);
+  const serve = resolveDaemonHttpServeOptions(
+    serveOverrides,
+    serveEnv,
+    loadGlobalServeDefaults(env, options),
+  );
   const command = buildDaemonCommandPlan({
     serve,
     paths,
@@ -96,6 +103,7 @@ export async function installDaemon(
   const config: DaemonConfig = {
     instance: "default",
     serve,
+    serveOverrides,
     command,
     env: daemonEnv,
     paths,
@@ -441,6 +449,7 @@ export function redactDaemonInstallResult(result: DaemonInstallResult): DaemonIn
 }
 
 function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
+  const secrets = collectDaemonSecrets(config);
   const env = redactEnv(config.env.values);
   const serve = redactLegacyDaemonServeAuth(config.serve);
   return {
@@ -453,6 +462,14 @@ function redactDaemonConfig(config: DaemonConfig): DaemonConfig {
       ...serve,
       ...(config.serve.remoteCredentialStateDir ? { remoteCredentialStateDir: "[REDACTED]" } : {}),
     },
+    ...(config.serveOverrides
+      ? {
+          serveOverrides: redactNativeValue(
+            config.serveOverrides,
+            secrets,
+          ) as DaemonConfig["serveOverrides"],
+        }
+      : {}),
     command: {
       ...config.command,
       args: redactSensitiveArgs(config.command.args),
@@ -488,6 +505,7 @@ function collectDaemonSecrets(config: DaemonConfig): string[] {
     new Set(
       [
         config.serve.remoteCredentialStateDir,
+        config.serveOverrides?.remoteStatePath,
         legacyDaemonServeAuth(config.serve)?.password,
         ...Object.values(config.env.values),
         ...Object.values(config.command.env),
@@ -620,12 +638,16 @@ async function daemonLifecycle(
   options: DaemonOperationOptions,
 ): Promise<DaemonLifecycleResult> {
   const paths = resolveDaemonPaths(options);
-  const config = readDaemonConfig(paths);
-  if (!config) {
+  const persisted = readDaemonConfig(paths);
+  if (!persisted) {
     throw new CapletsError(
       "REQUEST_INVALID",
       `Caplets daemon is not installed. Run caplets daemon install${action === "start" || action === "restart" ? " --start" : ""} first.`,
     );
+  }
+  const config = action === "stop" ? persisted : refreshDaemonServeConfig(persisted, options);
+  if (config !== persisted) {
+    writeDaemonConfig(paths, config);
   }
   const manager = options.manager ?? createNativeDaemonManager(options);
   const before = await manager.status(config, paths);
@@ -661,52 +683,112 @@ async function daemonLifecycle(
   return { action: effectiveAction, native, status };
 }
 
-function mergeServeOptions(
+function mergeServeOverrides(
   existing: DaemonConfig | undefined,
   install: DaemonInstallOptions,
 ): RawDaemonServeOptions {
+  const existingOverrides = existing
+    ? (existing.serveOverrides ?? legacyServeOverrides(existing))
+    : undefined;
   return {
     ...(install.host !== undefined
       ? { host: install.host }
-      : existing?.serve.host
-        ? { host: existing.serve.host }
+      : existingOverrides?.host !== undefined
+        ? { host: existingOverrides.host }
         : {}),
     ...(install.port !== undefined
       ? { port: install.port }
-      : existing?.serve.port
-        ? { port: existing.serve.port }
+      : existingOverrides?.port !== undefined
+        ? { port: existingOverrides.port }
         : {}),
     ...(install.path !== undefined
       ? { path: install.path }
-      : existing?.serve.path
-        ? { path: existing.serve.path }
+      : existingOverrides?.path !== undefined
+        ? { path: existingOverrides.path }
         : {}),
     ...(install.remoteStatePath !== undefined
       ? { remoteStatePath: install.remoteStatePath }
-      : existing?.serve.remoteCredentialStateDir
-        ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
+      : existingOverrides?.remoteStatePath !== undefined
+        ? { remoteStatePath: existingOverrides.remoteStatePath }
         : {}),
     ...(install.upstreamUrl !== undefined
       ? { upstreamUrl: install.upstreamUrl }
-      : existing?.serve.upstreamUrl
-        ? { upstreamUrl: existing.serve.upstreamUrl }
+      : existingOverrides?.upstreamUrl !== undefined
+        ? { upstreamUrl: existingOverrides.upstreamUrl }
         : {}),
     ...(install.allowUnauthenticatedHttp !== undefined
       ? { allowUnauthenticatedHttp: install.allowUnauthenticatedHttp }
-      : existing
-        ? { allowUnauthenticatedHttp: existing.serve.allowUnauthenticatedHttp }
+      : existingOverrides?.allowUnauthenticatedHttp !== undefined
+        ? { allowUnauthenticatedHttp: existingOverrides.allowUnauthenticatedHttp }
         : {}),
     ...(install.trustProxy !== undefined
       ? { trustProxy: install.trustProxy }
-      : existing
-        ? { trustProxy: existing.serve.trustProxy }
+      : existingOverrides?.trustProxy !== undefined
+        ? { trustProxy: existingOverrides.trustProxy }
         : {}),
     ...(existing &&
     existing.serve.auth.type === "development_unauthenticated" &&
+    existing.serveOverrides === undefined &&
     install.allowUnauthenticatedHttp === undefined
       ? { preserveUnauthenticatedAuth: true }
       : {}),
   };
+}
+
+function legacyServeOverrides(existing: DaemonConfig): RawDaemonServeOptions {
+  return {
+    host: existing.serve.host,
+    port: existing.serve.port,
+    path: existing.serve.path,
+    ...(existing.serve.remoteCredentialStateDir
+      ? { remoteStatePath: existing.serve.remoteCredentialStateDir }
+      : {}),
+    ...(existing.serve.upstreamUrl ? { upstreamUrl: existing.serve.upstreamUrl } : {}),
+    allowUnauthenticatedHttp: existing.serve.allowUnauthenticatedHttp,
+    trustProxy: existing.serve.trustProxy,
+  };
+}
+
+function refreshDaemonServeConfig(
+  config: DaemonConfig,
+  options: DaemonOperationOptions,
+): DaemonConfig {
+  const env = options.env ?? process.env;
+  const serveEnv =
+    config.serve.publicOrigin && env.CAPLETS_SERVER_URL === undefined
+      ? { ...env, CAPLETS_SERVER_URL: config.serve.publicOrigin }
+      : env;
+  const serveOverrides = config.serveOverrides ?? legacyServeOverrides(config);
+  const serve = resolveDaemonHttpServeOptions(
+    serveOverrides,
+    serveEnv,
+    loadGlobalServeDefaults(env, options),
+  );
+  const command = buildDaemonCommandPlan({
+    serve,
+    paths: config.paths,
+    operation: options,
+    explicitEnv: config.env.values,
+    inheritEnv: config.env.inherit,
+  });
+  return {
+    ...config,
+    serve,
+    serveOverrides,
+    command,
+    updatedAt: (options.now ?? new Date()).toISOString(),
+  };
+}
+
+function loadGlobalServeDefaults(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  options: Pick<DaemonOperationOptions, "home" | "platform">,
+) {
+  const explicitPath = env.CAPLETS_CONFIG?.trim();
+  const configPath =
+    explicitPath || defaultConfigPath(env as NodeJS.ProcessEnv, options.home, options.platform);
+  if (!existsSync(configPath)) return undefined;
+  return loadGlobalConfig(configPath).serve;
 }
 
 type PersistenceBackup = { path: string; existed: boolean; contents?: Buffer; mode?: number };

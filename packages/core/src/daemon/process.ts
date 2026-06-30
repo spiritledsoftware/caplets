@@ -3,7 +3,12 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { defaultConfigPath } from "../config/paths";
 import { CapletsError } from "../errors";
-import { resolveServeOptions, type HttpServeOptions, type RawServeOptions } from "../serve/options";
+import {
+  resolveServeOptions,
+  type HttpServeOptions,
+  type RawServeOptions,
+  type ServeDefaults,
+} from "../serve/options";
 import { DISABLE_UPDATE_CHECK_ENV } from "../update-check/control";
 import { resolveDaemonShell } from "./env";
 import type {
@@ -16,6 +21,7 @@ import type {
 export function resolveDaemonHttpServeOptions(
   raw: RawDaemonServeOptions,
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  defaults?: ServeDefaults | undefined,
 ): HttpServeOptions {
   if ((raw as RawServeOptions).transport !== undefined) {
     throw new CapletsError(
@@ -25,7 +31,7 @@ export function resolveDaemonHttpServeOptions(
   }
   const serveRaw = { ...raw };
   delete serveRaw.preserveUnauthenticatedAuth;
-  return resolveServeOptions({ ...serveRaw, transport: "http" }, env) as HttpServeOptions;
+  return resolveServeOptions({ ...serveRaw, transport: "http" }, env, defaults) as HttpServeOptions;
 }
 
 export function daemonServeArgs(options: HttpServeOptions): string[] {

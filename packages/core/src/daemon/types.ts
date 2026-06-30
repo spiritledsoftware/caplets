@@ -6,6 +6,8 @@ export type RawDaemonServeOptions = Omit<RawServeOptions, "transport"> & {
   preserveUnauthenticatedAuth?: boolean;
 };
 
+export type DaemonServeOverrides = RawDaemonServeOptions;
+
 export type DaemonPaths = {
   instance: DaemonInstance;
   stateDir: string;
@@ -43,6 +45,7 @@ export type DaemonCommandPlan = {
 export type DaemonConfig = {
   instance: DaemonInstance;
   serve: HttpServeOptions;
+  serveOverrides?: DaemonServeOverrides | undefined;
   command: DaemonCommandPlan;
   env: DaemonEnvConfig;
   paths: DaemonPaths;
