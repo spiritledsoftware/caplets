@@ -27,6 +27,7 @@ export type HttpServeOptions = {
   port: number;
   path: string;
   publicOrigin?: string | undefined;
+  publicOrigins?: string[] | undefined;
   auth: HttpServeAuthOptions;
   remoteCredentialStateDir?: string | undefined;
   upstreamUrl?: string | undefined;
@@ -88,7 +89,8 @@ export function resolveServeOptions(
   const serverUrl = env.CAPLETS_SERVER_URL
     ? parseServeServerUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
     : undefined;
-  const publicOrigin = serverUrl?.origin ?? defaults?.publicOrigins?.[0];
+  const publicOrigins = serverUrl ? [serverUrl.origin] : (defaults?.publicOrigins ?? []);
+  const publicOrigin = publicOrigins[0];
   const host =
     nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? defaults?.host ?? "127.0.0.1";
   const port = parsePort(
@@ -126,6 +128,7 @@ export function resolveServeOptions(
     port,
     path,
     ...(publicOrigin ? { publicOrigin } : {}),
+    ...(publicOrigins.length > 0 ? { publicOrigins } : {}),
     auth,
     ...(auth.type === "remote_credentials" ? { remoteCredentialStateDir } : {}),
     ...(upstreamUrl ? { upstreamUrl } : {}),

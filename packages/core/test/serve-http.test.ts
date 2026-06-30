@@ -2209,6 +2209,26 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("allows attach requests through additional configured public origin hosts", async () => {
+    const { engine } = testEngine();
+    const app = createHttpServeApp(
+      httpOptions({
+        publicOrigin: "https://primary.example.com",
+        publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+        allowUnauthenticatedHttp: true,
+      }),
+      engine,
+      { writeErr: () => {} },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { host: "secondary.example.com" },
+    });
+
+    expect(response.status).toBe(200);
+    await engine.close();
+  });
+
   it("allows authenticated attach requests through the configured public origin host", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();

@@ -1795,10 +1795,11 @@ type DnsRebindingOptions = {
 
 function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
-  const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
+  const publicUrls = publicOriginsForOptions(options).map((origin) => new URL(origin));
   const publicHosts =
-    publicUrl && (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
-      ? [publicUrl.hostname, publicUrl.host]
+    publicUrls.length > 0 &&
+    (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
+      ? publicUrls.flatMap((url) => [url.hostname, url.host])
       : [];
   return {
     enableDnsRebindingProtection: true,
@@ -1810,6 +1811,11 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
       ...publicHosts,
     ],
   };
+}
+
+function publicOriginsForOptions(options: HttpServeOptions): string[] {
+  if (options.publicOrigins?.length) return options.publicOrigins;
+  return options.publicOrigin ? [options.publicOrigin] : [];
 }
 
 function authDescription(options: HttpServeOptions): string {

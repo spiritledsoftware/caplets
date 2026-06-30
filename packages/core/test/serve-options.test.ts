@@ -66,6 +66,22 @@ describe("resolveServeOptions", () => {
     expect("remoteCredentialStateDir" in resolved).toBe(false);
   });
 
+  it("keeps the first public origin canonical while preserving additional origins", () => {
+    expect(
+      resolveServeOptions(
+        { transport: "http" },
+        {},
+        {
+          publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+        },
+      ),
+    ).toMatchObject({
+      transport: "http",
+      publicOrigin: "https://primary.example.com",
+      publicOrigins: ["https://primary.example.com", "https://secondary.example.com"],
+    });
+  });
+
   it("keeps global HTTP serve defaults from affecting stdio", () => {
     expect(resolveServeOptions({ transport: "stdio" }, {}, { port: 5480 })).toEqual({
       transport: "stdio",
