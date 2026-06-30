@@ -4102,7 +4102,13 @@ describe("cli setup", () => {
     expect(text).toContain("opencode");
     expect(text).toContain("pi");
     expect(text).toContain("mcp-client");
+    expect(text).toContain("daemon-first");
+    expect(text).toContain("detected MCP clients");
+    expect(text).toContain("all supported MCP clients");
+    expect(text).toContain("--remote-url");
+    expect(text).toContain("--output");
     expect(text).toContain("--dry-run");
+    expect(text).not.toContain("caplets serve");
     expect(text).not.toContain("plugin marketplace");
     expect(text).not.toContain("caplets@caplets");
   });
@@ -4288,7 +4294,7 @@ describe("cli setup", () => {
     expect(commands).toEqual([]);
     expect(out.join("")).toContain("Dry run");
     expect(out.join("")).toContain("caplets attach http://127.0.0.1:5387/");
-    expect(out.join("")).toContain("planned: wrote");
+    expect(out.join("")).toContain("planned: configured Codex MCP client");
     expect(out.join("")).not.toContain("plugin marketplace");
     expect(out.join("")).not.toContain("caplets@caplets");
   });

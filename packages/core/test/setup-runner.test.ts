@@ -623,6 +623,35 @@ describe("setup runner", () => {
     }
   });
 
+  it("surfaces selected MCP client, scope, path, and adapter warnings in plain output", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-plain-warning-"));
+    try {
+      const output = await runSetup("mcp-client", {
+        client: "zed",
+        env: { CAPLETS_CONFIG: join(dir, "config.json") },
+        setupOperations: fakeSetupPhases("http://127.0.0.1:5387/caplets"),
+        mcpOperations: {
+          listSupportedClients: () => fakeMcpClients(),
+          upsertServer: async () => ({
+            clientId: "zed",
+            success: true,
+            path: join(dir, "zed.json"),
+            droppedFields: ["headers"],
+            extraPaths: [join(dir, "backup.json")],
+          }),
+        },
+      });
+
+      expect(output).toContain("configured Zed MCP client (project)");
+      expect(output).toContain(`at ${join(dir, "zed.json")}`);
+      expect(output).toContain("command: caplets attach http://127.0.0.1:5387/caplets");
+      expect(output).toContain("dropped unsupported fields: headers");
+      expect(output).toContain(`additional paths: ${join(dir, "backup.json")}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces add-mcp dropped fields and extra paths in JSON output", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-warning-"));
     try {

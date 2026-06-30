@@ -163,19 +163,31 @@ export function formatSetupMenu(): string {
   return [
     "Usage: caplets setup [integration]",
     "",
+    "daemon-first local setup initializes Caplets config, starts or reuses the local daemon,",
+    "then configures the selected integration to run caplets attach as a thin client.",
+    "",
     "Supported integrations:",
     "  codex        Add Caplets to Codex MCP config",
     "  claude-code  Add Caplets to Claude Code MCP config",
-    "  opencode     Run OpenCode native plugin install",
-    "  pi           Run Pi extension install",
-    "  mcp-client   Add Caplets to any supported MCP client with --client",
+    "  opencode     Install the native OpenCode plugin and daemon defaults",
+    "  pi           Install the native Pi extension and daemon defaults",
+    "  mcp-client   Pick detected MCP clients or pass --client for any supported add-mcp client",
+    "",
+    "MCP client selection:",
+    "  Interactive setup shows detected MCP clients first; choose all to list all supported MCP clients.",
+    "",
+    "Remote setup:",
+    "  Use --remote-url <url> (or --server-url <url>) to configure remote/cloud attach instead of the local daemon.",
+    "",
+    "Advanced manual config fallback:",
+    "  caplets setup mcp-client --output ./caplets.mcp.json",
     "",
     "Examples:",
     "  caplets setup",
     "  caplets setup codex",
     "  caplets setup opencode --dry-run",
     "  caplets setup mcp-client --client codex",
-    "  caplets setup mcp-client --output ./caplets.mcp.json",
+    "  caplets setup codex --remote-url https://caplets.example.com/caplets",
     "",
   ].join("\n");
 }
@@ -894,6 +906,20 @@ function formatSetupResult(result: SetupResult): string {
     lines.push(`- ${phase.status} ${phase.phase}: ${phase.label}${details ? ` (${details})` : ""}`);
   }
   for (const action of result.actions) {
+    if (action.clientId) {
+      const clientName = action.clientName ?? action.label;
+      const scope = action.scope ? ` (${action.scope})` : "";
+      const path = action.path ? ` at ${action.path}` : "";
+      lines.push(`- ${action.status}: configured ${clientName} MCP client${scope}${path}`);
+      if (action.command) lines.push(`  command: ${action.command}`);
+      if (action.droppedFields?.length) {
+        lines.push(`  add-mcp dropped unsupported fields: ${action.droppedFields.join(", ")}`);
+      }
+      if (action.extraPaths?.length) {
+        lines.push(`  add-mcp additional paths: ${action.extraPaths.join(", ")}`);
+      }
+      continue;
+    }
     if (action.command) lines.push(`- ${action.status}: ${action.command}`);
     if (action.path) lines.push(`- ${action.status}: wrote ${action.path}`);
   }
