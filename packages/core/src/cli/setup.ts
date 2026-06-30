@@ -1,9 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
+import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
+import type { DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { isCapletsCloudUrl } from "../remote/options";
+import { initConfig } from "./init";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
 
@@ -29,6 +33,26 @@ export type SetupCommandResult = {
 export type SetupCommandRunner = (command: string, args: string[]) => Promise<SetupCommandResult>;
 export type SetupPromptReader = (prompt: string) => Promise<string>;
 
+export type SetupPhaseStatus = "planned" | "completed" | "reused";
+
+export type SetupPhaseResult = {
+  phase: "config" | "daemon" | "integration";
+  label: string;
+  status: SetupPhaseStatus;
+  path?: string;
+  daemonBaseUrl?: string;
+  message?: string;
+};
+
+export type SetupPhaseContext = {
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+};
+
+export type SetupPhaseOperations = {
+  ensureUserConfig?: (context: SetupPhaseContext) => Promise<SetupPhaseResult> | SetupPhaseResult;
+  ensureDaemon?: (context: SetupPhaseContext) => Promise<SetupPhaseResult> | SetupPhaseResult;
+};
+
 export type SetupOptions = {
   remote?: boolean;
   remoteUrl?: string;
@@ -38,6 +62,7 @@ export type SetupOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   format?: SetupFormat;
   runCommand?: SetupCommandRunner;
+  setupOperations?: SetupPhaseOperations;
   yes?: boolean;
   target?: SetupTargetOption;
 };
@@ -63,19 +88,26 @@ type SetupResult = {
   mode: "local" | "remote";
   targetKind: SetupTargetKind;
   dryRun: boolean;
+  phases: SetupPhaseResult[];
   actions: SetupActionResult[];
   nextSteps: string[];
 };
 
-const localMcpConfig = `{
-  "mcpServers": {
-    "caplets": {
-      "command": "caplets",
-      "args": ["serve"]
-    }
-  }
-}
+function localMcpConfig(daemonBaseUrl: string): string {
+  return `${JSON.stringify(
+    {
+      mcpServers: {
+        caplets: {
+          command: "caplets",
+          args: ["attach", daemonBaseUrl],
+        },
+      },
+    },
+    null,
+    2,
+  )}
 `;
+}
 
 export function formatSetupMenu(): string {
   return [
@@ -159,9 +191,26 @@ export async function runSetup(integration: string, options: SetupOptions = {}):
 
 async function executeSetup(integration: string, options: SetupOptions): Promise<SetupResult> {
   const id = parseSetupIntegrationId(integration);
-  const definition = setupDefinition(id, options);
-  const actions: SetupActionResult[] = [];
+  setupDefinition(id, options, "http://127.0.0.1:5387/");
   const runner = options.runCommand ?? defaultSetupCommandRunner;
+  const phases: SetupPhaseResult[] = [];
+  let daemonBaseUrl: string | undefined;
+
+  if (!isRemoteSetup(options)) {
+    if (options.dryRun) {
+      const planned = plannedLocalSetupPhases(options);
+      phases.push(planned.config, planned.daemon);
+      daemonBaseUrl = planned.daemon.daemonBaseUrl;
+    } else {
+      phases.push(await ensureUserConfigPhase(options));
+      const daemonPhase = await ensureDaemonPhase(options);
+      daemonBaseUrl = daemonPhase.daemonBaseUrl;
+      phases.push(daemonPhase);
+    }
+  }
+
+  const definition = setupDefinition(id, options, daemonBaseUrl);
+  const actions: SetupActionResult[] = [];
 
   for (const action of definition.actions) {
     if (action.type === "command") {
@@ -202,22 +251,159 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
     });
   }
 
+  phases.push({
+    phase: "integration",
+    label: `Configure ${definition.name}`,
+    status: options.dryRun ? "planned" : "completed",
+    message: `${actions.length} setup action${actions.length === 1 ? "" : "s"}`,
+  });
+
   return {
     integration: id,
     name: definition.name,
     mode: isRemoteSetup(options) ? "remote" : "local",
     targetKind: resolveSetupTargetKind(options),
     dryRun: Boolean(options.dryRun),
+    phases,
     actions,
     nextSteps: definition.nextSteps,
   };
 }
 
+function plannedLocalSetupPhases(options: SetupOptions): {
+  config: SetupPhaseResult;
+  daemon: SetupPhaseResult;
+} {
+  return {
+    config: {
+      phase: "config",
+      label: "Initialize user Caplets config",
+      status: "planned",
+      path: userConfigPath(setupEnv(options)),
+    },
+    daemon: {
+      phase: "daemon",
+      label: "Start local Caplets daemon",
+      status: "planned",
+      daemonBaseUrl: "http://127.0.0.1:5387/",
+      message: "install/start/reuse default daemon and verify health",
+    },
+  };
+}
+
+async function ensureUserConfigPhase(options: SetupOptions): Promise<SetupPhaseResult> {
+  const operation = options.setupOperations?.ensureUserConfig ?? defaultEnsureUserConfig;
+  return await operation({ env: setupEnv(options) });
+}
+
+async function ensureDaemonPhase(options: SetupOptions): Promise<SetupPhaseResult> {
+  const operation = options.setupOperations?.ensureDaemon ?? defaultEnsureDaemon;
+  try {
+    const phase = await operation({ env: setupEnv(options) });
+    if (!phase.daemonBaseUrl) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Caplets daemon setup did not return a daemon URL.",
+      );
+    }
+    return phase;
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplets daemon setup failed before integration config mutation${
+        error instanceof Error ? `: ${error.message}` : ""
+      }`,
+    );
+  }
+}
+
+function defaultEnsureUserConfig(context: SetupPhaseContext): SetupPhaseResult {
+  const path = userConfigPath(context.env);
+  if (!existsSync(path)) {
+    initConfig({ path });
+    return {
+      phase: "config",
+      label: "Initialize user Caplets config",
+      status: "completed",
+      path,
+      message: "created user config",
+    };
+  }
+
+  loadConfig(path, projectConfigPath(context.env));
+  return {
+    phase: "config",
+    label: "Initialize user Caplets config",
+    status: "reused",
+    path,
+    message: "existing user config is valid",
+  };
+}
+
+async function defaultEnsureDaemon(context: SetupPhaseContext): Promise<SetupPhaseResult> {
+  const operation = daemonOperationOptions(context.env);
+  const status = await daemonStatus(operation);
+  if (status.installed && status.running && status.health?.ok && status.config) {
+    return {
+      phase: "daemon",
+      label: "Reuse local Caplets daemon",
+      status: "reused",
+      daemonBaseUrl: daemonClientBaseUrl(status.config).toString(),
+      message: "existing daemon is healthy",
+    };
+  }
+
+  const result = await installDaemon({ start: true }, operation);
+  const config = result.status.config ?? result.config;
+  const health = result.status.health ?? result.validation;
+  if (!result.status.running || health?.ok !== true) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplets daemon health verification failed${health?.error ? `: ${health.error}` : ""}`,
+    );
+  }
+
+  return {
+    phase: "daemon",
+    label: "Start local Caplets daemon",
+    status: "completed",
+    daemonBaseUrl: daemonClientBaseUrl(config).toString(),
+    message: result.plannedActions.join(", "),
+  };
+}
+
+function setupEnv(options: SetupOptions): NodeJS.ProcessEnv | Record<string, string | undefined> {
+  return options.env ?? process.env;
+}
+
+function daemonOperationOptions(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): DaemonOperationOptions {
+  return {
+    env,
+    healthTimeoutMs: 10_000,
+    healthIntervalMs: 200,
+  };
+}
+
+function userConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  return resolveConfigPath(nonEmpty(env.CAPLETS_CONFIG));
+}
+
+function projectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  return (
+    nonEmpty(env.CAPLETS_PROJECT_CONFIG) ?? resolveProjectConfigPath(dirname(userConfigPath(env)))
+  );
+}
+
 function setupDefinition(
   id: SetupIntegrationId,
   options: SetupOptions,
+  daemonBaseUrl: string | undefined,
 ): { name: string; actions: SetupAction[]; nextSteps: string[] } {
   if (isRemoteSetup(options)) return remoteSetupDefinition(id, options);
+  const localDaemonBaseUrl = daemonBaseUrl ?? "http://127.0.0.1:5387/";
 
   switch (id) {
     case "codex":
@@ -228,10 +414,11 @@ function setupDefinition(
             type: "command",
             label: "Add Caplets MCP server to Codex",
             command: "codex",
-            args: codexMcpAddArgs(["serve"]),
+            args: codexMcpAddArgs(["attach", localDaemonBaseUrl]),
           },
         ],
         nextSteps: [
+          `Caplets daemon is ready at ${localDaemonBaseUrl}; Codex runs caplets attach as a thin client.`,
           "In Codex, run /mcp to confirm the caplets server is connected.",
           "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
           'Ask Codex: codex "try using the github caplet"',
@@ -245,10 +432,11 @@ function setupDefinition(
             type: "command",
             label: "Add Caplets MCP server to Claude Code",
             command: "claude",
-            args: claudeMcpAddArgs(["serve"]),
+            args: claudeMcpAddArgs(["attach", localDaemonBaseUrl]),
           },
         ],
         nextSteps: [
+          `Caplets daemon is ready at ${localDaemonBaseUrl}; Claude Code runs caplets attach as a thin client.`,
           "In Claude Code, run /mcp to confirm the caplets server is connected.",
           "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
         ],
@@ -299,7 +487,7 @@ function setupDefinition(
             type: "writeFile",
             label: "Write generic MCP stdio config",
             path: options.output,
-            content: localMcpConfig,
+            content: localMcpConfig(localDaemonBaseUrl),
           },
         ],
         nextSteps: ["Import the written MCP config into your MCP client."],
@@ -500,6 +688,10 @@ function formatSetupResult(result: SetupResult): string {
     `${result.dryRun ? "Dry run" : "Completed"} ${result.name} setup (${result.mode}, ${result.targetKind})`,
     "",
   ];
+  for (const phase of result.phases) {
+    const details = phase.daemonBaseUrl ?? phase.path ?? phase.message;
+    lines.push(`- ${phase.status} ${phase.phase}: ${phase.label}${details ? ` (${details})` : ""}`);
+  }
   for (const action of result.actions) {
     if (action.command) lines.push(`- ${action.status}: ${action.command}`);
     if (action.path) lines.push(`- ${action.status}: wrote ${action.path}`);

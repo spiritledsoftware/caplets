@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -220,6 +220,226 @@ describe("setup runner", () => {
       ]);
       await expect(store.listAttempts("project-b", "ast-grep")).resolves.toMatchObject([
         { projectFingerprint: "project-b", commandLabel: "b" },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates user config before daemon setup and reports daemon-backed JSON phases", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-setup-"));
+    const configPath = join(dir, "config.json");
+    const commands: Array<{ command: string; args: string[] }> = [];
+    try {
+      const result = JSON.parse(
+        await runSetup("codex", {
+          format: "json",
+          env: { CAPLETS_CONFIG: configPath },
+          runCommand: async (command, args) => {
+            commands.push({ command, args });
+            return { stdout: "", stderr: "" };
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              expect(existsSync(configPath)).toBe(true);
+              return {
+                phase: "daemon",
+                label: "Start local Caplets daemon",
+                status: "completed",
+                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+                message: "daemon is healthy",
+              };
+            },
+          },
+        }),
+      );
+
+      expect(result.phases).toMatchObject([
+        { phase: "config", status: "completed", path: configPath },
+        { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "integration", status: "completed" },
+      ]);
+      expect(commands).toEqual([
+        {
+          command: "codex",
+          args: [
+            "mcp",
+            "add",
+            "caplets",
+            "--",
+            "caplets",
+            "attach",
+            "http://127.0.0.1:5387/caplets",
+          ],
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before daemon or integration work when an existing user config is invalid", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-invalid-config-"));
+    const configPath = join(dir, "config.json");
+    const commands: Array<{ command: string; args: string[] }> = [];
+    let daemonCalled = false;
+    try {
+      writeFileSync(configPath, "{ not json");
+
+      await expect(
+        runSetup("codex", {
+          env: { CAPLETS_CONFIG: configPath },
+          runCommand: async (command, args) => {
+            commands.push({ command, args });
+            return { stdout: "", stderr: "" };
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              daemonCalled = true;
+              return {
+                phase: "daemon",
+                label: "Start local Caplets daemon",
+                status: "completed",
+                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              };
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(daemonCalled).toBe(false);
+      expect(commands).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid integration options before config or daemon phases", async () => {
+    let configCalled = false;
+    let daemonCalled = false;
+
+    await expect(
+      runSetup("mcp-client", {
+        setupOperations: {
+          ensureUserConfig: () => {
+            configCalled = true;
+            return {
+              phase: "config",
+              label: "Initialize user Caplets config",
+              status: "completed",
+            };
+          },
+          ensureDaemon: () => {
+            daemonCalled = true;
+            return {
+              phase: "daemon",
+              label: "Start local Caplets daemon",
+              status: "completed",
+              daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+            };
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+
+    expect(configCalled).toBe(false);
+    expect(daemonCalled).toBe(false);
+  });
+
+  it("reports daemon failure and does not call integration writers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-daemon-failure-"));
+    const configPath = join(dir, "config.json");
+    const commands: Array<{ command: string; args: string[] }> = [];
+    try {
+      await expect(
+        runSetup("codex", {
+          env: { CAPLETS_CONFIG: configPath },
+          runCommand: async (command, args) => {
+            commands.push({ command, args });
+            return { stdout: "", stderr: "" };
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              throw new Error("daemon health probe failed");
+            },
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+        message: expect.stringContaining("daemon health probe failed"),
+      });
+      expect(commands).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-runs local setup phases without writes, daemon operations, or integration mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-dry-run-"));
+    const configPath = join(dir, "config.json");
+    const commands: Array<{ command: string; args: string[] }> = [];
+    let daemonCalled = false;
+    try {
+      const result = JSON.parse(
+        await runSetup("codex", {
+          dryRun: true,
+          format: "json",
+          env: { CAPLETS_CONFIG: configPath },
+          runCommand: async (command, args) => {
+            commands.push({ command, args });
+            return { stdout: "", stderr: "" };
+          },
+          setupOperations: {
+            ensureDaemon: async () => {
+              daemonCalled = true;
+              return {
+                phase: "daemon",
+                label: "Start local Caplets daemon",
+                status: "completed",
+                daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+              };
+            },
+          },
+        }),
+      );
+
+      expect(existsSync(configPath)).toBe(false);
+      expect(daemonCalled).toBe(false);
+      expect(commands).toEqual([]);
+      expect(result.phases).toMatchObject([
+        { phase: "config", status: "planned", path: configPath },
+        { phase: "daemon", status: "planned" },
+        { phase: "integration", status: "planned" },
+      ]);
+      expect(result.actions[0]).toMatchObject({ status: "planned" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports healthy existing daemon reuse before integration", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-reuse-"));
+    const configPath = join(dir, "config.json");
+    try {
+      const result = JSON.parse(
+        await runSetup("codex", {
+          format: "json",
+          env: { CAPLETS_CONFIG: configPath },
+          runCommand: async () => ({ stdout: "", stderr: "" }),
+          setupOperations: {
+            ensureDaemon: async () => ({
+              phase: "daemon",
+              label: "Reuse local Caplets daemon",
+              status: "reused",
+              daemonBaseUrl: "http://127.0.0.1:5387/caplets",
+            }),
+          },
+        }),
+      );
+
+      expect(result.phases).toMatchObject([
+        { phase: "config", status: "completed" },
+        { phase: "daemon", status: "reused", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
+        { phase: "integration", status: "completed" },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });

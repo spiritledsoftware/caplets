@@ -69,6 +69,7 @@ import {
   type SetupCommandRunner,
   type SetupFormat,
   type SetupOptions,
+  type SetupPhaseOperations,
   type SetupPromptReader,
 } from "./cli/setup";
 import {
@@ -186,6 +187,7 @@ type CliIO = {
   attachServe?: (options: AttachServeOptions) => Promise<void>;
   daemon?: DaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
+  setupOperations?: SetupPhaseOperations;
   readStdin?: () => Promise<string>;
 };
 
@@ -2604,6 +2606,7 @@ export function createProgram(io: CliIO = {}): Command {
         printTelemetryNotice("cli");
         const setupOptions: SetupOptions = { ...options, env };
         if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
+        if (io.setupOperations) setupOptions.setupOperations = io.setupOperations;
         if (!integration) {
           const promptHandle = createSetupPromptHandle(io, writeOut);
           if (!promptHandle) {

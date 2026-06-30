@@ -1111,7 +1111,7 @@ describe("cli init", () => {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
       }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+        hostUrl: "https://remote.caplets.test/caplets",
         clientId: "rcli_test",
         clientLabel: "Remote Prompt Test",
         credentials: {
@@ -1134,7 +1134,7 @@ describe("cli init", () => {
         {
           env: {
             CAPLETS_MODE: "remote",
-            CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+            CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
             CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
             CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
           },
@@ -2418,7 +2418,7 @@ describe("cli init", () => {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
       }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+        hostUrl: "https://remote.caplets.test/caplets",
         clientId: "rcli_install_test",
         clientLabel: "Remote Install Test",
         credentials: {
@@ -2432,7 +2432,7 @@ describe("cli init", () => {
       await runCli(["install", "--global", "--remote", "--json"], {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
           CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
           CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
         },
@@ -4021,6 +4021,29 @@ describe("cli init", () => {
   });
 });
 
+function fakeDaemonFirstCliSetup(baseDir?: string) {
+  const ownsDir = baseDir === undefined;
+  const dir = baseDir ?? mkdtempSync(join(tmpdir(), "caplets-cli-daemon-first-"));
+  const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+  return {
+    daemonBaseUrl,
+    io: {
+      env: { ...process.env, CAPLETS_CONFIG: join(dir, "config.json") },
+      setupOperations: {
+        ensureDaemon: async () => ({
+          phase: "daemon" as const,
+          label: "Reuse local Caplets daemon",
+          status: "reused" as const,
+          daemonBaseUrl,
+        }),
+      },
+    },
+    cleanup: () => {
+      if (ownsDir) rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
 describe("cli setup", () => {
   it("prints supported integrations when no integration is provided", async () => {
     const out: string[] = [];
@@ -4072,18 +4095,27 @@ describe("cli setup", () => {
   it("prompts for integrations when stdin is available", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup"], {
-      writeOut: (value) => out.push(value),
-      readStdin: async () => "1, Claude Code\n",
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        readStdin: async () => "1, Claude Code\n",
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
     expect(commands).toEqual([
-      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
+      {
+        command: "codex",
+        args: ["mcp", "add", "caplets", "--", "caplets", "attach", setup.daemonBaseUrl],
+      },
       {
         command: "claude",
         args: [
@@ -4096,7 +4128,8 @@ describe("cli setup", () => {
           "caplets",
           "--",
           "caplets",
-          "serve",
+          "attach",
+          setup.daemonBaseUrl,
         ],
       },
     ]);
@@ -4111,14 +4144,16 @@ describe("cli setup", () => {
     const output = join(dir, "caplets.mcp.json");
     const out: string[] = [];
 
+    const setup = fakeDaemonFirstCliSetup(dir);
     try {
       await runCli(["setup"], {
+        ...setup.io,
         writeOut: (value) => out.push(value),
         readStdin: async () => `Any MCP client\n${output}\n`,
       });
 
       expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
+        mcpServers: { caplets: { command: "caplets", args: ["attach", setup.daemonBaseUrl] } },
       });
       const text = out.join("");
       expect(text).toContain("Select integrations to set up:");
@@ -4132,17 +4167,26 @@ describe("cli setup", () => {
   it("adds Caplets to Codex MCP config", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup", "codex"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "codex"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
     expect(commands).toEqual([
-      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
+      {
+        command: "codex",
+        args: ["mcp", "add", "caplets", "--", "caplets", "attach", setup.daemonBaseUrl],
+      },
     ]);
     expect(out.join("")).toContain("Completed Codex setup");
   });
@@ -4150,14 +4194,20 @@ describe("cli setup", () => {
   it("adds Caplets to Claude Code MCP config", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup", "claude-code"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "claude-code"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
     expect(commands).toEqual([
       {
@@ -4172,7 +4222,8 @@ describe("cli setup", () => {
           "caplets",
           "--",
           "caplets",
-          "serve",
+          "attach",
+          setup.daemonBaseUrl,
         ],
       },
     ]);
@@ -4193,7 +4244,9 @@ describe("cli setup", () => {
 
     expect(commands).toEqual([]);
     expect(out.join("")).toContain("Dry run");
-    expect(out.join("")).toContain("codex mcp add caplets -- caplets serve");
+    expect(out.join("")).toContain(
+      "codex mcp add caplets -- caplets attach http://127.0.0.1:5387/",
+    );
     expect(out.join("")).not.toContain("plugin marketplace");
     expect(out.join("")).not.toContain("caplets@caplets");
   });
@@ -4203,13 +4256,15 @@ describe("cli setup", () => {
     const output = join(dir, "nested", "caplets.mcp.json");
     const out: string[] = [];
 
+    const setup = fakeDaemonFirstCliSetup(dir);
     try {
       await runCli(["setup", "mcp-client", "--output", output], {
+        ...setup.io,
         writeOut: (value) => out.push(value),
       });
 
       expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
+        mcpServers: { caplets: { command: "caplets", args: ["attach", setup.daemonBaseUrl] } },
       });
       expect(out.join("")).toContain(`completed: wrote ${output}`);
     } finally {
@@ -4480,19 +4535,27 @@ describe("cli setup", () => {
   });
 
   it("wraps setup command failures with the failed command", async () => {
-    await expect(
-      runCli(["setup", "codex"], {
-        writeErr: () => {},
-        runSetupCommand: async () => {
-          throw new Error("missing codex binary");
-        },
-      }),
-    ).rejects.toThrow(
-      expect.objectContaining({
-        code: "SERVER_UNAVAILABLE",
-        message: expect.stringContaining("codex mcp add caplets -- caplets serve"),
-      }) as CapletsError,
-    );
+    const setup = fakeDaemonFirstCliSetup();
+    try {
+      await expect(
+        runCli(["setup", "codex"], {
+          ...setup.io,
+          writeErr: () => {},
+          runSetupCommand: async () => {
+            throw new Error("missing codex binary");
+          },
+        }),
+      ).rejects.toThrow(
+        expect.objectContaining({
+          code: "SERVER_UNAVAILABLE",
+          message: expect.stringContaining(
+            `codex mcp add caplets -- caplets attach ${setup.daemonBaseUrl}`,
+          ),
+        }) as CapletsError,
+      );
+    } finally {
+      setup.cleanup();
+    }
   });
 });
 
