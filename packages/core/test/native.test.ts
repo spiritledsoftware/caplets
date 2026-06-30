@@ -134,6 +134,33 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("uses daemon mode as a credential-free loopback remote client", async () => {
+    const remoteOptions: unknown[] = [];
+    const service = createNativeCapletsService({
+      mode: "daemon",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+      remoteClientFactory: (options) => {
+        remoteOptions.push(options);
+        return {
+          listTools: async () => [],
+          callTool: async () => ({ ok: true }),
+          onToolsChanged: () => () => {},
+          close: async () => {},
+        };
+      },
+    });
+
+    try {
+      await expect(service.reload()).resolves.toBe(true);
+      expect(remoteOptions[0]).toMatchObject({
+        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        auth: { enabled: false, user: "caplets" },
+      });
+    } finally {
+      await service.close();
+    }
+  });
+
   it("suppresses native-first telemetry until a visible notice has been recorded", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {

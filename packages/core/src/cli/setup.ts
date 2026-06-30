@@ -13,6 +13,7 @@ import {
   upsertCapletsMcpServer,
   type AddMcpClient,
 } from "./add-mcp-adapter";
+import { nativeDefaultsPath, writeNativeDefaults } from "../native/user-settings";
 import { initConfig } from "./init";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
@@ -96,6 +97,7 @@ export type SetupOptions = {
   runCommand?: SetupCommandRunner;
   setupOperations?: SetupPhaseOperations;
   mcpOperations?: SetupMcpOperations;
+  nativeDefaultsPath?: string;
   yes?: boolean;
   target?: SetupTargetOption;
 };
@@ -115,7 +117,8 @@ type SetupAction =
       daemonBaseUrl: string;
       path: string;
       scope: "project" | "global";
-    };
+    }
+  | { type: "nativeDefaults"; label: string; daemonBaseUrl: string; path?: string };
 
 type SetupActionResult = {
   label: string;
@@ -292,6 +295,22 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
         scope: action.scope,
         ...(result.droppedFields?.length ? { droppedFields: result.droppedFields } : {}),
         ...(result.extraPaths?.length ? { extraPaths: result.extraPaths } : {}),
+      });
+      continue;
+    }
+
+    if (action.type === "nativeDefaults") {
+      const path = action.path ?? nativeDefaultsPathForSetup(options);
+      if (!options.dryRun) {
+        writeNativeDefaults(
+          { source: "setup", daemon: { url: action.daemonBaseUrl } },
+          { path, env: setupEnv(options) },
+        );
+      }
+      actions.push({
+        label: action.label,
+        path,
+        status: options.dryRun ? "planned" : "completed",
       });
       continue;
     }
@@ -480,6 +499,13 @@ function projectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | unde
   );
 }
 
+function nativeDefaultsPathForSetup(options: SetupOptions): string {
+  return nativeDefaultsPath({
+    ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
+    env: setupEnv(options),
+  });
+}
+
 function setupDefinition(
   id: SetupIntegrationId,
   options: SetupOptions,
@@ -503,6 +529,12 @@ function setupDefinition(
             command: "opencode",
             args: ["plugin", "@caplets/opencode", "--global"],
           },
+          {
+            type: "nativeDefaults",
+            label: "Write Caplets native daemon defaults",
+            daemonBaseUrl: localDaemonBaseUrl,
+            ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
+          },
         ],
         nextSteps: [
           "OpenCode reads local Caplets config and exposes native caplets_<id> tools.",
@@ -518,6 +550,12 @@ function setupDefinition(
             label: "Install Pi Caplets extension",
             command: "pi",
             args: ["install", "npm:@caplets/pi"],
+          },
+          {
+            type: "nativeDefaults",
+            label: "Write Caplets native daemon defaults",
+            daemonBaseUrl: localDaemonBaseUrl,
+            ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
           },
         ],
         nextSteps: [

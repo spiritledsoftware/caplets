@@ -15,6 +15,7 @@ import capletsPiExtension, {
 const nativeMocks = vi.hoisted(() => ({
   createNativeCapletsService: vi.fn(),
   registerNativeCapletsProcessCleanup: vi.fn(),
+  readNativeDefaults: vi.fn<() => unknown>(() => undefined),
 }));
 
 const fsMocks = vi.hoisted(() => ({
@@ -1211,6 +1212,29 @@ describe("@caplets/pi", () => {
     await capletsPiExtension(api as unknown as PiExtensionApi);
 
     expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      telemetryIntegration: "pi",
+    });
+  });
+
+  it("default export uses Caplets native defaults when Pi settings are missing", async () => {
+    const service = mockService([]);
+    nativeMocks.createNativeCapletsService.mockReturnValueOnce(service);
+    nativeMocks.readNativeDefaults.mockReturnValueOnce({
+      version: 1,
+      source: "setup",
+      updatedAt: "2026-06-30T00:00:00.000Z",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+    });
+    fsMocks.readFile
+      .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }))
+      .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const { api } = mockPiApi();
+
+    await capletsPiExtension(api as unknown as PiExtensionApi);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenLastCalledWith({
+      mode: "daemon",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
       telemetryIntegration: "pi",
     });
   });

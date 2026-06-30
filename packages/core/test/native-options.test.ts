@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { CapletsError } from "../src/errors";
 import { resolveNativeCapletsServiceOptions } from "../src/native/options";
+import { readNativeDefaults, writeNativeDefaults } from "../src/native/user-settings";
 
 describe("resolveNativeCapletsServiceOptions", () => {
   it("defaults to local mode without remote configuration", () => {
@@ -21,6 +25,30 @@ describe("resolveNativeCapletsServiceOptions", () => {
         pollIntervalMs: 30_000,
       },
     });
+  });
+
+  it("uses explicit daemon mode with a credential-free loopback attach URL", () => {
+    expect(
+      resolveNativeCapletsServiceOptions(
+        { mode: "daemon", daemon: { url: "http://127.0.0.1:5387/caplets" } },
+        {},
+      ),
+    ).toMatchObject({
+      mode: "daemon",
+      remote: {
+        url: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        auth: { enabled: false, user: "caplets" },
+      },
+    });
+  });
+
+  it("rejects daemon mode URLs that are not loopback HTTP", () => {
+    expect(() =>
+      resolveNativeCapletsServiceOptions(
+        { mode: "daemon", daemon: { url: "http://192.0.2.10:5387/caplets" } },
+        {},
+      ),
+    ).toThrow(/loopback/u);
   });
 
   it("uses cloud mode in auto when CAPLETS_REMOTE_URL points at Caplets Cloud", () => {
@@ -206,5 +234,42 @@ describe("resolveNativeCapletsServiceOptions", () => {
         {},
       ),
     ).toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
+  });
+});
+
+describe("native defaults store", () => {
+  it("writes and reads setup-owned daemon defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-native-defaults-"));
+    const path = join(dir, "native-defaults.json");
+    try {
+      writeNativeDefaults(
+        { daemon: { url: "http://127.0.0.1:5387/caplets" }, source: "setup" },
+        { path, now: new Date("2026-06-30T00:00:00.000Z") },
+      );
+
+      expect(readNativeDefaults({ path })).toEqual({
+        version: 1,
+        source: "setup",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+        daemon: { url: "http://127.0.0.1:5387/caplets" },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns and ignores malformed native defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-native-defaults-bad-"));
+    const path = join(dir, "native-defaults.json");
+    const warnings: string[] = [];
+    try {
+      writeFileSync(path, "{ not json");
+      expect(
+        readNativeDefaults({ path, writeWarning: (message) => warnings.push(message) }),
+      ).toBeUndefined();
+      expect(warnings.join("\n")).toContain("Ignoring Caplets native defaults");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

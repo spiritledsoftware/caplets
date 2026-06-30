@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -403,6 +403,43 @@ describe("setup runner", () => {
         { phase: "integration", status: "planned" },
       ]);
       expect(result.actions[0]).toMatchObject({ status: "planned" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("native setup installs the plugin and writes daemon defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-native-setup-defaults-"));
+    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const commands: Array<{ command: string; args: string[] }> = [];
+    const defaultsPath = join(dir, "native-defaults.json");
+    try {
+      const result = JSON.parse(
+        await runSetup("opencode", {
+          format: "json",
+          env: { CAPLETS_CONFIG: join(dir, "config.json") },
+          nativeDefaultsPath: defaultsPath,
+          runCommand: async (command, args) => {
+            commands.push({ command, args });
+            return { stdout: "", stderr: "" };
+          },
+          setupOperations: fakeSetupPhases(daemonBaseUrl),
+        }),
+      );
+
+      expect(commands).toEqual([
+        { command: "opencode", args: ["plugin", "@caplets/opencode", "--global"] },
+      ]);
+      expect(JSON.parse(readFileSync(defaultsPath, "utf8"))).toMatchObject({
+        version: 1,
+        source: "setup",
+        daemon: { url: daemonBaseUrl },
+      });
+      expect(result.actions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ status: "completed", path: defaultsPath }),
+        ]),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
