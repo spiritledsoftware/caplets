@@ -29,9 +29,7 @@ function normalizeOpenCodeConfig(config: CapletsOpenCodeConfig | undefined): Cap
       ...(config.daemon ? { daemon: config.daemon } : {}),
     };
   }
-  const defaults = readNativeDefaults({
-    writeWarning: (message) => console.warn(`[caplets/opencode] ${message}`),
-  });
+  const defaults = readNativeDefaults();
   return defaults ? { mode: "daemon", daemon: { url: defaults.daemon.url } } : {};
 }
 
