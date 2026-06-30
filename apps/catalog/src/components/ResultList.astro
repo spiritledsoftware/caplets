@@ -55,6 +55,17 @@ const initialRows = rows.slice(0, 24);
               )}
               <div class="catalog-result-row__heading">
                 <a class="catalog-result-row__title" href={row.detailHref}>{row.name}</a>
+                {row.trust === "official" && (
+                  <span
+                    class="catalog-result-row__trust catalog-result-row__trust--official catalog-result-row__trust--title"
+                    aria-hidden="true"
+                  >
+                    <HugeIcon
+                      class="catalog-result-row__trust-icon size-[14px]"
+                      icon={catalogTrustIcons.official ?? AlertCircleIcon}
+                    />
+                  </span>
+                )}
               </div>
             </div>
             <p class="catalog-result-row__description" role="cell">{row.description}</p>

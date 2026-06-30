@@ -7,7 +7,7 @@ tags:
   - code-search
   - mcp
 catalog:
-  icon: https://sourcegraph.com/favicon.ico
+  icon: https://sourcegraph.com/.assets/img/sourcegraph-mark.svg
 mcpServer:
   url: https://sourcegraph.com/.api/mcp
   auth:

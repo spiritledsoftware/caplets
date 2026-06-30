@@ -163,6 +163,27 @@ describe("virtual catalog results", () => {
     expect(icon.getAttribute("loading")).toBe("lazy");
   });
 
+  it("shows the official trust icon next to the caplet title without repeating the status label", async () => {
+    mountSearchShell([
+      catalogSearchRowFixture({
+        id: "ast-grep",
+        name: "ast-grep",
+        trust: "official",
+      }),
+    ]);
+
+    const { initVirtualCatalogSearch } = await import("../src/scripts/virtual-results");
+    trackSearch(initVirtualCatalogSearch());
+
+    const titleTrustIcon = document.querySelector(
+      ".catalog-result-row__heading .catalog-result-row__trust--official",
+    );
+
+    expect(titleTrustIcon).toBeTruthy();
+    expect(titleTrustIcon?.getAttribute("aria-hidden")).toBe("true");
+    expect(titleTrustIcon?.getAttribute("aria-label")).toBeNull();
+  });
+
   it("reuses row nodes that remain visible while scrolling", async () => {
     mountSearchShell(manyCatalogSearchRows(200));
 

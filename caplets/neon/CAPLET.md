@@ -9,7 +9,7 @@ tags:
   - branches
   - sql
 catalog:
-  icon: https://neon.com/favicon.ico
+  icon: https://neon.com/apple-touch-icon.png
 mcpServer:
   url: https://mcp.neon.tech/mcp
   auth:
