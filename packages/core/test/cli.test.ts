@@ -4025,8 +4025,10 @@ function fakeDaemonFirstCliSetup(baseDir?: string) {
   const ownsDir = baseDir === undefined;
   const dir = baseDir ?? mkdtempSync(join(tmpdir(), "caplets-cli-daemon-first-"));
   const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+  const mcpUpserts: unknown[] = [];
   return {
     daemonBaseUrl,
+    mcpUpserts,
     io: {
       env: { ...process.env, CAPLETS_CONFIG: join(dir, "config.json") },
       setupOperations: {
@@ -4037,11 +4039,54 @@ function fakeDaemonFirstCliSetup(baseDir?: string) {
           daemonBaseUrl,
         }),
       },
+      mcpOperations: {
+        detectClients: async () => fakeCliMcpClients(),
+        listSupportedClients: () => fakeCliMcpClients(),
+        upsertServer: async (options: {
+          clientId: string;
+          daemonBaseUrl: string;
+          local: boolean;
+        }) => {
+          mcpUpserts.push(options);
+          const client = fakeCliMcpClients().find((entry) => entry.id === options.clientId);
+          return {
+            clientId: options.clientId,
+            success: true,
+            path: client?.projectConfigPath ?? `/project/${options.clientId}.json`,
+          };
+        },
+      },
     },
     cleanup: () => {
       if (ownsDir) rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+function fakeCliMcpClients() {
+  return [
+    {
+      id: "zed",
+      displayName: "Zed",
+      configPath: "/home/user/.config/zed/settings.json",
+      projectConfigPath: "/project/.zed/settings.json",
+      supportsStdio: true,
+    },
+    {
+      id: "codex",
+      displayName: "Codex",
+      configPath: "/home/user/.codex/config.toml",
+      projectConfigPath: "/project/.codex/config.toml",
+      supportsStdio: true,
+    },
+    {
+      id: "claude-code",
+      displayName: "Claude Code",
+      configPath: "/home/user/.claude.json",
+      projectConfigPath: "/project/.claude.json",
+      supportsStdio: true,
+    },
+  ];
 }
 
 describe("cli setup", () => {
@@ -4111,27 +4156,10 @@ describe("cli setup", () => {
       setup.cleanup();
     }
 
-    expect(commands).toEqual([
-      {
-        command: "codex",
-        args: ["mcp", "add", "caplets", "--", "caplets", "attach", setup.daemonBaseUrl],
-      },
-      {
-        command: "claude",
-        args: [
-          "mcp",
-          "add",
-          "--transport",
-          "stdio",
-          "--scope",
-          "user",
-          "caplets",
-          "--",
-          "caplets",
-          "attach",
-          setup.daemonBaseUrl,
-        ],
-      },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      { clientId: "claude-code", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     const text = out.join("");
     expect(text).toContain("Select integrations to set up:");
@@ -4139,28 +4167,59 @@ describe("cli setup", () => {
     expect(text).toContain("Completed Claude Code setup");
   });
 
-  it("prompts for a generic MCP client output path during interactive setup", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-interactive-"));
-    const output = join(dir, "caplets.mcp.json");
+  it("prompts for a detected MCP client and configures only the selected client", async () => {
     const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const upserts: unknown[] = [];
 
-    const setup = fakeDaemonFirstCliSetup(dir);
     try {
       await runCli(["setup"], {
         ...setup.io,
+        mcpOperations: {
+          detectClients: async () => [fakeCliMcpClients()[0]!],
+          listSupportedClients: () => fakeCliMcpClients(),
+          upsertServer: async (options) => {
+            upserts.push(options);
+            return { clientId: "zed", success: true, path: "/project/.zed/settings.json" };
+          },
+        },
         writeOut: (value) => out.push(value),
-        readStdin: async () => `Any MCP client\n${output}\n`,
+        readStdin: async () => "Any MCP client\nzed\n",
       });
 
-      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["attach", setup.daemonBaseUrl] } },
-      });
-      const text = out.join("");
-      expect(text).toContain("Select integrations to set up:");
-      expect(text).toContain("Path to write generic MCP config");
-      expect(text).toContain(`completed: wrote ${output}`);
+      expect(upserts).toEqual([
+        { clientId: "zed", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Detected MCP clients");
+      expect(out.join("")).toContain("Zed");
+      expect(out.join("")).not.toContain("codex.toml");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      setup.cleanup();
+    }
+  });
+
+  it("lets interactive MCP setup reveal all supported clients", async () => {
+    const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
+
+    try {
+      await runCli(["setup"], {
+        ...setup.io,
+        mcpOperations: {
+          ...setup.io.mcpOperations,
+          detectClients: async () => [fakeCliMcpClients()[0]!],
+        },
+        writeOut: (value) => out.push(value),
+        readStdin: async () => "Any MCP client\nall\ncodex\n",
+      });
+
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Supported MCP clients");
+      expect(out.join("")).toContain("Codex");
+    } finally {
+      setup.cleanup();
     }
   });
 
@@ -4182,11 +4241,9 @@ describe("cli setup", () => {
       setup.cleanup();
     }
 
-    expect(commands).toEqual([
-      {
-        command: "codex",
-        args: ["mcp", "add", "caplets", "--", "caplets", "attach", setup.daemonBaseUrl],
-      },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     expect(out.join("")).toContain("Completed Codex setup");
   });
@@ -4209,23 +4266,9 @@ describe("cli setup", () => {
       setup.cleanup();
     }
 
-    expect(commands).toEqual([
-      {
-        command: "claude",
-        args: [
-          "mcp",
-          "add",
-          "--transport",
-          "stdio",
-          "--scope",
-          "user",
-          "caplets",
-          "--",
-          "caplets",
-          "attach",
-          setup.daemonBaseUrl,
-        ],
-      },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "claude-code", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     expect(out.join("")).toContain("Completed Claude Code setup");
   });
@@ -4244,9 +4287,8 @@ describe("cli setup", () => {
 
     expect(commands).toEqual([]);
     expect(out.join("")).toContain("Dry run");
-    expect(out.join("")).toContain(
-      "codex mcp add caplets -- caplets attach http://127.0.0.1:5387/",
-    );
+    expect(out.join("")).toContain("caplets attach http://127.0.0.1:5387/");
+    expect(out.join("")).toContain("planned: wrote");
     expect(out.join("")).not.toContain("plugin marketplace");
     expect(out.join("")).not.toContain("caplets@caplets");
   });
@@ -4276,7 +4318,7 @@ describe("cli setup", () => {
     await expect(runCli(["setup", "mcp-client"], { writeErr: () => {} })).rejects.toThrow(
       expect.objectContaining({
         code: "REQUEST_INVALID",
-        message: expect.stringContaining("requires --output <path>"),
+        message: expect.stringContaining("requires --client <id> or --output <path>"),
       }) as CapletsError,
     );
   });
@@ -4534,22 +4576,28 @@ describe("cli setup", () => {
     expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");
   });
 
-  it("wraps setup command failures with the failed command", async () => {
+  it("wraps MCP adapter failures with the selected client", async () => {
     const setup = fakeDaemonFirstCliSetup();
     try {
       await expect(
         runCli(["setup", "codex"], {
           ...setup.io,
-          writeErr: () => {},
-          runSetupCommand: async () => {
-            throw new Error("missing codex binary");
+          mcpOperations: {
+            ...setup.io.mcpOperations,
+            upsertServer: async () => ({
+              clientId: "codex",
+              success: false,
+              path: "/project/.codex/config.toml",
+              error: "missing codex config",
+            }),
           },
+          writeErr: () => {},
         }),
       ).rejects.toThrow(
         expect.objectContaining({
           code: "SERVER_UNAVAILABLE",
           message: expect.stringContaining(
-            `codex mcp add caplets -- caplets attach ${setup.daemonBaseUrl}`,
+            "Failed to configure Codex MCP config: missing codex config",
           ),
         }) as CapletsError,
       );

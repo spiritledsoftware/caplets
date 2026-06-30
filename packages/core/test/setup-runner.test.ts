@@ -229,15 +229,18 @@ describe("setup runner", () => {
   it("creates user config before daemon setup and reports daemon-backed JSON phases", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-first-setup-"));
     const configPath = join(dir, "config.json");
-    const commands: Array<{ command: string; args: string[] }> = [];
+    const upserts: unknown[] = [];
     try {
       const result = JSON.parse(
         await runSetup("codex", {
           format: "json",
           env: { CAPLETS_CONFIG: configPath },
-          runCommand: async (command, args) => {
-            commands.push({ command, args });
-            return { stdout: "", stderr: "" };
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async (options) => {
+              upserts.push(options);
+              return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+            },
           },
           setupOperations: {
             ensureDaemon: async () => {
@@ -259,19 +262,8 @@ describe("setup runner", () => {
         { phase: "daemon", status: "completed", daemonBaseUrl: "http://127.0.0.1:5387/caplets" },
         { phase: "integration", status: "completed" },
       ]);
-      expect(commands).toEqual([
-        {
-          command: "codex",
-          args: [
-            "mcp",
-            "add",
-            "caplets",
-            "--",
-            "caplets",
-            "attach",
-            "http://127.0.0.1:5387/caplets",
-          ],
-        },
+      expect(upserts).toEqual([
+        { clientId: "codex", daemonBaseUrl: "http://127.0.0.1:5387/caplets", local: true },
       ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -424,7 +416,14 @@ describe("setup runner", () => {
         await runSetup("codex", {
           format: "json",
           env: { CAPLETS_CONFIG: configPath },
-          runCommand: async () => ({ stdout: "", stderr: "" }),
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => ({
+              clientId: "codex",
+              success: true,
+              path: join(dir, "codex.toml"),
+            }),
+          },
           setupOperations: {
             ensureDaemon: async () => ({
               phase: "daemon",
@@ -484,6 +483,140 @@ describe("setup runner", () => {
     },
   );
 
+  it("configures a targeted add-mcp client with daemon attach and no credential env", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-target-"));
+    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const upserts: unknown[] = [];
+    try {
+      const result = JSON.parse(
+        await runSetup("mcp-client", {
+          client: "zed",
+          format: "json",
+          env: {
+            CAPLETS_CONFIG: join(dir, "config.json"),
+            CAPLETS_REMOTE_TOKEN: "must-not-leak",
+            VAULT_PASSWORD: "must-not-leak",
+          },
+          setupOperations: fakeSetupPhases(daemonBaseUrl),
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async (options) => {
+              upserts.push(options);
+              return { clientId: "zed", success: true, path: join(dir, "zed.json") };
+            },
+          },
+        }),
+      );
+
+      expect(upserts).toEqual([{ clientId: "zed", daemonBaseUrl, local: true }]);
+      expect(JSON.stringify(upserts)).not.toContain("must-not-leak");
+      expect(result.actions).toMatchObject([
+        {
+          status: "completed",
+          clientId: "zed",
+          command: "caplets attach http://127.0.0.1:5387/caplets",
+          path: join(dir, "zed.json"),
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps codex as a compatibility alias for the add-mcp adapter", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-codex-"));
+    const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+    const upserts: unknown[] = [];
+    const commands: unknown[] = [];
+    try {
+      await runSetup("codex", {
+        env: { CAPLETS_CONFIG: join(dir, "config.json") },
+        runCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+        setupOperations: fakeSetupPhases(daemonBaseUrl),
+        mcpOperations: {
+          listSupportedClients: () => fakeMcpClients(),
+          upsertServer: async (options) => {
+            upserts.push(options);
+            return { clientId: "codex", success: true, path: join(dir, "codex.toml") };
+          },
+        },
+      });
+
+      expect(commands).toEqual([]);
+      expect(upserts).toEqual([{ clientId: "codex", daemonBaseUrl, local: true }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-runs targeted add-mcp client setup without mutating adapter state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-dry-run-"));
+    let upsertCalled = false;
+    try {
+      const result = JSON.parse(
+        await runSetup("mcp-client", {
+          client: "zed",
+          dryRun: true,
+          format: "json",
+          env: { CAPLETS_CONFIG: join(dir, "config.json") },
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => {
+              upsertCalled = true;
+              return { clientId: "zed", success: true, path: join(dir, "zed.json") };
+            },
+          },
+        }),
+      );
+
+      expect(upsertCalled).toBe(false);
+      expect(result.actions).toMatchObject([
+        {
+          status: "planned",
+          clientId: "zed",
+          path: "/project/.zed/settings.json",
+          scope: "project",
+        },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces add-mcp dropped fields and extra paths in JSON output", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-add-mcp-warning-"));
+    try {
+      const result = JSON.parse(
+        await runSetup("mcp-client", {
+          client: "zed",
+          format: "json",
+          env: { CAPLETS_CONFIG: join(dir, "config.json") },
+          setupOperations: fakeSetupPhases("http://127.0.0.1:5387/caplets"),
+          mcpOperations: {
+            listSupportedClients: () => fakeMcpClients(),
+            upsertServer: async () => ({
+              clientId: "zed",
+              success: true,
+              path: join(dir, "zed.json"),
+              droppedFields: ["headers"],
+              extraPaths: [join(dir, "backup.json")],
+            }),
+          },
+        }),
+      );
+
+      expect(result.actions[0]).toMatchObject({
+        droppedFields: ["headers"],
+        extraPaths: [join(dir, "backup.json")],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("records setup hash and runtime features without requiring project output retention", async () => {
     const store = memoryStore();
     const attempts = await runCapletSetup({
@@ -534,6 +667,43 @@ describe("setup runner", () => {
     }
   });
 });
+
+function fakeSetupPhases(daemonBaseUrl: string) {
+  return {
+    ensureDaemon: async () => ({
+      phase: "daemon" as const,
+      label: "Reuse local Caplets daemon",
+      status: "reused" as const,
+      daemonBaseUrl,
+    }),
+  };
+}
+
+function fakeMcpClients() {
+  return [
+    {
+      id: "codex",
+      displayName: "Codex",
+      configPath: "/home/user/.codex/config.toml",
+      projectConfigPath: "/project/.codex/config.toml",
+      supportsStdio: true,
+    },
+    {
+      id: "claude-code",
+      displayName: "Claude Code",
+      configPath: "/home/user/.claude.json",
+      projectConfigPath: "/project/.claude.json",
+      supportsStdio: true,
+    },
+    {
+      id: "zed",
+      displayName: "Zed",
+      configPath: "/home/user/.config/zed/settings.json",
+      projectConfigPath: "/project/.zed/settings.json",
+      supportsStdio: true,
+    },
+  ];
+}
 
 function caplet(command: string, args: string[]): CapletConfig {
   return {

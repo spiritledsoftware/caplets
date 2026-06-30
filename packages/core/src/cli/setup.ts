@@ -7,6 +7,12 @@ import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
 import type { DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { isCapletsCloudUrl } from "../remote/options";
+import {
+  detectAddMcpClients,
+  listSupportedAddMcpClients,
+  upsertCapletsMcpServer,
+  type AddMcpClient,
+} from "./add-mcp-adapter";
 import { initConfig } from "./init";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
@@ -53,16 +59,43 @@ export type SetupPhaseOperations = {
   ensureDaemon?: (context: SetupPhaseContext) => Promise<SetupPhaseResult> | SetupPhaseResult;
 };
 
+export type SetupMcpClient = Omit<AddMcpClient, "id"> & { id: string };
+
+export type SetupMcpUpsertOptions = {
+  clientId: string;
+  daemonBaseUrl: string;
+  local: boolean;
+};
+
+export type SetupMcpUpsertResult = {
+  clientId: string;
+  success: boolean;
+  path: string;
+  error?: string;
+  droppedFields?: string[];
+  extraPaths?: string[];
+};
+
+export type SetupMcpOperations = {
+  listSupportedClients?: () => SetupMcpClient[];
+  detectClients?: () => Promise<SetupMcpClient[]> | SetupMcpClient[];
+  upsertServer?: (
+    options: SetupMcpUpsertOptions,
+  ) => Promise<SetupMcpUpsertResult> | SetupMcpUpsertResult;
+};
+
 export type SetupOptions = {
   remote?: boolean;
   remoteUrl?: string;
   serverUrl?: string;
   output?: string;
+  client?: string;
   dryRun?: boolean;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   format?: SetupFormat;
   runCommand?: SetupCommandRunner;
   setupOperations?: SetupPhaseOperations;
+  mcpOperations?: SetupMcpOperations;
   yes?: boolean;
   target?: SetupTargetOption;
 };
@@ -73,13 +106,27 @@ export type InteractiveSetupOptions = SetupOptions & {
 
 type SetupAction =
   | { type: "command"; label: string; command: string; args: string[] }
-  | { type: "writeFile"; label: string; path: string; content: string };
+  | { type: "writeFile"; label: string; path: string; content: string }
+  | {
+      type: "mcpClient";
+      label: string;
+      clientId: string;
+      clientName: string;
+      daemonBaseUrl: string;
+      path: string;
+      scope: "project" | "global";
+    };
 
 type SetupActionResult = {
   label: string;
   command?: string;
   path?: string;
   status: "planned" | "completed";
+  clientId?: string;
+  clientName?: string;
+  scope?: "project" | "global";
+  droppedFields?: string[];
+  extraPaths?: string[];
 };
 
 type SetupResult = {
@@ -118,12 +165,13 @@ export function formatSetupMenu(): string {
     "  claude-code  Add Caplets to Claude Code MCP config",
     "  opencode     Run OpenCode native plugin install",
     "  pi           Run Pi extension install",
-    "  mcp-client   Write a generic MCP client config with --output",
+    "  mcp-client   Add Caplets to any supported MCP client with --client",
     "",
     "Examples:",
     "  caplets setup",
     "  caplets setup codex",
     "  caplets setup opencode --dry-run",
+    "  caplets setup mcp-client --client codex",
     "  caplets setup mcp-client --output ./caplets.mcp.json",
     "",
   ].join("\n");
@@ -155,14 +203,8 @@ export async function runInteractiveSetup(options: InteractiveSetupOptions): Pro
 
   for (const integration of selected) {
     const setupOptions: SetupOptions = { ...options };
-    if (integration === "mcp-client" && !setupOptions.output) {
-      const output = nonEmpty(
-        await options.readPrompt("Path to write generic MCP config (--output): "),
-      );
-      if (!output) {
-        throw new CapletsError("REQUEST_INVALID", "mcp-client setup requires an output path");
-      }
-      setupOptions.output = output;
+    if (integration === "mcp-client" && !setupOptions.output && !setupOptions.client) {
+      setupOptions.client = await promptForMcpClient(setupOptions, options.readPrompt);
     }
     chunks.push(await runSetup(integration, setupOptions));
   }
@@ -213,6 +255,47 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
   const actions: SetupActionResult[] = [];
 
   for (const action of definition.actions) {
+    if (action.type === "mcpClient") {
+      const commandText = formatCommand("caplets", ["attach", action.daemonBaseUrl]);
+      if (options.dryRun) {
+        actions.push({
+          label: action.label,
+          command: commandText,
+          path: action.path,
+          status: "planned",
+          clientId: action.clientId,
+          clientName: action.clientName,
+          scope: action.scope,
+        });
+        continue;
+      }
+      const result = await mcpOperations(options).upsertServer({
+        clientId: action.clientId,
+        daemonBaseUrl: action.daemonBaseUrl,
+        local: true,
+      });
+      if (!result.success) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          `Failed to configure ${action.clientName} MCP config${
+            result.error ? `: ${result.error}` : ""
+          }. The Caplets daemon is still ready; rerun caplets setup mcp-client --client ${action.clientId} to retry.`,
+        );
+      }
+      actions.push({
+        label: action.label,
+        command: commandText,
+        path: result.path,
+        status: "completed",
+        clientId: action.clientId,
+        clientName: action.clientName,
+        scope: action.scope,
+        ...(result.droppedFields?.length ? { droppedFields: result.droppedFields } : {}),
+        ...(result.extraPaths?.length ? { extraPaths: result.extraPaths } : {}),
+      });
+      continue;
+    }
+
     if (action.type === "command") {
       const commandText = formatCommand(action.command, action.args);
       if (!options.dryRun) {
@@ -407,40 +490,9 @@ function setupDefinition(
 
   switch (id) {
     case "codex":
-      return {
-        name: "Codex",
-        actions: [
-          {
-            type: "command",
-            label: "Add Caplets MCP server to Codex",
-            command: "codex",
-            args: codexMcpAddArgs(["attach", localDaemonBaseUrl]),
-          },
-        ],
-        nextSteps: [
-          `Caplets daemon is ready at ${localDaemonBaseUrl}; Codex runs caplets attach as a thin client.`,
-          "In Codex, run /mcp to confirm the caplets server is connected.",
-          "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
-          'Ask Codex: codex "try using the github caplet"',
-        ],
-      };
+      return mcpClientSetupDefinition("codex", "Codex", localDaemonBaseUrl, options);
     case "claude-code":
-      return {
-        name: "Claude Code",
-        actions: [
-          {
-            type: "command",
-            label: "Add Caplets MCP server to Claude Code",
-            command: "claude",
-            args: claudeMcpAddArgs(["attach", localDaemonBaseUrl]),
-          },
-        ],
-        nextSteps: [
-          `Caplets daemon is ready at ${localDaemonBaseUrl}; Claude Code runs caplets attach as a thin client.`,
-          "In Claude Code, run /mcp to confirm the caplets server is connected.",
-          "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
-        ],
-      };
+      return mcpClientSetupDefinition("claude-code", "Claude Code", localDaemonBaseUrl, options);
     case "opencode":
       return {
         name: "OpenCode",
@@ -474,10 +526,13 @@ function setupDefinition(
         ],
       };
     case "mcp-client":
+      if (options.client) {
+        return mcpClientSetupDefinition(options.client, "MCP client", localDaemonBaseUrl, options);
+      }
       if (!options.output) {
         throw new CapletsError(
           "REQUEST_INVALID",
-          "caplets setup mcp-client requires --output <path> because MCP clients do not share one config path",
+          "caplets setup mcp-client requires --client <id> or --output <path>",
         );
       }
       return {
@@ -493,6 +548,114 @@ function setupDefinition(
         nextSteps: ["Import the written MCP config into your MCP client."],
       };
   }
+}
+
+function mcpClientSetupDefinition(
+  clientId: string,
+  fallbackName: string,
+  daemonBaseUrl: string,
+  options: SetupOptions,
+): { name: string; actions: SetupAction[]; nextSteps: string[] } {
+  const client = resolveSetupMcpClient(clientId, options);
+  const scope = client.projectConfigPath ? "project" : "global";
+  const path = client.projectConfigPath ?? client.configPath;
+  const name = fallbackName === "MCP client" ? client.displayName : fallbackName;
+  return {
+    name,
+    actions: [
+      {
+        type: "mcpClient",
+        label: `Add Caplets MCP server to ${client.displayName}`,
+        clientId: client.id,
+        clientName: client.displayName,
+        daemonBaseUrl,
+        path,
+        scope,
+      },
+    ],
+    nextSteps: [
+      `Caplets daemon is ready at ${daemonBaseUrl}; ${client.displayName} runs caplets attach as a thin client.`,
+      `Restart or reload ${client.displayName} and confirm the caplets MCP server is connected.`,
+      "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
+    ],
+  };
+}
+
+function resolveSetupMcpClient(clientId: string, options: SetupOptions): SetupMcpClient {
+  const clients = mcpOperations(options).listSupportedClients();
+  const client = clients.find((entry) => entry.id === clientId);
+  if (!client) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `MCP client must be one of: ${clients.map((entry) => entry.id).join(", ")}`,
+    );
+  }
+  if (!client.supportsStdio) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `${client.displayName} does not support stdio MCP servers through add-mcp.`,
+    );
+  }
+  return client;
+}
+
+async function promptForMcpClient(
+  options: SetupOptions,
+  readPrompt: SetupPromptReader,
+): Promise<string> {
+  const operations = mcpOperations(options);
+  const detected = await operations.detectClients();
+  const supported = operations.listSupportedClients().filter((client) => client.supportsStdio);
+  const primary = detected.length > 0 ? detected : supported;
+  const answer = nonEmpty(await readPrompt(formatMcpClientPrompt(primary, detected.length > 0)));
+  if (answer && isShowAllMcpClientsAnswer(answer)) {
+    return parseMcpClientPromptAnswer(
+      nonEmpty(await readPrompt(formatMcpClientPrompt(supported, false))) ?? "",
+      supported,
+    );
+  }
+  return parseMcpClientPromptAnswer(answer ?? primary[0]?.id ?? "", primary);
+}
+
+function formatMcpClientPrompt(clients: SetupMcpClient[], detected: boolean): string {
+  const lines = [
+    detected ? "Detected MCP clients:" : "Supported MCP clients:",
+    ...clients.map(
+      (client, index) =>
+        `  ${index + 1}. ${client.displayName} (${client.id}) -> ${
+          client.projectConfigPath ?? client.configPath
+        }`,
+    ),
+  ];
+  if (detected) lines.push("  all. Show all supported MCP clients");
+  lines.push("", "Enter MCP client id or number: ");
+  return lines.join("\n");
+}
+
+function parseMcpClientPromptAnswer(answer: string, clients: SetupMcpClient[]): string {
+  const normalized = answer.trim();
+  const byIndex = Number(normalized);
+  if (Number.isInteger(byIndex) && byIndex >= 1 && byIndex <= clients.length) {
+    return clients[byIndex - 1]!.id;
+  }
+  const client = clients.find(
+    (entry) =>
+      entry.id === normalized || entry.displayName.toLowerCase() === normalized.toLowerCase(),
+  );
+  if (client) return client.id;
+  throw new CapletsError("REQUEST_INVALID", `unknown MCP client selection: ${answer || "<empty>"}`);
+}
+
+function isShowAllMcpClientsAnswer(answer: string): boolean {
+  return ["all", "a", "show all", "show-all"].includes(answer.trim().toLowerCase());
+}
+
+function mcpOperations(options: SetupOptions): Required<SetupMcpOperations> {
+  return {
+    listSupportedClients: options.mcpOperations?.listSupportedClients ?? listSupportedAddMcpClients,
+    detectClients: options.mcpOperations?.detectClients ?? detectAddMcpClients,
+    upsertServer: options.mcpOperations?.upsertServer ?? upsertCapletsMcpServer,
+  };
 }
 
 function remoteSetupDefinition(

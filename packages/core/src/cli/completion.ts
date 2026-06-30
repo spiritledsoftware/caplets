@@ -5,6 +5,7 @@ import {
   type CompletionConfig,
 } from "../config";
 import { CapletsError } from "../errors";
+import { listSupportedAddMcpClients } from "./add-mcp-adapter";
 import { listCaplets } from "./inspection";
 import {
   capletIdCommands,
@@ -37,10 +38,14 @@ export type CompletionOptions = {
 const optionValueSuggestions: Record<string, Record<string, string[]>> = {
   "*": { "--format": ["markdown", "md", "plain", "json"] },
   serve: { "--transport": ["stdio", "http"] },
-  setup: { "--format": ["plain", "json"] },
+  setup: { "--format": ["plain", "json"], "--client": setupMcpClientIds() },
   "add:mcp": { "--transport": ["http", "sse"] },
   "add:cli": { "--include": ["git", "gh", "package"] },
 };
+
+function setupMcpClientIds(): string[] {
+  return listSupportedAddMcpClients().map((client) => client.id);
+}
 
 export function completionScript(shell: CompletionShell): string {
   switch (shell) {

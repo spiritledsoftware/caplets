@@ -118,6 +118,9 @@ describe("CLI completion resolver", () => {
       "plain",
       "json",
     ]);
+    await expect(completeCliWords(["setup", "mcp-client", "--client", ""])).resolves.toEqual(
+      expect.arrayContaining(["codex", "claude-code", "opencode"]),
+    );
     await expect(completeCliWords(["call-tool", "github.search", "--format", ""])).resolves.toEqual(
       ["markdown", "md", "plain", "json"],
     );
