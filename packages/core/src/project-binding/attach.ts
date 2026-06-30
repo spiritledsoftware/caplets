@@ -107,12 +107,16 @@ export async function attachProjectSession(
   const pinnedRaw = resolved.selectedWorkspace
     ? { ...raw, workspace: resolved.selectedWorkspace }
     : raw;
+  const remoteResolver =
+    resolved.authMode === "local_daemon"
+      ? undefined
+      : async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote;
   bootstrapProjectBindingGitignore(resolved.projectRoot);
   assertSyncPolicy(resolved.syncPolicy);
   return await runProjectBindingSession({
     projectRoot: resolved.projectRoot,
     remote: resolved.remote,
-    remoteResolver: async () => (await resolveAttachOptionsForRun(pinnedRaw, env)).remote,
+    ...(remoteResolver ? { remoteResolver } : {}),
     fetch: resolved.remote.fetch,
     signal: options.signal,
     heartbeatIntervalMs: options.heartbeatIntervalMs,

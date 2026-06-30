@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { CloudAuthStore } from "../src/cloud-auth/store";
+import { installDaemon } from "../src/daemon";
+import type { DaemonConfig, DaemonManager, NativeDaemonStatus } from "../src/daemon/types";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { resolveRemoteSelection } from "../src/remote/selection";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
@@ -24,7 +26,8 @@ describe("resolveRemoteSelection", () => {
     await expect(resolveRemoteSelection({}, {})).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
   });
 
-  it("resolves loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+  it("resolves setup-validated loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+    const daemon = await setupPersistedLocalDaemon();
     const fetched: string[] = [];
     await expect(
       resolveRemoteSelection(
@@ -32,10 +35,11 @@ describe("resolveRemoteSelection", () => {
           remoteUrl: "http://127.0.0.1:5387/caplets",
           fetch: async (url) => {
             fetched.push(String(url));
-            return Response.json({ name: "caplets", transport: "http" });
+            return Response.json({ ok: true });
           },
         },
-        {},
+        daemon.env,
+        { daemon: daemon.options },
       ),
     ).resolves.toMatchObject({
       kind: "local_daemon",
@@ -45,52 +49,46 @@ describe("resolveRemoteSelection", () => {
         auth: { type: "none" },
       },
     });
-    expect(fetched).toEqual(["http://127.0.0.1:5387/caplets"]);
+    expect(fetched).toEqual(["http://127.0.0.1:5387/caplets/v1/healthz"]);
   });
 
-  it("does not classify loopback URLs as local daemons without Caplets discovery", async () => {
+  it("does not classify spoofed loopback discovery as a local daemon without persisted daemon config", async () => {
+    const dir = tempDir("caplets-remote-selection-spoof-daemon-");
+    const manager = runningDaemonManager();
+    const fetched: string[] = [];
     await expect(
       resolveRemoteSelection(
         {
           remoteUrl: "http://127.0.0.1:9999/caplets",
-          fetch: async () => Response.json({ status: "ok" }),
-        },
-        {},
-      ),
-    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
-  });
-
-  it("bounds loopback daemon discovery probes before falling back to Remote Login", async () => {
-    vi.useFakeTimers();
-    let aborted = false;
-    try {
-      const selection = resolveRemoteSelection(
-        {
-          remoteUrl: "http://127.0.0.1:9999/caplets",
-          fetch: async (_url, init) => {
-            const signal = init?.signal;
-            if (!signal) return Response.json({ status: "ok" });
-            return await new Promise<Response>((_resolve, reject) => {
-              signal.addEventListener("abort", () => {
-                aborted = true;
-                reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-              });
-            });
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ name: "caplets", transport: "http" });
           },
         },
-        {},
-      );
-      const selectionResult = expect(selection).rejects.toMatchObject({
-        projectBindingCode: "remote_credentials_required",
-      });
+        daemonTestEnv(dir),
+        { daemon: { home: dir, platform: "linux", manager } },
+      ),
+    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
+    expect(fetched).toEqual([]);
+  });
 
-      await vi.advanceTimersByTimeAsync(2_000);
-
-      await selectionResult;
-      expect(aborted).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("does not classify loopback URLs as local daemons when the persisted daemon URL differs", async () => {
+    const daemon = await setupPersistedLocalDaemon();
+    const fetched: string[] = [];
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:9999/caplets",
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ ok: true });
+          },
+        },
+        daemon.env,
+        { daemon: daemon.options },
+      ),
+    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
+    expect(fetched).toEqual([]);
   });
 
   it("prefers a stored self-hosted Remote Profile over local daemon classification for loopback URLs", async () => {
@@ -801,4 +799,44 @@ function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+async function setupPersistedLocalDaemon(): Promise<{
+  env: Record<string, string>;
+  options: { home: string; platform: "linux"; manager: DaemonManager };
+}> {
+  const home = tempDir("caplets-remote-selection-daemon-");
+  const env = daemonTestEnv(home);
+  const manager = runningDaemonManager();
+  const options = { home, platform: "linux" as const, manager };
+  await installDaemon(
+    { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false, noRestart: true },
+    { env, ...options },
+  );
+  return { env, options };
+}
+
+function daemonTestEnv(dir: string): Record<string, string> {
+  return {
+    XDG_CONFIG_HOME: join(dir, "config"),
+    XDG_STATE_HOME: join(dir, "state"),
+  };
+}
+
+function runningDaemonManager(): DaemonManager {
+  const running: NativeDaemonStatus = { state: "running", installed: true, running: true };
+  return {
+    descriptor: (config: DaemonConfig) => ({
+      kind: "systemd-user",
+      unitName: "caplets-daemon-default.service",
+      path: config.paths.descriptorFile,
+      contents: "",
+    }),
+    status: async () => running,
+    install: async () => ({ action: "install", native: running, commands: [] }),
+    uninstall: async () => ({ action: "uninstall", native: running, commands: [] }),
+    start: async () => ({ action: "start", native: running, commands: [] }),
+    restart: async () => ({ action: "restart", native: running, commands: [] }),
+    stop: async () => ({ action: "stop", native: running, commands: [] }),
+  };
 }

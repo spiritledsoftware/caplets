@@ -1,9 +1,19 @@
 import { CloudAuthClient } from "../cloud-auth/client";
 import type { CloudAuthCredentials } from "../cloud-auth/store";
 import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
+import { daemonClientBaseUrl } from "../daemon/client-url";
+import { readDaemonConfig } from "../daemon/config";
+import { createNativeDaemonManager } from "../daemon/manager";
+import { resolveDaemonPaths } from "../daemon/paths";
+import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { ProjectBindingError, projectBindingError } from "../project-binding/errors";
-import { appendBasePath, isLoopbackHost, parseServerBaseUrl } from "../server/options";
+import {
+  appendBasePath,
+  healthUrlForBase,
+  isLoopbackHost,
+  parseServerBaseUrl,
+} from "../server/options";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
   normalizeRemoteProfileHostUrl,
@@ -15,7 +25,6 @@ import {
 import { cloudCredentialsFromRemoteProfile, createRemoteProfileStore } from "./profile-store";
 
 const SELF_HOSTED_REFRESH_TIMEOUT_MS = 15_000;
-const LOCAL_DAEMON_DISCOVERY_TIMEOUT_MS = 2_000;
 
 export type RemoteSelectionInput = {
   mode?: string;
@@ -23,6 +32,10 @@ export type RemoteSelectionInput = {
   workspace?: string;
   fetch?: typeof fetch;
   authDir?: string;
+};
+
+type RemoteSelectionDependencies = {
+  daemon?: Omit<DaemonOperationOptions, "env" | "fetch">;
 };
 
 export type ResolvedRemoteSelection =
@@ -51,6 +64,7 @@ export type ResolvedRemoteSelection =
 export async function resolveRemoteSelection(
   input: RemoteSelectionInput = {},
   env: Record<string, string | undefined> = process.env,
+  dependencies: RemoteSelectionDependencies = {},
 ): Promise<ResolvedRemoteSelection> {
   const modeValue = input.mode ?? env.CAPLETS_MODE;
   const mode = resolveRemoteMode(
@@ -106,7 +120,7 @@ export async function resolveRemoteSelection(
       if (
         localDaemonFallback &&
         !refreshed &&
-        (await isCapletsLocalDaemon(remoteUrl, input.fetch))
+        (await isSetupValidatedLocalDaemon(remoteUrl, input, env, dependencies))
       ) {
         return localDaemonRemoteSelection(remoteUrl, input.fetch);
       }
@@ -285,39 +299,47 @@ function isLocalDaemonRemoteUrl(value: string): boolean {
   return url.protocol === "http:" && isLoopbackHost(url.hostname);
 }
 
-async function isCapletsLocalDaemon(
+async function isSetupValidatedLocalDaemon(
   value: string,
+  input: RemoteSelectionInput,
+  env: Record<string, string | undefined>,
+  dependencies: RemoteSelectionDependencies,
+): Promise<boolean> {
+  try {
+    const requested = parseServerBaseUrl(value);
+    const daemonOptions: DaemonOperationOptions = {
+      ...dependencies.daemon,
+      env,
+      ...(input.fetch ? { fetch: input.fetch } : {}),
+    };
+    const paths = resolveDaemonPaths(daemonOptions);
+    const config = readDaemonConfig(paths);
+    if (!config || daemonClientBaseUrl(config).href !== requested.href) return false;
+    const native = await (daemonOptions.manager ?? createNativeDaemonManager(daemonOptions)).status(
+      config,
+      paths,
+    );
+    if (!native.running) return false;
+    return await isDaemonHealthOk(config, input.fetch);
+  } catch {
+    return false;
+  }
+}
+
+async function isDaemonHealthOk(
+  config: Pick<DaemonConfig, "serve">,
   fetchInput: typeof globalThis.fetch | undefined,
 ): Promise<boolean> {
   const fetchImpl = fetchInput ?? globalThis.fetch;
   if (!fetchImpl) return false;
-  const controller = new AbortController();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const discovery = Promise.resolve(
-      fetchImpl(parseServerBaseUrl(value), { signal: controller.signal }),
-    ).catch(() => undefined);
-    const timedOut = new Promise<undefined>((resolve) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        resolve(undefined);
-      }, LOCAL_DAEMON_DISCOVERY_TIMEOUT_MS);
+    const response = await fetchImpl(healthUrlForBase(daemonClientBaseUrl(config)), {
+      signal: AbortSignal.timeout(2_000),
     });
-    const response = await Promise.race([discovery, timedOut]);
-    if (!response?.ok) return false;
-    const parsed = await response.json();
-    return isCapletsHttpDiscovery(parsed);
+    return response.ok;
   } catch {
     return false;
-  } finally {
-    if (timeout) clearTimeout(timeout);
   }
-}
-
-function isCapletsHttpDiscovery(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return record.name === "caplets" && record.transport === "http";
 }
 
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {

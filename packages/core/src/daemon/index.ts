@@ -10,7 +10,7 @@ import {
 import { dirname } from "node:path";
 import { loadGlobalServeDefaults } from "../config";
 import { CapletsError } from "../errors";
-import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
+import { isWildcardBindHost } from "./client-url";
 import { daemonHostPath } from "./host-path";
 import {
   mergeDaemonEnv,
@@ -45,26 +45,6 @@ import type {
   DaemonUninstallResult,
   RawDaemonServeOptions,
 } from "./types";
-
-export function daemonClientBaseUrl(config: Pick<DaemonConfig, "serve">): URL {
-  const host = daemonClientHost(config.serve.host);
-  return parseServerBaseUrl(
-    `http://${formatDaemonClientHost(host)}:${config.serve.port}${config.serve.path}`,
-  );
-}
-
-function daemonClientHost(host: string): string {
-  if (isWildcardBindHost(host)) return "127.0.0.1";
-  if (isLoopbackHost(host)) return host;
-  throw new CapletsError(
-    "REQUEST_INVALID",
-    `Default Caplets daemon client URL must use a loopback host; daemon is configured for ${host}.`,
-  );
-}
-
-function formatDaemonClientHost(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
 
 export async function installDaemon(
   install: DaemonInstallOptions = {},
@@ -280,11 +260,6 @@ function runningDaemonMayOccupyRequestedAddress(
 
 function bindHostsMayOverlap(left: string, right: string): boolean {
   return left === right || isWildcardBindHost(left) || isWildcardBindHost(right);
-}
-
-function isWildcardBindHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return normalized === "0.0.0.0" || normalized === "::" || normalized === "[::]";
 }
 
 async function waitForDaemonHealth(
@@ -851,6 +826,7 @@ export { resolveDaemonHttpServeOptions, daemonServeArgs } from "./process";
 export { readDaemonConfig, readDaemonState } from "./config";
 export { createNativeDaemonManager } from "./manager";
 export { followDaemonLogs } from "./logs";
+export { daemonClientBaseUrl } from "./client-url";
 export type {
   DaemonCommandPlan,
   DaemonCommandRunner,
