@@ -3,13 +3,20 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@opencode-ai/plugin", () => ({
   tool: Object.assign((definition: unknown) => definition, {
     schema: {
-      enum: () => ({ type: "enum" }),
+      enum: (values: string[]) => ({
+        type: "enum",
+        values,
+        optional: () => ({ type: "enum", values, optional: true }),
+      }),
       string: () => ({
         type: "string",
         optional: () => ({ type: "string", optional: true }),
         min: () => ({ type: "string" }),
       }),
-      boolean: () => ({ type: "boolean" }),
+      boolean: () => ({
+        type: "boolean",
+        optional: () => ({ type: "boolean", optional: true }),
+      }),
       number: () => ({
         int: () => ({ positive: () => ({ optional: () => ({ type: "number", optional: true }) }) }),
       }),
@@ -31,7 +38,9 @@ vi.mock("@opencode-ai/plugin", () => ({
         options,
         optional: () => ({ type: "union", options, optional: true }),
       }),
-      array: () => ({ min: () => ({ optional: () => ({ type: "array", optional: true }) }) }),
+      array: (item: unknown) => ({
+        min: () => ({ optional: () => ({ type: "array", item, optional: true }) }),
+      }),
     },
   }),
 }));
@@ -184,7 +193,13 @@ describe("@caplets/opencode", () => {
           promptGuidance: ["Use caplets__status__ping."],
           inputSchema: {
             type: "object",
-            properties: { verbose: { type: "boolean" } },
+            properties: {
+              mode: { enum: ["fast", "safe"] },
+              verbose: { type: "boolean" },
+              tags: { type: "array", items: { type: "string" } },
+              priorityTags: { type: "array", items: { enum: ["high", "low"] } },
+              looseTags: { type: "array", items: { anyOf: [{ type: "string" }] } },
+            },
           },
         },
       ],
@@ -200,7 +215,17 @@ describe("@caplets/opencode", () => {
       execute(args: unknown, context: unknown): Promise<string>;
     };
 
-    expect(directTool.args).toEqual({ verbose: { type: "boolean" } });
+    expect(directTool.args).toMatchObject({
+      mode: { type: "enum", values: ["fast", "safe"], optional: true },
+      verbose: { type: "boolean", optional: true },
+      tags: { type: "array", item: { type: "string" }, optional: true },
+      priorityTags: {
+        type: "array",
+        item: { type: "enum", values: ["high", "low"] },
+        optional: true,
+      },
+      looseTags: { type: "array", item: { type: "string" }, optional: true },
+    });
     await directTool.execute({ verbose: true }, {} as never);
     expect(service.execute).toHaveBeenCalledWith("status__ping", { verbose: true });
   });
