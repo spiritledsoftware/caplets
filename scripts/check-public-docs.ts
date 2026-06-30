@@ -38,7 +38,10 @@ const requiredContent = new Map<string, string[]>([
       '"command": "npx"',
     ],
   ],
-  ["configuration.mdx", ["https://caplets.dev/config.schema.json", ".caplets/config.json"]],
+  [
+    "configuration.mdx",
+    ["https://caplets.dev/config.schema.json", ".caplets/config.json", "serve", "publicOrigins"],
+  ],
   [
     "code-mode.mdx",
     ["caplets__code_mode", "caplets.osv.searchTools", "caplets.osv.callTool", "sessionId"],
@@ -49,7 +52,13 @@ const requiredContent = new Map<string, string[]>([
   ["troubleshooting.mdx", ["caplets doctor", "CAPLETS_CONFIG"]],
   [
     "reference/config.mdx",
-    ["https://caplets.dev/config.schema.json", "Required", "googleDiscoveryApis"],
+    [
+      "https://caplets.dev/config.schema.json",
+      "Required",
+      "googleDiscoveryApis",
+      "serve",
+      "publicOrigins",
+    ],
   ],
   ["reference/code-mode-api.mdx", ["CapletHandle", "DebugApi", "CapletsResult"]],
   [
@@ -58,7 +67,7 @@ const requiredContent = new Map<string, string[]>([
   ],
 ]);
 
-const forbiddenPatterns = [
+const forbiddenInternalPatterns = [
   "docs/adr",
   "docs/product",
   "docs/plans",
@@ -72,6 +81,8 @@ const forbiddenPatterns = [
   "github.com/spiritledsoftware/caplets/blob/main/docs/plans",
   "github.com/spiritledsoftware/caplets/blob/main/docs/specs",
 ];
+
+const forbiddenGuidancePatterns = ["serve.allowedHosts", '"allowedHosts"', "serve.transport"];
 
 const failures: string[] = [];
 
@@ -97,9 +108,16 @@ for (const page of requiredPages) {
 
 for (const path of [join(docsRoot, "astro.config.mjs"), ...walkFiles(docsSourceRoot)]) {
   const text = readFileSync(path, "utf8");
-  for (const pattern of forbiddenPatterns) {
+  for (const pattern of forbiddenInternalPatterns) {
     if (text.includes(pattern)) {
       failures.push(`${relative(repoRoot, path)} references internal docs path ${pattern}.`);
+    }
+  }
+  for (const pattern of forbiddenGuidancePatterns) {
+    if (text.includes(pattern)) {
+      failures.push(
+        `${relative(repoRoot, path)} contains forbidden public docs guidance ${pattern}.`,
+      );
     }
   }
 }

@@ -83,6 +83,25 @@ Manual daemon-backed MCP config looks like this:
 }
 ```
 
+You can put HTTP serve defaults in your user Caplets config when you run a foreground
+HTTP server or want daemon restarts to reuse a non-default port, path, upstream, or public
+origin. These defaults live under top-level `serve`, are ignored from project config for
+security, and lose to command flags and environment variables:
+
+```json
+{
+  "serve": {
+    "host": "127.0.0.1",
+    "port": 5387,
+    "publicOrigins": ["https://caplets.example.com"]
+  }
+}
+```
+
+`serve.publicOrigins` are full origins used for public request identity, not host-only
+allowlists. `caplets setup` still prepares a credential-free loopback daemon before
+mutating agent config, even if your user `serve` defaults describe a broader HTTP runtime.
+
 ## Use Caplets
 
 Add your own capability sources:

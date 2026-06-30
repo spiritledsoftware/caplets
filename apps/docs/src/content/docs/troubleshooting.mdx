@@ -64,6 +64,34 @@ CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
 Project config should live at `.caplets/config.json`. User config is for personal agent
 setup; project config is for capabilities that should travel with a repository.
 
+### Serve defaults are not applying
+
+Expected symptom: `caplets serve --transport http` or `caplets daemon restart` still uses a
+different host, port, path, auth mode, or public origin than the `serve` block you edited.
+
+Check the active user config path first:
+
+```sh
+caplets config path
+```
+
+The top-level `serve` block is respected only from user config. `.caplets/config.json`
+cannot control local HTTP serving and is ignored with a warning for security. Command flags
+and environment variables also win over user config, so remove `--host`, `--port`,
+`CAPLETS_SERVER_URL`, or related overrides before expecting defaults to apply.
+
+For daemon changes, run:
+
+```sh
+caplets daemon restart
+caplets daemon status --json
+```
+
+The restart re-resolves user `serve` defaults for daemon fields that were not explicitly
+set at install time. If `caplets setup` still writes a loopback attach URL, that is
+intentional: local setup keeps the onboarding daemon credential-free and loopback-only even
+when your user defaults are broader.
+
 ### Disable or inspect telemetry
 
 Expected symptom: you want to disable anonymous telemetry, inspect local telemetry state, or see the

@@ -1189,6 +1189,7 @@ const CAPLET_BACKEND_KEY_SET = new Set<string>(CAPLET_BACKEND_KEYS);
 
 const publicOriginSchema = z
   .string()
+  .describe("Public HTTP(S) origin for DNS rebinding and credential audience checks.")
   .refine(isAllowedServePublicOrigin, {
     message:
       "public origin must be an http(s) origin without credentials, path, query, or fragment; http is only allowed for loopback development origins",
@@ -1197,19 +1198,38 @@ const publicOriginSchema = z
 
 const serveConfigSchema = z
   .object({
-    host: z.string().trim().min(1).optional(),
-    port: z.number().int().min(1).max(65_535).optional(),
+    host: z.string().trim().min(1).optional().describe("Default HTTP bind host for caplets serve."),
+    port: z.number().int().min(1).max(65_535).optional().describe("Default HTTP port."),
     path: z
       .string()
       .refine((value) => value.startsWith("/") && !value.includes("?") && !value.includes("#"), {
         message: "serve path must start with / and must not include query or fragment",
       })
-      .optional(),
-    remoteStatePath: z.string().trim().min(1).optional(),
-    upstreamUrl: z.string().refine(isAllowedHttpBaseUrl).optional(),
-    allowUnauthenticatedHttp: z.boolean().optional(),
-    trustProxy: z.boolean().optional(),
-    publicOrigins: z.array(publicOriginSchema).default([]),
+      .optional()
+      .describe("Default HTTP base path."),
+    remoteStatePath: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe("Default remote credential state directory for HTTP serve."),
+    upstreamUrl: z
+      .string()
+      .refine(isAllowedHttpBaseUrl)
+      .optional()
+      .describe("Default upstream Caplets URL for stacked HTTP serve."),
+    allowUnauthenticatedHttp: z
+      .boolean()
+      .optional()
+      .describe("Opt in to unauthenticated HTTP serving; intended only for trusted local use."),
+    trustProxy: z
+      .boolean()
+      .optional()
+      .describe("Trust proxy headers when deriving public HTTP request URLs."),
+    publicOrigins: z
+      .array(publicOriginSchema)
+      .default([])
+      .describe("Additional public HTTP origins."),
   })
   .strict();
 

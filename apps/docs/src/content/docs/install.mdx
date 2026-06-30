@@ -133,6 +133,24 @@ expects a stable installed `caplets` binary on PATH:
 }
 ```
 
+If you need non-default HTTP serving behavior, prefer user config over repeating flags:
+
+```json
+{
+  "serve": {
+    "port": 5487,
+    "path": "/caplets",
+    "publicOrigins": ["https://caplets.example.com"]
+  }
+}
+```
+
+These `serve` defaults are user-only. They are ignored from `.caplets/config.json`, do not
+set transport under `serve`, and are overridden by command flags and environment variables. A
+daemon restart picks up changed user defaults for daemon fields that were not explicitly
+set during daemon install. Local `caplets setup` still uses a credential-free loopback
+daemon before writing MCP or native integration config.
+
 ## Check the install
 
 Run the doctor check after setup:
