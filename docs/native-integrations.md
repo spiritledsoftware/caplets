@@ -12,14 +12,17 @@ Auto or configured hosted behavior is lazy. The native integration can start loc
 
 OpenCode and Pi use the same resolver as `caplets attach`.
 
-- `CAPLETS_MODE=local` exposes local/user/project Caplets only.
+- `CAPLETS_MODE=local` exposes local/user/project Caplets in-process only.
+- `CAPLETS_MODE=daemon` requires a loopback daemon URL from explicit config, `CAPLETS_DAEMON_URL`, or setup-written native defaults, and connects without Remote Profile credentials.
 - `CAPLETS_MODE=remote` requires `CAPLETS_REMOTE_URL` and connects to a self-hosted Caplets service.
 - `CAPLETS_MODE=cloud` requires `CAPLETS_REMOTE_URL` pointing at Caplets Cloud and uses the saved Remote Profile from `caplets remote login <cloud-url>`.
-- `CAPLETS_MODE=auto` treats Cloud URLs as Cloud, non-Cloud remote URLs as self-hosted, and no remote URL as local.
+- `CAPLETS_MODE=auto` treats Cloud URLs as Cloud, non-Cloud remote URLs as self-hosted, setup-written daemon defaults as daemon mode, and no remote URL/default as local.
+
+`caplets setup opencode` and `caplets setup pi` write a non-secret native defaults file with the local daemon URL after the daemon is healthy. Explicit integration config wins first, Pi settings win next, runtime environment selectors such as `CAPLETS_MODE`, `CAPLETS_DAEMON_URL`, and `CAPLETS_REMOTE_URL` override setup-written native defaults, and malformed defaults are ignored with a warning.
 
 Cloud mode starts Project Binding automatically for the current project and overlays local/project Caplets over the remote workspace. A stacked HTTP runtime started with `caplets serve --transport http --upstream-url <url>` also attempts upstream Project Binding for each attach or native session that supplies a project root. Upstream file propagation uses Mutagen after sync filters and size limits are translated into an enforceable policy. If the upstream binding path is unavailable or quarantined, local project Caplets and non-project upstream Caplets remain available and the diagnostic points to `caplets doctor`.
 
-`caplets attach` and native remote integrations connect to the remote `/v1/attach` API for the Caplets runtime surface. `caplets attach <url>` is stdio-only; HTTP serving belongs to `caplets serve`. Ordinary MCP clients continue to use `/v1/mcp`, which remains governed by configured exposure policy.
+`caplets attach`, native daemon mode, and native remote integrations connect to the `/v1/attach` API for the Caplets runtime surface. `caplets attach <url>` is stdio-only; HTTP serving belongs to `caplets serve`. Ordinary MCP clients continue to use `/v1/mcp`, which remains governed by configured exposure policy.
 
 Native metadata should expose:
 

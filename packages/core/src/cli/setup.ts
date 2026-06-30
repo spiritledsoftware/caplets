@@ -1,9 +1,21 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
+import { loadConfig, resolveConfigPath, resolveProjectConfigPath } from "../config";
+import { daemonClientBaseUrl, daemonStatus, installDaemon } from "../daemon";
+import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { isCapletsCloudUrl } from "../remote/options";
+import { isLoopbackHost } from "../server/options";
+import {
+  detectAddMcpClients,
+  listSupportedAddMcpClients,
+  upsertCapletsMcpServer,
+  type AddMcpClient,
+} from "./add-mcp-adapter";
+import { nativeDefaultsPath, writeNativeDefaults } from "../native/user-settings";
+import { initConfig } from "./init";
 import { runCapletSetupCli } from "./setup-caplet";
 import { isSetupTargetKind, type SetupTargetKind } from "../setup/types";
 
@@ -29,15 +41,64 @@ export type SetupCommandResult = {
 export type SetupCommandRunner = (command: string, args: string[]) => Promise<SetupCommandResult>;
 export type SetupPromptReader = (prompt: string) => Promise<string>;
 
+export type SetupPhaseStatus = "planned" | "completed" | "reused";
+
+export type SetupPhaseResult = {
+  phase: "config" | "daemon" | "integration";
+  label: string;
+  status: SetupPhaseStatus;
+  path?: string;
+  daemonBaseUrl?: string;
+  message?: string;
+};
+
+export type SetupPhaseContext = {
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>;
+};
+
+export type SetupPhaseOperations = {
+  ensureUserConfig?: (context: SetupPhaseContext) => Promise<SetupPhaseResult> | SetupPhaseResult;
+  ensureDaemon?: (context: SetupPhaseContext) => Promise<SetupPhaseResult> | SetupPhaseResult;
+};
+
+export type SetupMcpClient = Omit<AddMcpClient, "id"> & { id: string };
+
+export type SetupMcpUpsertOptions = {
+  clientId: string;
+  daemonBaseUrl: string;
+  local: boolean;
+};
+
+export type SetupMcpUpsertResult = {
+  clientId: string;
+  success: boolean;
+  path: string;
+  error?: string;
+  droppedFields?: string[];
+  extraPaths?: string[];
+};
+
+export type SetupMcpOperations = {
+  listSupportedClients?: () => SetupMcpClient[];
+  detectClients?: () => Promise<SetupMcpClient[]> | SetupMcpClient[];
+  upsertServer?: (
+    options: SetupMcpUpsertOptions,
+  ) => Promise<SetupMcpUpsertResult> | SetupMcpUpsertResult;
+};
+
 export type SetupOptions = {
   remote?: boolean;
   remoteUrl?: string;
   serverUrl?: string;
   output?: string;
+  client?: string;
   dryRun?: boolean;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
   format?: SetupFormat;
   runCommand?: SetupCommandRunner;
+  setupOperations?: SetupPhaseOperations;
+  mcpOperations?: SetupMcpOperations;
+  nativeDefaultsPath?: string;
   yes?: boolean;
   target?: SetupTargetOption;
 };
@@ -48,13 +109,28 @@ export type InteractiveSetupOptions = SetupOptions & {
 
 type SetupAction =
   | { type: "command"; label: string; command: string; args: string[] }
-  | { type: "writeFile"; label: string; path: string; content: string };
+  | { type: "writeFile"; label: string; path: string; content: string }
+  | {
+      type: "mcpClient";
+      label: string;
+      clientId: string;
+      clientName: string;
+      daemonBaseUrl: string;
+      path: string;
+      scope: "project" | "global";
+    }
+  | { type: "nativeDefaults"; label: string; daemonBaseUrl: string; path?: string };
 
 type SetupActionResult = {
   label: string;
   command?: string;
   path?: string;
   status: "planned" | "completed";
+  clientId?: string;
+  clientName?: string;
+  scope?: "project" | "global";
+  droppedFields?: string[];
+  extraPaths?: string[];
 };
 
 type SetupResult = {
@@ -63,36 +139,56 @@ type SetupResult = {
   mode: "local" | "remote";
   targetKind: SetupTargetKind;
   dryRun: boolean;
+  phases: SetupPhaseResult[];
   actions: SetupActionResult[];
   nextSteps: string[];
 };
 
-const localMcpConfig = `{
-  "mcpServers": {
-    "caplets": {
-      "command": "caplets",
-      "args": ["serve"]
-    }
-  }
-}
+function localMcpConfig(daemonBaseUrl: string): string {
+  return `${JSON.stringify(
+    {
+      mcpServers: {
+        caplets: {
+          command: "caplets",
+          args: ["attach", daemonBaseUrl],
+        },
+      },
+    },
+    null,
+    2,
+  )}
 `;
+}
 
 export function formatSetupMenu(): string {
   return [
     "Usage: caplets setup [integration]",
     "",
+    "daemon-first local setup initializes Caplets config, starts or reuses the local daemon,",
+    "then configures the selected integration to run caplets attach as a thin client.",
+    "",
     "Supported integrations:",
     "  codex        Add Caplets to Codex MCP config",
     "  claude-code  Add Caplets to Claude Code MCP config",
-    "  opencode     Run OpenCode native plugin install",
-    "  pi           Run Pi extension install",
-    "  mcp-client   Write a generic MCP client config with --output",
+    "  opencode     Install the native OpenCode plugin and daemon defaults",
+    "  pi           Install the native Pi extension and daemon defaults",
+    "  mcp-client   Pick detected MCP clients or pass --client for any supported add-mcp client",
+    "",
+    "MCP client selection:",
+    "  Interactive setup shows detected MCP clients first; choose all to list all supported MCP clients.",
+    "",
+    "Remote setup:",
+    "  Use --remote-url <url> (or --server-url <url>) to configure remote/cloud attach instead of the local daemon.",
+    "",
+    "Advanced manual config fallback:",
+    "  caplets setup mcp-client --output ./caplets.mcp.json",
     "",
     "Examples:",
     "  caplets setup",
     "  caplets setup codex",
     "  caplets setup opencode --dry-run",
-    "  caplets setup mcp-client --output ./caplets.mcp.json",
+    "  caplets setup mcp-client --client codex",
+    "  caplets setup codex --remote-url https://caplets.example.com/caplets",
     "",
   ].join("\n");
 }
@@ -123,14 +219,8 @@ export async function runInteractiveSetup(options: InteractiveSetupOptions): Pro
 
   for (const integration of selected) {
     const setupOptions: SetupOptions = { ...options };
-    if (integration === "mcp-client" && !setupOptions.output) {
-      const output = nonEmpty(
-        await options.readPrompt("Path to write generic MCP config (--output): "),
-      );
-      if (!output) {
-        throw new CapletsError("REQUEST_INVALID", "mcp-client setup requires an output path");
-      }
-      setupOptions.output = output;
+    if (integration === "mcp-client" && !setupOptions.output && !setupOptions.client) {
+      setupOptions.client = await promptForMcpClient(setupOptions, options.readPrompt);
     }
     chunks.push(await runSetup(integration, setupOptions));
   }
@@ -159,11 +249,85 @@ export async function runSetup(integration: string, options: SetupOptions = {}):
 
 async function executeSetup(integration: string, options: SetupOptions): Promise<SetupResult> {
   const id = parseSetupIntegrationId(integration);
-  const definition = setupDefinition(id, options);
-  const actions: SetupActionResult[] = [];
+  setupDefinition(id, options, "http://127.0.0.1:5387/");
   const runner = options.runCommand ?? defaultSetupCommandRunner;
+  const phases: SetupPhaseResult[] = [];
+  let daemonBaseUrl: string | undefined;
+
+  if (!isRemoteSetup(options)) {
+    if (options.dryRun) {
+      const planned = plannedLocalSetupPhases(options);
+      phases.push(planned.config, planned.daemon);
+      daemonBaseUrl = planned.daemon.daemonBaseUrl;
+    } else {
+      phases.push(await ensureUserConfigPhase(options));
+      const daemonPhase = await ensureDaemonPhase(options);
+      daemonBaseUrl = daemonPhase.daemonBaseUrl;
+      phases.push(daemonPhase);
+    }
+  }
+
+  const definition = setupDefinition(id, options, daemonBaseUrl);
+  const actions: SetupActionResult[] = [];
 
   for (const action of definition.actions) {
+    if (action.type === "mcpClient") {
+      const commandText = formatCommand("caplets", ["attach", action.daemonBaseUrl]);
+      if (options.dryRun) {
+        actions.push({
+          label: action.label,
+          command: commandText,
+          path: action.path,
+          status: "planned",
+          clientId: action.clientId,
+          clientName: action.clientName,
+          scope: action.scope,
+        });
+        continue;
+      }
+      const result = await mcpOperations(options).upsertServer({
+        clientId: action.clientId,
+        daemonBaseUrl: action.daemonBaseUrl,
+        local: true,
+      });
+      if (!result.success) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          `Failed to configure ${action.clientName} MCP config${
+            result.error ? `: ${result.error}` : ""
+          }. The Caplets daemon is still ready; rerun caplets setup mcp-client --client ${action.clientId} to retry.`,
+        );
+      }
+      actions.push({
+        label: action.label,
+        command: commandText,
+        path: result.path,
+        status: "completed",
+        clientId: action.clientId,
+        clientName: action.clientName,
+        scope: action.scope,
+        ...(result.droppedFields?.length ? { droppedFields: result.droppedFields } : {}),
+        ...(result.extraPaths?.length ? { extraPaths: result.extraPaths } : {}),
+      });
+      continue;
+    }
+
+    if (action.type === "nativeDefaults") {
+      const path = action.path ?? nativeDefaultsPathForSetup(options);
+      if (!options.dryRun) {
+        writeNativeDefaults(
+          { source: "setup", daemon: { url: action.daemonBaseUrl } },
+          { path, env: setupEnv(options) },
+        );
+      }
+      actions.push({
+        label: action.label,
+        path,
+        status: options.dryRun ? "planned" : "completed",
+      });
+      continue;
+    }
+
     if (action.type === "command") {
       const commandText = formatCommand(action.command, action.args);
       if (!options.dryRun) {
@@ -202,57 +366,201 @@ async function executeSetup(integration: string, options: SetupOptions): Promise
     });
   }
 
+  phases.push({
+    phase: "integration",
+    label: `Configure ${definition.name}`,
+    status: options.dryRun ? "planned" : "completed",
+    message: `${actions.length} setup action${actions.length === 1 ? "" : "s"}`,
+  });
+
   return {
     integration: id,
     name: definition.name,
     mode: isRemoteSetup(options) ? "remote" : "local",
     targetKind: resolveSetupTargetKind(options),
     dryRun: Boolean(options.dryRun),
+    phases,
     actions,
     nextSteps: definition.nextSteps,
   };
 }
 
+function plannedLocalSetupPhases(options: SetupOptions): {
+  config: SetupPhaseResult;
+  daemon: SetupPhaseResult;
+} {
+  return {
+    config: {
+      phase: "config",
+      label: "Initialize user Caplets config",
+      status: "planned",
+      path: userConfigPath(setupEnv(options)),
+    },
+    daemon: {
+      phase: "daemon",
+      label: "Start local Caplets daemon",
+      status: "planned",
+      daemonBaseUrl: "http://127.0.0.1:5387/",
+      message: "install/start/reuse default daemon and verify health",
+    },
+  };
+}
+
+async function ensureUserConfigPhase(options: SetupOptions): Promise<SetupPhaseResult> {
+  const operation = options.setupOperations?.ensureUserConfig ?? defaultEnsureUserConfig;
+  return await operation({ env: setupEnv(options) });
+}
+
+async function ensureDaemonPhase(options: SetupOptions): Promise<SetupPhaseResult> {
+  const operation = options.setupOperations?.ensureDaemon ?? defaultEnsureDaemon;
+  try {
+    const phase = await operation({ env: setupEnv(options) });
+    if (!phase.daemonBaseUrl) {
+      throw new CapletsError(
+        "SERVER_UNAVAILABLE",
+        "Caplets daemon setup did not return a daemon URL.",
+      );
+    }
+    return phase;
+  } catch (error) {
+    if (error instanceof CapletsError) throw error;
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplets daemon setup failed before integration config mutation${
+        error instanceof Error ? `: ${error.message}` : ""
+      }`,
+    );
+  }
+}
+
+function defaultEnsureUserConfig(context: SetupPhaseContext): SetupPhaseResult {
+  const path = userConfigPath(context.env);
+  if (!existsSync(path)) {
+    initConfig({ path });
+    loadConfig(path, projectConfigPath(context.env));
+    return {
+      phase: "config",
+      label: "Initialize user Caplets config",
+      status: "completed",
+      path,
+      message: "created user config",
+    };
+  }
+
+  loadConfig(path, projectConfigPath(context.env));
+  return {
+    phase: "config",
+    label: "Initialize user Caplets config",
+    status: "reused",
+    path,
+    message: "existing user config is valid",
+  };
+}
+
+async function defaultEnsureDaemon(context: SetupPhaseContext): Promise<SetupPhaseResult> {
+  const operation = daemonOperationOptions(context.env);
+  const status = await daemonStatus(operation);
+  if (status.config) assertCredentialFreeLocalSetupDaemonHost(status.config);
+  if (status.installed && status.running && status.health?.ok && status.config) {
+    if (!isCredentialFreeLocalSetupDaemon(status.config)) {
+      return await installCredentialFreeLocalSetupDaemon(operation);
+    }
+    return {
+      phase: "daemon",
+      label: "Reuse local Caplets daemon",
+      status: "reused",
+      daemonBaseUrl: daemonClientBaseUrl(status.config).toString(),
+      message: "existing daemon is healthy",
+    };
+  }
+
+  return await installCredentialFreeLocalSetupDaemon(operation);
+}
+
+async function installCredentialFreeLocalSetupDaemon(
+  operation: DaemonOperationOptions,
+): Promise<SetupPhaseResult> {
+  const result = await installDaemon(
+    { start: true, host: "127.0.0.1", allowUnauthenticatedHttp: true },
+    operation,
+  );
+  const config = result.status.config ?? result.config;
+  assertCredentialFreeLocalSetupDaemonHost(config);
+  const health = result.status.health ?? result.validation;
+  if (!result.status.running || health?.ok !== true) {
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      `Caplets daemon health verification failed${health?.error ? `: ${health.error}` : ""}`,
+    );
+  }
+
+  return {
+    phase: "daemon",
+    label: "Start local Caplets daemon",
+    status: "completed",
+    daemonBaseUrl: daemonClientBaseUrl(config).toString(),
+    message: result.plannedActions.join(", "),
+  };
+}
+
+function isCredentialFreeLocalSetupDaemon(config: Pick<DaemonConfig, "serve">): boolean {
+  return (
+    config.serve.allowUnauthenticatedHttp === true &&
+    config.serve.auth.type === "development_unauthenticated"
+  );
+}
+
+function assertCredentialFreeLocalSetupDaemonHost(config: Pick<DaemonConfig, "serve">): void {
+  if (!isLoopbackHost(config.serve.host)) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `caplets setup cannot configure credential-free local attach for daemon host ${config.serve.host}. Reinstall the local daemon on 127.0.0.1 or use remote setup.`,
+    );
+  }
+}
+
+function setupEnv(options: SetupOptions): NodeJS.ProcessEnv | Record<string, string | undefined> {
+  return options.env ?? process.env;
+}
+
+function daemonOperationOptions(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): DaemonOperationOptions {
+  return {
+    env,
+    healthTimeoutMs: 10_000,
+    healthIntervalMs: 200,
+  };
+}
+
+function userConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  return resolveConfigPath(nonEmpty(env.CAPLETS_CONFIG));
+}
+
+function projectConfigPath(env: NodeJS.ProcessEnv | Record<string, string | undefined>): string {
+  return nonEmpty(env.CAPLETS_PROJECT_CONFIG) ?? resolveProjectConfigPath();
+}
+
+function nativeDefaultsPathForSetup(options: SetupOptions): string {
+  return nativeDefaultsPath({
+    ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
+    env: setupEnv(options),
+  });
+}
+
 function setupDefinition(
   id: SetupIntegrationId,
   options: SetupOptions,
+  daemonBaseUrl: string | undefined,
 ): { name: string; actions: SetupAction[]; nextSteps: string[] } {
   if (isRemoteSetup(options)) return remoteSetupDefinition(id, options);
+  const localDaemonBaseUrl = daemonBaseUrl ?? "http://127.0.0.1:5387/";
 
   switch (id) {
     case "codex":
-      return {
-        name: "Codex",
-        actions: [
-          {
-            type: "command",
-            label: "Add Caplets MCP server to Codex",
-            command: "codex",
-            args: codexMcpAddArgs(["serve"]),
-          },
-        ],
-        nextSteps: [
-          "In Codex, run /mcp to confirm the caplets server is connected.",
-          "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
-          'Ask Codex: codex "try using the github caplet"',
-        ],
-      };
+      return mcpClientSetupDefinition("codex", "Codex", localDaemonBaseUrl, options);
     case "claude-code":
-      return {
-        name: "Claude Code",
-        actions: [
-          {
-            type: "command",
-            label: "Add Caplets MCP server to Claude Code",
-            command: "claude",
-            args: claudeMcpAddArgs(["serve"]),
-          },
-        ],
-        nextSteps: [
-          "In Claude Code, run /mcp to confirm the caplets server is connected.",
-          "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
-        ],
-      };
+      return mcpClientSetupDefinition("claude-code", "Claude Code", localDaemonBaseUrl, options);
     case "opencode":
       return {
         name: "OpenCode",
@@ -262,6 +570,12 @@ function setupDefinition(
             label: "Install OpenCode Caplets plugin globally",
             command: "opencode",
             args: ["plugin", "@caplets/opencode", "--global"],
+          },
+          {
+            type: "nativeDefaults",
+            label: "Write Caplets native daemon defaults",
+            daemonBaseUrl: localDaemonBaseUrl,
+            ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
           },
         ],
         nextSteps: [
@@ -279,6 +593,12 @@ function setupDefinition(
             command: "pi",
             args: ["install", "npm:@caplets/pi"],
           },
+          {
+            type: "nativeDefaults",
+            label: "Write Caplets native daemon defaults",
+            daemonBaseUrl: localDaemonBaseUrl,
+            ...(options.nativeDefaultsPath ? { path: options.nativeDefaultsPath } : {}),
+          },
         ],
         nextSteps: [
           "Pi reads local Caplets config and exposes native tools.",
@@ -286,10 +606,13 @@ function setupDefinition(
         ],
       };
     case "mcp-client":
+      if (options.client) {
+        return mcpClientSetupDefinition(options.client, "MCP client", localDaemonBaseUrl, options);
+      }
       if (!options.output) {
         throw new CapletsError(
           "REQUEST_INVALID",
-          "caplets setup mcp-client requires --output <path> because MCP clients do not share one config path",
+          "caplets setup mcp-client requires --client <id> or --output <path>",
         );
       }
       return {
@@ -299,12 +622,120 @@ function setupDefinition(
             type: "writeFile",
             label: "Write generic MCP stdio config",
             path: options.output,
-            content: localMcpConfig,
+            content: localMcpConfig(localDaemonBaseUrl),
           },
         ],
         nextSteps: ["Import the written MCP config into your MCP client."],
       };
   }
+}
+
+function mcpClientSetupDefinition(
+  clientId: string,
+  fallbackName: string,
+  daemonBaseUrl: string,
+  options: SetupOptions,
+): { name: string; actions: SetupAction[]; nextSteps: string[] } {
+  const client = resolveSetupMcpClient(clientId, options);
+  const scope = client.projectConfigPath ? "project" : "global";
+  const path = client.projectConfigPath ?? client.configPath;
+  const name = fallbackName === "MCP client" ? client.displayName : fallbackName;
+  return {
+    name,
+    actions: [
+      {
+        type: "mcpClient",
+        label: `Add Caplets MCP server to ${client.displayName}`,
+        clientId: client.id,
+        clientName: client.displayName,
+        daemonBaseUrl,
+        path,
+        scope,
+      },
+    ],
+    nextSteps: [
+      `Caplets daemon is ready at ${daemonBaseUrl}; ${client.displayName} runs caplets attach as a thin client.`,
+      `Restart or reload ${client.displayName} and confirm the caplets MCP server is connected.`,
+      "Try a premade Caplet: caplets install spiritledsoftware/caplets github",
+    ],
+  };
+}
+
+function resolveSetupMcpClient(clientId: string, options: SetupOptions): SetupMcpClient {
+  const clients = mcpOperations(options).listSupportedClients();
+  const client = clients.find((entry) => entry.id === clientId);
+  if (!client) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `MCP client must be one of: ${clients.map((entry) => entry.id).join(", ")}`,
+    );
+  }
+  if (!client.supportsStdio) {
+    throw new CapletsError(
+      "REQUEST_INVALID",
+      `${client.displayName} does not support stdio MCP servers through add-mcp.`,
+    );
+  }
+  return client;
+}
+
+async function promptForMcpClient(
+  options: SetupOptions,
+  readPrompt: SetupPromptReader,
+): Promise<string> {
+  const operations = mcpOperations(options);
+  const detected = (await operations.detectClients()).filter((client) => client.supportsStdio);
+  const supported = operations.listSupportedClients().filter((client) => client.supportsStdio);
+  const primary = detected.length > 0 ? detected : supported;
+  const answer = nonEmpty(await readPrompt(formatMcpClientPrompt(primary, detected.length > 0)));
+  if (answer && isShowAllMcpClientsAnswer(answer)) {
+    return parseMcpClientPromptAnswer(
+      nonEmpty(await readPrompt(formatMcpClientPrompt(supported, false))) ?? "",
+      supported,
+    );
+  }
+  return parseMcpClientPromptAnswer(answer ?? primary[0]?.id ?? "", primary);
+}
+
+function formatMcpClientPrompt(clients: SetupMcpClient[], detected: boolean): string {
+  const lines = [
+    detected ? "Detected MCP clients:" : "Supported MCP clients:",
+    ...clients.map(
+      (client, index) =>
+        `  ${index + 1}. ${client.displayName} (${client.id}) -> ${
+          client.projectConfigPath ?? client.configPath
+        }`,
+    ),
+  ];
+  if (detected) lines.push("  all. Show all supported MCP clients");
+  lines.push("", "Enter MCP client id or number: ");
+  return lines.join("\n");
+}
+
+function parseMcpClientPromptAnswer(answer: string, clients: SetupMcpClient[]): string {
+  const normalized = answer.trim();
+  const byIndex = Number(normalized);
+  if (Number.isInteger(byIndex) && byIndex >= 1 && byIndex <= clients.length) {
+    return clients[byIndex - 1]!.id;
+  }
+  const client = clients.find(
+    (entry) =>
+      entry.id === normalized || entry.displayName.toLowerCase() === normalized.toLowerCase(),
+  );
+  if (client) return client.id;
+  throw new CapletsError("REQUEST_INVALID", `unknown MCP client selection: ${answer || "<empty>"}`);
+}
+
+function isShowAllMcpClientsAnswer(answer: string): boolean {
+  return ["all", "a", "show all", "show-all"].includes(answer.trim().toLowerCase());
+}
+
+function mcpOperations(options: SetupOptions): Required<SetupMcpOperations> {
+  return {
+    listSupportedClients: options.mcpOperations?.listSupportedClients ?? listSupportedAddMcpClients,
+    detectClients: options.mcpOperations?.detectClients ?? detectAddMcpClients,
+    upsertServer: options.mcpOperations?.upsertServer ?? upsertCapletsMcpServer,
+  };
 }
 
 function remoteSetupDefinition(
@@ -500,7 +931,25 @@ function formatSetupResult(result: SetupResult): string {
     `${result.dryRun ? "Dry run" : "Completed"} ${result.name} setup (${result.mode}, ${result.targetKind})`,
     "",
   ];
+  for (const phase of result.phases) {
+    const details = phase.daemonBaseUrl ?? phase.path ?? phase.message;
+    lines.push(`- ${phase.status} ${phase.phase}: ${phase.label}${details ? ` (${details})` : ""}`);
+  }
   for (const action of result.actions) {
+    if (action.clientId) {
+      const clientName = action.clientName ?? action.label;
+      const scope = action.scope ? ` (${action.scope})` : "";
+      const path = action.path ? ` at ${action.path}` : "";
+      lines.push(`- ${action.status}: configured ${clientName} MCP client${scope}${path}`);
+      if (action.command) lines.push(`  command: ${action.command}`);
+      if (action.droppedFields?.length) {
+        lines.push(`  add-mcp dropped unsupported fields: ${action.droppedFields.join(", ")}`);
+      }
+      if (action.extraPaths?.length) {
+        lines.push(`  add-mcp additional paths: ${action.extraPaths.join(", ")}`);
+      }
+      continue;
+    }
     if (action.command) lines.push(`- ${action.status}: ${action.command}`);
     if (action.path) lines.push(`- ${action.status}: wrote ${action.path}`);
   }

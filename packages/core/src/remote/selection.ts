@@ -1,9 +1,19 @@
 import { CloudAuthClient } from "../cloud-auth/client";
 import type { CloudAuthCredentials } from "../cloud-auth/store";
 import { HOSTED_CLOUD_AUTH_SCOPES } from "../cloud-auth/types";
+import { daemonClientBaseUrl } from "../daemon/client-url";
+import { readDaemonConfig } from "../daemon/config";
+import { createNativeDaemonManager } from "../daemon/manager";
+import { resolveDaemonPaths } from "../daemon/paths";
+import type { DaemonConfig, DaemonOperationOptions } from "../daemon/types";
 import { CapletsError } from "../errors";
 import { ProjectBindingError, projectBindingError } from "../project-binding/errors";
-import { appendBasePath } from "../server/options";
+import {
+  appendBasePath,
+  healthUrlForBase,
+  isLoopbackHost,
+  parseServerBaseUrl,
+} from "../server/options";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
   normalizeRemoteProfileHostUrl,
@@ -24,7 +34,15 @@ export type RemoteSelectionInput = {
   authDir?: string;
 };
 
+type RemoteSelectionDependencies = {
+  daemon?: Omit<DaemonOperationOptions, "env" | "fetch">;
+};
+
 export type ResolvedRemoteSelection =
+  | {
+      kind: "local_daemon";
+      remote: ResolvedCapletsRemote;
+    }
   | {
       kind: "self_hosted_remote";
       remote: ResolvedCapletsRemote;
@@ -46,6 +64,7 @@ export type ResolvedRemoteSelection =
 export async function resolveRemoteSelection(
   input: RemoteSelectionInput = {},
   env: Record<string, string | undefined> = process.env,
+  dependencies: RemoteSelectionDependencies = {},
 ): Promise<ResolvedRemoteSelection> {
   const modeValue = input.mode ?? env.CAPLETS_MODE;
   const mode = resolveRemoteMode(
@@ -68,6 +87,7 @@ export async function resolveRemoteSelection(
     if (!remoteUrl) {
       throw new CapletsError("REQUEST_INVALID", "CAPLETS_REMOTE_URL or remoteUrl is required.");
     }
+    const localDaemonFallback = isLocalDaemonRemoteUrl(remoteUrl);
     const store = createRemoteProfileStore({ authDir: input.authDir, env });
     const refreshed = await store.refreshSelfHostedProfileIfNeeded({
       hostUrl: remoteUrl,
@@ -97,6 +117,13 @@ export async function resolveRemoteSelection(
     });
     const credential = refreshed?.credential;
     if (!credential?.accessToken) {
+      if (
+        localDaemonFallback &&
+        !refreshed &&
+        (await isSetupValidatedLocalDaemon(remoteUrl, input, env, dependencies))
+      ) {
+        return localDaemonRemoteSelection(remoteUrl, input.fetch);
+      }
       const normalizedUrl = normalizeRemoteProfileHostUrl(remoteUrl);
       throw new ProjectBindingError({
         code: "remote_credentials_required",
@@ -249,6 +276,70 @@ export async function resolveRemoteSelection(
       workspaceId: credentials.workspaceId,
     },
   };
+}
+
+function localDaemonRemoteSelection(
+  remoteUrl: string,
+  fetch: typeof globalThis.fetch | undefined,
+): ResolvedRemoteSelection {
+  return {
+    kind: "local_daemon",
+    remote: resolveCapletsRemote(
+      {
+        url: remoteUrl,
+        ...(fetch !== undefined ? { fetch } : {}),
+      },
+      {},
+    ),
+  };
+}
+
+function isLocalDaemonRemoteUrl(value: string): boolean {
+  const url = parseServerBaseUrl(value);
+  return url.protocol === "http:" && isLoopbackHost(url.hostname);
+}
+
+async function isSetupValidatedLocalDaemon(
+  value: string,
+  input: RemoteSelectionInput,
+  env: Record<string, string | undefined>,
+  dependencies: RemoteSelectionDependencies,
+): Promise<boolean> {
+  try {
+    const requested = parseServerBaseUrl(value);
+    const daemonOptions: DaemonOperationOptions = {
+      ...dependencies.daemon,
+      env,
+      ...(input.fetch ? { fetch: input.fetch } : {}),
+    };
+    const paths = resolveDaemonPaths(daemonOptions);
+    const config = readDaemonConfig(paths);
+    if (!config || daemonClientBaseUrl(config).href !== requested.href) return false;
+    const native = await (daemonOptions.manager ?? createNativeDaemonManager(daemonOptions)).status(
+      config,
+      paths,
+    );
+    if (!native.running) return false;
+    return await isDaemonHealthOk(config, input.fetch);
+  } catch {
+    return false;
+  }
+}
+
+async function isDaemonHealthOk(
+  config: Pick<DaemonConfig, "serve">,
+  fetchInput: typeof globalThis.fetch | undefined,
+): Promise<boolean> {
+  const fetchImpl = fetchInput ?? globalThis.fetch;
+  if (!fetchImpl) return false;
+  try {
+    const response = await fetchImpl(healthUrlForBase(daemonClientBaseUrl(config)), {
+      signal: AbortSignal.timeout(2_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 function credentialsNeedRefresh(credentials: { expiresAt: string }): boolean {

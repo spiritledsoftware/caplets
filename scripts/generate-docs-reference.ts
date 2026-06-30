@@ -124,6 +124,7 @@ function schemaPage({
 
   const majorSections = rows.filter(({ name }) =>
     [
+      "serve",
       "completion",
       "options",
       "mcpServers",
@@ -251,6 +252,20 @@ function commonSchemaRecipes(sourcePath: string): string {
       "```json",
       "{",
       '  "$schema": "https://caplets.dev/config.schema.json",',
+      '  "mcpServers": {}',
+      "}",
+      "```",
+      "",
+      "Global HTTP serve defaults (user config only):",
+      "",
+      "```json",
+      "{",
+      '  "$schema": "https://caplets.dev/config.schema.json",',
+      '  "serve": {',
+      '    "host": "127.0.0.1",',
+      '    "port": 5387,',
+      '    "publicOrigins": ["https://caplets.example.com"]',
+      "  },",
       '  "mcpServers": {}',
       "}",
       "```",

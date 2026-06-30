@@ -22,6 +22,20 @@ Minimal user config:
 }
 ```
 
+Global HTTP serve defaults (user config only):
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "serve": {
+    "host": "127.0.0.1",
+    "port": 5387,
+    "publicOrigins": ["https://caplets.example.com"]
+  },
+  "mcpServers": {}
+}
+```
+
 Keep `options.exposure` at the default `code_mode` unless your client cannot run Code
 Mode. Add backend maps such as `mcpServers`, `openapiEndpoints`,
 `googleDiscoveryApis`, `graphqlEndpoints`, `httpApis`, `cliTools`, or `capletSets` only
@@ -62,25 +76,41 @@ Public OpenAPI endpoint:
 
 ## Top-level fields
 
-| Field                 | Status   | Type    | Description                                                            |
-| --------------------- | -------- | ------- | ---------------------------------------------------------------------- |
-| `$schema`             | Optional | string  | Optional JSON Schema for editor validation.                            |
-| `version`             | Optional | number  | Caplets config schema version.                                         |
-| `defaultSearchLimit`  | Optional | integer | Default maximum number of same-server search results.                  |
-| `maxSearchLimit`      | Optional | integer | Maximum accepted search_tools limit.                                   |
-| `telemetry`           | Optional | boolean | Set false to disable anonymous Caplets telemetry for this user config. |
-| `completion`          | Optional | object  | Shell completion discovery timeout and cache settings.                 |
-| `options`             | Optional | object  | Global Caplets runtime options.                                        |
-| `namespaceAliases`    | Optional | object  | Source-level namespace aliases for hash-qualified Caplet IDs.          |
-| `mcpServers`          | Optional | object  | Downstream MCP servers keyed by stable server ID.                      |
-| `openapiEndpoints`    | Optional | object  | OpenAPI endpoints keyed by stable Caplet ID.                           |
-| `googleDiscoveryApis` | Optional | object  | Google Discovery APIs keyed by stable Caplet ID.                       |
-| `graphqlEndpoints`    | Optional | object  | GraphQL endpoints keyed by stable Caplet ID.                           |
-| `httpApis`            | Optional | object  | HTTP APIs keyed by stable Caplet ID.                                   |
-| `cliTools`            | Optional | object  | CLI tools keyed by stable Caplet ID.                                   |
-| `capletSets`          | Optional | object  | Nested Caplet collections keyed by stable Caplet ID.                   |
+| Field                 | Status   | Type    | Description                                                               |
+| --------------------- | -------- | ------- | ------------------------------------------------------------------------- |
+| `$schema`             | Optional | string  | Optional JSON Schema for editor validation.                               |
+| `version`             | Optional | number  | Caplets config schema version.                                            |
+| `defaultSearchLimit`  | Optional | integer | Default maximum number of same-server search results.                     |
+| `maxSearchLimit`      | Optional | integer | Maximum accepted search_tools limit.                                      |
+| `telemetry`           | Optional | boolean | Set false to disable anonymous Caplets telemetry for this user config.    |
+| `serve`               | Optional | object  | User-owned HTTP serve defaults. Ignored from project config for security. |
+| `completion`          | Optional | object  | Shell completion discovery timeout and cache settings.                    |
+| `options`             | Optional | object  | Global Caplets runtime options.                                           |
+| `namespaceAliases`    | Optional | object  | Source-level namespace aliases for hash-qualified Caplet IDs.             |
+| `mcpServers`          | Optional | object  | Downstream MCP servers keyed by stable server ID.                         |
+| `openapiEndpoints`    | Optional | object  | OpenAPI endpoints keyed by stable Caplet ID.                              |
+| `googleDiscoveryApis` | Optional | object  | Google Discovery APIs keyed by stable Caplet ID.                          |
+| `graphqlEndpoints`    | Optional | object  | GraphQL endpoints keyed by stable Caplet ID.                              |
+| `httpApis`            | Optional | object  | HTTP APIs keyed by stable Caplet ID.                                      |
+| `cliTools`            | Optional | object  | CLI tools keyed by stable Caplet ID.                                      |
+| `capletSets`          | Optional | object  | Nested Caplet collections keyed by stable Caplet ID.                      |
 
 ## Major sections
+
+### `serve`
+
+User-owned HTTP serve defaults. Ignored from project config for security.
+
+| Field                      | Status   | Type    | Description                                                                  |
+| -------------------------- | -------- | ------- | ---------------------------------------------------------------------------- |
+| `host`                     | Optional | string  | Default HTTP bind host for caplets serve.                                    |
+| `port`                     | Optional | integer | Default HTTP port.                                                           |
+| `path`                     | Optional | string  | Default HTTP base path.                                                      |
+| `remoteStatePath`          | Optional | string  | Default remote credential state directory for HTTP serve.                    |
+| `upstreamUrl`              | Optional | string  | Default upstream Caplets URL for stacked HTTP serve.                         |
+| `allowUnauthenticatedHttp` | Optional | boolean | Opt in to unauthenticated HTTP serving; intended only for trusted local use. |
+| `trustProxy`               | Optional | boolean | Trust proxy headers when deriving public HTTP request URLs.                  |
+| `publicOrigins`            | Optional | array   | Additional public HTTP origins.                                              |
 
 ### `completion`
 

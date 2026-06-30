@@ -66,6 +66,12 @@ A per-user native service managed by `caplets daemon` that runs local HTTP `capl
 
 The Caplets Daemon is installed and updated through an install-time service contract. Runtime lifecycle commands operate on the installed service rather than changing its persisted serve or environment configuration.
 
+### Daemon-First Setup
+
+The local onboarding path where `caplets setup` prepares the user config and a healthy Caplets Daemon before configuring agent integrations.
+
+Daemon-First Setup points MCP clients at `caplets attach <local-daemon-url>` and points native integrations at the local daemon runtime, so backend execution uses the daemon-owned environment instead of depending on MCP client environment passthrough.
+
 ### Caplets Vault
 
 A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
@@ -183,6 +189,12 @@ Remote Attach uses Remote Profiles for trust and credentials. Long-lived attach 
 A local HTTP Caplets runtime that serves local Caplets while composing an upstream Caplets host through a configured upstream URL.
 
 Stacked Remote Runtime keeps project context session-scoped. `caplets attach` supplies the project root for a client session, while the long-running runtime owns env, Remote Profile, Project Binding, health, and composition behavior.
+
+### Public Origin
+
+An externally meaningful origin for a Caplets HTTP serve process.
+
+Public Origins participate in host/audience identity for HTTP serve, Remote Login, and attach routes. They are not a project-controlled allowlist or a general network authorization policy.
 
 ### Remote Login
 

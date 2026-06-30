@@ -1,12 +1,14 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import {
   createNativeCapletsService,
+  hasNativeRuntimeSelectionEnv,
+  readNativeDefaults,
   registerNativeCapletsProcessCleanup,
   type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 import { createCapletsOpenCodeHooks } from "./hooks";
 
-export type CapletsOpenCodeConfig = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+export type CapletsOpenCodeConfig = Pick<NativeCapletsServiceOptions, "mode" | "remote" | "daemon">;
 
 const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
   const service = createNativeCapletsService({
@@ -21,13 +23,17 @@ const plugin = (async (_ctx: PluginInput, config?: CapletsOpenCodeConfig) => {
 }) as Plugin;
 
 function normalizeOpenCodeConfig(config: CapletsOpenCodeConfig | undefined): CapletsOpenCodeConfig {
-  if (!config) {
-    return {};
-  }
-  return {
-    ...(config.mode ? { mode: config.mode } : {}),
-    ...(config.remote ? { remote: config.remote } : {}),
-  };
+  const explicitConfig = config
+    ? {
+        ...(config.mode ? { mode: config.mode } : {}),
+        ...(config.remote ? { remote: config.remote } : {}),
+        ...(config.daemon ? { daemon: config.daemon } : {}),
+      }
+    : undefined;
+  if (explicitConfig && Object.keys(explicitConfig).length > 0) return explicitConfig;
+  if (hasNativeRuntimeSelectionEnv()) return {};
+  const defaults = readNativeDefaults();
+  return defaults ? { mode: "daemon", daemon: { url: defaults.daemon.url } } : {};
 }
 
 export default plugin;

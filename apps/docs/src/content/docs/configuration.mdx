@@ -18,6 +18,41 @@ CAPLETS_CONFIG=/path/to/caplets.json caplets doctor
 `CAPLETS_CONFIG` is useful in CI, tests, or temporary sessions where you want a different
 user config file.
 
+### HTTP serve defaults
+
+User config can define optional HTTP `serve` defaults for foreground `caplets serve
+--transport http` and the managed local daemon:
+
+```json
+{
+  "$schema": "https://caplets.dev/config.schema.json",
+  "serve": {
+    "host": "127.0.0.1",
+    "port": 5387,
+    "path": "/",
+    "publicOrigins": ["https://caplets.example.com"]
+  },
+  "mcpServers": {}
+}
+```
+
+Precedence is command flags, then environment variables, then user `serve` config, then
+built-in defaults. `caplets daemon restart` re-resolves user `serve` defaults for daemon
+fields that were not set explicitly at daemon install time.
+
+`serve.publicOrigins` entries are full origins, not host-only allowlists. They are used for
+public request identity such as DNS rebinding checks and remote credential audiences. The
+config surface intentionally has no transport field under `serve`; choose transport on the
+command line.
+
+Keep `serve` in user config only. Project config ignores `serve` and warns because project
+repositories should not control a developer's local HTTP bind address, auth posture, or
+public origins.
+
+`caplets setup` remains safer than a hand-written MCP server. Local setup always prepares a
+credential-free loopback daemon before writing agent config, even if user `serve` defaults
+describe a broader foreground or self-hosted HTTP runtime.
+
 ## Project config
 
 Project config lives at:

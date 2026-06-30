@@ -320,6 +320,8 @@ describe("@caplets/opencode", () => {
         close: vi.fn(async () => {}),
       })),
       registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => undefined),
     };
     vi.doMock("@caplets/core/native", () => nativeMocks);
     const plugin = (await import("../src/index")).default;
@@ -356,6 +358,8 @@ describe("@caplets/opencode", () => {
         close: vi.fn(async () => {}),
       })),
       registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => undefined),
     };
     vi.doMock("@caplets/core/native", () => nativeMocks);
     const plugin = (await import("../src/index")).default;
@@ -368,6 +372,98 @@ describe("@caplets/opencode", () => {
     expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       mode: "cloud",
       remote: { url: "https://cloud.caplets.dev" },
+      telemetryIntegration: "opencode",
+    });
+  });
+
+  it("uses Caplets native defaults when no explicit config is provided", async () => {
+    vi.resetModules();
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => ({
+        listTools: () => [],
+        execute: vi.fn(async () => ({})),
+        reload: vi.fn(async () => true),
+        onToolsChanged: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      })),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => ({
+        version: 1,
+        source: "setup",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+        daemon: { url: "http://127.0.0.1:5387/caplets" },
+      })),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index")).default;
+
+    await plugin({} as never, undefined as never);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      mode: "daemon",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+      telemetryIntegration: "opencode",
+    });
+  });
+
+  it("uses Caplets native defaults when OpenCode passes an empty config object", async () => {
+    vi.resetModules();
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => ({
+        listTools: () => [],
+        execute: vi.fn(async () => ({})),
+        reload: vi.fn(async () => true),
+        onToolsChanged: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      })),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => ({
+        version: 1,
+        source: "setup",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+        daemon: { url: "http://127.0.0.1:5387/caplets" },
+      })),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index")).default;
+
+    await plugin({} as never, {} as never);
+
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
+      mode: "daemon",
+      daemon: { url: "http://127.0.0.1:5387/caplets" },
+      telemetryIntegration: "opencode",
+    });
+  });
+
+  it("lets native environment selectors override Caplets native defaults", async () => {
+    vi.resetModules();
+    const nativeMocks = {
+      createNativeCapletsService: vi.fn(() => ({
+        listTools: () => [],
+        execute: vi.fn(async () => ({})),
+        reload: vi.fn(async () => true),
+        onToolsChanged: vi.fn(() => () => {}),
+        close: vi.fn(async () => {}),
+      })),
+      registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => true),
+      readNativeDefaults: vi.fn(() => ({
+        version: 1,
+        source: "setup",
+        updatedAt: "2026-06-30T00:00:00.000Z",
+        daemon: { url: "http://127.0.0.1:5387/caplets" },
+      })),
+    };
+    vi.doMock("@caplets/core/native", () => nativeMocks);
+    const plugin = (await import("../src/index")).default;
+
+    await plugin({} as never, undefined as never);
+
+    expect(nativeMocks.readNativeDefaults).not.toHaveBeenCalled();
+    expect(nativeMocks.createNativeCapletsService).toHaveBeenCalledWith({
       telemetryIntegration: "opencode",
     });
   });
@@ -397,6 +493,8 @@ describe("@caplets/opencode", () => {
     const nativeMocks = {
       createNativeCapletsService: vi.fn(() => service),
       registerNativeCapletsProcessCleanup: vi.fn(),
+      hasNativeRuntimeSelectionEnv: vi.fn(() => false),
+      readNativeDefaults: vi.fn(() => undefined),
     };
     vi.doMock("@caplets/core/native", () => nativeMocks);
     const plugin = (await import("../src/index")).default;

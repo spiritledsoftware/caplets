@@ -11,13 +11,15 @@ import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { generatedToolInputJsonSchema } from "@caplets/core/generated-tool-input-schema";
 import {
   createNativeCapletsService,
+  hasNativeRuntimeSelectionEnv,
+  readNativeDefaults,
   registerNativeCapletsProcessCleanup,
   type NativeCapletTool,
   type NativeCapletsService,
   type NativeCapletsServiceOptions,
 } from "@caplets/core/native";
 
-type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote">;
+type PiNativeCapletsOptions = Pick<NativeCapletsServiceOptions, "mode" | "remote" | "daemon">;
 
 export type PiExtensionApi = Pick<ExtensionAPI, "registerTool"> &
   Partial<Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">> & {
@@ -109,7 +111,15 @@ async function registerCapletsPiExtension(
     ownsService && !explicitNativeOptions && options.loadSettings
       ? await loadPiSettingsArgs(options)
       : undefined;
-  const serviceOptions = explicitNativeOptions ?? settingsArgs ?? {};
+  const defaultsArgs =
+    ownsService &&
+    !explicitNativeOptions &&
+    !hasNativeRuntimeSettings(settingsArgs) &&
+    !hasNativeRuntimeSelectionEnv()
+      ? nativeDefaultsServiceOptions(options.writeWarning)
+      : undefined;
+  const serviceOptions =
+    explicitNativeOptions ?? mergeNativeServiceOptions(defaultsArgs, settingsArgs);
   const service =
     options.service ??
     createNativeCapletsService({
@@ -272,7 +282,13 @@ function parsePiNativeOptions(
   const result: PiCapletsSettings = {};
   const mode = raw.mode;
   if (mode !== undefined) {
-    if (mode !== "auto" && mode !== "local" && mode !== "remote" && mode !== "cloud") {
+    if (
+      mode !== "auto" &&
+      mode !== "local" &&
+      mode !== "remote" &&
+      mode !== "cloud" &&
+      mode !== "daemon"
+    ) {
       return undefined;
     }
     result.mode = mode;
@@ -302,15 +318,39 @@ function parsePiNativeOptions(
     }
     const pollIntervalMs = remote.pollIntervalMs;
     if (pollIntervalMs !== undefined) {
-      if (typeof pollIntervalMs !== "number" || !Number.isFinite(pollIntervalMs)) return undefined;
+      if (!isValidNativePollIntervalMs(pollIntervalMs)) return undefined;
       parsedRemote.pollIntervalMs = pollIntervalMs;
     }
     result.remote = parsedRemote;
+  }
+  const daemon = objectProperty(value, "daemon");
+  if (raw.daemon !== undefined && !daemon) {
+    return undefined;
+  }
+  if (daemon) {
+    const parsedDaemon: NonNullable<PiNativeCapletsOptions["daemon"]> = {};
+    const url = daemon.url;
+    if (url !== undefined) {
+      if (typeof url !== "string") return undefined;
+      parsedDaemon.url = url;
+    }
+    const pollIntervalMs = daemon.pollIntervalMs;
+    if (pollIntervalMs !== undefined) {
+      if (!isValidNativePollIntervalMs(pollIntervalMs)) return undefined;
+      parsedDaemon.pollIntervalMs = pollIntervalMs;
+    }
+    result.daemon = parsedDaemon;
   }
   if (raw.server !== undefined) {
     return undefined;
   }
   return result;
+}
+
+function isValidNativePollIntervalMs(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 1_000
+  );
 }
 
 function capletsRemoteStatusText(status: "connected" | "offline", nerdFontIcons: boolean): string {
@@ -324,6 +364,30 @@ function nativeServiceOptions(options: PiCapletsSettings): PiNativeCapletsOption
   return {
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.remote ? { remote: options.remote } : {}),
+    ...(options.daemon ? { daemon: options.daemon } : {}),
+  };
+}
+
+function hasNativeRuntimeSettings(options: PiCapletsSettings | undefined): boolean {
+  return Boolean(options?.mode || options?.remote || options?.daemon);
+}
+
+function nativeDefaultsServiceOptions(
+  writeWarning: ((message: string) => void) | undefined,
+): PiNativeCapletsOptions {
+  const defaults = readNativeDefaults({
+    writeWarning: (message) => writeWarning?.(`[caplets/pi] ${message}`),
+  });
+  return defaults ? { mode: "daemon", daemon: { url: defaults.daemon.url } } : {};
+}
+
+function mergeNativeServiceOptions(
+  defaults: PiNativeCapletsOptions | undefined,
+  settings: PiCapletsSettings | undefined,
+): PiNativeCapletsOptions {
+  return {
+    ...defaults,
+    ...nativeServiceOptions(settings ?? {}),
   };
 }
 
@@ -340,8 +404,11 @@ function shouldShowStatusWidget(
   return (
     options.mode === "remote" ||
     options.mode === "cloud" ||
+    options.mode === "daemon" ||
     !!options.remote?.url ||
-    process.env.CAPLETS_REMOTE_URL !== undefined
+    process.env.CAPLETS_REMOTE_URL !== undefined ||
+    process.env.CAPLETS_MODE === "daemon" ||
+    process.env.CAPLETS_DAEMON_URL !== undefined
   );
 }
 

@@ -3,9 +3,10 @@ title: Remote Attach
 description: Connect an agent to a remote Caplets runtime.
 ---
 
-Use `caplets attach` when the agent should connect to a remote or Cloud-backed Caplets
-runtime instead of starting local backends. `caplets attach <url>` is a stdio MCP adapter;
-it does not run an HTTP server.
+Use `caplets attach` when an agent should be a thin stdio client for a Caplets runtime.
+Daemon-first local setup points clients at the local Caplets daemon with `caplets attach
+<local-daemon-url>`; remote and Cloud setup use the same command shape with a remote URL.
+`caplets attach <url>` does not run an HTTP server.
 
 Use `caplets serve --transport http --upstream-url <url>` for a long-running stacked
 runtime that composes local user/global Caplets, per-session project Caplets, and an
@@ -15,16 +16,25 @@ upstream Caplets host.
 
 Caplets native integrations use the same mode names as `caplets attach`:
 
-| Mode     | Use it when                                                                                                               |
-| -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `local`  | The agent should start Caplets against local user and project config.                                                     |
-| `remote` | The agent should connect to a self-hosted Caplets service.                                                                |
-| `cloud`  | The agent should connect to Caplets Cloud through a saved Remote Profile.                                                 |
-| `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, and local mode when no remote URL is set. |
+| Mode     | Use it when                                                                                                                                      |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `local`  | The native integration should start local Caplets in-process against user and project config.                                                    |
+| `daemon` | The native integration should use the local Caplets daemon through a credential-free loopback attach URL.                                        |
+| `remote` | The agent should connect to a self-hosted Caplets service.                                                                                       |
+| `cloud`  | The agent should connect to Caplets Cloud through a saved Remote Profile.                                                                        |
+| `auto`   | Caplets should use Cloud for Cloud URLs, self-hosted remote for non-Cloud URLs, daemon defaults when setup wrote them, and local mode otherwise. |
 
 ## MCP client config
 
-Codex:
+Local daemon-backed Codex config after setup:
+
+```toml
+[mcp_servers.caplets]
+command = "caplets"
+args = ["attach", "http://127.0.0.1:5387/"]
+```
+
+Remote Codex config after Remote Login:
 
 ```toml
 [mcp_servers.caplets]

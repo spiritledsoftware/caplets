@@ -206,12 +206,8 @@ export function createHttpServeApp(
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login start request");
         const clientLabel = optionalStringField(parsed, "clientLabel");
         const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
-        const hostUrl = remoteCredentialHostUrl(
-          c.req.url,
-          paths.base,
-          options.publicOrigin,
-          options.trustProxy,
-          (name) => c.req.header(name),
+        const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+          c.req.header(name),
         );
         const pending = remoteCredentialStore.createPendingLogin({
           hostUrl,
@@ -259,12 +255,8 @@ export function createHttpServeApp(
       try {
         const parsed = await parseJsonObject(c.req.json(), "Pending remote login complete request");
         const credentials = remoteCredentialStore.completePendingLogin({
-          hostUrl: remoteCredentialHostUrl(
-            c.req.url,
-            paths.base,
-            options.publicOrigin,
-            options.trustProxy,
-            (name) => c.req.header(name),
+          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+            c.req.header(name),
           ),
           flowId: stringField(parsed, "flowId"),
           pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
@@ -298,12 +290,8 @@ export function createHttpServeApp(
         const parsed = await parseJsonObject(c.req.json(), "Remote refresh request");
         const refreshToken = stringField(parsed, "refreshToken");
         const credentials = remoteCredentialStore.refreshClientCredentials({
-          hostUrl: remoteCredentialHostUrl(
-            c.req.url,
-            paths.base,
-            options.publicOrigin,
-            options.trustProxy,
-            (name) => c.req.header(name),
+          hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+            c.req.header(name),
           ),
           refreshToken,
         });
@@ -1053,17 +1041,46 @@ function publicHostUrl(
 function remoteCredentialHostUrl(
   requestUrl: string,
   basePath: string,
-  publicOrigin: string | undefined,
-  trustProxy: boolean,
+  options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins" | "trustProxy">,
   header: (name: string) => string | undefined,
 ): string {
-  if (trustProxy && !publicOrigin) {
+  const publicOrigin = remoteCredentialPublicOrigin(options, header);
+  if (options.trustProxy && !publicOrigin) {
     throw new CapletsError(
       "REQUEST_INVALID",
-      "Remote credential auth with --trust-proxy requires CAPLETS_SERVER_URL.",
+      "Remote credential auth with --trust-proxy requires a configured public origin.",
     );
   }
-  return publicHostUrl(requestUrl, basePath, publicOrigin, trustProxy, header);
+  return publicHostUrl(requestUrl, basePath, publicOrigin, options.trustProxy, header);
+}
+
+function remoteCredentialPublicOrigin(
+  options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins" | "trustProxy">,
+  header: (name: string) => string | undefined,
+): string | undefined {
+  const publicOrigins = publicOriginsForOptions(options);
+  if (publicOrigins.length === 0) return undefined;
+  const host =
+    firstForwardedValue(options.trustProxy ? header("x-forwarded-host") : undefined) ??
+    header("host");
+  const matchingOrigin = host
+    ? publicOrigins.find((origin) => publicOriginMatchesHost(origin, host))
+    : undefined;
+  return matchingOrigin ?? options.publicOrigin ?? publicOrigins[0];
+}
+
+function publicOriginMatchesHost(origin: string, host: string): boolean {
+  const url = new URL(origin);
+  const normalizedHost = normalizeHostHeader(host);
+  const originHost = normalizeHostHeader(url.host);
+  const originHostWithDefaultPort = normalizeHostHeader(
+    `${url.hostname}:${url.protocol === "https:" ? "443" : "80"}`,
+  );
+  return normalizedHost === originHost || normalizedHost === originHostWithDefaultPort;
+}
+
+function normalizeHostHeader(host: string): string {
+  return host.trim().toLowerCase();
 }
 
 function remoteCredentialSourceHint(
@@ -1113,13 +1130,7 @@ function remoteHostMetadata(
   options: HttpServeOptions,
   header: (name: string) => string | undefined,
 ): RemoteHostMetadata {
-  const audience = remoteCredentialHostUrl(
-    requestUrl,
-    basePath,
-    options.publicOrigin,
-    options.trustProxy,
-    header,
-  );
+  const audience = remoteCredentialHostUrl(requestUrl, basePath, options, header);
   return { hostIdentity: audience, audience };
 }
 
@@ -1588,12 +1599,8 @@ function routeAuth(
     }
     try {
       remoteCredentialStore.validateAccessToken({
-        hostUrl: remoteCredentialHostUrl(
-          c.req.url,
-          basePath,
-          options.publicOrigin,
-          options.trustProxy,
-          (name) => c.req.header(name),
+        hostUrl: remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
+          c.req.header(name),
         ),
         accessToken: token,
       });
@@ -1617,13 +1624,7 @@ function validatedRemoteClient(
     throw new CapletsError("AUTH_FAILED", "Remote client credential is required.");
   }
   return remoteCredentialStore.validateAccessToken({
-    hostUrl: remoteCredentialHostUrl(
-      requestUrl,
-      basePath,
-      options.publicOrigin,
-      options.trustProxy,
-      header,
-    ),
+    hostUrl: remoteCredentialHostUrl(requestUrl, basePath, options, header),
     accessToken: token,
   });
 }
@@ -1795,10 +1796,11 @@ type DnsRebindingOptions = {
 
 function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
   const hostForHeader = options.host === "::1" ? "[::1]" : options.host;
-  const publicUrl = options.publicOrigin ? new URL(options.publicOrigin) : undefined;
+  const publicUrls = publicOriginsForOptions(options).map((origin) => new URL(origin));
   const publicHosts =
-    publicUrl && (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
-      ? [publicUrl.hostname, publicUrl.host]
+    publicUrls.length > 0 &&
+    (options.auth.type === "remote_credentials" || options.allowUnauthenticatedHttp)
+      ? publicUrls.flatMap((url) => [url.hostname, url.host])
       : [];
   return {
     enableDnsRebindingProtection: true,
@@ -1810,6 +1812,13 @@ function dnsRebindingOptions(options: HttpServeOptions): DnsRebindingOptions {
       ...publicHosts,
     ],
   };
+}
+
+function publicOriginsForOptions(
+  options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins">,
+): string[] {
+  if (options.publicOrigins?.length) return options.publicOrigins;
+  return options.publicOrigin ? [options.publicOrigin] : [];
 }
 
 function authDescription(options: HttpServeOptions): string {

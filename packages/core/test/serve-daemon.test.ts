@@ -18,6 +18,7 @@ import {
   createNativeDaemonManager,
   daemonServeArgs,
   daemonLogs,
+  daemonClientBaseUrl,
   daemonStatus,
   installDaemon,
   resolveDaemonHttpServeOptions,
@@ -26,6 +27,7 @@ import {
   startDaemon,
   stopDaemon,
   uninstallDaemon,
+  type DaemonConfig,
   type DaemonCommandRunner,
   type DaemonManager,
 } from "../src/daemon";
@@ -85,6 +87,33 @@ describe("caplets daemon CLI", () => {
       ).rejects.toThrow(expect.objectContaining({ code: "REQUEST_INVALID" }) as CapletsError);
 
       expect(existsSync(join(dir, "config", "caplets", "daemon", "default.json"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("derives daemon client base URLs from loopback and wildcard HTTP config", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-client-url-"));
+    try {
+      const loopback = await installDaemon(
+        { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false },
+        { env: testEnv(dir), platform: "linux", commandRunner: fakeRunner() },
+      );
+      expect(daemonClientBaseUrl(loopback.config)).toEqual(
+        new URL("http://127.0.0.1:5387/caplets"),
+      );
+
+      const wildcard = {
+        ...loopback.config,
+        serve: { ...loopback.config.serve, host: "0.0.0.0" },
+      };
+      expect(daemonClientBaseUrl(wildcard)).toEqual(new URL("http://127.0.0.1:5387/caplets"));
+
+      const network = {
+        ...loopback.config,
+        serve: { ...loopback.config.serve, host: "192.0.2.10" },
+      };
+      expect(() => daemonClientBaseUrl(network)).toThrow(/loopback/u);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -575,6 +604,106 @@ describe("daemon paths and config", () => {
         },
       );
       expect(overridden.config.command.env.CAPLETS_CONFIG).toBe("/explicit/service.json");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves current global serve defaults when restarting defaulted daemons", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-global-restart-"));
+    try {
+      const env = testEnv(dir);
+      const configPath = join(env.XDG_CONFIG_HOME!, "caplets", "config.json");
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5480 } }));
+      const installOptions = {
+        env,
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner({ active: true }),
+      };
+
+      const installed = await installDaemon({ validate: false }, installOptions);
+      expect(installed.config.serve.port).toBe(5480);
+
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481 } }));
+      const restarted: DaemonConfig[] = [];
+      const manager = captureRestartManager(restarted);
+
+      await restartDaemon({
+        ...installOptions,
+        manager,
+        fetch: async () => new Response("ok"),
+      });
+
+      expect(restarted).toHaveLength(1);
+      expect(restarted[0]?.serve.port).toBe(5481);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit daemon serve settings ahead of changed global defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-explicit-restart-"));
+    try {
+      const env = testEnv(dir);
+      const configPath = join(env.XDG_CONFIG_HOME!, "caplets", "config.json");
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5480 } }));
+      const installOptions = {
+        env,
+        home: "/home/alice",
+        platform: "linux" as const,
+        commandRunner: fakeRunner({ active: true }),
+      };
+
+      const installed = await installDaemon({ validate: false, port: "6000" }, installOptions);
+      expect(installed.config.serve.port).toBe(6000);
+
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481 } }));
+      const restarted: DaemonConfig[] = [];
+      const manager = captureRestartManager(restarted);
+
+      await restartDaemon({
+        ...installOptions,
+        manager,
+        fetch: async () => new Response("ok"),
+      });
+
+      expect(restarted).toHaveLength(1);
+      expect(restarted[0]?.serve.port).toBe(6000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets setup-style explicit loopback unauthenticated daemon options override unsafe globals", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-safe-setup-globals-"));
+    try {
+      const env = testEnv(dir);
+      const configPath = join(env.XDG_CONFIG_HOME!, "caplets", "config.json");
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: { host: "0.0.0.0", port: 5480, allowUnauthenticatedHttp: false },
+        }),
+      );
+
+      const installed = await installDaemon(
+        { validate: false, host: "127.0.0.1", allowUnauthenticatedHttp: true },
+        {
+          env,
+          home: "/home/alice",
+          platform: "linux",
+          commandRunner: fakeRunner({ active: true }),
+        },
+      );
+
+      expect(installed.config.serve.host).toBe("127.0.0.1");
+      expect(installed.config.serve.port).toBe(5480);
+      expect(installed.config.serve.allowUnauthenticatedHttp).toBe(true);
+      expect(installed.config.serve.auth.type).toBe("development_unauthenticated");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1668,6 +1797,32 @@ describe("daemon lifecycle and logs", () => {
       };
       const installed = await installDaemon({ validate: false }, options);
       rmSync(installed.config.paths.descriptorFile, { force: true });
+      runner.commands.length = 0;
+
+      await stopDaemon(options);
+
+      expect(runner.commands).toContainEqual([
+        "systemctl",
+        "--user",
+        "stop",
+        "caplets-daemon-default.service",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops native services when persisted daemon config is missing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-daemon-stale-config-stop-"));
+    try {
+      const runner = fakeRunner({ active: true });
+      const options = {
+        env: testEnv(dir),
+        platform: "linux" as const,
+        commandRunner: runner,
+      };
+      const installed = await installDaemon({ validate: false }, options);
+      rmSync(installed.config.paths.configFile, { force: true });
       runner.commands.length = 0;
 
       await stopDaemon(options);
@@ -2814,5 +2969,29 @@ function fakeRunner(
       }
       return { stdout: "", stderr: "", code: 0 };
     },
+  };
+}
+
+function captureRestartManager(restarted: DaemonConfig[]): DaemonManager {
+  const native = { state: "running" as const, installed: true, running: true };
+  return {
+    descriptor: (config) => ({
+      kind: "systemd-user",
+      unitName: "caplets-daemon-default.service",
+      path: config.paths.descriptorFile,
+      contents: "",
+    }),
+    status: async () => native,
+    install: async () => ({ action: "install", native }),
+    uninstall: async () => ({ action: "uninstall", native }),
+    start: async (config) => {
+      restarted.push(config);
+      return { action: "start", native };
+    },
+    restart: async (config) => {
+      restarted.push(config);
+      return { action: "restart", native };
+    },
+    stop: async () => ({ action: "stop", native }),
   };
 }

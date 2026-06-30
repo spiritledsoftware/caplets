@@ -33,6 +33,54 @@
       "description": "Set false to disable anonymous Caplets telemetry for this user config.",
       "type": "boolean"
     },
+    "serve": {
+      "description": "User-owned HTTP serve defaults. Ignored from project config for security.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "Default HTTP bind host for caplets serve.",
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "description": "Default HTTP port.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "path": {
+          "description": "Default HTTP base path.",
+          "type": "string"
+        },
+        "remoteStatePath": {
+          "description": "Default remote credential state directory for HTTP serve.",
+          "type": "string",
+          "minLength": 1
+        },
+        "upstreamUrl": {
+          "description": "Default upstream Caplets URL for stacked HTTP serve.",
+          "type": "string"
+        },
+        "allowUnauthenticatedHttp": {
+          "description": "Opt in to unauthenticated HTTP serving; intended only for trusted local use.",
+          "type": "boolean"
+        },
+        "trustProxy": {
+          "description": "Trust proxy headers when deriving public HTTP request URLs.",
+          "type": "boolean"
+        },
+        "publicOrigins": {
+          "description": "Additional public HTTP origins.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https?:\\/\\/(?![^/?#]*@)[^/?#]+\\/?$",
+            "description": "Public HTTP(S) origin for DNS rebinding and credential audience checks."
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "completion": {
       "default": {
         "discoveryTimeoutMs": 750,

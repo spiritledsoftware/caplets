@@ -166,6 +166,16 @@ export function createNativeCapletsService(
   if (resolved.mode === "cloud") {
     return new ProfileBackedNativeCapletsService(options, resolved.remote, "hosted_cloud");
   }
+  if (resolved.mode === "daemon") {
+    const remote = new RemoteNativeCapletsService({
+      client: createRemoteClient(resolved.remote, options, "self_hosted_remote"),
+      clientFactory: () => createRemoteClient(resolved.remote, options, "self_hosted_remote"),
+      pollIntervalMs: resolved.remote.pollIntervalMs,
+      authKind: "self_hosted_remote",
+      ...(options.writeErr ? { writeErr: options.writeErr } : {}),
+    });
+    return remote;
+  }
   return new DefaultNativeCapletsService(options);
 }
 
@@ -601,6 +611,7 @@ function runtimeModeFromNativeOptions(options: NativeCapletsServiceOptions) {
   if (options.mode === "local") return "local";
   if (options.mode === "remote") return "remote";
   if (options.mode === "cloud") return "cloud";
+  if (options.mode === "daemon") return "remote";
   if (options.remote?.url) return "remote";
   const envMode = options.telemetryEnv?.CAPLETS_MODE ?? process.env.CAPLETS_MODE;
   if (envMode === "remote" || envMode === "cloud" || envMode === "local") return envMode;
@@ -1040,7 +1051,7 @@ function remoteOptionsFromSelection(
     requestInit: selection.remote.requestInit,
     ...(selection.remote.fetch ? { fetch: selection.remote.fetch } : {}),
     ...(cloudPresence ? { cloud: cloudPresence } : {}),
-    ...(selection.credentialExpiresAt
+    ...("credentialExpiresAt" in selection && selection.credentialExpiresAt
       ? { credentialExpiresAt: selection.credentialExpiresAt }
       : {}),
   } satisfies ProfileResolvedNativeRemoteOptions;

@@ -2,7 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { loadCapletFilesWithPaths, loadCapletFilesWithPathsBestEffort } from "./caplet-files";
-import { resolveCapletsRoot, resolveConfigPath, resolveProjectConfigPath } from "./config/paths";
+import {
+  defaultConfigPath,
+  resolveCapletsRoot,
+  resolveConfigPath,
+  resolveProjectConfigPath,
+} from "./config/paths";
 import {
   FORBIDDEN_HEADERS,
   HEADER_NAME_PATTERN,
@@ -339,6 +344,17 @@ export type CapletsOptions = {
   completion: CompletionConfig;
 };
 
+export type ServeConfig = {
+  host?: string | undefined;
+  port?: number | undefined;
+  path?: string | undefined;
+  remoteStatePath?: string | undefined;
+  upstreamUrl?: string | undefined;
+  allowUnauthenticatedHttp?: boolean | undefined;
+  trustProxy?: boolean | undefined;
+  publicOrigins: string[];
+};
+
 export type CompletionConfig = {
   discoveryTimeoutMs: number;
   overallTimeoutMs: number;
@@ -349,6 +365,7 @@ export type CompletionConfig = {
 export type CapletsConfig = {
   version: 1;
   telemetry?: boolean | undefined;
+  serve?: ServeConfig | undefined;
   options: CapletsOptions;
   namespaceAliases: NamespaceAliasesConfig;
   mcpServers: Record<string, CapletServerConfig>;
@@ -1151,6 +1168,7 @@ type ConfigSchemaCliToolsValue = z.infer<typeof normalizedCliToolsSchema>;
 type ConfigSchemaCapletSetValue = z.infer<typeof normalizedCapletSetSchema>;
 type ConfigInput = {
   telemetry?: unknown;
+  serve?: unknown;
   namespaceAliases?: unknown;
   mcpServers?: Record<string, unknown>;
   openapiEndpoints?: Record<string, unknown>;
@@ -1173,6 +1191,59 @@ const CAPLET_BACKEND_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ConfigInput>;
 
 const CAPLET_BACKEND_KEY_SET = new Set<string>(CAPLET_BACKEND_KEYS);
+const SERVE_PUBLIC_ORIGIN_PATTERN = /^https?:\/\/(?![^/?#]*@)[^/?#]+\/?$/u;
+
+const publicOriginSchema = z
+  .string()
+  .describe("Public HTTP(S) origin for DNS rebinding and credential audience checks.")
+  .regex(SERVE_PUBLIC_ORIGIN_PATTERN, {
+    message:
+      "public origin must be an http(s) origin without credentials, path, query, or fragment",
+  })
+  .refine(isAllowedServePublicOrigin, {
+    message:
+      "public origin must be an http(s) origin without credentials, path, query, or fragment; http is only allowed for loopback development origins",
+  })
+  .transform(normalizePublicOrigin);
+
+const serveConfigSchema = z
+  .object({
+    host: z.string().trim().min(1).optional().describe("Default HTTP bind host for caplets serve."),
+    port: z.number().int().min(1).max(65_535).optional().describe("Default HTTP port."),
+    path: z
+      .string()
+      .refine((value) => value.startsWith("/") && !value.includes("?") && !value.includes("#"), {
+        message: "serve path must start with / and must not include query or fragment",
+      })
+      .optional()
+      .describe("Default HTTP base path."),
+    remoteStatePath: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe("Default remote credential state directory for HTTP serve."),
+    upstreamUrl: z
+      .string()
+      .refine(isAllowedHttpBaseUrl)
+      .optional()
+      .describe("Default upstream Caplets URL for stacked HTTP serve."),
+    allowUnauthenticatedHttp: z
+      .boolean()
+      .optional()
+      .describe("Opt in to unauthenticated HTTP serving; intended only for trusted local use."),
+    trustProxy: z
+      .boolean()
+      .optional()
+      .describe("Trust proxy headers when deriving public HTTP request URLs."),
+    publicOrigins: z
+      .array(publicOriginSchema)
+      .default([])
+      .describe("Additional public HTTP origins."),
+  })
+  .strict();
+
+const serveDefaultsFileSchema = z.object({ serve: serveConfigSchema.optional() }).passthrough();
 
 type MissingEnvReference = {
   name: string;
@@ -1209,6 +1280,9 @@ function configSchemaFor(
         .boolean()
         .optional()
         .describe("Set false to disable anonymous Caplets telemetry for this user config."),
+      serve: serveConfigSchema
+        .optional()
+        .describe("User-owned HTTP serve defaults. Ignored from project config for security."),
       completion: z
         .object({
           discoveryTimeoutMs: z.number().int().positive().default(750),
@@ -1678,7 +1752,10 @@ export function loadConfigWithSources(
   const userConfig = hasUserConfig ? readPublicConfigInput(path) : undefined;
   const userCaplets = loadCapletFilesWithPaths(resolveCapletsRoot(path));
   const projectConfig = hasProjectConfig
-    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
@@ -1725,12 +1802,26 @@ export function loadGlobalConfig(
   ).config;
 }
 
+export function loadGlobalServeDefaults(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+  options: { home?: string | undefined; platform?: NodeJS.Platform | undefined } = {},
+): ServeConfig | undefined {
+  const explicitPath = env.CAPLETS_CONFIG?.trim();
+  const configPath =
+    explicitPath || defaultConfigPath(env as NodeJS.ProcessEnv, options.home, options.platform);
+  if (!existsSync(configPath)) return undefined;
+  return readServeDefaultsInput(configPath);
+}
+
 export function loadProjectConfig(
   projectPath = resolveProjectConfigPath(),
   options: Pick<ConfigParseOptions, "vaultResolver"> = {},
 ): CapletsConfig {
   const projectConfig = existsSync(projectPath)
-    ? rejectProjectConfigExecutableBackendMaps(readPublicConfigInput(projectPath), projectPath)
+    ? rejectProjectConfigExecutableBackendMaps(
+        stripProjectServeConfig(readPublicConfigInput(projectPath), projectPath),
+        projectPath,
+      )
     : undefined;
   const projectCapletsRoot = resolveProjectCapletsRootForConfigPath(projectPath);
   const projectCaplets = projectCapletsRoot
@@ -1818,7 +1909,11 @@ export function loadLocalOverlayConfigWithSources(
         projectPath,
         "project-config",
         warnings,
-        (input) => rejectProjectConfigExecutableBackendMaps(input, projectPath),
+        (input) =>
+          rejectProjectConfigExecutableBackendMaps(
+            stripProjectServeConfig(input, projectPath, warnings),
+            projectPath,
+          ),
         parseOptions,
       )
     : undefined;
@@ -2326,6 +2421,33 @@ function readPublicConfigInput(path: string): ConfigInput {
   }
 }
 
+function readServeDefaultsInput(path: string): ServeConfig | undefined {
+  try {
+    const input = JSON.parse(readFileSync(path, "utf8"));
+    const validationOptions = { sources: {}, vaultResolver: vaultBootstrapResolver };
+    const parsed = serveDefaultsFileSchema.safeParse(
+      interpolateConfig(input as ConfigInput, [], validationOptions),
+    );
+    if (!parsed.success) {
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        `Caplets config at ${path} has invalid serve defaults`,
+        parsed.error.issues,
+      );
+    }
+    return parsed.data.serve ? normalizeServeConfig(parsed.data.serve) : undefined;
+  } catch (error) {
+    if (error instanceof CapletsError) {
+      throw error;
+    }
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      `Caplets config at ${path} is not valid JSON`,
+      redactSecrets(error),
+    );
+  }
+}
+
 function normalizeLocalPaths(input: ConfigInput, baseDir: string): ConfigInput {
   return stripUndefined({
     ...input,
@@ -2498,6 +2620,7 @@ function mergeConfigInputs(...inputs: Array<ConfigInput | undefined>): ConfigInp
       ...merged,
       ...input,
       telemetry: input.telemetry === undefined ? merged?.telemetry : input.telemetry,
+      serve: input.serve === undefined ? merged?.serve : input.serve,
       namespaceAliases: mergeNamespaceAliases(merged?.namespaceAliases, input.namespaceAliases),
       mcpServers: {
         ...merged?.mcpServers,
@@ -2586,7 +2709,25 @@ function mergeConfigInputsWithSources(...inputs: Array<ConfigInputWithSource | u
 }
 
 function stripUserOnlyConfig(input: ConfigInput): ConfigInput {
-  const { telemetry: _telemetry, ...rest } = input;
+  const { telemetry: _telemetry, serve: _serve, ...rest } = input;
+  return rest;
+}
+
+function stripProjectServeConfig(
+  input: ConfigInput,
+  path: string,
+  warnings?: LocalOverlayConfigWarning[],
+): ConfigInput {
+  if (input.serve === undefined) {
+    return input;
+  }
+  warnings?.push({
+    kind: "project-config",
+    path,
+    message: `Project config at ${path} cannot define user-owned serve settings; serve was ignored for security reasons`,
+    recoverable: true,
+  });
+  const { serve: _serve, ...rest } = input;
   return rest;
 }
 
@@ -2723,6 +2864,7 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
   return {
     version: parsed.data.version,
     telemetry: parsed.data.telemetry,
+    ...(parsed.data.serve ? { serve: normalizeServeConfig(parsed.data.serve) } : {}),
     options: {
       defaultSearchLimit: parsed.data.defaultSearchLimit,
       maxSearchLimit: parsed.data.maxSearchLimit,
@@ -2743,6 +2885,28 @@ export function parseConfig(input: unknown, options: ConfigParseOptions = {}): C
     cliTools,
     capletSets,
   };
+}
+
+function normalizeServeConfig(raw: z.infer<typeof serveConfigSchema>): ServeConfig {
+  return stripUndefined({
+    host: raw.host,
+    port: raw.port,
+    path: raw.path,
+    remoteStatePath: raw.remoteStatePath,
+    upstreamUrl: raw.upstreamUrl,
+    allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp,
+    trustProxy: raw.trustProxy,
+    publicOrigins: raw.publicOrigins,
+  }) as ServeConfig;
+}
+
+function isAllowedServePublicOrigin(value: string): boolean {
+  if (!isAllowedHttpBaseUrl(value)) return false;
+  return new URL(value).pathname === "/";
+}
+
+function normalizePublicOrigin(value: string): string {
+  return new URL(value).origin;
 }
 
 function validateEndpointAuthHeaders(

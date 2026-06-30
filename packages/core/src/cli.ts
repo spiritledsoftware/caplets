@@ -68,7 +68,9 @@ import {
   runSetup,
   type SetupCommandRunner,
   type SetupFormat,
+  type SetupMcpOperations,
   type SetupOptions,
+  type SetupPhaseOperations,
   type SetupPromptReader,
 } from "./cli/setup";
 import {
@@ -78,6 +80,7 @@ import {
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
   defaultCapletsLockfilePath,
+  loadGlobalServeDefaults,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
   resolveCapletsRoot,
@@ -186,6 +189,8 @@ type CliIO = {
   attachServe?: (options: AttachServeOptions) => Promise<void>;
   daemon?: DaemonOperationOptions;
   runSetupCommand?: SetupCommandRunner;
+  setupOperations?: SetupPhaseOperations;
+  mcpOperations?: SetupMcpOperations;
   readStdin?: () => Promise<string>;
 };
 
@@ -1409,6 +1414,7 @@ export function createProgram(io: CliIO = {}): Command {
   const writeErr = io.writeErr ?? ((value: string) => process.stderr.write(value));
   const env = io.env ?? process.env;
   const currentConfigPath = () => envConfigPath(env);
+  const currentServeDefaults = () => loadGlobalServeDefaults(env);
   const telemetryContext = (): TelemetryCliContext => ({
     env,
     configPath: currentConfigPath(),
@@ -1727,7 +1733,8 @@ export function createProgram(io: CliIO = {}): Command {
         trustProxy?: boolean;
       }) => {
         printTelemetryNotice("serve");
-        const resolved = resolveServeOptions(options);
+        const defaults = options.transport === "http" ? currentServeDefaults() : undefined;
+        const resolved = resolveServeOptions(options, env, defaults);
         const configPath = currentConfigPath();
         const runner =
           io.serve ??
@@ -2583,6 +2590,7 @@ export function createProgram(io: CliIO = {}): Command {
     .option("--remote-url <url>", "remote Caplets service base URL")
     .option("--server-url <url>", "remote Caplets service base URL")
     .option("--output <path>", "config path to write for generic MCP setup")
+    .option("--client <id>", "MCP client id to configure through add-mcp")
     .option("--dry-run", "print actions without running commands or writing files")
     .option("--yes", "approve Caplet setup commands for the exact current content hash")
     .option("--target <target>", "Caplet setup target: local, remote, or cloud", parseSetupTarget)
@@ -2595,6 +2603,7 @@ export function createProgram(io: CliIO = {}): Command {
           remoteUrl?: string;
           serverUrl?: string;
           output?: string;
+          client?: string;
           dryRun?: boolean;
           yes?: boolean;
           target?: "local" | "remote" | "cloud";
@@ -2604,6 +2613,8 @@ export function createProgram(io: CliIO = {}): Command {
         printTelemetryNotice("cli");
         const setupOptions: SetupOptions = { ...options, env };
         if (io.runSetupCommand) setupOptions.runCommand = io.runSetupCommand;
+        if (io.setupOperations) setupOptions.setupOperations = io.setupOperations;
+        if (io.mcpOperations) setupOptions.mcpOperations = io.mcpOperations;
         if (!integration) {
           const promptHandle = createSetupPromptHandle(io, writeOut);
           if (!promptHandle) {

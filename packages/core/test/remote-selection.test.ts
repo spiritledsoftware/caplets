@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudAuthStore } from "../src/cloud-auth/store";
+import { installDaemon } from "../src/daemon";
+import type { DaemonConfig, DaemonManager, NativeDaemonStatus } from "../src/daemon/types";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import { resolveRemoteSelection } from "../src/remote/selection";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
@@ -22,6 +24,104 @@ describe("resolveRemoteSelection", () => {
 
   it("rejects auto mode without a remote URL for attach", async () => {
     await expect(resolveRemoteSelection({}, {})).rejects.toThrow(/CAPLETS_REMOTE_URL/u);
+  });
+
+  it("resolves setup-validated loopback HTTP attach URLs as credential-free local daemon selections", async () => {
+    const daemon = await setupPersistedLocalDaemon();
+    const fetched: string[] = [];
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:5387/caplets",
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ ok: true });
+          },
+        },
+        daemon.env,
+        { daemon: daemon.options },
+      ),
+    ).resolves.toMatchObject({
+      kind: "local_daemon",
+      remote: {
+        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        attachUrl: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        auth: { type: "none" },
+      },
+    });
+    expect(fetched).toEqual(["http://127.0.0.1:5387/caplets/v1/healthz"]);
+  });
+
+  it("does not classify spoofed loopback discovery as a local daemon without persisted daemon config", async () => {
+    const dir = tempDir("caplets-remote-selection-spoof-daemon-");
+    const manager = runningDaemonManager();
+    const fetched: string[] = [];
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:9999/caplets",
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ name: "caplets", transport: "http" });
+          },
+        },
+        daemonTestEnv(dir),
+        { daemon: { home: dir, platform: "linux", manager } },
+      ),
+    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
+    expect(fetched).toEqual([]);
+  });
+
+  it("does not classify loopback URLs as local daemons when the persisted daemon URL differs", async () => {
+    const daemon = await setupPersistedLocalDaemon();
+    const fetched: string[] = [];
+    await expect(
+      resolveRemoteSelection(
+        {
+          remoteUrl: "http://127.0.0.1:9999/caplets",
+          fetch: async (url) => {
+            fetched.push(String(url));
+            return Response.json({ ok: true });
+          },
+        },
+        daemon.env,
+        { daemon: daemon.options },
+      ),
+    ).rejects.toMatchObject({ projectBindingCode: "remote_credentials_required" });
+    expect(fetched).toEqual([]);
+  });
+
+  it("prefers a stored self-hosted Remote Profile over local daemon classification for loopback URLs", async () => {
+    const authDir = tempDir("caplets-remote-selection-loopback-auth-");
+    await new FileRemoteProfileStore({
+      root: join(authDir, "remote-profiles"),
+    }).saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387/caplets",
+      clientId: "rcli_loopback",
+      clientLabel: "Loopback Test Device",
+      credentials: {
+        accessToken: "profile-access-token",
+        refreshToken: "profile-refresh-token",
+        tokenType: "Bearer",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+      },
+    });
+
+    await expect(
+      resolveRemoteSelection(
+        { authDir },
+        {
+          CAPLETS_MODE: "remote",
+          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
+        },
+      ),
+    ).resolves.toMatchObject({
+      kind: "self_hosted_remote",
+      remote: {
+        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        auth: { type: "bearer", token: "profile-access-token" },
+      },
+    });
   });
 
   it("resolves self-hosted remote auth from a stored Remote Profile", async () => {
@@ -699,4 +799,44 @@ function tempDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+async function setupPersistedLocalDaemon(): Promise<{
+  env: Record<string, string>;
+  options: { home: string; platform: "linux"; manager: DaemonManager };
+}> {
+  const home = tempDir("caplets-remote-selection-daemon-");
+  const env = daemonTestEnv(home);
+  const manager = runningDaemonManager();
+  const options = { home, platform: "linux" as const, manager };
+  await installDaemon(
+    { host: "127.0.0.1", port: 5387, path: "/caplets", validate: false, noRestart: true },
+    { env, ...options },
+  );
+  return { env, options };
+}
+
+function daemonTestEnv(dir: string): Record<string, string> {
+  return {
+    XDG_CONFIG_HOME: join(dir, "config"),
+    XDG_STATE_HOME: join(dir, "state"),
+  };
+}
+
+function runningDaemonManager(): DaemonManager {
+  const running: NativeDaemonStatus = { state: "running", installed: true, running: true };
+  return {
+    descriptor: (config: DaemonConfig) => ({
+      kind: "systemd-user",
+      unitName: "caplets-daemon-default.service",
+      path: config.paths.descriptorFile,
+      contents: "",
+    }),
+    status: async () => running,
+    install: async () => ({ action: "install", native: running, commands: [] }),
+    uninstall: async () => ({ action: "uninstall", native: running, commands: [] }),
+    start: async () => ({ action: "start", native: running, commands: [] }),
+    restart: async () => ({ action: "restart", native: running, commands: [] }),
+    stop: async () => ({ action: "stop", native: running, commands: [] }),
+  };
 }

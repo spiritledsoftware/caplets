@@ -19,8 +19,9 @@ Use `npx` if you only want to try a command without installing globally:
 npx caplets install spiritledsoftware/caplets osv
 ```
 
-Use the global CLI before running setup. Setup writes agent configuration that launches
-`caplets serve`, so the binary needs to stay on your PATH:
+Use the global CLI before running setup. Setup installs or reuses the local Caplets
+daemon and writes agent configuration that launches `caplets attach <local-daemon-url>`,
+so the binary needs to stay on your PATH:
 
 ```sh
 npm install -g caplets
@@ -28,8 +29,10 @@ caplets setup
 caplets install spiritledsoftware/caplets osv
 ```
 
-`caplets setup` configures supported agent harnesses. The OSV Caplet is the recommended
-first install because it is public and does not require credentials.
+`caplets setup` configures supported agent harnesses. It initializes user config,
+health-checks the daemon before writing agent config, and uses daemon-backed attach/native
+clients so backend execution keeps the full Caplets environment. The OSV Caplet is the
+recommended first install because it is public and does not require credentials.
 
 ## Install lockfiles and updates
 
@@ -81,8 +84,32 @@ Remote project install and update semantics are intentionally separate from this
 
 ## Manual MCP setup
 
-If your client does not support `caplets setup`, or if you are avoiding a global install,
-add Caplets as a stdio MCP server:
+Prefer `caplets setup` for local MCP clients. It uses the supported MCP-client catalog
+and configures `caplets attach <local-daemon-url>` after the daemon is healthy. For an
+explicit client target, run:
+
+```sh
+caplets setup mcp-client --client codex
+```
+
+If you need to write a config by hand, keep it daemon-backed and secret-free:
+
+```json
+{
+  "mcpServers": {
+    "caplets": {
+      "command": "caplets",
+      "args": ["attach", "<local-daemon-url>"]
+    }
+  }
+}
+```
+
+Replace `<local-daemon-url>` with the loopback daemon URL reported by `caplets setup` or
+`caplets daemon status`; the default is usually `http://127.0.0.1:5387/`.
+
+For an advanced manual fallback where the agent intentionally launches a foreground
+process instead of attaching to the daemon, configure `caplets serve` directly:
 
 ```json
 {
@@ -95,7 +122,8 @@ add Caplets as a stdio MCP server:
 }
 ```
 
-Use `npx` in the command if you did not install globally:
+Use `npx` in the command only for temporary foreground experiments; daemon-backed setup
+expects a stable installed `caplets` binary on PATH:
 
 ```json
 {
@@ -107,6 +135,24 @@ Use `npx` in the command if you did not install globally:
   }
 }
 ```
+
+If you need non-default HTTP serving behavior, prefer user config over repeating flags:
+
+```json
+{
+  "serve": {
+    "port": 5487,
+    "path": "/caplets",
+    "publicOrigins": ["https://caplets.example.com"]
+  }
+}
+```
+
+These `serve` defaults are user-only. They are ignored from `.caplets/config.json`, do not
+set transport under `serve`, and are overridden by command flags and environment variables. A
+daemon restart picks up changed user defaults for daemon fields that were not explicitly
+set during daemon install. Local `caplets setup` still uses a credential-free loopback
+daemon before writing MCP or native integration config.
 
 ## Check the install
 

@@ -56,6 +56,8 @@ The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, atta
 
 `packages/core/src/daemon/` owns the default per-user daemon lifecycle. `caplets daemon install` persists HTTP `caplets serve` configuration, explicit service environment variables, optional shell inheritance intent, user-only log paths, and native service descriptors under the `daemon/default` identity. Runtime lifecycle commands (`start`, `restart`, `stop`, `status`, `logs`, and `uninstall`) read that installed service state instead of accepting serve flags.
 
+Top-level user `serve` config supplies optional HTTP defaults for foreground serve and daemon-managed serve. CLI flags and environment variables win over user config, and explicit daemon install settings win over later user-default changes. `caplets daemon restart` re-resolves user `serve` defaults for fields that were not explicit in the installed daemon config. Project config strips `serve` because repositories must not control a developer's local bind address, auth posture, or public origins.
+
 The daemon uses the native per-user service manager for the host platform: launchd UserAgents on macOS, `systemd --user` services on Linux, and current-user Windows Scheduled Tasks on Windows. There is no detached-process fallback when a native manager is unavailable. Foreground `caplets serve` remains stdio/HTTP serving only.
 
 ### Code Mode

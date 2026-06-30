@@ -18,22 +18,25 @@ describe("Codex and Claude manual MCP setup", () => {
     }
   });
 
-  it("documents manual MCP config for Codex and Claude users", async () => {
+  it("documents daemon-first local MCP setup for Codex and Claude users", async () => {
     const readme = await readFile(path.join(repoRoot, "README.md"), "utf8");
+    expect(readme).toContain("caplets setup mcp-client --client codex");
+    expect(readme).toContain("local Caplets daemon");
     expect(readme).toContain('"command": "caplets"');
-    expect(readme).toContain('"args": ["serve"]');
+    expect(readme).toContain('"args": ["attach", "<local-daemon-url>"]');
     expect(readme).toContain('"args": ["attach", "https://caplets.example.com/caplets"]');
     expect(readme).toContain("[mcp_servers.caplets]");
-    expect(readme).toContain("codex mcp add caplets -- caplets serve");
-    expect(readme).toContain(
+    expect(readme).not.toContain("codex mcp add caplets -- caplets serve");
+    expect(readme).not.toContain(
       "claude mcp add --transport stdio --scope user caplets -- caplets serve",
     );
     expect(readme).not.toMatch(/plugin marketplace add|plugin (?:add|install) caplets@caplets/u);
   });
 
-  it("documents serve for local MCP and attach for remote MCP", async () => {
+  it("documents serve as an advanced fallback and attach for remote MCP", async () => {
     const readme = await readFile(path.join(repoRoot, "README.md"), "utf8");
-    expect(readme).toContain("caplets serve");
+    expect(readme).toContain("advanced manual fallback");
+    expect(readme).toContain("caplets serve --transport http");
     expect(readme).toContain("caplets attach");
     expect(readme).toContain("caplets remote login https://caplets.example.com/caplets");
     expect(readme).toContain("CAPLETS_MODE=cloud");

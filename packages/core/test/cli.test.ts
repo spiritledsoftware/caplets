@@ -592,6 +592,110 @@ describe("cli init", () => {
     ]);
   });
 
+  it("resolves HTTP serve with global config defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-config-defaults-"));
+    const configPath = join(dir, "config.json");
+    const served: unknown[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: {
+            host: "0.0.0.0",
+            port: 5480,
+            path: "/configured",
+            allowUnauthenticatedHttp: true,
+          },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http"], {
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          host: "0.0.0.0",
+          port: 5480,
+          path: "/configured",
+          auth: { type: "development_unauthenticated" },
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves HTTP serve defaults from the default user config path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-default-path-"));
+    const configPath = join(dir, "config", "caplets", "config.json");
+    const served: unknown[] = [];
+    try {
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify({ serve: { port: 5481, path: "/default-path" } }));
+      delete process.env.CAPLETS_CONFIG;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http"], {
+        env: { ...process.env, CAPLETS_CONFIG: undefined, XDG_CONFIG_HOME: join(dir, "config") },
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          port: 5481,
+          path: "/default-path",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets HTTP serve CLI flags override global config defaults", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-serve-config-cli-"));
+    const configPath = join(dir, "config.json");
+    const served: unknown[] = [];
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          serve: { host: "0.0.0.0", port: 5480, path: "/configured" },
+        }),
+      );
+      process.env.CAPLETS_CONFIG = configPath;
+      delete process.env.CAPLETS_SERVER_URL;
+
+      await runCli(["serve", "--transport", "http", "--port", "6000", "--path", "/cli"], {
+        writeOut: () => {},
+        serve: async (options) => {
+          served.push(options);
+        },
+      });
+
+      expect(served).toEqual([
+        expect.objectContaining({
+          transport: "http",
+          host: "0.0.0.0",
+          port: 6000,
+          path: "/cli",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("resolves HTTP serve with an upstream URL", async () => {
     const served: unknown[] = [];
 
@@ -1111,7 +1215,7 @@ describe("cli init", () => {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
       }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+        hostUrl: "https://remote.caplets.test/caplets",
         clientId: "rcli_test",
         clientLabel: "Remote Prompt Test",
         credentials: {
@@ -1134,7 +1238,7 @@ describe("cli init", () => {
         {
           env: {
             CAPLETS_MODE: "remote",
-            CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+            CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
             CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
             CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
           },
@@ -2418,7 +2522,7 @@ describe("cli init", () => {
       await new FileRemoteProfileStore({
         root: join(authDir, "remote-profiles"),
       }).saveSelfHostedProfile({
-        hostUrl: "http://127.0.0.1:5387",
+        hostUrl: "https://remote.caplets.test/caplets",
         clientId: "rcli_install_test",
         clientLabel: "Remote Install Test",
         credentials: {
@@ -2432,7 +2536,7 @@ describe("cli init", () => {
       await runCli(["install", "--global", "--remote", "--json"], {
         env: {
           CAPLETS_MODE: "remote",
-          CAPLETS_REMOTE_URL: "http://127.0.0.1:5387",
+          CAPLETS_REMOTE_URL: "https://remote.caplets.test/caplets",
           CAPLETS_CONFIG: join(dir, "missing-user-config.json"),
           CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
         },
@@ -4021,6 +4125,74 @@ describe("cli init", () => {
   });
 });
 
+function fakeDaemonFirstCliSetup(baseDir?: string) {
+  const ownsDir = baseDir === undefined;
+  const dir = baseDir ?? mkdtempSync(join(tmpdir(), "caplets-cli-daemon-first-"));
+  const daemonBaseUrl = "http://127.0.0.1:5387/caplets";
+  const mcpUpserts: unknown[] = [];
+  return {
+    daemonBaseUrl,
+    mcpUpserts,
+    io: {
+      env: { ...process.env, CAPLETS_CONFIG: join(dir, "config.json") },
+      setupOperations: {
+        ensureDaemon: async () => ({
+          phase: "daemon" as const,
+          label: "Reuse local Caplets daemon",
+          status: "reused" as const,
+          daemonBaseUrl,
+        }),
+      },
+      mcpOperations: {
+        detectClients: async () => fakeCliMcpClients(),
+        listSupportedClients: () => fakeCliMcpClients(),
+        upsertServer: async (options: {
+          clientId: string;
+          daemonBaseUrl: string;
+          local: boolean;
+        }) => {
+          mcpUpserts.push(options);
+          const client = fakeCliMcpClients().find((entry) => entry.id === options.clientId);
+          return {
+            clientId: options.clientId,
+            success: true,
+            path: client?.projectConfigPath ?? `/project/${options.clientId}.json`,
+          };
+        },
+      },
+    },
+    cleanup: () => {
+      if (ownsDir) rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+function fakeCliMcpClients() {
+  return [
+    {
+      id: "zed",
+      displayName: "Zed",
+      configPath: "/home/user/.config/zed/settings.json",
+      projectConfigPath: "/project/.zed/settings.json",
+      supportsStdio: true,
+    },
+    {
+      id: "codex",
+      displayName: "Codex",
+      configPath: "/home/user/.codex/config.toml",
+      projectConfigPath: "/project/.codex/config.toml",
+      supportsStdio: true,
+    },
+    {
+      id: "claude-code",
+      displayName: "Claude Code",
+      configPath: "/home/user/.claude.json",
+      projectConfigPath: "/project/.claude.json",
+      supportsStdio: true,
+    },
+  ];
+}
+
 describe("cli setup", () => {
   it("prints supported integrations when no integration is provided", async () => {
     const out: string[] = [];
@@ -4034,7 +4206,13 @@ describe("cli setup", () => {
     expect(text).toContain("opencode");
     expect(text).toContain("pi");
     expect(text).toContain("mcp-client");
+    expect(text).toContain("daemon-first");
+    expect(text).toContain("detected MCP clients");
+    expect(text).toContain("all supported MCP clients");
+    expect(text).toContain("--remote-url");
+    expect(text).toContain("--output");
     expect(text).toContain("--dry-run");
+    expect(text).not.toContain("caplets serve");
     expect(text).not.toContain("plugin marketplace");
     expect(text).not.toContain("caplets@caplets");
   });
@@ -4072,33 +4250,26 @@ describe("cli setup", () => {
   it("prompts for integrations when stdin is available", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup"], {
-      writeOut: (value) => out.push(value),
-      readStdin: async () => "1, Claude Code\n",
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        readStdin: async () => "1, Claude Code\n",
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
-    expect(commands).toEqual([
-      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
-      {
-        command: "claude",
-        args: [
-          "mcp",
-          "add",
-          "--transport",
-          "stdio",
-          "--scope",
-          "user",
-          "caplets",
-          "--",
-          "caplets",
-          "serve",
-        ],
-      },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      { clientId: "claude-code", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     const text = out.join("");
     expect(text).toContain("Select integrations to set up:");
@@ -4106,43 +4277,83 @@ describe("cli setup", () => {
     expect(text).toContain("Completed Claude Code setup");
   });
 
-  it("prompts for a generic MCP client output path during interactive setup", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "caplets-setup-interactive-"));
-    const output = join(dir, "caplets.mcp.json");
+  it("prompts for a detected MCP client and configures only the selected client", async () => {
     const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
+    const upserts: unknown[] = [];
 
     try {
       await runCli(["setup"], {
+        ...setup.io,
+        mcpOperations: {
+          detectClients: async () => [fakeCliMcpClients()[0]!],
+          listSupportedClients: () => fakeCliMcpClients(),
+          upsertServer: async (options) => {
+            upserts.push(options);
+            return { clientId: "zed", success: true, path: "/project/.zed/settings.json" };
+          },
+        },
         writeOut: (value) => out.push(value),
-        readStdin: async () => `Any MCP client\n${output}\n`,
+        readStdin: async () => "Any MCP client\nzed\n",
       });
 
-      expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
-      });
-      const text = out.join("");
-      expect(text).toContain("Select integrations to set up:");
-      expect(text).toContain("Path to write generic MCP config");
-      expect(text).toContain(`completed: wrote ${output}`);
+      expect(upserts).toEqual([
+        { clientId: "zed", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Detected MCP clients");
+      expect(out.join("")).toContain("Zed");
+      expect(out.join("")).not.toContain("codex.toml");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      setup.cleanup();
+    }
+  });
+
+  it("lets interactive MCP setup reveal all supported clients", async () => {
+    const out: string[] = [];
+    const setup = fakeDaemonFirstCliSetup();
+
+    try {
+      await runCli(["setup"], {
+        ...setup.io,
+        mcpOperations: {
+          ...setup.io.mcpOperations,
+          detectClients: async () => [fakeCliMcpClients()[0]!],
+        },
+        writeOut: (value) => out.push(value),
+        readStdin: async () => "Any MCP client\nall\ncodex\n",
+      });
+
+      expect(setup.mcpUpserts).toEqual([
+        { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
+      ]);
+      expect(out.join("")).toContain("Supported MCP clients");
+      expect(out.join("")).toContain("Codex");
+    } finally {
+      setup.cleanup();
     }
   });
 
   it("adds Caplets to Codex MCP config", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup", "codex"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "codex"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
-    expect(commands).toEqual([
-      { command: "codex", args: ["mcp", "add", "caplets", "--", "caplets", "serve"] },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "codex", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     expect(out.join("")).toContain("Completed Codex setup");
   });
@@ -4150,31 +4361,24 @@ describe("cli setup", () => {
   it("adds Caplets to Claude Code MCP config", async () => {
     const out: string[] = [];
     const commands: Array<{ command: string; args: string[] }> = [];
+    const setup = fakeDaemonFirstCliSetup();
 
-    await runCli(["setup", "claude-code"], {
-      writeOut: (value) => out.push(value),
-      runSetupCommand: async (command, args) => {
-        commands.push({ command, args });
-        return { stdout: "", stderr: "" };
-      },
-    });
+    try {
+      await runCli(["setup", "claude-code"], {
+        ...setup.io,
+        writeOut: (value) => out.push(value),
+        runSetupCommand: async (command, args) => {
+          commands.push({ command, args });
+          return { stdout: "", stderr: "" };
+        },
+      });
+    } finally {
+      setup.cleanup();
+    }
 
-    expect(commands).toEqual([
-      {
-        command: "claude",
-        args: [
-          "mcp",
-          "add",
-          "--transport",
-          "stdio",
-          "--scope",
-          "user",
-          "caplets",
-          "--",
-          "caplets",
-          "serve",
-        ],
-      },
+    expect(commands).toEqual([]);
+    expect(setup.mcpUpserts).toEqual([
+      { clientId: "claude-code", daemonBaseUrl: setup.daemonBaseUrl, local: true },
     ]);
     expect(out.join("")).toContain("Completed Claude Code setup");
   });
@@ -4193,7 +4397,8 @@ describe("cli setup", () => {
 
     expect(commands).toEqual([]);
     expect(out.join("")).toContain("Dry run");
-    expect(out.join("")).toContain("codex mcp add caplets -- caplets serve");
+    expect(out.join("")).toContain("caplets attach http://127.0.0.1:5387/");
+    expect(out.join("")).toContain("planned: configured Codex MCP client");
     expect(out.join("")).not.toContain("plugin marketplace");
     expect(out.join("")).not.toContain("caplets@caplets");
   });
@@ -4203,13 +4408,15 @@ describe("cli setup", () => {
     const output = join(dir, "nested", "caplets.mcp.json");
     const out: string[] = [];
 
+    const setup = fakeDaemonFirstCliSetup(dir);
     try {
       await runCli(["setup", "mcp-client", "--output", output], {
+        ...setup.io,
         writeOut: (value) => out.push(value),
       });
 
       expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
-        mcpServers: { caplets: { command: "caplets", args: ["serve"] } },
+        mcpServers: { caplets: { command: "caplets", args: ["attach", setup.daemonBaseUrl] } },
       });
       expect(out.join("")).toContain(`completed: wrote ${output}`);
     } finally {
@@ -4221,7 +4428,7 @@ describe("cli setup", () => {
     await expect(runCli(["setup", "mcp-client"], { writeErr: () => {} })).rejects.toThrow(
       expect.objectContaining({
         code: "REQUEST_INVALID",
-        message: expect.stringContaining("requires --output <path>"),
+        message: expect.stringContaining("requires --client <id> or --output <path>"),
       }) as CapletsError,
     );
   });
@@ -4447,6 +4654,8 @@ describe("cli setup", () => {
       expect(text, relativePath).not.toMatch(/CAPLETS_REMOTE_(TOKEN|USER|PASSWORD)/u);
       expect(text, relativePath).not.toMatch(/Basic Auth/u);
       expect(text, relativePath).not.toMatch(/add-mcp --env/u);
+      expect(text, relativePath).not.toMatch(/codex mcp add caplets -- caplets serve/u);
+      expect(text, relativePath).not.toMatch(/claude mcp add[^\n]*caplets serve/u);
     }
   });
 
@@ -4479,20 +4688,34 @@ describe("cli setup", () => {
     expect(out.join("")).toContain("Completed Codex setup (remote, remote_host)");
   });
 
-  it("wraps setup command failures with the failed command", async () => {
-    await expect(
-      runCli(["setup", "codex"], {
-        writeErr: () => {},
-        runSetupCommand: async () => {
-          throw new Error("missing codex binary");
-        },
-      }),
-    ).rejects.toThrow(
-      expect.objectContaining({
-        code: "SERVER_UNAVAILABLE",
-        message: expect.stringContaining("codex mcp add caplets -- caplets serve"),
-      }) as CapletsError,
-    );
+  it("wraps MCP adapter failures with the selected client", async () => {
+    const setup = fakeDaemonFirstCliSetup();
+    try {
+      await expect(
+        runCli(["setup", "codex"], {
+          ...setup.io,
+          mcpOperations: {
+            ...setup.io.mcpOperations,
+            upsertServer: async () => ({
+              clientId: "codex",
+              success: false,
+              path: "/project/.codex/config.toml",
+              error: "missing codex config",
+            }),
+          },
+          writeErr: () => {},
+        }),
+      ).rejects.toThrow(
+        expect.objectContaining({
+          code: "SERVER_UNAVAILABLE",
+          message: expect.stringContaining(
+            "Failed to configure Codex MCP config: missing codex config",
+          ),
+        }) as CapletsError,
+      );
+    } finally {
+      setup.cleanup();
+    }
   });
 });
 

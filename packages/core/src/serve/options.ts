@@ -2,6 +2,7 @@ import { CapletsError } from "../errors";
 import { isLoopbackHost, parseServerBaseUrl } from "../server/options";
 import { DEFAULT_AUTH_DIR } from "../config/paths";
 import { join } from "node:path";
+import type { ServeConfig } from "../config";
 
 export type ServeTransport = "stdio" | "http";
 
@@ -26,6 +27,7 @@ export type HttpServeOptions = {
   port: number;
   path: string;
   publicOrigin?: string | undefined;
+  publicOrigins?: string[] | undefined;
   auth: HttpServeAuthOptions;
   remoteCredentialStateDir?: string | undefined;
   upstreamUrl?: string | undefined;
@@ -44,6 +46,8 @@ export type ServeOptions = StdioServeOptions | HttpServeOptions;
 export type ServeEnv = Partial<
   Record<"CAPLETS_SERVER_URL" | "CAPLETS_REMOTE_SERVER_STATE_DIR", string>
 >;
+
+export type ServeDefaults = Partial<ServeConfig>;
 
 const HTTP_ONLY_OPTIONS = [
   "host",
@@ -68,6 +72,7 @@ const HTTP_ONLY_OPTION_FLAGS = {
 export function resolveServeOptions(
   raw: RawServeOptions,
   env: ServeEnv = process.env,
+  defaults?: ServeDefaults | undefined,
 ): ServeOptions {
   const transport = parseTransport(raw.transport ?? "stdio");
   if (transport === "stdio") {
@@ -84,17 +89,28 @@ export function resolveServeOptions(
   const serverUrl = env.CAPLETS_SERVER_URL
     ? parseServeServerUrl(nonEmpty(env.CAPLETS_SERVER_URL, "CAPLETS_SERVER_URL")!)
     : undefined;
-  const host = nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? "127.0.0.1";
-  const port = parsePort(raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : 5387));
-  const path = normalizeHttpPath(raw.path ?? serverUrl?.pathname ?? "/");
+  const configuredPublicOrigins = defaults?.publicOrigins ?? [];
+  const publicOrigin = serverUrl?.origin ?? configuredPublicOrigins[0];
+  const publicOrigins = publicOrigin
+    ? [publicOrigin, ...configuredPublicOrigins.filter((origin) => origin !== publicOrigin)]
+    : configuredPublicOrigins;
+  const host =
+    nonEmpty(raw.host, "--host") ?? serverUrlHost(serverUrl) ?? defaults?.host ?? "127.0.0.1";
+  const port = parsePort(
+    raw.port ?? (serverUrl?.port ? Number(serverUrl.port) : (defaults?.port ?? 5387)),
+  );
+  const path = normalizeHttpPath(raw.path ?? serverUrl?.pathname ?? defaults?.path ?? "/");
   const remoteCredentialStateDir =
     nonEmpty(raw.remoteStatePath, "--remote-state-path") ??
     nonEmpty(env.CAPLETS_REMOTE_SERVER_STATE_DIR, "CAPLETS_REMOTE_SERVER_STATE_DIR") ??
+    nonEmpty(defaults?.remoteStatePath, "serve.remoteStatePath") ??
     join(DEFAULT_AUTH_DIR, "remote-server");
-  const upstreamUrl = nonEmpty(raw.upstreamUrl, "--upstream-url");
+  const upstreamUrl =
+    nonEmpty(raw.upstreamUrl, "--upstream-url") ??
+    nonEmpty(defaults?.upstreamUrl, "serve.upstreamUrl");
   if (upstreamUrl) {
     rejectSelfReferentialUpstream(upstreamUrl, {
-      ...(serverUrl ? { origin: serverUrl.origin } : {}),
+      ...(publicOrigin ? { origin: publicOrigin } : {}),
       host,
       port,
       path,
@@ -102,23 +118,27 @@ export function resolveServeOptions(
   }
 
   const loopback = isLoopbackHost(host);
+  const allowUnauthenticatedHttp =
+    raw.allowUnauthenticatedHttp ?? defaults?.allowUnauthenticatedHttp ?? false;
   const auth: HttpServeAuthOptions =
-    raw.allowUnauthenticatedHttp === true
+    allowUnauthenticatedHttp === true
       ? { type: "development_unauthenticated" }
       : { type: "remote_credentials" };
+  const trustProxy = raw.trustProxy ?? defaults?.trustProxy ?? false;
   return {
     transport,
     host,
     port,
     path,
-    ...(serverUrl ? { publicOrigin: serverUrl.origin } : {}),
+    ...(publicOrigin ? { publicOrigin } : {}),
+    ...(publicOrigins.length > 0 ? { publicOrigins } : {}),
     auth,
     ...(auth.type === "remote_credentials" ? { remoteCredentialStateDir } : {}),
     ...(upstreamUrl ? { upstreamUrl } : {}),
-    allowUnauthenticatedHttp: raw.allowUnauthenticatedHttp === true,
+    allowUnauthenticatedHttp,
     warnUnauthenticatedNetwork: !loopback && auth.type === "development_unauthenticated",
     loopback,
-    trustProxy: raw.trustProxy === true,
+    trustProxy,
   };
 }
 

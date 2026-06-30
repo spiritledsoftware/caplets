@@ -69,4 +69,47 @@ describe("attach native service wiring", () => {
       }),
     );
   });
+  it("wires local daemon selections without Cloud workspace or Remote Profile fields", async () => {
+    const { createAttachNativeServiceForTests } = await import("../src/attach/server");
+    const selection: ResolvedRemoteSelection = {
+      kind: "local_daemon",
+      remote: {
+        baseUrl: new URL("http://127.0.0.1:5387/caplets"),
+        mcpUrl: new URL("http://127.0.0.1:5387/caplets/v1/mcp"),
+        attachUrl: new URL("http://127.0.0.1:5387/caplets/v1/attach"),
+        controlUrl: new URL("http://127.0.0.1:5387/caplets/v1/admin"),
+        healthUrl: new URL("http://127.0.0.1:5387/caplets/v1/healthz"),
+        projectBindingWebSocketUrl: new URL(
+          "ws://127.0.0.1:5387/caplets/v1/attach/project-bindings/connect",
+        ),
+        auth: { type: "none", user: "caplets" },
+        requestInit: {},
+      },
+    };
+
+    createAttachNativeServiceForTests(
+      {
+        transport: "stdio",
+        configPath: "/repo/caplets.json",
+        projectRoot: "/repo",
+        projectConfigPath: "/repo/.caplets/config.json",
+        selection,
+      } as AttachServeOptions,
+      {},
+    );
+
+    expect(createNativeCapletsService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "remote",
+        remote: expect.objectContaining({
+          url: "http://127.0.0.1:5387/caplets",
+        }),
+      }),
+    );
+    expect(createNativeCapletsService).toHaveBeenCalledWith(
+      expect.not.objectContaining({
+        remote: expect.objectContaining({ workspace: expect.anything() }),
+      }),
+    );
+  });
 });
