@@ -2,7 +2,7 @@ import type { Prompt, Resource, ResourceTemplate, Tool } from "@modelcontextprot
 import { describe, expect, it } from "vitest";
 import type { CapletConfig } from "../src/config";
 import type { CallableCaplet, ExposureSnapshot } from "../src/exposure/discovery";
-import { buildExposureProjection } from "../src/exposure/projection";
+import { buildExposureProjection, resolveNativeProjectionMerge } from "../src/exposure/projection";
 
 const discoveredAt = 1_719_000_000_000;
 
@@ -155,6 +155,123 @@ describe("Caplets exposure projection", () => {
     );
   });
 });
+
+describe("native projection merge", () => {
+  it("suppresses local entries when remote forbids shadowing", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [mergeTool("shared", "remote", "forbid")],
+      localTools: [mergeTool("shared", "local", "namespace")],
+      remoteCodeModeTools: [],
+      localCodeModeTools: [],
+      remoteIdentity: "https://remote.example.com",
+      localIdentity: "local:/repo",
+      namespaceAliases: { upstreams: {} },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteTools.map((tool) => tool.caplet)).toEqual(["shared"]);
+    expect(result.localTools).toEqual([]);
+    expect(result.routes.get("shared")).toEqual({ service: "remote", capletId: "shared" });
+    expect(result.suppressedLocalIds).toEqual(new Set(["shared"]));
+  });
+
+  it("keeps local entries visible when remote allows shadowing", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [mergeTool("shared", "remote", "allow")],
+      localTools: [mergeTool("shared", "local", "namespace")],
+      remoteCodeModeTools: [],
+      localCodeModeTools: [],
+      remoteIdentity: "https://remote.example.com",
+      localIdentity: "local:/repo",
+      namespaceAliases: { upstreams: {} },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteTools.map((tool) => tool.caplet)).toEqual(["shared"]);
+    expect(result.localTools.map((tool) => tool.caplet)).toEqual(["shared"]);
+    expect(result.routes.get("shared")).toEqual({ service: "local", capletId: "shared" });
+  });
+
+  it("qualifies namespace collisions and makes bare IDs diagnostic-only", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [mergeTool("shared", "remote", "namespace")],
+      localTools: [mergeTool("shared", "local", "namespace")],
+      remoteCodeModeTools: [],
+      localCodeModeTools: [],
+      remoteIdentity: "https://remote.example.com",
+      localIdentity: "local:/repo",
+      namespaceAliases: { local: "mac", upstreams: { "https://remote.example.com": "vps" } },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteTools.map((tool) => tool.caplet)).toEqual(["vps-d4b6__shared"]);
+    expect(result.localTools.map((tool) => tool.caplet)).toEqual(["mac-6617__shared"]);
+    expect(result.routes.has("shared")).toBe(false);
+    expect(result.namespaceDiagnostics.get("shared")).toMatchObject({
+      requestedId: "shared",
+      reason: "namespace_collision",
+      alternatives: ["vps-d4b6__shared", "mac-6617__shared"],
+    });
+  });
+
+  it("rewrites direct-tool alternatives while preserving source routes", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [mergeTool("shared__read", "remote", "namespace", "shared")],
+      localTools: [mergeTool("shared__write", "local", "namespace", "shared")],
+      remoteCodeModeTools: [],
+      localCodeModeTools: [],
+      remoteIdentity: "https://remote.example.com",
+      localIdentity: "local:/repo",
+      namespaceAliases: { local: "mac", upstreams: { "https://remote.example.com": "vps" } },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteTools.map((tool) => [tool.caplet, tool.sourceCaplet])).toEqual([
+      ["vps-d4b6__shared__read", "vps-d4b6__shared"],
+    ]);
+    expect(result.localTools.map((tool) => [tool.caplet, tool.sourceCaplet])).toEqual([
+      ["mac-6617__shared__write", "mac-6617__shared"],
+    ]);
+    expect(result.routes.get("vps-d4b6__shared__read")).toEqual({
+      service: "remote",
+      capletId: "shared__read",
+    });
+    expect(result.namespaceDiagnostics.get("shared__read")).toMatchObject({
+      alternatives: ["vps-d4b6__shared__read", "mac-6617__shared__write"],
+    });
+  });
+});
+
+type MergeTool = {
+  caplet: string;
+  sourceCaplet?: string | undefined;
+  shadowing?: "forbid" | "allow" | "namespace" | undefined;
+  service: "local" | "remote";
+};
+
+function mergeTool(
+  caplet: string,
+  service: "local" | "remote",
+  shadowing: "forbid" | "allow" | "namespace",
+  sourceCaplet?: string,
+): MergeTool {
+  return {
+    caplet,
+    service,
+    shadowing,
+    ...(sourceCaplet ? { sourceCaplet } : {}),
+  };
+}
+
+function renameMergeTool(tool: MergeTool, visibleBaseId: string): MergeTool {
+  const baseId = tool.sourceCaplet ?? tool.caplet;
+  const directTool = Boolean(tool.sourceCaplet && tool.caplet.startsWith(`${baseId}__`));
+  return {
+    ...tool,
+    caplet: directTool ? `${visibleBaseId}${tool.caplet.slice(baseId.length)}` : visibleBaseId,
+    sourceCaplet: directTool ? visibleBaseId : tool.sourceCaplet,
+  };
+}
 
 function snapshot(overrides: Partial<ExposureSnapshot>): ExposureSnapshot {
   return {

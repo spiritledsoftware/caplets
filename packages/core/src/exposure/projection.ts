@@ -1,4 +1,9 @@
 import type { CapletShadowingPolicy } from "../config";
+import {
+  resolveNamespaceExposure,
+  type NamespaceDiagnostic,
+  type NamespaceSourceEntry,
+} from "./namespace";
 import type { SafeErrorSummary } from "../errors";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 import type {
@@ -245,4 +250,254 @@ function sensitiveKey(key: string): boolean {
 
 function shadowingPolicy(caplet: { shadowing?: CapletShadowingPolicy | undefined }) {
   return caplet.shadowing ?? "forbid";
+}
+
+export type NativeProjectionMergeTool = {
+  caplet: string;
+  sourceCaplet?: string | undefined;
+  shadowing?: CapletShadowingPolicy | undefined;
+  codeModeRun?: boolean | undefined;
+};
+
+export type NativeProjectionMergeRoute = {
+  service: "local" | "remote";
+  capletId: string;
+};
+
+type NativeProjectionNamespaceRoute = {
+  service: "local" | "remote";
+  baseId: string;
+};
+
+export type NativeProjectionMergeOptions<Tool extends NativeProjectionMergeTool> = {
+  remoteTools: Tool[];
+  localTools: Tool[];
+  remoteCodeModeTools: Tool[];
+  localCodeModeTools: Tool[];
+  remoteIdentity: string;
+  localIdentity: string;
+  namespaceAliases: {
+    local?: string | undefined;
+    upstreams: Record<string, string>;
+  };
+  renameTool(tool: Tool, visibleBaseId: string): Tool;
+};
+
+export type NativeProjectionMergeResult<Tool extends NativeProjectionMergeTool> = {
+  remoteTools: Tool[];
+  localTools: Tool[];
+  remoteCodeModeTools: Tool[];
+  localCodeModeTools: Tool[];
+  routes: Map<string, NativeProjectionMergeRoute>;
+  namespaceDiagnostics: Map<string, NamespaceDiagnostic>;
+  suppressedLocalIds: Set<string>;
+};
+
+export function resolveNativeProjectionMerge<Tool extends NativeProjectionMergeTool>(
+  options: NativeProjectionMergeOptions<Tool>,
+): NativeProjectionMergeResult<Tool> {
+  const suppressedLocalIds = remoteSuppressedProjectionCapletIds(
+    options.remoteTools,
+    options.remoteCodeModeTools,
+  );
+  const localTools = options.localTools.filter(
+    (tool) => tool.codeModeRun !== true && !suppressedLocalIds.has(projectionSourceBaseId(tool)),
+  );
+  const localCodeModeTools = options.localCodeModeTools.filter(
+    (tool) => !suppressedLocalIds.has(tool.caplet),
+  );
+  const remoteTools = options.remoteTools.filter((tool) => tool.codeModeRun !== true);
+  const resolved = resolveVisibleProjectionToolIds({
+    remoteTools,
+    localTools,
+    remoteCodeModeTools: options.remoteCodeModeTools,
+    localCodeModeTools,
+    remoteIdentity: options.remoteIdentity,
+    localIdentity: options.localIdentity,
+    namespaceAliases: options.namespaceAliases,
+    renameTool: options.renameTool,
+  });
+  return { ...resolved, suppressedLocalIds };
+}
+
+function resolveVisibleProjectionToolIds<Tool extends NativeProjectionMergeTool>(options: {
+  remoteTools: Tool[];
+  localTools: Tool[];
+  remoteCodeModeTools: Tool[];
+  localCodeModeTools: Tool[];
+  remoteIdentity: string;
+  localIdentity: string;
+  namespaceAliases: { local?: string | undefined; upstreams: Record<string, string> };
+  renameTool(tool: Tool, visibleBaseId: string): Tool;
+}): Omit<NativeProjectionMergeResult<Tool>, "suppressedLocalIds"> {
+  const entries = nativeProjectionNamespaceEntries(
+    [
+      { service: "remote", tools: [...options.remoteTools, ...options.remoteCodeModeTools] },
+      { service: "local", tools: [...options.localTools, ...options.localCodeModeTools] },
+    ],
+    options,
+  );
+  const resolution = resolveNamespaceExposure(entries);
+  const namespacedRecords = resolution.visibleRecords.filter((record) => record.namespaced);
+  const namespacedBaseIds = new Set(namespacedRecords.map((record) => record.baseId));
+  const diagnosticBaseIds = new Set(
+    resolution.unavailableDiagnostics.map((diagnostic) => diagnostic.requestedId),
+  );
+  const routes = new Map<string, NativeProjectionMergeRoute>();
+  const namespaceDiagnostics = new Map(resolution.suppressedBareIds);
+  for (const diagnostic of resolution.unavailableDiagnostics) {
+    namespaceDiagnostics.set(diagnostic.requestedId, diagnostic);
+  }
+  const alternativesByBaseId = new Map<string, Set<string>>();
+  const staleIdsByBaseId = new Map<string, Set<string>>();
+
+  const setRoute = (
+    visibleCapletId: string,
+    route: NativeProjectionMergeRoute,
+    overwrite: boolean,
+  ) => {
+    if (overwrite || !routes.has(visibleCapletId)) routes.set(visibleCapletId, route);
+  };
+  const rewrite = (service: "local" | "remote", tools: Tool[], overwrite: boolean): Tool[] => {
+    const rewritten: Tool[] = [];
+    for (const tool of tools) {
+      const baseId = projectionSourceBaseId(tool);
+      if (diagnosticBaseIds.has(baseId)) continue;
+      if (!namespacedBaseIds.has(baseId)) {
+        rewritten.push(tool);
+        setRoute(tool.caplet, { service, capletId: tool.caplet }, overwrite);
+        continue;
+      }
+      const record = namespacedRecords.find(
+        (candidate) => candidate.baseId === baseId && candidate.route.service === service,
+      );
+      if (!record) continue;
+      const visibleTool = options.renameTool(tool, record.id);
+      rewritten.push(visibleTool);
+      addProjectionMapSetValue(alternativesByBaseId, baseId, visibleTool.caplet);
+      if (tool.caplet !== visibleTool.caplet) {
+        addProjectionMapSetValue(staleIdsByBaseId, baseId, tool.caplet);
+      }
+      setRoute(visibleTool.caplet, { service, capletId: tool.caplet }, overwrite);
+    }
+    return rewritten;
+  };
+
+  const remoteTools = rewrite("remote", options.remoteTools, false);
+  const localTools = rewrite("local", options.localTools, true);
+  const remoteCodeModeTools = rewrite("remote", options.remoteCodeModeTools, false);
+  const localCodeModeTools = rewrite("local", options.localCodeModeTools, true);
+  for (const [baseId, alternatives] of alternativesByBaseId) {
+    const baseDiagnostic = resolution.suppressedBareIds.get(baseId);
+    if (!baseDiagnostic) continue;
+    const alternativeList = [...alternatives];
+    namespaceDiagnostics.set(
+      baseId,
+      projectionNamespaceDiagnosticWithAlternatives(baseId, baseDiagnostic, alternativeList),
+    );
+    for (const staleId of staleIdsByBaseId.get(baseId) ?? []) {
+      namespaceDiagnostics.set(
+        staleId,
+        projectionNamespaceDiagnosticWithAlternatives(staleId, baseDiagnostic, alternativeList),
+      );
+    }
+  }
+
+  return {
+    remoteTools,
+    localTools,
+    remoteCodeModeTools,
+    localCodeModeTools,
+    routes,
+    namespaceDiagnostics,
+  };
+}
+
+function nativeProjectionNamespaceEntries<Tool extends NativeProjectionMergeTool>(
+  groups: Array<{ service: "local" | "remote"; tools: Tool[] }>,
+  identities: {
+    remoteIdentity: string;
+    localIdentity: string;
+    namespaceAliases: { local?: string | undefined; upstreams: Record<string, string> };
+  },
+): Array<NamespaceSourceEntry<NativeProjectionNamespaceRoute>> {
+  const entries = new Map<string, NamespaceSourceEntry<NativeProjectionNamespaceRoute>>();
+  for (const group of groups) {
+    const byBaseId = new Map<string, Tool[]>();
+    for (const tool of group.tools) {
+      const baseId = projectionSourceBaseId(tool);
+      byBaseId.set(baseId, [...(byBaseId.get(baseId) ?? []), tool]);
+    }
+    for (const [baseId, tools] of byBaseId) {
+      const service = group.service;
+      entries.set(`${service}:${baseId}`, {
+        baseId,
+        sourceKind: service === "local" ? "local" : "upstream",
+        sourceLabel: service === "local" ? "local" : "remote",
+        namespaceAlias:
+          service === "local"
+            ? identities.namespaceAliases.local
+            : identities.namespaceAliases.upstreams[identities.remoteIdentity],
+        durableSourceIdentity:
+          service === "local" ? identities.localIdentity : identities.remoteIdentity,
+        shadowing: aggregateProjectionShadowing(tools),
+        route: { service, baseId },
+      });
+    }
+  }
+  return [...entries.values()];
+}
+
+function remoteSuppressedProjectionCapletIds<Tool extends NativeProjectionMergeTool>(
+  allRemoteTools: Tool[],
+  remoteCodeModeTools: Tool[],
+): Set<string> {
+  return new Set(
+    [
+      ...allRemoteTools
+        .filter((tool) => tool.codeModeRun !== true && (tool.shadowing ?? "forbid") === "forbid")
+        .map(projectionSourceBaseId),
+      ...remoteCodeModeTools
+        .filter((tool) => (tool.shadowing ?? "forbid") === "forbid")
+        .map((tool) => tool.caplet),
+    ].filter((caplet) => caplet !== "code_mode"),
+  );
+}
+
+function aggregateProjectionShadowing<Tool extends NativeProjectionMergeTool>(
+  tools: Tool[],
+): CapletShadowingPolicy {
+  if (tools.some((tool) => (tool.shadowing ?? "forbid") === "forbid")) return "forbid";
+  if (tools.some((tool) => tool.shadowing === "namespace")) return "namespace";
+  return "allow";
+}
+
+function projectionSourceBaseId(tool: NativeProjectionMergeTool): string {
+  return tool.sourceCaplet ?? tool.caplet;
+}
+
+function addProjectionMapSetValue<Key, Value>(
+  map: Map<Key, Set<Value>>,
+  key: Key,
+  value: Value,
+): void {
+  let values = map.get(key);
+  if (!values) {
+    values = new Set();
+    map.set(key, values);
+  }
+  values.add(value);
+}
+
+function projectionNamespaceDiagnosticWithAlternatives(
+  requestedId: string,
+  diagnostic: NamespaceDiagnostic,
+  alternatives: string[],
+): NamespaceDiagnostic {
+  return {
+    ...diagnostic,
+    requestedId,
+    alternatives,
+    hint: `Caplet '${requestedId}' is unavailable because namespace shadowing exposes qualified alternatives: ${alternatives.join(", ")}.`,
+  };
 }
