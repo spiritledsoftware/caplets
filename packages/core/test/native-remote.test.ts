@@ -2616,38 +2616,6 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
-  it("omits bare Code Mode handles when namespace shadowing qualifies remote and local overlays", async () => {
-    const fixture = client([{ name: "shared", title: "Remote Shared", shadowing: "namespace" }]);
-    const { dir, configPath, projectConfigPath } = tempConfig({
-      mcpServers: {
-        shared: {
-          name: "Local Shared",
-          description: "Local shared Caplet.",
-          command: process.execPath,
-          shadowing: "namespace",
-        },
-      },
-    });
-    dirs.push(dir);
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: { url: "http://127.0.0.1:5387" },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      configPath,
-      projectConfigPath,
-    });
-
-    await service.reload();
-
-    const callableIds = listCodeModeCallableCaplets(service).map((caplet) => caplet.id);
-    expect(callableIds).not.toContain("shared");
-    expect(callableIds).toEqual([
-      expect.stringMatching(/^local-[a-f0-9]{4}__shared$/u),
-      expect.stringMatching(/^remote-[a-f0-9]{4}__shared$/u),
-    ]);
-    await service.close();
-  });
-
   it("preserves namespace collisions across stacked attach manifests", async () => {
     const innerRemote = client([
       { name: "computer-use", title: "VPS Computer Use", shadowing: "namespace" },
@@ -2831,46 +2799,6 @@ describe("createNativeCapletsService remote mode", () => {
       expect.stringMatching(/^vps-[a-f0-9]{4}__shared$/u),
       expect.stringMatching(/^mac-[a-f0-9]{4}__shared$/u),
     ]);
-    await service.close();
-  });
-
-  it("keeps namespace collisions fail-closed when qualified IDs collide with bare IDs", async () => {
-    const fixture = client([
-      { name: "shared", title: "Remote Shared", shadowing: "namespace" },
-      { name: "clash-8516__shared", title: "Remote Collision" },
-      { name: "clash-85163__shared", title: "Remote Collision 5" },
-      { name: "clash-851639__shared", title: "Remote Collision 6" },
-      { name: "clash-851639a__shared", title: "Remote Collision 7" },
-      { name: "clash-851639a7__shared", title: "Remote Collision 8" },
-    ]);
-    const { dir, configPath, projectConfigPath } = tempConfig({
-      namespaceAliases: {
-        upstreams: {
-          "http://127.0.0.1:5387/v1/attach": "clash",
-        },
-      },
-      mcpServers: {
-        shared: { name: "Local Shared", description: "Local wins.", command: process.execPath },
-      },
-    });
-    dirs.push(dir);
-    const service = createNativeCapletsService({
-      mode: "remote",
-      remote: { url: "http://127.0.0.1:5387" },
-      remoteClientFactory: vi.fn(() => fixture.api),
-      configPath,
-      projectConfigPath,
-    });
-
-    await service.reload();
-
-    expect(configuredCapletIds(service.listTools())).not.toContain("shared");
-    await expect(service.execute("shared", { operation: "inspect" })).rejects.toMatchObject({
-      code: "CAPLET_NAMESPACE_COLLISION",
-      details: expect.objectContaining({
-        reason: "generated_id_collision",
-      }),
-    });
     await service.close();
   });
 

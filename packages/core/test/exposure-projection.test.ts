@@ -385,6 +385,61 @@ describe("native projection merge", () => {
     });
   });
 
+  it("qualifies Code Mode-only collisions and removes the bare handle", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [],
+      localTools: [],
+      remoteCodeModeTools: [mergeTool("shared", "remote", "namespace")],
+      localCodeModeTools: [mergeTool("shared", "local", "namespace")],
+      remoteIdentity: "https://remote.example.com",
+      localIdentity: "local:/repo",
+      namespaceAliases: { local: "mac", upstreams: { "https://remote.example.com": "vps" } },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteCodeModeTools.map((tool) => tool.caplet)).toEqual(["vps-d4b6__shared"]);
+    expect(result.localCodeModeTools.map((tool) => tool.caplet)).toEqual(["mac-6617__shared"]);
+    expect(result.routes.has("shared")).toBe(false);
+    expect(result.namespaceDiagnostics.get("shared")).toMatchObject({
+      requestedId: "shared",
+      reason: "namespace_collision",
+      alternatives: ["vps-d4b6__shared", "mac-6617__shared"],
+    });
+  });
+
+  it("fails closed when generated namespace IDs collide with bare IDs", () => {
+    const result = resolveNativeProjectionMerge({
+      remoteTools: [
+        mergeTool("shared", "remote", "namespace"),
+        mergeTool("clash-8516__shared", "remote", "forbid"),
+        mergeTool("clash-85163__shared", "remote", "forbid"),
+        mergeTool("clash-851639__shared", "remote", "forbid"),
+        mergeTool("clash-851639a__shared", "remote", "forbid"),
+        mergeTool("clash-851639a7__shared", "remote", "forbid"),
+      ],
+      localTools: [mergeTool("shared", "local", "namespace")],
+      remoteCodeModeTools: [],
+      localCodeModeTools: [],
+      remoteIdentity: "http://127.0.0.1:5387/v1/attach",
+      localIdentity: "local:/repo",
+      namespaceAliases: { upstreams: { "http://127.0.0.1:5387/v1/attach": "clash" } },
+      renameTool: renameMergeTool,
+    });
+
+    expect(result.remoteTools.map((tool) => tool.caplet)).toEqual([
+      "clash-8516__shared",
+      "clash-85163__shared",
+      "clash-851639__shared",
+      "clash-851639a__shared",
+      "clash-851639a7__shared",
+    ]);
+    expect(result.localTools).toEqual([]);
+    expect(result.routes.has("shared")).toBe(false);
+    expect(result.namespaceDiagnostics.get("shared")).toMatchObject({
+      reason: "generated_id_collision",
+    });
+  });
+
   it("rewrites direct-tool alternatives while preserving source routes", () => {
     const result = resolveNativeProjectionMerge({
       remoteTools: [mergeTool("shared__read", "remote", "namespace", "shared")],
