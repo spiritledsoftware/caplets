@@ -49,7 +49,7 @@ if (sentryDsn) {
 
 captureLandingEvent("caplets_site_pageview", {
   route_family: classifyRouteFamily(window.location.pathname),
-  page_family: "home",
+  page_family: classifyRouteFamily(window.location.pathname),
   referrer_category: referrerCategory(document.referrer),
 });
 
@@ -59,10 +59,11 @@ document.addEventListener("click", (event) => {
   const category = linkCategory(link);
   if (category === "unknown") return;
   captureLandingEvent("caplets_site_intent", {
-    route_family: "home",
+    route_family: category === "blog" ? "blog" : classifyRouteFamily(window.location.pathname),
+    page_family: category === "blog" ? "blog" : classifyRouteFamily(window.location.pathname),
     section_category: sectionCategory(link),
     navigation_path_category:
-      category === "docs" || category === "catalog"
+      category === "docs" || category === "catalog" || category === "blog"
         ? category
         : category === "github"
           ? "external"
@@ -78,7 +79,7 @@ export function attributedLandingCommand(command: string): string {
 
 export function captureLandingInstallCopy(): void {
   captureLandingEvent("caplets_install_intent", {
-    route_family: "home",
+    route_family: classifyRouteFamily(window.location.pathname),
     section_category: "install",
     install_intent_category: "copy",
   });
@@ -123,6 +124,7 @@ function linkCategory(
   const href = link.getAttribute("href") ?? "";
   if (href.includes("github.com")) return "github";
   if (href.includes("npmjs.com")) return "npm";
+  if (href.startsWith("/blog") || href.includes("caplets.dev/blog")) return "blog";
   if (href.startsWith("/docs") || href.includes("docs.caplets")) return "docs";
   if (
     href.startsWith("/catalog") ||
@@ -143,6 +145,7 @@ function sectionCategory(
   const text = `${section?.id ?? ""} ${section?.className ?? ""}`.toLowerCase();
   if (text.includes("hero")) return "hero";
   if (text.includes("install") || text.includes("activation")) return "install";
+  if (text.includes("blog")) return "blog";
   if (text.includes("docs")) return "docs";
   if (text.includes("catalog")) return "catalog";
   return "unknown";
@@ -151,6 +154,7 @@ function sectionCategory(
 function ctaCategory(element: HTMLElement): NonNullable<WebEventPropertySet["cta_category"]> {
   const text = element.textContent?.toLowerCase() ?? "";
   if (text.includes("install") || text.includes("copy")) return "install";
+  if (text.includes("blog")) return "blog";
   if (text.includes("docs")) return "docs";
   if (text.includes("catalog")) return "catalog";
   return element.closest("main") ? "secondary" : "primary";

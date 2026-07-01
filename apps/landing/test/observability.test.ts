@@ -65,4 +65,24 @@ describe("landing observability", () => {
       }),
     );
   });
+
+  it("classifies /blog links as blog navigation", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    document.body.innerHTML = `<main><a href="/blog/why-giant-mcp-tool-walls-dont-scale/">Read blog</a></main>`;
+
+    await import("../src/scripts/observability");
+    posthogCapture.mockClear();
+    document.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(posthogCapture).toHaveBeenCalledWith(
+      "caplets_site_intent",
+      expect.objectContaining({
+        route_family: "blog",
+        page_family: "blog",
+        navigation_path_category: "blog",
+        outbound_action_category: "blog",
+        cta_category: "blog",
+      }),
+    );
+  });
 });

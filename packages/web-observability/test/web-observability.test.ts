@@ -39,6 +39,31 @@ describe("web observability contract", () => {
         empty_state_category: "unknown",
       },
     });
+    expect(
+      buildWebEvent({
+        name: "caplets_site_intent",
+        properties: {
+          surface: "landing",
+          route_family: "blog",
+          page_family: "blog",
+          section_category: "blog",
+          navigation_path_category: "blog",
+          outbound_action_category: "blog",
+          cta_category: "blog",
+        } as never,
+      }),
+    ).toEqual({
+      name: "caplets_site_intent",
+      properties: {
+        surface: "landing",
+        route_family: "blog",
+        page_family: "blog",
+        section_category: "blog",
+        navigation_path_category: "blog",
+        outbound_action_category: "blog",
+        cta_category: "blog",
+      },
+    });
   });
 
   it("rejects event-specific property mixes at the shared boundary", () => {
@@ -89,6 +114,8 @@ describe("web observability contract", () => {
   it("classifies routes without preserving raw URLs", () => {
     expect(classifyRouteFamily("/")).toBe("home");
     expect(classifyRouteFamily("/docs/privacy/indexing")).toBe("privacy");
+    expect(classifyRouteFamily("/blog")).toBe("blog");
+    expect(classifyRouteFamily("/blog/why-giant-mcp-tool-walls-dont-scale")).toBe("blog");
     expect(classifyRouteFamily("/caplets/google-docs")).toBe("catalog_detail");
   });
 
