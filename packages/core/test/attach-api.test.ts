@@ -100,6 +100,48 @@ describe("Attach API dispatch", () => {
     ]);
   });
 
+  it("sanitizes hidden discovery diagnostics through exposure projection", async () => {
+    const engine = {
+      exposureSnapshot: async () => ({
+        callableCaplets: [],
+        progressiveCaplets: [],
+        codeModeCaplets: [],
+        directTools: [],
+        directResources: [],
+        directResourceTemplates: [],
+        directPrompts: [],
+        hiddenCaplets: [
+          {
+            capletId: "vaulted",
+            reason: "discovery_failed",
+            error: {
+              code: "SERVER_UNAVAILABLE",
+              message: "Failed with sk-live-secret-token at /Users/ian/.config/caplets/token.json",
+              details: {
+                token: "sk-live-secret-token",
+                path: "/Users/ian/.config/caplets/token.json",
+              },
+            },
+          },
+        ],
+      }),
+    } as unknown as CapletsEngine;
+
+    const projection = await buildAttachProjection(engine);
+
+    expect(projection.manifest.diagnostics).toEqual([
+      expect.objectContaining({
+        code: "ATTACH_CAPLET_DISCOVERY_FAILED",
+        capletId: "vaulted",
+        details: expect.objectContaining({
+          code: "SERVER_UNAVAILABLE",
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(projection.manifest.diagnostics)).not.toContain("sk-live-secret-token");
+    expect(JSON.stringify(projection.manifest.diagnostics)).not.toContain("/Users/ian");
+  });
+
   it("includes authoritative Project Binding metadata for hidden Caplets", async () => {
     const engine = {
       exposureSnapshot: async () => ({

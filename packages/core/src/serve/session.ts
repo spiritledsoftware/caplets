@@ -32,6 +32,7 @@ import type {
   DirectToolRegistration,
   ExposureSnapshot,
 } from "../exposure/discovery";
+import { buildExposureProjection, type ExposureProjection } from "../exposure/projection";
 import { decodeDirectResourceUri } from "../exposure/direct-names";
 import { resolveExposure } from "../exposure/policy";
 import { generatedToolInputSchemaForCaplet } from "../generated-tool-input-schema";
@@ -123,64 +124,89 @@ export class CapletsMcpSession {
   }
 
   private reconcileFromSnapshot(snapshot: ExposureSnapshot): void {
-    if (snapshot.codeModeCaplets.length > 0) {
+    this.reconcileFromProjection(buildExposureProjection(snapshot), snapshot);
+  }
+
+  private reconcileFromProjection(
+    projection: ExposureProjection,
+    snapshot: ExposureSnapshot,
+  ): void {
+    const codeModeCaplets = projection.entries
+      .filter((entry) => entry.kind === "code-mode-caplet")
+      .flatMap((entry) => {
+        const caplet = snapshot.codeModeCaplets.find(
+          (candidate) => candidate.caplet.server === entry.capletId,
+        );
+        return caplet ? [caplet] : [];
+      });
+    if (codeModeCaplets.length > 0) {
       if (this.codeModeTool) {
         this.codeModeTool.update({
           title: "Code Mode",
-          description: codeModeRunToolDescription(snapshot.codeModeCaplets),
+          description: codeModeRunToolDescription(codeModeCaplets),
           paramsSchema: codeModeRunParamsSchema,
           callback: async (request: unknown) => this.handleCodeModeRunTool(request),
           enabled: true,
         });
       } else {
-        this.codeModeTool = this.registerCodeModeTool(snapshot);
+        this.codeModeTool = this.registerCodeModeTool(codeModeCaplets);
       }
     } else if (this.codeModeTool) {
       this.codeModeTool.remove();
       this.codeModeTool = undefined;
     }
 
+    const progressiveById = new Map(
+      snapshot.progressiveCaplets.map((entry) => [entry.caplet.server, entry]),
+    );
+    const directToolsById = new Map(snapshot.directTools.map((entry) => [entry.name, entry]));
     const desiredTools = new Map<string, ToolRegistrationPlan>();
-    for (const entry of snapshot.progressiveCaplets) {
-      desiredTools.set(entry.caplet.server, {
-        register: () => this.registerCapletTool(entry.caplet),
-        update: (tool) =>
-          (tool.update as (updates: Record<string, unknown>) => void)({
-            title: entry.caplet.name,
-            description: capabilityDescription(entry.caplet),
-            paramsSchema: generatedToolInputSchemaForCaplet(entry.caplet).shape,
-            callback: async (request: unknown) =>
-              this.engine.execute(entry.caplet.server, request) as never,
-            enabled: true,
-          }),
-      });
-    }
-    for (const entry of snapshot.directTools) {
-      desiredTools.set(entry.name, {
-        register: () => this.registerDirectTool(entry),
-        update: (tool) =>
-          (tool.update as (updates: Record<string, unknown>) => void)({
-            title: entry.tool.name,
-            description: entry.tool.description,
-            paramsSchema: entry.tool.inputSchema as never,
-            outputSchema: entry.tool.outputSchema as never,
-            annotations: entry.tool.annotations,
-            _meta: {
-              caplets: {
-                capletId: entry.caplet.server,
-                downstreamName: entry.downstreamName,
-                exposure: "direct",
+    for (const entry of projection.entries) {
+      if (entry.kind === "progressive-caplet") {
+        const capletEntry = progressiveById.get(entry.id);
+        if (!capletEntry) continue;
+        desiredTools.set(entry.id, {
+          register: () => this.registerCapletTool(capletEntry.caplet),
+          update: (tool) =>
+            (tool.update as (updates: Record<string, unknown>) => void)({
+              title: capletEntry.caplet.name,
+              description: capabilityDescription(capletEntry.caplet),
+              paramsSchema: generatedToolInputSchemaForCaplet(capletEntry.caplet).shape,
+              callback: async (request: unknown) =>
+                this.engine.execute(capletEntry.caplet.server, request) as never,
+              enabled: true,
+            }),
+        });
+      }
+      if (entry.kind === "direct-tool") {
+        const directTool = directToolsById.get(entry.id);
+        if (!directTool) continue;
+        desiredTools.set(entry.id, {
+          register: () => this.registerDirectTool(directTool),
+          update: (tool) =>
+            (tool.update as (updates: Record<string, unknown>) => void)({
+              title: directTool.tool.name,
+              description: directTool.tool.description,
+              paramsSchema: directTool.tool.inputSchema as never,
+              outputSchema: directTool.tool.outputSchema as never,
+              annotations: directTool.tool.annotations,
+              _meta: {
+                caplets: {
+                  capletId: directTool.caplet.server,
+                  downstreamName: directTool.downstreamName,
+                  exposure: "direct",
+                },
               },
-            },
-            callback: async (request: unknown) =>
-              this.engine.executeDirectTool(
-                entry.caplet.server,
-                entry.downstreamName,
-                isRecord(request) ? request : {},
-              ) as never,
-            enabled: true,
-          }),
-      });
+              callback: async (request: unknown) =>
+                this.engine.executeDirectTool(
+                  directTool.caplet.server,
+                  directTool.downstreamName,
+                  isRecord(request) ? request : {},
+                ) as never,
+              enabled: true,
+            }),
+        });
+      }
     }
     for (const [name, tool] of this.tools) {
       const plan = desiredTools.get(name);
@@ -201,14 +227,24 @@ export class CapletsMcpSession {
     for (const prompt of this.prompts.values()) prompt.remove();
     this.resources.clear();
     this.prompts.clear();
-    for (const entry of snapshot.directResources) {
-      this.resources.set(entry.uri, this.registerDirectResource(entry));
-    }
-    for (const entry of snapshot.directResourceTemplates) {
-      this.resources.set(entry.uriTemplate, this.registerDirectResourceTemplate(entry));
-    }
-    for (const entry of snapshot.directPrompts) {
-      this.prompts.set(entry.name, this.registerDirectPrompt(entry));
+    const resourcesById = new Map(snapshot.directResources.map((entry) => [entry.uri, entry]));
+    const resourceTemplatesById = new Map(
+      snapshot.directResourceTemplates.map((entry) => [entry.uriTemplate, entry]),
+    );
+    const promptsById = new Map(snapshot.directPrompts.map((entry) => [entry.name, entry]));
+    for (const entry of projection.entries) {
+      if (entry.kind === "direct-resource") {
+        const resource = resourcesById.get(entry.id);
+        if (resource) this.resources.set(entry.id, this.registerDirectResource(resource));
+      }
+      if (entry.kind === "direct-resource-template") {
+        const template = resourceTemplatesById.get(entry.id);
+        if (template) this.resources.set(entry.id, this.registerDirectResourceTemplate(template));
+      }
+      if (entry.kind === "direct-prompt") {
+        const prompt = promptsById.get(entry.id);
+        if (prompt) this.prompts.set(entry.id, this.registerDirectPrompt(prompt));
+      }
     }
   }
 
@@ -223,12 +259,12 @@ export class CapletsMcpSession {
     this.prompts.clear();
   }
 
-  private registerCodeModeTool(snapshot: ExposureSnapshot): RegisteredTool {
+  private registerCodeModeTool(codeModeCaplets: CallableCaplet[]): RegisteredTool {
     return this.server.registerTool(
       "code_mode",
       {
         title: "Code Mode",
-        description: codeModeRunToolDescription(snapshot.codeModeCaplets),
+        description: codeModeRunToolDescription(codeModeCaplets),
         inputSchema: codeModeRunParamsSchema,
       },
       async (request: unknown) => this.handleCodeModeRunTool(request),

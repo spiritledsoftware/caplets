@@ -28,7 +28,7 @@ Project sources override user/global sources. Source-aware inspection reports wh
 
 Backend managers provide a common shape for listing tools, searching tools, describing exact tools, calling tools, and checking readiness. MCP-backed Caplets additionally support resources, resource templates, prompts, and completion.
 
-### Exposure Policy
+### Exposure Policy And Projection
 
 `packages/core/src/exposure/policy.ts` resolves one exposure value into three booleans:
 
@@ -37,6 +37,8 @@ Backend managers provide a common shape for listing tools, searching tools, desc
 - `direct`
 
 The global default is `code_mode`. Per-Caplet config may choose `direct`, `progressive`, `code_mode`, `direct_and_code_mode`, or `progressive_and_code_mode`.
+
+`packages/core/src/exposure/projection.ts` turns resolved discovery snapshots and attach manifests into the Caplets exposure projection: the adapter-neutral view of Code Mode handles, progressive tools, direct downstream operations, direct MCP surfaces, route descriptors, hidden diagnostic breadcrumbs, and local/remote merge outcomes. MCP serving, native integrations, and attach/remote clients render this projection; they do not re-own exposure identity, namespace shadowing, or hidden-Caplet policy.
 
 ### MCP Server
 

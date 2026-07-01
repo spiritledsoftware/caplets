@@ -8,15 +8,11 @@ import {
   decodeDirectResourceUri,
   directResourceUriMatchesTemplate,
 } from "../exposure/direct-names";
-import type {
-  CallableCaplet,
-  DirectPromptRegistration,
-  DirectResourceRegistration,
-  DirectResourceTemplateRegistration,
-  DirectToolRegistration,
-  ExposureSnapshot,
-} from "../exposure/discovery";
-import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
+import {
+  buildExposureProjection,
+  type ExposureProjectionEntry,
+  type ExposureProjectionHiddenCaplet,
+} from "../exposure/projection";
 import type { NativeCapletsService } from "../native/service";
 
 export const CAPLETS_ATTACH_SESSION_HEADER = "caplets-attach-session-id";
@@ -130,10 +126,6 @@ type AttachRoute =
   | { kind: "prompt"; capletId: string; downstreamName: string }
   | { kind: "completion"; capletId: string };
 
-type AttachCapletWithShadowing = {
-  shadowing?: CapletShadowingPolicy | undefined;
-};
-
 export type AttachProjection = {
   manifest: AttachManifest;
   routes: Map<string, AttachRoute>;
@@ -151,16 +143,16 @@ type AttachManifestProjectionInput = {
 };
 
 export async function buildAttachProjection(engine: CapletsEngine): Promise<AttachProjection> {
-  const snapshot = await engine.exposureSnapshot();
+  const projection = buildExposureProjection(await engine.exposureSnapshot());
   const partial = sortAttachProjectionInput({
-    caplets: snapshot.progressiveCaplets.map(progressiveCapletExport),
-    tools: snapshot.directTools.map(toolExport),
-    resources: snapshot.directResources.map(resourceExport),
-    resourceTemplates: snapshot.directResourceTemplates.map(resourceTemplateExport),
-    prompts: snapshot.directPrompts.map(promptExport),
-    completions: completionExports(snapshot),
-    codeModeCaplets: snapshot.codeModeCaplets.map(codeModeCapletExport),
-    diagnostics: snapshot.hiddenCaplets.map(attachDiagnosticForHiddenCaplet),
+    caplets: projection.entries.flatMap(progressiveCapletExport),
+    tools: projection.entries.flatMap(toolExport),
+    resources: projection.entries.flatMap(resourceExport),
+    resourceTemplates: projection.entries.flatMap(resourceTemplateExport),
+    prompts: projection.entries.flatMap(promptExport),
+    completions: projection.entries.flatMap(completionExport),
+    codeModeCaplets: projection.entries.flatMap(codeModeCapletExport),
+    diagnostics: projection.hiddenCaplets.map(attachDiagnosticForHiddenCaplet),
   });
   const revision = revisionFor(partial);
   const manifest: AttachManifest = {
@@ -175,7 +167,7 @@ export async function buildAttachProjection(engine: CapletsEngine): Promise<Atta
   };
 }
 
-function attachDiagnosticForHiddenCaplet(hidden: ExposureSnapshot["hiddenCaplets"][number]) {
+function attachDiagnosticForHiddenCaplet(hidden: ExposureProjectionHiddenCaplet) {
   return {
     code: `ATTACH_CAPLET_${hidden.reason.toUpperCase()}`,
     message: `Caplet ${hidden.capletId} is not exported: ${hidden.reason}.`,
@@ -185,12 +177,12 @@ function attachDiagnosticForHiddenCaplet(hidden: ExposureSnapshot["hiddenCaplets
 }
 
 function hiddenDiagnosticDetails(
-  hidden: ExposureSnapshot["hiddenCaplets"][number],
+  hidden: ExposureProjectionHiddenCaplet,
 ): Pick<AttachDiagnostic, "details"> {
-  if (!hidden.error) return {};
-  const details = hidden.error.details;
+  if (!hidden.diagnostic) return {};
+  const details = hidden.diagnostic.details;
   if (!hidden.reason.startsWith("project_binding_")) {
-    return { details: hidden.error };
+    return { details: hidden.diagnostic };
   }
   const existing =
     isRecord(details) && isRecord(details.projectBinding) ? details.projectBinding : {};
@@ -412,126 +404,142 @@ export function attachErrorResponse(error: unknown): {
 }
 
 function progressiveCapletExport(
-  entry: CallableCaplet,
-): Omit<AttachProgressiveCapletExport, "exportId"> {
-  const inputSchema = generatedToolInputJsonSchemaForCaplet(entry.caplet);
-  return {
-    stableId: `progressive:${entry.caplet.server}`,
-    kind: "caplet",
-    name: entry.caplet.server,
-    title: entry.caplet.name,
-    description: entry.caplet.description,
-    inputSchema,
-    schemaHash: schemaHash(inputSchema),
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
+  entry: ExposureProjectionEntry,
+): Array<Omit<AttachProgressiveCapletExport, "exportId">> {
+  if (entry.kind !== "progressive-caplet") return [];
+  return [
+    {
+      stableId: `progressive:${entry.capletId}`,
+      kind: "caplet",
+      name: entry.id,
+      title: entry.title,
+      description: entry.description,
+      inputSchema: entry.inputSchema,
+      schemaHash: schemaHash(entry.inputSchema ?? null),
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
-function codeModeCapletExport(entry: CallableCaplet): Omit<AttachCodeModeCaplet, "exportId"> {
-  return {
-    stableId: `code_mode:${entry.caplet.server}`,
-    kind: "caplet",
-    name: entry.caplet.name,
-    title: entry.caplet.name,
-    description: entry.caplet.description,
-    schemaHash: null,
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
+function codeModeCapletExport(
+  entry: ExposureProjectionEntry,
+): Array<Omit<AttachCodeModeCaplet, "exportId">> {
+  if (entry.kind !== "code-mode-caplet") return [];
+  return [
+    {
+      stableId: `code_mode:${entry.capletId}`,
+      kind: "caplet",
+      name: entry.title ?? entry.id,
+      title: entry.title,
+      description: entry.description,
+      schemaHash: null,
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
-function toolExport(entry: DirectToolRegistration): Omit<AttachToolExport, "exportId"> {
-  return {
-    stableId: `tool:${entry.caplet.server}:${entry.downstreamName}`,
-    kind: "tool",
-    name: entry.name,
-    downstreamName: entry.downstreamName,
-    title: entry.tool.name,
-    description: entry.tool.description,
-    inputSchema: entry.tool.inputSchema,
-    outputSchema: entry.tool.outputSchema,
-    annotations: entry.tool.annotations,
-    schemaHash: schemaHash({ input: entry.tool.inputSchema, output: entry.tool.outputSchema }),
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
+function toolExport(entry: ExposureProjectionEntry): Array<Omit<AttachToolExport, "exportId">> {
+  if (entry.kind !== "direct-tool" || entry.route.kind !== "direct-tool") return [];
+  return [
+    {
+      stableId: `tool:${entry.capletId}:${entry.route.downstreamName}`,
+      kind: "tool",
+      name: entry.id,
+      downstreamName: entry.route.downstreamName,
+      title: entry.title,
+      description: entry.description,
+      inputSchema: entry.inputSchema,
+      outputSchema: entry.outputSchema,
+      annotations: entry.annotations,
+      schemaHash: schemaHash({ input: entry.inputSchema, output: entry.outputSchema }),
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
-function resourceExport(entry: DirectResourceRegistration): Omit<AttachResourceExport, "exportId"> {
-  return {
-    stableId: `resource:${entry.caplet.server}:${entry.downstreamUri}`,
-    kind: "resource",
-    uri: entry.uri,
-    downstreamUri: entry.downstreamUri,
-    title: entry.resource.name,
-    description: entry.resource.description,
-    ...(entry.resource.mimeType ? { mimeType: entry.resource.mimeType } : {}),
-    ...(typeof entry.resource.size === "number" ? { size: entry.resource.size } : {}),
-    schemaHash: null,
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
+function resourceExport(
+  entry: ExposureProjectionEntry,
+): Array<Omit<AttachResourceExport, "exportId">> {
+  if (entry.kind !== "direct-resource" || entry.route.kind !== "direct-resource") return [];
+  return [
+    {
+      stableId: `resource:${entry.capletId}:${entry.route.downstreamUri}`,
+      kind: "resource",
+      uri: entry.id,
+      downstreamUri: entry.route.downstreamUri,
+      title: entry.title,
+      description: entry.description,
+      ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+      ...(typeof entry.size === "number" ? { size: entry.size } : {}),
+      schemaHash: null,
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
 function resourceTemplateExport(
-  entry: DirectResourceTemplateRegistration,
-): Omit<AttachResourceTemplateExport, "exportId"> {
-  return {
-    stableId: `resourceTemplate:${entry.caplet.server}:${entry.downstreamUriTemplate}`,
-    kind: "resourceTemplate",
-    uriTemplate: entry.uriTemplate,
-    downstreamUriTemplate: entry.downstreamUriTemplate,
-    title: entry.resourceTemplate.name,
-    description: entry.resourceTemplate.description,
-    ...(entry.resourceTemplate.mimeType ? { mimeType: entry.resourceTemplate.mimeType } : {}),
-    schemaHash: null,
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
-}
-
-function promptExport(entry: DirectPromptRegistration): Omit<AttachPromptExport, "exportId"> {
-  const inputSchema = { arguments: entry.prompt.arguments ?? [] };
-  return {
-    stableId: `prompt:${entry.caplet.server}:${entry.downstreamName}`,
-    kind: "prompt",
-    name: entry.name,
-    downstreamName: entry.downstreamName,
-    title: entry.prompt.name,
-    description: entry.prompt.description,
-    inputSchema,
-    schemaHash: schemaHash(inputSchema),
-    capletId: entry.caplet.server,
-    shadowing: shadowingPolicy(entry.caplet),
-  };
-}
-
-function completionExports(
-  snapshot: ExposureSnapshot,
-): Array<Omit<AttachCompletionExport, "exportId">> {
-  const caplets = new Map(
-    [...snapshot.directPrompts, ...snapshot.directResourceTemplates].map((entry) => [
-      entry.caplet.server,
-      entry.caplet,
-    ]),
-  );
-  return [...caplets.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([capletId, caplet]) => ({
-      stableId: `completion:${capletId}`,
-      kind: "completion",
-      name: `${capletId}:complete`,
-      title: "Complete",
-      description: `MCP completion for ${capletId}.`,
+  entry: ExposureProjectionEntry,
+): Array<Omit<AttachResourceTemplateExport, "exportId">> {
+  if (
+    entry.kind !== "direct-resource-template" ||
+    entry.route.kind !== "direct-resource-template"
+  ) {
+    return [];
+  }
+  return [
+    {
+      stableId: `resourceTemplate:${entry.capletId}:${entry.route.downstreamUriTemplate}`,
+      kind: "resourceTemplate",
+      uriTemplate: entry.id,
+      downstreamUriTemplate: entry.route.downstreamUriTemplate,
+      title: entry.title,
+      description: entry.description,
+      ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
       schemaHash: null,
-      capletId,
-      shadowing: shadowingPolicy(caplet),
-    }));
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
-function shadowingPolicy(caplet: AttachCapletWithShadowing): CapletShadowingPolicy {
-  return caplet.shadowing ?? "forbid";
+function promptExport(entry: ExposureProjectionEntry): Array<Omit<AttachPromptExport, "exportId">> {
+  if (entry.kind !== "direct-prompt" || entry.route.kind !== "direct-prompt") return [];
+  return [
+    {
+      stableId: `prompt:${entry.capletId}:${entry.route.downstreamName}`,
+      kind: "prompt",
+      name: entry.id,
+      downstreamName: entry.route.downstreamName,
+      title: entry.title,
+      description: entry.description,
+      inputSchema: entry.inputSchema,
+      schemaHash: schemaHash(entry.inputSchema ?? null),
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
+}
+
+function completionExport(
+  entry: ExposureProjectionEntry,
+): Array<Omit<AttachCompletionExport, "exportId">> {
+  if (entry.kind !== "completion") return [];
+  return [
+    {
+      stableId: `completion:${entry.capletId}`,
+      kind: "completion",
+      name: entry.id,
+      title: entry.title,
+      description: entry.description,
+      schemaHash: null,
+      capletId: entry.capletId,
+      shadowing: entry.shadowing,
+    },
+  ];
 }
 
 function sortAttachProjectionInput(

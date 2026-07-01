@@ -20,6 +20,10 @@ _Avoid_: Caplets utility namespace, custom helper surface
 The first compatibility-global set for Code Mode: URL and query handling, text encoding, base64 and Buffer-compatible byte handling, web binary payload objects, safe crypto primitives, timing, scheduling, and structured cloning.
 _Avoid_: Minimal encoding helpers, full Node compatibility
 
+**Caplets exposure projection**:
+A shared adapter-neutral runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces, including non-callable diagnostic breadcrumbs for hidden Caplets. MCP, native, and attach host adapters render it differently; they do not own exposure policy or execution behavior.
+_Avoid_: Tool registration list, exposure wrapper map, transport-specific surface
+
 **Code Mode bridge value**:
 A value passed between a Code Mode script and a Caplets backend call, including JSON-compatible data and supported standard-library binary payload objects.
 _Avoid_: JSON-only payload, host object leak

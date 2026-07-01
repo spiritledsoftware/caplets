@@ -5,6 +5,10 @@ import {
 } from "../exposure/direct-names";
 import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
 import {
+  buildManifestExposureProjection,
+  type ExposureProjectionEntry,
+} from "../exposure/projection";
+import {
   CAPLETS_ATTACH_SESSION_HEADER,
   type AttachCodeModeCaplet,
   type AttachManifest,
@@ -885,40 +889,15 @@ function primitiveInvokeInput(
 }
 
 function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
+  const projection = buildManifestExposureProjection(manifest);
   const codeModeCaplets = manifest.codeModeCaplets ?? [];
   const codeModeMarker = attachCodeModeMarker(codeModeCaplets);
-  const codeModeShadowing: CapletShadowingPolicy = codeModeCaplets.some(
-    (entry) => entry.shadowing === "forbid",
-  )
-    ? "forbid"
-    : codeModeCaplets.some((entry) => entry.shadowing === "namespace")
-      ? "namespace"
-      : "allow";
+  const codeModeEntries = projection.entries.filter((entry) => entry.kind === "code-mode-caplet");
   return [
-    ...manifest.caplets.map((entry) => ({
-      name: entry.capletId,
-      capletId: entry.capletId,
-      sourceCapletId: entry.sourceCapletId,
-      title: entry.title ?? entry.name,
-      description: entry.description,
-      inputSchema: entry.inputSchema,
-      shadowing: entry.shadowing,
-      ...codeModeMarker,
-    })),
-    ...manifest.tools.map((entry) => ({
-      name: entry.name,
-      capletId: entry.capletId,
-      sourceCapletId: entry.capletId,
-      title: entry.title ?? entry.name,
-      description: entry.description,
-      inputSchema: entry.inputSchema,
-      outputSchema: entry.outputSchema,
-      annotations: entry.annotations,
-      shadowing: entry.shadowing,
-      ...codeModeMarker,
-    })),
-    ...primitiveToolsFromManifest(manifest, codeModeMarker),
-    ...(codeModeCaplets.length > 0
+    ...projection.entries.flatMap((entry) => progressiveToolFromProjection(entry, codeModeMarker)),
+    ...projection.entries.flatMap((entry) => directToolFromProjection(entry, codeModeMarker)),
+    ...primitiveToolsFromProjection(projection.entries, codeModeMarker),
+    ...(codeModeEntries.length > 0
       ? [
           {
             name: nativeCodeModeToolId,
@@ -927,11 +906,51 @@ function toolsFromManifest(manifest: AttachManifest): RemoteCapletsTool[] {
             description: "Remote Caplets available to locally-run attached Code Mode.",
             codeModeRun: true,
             codeModeCaplets,
-            shadowing: codeModeShadowing,
+            shadowing: aggregateProjectionEntryShadowing(codeModeEntries),
             inputSchema: codeModeRunInputJsonSchema(),
           },
         ]
       : []),
+  ];
+}
+
+function progressiveToolFromProjection(
+  entry: ExposureProjectionEntry,
+  codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
+): RemoteCapletsTool[] {
+  if (entry.kind !== "progressive-caplet") return [];
+  return [
+    {
+      name: entry.capletId,
+      capletId: entry.capletId,
+      sourceCapletId: entry.sourceCapletId,
+      title: entry.title,
+      description: entry.description,
+      inputSchema: entry.inputSchema,
+      shadowing: entry.shadowing,
+      ...codeModeMarker,
+    },
+  ];
+}
+
+function directToolFromProjection(
+  entry: ExposureProjectionEntry,
+  codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
+): RemoteCapletsTool[] {
+  if (entry.kind !== "direct-tool" || entry.route.kind !== "direct-tool") return [];
+  return [
+    {
+      name: entry.id,
+      capletId: entry.capletId,
+      sourceCapletId: entry.sourceCapletId ?? entry.capletId,
+      title: entry.title,
+      description: entry.description,
+      inputSchema: entry.inputSchema,
+      outputSchema: entry.outputSchema,
+      annotations: entry.annotations,
+      shadowing: entry.shadowing,
+      ...codeModeMarker,
+    },
   ];
 }
 
@@ -941,11 +960,13 @@ function attachCodeModeMarker(
   return codeModeCaplets.length === 0 ? { codeModeCaplets: [] } : {};
 }
 
-function primitiveToolsFromManifest(
-  manifest: AttachManifest,
+function primitiveToolsFromProjection(
+  entries: ExposureProjectionEntry[],
   codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
 ): RemoteCapletsTool[] {
-  const directToolNames = new Set(manifest.tools.map((entry) => entry.name));
+  const directToolNames = new Set(
+    entries.filter((entry) => entry.kind === "direct-tool").map((entry) => entry.id),
+  );
   const byCaplet = new Map<
     string,
     {
@@ -959,7 +980,9 @@ function primitiveToolsFromManifest(
   const entryFor = (capletId: string, shadowing: CapletShadowingPolicy) => {
     const existing = byCaplet.get(capletId);
     if (existing) {
-      if (shadowing === "forbid") existing.shadowing = "forbid";
+      if (shadowing === "forbid" || (shadowing === "namespace" && existing.shadowing === "allow")) {
+        existing.shadowing = shadowing;
+      }
       return existing;
     }
     const next = {
@@ -972,13 +995,15 @@ function primitiveToolsFromManifest(
     byCaplet.set(capletId, next);
     return next;
   };
-  for (const entry of manifest.resources)
-    entryFor(entry.capletId, entry.shadowing).resources = true;
-  for (const entry of manifest.resourceTemplates)
-    entryFor(entry.capletId, entry.shadowing).resourceTemplates = true;
-  for (const entry of manifest.prompts) entryFor(entry.capletId, entry.shadowing).prompts = true;
-  for (const entry of manifest.completions)
-    entryFor(entry.capletId, entry.shadowing).completions = true;
+  for (const entry of entries) {
+    if (entry.kind === "direct-resource")
+      entryFor(entry.capletId, entry.shadowing).resources = true;
+    if (entry.kind === "direct-resource-template") {
+      entryFor(entry.capletId, entry.shadowing).resourceTemplates = true;
+    }
+    if (entry.kind === "direct-prompt") entryFor(entry.capletId, entry.shadowing).prompts = true;
+    if (entry.kind === "completion") entryFor(entry.capletId, entry.shadowing).completions = true;
+  }
 
   const tools: RemoteCapletsTool[] = [];
   const addPrimitiveTool = (
@@ -1026,6 +1051,14 @@ function primitiveTool(
     shadowing,
     ...codeModeMarker,
   };
+}
+
+function aggregateProjectionEntryShadowing(
+  entries: ExposureProjectionEntry[],
+): CapletShadowingPolicy {
+  if (entries.some((entry) => entry.shadowing === "forbid")) return "forbid";
+  if (entries.some((entry) => entry.shadowing === "namespace")) return "namespace";
+  return "allow";
 }
 
 function primitiveInputSchema(operation: string): Record<string, unknown> {
