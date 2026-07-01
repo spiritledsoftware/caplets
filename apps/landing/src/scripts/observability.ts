@@ -47,9 +47,10 @@ if (sentryDsn) {
   });
 }
 
+const routeFamily = currentRouteFamily();
 captureLandingEvent("caplets_site_pageview", {
-  route_family: classifyRouteFamily(window.location.pathname),
-  page_family: classifyRouteFamily(window.location.pathname),
+  route_family: routeFamily,
+  page_family: routeFamily,
   referrer_category: referrerCategory(document.referrer),
 });
 
@@ -58,9 +59,10 @@ document.addEventListener("click", (event) => {
   if (!link) return;
   const category = linkCategory(link);
   if (category === "unknown") return;
+  const routeFamily = category === "blog" ? "blog" : currentRouteFamily();
   captureLandingEvent("caplets_site_intent", {
-    route_family: category === "blog" ? "blog" : classifyRouteFamily(window.location.pathname),
-    page_family: category === "blog" ? "blog" : classifyRouteFamily(window.location.pathname),
+    route_family: routeFamily,
+    page_family: routeFamily,
     section_category: sectionCategory(link),
     navigation_path_category:
       category === "docs" || category === "catalog" || category === "blog"
@@ -79,10 +81,14 @@ export function attributedLandingCommand(command: string): string {
 
 export function captureLandingInstallCopy(): void {
   captureLandingEvent("caplets_install_intent", {
-    route_family: classifyRouteFamily(window.location.pathname),
+    route_family: currentRouteFamily(),
     section_category: "install",
     install_intent_category: "copy",
   });
+}
+
+function currentRouteFamily(): WebEventPropertySet["route_family"] {
+  return classifyRouteFamily(window.location.pathname);
 }
 
 function captureLandingEvent(name: WebEventName, properties: WebEventPropertySet): void {
