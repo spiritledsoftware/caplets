@@ -17,7 +17,23 @@ describe("blog metadata and article presentation", () => {
     expect(layout).toContain('property="og:description"');
     expect(layout).toContain('property="og:url"');
     expect(layout).toContain('property="og:type"');
+    expect(layout).toContain("ogImageUrl");
     expect(layout).toContain('name="twitter:card"');
+  });
+
+  it("sets canonical metadata on the blog index and post pages", () => {
+    const indexRoute = readFileSync(
+      join(repoRoot, "apps/landing/src/pages/blog/index.astro"),
+      "utf8",
+    );
+    const postRoute = readFileSync(
+      join(repoRoot, "apps/landing/src/pages/blog/[slug].astro"),
+      "utf8",
+    );
+
+    expect(indexRoute).toContain('canonicalUrl="https://caplets.dev/blog/"');
+    expect(postRoute).toContain("canonicalUrl={canonicalUrl}");
+    expect(postRoute).toContain("https://caplets.dev");
   });
 
   it("uses article and CTA components on blog post pages", () => {
