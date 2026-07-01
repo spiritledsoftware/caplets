@@ -1,5 +1,6 @@
 import type { CapletShadowingPolicy } from "../config";
 import type { SafeErrorSummary } from "../errors";
+import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
 import type {
   CallableCaplet,
   DirectPromptRegistration,
@@ -43,6 +44,8 @@ export type ExposureProjectionEntry = {
   inputSchema?: unknown;
   outputSchema?: unknown;
   annotations?: unknown;
+  mimeType?: string | undefined;
+  size?: number | undefined;
   sourceCapletId?: string | undefined;
   shadowing: CapletShadowingPolicy;
   route: ExposureProjectionRoute;
@@ -88,6 +91,7 @@ function progressiveCapletEntry(entry: CallableCaplet): ExposureProjectionEntry 
     capletId,
     title: entry.caplet.name,
     description: entry.caplet.description,
+    inputSchema: generatedToolInputJsonSchemaForCaplet(entry.caplet),
     shadowing: shadowingPolicy(entry.caplet),
     route: { kind: "progressive-caplet", capletId },
   };
@@ -132,6 +136,8 @@ function directResourceEntry(entry: DirectResourceRegistration): ExposureProject
     capletId: entry.caplet.server,
     title: entry.resource.name,
     description: entry.resource.description,
+    ...(entry.resource.mimeType ? { mimeType: entry.resource.mimeType } : {}),
+    ...(typeof entry.resource.size === "number" ? { size: entry.resource.size } : {}),
     shadowing: shadowingPolicy(entry.caplet),
     route: {
       kind: "direct-resource",
@@ -150,6 +156,7 @@ function directResourceTemplateEntry(
     capletId: entry.caplet.server,
     title: entry.resourceTemplate.name,
     description: entry.resourceTemplate.description,
+    ...(entry.resourceTemplate.mimeType ? { mimeType: entry.resourceTemplate.mimeType } : {}),
     shadowing: shadowingPolicy(entry.caplet),
     route: {
       kind: "direct-resource-template",
