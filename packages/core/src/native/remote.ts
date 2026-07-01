@@ -980,7 +980,9 @@ function primitiveToolsFromProjection(
   const entryFor = (capletId: string, shadowing: CapletShadowingPolicy) => {
     const existing = byCaplet.get(capletId);
     if (existing) {
-      if (shadowing === "forbid") existing.shadowing = "forbid";
+      if (shadowing === "forbid" || (shadowing === "namespace" && existing.shadowing === "allow")) {
+        existing.shadowing = shadowing;
+      }
       return existing;
     }
     const next = {

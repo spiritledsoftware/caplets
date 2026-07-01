@@ -269,7 +269,12 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     const callableById = new Map(
       snapshot.callableCaplets.map((entry) => [entry.caplet.server, entry]),
     );
-    const directToolsById = new Map(snapshot.directTools.map((entry) => [entry.name, entry]));
+    const directToolsByRoute = new Map(
+      snapshot.directTools.map((entry) => [
+        directToolRouteKey(entry.caplet.server, entry.downstreamName),
+        entry,
+      ]),
+    );
     const primitiveCapletIds = new Set<string>();
 
     for (const entry of projection.entries) {
@@ -282,13 +287,19 @@ class DefaultNativeCapletsService implements NativeCapletsService {
         codeModeCaplets.push(codeModeCapletDescriptor(callable.caplet));
       }
       if (entry.kind === "direct-tool") {
-        const direct = directToolsById.get(entry.id);
-        if (direct) directTools.push(this.directDiscoveredTool(callable.caplet, direct));
+        const direct =
+          entry.route.kind === "direct-tool"
+            ? directToolsByRoute.get(
+                directToolRouteKey(entry.route.capletId, entry.route.downstreamName),
+              )
+            : undefined;
+        if (direct) directTools.push(this.directDiscoveredTool(callable.caplet, direct, entry.id));
       }
       if (
         entry.kind === "direct-resource" ||
         entry.kind === "direct-resource-template" ||
-        entry.kind === "direct-prompt"
+        entry.kind === "direct-prompt" ||
+        entry.kind === "completion"
       ) {
         primitiveCapletIds.add(entry.capletId);
       }
@@ -437,8 +448,10 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private directDiscoveredTool(
     caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
     entry: DirectToolRegistration,
+    visibleId?: string,
   ): NativeCapletTool {
     return this.directNativeTool(caplet, entry.downstreamName, {
+      ...(visibleId ? { visibleId } : {}),
       ...(entry.tool.description ? { description: entry.tool.description } : {}),
       ...(entry.tool.inputSchema
         ? { inputSchema: entry.tool.inputSchema as Record<string, unknown> }
@@ -454,13 +467,14 @@ class DefaultNativeCapletsService implements NativeCapletsService {
     caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
     operationName: string,
     options: {
+      visibleId?: string;
       description?: string;
       inputSchema?: Record<string, unknown>;
       outputSchema?: Record<string, unknown>;
       annotations?: Record<string, unknown>;
     },
   ): NativeCapletTool {
-    const routeId = `${caplet.server}__${operationName}`;
+    const routeId = options.visibleId ?? `${caplet.server}__${operationName}`;
     const toolName = nativeDirectToolName(caplet.server, operationName);
     this.directToolRoutes.set(routeId, { capletId: caplet.server, operationName });
     return {
@@ -577,6 +591,10 @@ function codeModeCapletDescriptor(
   };
 }
 
+function directToolRouteKey(capletId: string, downstreamName: string): string {
+  return `${capletId}:${downstreamName}`;
+}
+
 function mcpPrimitiveNativeTools(
   caplet: ReturnType<CapletsEngine["enabledServers"]>[number],
   snapshot: ExposureSnapshot | undefined,
@@ -590,6 +608,9 @@ function mcpPrimitiveNativeTools(
   }
   if (snapshot?.directPrompts.some((entry) => entry.caplet.server === caplet.server)) {
     operations.push("list_prompts", "get_prompt", "complete");
+  }
+  if (snapshot?.directResourceTemplates.some((entry) => entry.caplet.server === caplet.server)) {
+    operations.push("complete");
   }
   return [...new Set(operations)];
 }

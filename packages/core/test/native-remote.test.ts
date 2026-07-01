@@ -1101,6 +1101,86 @@ describe("RemoteNativeCapletsService", () => {
     await service.close();
   });
 
+  it("surfaces completion-only manifest entries as native primitive tools", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifest("rev-1", "export-unused"),
+            caplets: [],
+            completions: [
+              {
+                stableId: "completion:docs",
+                exportId: "export-completion",
+                kind: "completion",
+                name: "docs:complete",
+                title: "Complete",
+                description: "Complete docs.",
+                schemaHash: null,
+                capletId: "docs",
+                shadowing: "forbid",
+              },
+            ],
+          });
+        }
+        return Response.json({ ok: true, data: { completed: true } });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 60_000 });
+
+    await service.reload();
+
+    expect(configuredCapletIds(service.listTools())).toEqual(["docs__complete"]);
+    await expect(service.execute("docs__complete", { ref: { name: "topic" } })).resolves.toEqual({
+      completed: true,
+    });
+    await service.close();
+  });
+
+  it("upgrades primitive tool shadowing when a later manifest entry uses namespace", async () => {
+    const remote = createSdkRemoteCapletsClient({
+      url: new URL("https://caplets.example.com/v1/attach"),
+      requestInit: {},
+      fetch: vi.fn(async (input) => {
+        if (String(input).endsWith("/manifest")) {
+          return Response.json({
+            ...attachManifestWithDirectMcpPrimitives("rev-1"),
+            resources: attachManifestWithDirectMcpPrimitives("rev-1").resources.map((entry) => ({
+              ...entry,
+              shadowing: "allow" as const,
+            })),
+            resourceTemplates: [],
+            prompts: [],
+            completions: attachManifestWithDirectMcpPrimitives("rev-1").completions.map(
+              (entry) => ({
+                ...entry,
+                shadowing: "namespace" as const,
+              }),
+            ),
+          });
+        }
+        return Response.json({ ok: true, data: {} });
+      }),
+      auth: { enabled: false, user: "caplets" },
+      pollIntervalMs: 60_000,
+    });
+    const service = new RemoteNativeCapletsService({ client: remote, pollIntervalMs: 60_000 });
+
+    await service.reload();
+
+    expect(service.listTools()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ caplet: "docs__read_resource", shadowing: "namespace" }),
+        expect.objectContaining({ caplet: "docs__complete", shadowing: "namespace" }),
+      ]),
+    );
+    await service.close();
+  });
+
   it("passes prompt argument metadata through attached prompt lists", async () => {
     const remote = createSdkRemoteCapletsClient({
       url: new URL("https://caplets.example.com/v1/attach"),

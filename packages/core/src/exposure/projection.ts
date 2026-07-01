@@ -31,6 +31,8 @@ export type ExposureProjectionEntryKind =
   | "direct-prompt"
   | "completion";
 
+export type ExposureProjectionRouteKey = `${ExposureProjectionEntryKind}:${string}`;
+
 export type ExposureProjectionRoute =
   | { kind: "progressive-caplet"; capletId: string }
   | { kind: "code-mode-caplet"; capletId: string }
@@ -66,8 +68,14 @@ export type ExposureProjection = {
   availability: ExposureProjectionAvailability;
   entries: ExposureProjectionEntry[];
   hiddenCaplets: ExposureProjectionHiddenCaplet[];
-  routes: Map<string, ExposureProjectionRoute>;
+  routes: Map<ExposureProjectionRouteKey, ExposureProjectionRoute>;
 };
+
+export function exposureProjectionRouteKey(
+  entry: Pick<ExposureProjectionEntry, "kind" | "id">,
+): ExposureProjectionRouteKey {
+  return `${entry.kind}:${entry.id}`;
+}
 
 export function buildExposureProjection(snapshot: ExposureSnapshot): ExposureProjection {
   const entries = [
@@ -84,7 +92,7 @@ export function buildExposureProjection(snapshot: ExposureSnapshot): ExposurePro
     availability: { state: "ready" },
     entries,
     hiddenCaplets: snapshot.hiddenCaplets.map(hiddenCapletEntry),
-    routes: new Map(entries.map((entry) => [entry.id, entry.route])),
+    routes: new Map(entries.map((entry) => [exposureProjectionRouteKey(entry), entry.route])),
   };
 }
 
@@ -167,7 +175,7 @@ export function buildManifestExposureProjection(
     availability: { state: "ready" },
     entries,
     hiddenCaplets: [],
-    routes: new Map(entries.map((entry) => [entry.id, entry.route])),
+    routes: new Map(entries.map((entry) => [exposureProjectionRouteKey(entry), entry.route])),
   };
 }
 
@@ -206,6 +214,7 @@ function manifestDirectResourceEntry(entry: ManifestProjectionResource): Exposur
     kind: "direct-resource",
     id: entry.uri,
     capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title,
     description: entry.description,
     ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
@@ -226,6 +235,7 @@ function manifestDirectResourceTemplateEntry(
     kind: "direct-resource-template",
     id: entry.uriTemplate,
     capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title,
     description: entry.description,
     ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
@@ -243,6 +253,7 @@ function manifestDirectPromptEntry(entry: ManifestProjectionPrompt): ExposurePro
     kind: "direct-prompt",
     id: entry.name,
     capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title ?? entry.name,
     description: entry.description,
     inputSchema: entry.inputSchema,
@@ -260,6 +271,7 @@ function manifestCompletionEntry(entry: ManifestProjectionCompletion): ExposureP
     kind: "completion",
     id: entry.name ?? `${entry.capletId}:complete`,
     capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title,
     description: entry.description,
     shadowing: entry.shadowing,
@@ -435,7 +447,10 @@ function sanitizeDetails(value: unknown): unknown {
 function sanitizeString(value: string): string {
   return value
     .replace(/sk-[A-Za-z0-9_-]+/g, "[REDACTED]")
-    .replace(/(?:\/Users|\/home)\/[^\s,)]+/g, "[REDACTED_PATH]");
+    .replace(
+      /(?:\/Users|\/home)\/[^\s,)]+|[A-Za-z]:[\\/](?:Users|home)[^,\s)]*/g,
+      "[REDACTED_PATH]",
+    );
 }
 
 function sensitiveKey(key: string): boolean {

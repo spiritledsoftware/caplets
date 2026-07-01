@@ -21,7 +21,7 @@ The first compatibility-global set for Code Mode: URL and query handling, text e
 _Avoid_: Minimal encoding helpers, full Node compatibility
 
 **Caplets exposure projection**:
-A resolved runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces for a specific host adapter, including non-callable diagnostic breadcrumbs for hidden Caplets.
+A shared adapter-neutral runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces, including non-callable diagnostic breadcrumbs for hidden Caplets. MCP, native, and attach host adapters render it differently; they do not own exposure policy or execution behavior.
 _Avoid_: Tool registration list, exposure wrapper map, transport-specific surface
 
 **Code Mode bridge value**:

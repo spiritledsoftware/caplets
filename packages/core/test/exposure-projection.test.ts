@@ -5,6 +5,7 @@ import type { CallableCaplet, ExposureSnapshot } from "../src/exposure/discovery
 import {
   buildExposureProjection,
   buildManifestExposureProjection,
+  exposureProjectionRouteKey,
   resolveNativeProjectionMerge,
 } from "../src/exposure/projection";
 
@@ -80,12 +81,20 @@ describe("Caplets exposure projection", () => {
       ["direct-prompt", "docs__summarize", "docs"],
       ["completion", "docs:complete", "docs"],
     ]);
-    expect(projection.routes.get("docs__read")).toEqual({
+    expect(projection.routes.get("direct-tool:docs__read")).toEqual({
       kind: "direct-tool",
       capletId: "docs",
       downstreamName: "read",
     });
-    expect(projection.routes.get("docs__read")).not.toEqual(
+    expect(projection.routes.get("progressive-caplet:search")).toEqual({
+      kind: "progressive-caplet",
+      capletId: "search",
+    });
+    expect(projection.routes.get("code-mode-caplet:search")).toEqual({
+      kind: "code-mode-caplet",
+      capletId: "search",
+    });
+    expect(projection.routes.get("direct-tool:docs__read")).not.toEqual(
       expect.objectContaining({ callback: expect.any(Function) }),
     );
   });
@@ -99,10 +108,11 @@ describe("Caplets exposure projection", () => {
             reason: "discovery_failed",
             error: {
               code: "SERVER_UNAVAILABLE",
-              message: "Failed with sk-live-secret-token at /Users/ian/.config/caplets/token.json",
+              message:
+                "Failed with sk-live-secret-token at /Users/ian/.config/caplets/token.json and C:\\Users\\ian\\.caplets\\config.json",
               details: {
                 token: "sk-live-secret-token",
-                path: "/Users/ian/.config/caplets/token.json",
+                path: "C:/Users/ian/.caplets/config.json",
               },
             },
           },
@@ -127,6 +137,8 @@ describe("Caplets exposure projection", () => {
     ]);
     expect(JSON.stringify(projection.hiddenCaplets)).not.toContain("sk-live-secret-token");
     expect(JSON.stringify(projection.hiddenCaplets)).not.toContain("/Users/ian");
+    expect(JSON.stringify(projection.hiddenCaplets)).not.toContain("C:\\Users\\ian");
+    expect(JSON.stringify(projection.hiddenCaplets)).not.toContain("C:/Users/ian");
   });
 
   it("preserves skipped non-direct MCP surface discovery as an empty projection", () => {
@@ -194,6 +206,7 @@ describe("remote manifest exposure projection", () => {
           uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
           downstreamUri: "file:///README.md",
           capletId: "docs",
+          sourceCapletId: "upstream-docs",
           title: "README",
           description: "README resource.",
           mimeType: "text/markdown",
@@ -207,6 +220,7 @@ describe("remote manifest exposure projection", () => {
           uriTemplate: "caplets://docs/resources/{encodedUri}",
           downstreamUriTemplate: "file:///{path}",
           capletId: "docs",
+          sourceCapletId: "upstream-docs",
           title: "File",
           description: "File resource.",
           mimeType: "text/plain",
@@ -219,6 +233,7 @@ describe("remote manifest exposure projection", () => {
           name: "docs__explain",
           downstreamName: "explain",
           capletId: "docs",
+          sourceCapletId: "upstream-docs",
           title: "Explain",
           description: "Explain prompt.",
           inputSchema: { arguments: [{ name: "topic", required: true }] },
@@ -230,6 +245,7 @@ describe("remote manifest exposure projection", () => {
           kind: "completion",
           name: "docs:complete",
           capletId: "docs",
+          sourceCapletId: "upstream-docs",
           title: "Complete",
           description: "Complete docs inputs.",
           shadowing: "allow",
@@ -276,11 +292,29 @@ describe("remote manifest exposure projection", () => {
       ["completion", "docs:complete", { kind: "completion", capletId: "docs" }],
       ["code-mode-caplet", "docs", { kind: "code-mode-caplet", capletId: "docs" }],
     ]);
-    expect(projection.routes.get("docs__search")).toEqual({
+    expect(
+      projection.routes.get(
+        exposureProjectionRouteKey({ kind: "direct-tool", id: "docs__search" }),
+      ),
+    ).toEqual({
       kind: "direct-tool",
       capletId: "docs",
       downstreamName: "search",
     });
+    expect(
+      projection.entries
+        .filter((entry) =>
+          ["direct-resource", "direct-resource-template", "direct-prompt", "completion"].includes(
+            entry.kind,
+          ),
+        )
+        .map((entry) => [entry.kind, entry.sourceCapletId]),
+    ).toEqual([
+      ["direct-resource", "upstream-docs"],
+      ["direct-resource-template", "upstream-docs"],
+      ["direct-prompt", "upstream-docs"],
+      ["completion", "upstream-docs"],
+    ]);
   });
 
   it("keeps manifest Code Mode entries explicit instead of inferring fallback handles", () => {
@@ -411,6 +445,8 @@ describe("native projection merge", () => {
     const result = resolveNativeProjectionMerge({
       remoteTools: [
         mergeTool("shared", "remote", "namespace"),
+        // These five bare IDs are calibrated to exhaust the current generated
+        // namespace suffix retry policy for the `clash` namespace alias.
         mergeTool("clash-8516__shared", "remote", "forbid"),
         mergeTool("clash-85163__shared", "remote", "forbid"),
         mergeTool("clash-851639__shared", "remote", "forbid"),
