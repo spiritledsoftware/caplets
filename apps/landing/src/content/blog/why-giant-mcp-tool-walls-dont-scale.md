@@ -1,6 +1,6 @@
 ---
 title: Why Most MCP Clients Suck
-description: "MCP is a good protocol. Most clients still make the model play air-traffic controller: pick tools one at a time, read raw output, ask again, and drag every intermediate result back into chat."
+description: "MCP is not the problem. The problem is clients that make the model babysit API calls one at a time, drag raw blobs into context, and call that an agent workflow."
 date: 2026-07-01
 tags:
   - MCP
@@ -9,56 +9,115 @@ tags:
   - Code Mode
 ---
 
-The problem is not MCP.
-MCP made it easy to connect agents to tools, and that part is good.
-The problem is what most clients do next: they make the model orchestrate everything in public.
+Give your agent capabilities, not giant tool walls.
+
+That is the whole pitch.
+
+MCP is good. The protocol is not the villain here.
+
+It solved a real problem: give agents a standard way to reach tools. That part matters. I am glad it exists.
+
+But most MCP clients take that good idea and make the model do the dumbest possible version of the work.
+
+They turn every task into this loop:
 
 Pick a tool.
 Read the schema.
 Call it.
-Get back a blob.
+Get a blob back.
 Read the blob.
 Pick another tool.
 Call it.
 Get another blob.
-Now ask the model to remember which pieces mattered.
+Try to remember which three fields mattered from the last six calls.
 
-That sucks.
-Not because tools are bad.
-Because the client is forcing the model to do backend orchestration through a chat transcript.
+That is not an agent workflow.
+That is making the model manually drive an API client through a chat window.
 
-Most clients turn MCP into a junk drawer: `get`, `search`, `list`, `create`, `delete`, repeated across every backend, with raw responses dumped back into the conversation after every step.
-The visible tool wall is part of the problem, but it is not the whole problem.
-The deeper failure is that the agent has to shuttle every intermediate decision and every noisy payload through the most expensive part of the system: the model context.
+And yes, the giant tool wall is annoying. Nobody wants to dump 200 tools into the first prompt and ask the model to squint at a pile of `get`, `search`, `list`, `create`, and `delete` operations.
 
-Caplets exists because usable capability is not “show the model every tool.”
-A useful capability should let the agent batch the investigation, execute the boring middle steps close to the tools, filter the output before it hits the model, and return compact evidence instead of a transcript full of plumbing.
+But the tool wall is only the obvious symptom.
 
-## The real problem is the loop
+The deeper problem is the loop.
 
-Flat MCP aggregation feels fine in demos because the tool count is small and the response shapes are clean.
-It starts falling apart when real servers show up with broad surfaces, generic names, pagination, nested records, noisy fields, and follow-up calls.
+Most clients keep forcing every intermediate step through the most expensive part of the system: model context. Every schema read, every candidate record, every noisy response, every follow-up decision gets dragged back into chat.
 
-The bad loop looks like this:
+That is the part that really sucks.
 
-1. The model scans a giant list of tools.
-2. It guesses which generic operation belongs to the job.
-3. The client sends the raw response back into chat.
-4. The model reads the response, decides what to do next, and asks for another call.
-5. The process repeats until enough context has been burned to answer the original question.
+Caplets exists because I do not think “show the model every tool and every response” is the end state for agent capabilities.
+
+The better shape is simple:
+
+- batch the investigation
+- run the boring middle steps close to the tools
+- filter the output before it hits the model
+- return compact evidence instead of a transcript full of plumbing
+
+Fewer visible tools helps. But if all you do is hide the tool list and still make the model babysit every backend call, you did not fix the workflow. You just moved the clutter.
+
+## The broken loop
+
+Flat MCP aggregation looks fine in demos.
+
+The toy server has a few tools. The names are clean. The responses are small. The happy path works.
+
+Then you point it at real backends.
+
+Now the agent has broad surfaces, generic operation names, nested schemas, pagination, noisy records, partial failures, and follow-up calls that only make sense after the first result comes back.
+
+The common loop looks like this:
+
+1. The model scans a giant initial tool list.
+2. It guesses which generic operation belongs to the task.
+3. The client sends raw output back into the conversation.
+4. The model reads the raw output and decides the next call.
+5. The client sends another raw payload back.
+6. Repeat until the answer is somewhere in the context window.
 
 That is not capability.
-That is an agent manually driving an API client through a keyhole.
 
-Caplets changes the loop.
-Instead of flattening every downstream operation into the first tool list, each backend becomes a named capability handle.
-The agent can inspect the capability, search its operations, describe the schema it actually needs, call the operation, filter the result, join follow-up calls, and summarize the answer inside one bounded workflow.
-The model sees the decision-ready result, not every irrelevant field the backend happened to return.
+That is remote-controlling an API with a language model.
 
-## What the deterministic benchmark shows
+The model should not need to see every field in every candidate object just to answer a focused question. It should not need to burn tokens reading intermediate junk that a tiny bit of local logic could have filtered away.
+
+This is why Caplets is built around capability handles instead of one giant flattened tool list.
+
+The agent can inspect a capability, search for the right operation, describe the schema it actually needs, call the operation, join follow-up calls, filter noisy data, and return a decision-ready result.
+
+The key difference is not cosmetic.
+
+The model sees the evidence.
+It does not have to watch the plumbing.
+
+## Batching is the point
+
+The thing I keep coming back to is that most useful backend tasks are not one call.
+
+They are small investigations.
+
+Find the right operation. Inspect the shape. Fetch candidates. Throw away irrelevant records. Preserve the fields that matter. Maybe make a follow-up call. Then come back with the answer and the evidence.
+
+A normal MCP client tends to spread that whole investigation across the chat transcript.
+
+Caplets Code Mode lets the agent do it as one bounded workflow.
+
+Inside Code Mode, the agent can write a compact TypeScript script that discovers, filters, joins, and summarizes before returning anything to the model. The final output can be small JSON with the exact facts needed for the decision.
+
+That changes the cost profile.
+
+Instead of paying model-context rent for every intermediate object, you keep bulky exploration inside the workflow and only bring back the useful part.
+
+That is the wedge.
+
+Not “we made the tool list prettier.”
+
+More like: “we stopped making the model narrate every database/API/browser step back to itself.”
+
+## What the benchmark actually says
 
 The deterministic benchmark in this repo compares direct flat MCP exposure with Caplets capability exposure over local mock MCP metadata.
-It is intentionally reproducible: it does not call external APIs, depend on network access, or require model credentials.
+
+It is deliberately boring. No external APIs. No network. No model credentials. No vibes.
 
 In that fixture, Caplets shows:
 
@@ -68,23 +127,39 @@ In that fixture, Caplets shows:
 - 12,633 fewer approximate initial context tokens.
 - 0 top-level duplicate tool-name collisions, compared with repeated direct collisions for generic names such as `get` and `search`.
 
-The win is not just fewer tools.
-Surface reduction helps, but the bigger point is workflow shape: batch the investigation, keep bulky exploration out of the model loop, and filter noisy backend output down to the evidence the answer actually needs.
+The headline is not just “fewer tools.”
 
-These are deterministic context-surface and workflow-shape claims, not a universal live model win-rate claim.
-Real MCP servers vary in schema quality, latency, operation count, and error behavior.
-Live benchmark runs are useful for product direction, but they are model-dependent and belong in local result artifacts rather than deterministic product claims.
+Fewer tools are nice. They make the first prompt less chaotic. They reduce name collisions. They make discovery less ridiculous.
 
-## Why Code Mode is the wedge
+But the more important claim is workflow shape: batch the investigation, filter before the model sees it, and return compact evidence instead of raw backend exhaust.
 
-Progressive discovery helps because it stops spraying every downstream operation into the initial prompt.
-Code Mode goes further: it lets the agent do discovery, inspection, execution, filtering, joining, and synthesis inside one bounded TypeScript workflow.
+These are deterministic context-surface and workflow-shape claims. They are not a promise that every model, every server, and every task gets faster in every environment.
 
-That matters because many backend tasks are not one tool call.
-They are small investigations: find the right operation, inspect the schema, fetch candidate records, preserve evidence fields, filter noise, and return a decision-ready answer.
-Code Mode keeps bulky exploration inside the script and returns only the compact result the user needs.
+Real MCP servers are messy. Schema quality varies. Latency varies. Error behavior varies. Live benchmarks are useful, but they are model-dependent and should be treated like local result artifacts, not universal product claims.
 
-That is the difference between an MCP client that merely exposes tools and a capability layer that helps the agent get work done.
+## Why Code Mode matters
+
+Progressive discovery is a good start because it stops spraying every downstream operation into the initial prompt.
+
+Code Mode is where it gets interesting.
+
+It gives the agent a place to do the middle of the job without dumping every intermediate result into chat.
+
+That middle is where a lot of agent work actually lives:
+
+- discover the right operation
+- inspect the schema
+- fetch candidate records
+- keep the evidence fields
+- drop the noise
+- join follow-up calls
+- return the smallest useful answer
+
+That is not glamorous. It is plumbing.
+
+But good plumbing is the difference between an agent that feels sharp and an agent that feels like it is reading logs out loud.
+
+A capability layer should help the agent get work done. It should not just expose tools and hope the model survives the blast radius.
 
 ## Try it
 
@@ -113,13 +188,16 @@ To regenerate it locally from the repository, run:
 pnpm benchmark
 ```
 
-The benchmark is useful precisely because it is narrow.
+The benchmark is narrow on purpose.
+
 It measures initial tool surface, serialized payload size, approximate context-token proxy, duplicate-name pressure, preserved evidence fields, and deterministic workflow shape.
+
 It does not pretend to prove that every model, server, or task is faster in every environment.
 
 ## The claim
 
 MCP made tool connection easy.
-The next fight is making those tools usable without forcing the model to babysit every API call and sift every raw payload.
+
+The next fight is making those tools usable without forcing the model to babysit API calls and sift raw payloads all day.
 
 Give your agent capabilities, not a junk drawer with schemas.
