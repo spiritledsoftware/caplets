@@ -1,6 +1,6 @@
 ---
-title: Why Giant MCP Tool Walls Don’t Scale
-description: "MCP made it easy to connect agents to tools. Caplets tackles the next scaling problem: keeping agents effective when those tools become a wall of hundreds of operations."
+title: Why Most MCP Clients Suck
+description: "MCP is a good protocol. Most clients still dump every tool into the model up front, then act surprised when the agent gets slower, noisier, and easier to confuse."
 date: 2026-07-01
 tags:
   - MCP
@@ -9,19 +9,28 @@ tags:
   - Code Mode
 ---
 
-MCP made it easy to give coding agents tools.
-That created the next problem: once every server exposes every operation up front, the agent starts each task staring at a giant tool wall.
+The problem is not MCP.
+MCP made it easy to connect agents to tools, and that part is good.
+The problem is what most clients do next: they take every operation from every server, flatten it into one giant menu, shove the whole thing into the model, and call that “capabilities.”
 
-Caplets exists because tool access is not the same thing as usable capability.
-A coding agent should be able to start with a focused capability, inspect only what matters, call the exact backend operation it needs, and return compact evidence without carrying the whole backend universe in its prompt.
+That sucks.
+Not because tools are bad.
+Because a wall of tools is not a capability.
+It is a junk drawer with schemas.
+
+Most clients turn it into a junk drawer: `get`, `search`, `list`, `create`, `delete`, repeated across every backend, all visible before the agent knows what it needs.
+The model burns context just reading the menu, guesses which generic verb belongs to which service, then burns more turns recovering from the wrong first choice.
+
+Caplets exists because tool access and usable capability are different things.
+A coding agent should start with a focused capability, inspect only what matters, call the exact backend operation it needs, and return compact evidence without dragging the whole backend universe into the prompt.
 
 ## The tool wall problem
 
-Flat MCP aggregation works well while the tool count is small.
-It starts to break down when useful servers expose broad surfaces with generic names like `get`, `search`, and `list_recent_changes`.
-The model has to reason over too much surface too early, schemas compete with the user's task for context, and multi-step discovery often turns into repeated model/tool round trips.
+Flat MCP aggregation feels fine in demos because the tool count is small.
+It starts falling apart when real servers show up with broad surfaces and generic names like `get`, `search`, and `list_recent_changes`.
+Now the model has to reason over too much surface too early, schemas compete with the user’s task for context, and multi-step discovery turns into repeated model/tool round trips.
 
-Caplets changes that initial shape.
+Caplets changes the starting shape.
 Instead of flattening every downstream operation into the first tool list, each backend becomes a named capability handle.
 The agent can inspect the capability, search its operations, describe the schema it actually needs, call the operation, filter the result, and summarize the answer in one bounded workflow.
 
@@ -45,7 +54,7 @@ Live benchmark runs are useful for product direction, but they are model-depende
 
 ## Why Code Mode is the wedge
 
-Progressive discovery is useful because it hides downstream operations until the agent asks for them.
+Progressive discovery helps because it stops spraying every downstream operation into the initial prompt.
 Code Mode goes further: it lets the agent do discovery, inspection, execution, filtering, joining, and synthesis inside one bounded TypeScript workflow.
 
 That matters because many backend tasks are not one tool call.
@@ -86,6 +95,6 @@ It does not pretend to prove that every model, server, or task is faster in ever
 ## The claim
 
 MCP made tool connection easy.
-Caplets focuses on the next layer: making connected tools usable by coding agents without turning the prompt into a giant tool wall.
+The next fight is making those tools usable without turning every agent session into a schema landfill.
 
 Give your agent capabilities, not giant tool walls.

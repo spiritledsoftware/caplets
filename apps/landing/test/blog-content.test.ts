@@ -24,7 +24,9 @@ describe("landing blog content", () => {
   it("ships the tool-wall launch essay as the first canonical blog post", () => {
     const post = readFileSync(launchPostPath, "utf8");
 
-    expect(post).toContain("title: Why Giant MCP Tool Walls Don’t Scale");
+    expect(post).toContain("title: Why Most MCP Clients Suck");
+    expect(post).toContain("The problem is not MCP");
+    expect(post).toContain("Most clients turn it into a junk drawer");
     expect(post).not.toContain("canonicalPath:");
     expect(post).toContain("96.7% fewer initially visible tools");
     expect(post).toContain("79.9% lower initial serialized tool payload");
