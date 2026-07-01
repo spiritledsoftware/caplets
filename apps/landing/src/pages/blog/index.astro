@@ -1,0 +1,72 @@
+---
+import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
+
+import Footer from "../../components/landing/Footer.astro";
+import Header from "../../components/landing/Header.astro";
+import { Badge } from "../../components/starwind/badge";
+import { Card, CardContent } from "../../components/starwind/card";
+import LandingLayout from "../../layouts/LandingLayout.astro";
+import { blogIndexUrl, blogPostUrl, getSortedBlogPosts } from "../../lib/blog";
+
+const posts = await getSortedBlogPosts();
+const featuredTitle = posts[0]?.data.title ?? "our launch essay";
+---
+
+<LandingLayout
+  canonicalUrl={blogIndexUrl()}
+  title="Caplets Blog"
+  description="Long-form notes and benchmark-backed proof for Caplets."
+>
+  <Header slot="header" />
+  <section class="mx-auto w-[min(960px,calc(100vw_-_32px))] py-20 md:py-28" aria-labelledby="blog-title">
+    <p class="text-sm font-medium text-primary-accent">Blog</p>
+    <h1 id="blog-title" class="mt-3 max-w-3xl text-4xl leading-tight font-semibold tracking-[-0.03em] text-balance text-foreground md:text-6xl">
+      Notes on agents, capabilities, and the tool wall problem.
+    </h1>
+    <p class="mt-6 max-w-2xl text-lg leading-8 text-pretty text-muted-foreground">
+      Start with the launch essay, <span class="text-foreground">{featuredTitle}</span>, then syndicate the canonical URL wherever developers already talk about MCP.
+    </p>
+  </section>
+
+  <section class="mx-auto w-[min(960px,calc(100vw_-_32px))] pb-24" aria-label="Blog posts">
+    <div class="grid gap-4">
+      {
+        posts.map((post) => (
+          <Card class="overflow-hidden">
+            <CardContent class="grid gap-5 p-6 md:grid-cols-[1fr_auto] md:items-start">
+              <div>
+                <div class="mb-4 flex flex-wrap items-center gap-2">
+                  <time class="text-sm text-muted-foreground" datetime={post.data.date.toISOString()}>
+                    {post.data.date.toLocaleDateString("en", {
+                      day: "numeric",
+                      month: "long",
+                      year: "numeric",
+                      timeZone: "UTC",
+                    })}
+                  </time>
+                  {post.data.tags.map((tag) => <Badge variant="outline">{tag}</Badge>)}
+                </div>
+                <h2 class="text-2xl font-semibold tracking-[-0.02em] text-foreground">
+                  <a class="rounded-sm hover:text-primary-accent focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href={blogPostUrl(post.slug)}>
+                    {post.data.title}
+                  </a>
+                </h2>
+                <p class="mt-3 max-w-2xl leading-7 text-muted-foreground">{post.data.description}</p>
+              </div>
+              <a class="inline-flex min-h-11 items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none" href={blogPostUrl(post.slug)}>
+                Read post
+                <ArrowUpRight class="size-4" aria-hidden="true" />
+              </a>
+            </CardContent>
+          </Card>
+        ))
+      }
+    </div>
+  </section>
+  <Footer slot="footer" />
+</LandingLayout>
+
+<script>
+  import "../../scripts/observability";
+  import "../../scripts/header-collapse";
+</script>
