@@ -27,6 +27,7 @@
 
 - Keep tests that protect behavior, user-visible contracts, generated artifacts, integrations, regressions, or data-safety boundaries. Remove or avoid tests that mostly restate implementation literals.
 - Do not add tests that only assert package metadata, prompt/help copy substrings, Markdown wrapper scaffolding, export importability, or duplicated flag passthrough when stronger behavior coverage already exists.
+- Do not add tests for marketing/blog/editorial prose, exact headlines, body copy, or subjective positioning. Copy is reviewed by humans, not locked by tests; only test durable content-system behavior such as schema validation, routing, metadata generation, or safety boundaries.
 - Prefer Code Mode coverage through structured envelopes, session/recovery metadata, generated API checks, schema checks, and real tool execution. Avoid long prompt-description snapshots.
 - Prefer benchmark tests that validate metric shape and failure thresholds. Do not pin static scenario IDs or improvement-name fixtures unless the exact list is the behavior under test.
 - When deleting or skipping a narrow unit test, make sure a stronger integration test, generated-file check, or full gate still protects the meaningful behavior.
