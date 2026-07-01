@@ -26,7 +26,10 @@ describe("landing blog content", () => {
 
     expect(post).toContain("title: Why Most MCP Clients Suck");
     expect(post).toContain("The problem is not MCP");
-    expect(post).toContain("Most clients turn it into a junk drawer");
+    expect(post).toContain("Most clients turn MCP into a junk drawer");
+    expect(post).toContain("batch the investigation");
+    expect(post).toContain("filter the output before it hits the model");
+    expect(post).toContain("The win is not just fewer tools");
     expect(post).not.toContain("canonicalPath:");
     expect(post).toContain("96.7% fewer initially visible tools");
     expect(post).toContain("79.9% lower initial serialized tool payload");
