@@ -40,6 +40,8 @@ describe("blog metadata and article presentation", () => {
     expect(cta).toContain("npm install -g caplets");
     expect(cta).toContain("https://docs.caplets.dev");
     expect(cta).toContain("https://catalog.caplets.dev");
+    expect(cta).toContain("https://github.com/spiritledsoftware/caplets");
+    expect(cta).toContain("https://www.npmjs.com/package/caplets");
     expect(cta).toContain("docs/benchmarks/coding-agent.md");
   });
 });
