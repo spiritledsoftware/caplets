@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.32.2
+
+### Patch Changes
+
+- 1ecb13b: Centralize Caplets exposure projection rendering across attach, native, remote, and MCP surfaces.
+
 ## 0.32.1
 
 ### Patch Changes
