@@ -1,6 +1,8 @@
 ---
 import { getCollection, render } from "astro:content";
 
+import BlogArticle from "../../components/landing/BlogArticle.astro";
+import BlogCta from "../../components/landing/BlogCta.astro";
 import Footer from "../../components/landing/Footer.astro";
 import Header from "../../components/landing/Header.astro";
 import LandingLayout from "../../layouts/LandingLayout.astro";
@@ -22,31 +24,21 @@ export async function getStaticPaths() {
 
 const { entry } = Astro.props;
 const { Content } = await render(entry);
+const canonicalUrl = `https://caplets.dev${blogPostUrl(entry.slug)}`;
 ---
 
-<LandingLayout title={`${entry.data.title} | Caplets Blog`} description={entry.data.description}>
+<LandingLayout
+  canonicalUrl={canonicalUrl}
+  title={`${entry.data.title} | Caplets Blog`}
+  description={entry.data.description}
+  ogType="article"
+  ogImage={entry.data.ogImage ?? "/icon.png"}
+>
   <Header slot="header" />
-  <article class="mx-auto w-[min(840px,calc(100vw_-_32px))] py-20 md:py-28">
-    <a class="text-sm font-medium text-primary-accent hover:text-foreground" href="/blog/">Blog</a>
-    <h1 class="mt-4 text-4xl leading-tight font-semibold tracking-[-0.03em] text-balance text-foreground md:text-6xl">
-      {entry.data.title}
-    </h1>
-    <p class="mt-5 text-xl leading-8 text-pretty text-muted-foreground">{entry.data.description}</p>
-    <time class="mt-6 block text-sm text-muted-foreground" datetime={entry.data.date.toISOString()}>
-      {entry.data.date.toLocaleDateString("en", {
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-        timeZone: "UTC",
-      })}
-    </time>
-    <div class="blog-prose mt-12">
-      <Content />
-    </div>
-    <p class="mt-12 text-sm text-muted-foreground">
-      Canonical URL: <a class="text-foreground underline decoration-border underline-offset-4 hover:text-primary-accent" href={blogPostUrl(entry.slug)}>{entry.data.canonicalPath}</a>
-    </p>
-  </article>
+  <BlogArticle title={entry.data.title} description={entry.data.description} date={entry.data.date} canonicalPath={entry.data.canonicalPath}>
+    <Content />
+    <BlogCta />
+  </BlogArticle>
   <Footer slot="footer" />
 </LandingLayout>
 

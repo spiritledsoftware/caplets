@@ -4,13 +4,19 @@ import "../styles/global.css";
 import { themeColor } from "../data/landing";
 
 interface Props {
-  title?: string;
+  canonicalUrl?: string;
   description?: string;
+  ogImage?: string;
+  ogType?: "article" | "website";
+  title?: string;
 }
 
 const {
+  canonicalUrl,
   title = "Caplets, capabilities instead of giant tool walls",
   description = "Caplets gives coding agents focused capability modes instead of giant MCP tool walls.",
+  ogImage = "/icon.png",
+  ogType = "website",
 } = Astro.props;
 ---
 
@@ -22,6 +28,15 @@ const {
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="generator" content={Astro.generator} />
     <meta name="description" content={description} />
+    {canonicalUrl && <link rel="canonical" href={canonicalUrl} />}
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    {canonicalUrl && <meta property="og:url" content={canonicalUrl} />}
+    <meta property="og:type" content={ogType} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
     <meta name="theme-color" content={themeColor} />
     <title>{title}</title>
   </head>
