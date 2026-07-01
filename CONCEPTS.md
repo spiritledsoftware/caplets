@@ -8,6 +8,12 @@ Shared domain vocabulary for this project -- entities, named processes, and stat
 
 A configured capability surface that exposes a backend to agents through a stable handle, progressive wrapper tools, or direct tool operations.
 
+### Caplets Exposure Projection
+
+The resolved runtime view of which local and remote Caplets are exposed as Code Mode handles, progressive tools, direct downstream operations, or direct MCP surfaces for a specific host adapter, including non-callable diagnostic breadcrumbs for hidden Caplets.
+
+Caplets Exposure Projection is the source of truth for exposure identity and availability. Host adapters render it; they do not re-own exposure policy or execution behavior.
+
 ### Prebuilt Caplets Catalog
 
 The repo-owned collection of installable Caplet files under `caplets/`.
