@@ -1,6 +1,6 @@
 ---
 title: Why Most MCP Clients Suck
-description: "MCP is not the problem. The problem is clients that make the model babysit API calls one at a time, drag raw blobs into context, and call that an agent workflow."
+description: "Large MCP servers are not the problem. GitHub, Slack, Linear, and Cloudflare should expose everything. The broken part is clients that make the model babysit that whole surface one raw call at a time."
 date: 2026-07-01
 tags:
   - MCP
@@ -9,17 +9,32 @@ tags:
   - Code Mode
 ---
 
-Give your agent capabilities, not giant tool walls.
+Everyone keeps complaining about large MCP servers.
 
-That is the whole pitch.
+GitHub exposes too much.
+Slack exposes too much.
+Linear exposes too much.
+Cloudflare exposes too much.
 
-MCP is good. The protocol is not the villain here.
+Honestly?
 
-It solved a real problem: give agents a standard way to reach tools. That part matters. I am glad it exists.
+Bring it on.
 
-But most MCP clients take that good idea and make the model do the dumbest possible version of the work.
+I want GitHub's MCP server to expose every issue, PR, workflow run, code search result, discussion, release, branch protection rule, permission, audit event, and weird corner of the API.
 
-They turn every task into this loop:
+I want Slack to expose the whole workspace.
+I want Linear to expose the whole product system.
+I want Cloudflare to expose the whole platform.
+
+That is the point.
+
+MCP servers should be rich. They should be complete. They should expose the real surface area of the service instead of some tiny toy subset that only works in a demo.
+
+The bloat is not the enemy.
+
+The client is the broken part.
+
+Most MCP clients take a huge server and flatten it straight into the model loop.
 
 Pick a tool.
 Read the schema.
@@ -32,28 +47,59 @@ Get another blob.
 Try to remember which three fields mattered from the last six calls.
 
 That is not an agent workflow.
+
 That is making the model manually drive an API client through a chat window.
 
-And yes, the giant tool wall is annoying. Nobody wants to dump 200 tools into the first prompt and ask the model to squint at a pile of `get`, `search`, `list`, `create`, and `delete` operations.
+MCP is good. The protocol is not the villain here.
 
-But the tool wall is only the obvious symptom.
+The mistake is treating the model like it should personally inspect every tool, every response, every follow-up decision, and every noisy intermediate payload.
 
-The deeper problem is the loop.
+It should not.
 
-Most clients keep forcing every intermediate step through the most expensive part of the system: model context. Every schema read, every candidate record, every noisy response, every follow-up decision gets dragged back into chat.
+The server should be rich.
+The client should be smart.
+The model should only see what matters.
 
-That is the part that really sucks.
+That is Caplets.
 
-Caplets exists because I do not think “show the model every tool and every response” is the end state for agent capabilities.
+## Stop shrinking the server
 
-The better shape is simple:
+The common reaction to MCP bloat is to make the server smaller.
 
-- batch the investigation
-- run the boring middle steps close to the tools
-- filter the output before it hits the model
-- return compact evidence instead of a transcript full of plumbing
+Expose fewer tools.
+Hide parts of the API.
+Handcraft a tiny happy-path surface.
+Pretend the real product is simpler than it is.
 
-Fewer visible tools helps. But if all you do is hide the tool list and still make the model babysit every backend call, you did not fix the workflow. You just moved the clutter.
+I think that is backwards.
+
+If the service is large, the MCP server should be large too.
+
+GitHub is not small. Cloudflare is not small. Stripe is not small. Linear is not small. Any useful internal platform at a real company is not small.
+
+The agent needs access to the actual surface area eventually.
+
+The problem is not that a server has 200 tools.
+
+The problem is that most clients act like the only two options are:
+
+1. dump all 200 tools into the model's face, or
+2. remove most of the capability.
+
+That is a false choice.
+
+You do not fix a rich capability surface by amputating it.
+
+You fix it by giving the agent a better way to move through it.
+
+Search the capability.
+Inspect the specific operation.
+Call what matters.
+Batch the boring middle steps.
+Filter the raw backend exhaust.
+Return compact evidence.
+
+That is the missing layer.
 
 ## The broken loop
 
@@ -61,11 +107,11 @@ Flat MCP aggregation looks fine in demos.
 
 The toy server has a few tools. The names are clean. The responses are small. The happy path works.
 
-Then you point it at real backends.
+Then you point it at a real backend.
 
 Now the agent has broad surfaces, generic operation names, nested schemas, pagination, noisy records, partial failures, and follow-up calls that only make sense after the first result comes back.
 
-The common loop looks like this:
+The bad client loop looks like this:
 
 1. The model scans a giant initial tool list.
 2. It guesses which generic operation belongs to the task.
@@ -78,16 +124,45 @@ That is not capability.
 
 That is remote-controlling an API with a language model.
 
+And it gets worse as the server gets better.
+
+The more complete the server is, the more the naive client punishes you for using it.
+
+That is insane.
+
+A good MCP server should be allowed to be huge. The client should make that hugeness navigable.
+
 The model should not need to see every field in every candidate object just to answer a focused question. It should not need to burn tokens reading intermediate junk that a tiny bit of local logic could have filtered away.
 
-This is why Caplets is built around capability handles instead of one giant flattened tool list.
+The model should see the evidence.
 
-The agent can inspect a capability, search for the right operation, describe the schema it actually needs, call the operation, join follow-up calls, filter noisy data, and return a decision-ready result.
+It does not need to watch the plumbing.
 
-The key difference is not cosmetic.
+## Caplets is the client-side moat
 
-The model sees the evidence.
-It does not have to watch the plumbing.
+Caplets is not a plea for smaller MCP servers.
+
+It is the opposite.
+
+Caplets assumes MCP servers are going to be big, messy, useful, and full of stuff.
+
+Good.
+
+The job is to make that surface agent-usable.
+
+Instead of handing the model one giant flattened tool wall, Caplets gives the agent named capability handles. The agent can inspect a capability, search its operations, describe the schema it actually needs, call the operation, join follow-up calls, filter noisy data, and return a decision-ready result.
+
+That changes the shape of the interaction.
+
+The agent is no longer asking the model to babysit every backend call.
+
+It can do the boring middle work near the tools and bring back the answer with the evidence that supports it.
+
+This is the moat.
+
+Not “we made MCP smaller.”
+
+More like: “we made large MCP servers usable without dumping the whole thing into model context.”
 
 ## Batching is the point
 
@@ -109,9 +184,9 @@ Instead of paying model-context rent for every intermediate object, you keep bul
 
 That is the wedge.
 
-Not “we made the tool list prettier.”
+Not “hide the tools.”
 
-More like: “we stopped making the model narrate every database/API/browser step back to itself.”
+More like: “let the server expose everything, then give the agent a sane way to work with it.”
 
 ## What the benchmark actually says
 
@@ -127,15 +202,21 @@ In that fixture, Caplets shows:
 - 12,633 fewer approximate initial context tokens.
 - 0 top-level duplicate tool-name collisions, compared with repeated direct collisions for generic names such as `get` and `search`.
 
-The headline is not just “fewer tools.”
+The important word is “visible.”
 
-Fewer tools are nice. They make the first prompt less chaotic. They reduce name collisions. They make discovery less ridiculous.
+Caplets is not saying the downstream capability should disappear.
 
-But the more important claim is workflow shape: batch the investigation, filter before the model sees it, and return compact evidence instead of raw backend exhaust.
+Those 215 operations can still exist. The server can still be broad. The backend can still expose the real product.
+
+The difference is that the first thing the model sees is not a giant wall of every operation and every schema.
+
+It sees a smaller set of capability handles and can progressively discover what it needs.
+
+The bigger win is workflow shape: batch the investigation, filter before the model sees it, and return compact evidence instead of raw backend exhaust.
 
 These are deterministic context-surface and workflow-shape claims. They are not a promise that every model, every server, and every task gets faster in every environment.
 
-Real MCP servers are messy. Schema quality varies. Latency varies. Error behavior varies. Live benchmarks are useful, but they are model-dependent and should be treated like local result artifacts, not universal product claims.
+Real MCP servers vary in schema quality, latency, operation count, and error behavior. Live benchmarks are useful, but they are model-dependent and should be treated like local result artifacts, not universal product claims.
 
 ## Why Code Mode matters
 
@@ -159,7 +240,7 @@ That is not glamorous. It is plumbing.
 
 But good plumbing is the difference between an agent that feels sharp and an agent that feels like it is reading logs out loud.
 
-A capability layer should help the agent get work done. It should not just expose tools and hope the model survives the blast radius.
+A capability layer should help the agent get work done. It should not ask the model to survive the blast radius of a rich MCP server.
 
 ## Try it
 
@@ -198,6 +279,14 @@ It does not pretend to prove that every model, server, or task is faster in ever
 
 MCP made tool connection easy.
 
-The next fight is making those tools usable without forcing the model to babysit API calls and sift raw payloads all day.
+Now let MCP servers be big.
+
+Let them expose everything.
+
+Bring on the giant GitHub server. Bring on the giant Cloudflare server. Bring on the internal platform with 600 weird operations nobody remembers until they need one.
+
+That is not the problem.
+
+The next fight is smarter clients: clients that let agents search, batch, filter, and return evidence without making the model babysit every API call.
 
 Give your agent capabilities, not a junk drawer with schemas.
