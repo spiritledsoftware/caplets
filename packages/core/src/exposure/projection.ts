@@ -88,6 +88,200 @@ export function buildExposureProjection(snapshot: ExposureSnapshot): ExposurePro
   };
 }
 
+export type ManifestProjectionInput = {
+  caplets: ManifestProjectionCaplet[];
+  tools: ManifestProjectionTool[];
+  resources: ManifestProjectionResource[];
+  resourceTemplates: ManifestProjectionResourceTemplate[];
+  prompts: ManifestProjectionPrompt[];
+  completions: ManifestProjectionCompletion[];
+  codeModeCaplets?: ManifestProjectionCodeModeCaplet[] | undefined;
+};
+
+type ManifestProjectionBase = {
+  capletId: string;
+  sourceCapletId?: string | undefined;
+  title?: string | undefined;
+  description?: string | undefined;
+  inputSchema?: unknown;
+  outputSchema?: unknown;
+  annotations?: unknown;
+  shadowing: CapletShadowingPolicy;
+};
+
+type ManifestProjectionCaplet = ManifestProjectionBase & {
+  kind: "caplet";
+  name: string;
+};
+
+type ManifestProjectionTool = ManifestProjectionBase & {
+  kind: "tool";
+  name: string;
+  downstreamName: string;
+};
+
+type ManifestProjectionResource = ManifestProjectionBase & {
+  kind: "resource";
+  uri: string;
+  downstreamUri: string;
+  mimeType?: string | undefined;
+  size?: number | undefined;
+};
+
+type ManifestProjectionResourceTemplate = ManifestProjectionBase & {
+  kind: "resourceTemplate";
+  uriTemplate: string;
+  downstreamUriTemplate: string;
+  mimeType?: string | undefined;
+};
+
+type ManifestProjectionPrompt = ManifestProjectionBase & {
+  kind: "prompt";
+  name: string;
+  downstreamName: string;
+};
+
+type ManifestProjectionCompletion = ManifestProjectionBase & {
+  kind: "completion";
+  name?: string | undefined;
+};
+
+type ManifestProjectionCodeModeCaplet = ManifestProjectionBase & {
+  kind: "caplet";
+  name: string;
+};
+
+export function buildManifestExposureProjection(
+  manifest: ManifestProjectionInput,
+): ExposureProjection {
+  const entries = [
+    ...manifest.caplets.map(manifestProgressiveCapletEntry),
+    ...manifest.tools.map(manifestDirectToolEntry),
+    ...manifest.resources.map(manifestDirectResourceEntry),
+    ...manifest.resourceTemplates.map(manifestDirectResourceTemplateEntry),
+    ...manifest.prompts.map(manifestDirectPromptEntry),
+    ...manifest.completions.map(manifestCompletionEntry),
+    ...(manifest.codeModeCaplets ?? []).map(manifestCodeModeCapletEntry),
+  ];
+  return {
+    availability: { state: "ready" },
+    entries,
+    hiddenCaplets: [],
+    routes: new Map(entries.map((entry) => [entry.id, entry.route])),
+  };
+}
+
+function manifestProgressiveCapletEntry(entry: ManifestProjectionCaplet): ExposureProjectionEntry {
+  return {
+    kind: "progressive-caplet",
+    id: entry.capletId,
+    capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
+    title: entry.title ?? entry.name,
+    description: entry.description,
+    inputSchema: entry.inputSchema,
+    shadowing: entry.shadowing,
+    route: { kind: "progressive-caplet", capletId: entry.capletId },
+  };
+}
+
+function manifestDirectToolEntry(entry: ManifestProjectionTool): ExposureProjectionEntry {
+  return {
+    kind: "direct-tool",
+    id: entry.name,
+    capletId: entry.capletId,
+    sourceCapletId: entry.sourceCapletId ?? entry.capletId,
+    title: entry.title ?? entry.name,
+    description: entry.description,
+    inputSchema: entry.inputSchema,
+    outputSchema: entry.outputSchema,
+    annotations: entry.annotations,
+    shadowing: entry.shadowing,
+    route: { kind: "direct-tool", capletId: entry.capletId, downstreamName: entry.downstreamName },
+  };
+}
+
+function manifestDirectResourceEntry(entry: ManifestProjectionResource): ExposureProjectionEntry {
+  return {
+    kind: "direct-resource",
+    id: entry.uri,
+    capletId: entry.capletId,
+    title: entry.title,
+    description: entry.description,
+    ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+    ...(typeof entry.size === "number" ? { size: entry.size } : {}),
+    shadowing: entry.shadowing,
+    route: {
+      kind: "direct-resource",
+      capletId: entry.capletId,
+      downstreamUri: entry.downstreamUri,
+    },
+  };
+}
+
+function manifestDirectResourceTemplateEntry(
+  entry: ManifestProjectionResourceTemplate,
+): ExposureProjectionEntry {
+  return {
+    kind: "direct-resource-template",
+    id: entry.uriTemplate,
+    capletId: entry.capletId,
+    title: entry.title,
+    description: entry.description,
+    ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+    shadowing: entry.shadowing,
+    route: {
+      kind: "direct-resource-template",
+      capletId: entry.capletId,
+      downstreamUriTemplate: entry.downstreamUriTemplate,
+    },
+  };
+}
+
+function manifestDirectPromptEntry(entry: ManifestProjectionPrompt): ExposureProjectionEntry {
+  return {
+    kind: "direct-prompt",
+    id: entry.name,
+    capletId: entry.capletId,
+    title: entry.title ?? entry.name,
+    description: entry.description,
+    inputSchema: entry.inputSchema,
+    shadowing: entry.shadowing,
+    route: {
+      kind: "direct-prompt",
+      capletId: entry.capletId,
+      downstreamName: entry.downstreamName,
+    },
+  };
+}
+
+function manifestCompletionEntry(entry: ManifestProjectionCompletion): ExposureProjectionEntry {
+  return {
+    kind: "completion",
+    id: entry.name ?? `${entry.capletId}:complete`,
+    capletId: entry.capletId,
+    title: entry.title,
+    description: entry.description,
+    shadowing: entry.shadowing,
+    route: { kind: "completion", capletId: entry.capletId },
+  };
+}
+
+function manifestCodeModeCapletEntry(
+  entry: ManifestProjectionCodeModeCaplet,
+): ExposureProjectionEntry {
+  return {
+    kind: "code-mode-caplet",
+    id: entry.capletId,
+    capletId: entry.capletId,
+    ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
+    title: entry.title ?? entry.name,
+    description: entry.description,
+    shadowing: entry.shadowing,
+    route: { kind: "code-mode-caplet", capletId: entry.capletId },
+  };
+}
+
 function progressiveCapletEntry(entry: CallableCaplet): ExposureProjectionEntry {
   const capletId = entry.caplet.server;
   return {

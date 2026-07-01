@@ -2,7 +2,11 @@ import type { Prompt, Resource, ResourceTemplate, Tool } from "@modelcontextprot
 import { describe, expect, it } from "vitest";
 import type { CapletConfig } from "../src/config";
 import type { CallableCaplet, ExposureSnapshot } from "../src/exposure/discovery";
-import { buildExposureProjection, resolveNativeProjectionMerge } from "../src/exposure/projection";
+import {
+  buildExposureProjection,
+  buildManifestExposureProjection,
+  resolveNativeProjectionMerge,
+} from "../src/exposure/projection";
 
 const discoveredAt = 1_719_000_000_000;
 
@@ -155,6 +159,173 @@ describe("Caplets exposure projection", () => {
     );
   });
 });
+
+describe("remote manifest exposure projection", () => {
+  it("projects attach manifest surfaces into first-class exposure entries", () => {
+    const projection = buildManifestExposureProjection({
+      caplets: [
+        manifestEntry({
+          kind: "caplet",
+          name: "Docs",
+          capletId: "docs",
+          title: "Docs",
+          description: "Docs caplet.",
+          inputSchema: { type: "object" },
+          shadowing: "allow",
+        }),
+      ],
+      tools: [
+        manifestEntry({
+          kind: "tool",
+          name: "docs__search",
+          downstreamName: "search",
+          capletId: "docs",
+          title: "Search",
+          description: "Search docs.",
+          inputSchema: { type: "object", properties: { q: { type: "string" } } },
+          outputSchema: { type: "object" },
+          annotations: { readOnlyHint: true },
+          shadowing: "allow",
+        }),
+      ],
+      resources: [
+        manifestEntry({
+          kind: "resource",
+          uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
+          downstreamUri: "file:///README.md",
+          capletId: "docs",
+          title: "README",
+          description: "README resource.",
+          mimeType: "text/markdown",
+          size: 42,
+          shadowing: "allow",
+        }),
+      ],
+      resourceTemplates: [
+        manifestEntry({
+          kind: "resourceTemplate",
+          uriTemplate: "caplets://docs/resources/{encodedUri}",
+          downstreamUriTemplate: "file:///{path}",
+          capletId: "docs",
+          title: "File",
+          description: "File resource.",
+          mimeType: "text/plain",
+          shadowing: "allow",
+        }),
+      ],
+      prompts: [
+        manifestEntry({
+          kind: "prompt",
+          name: "docs__explain",
+          downstreamName: "explain",
+          capletId: "docs",
+          title: "Explain",
+          description: "Explain prompt.",
+          inputSchema: { arguments: [{ name: "topic", required: true }] },
+          shadowing: "allow",
+        }),
+      ],
+      completions: [
+        manifestEntry({
+          kind: "completion",
+          name: "docs:complete",
+          capletId: "docs",
+          title: "Complete",
+          description: "Complete docs inputs.",
+          shadowing: "allow",
+        }),
+      ],
+      codeModeCaplets: [
+        manifestEntry({
+          kind: "caplet",
+          name: "Docs",
+          capletId: "docs",
+          title: "Docs",
+          description: "Docs Code Mode handle.",
+          shadowing: "allow",
+        }),
+      ],
+    });
+
+    expect(projection.entries.map((entry) => [entry.kind, entry.id, entry.route])).toEqual([
+      ["progressive-caplet", "docs", { kind: "progressive-caplet", capletId: "docs" }],
+      [
+        "direct-tool",
+        "docs__search",
+        { kind: "direct-tool", capletId: "docs", downstreamName: "search" },
+      ],
+      [
+        "direct-resource",
+        "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
+        { kind: "direct-resource", capletId: "docs", downstreamUri: "file:///README.md" },
+      ],
+      [
+        "direct-resource-template",
+        "caplets://docs/resources/{encodedUri}",
+        {
+          kind: "direct-resource-template",
+          capletId: "docs",
+          downstreamUriTemplate: "file:///{path}",
+        },
+      ],
+      [
+        "direct-prompt",
+        "docs__explain",
+        { kind: "direct-prompt", capletId: "docs", downstreamName: "explain" },
+      ],
+      ["completion", "docs:complete", { kind: "completion", capletId: "docs" }],
+      ["code-mode-caplet", "docs", { kind: "code-mode-caplet", capletId: "docs" }],
+    ]);
+    expect(projection.routes.get("docs__search")).toEqual({
+      kind: "direct-tool",
+      capletId: "docs",
+      downstreamName: "search",
+    });
+  });
+
+  it("keeps manifest Code Mode entries explicit instead of inferring fallback handles", () => {
+    const explicitEmpty = buildManifestExposureProjection({
+      caplets: [manifestEntry({ kind: "caplet", name: "Remote", capletId: "remote" })],
+      tools: [],
+      resources: [],
+      resourceTemplates: [],
+      prompts: [],
+      completions: [],
+      codeModeCaplets: [],
+    });
+    const explicitHandle = buildManifestExposureProjection({
+      caplets: [manifestEntry({ kind: "caplet", name: "Remote", capletId: "remote" })],
+      tools: [],
+      resources: [],
+      resourceTemplates: [],
+      prompts: [],
+      completions: [],
+      codeModeCaplets: [manifestEntry({ kind: "caplet", name: "Remote", capletId: "remote" })],
+    });
+
+    expect(explicitEmpty.entries.filter((entry) => entry.kind === "code-mode-caplet")).toEqual([]);
+    expect(explicitHandle.entries.filter((entry) => entry.kind === "code-mode-caplet")).toEqual([
+      expect.objectContaining({ id: "remote", capletId: "remote" }),
+    ]);
+  });
+});
+
+function manifestEntry<T extends Record<string, unknown>>(
+  entry: T,
+): T & {
+  stableId: string;
+  exportId: string;
+  schemaHash: null;
+  shadowing: "allow" | "forbid" | "namespace";
+} {
+  return {
+    stableId: `${String(entry.kind)}:${String(entry.name ?? entry.uri ?? entry.uriTemplate ?? entry.capletId)}`,
+    exportId: `export-${String(entry.kind)}-${String(entry.name ?? entry.uri ?? entry.uriTemplate ?? entry.capletId)}`,
+    schemaHash: null,
+    shadowing: "forbid",
+    ...entry,
+  };
+}
 
 describe("native projection merge", () => {
   it("suppresses local entries when remote forbids shadowing", () => {
