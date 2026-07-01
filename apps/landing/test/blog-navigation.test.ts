@@ -14,6 +14,12 @@ describe("blog navigation", () => {
     expect(header.match(/href="\/blog\/"/gu)?.length ?? 0).toBeGreaterThanOrEqual(2);
     expect(header).toContain(">Blog<");
     expect(header).not.toContain('href="/blog/" target="_blank"');
+
+    const desktopBlogLink = header.match(/<a class="[^"]*" href="\/blog\/">Blog<\/a>/u)?.[0] ?? "";
+    const desktopRemoteLink =
+      header.match(/<a class="[^"]*" href="#remote">Remote<\/a>/u)?.[0] ?? "";
+    expect(desktopBlogLink).toContain("focus-visible:ring-outline/50");
+    expect(desktopRemoteLink).toContain("focus-visible:ring-outline/50");
   });
 
   it("links to the first-party blog from the footer without external-link treatment", () => {

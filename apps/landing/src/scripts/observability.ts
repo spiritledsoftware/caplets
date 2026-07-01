@@ -59,7 +59,7 @@ document.addEventListener("click", (event) => {
   if (!link) return;
   const category = linkCategory(link);
   if (category === "unknown") return;
-  const routeFamily = category === "blog" ? "blog" : currentRouteFamily();
+  const routeFamily = currentRouteFamily();
   captureLandingEvent("caplets_site_intent", {
     route_family: routeFamily,
     page_family: routeFamily,

@@ -2,12 +2,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { blogPostUrl, sortBlogPostsNewestFirst } from "../src/lib/blog";
+import {
+  blogIndexUrl,
+  blogPostUrl,
+  landingSiteUrl,
+  sortBlogPostsNewestFirst,
+} from "../src/lib/blog";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 
 describe("landing blog routes", () => {
-  it("builds canonical post URLs with trailing slashes", () => {
+  it("builds canonical blog URLs from one site origin", () => {
+    expect(landingSiteUrl).toBe("https://caplets.dev");
+    expect(blogIndexUrl()).toBe("https://caplets.dev/blog/");
     expect(blogPostUrl("why-giant-mcp-tool-walls-dont-scale")).toBe(
       "/blog/why-giant-mcp-tool-walls-dont-scale/",
     );
@@ -33,10 +40,10 @@ describe("landing blog routes", () => {
       "utf8",
     );
 
-    expect(indexSource).toContain('getCollection("blog")');
-    expect(indexSource).toContain("Why Giant MCP Tool Walls Don’t Scale");
+    expect(indexSource).toContain("getSortedBlogPosts");
+    expect(indexSource).toContain("featuredTitle = posts[0]?.data.title");
     expect(postSource).toContain("getStaticPaths");
-    expect(postSource).toContain('getCollection("blog")');
+    expect(postSource).toContain("getSortedBlogPosts");
     expect(postSource).toContain("render(entry)");
   });
 });

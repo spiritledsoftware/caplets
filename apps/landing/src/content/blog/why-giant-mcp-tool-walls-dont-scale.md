@@ -2,7 +2,6 @@
 title: Why Giant MCP Tool Walls Don’t Scale
 description: "MCP made it easy to connect agents to tools. Caplets tackles the next scaling problem: keeping agents effective when those tools become a wall of hundreds of operations."
 date: 2026-07-01
-canonicalPath: /blog/why-giant-mcp-tool-walls-dont-scale/
 tags:
   - MCP
   - agents

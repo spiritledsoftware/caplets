@@ -1,5 +1,4 @@
 ---
-import { getCollection } from "astro:content";
 import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
 
 import Footer from "../../components/landing/Footer.astro";
@@ -7,19 +6,14 @@ import Header from "../../components/landing/Header.astro";
 import { Badge } from "../../components/starwind/badge";
 import { Card, CardContent } from "../../components/starwind/card";
 import LandingLayout from "../../layouts/LandingLayout.astro";
-import { blogPostUrl, sortBlogPostsNewestFirst } from "../../lib/blog";
+import { blogIndexUrl, blogPostUrl, getSortedBlogPosts } from "../../lib/blog";
 
-const posts = sortBlogPostsNewestFirst(
-  (await getCollection("blog")).map((entry) => ({
-    ...entry,
-    slug: entry.id,
-  })),
-);
-const featuredTitle = "Why Giant MCP Tool Walls Don’t Scale";
+const posts = await getSortedBlogPosts();
+const featuredTitle = posts[0]?.data.title ?? "our launch essay";
 ---
 
 <LandingLayout
-  canonicalUrl="https://caplets.dev/blog/"
+  canonicalUrl={blogIndexUrl()}
   title="Caplets Blog"
   description="Long-form notes and benchmark-backed proof for Caplets."
 >

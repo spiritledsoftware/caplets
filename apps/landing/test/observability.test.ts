@@ -15,6 +15,7 @@ describe("landing observability", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.restoreAllMocks();
+    window.history.pushState({}, "", "/");
     document.body.innerHTML = "";
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -66,7 +67,7 @@ describe("landing observability", () => {
     );
   });
 
-  it("classifies /blog links as blog navigation", async () => {
+  it("keeps the source route family when navigating from home to blog", async () => {
     vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
     document.body.innerHTML = `<main><a href="/blog/why-giant-mcp-tool-walls-dont-scale/">Read blog</a></main>`;
 
@@ -77,8 +78,8 @@ describe("landing observability", () => {
     expect(posthogCapture).toHaveBeenCalledWith(
       "caplets_site_intent",
       expect.objectContaining({
-        route_family: "blog",
-        page_family: "blog",
+        route_family: "home",
+        page_family: "home",
         navigation_path_category: "blog",
         outbound_action_category: "blog",
         cta_category: "blog",

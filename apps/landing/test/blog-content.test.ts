@@ -17,7 +17,7 @@ describe("landing blog content", () => {
     expect(source).toContain("title:");
     expect(source).toContain("description:");
     expect(source).toContain("date:");
-    expect(source).toContain("canonicalPath:");
+    expect(source).not.toContain("canonicalPath:");
     expect(source).toContain("tags:");
   });
 
@@ -25,7 +25,7 @@ describe("landing blog content", () => {
     const post = readFileSync(launchPostPath, "utf8");
 
     expect(post).toContain("title: Why Giant MCP Tool Walls Don’t Scale");
-    expect(post).toContain("canonicalPath: /blog/why-giant-mcp-tool-walls-dont-scale/");
+    expect(post).not.toContain("canonicalPath:");
     expect(post).toContain("96.7% fewer initially visible tools");
     expect(post).toContain("79.9% lower initial serialized tool payload");
     expect(post).toContain("deterministic benchmark");

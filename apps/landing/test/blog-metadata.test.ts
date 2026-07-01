@@ -19,6 +19,7 @@ describe("blog metadata and article presentation", () => {
     expect(layout).toContain('property="og:type"');
     expect(layout).toContain("ogImageUrl");
     expect(layout).toContain('name="twitter:card"');
+    expect(layout).toContain('name="twitter:image"');
   });
 
   it("sets canonical metadata on the blog index and post pages", () => {
@@ -31,9 +32,10 @@ describe("blog metadata and article presentation", () => {
       "utf8",
     );
 
-    expect(indexRoute).toContain('canonicalUrl="https://caplets.dev/blog/"');
+    expect(indexRoute).toContain("canonicalUrl={blogIndexUrl()}");
     expect(postRoute).toContain("canonicalUrl={canonicalUrl}");
-    expect(postRoute).toContain("https://caplets.dev");
+    expect(postRoute).toContain("canonicalPath={canonicalPath}");
+    expect(postRoute).toContain("absoluteBlogPostUrl(entry.slug)");
   });
 
   it("uses article and CTA components on blog post pages", () => {

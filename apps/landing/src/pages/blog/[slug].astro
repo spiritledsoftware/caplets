@@ -1,20 +1,15 @@
 ---
-import { getCollection, render } from "astro:content";
+import { render } from "astro:content";
 
 import BlogArticle from "../../components/landing/BlogArticle.astro";
 import BlogCta from "../../components/landing/BlogCta.astro";
 import Footer from "../../components/landing/Footer.astro";
 import Header from "../../components/landing/Header.astro";
 import LandingLayout from "../../layouts/LandingLayout.astro";
-import { blogPostUrl, sortBlogPostsNewestFirst } from "../../lib/blog";
+import { absoluteBlogPostUrl, blogPostUrl, getSortedBlogPosts } from "../../lib/blog";
 
 export async function getStaticPaths() {
-  const posts = sortBlogPostsNewestFirst(
-    (await getCollection("blog")).map((entry) => ({
-      ...entry,
-      slug: entry.id,
-    })),
-  );
+  const posts = await getSortedBlogPosts();
 
   return posts.map((entry) => ({
     params: { slug: entry.slug },
@@ -24,7 +19,8 @@ export async function getStaticPaths() {
 
 const { entry } = Astro.props;
 const { Content } = await render(entry);
-const canonicalUrl = `https://caplets.dev${blogPostUrl(entry.slug)}`;
+const canonicalPath = blogPostUrl(entry.slug);
+const canonicalUrl = absoluteBlogPostUrl(entry.slug);
 ---
 
 <LandingLayout
@@ -35,7 +31,7 @@ const canonicalUrl = `https://caplets.dev${blogPostUrl(entry.slug)}`;
   ogImage={entry.data.ogImage ?? "/icon.png"}
 >
   <Header slot="header" />
-  <BlogArticle title={entry.data.title} description={entry.data.description} date={entry.data.date} canonicalPath={entry.data.canonicalPath}>
+  <BlogArticle title={entry.data.title} description={entry.data.description} date={entry.data.date} canonicalPath={canonicalPath}>
     <Content />
     <BlogCta />
   </BlogArticle>
