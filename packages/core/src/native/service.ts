@@ -49,6 +49,7 @@ import {
   type NamespaceSourceEntry,
 } from "../exposure/namespace";
 import { resolveExposure } from "../exposure/policy";
+import { buildExposureProjection, type ExposureProjection } from "../exposure/projection";
 import {
   generateCodeModeDeclarations,
   generateCodeModeRunToolDescription,
@@ -194,6 +195,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
   private readonly toolListeners = new Set<NativeCapletsToolsChangedListener>();
   private directToolRoutes = new Map<string, { capletId: string; operationName: string }>();
   private exposureSnapshot: ExposureSnapshot | undefined;
+  private exposureProjection: ExposureProjection | undefined;
   private readonly codeModeSessions = new CodeModeSessionManager();
   private postReloadRefresh: Promise<void> | undefined;
   private exposureRefreshGeneration = 0;
@@ -219,19 +221,19 @@ class DefaultNativeCapletsService implements NativeCapletsService {
 
   listTools(): NativeCapletTool[] {
     this.directToolRoutes = new Map();
+    if (this.exposureSnapshot && this.exposureProjection) {
+      return this.projectedNativeTools(this.exposureProjection, this.exposureSnapshot);
+    }
     const progressiveTools: NativeCapletTool[] = [];
     const codeModeCaplets: NativeCapletTool[] = [];
     const directTools: NativeCapletTool[] = [];
-    const snapshotCaplets = this.exposureSnapshot?.callableCaplets;
-    const caplets = snapshotCaplets
-      ? snapshotCaplets.map((entry) => entry.caplet)
-      : this.engine.enabledServers().filter((caplet) => {
-          if (caplet.setup) return false;
-          if (caplet.projectBinding?.required && !this.engine.currentProjectBindingContext()) {
-            return false;
-          }
-          return true;
-        });
+    const caplets = this.engine.enabledServers().filter((caplet) => {
+      if (caplet.setup) return false;
+      if (caplet.projectBinding?.required && !this.engine.currentProjectBindingContext()) {
+        return false;
+      }
+      return true;
+    });
     for (const caplet of caplets) {
       const exposure = resolveExposure(
         caplet.exposure,
@@ -250,6 +252,61 @@ class DefaultNativeCapletsService implements NativeCapletsService {
         codeModeCaplets.push(codeModeCapletDescriptor(caplet));
       }
     }
+    return [
+      ...progressiveTools,
+      ...directTools,
+      ...(codeModeCaplets.length > 0 ? [codeModeRunNativeTool(codeModeCaplets)] : []),
+    ];
+  }
+
+  private projectedNativeTools(
+    projection: ExposureProjection,
+    snapshot: ExposureSnapshot,
+  ): NativeCapletTool[] {
+    const progressiveTools: NativeCapletTool[] = [];
+    const directTools: NativeCapletTool[] = [];
+    const codeModeCaplets: NativeCapletTool[] = [];
+    const callableById = new Map(
+      snapshot.callableCaplets.map((entry) => [entry.caplet.server, entry]),
+    );
+    const directToolsById = new Map(snapshot.directTools.map((entry) => [entry.name, entry]));
+    const primitiveCapletIds = new Set<string>();
+
+    for (const entry of projection.entries) {
+      const callable = callableById.get(entry.capletId);
+      if (!callable) continue;
+      if (entry.kind === "progressive-caplet") {
+        progressiveTools.push(progressiveNativeTool(callable.caplet));
+      }
+      if (entry.kind === "code-mode-caplet") {
+        codeModeCaplets.push(codeModeCapletDescriptor(callable.caplet));
+      }
+      if (entry.kind === "direct-tool") {
+        const direct = directToolsById.get(entry.id);
+        if (direct) directTools.push(this.directDiscoveredTool(callable.caplet, direct));
+      }
+      if (
+        entry.kind === "direct-resource" ||
+        entry.kind === "direct-resource-template" ||
+        entry.kind === "direct-prompt"
+      ) {
+        primitiveCapletIds.add(entry.capletId);
+      }
+    }
+
+    for (const capletId of [...primitiveCapletIds].sort()) {
+      const callable = callableById.get(capletId);
+      if (!callable || callable.caplet.backend !== "mcp") continue;
+      directTools.push(
+        ...mcpPrimitiveNativeTools(callable.caplet, snapshot).map((operationName) =>
+          this.directNativeTool(callable.caplet, operationName, {
+            description: `MCP ${operationName.replace(/_/g, " ")}.`,
+            inputSchema: nativeMcpPrimitiveInputSchema(operationName),
+          }),
+        ),
+      );
+    }
+
     return [
       ...progressiveTools,
       ...directTools,
@@ -429,6 +486,7 @@ class DefaultNativeCapletsService implements NativeCapletsService {
       });
       if (generation !== this.exposureRefreshGeneration) return;
       this.exposureSnapshot = snapshot;
+      this.exposureProjection = buildExposureProjection(snapshot);
       if (options.emitToolsChanged) this.emitToolsChanged();
     } catch (error) {
       if (generation !== this.exposureRefreshGeneration) return;
