@@ -340,6 +340,9 @@ importers:
       hono:
         specifier: ^4.12.27
         version: 4.12.27
+      jsonc-parser:
+        specifier: ^3.3.1
+        version: 3.3.1
       posthog-node:
         specifier: ^5.38.6
         version: 5.38.6
@@ -401,6 +404,9 @@ importers:
       '@opencode-ai/plugin':
         specifier: '>=1'
         version: 1.17.11
+      jsonc-parser:
+        specifier: ^3.3.1
+        version: 3.3.1
     devDependencies:
       '@jitl/quickjs-wasmfile-release-sync':
         specifier: ^0.32.0
@@ -432,6 +438,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: '*'
         version: 0.80.2
+      jsonc-parser:
+        specifier: ^3.3.1
+        version: 3.3.1
     devDependencies:
       '@jitl/quickjs-wasmfile-release-sync':
         specifier: ^0.32.0

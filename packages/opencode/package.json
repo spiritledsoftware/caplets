@@ -34,7 +34,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@caplets/core": "workspace:*"
+    "@caplets/core": "workspace:*",
+    "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
     "@jitl/quickjs-wasmfile-release-sync": "^0.32.0",
