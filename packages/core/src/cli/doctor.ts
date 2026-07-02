@@ -106,8 +106,13 @@ export async function doctorJsonReport(options: DoctorOptions = {}): Promise<Doc
   };
 }
 
-export async function formatDoctorReport(options: DoctorOptions = {}): Promise<string> {
+export async function formatDoctorReport(
+  options: DoctorOptions = {},
+  format: "plain" | "markdown" = "plain",
+): Promise<string> {
   const report = await doctorJsonReport(options);
+  if (format === "markdown") return formatDoctorMarkdownReport(report);
+
   const lines = [
     "Server hosting",
     `  Configured: ${yesNo(Boolean(report.server.configured))}`,
@@ -194,6 +199,101 @@ export async function formatDoctorReport(options: DoctorOptions = {}): Promise<s
     ...(observedOutputShapePath(report.codeMode.observedOutputShapes)
       ? [
           `  Observed output shape cache: ${observedOutputShapePath(report.codeMode.observedOutputShapes)}`,
+        ]
+      : []),
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+function formatDoctorMarkdownReport(report: DoctorJsonReport): string {
+  const lines = [
+    "# Caplets Doctor",
+    "",
+    "## Server hosting",
+    `- Configured: ${yesNo(Boolean(report.server.configured))}`,
+    ...(report.server.configured ? [`- Base URL: ${report.server.baseUrl}`] : []),
+    "",
+    "## Remote client",
+    `- Configured: ${yesNo(Boolean(report.remote.configured))}`,
+    ...(report.remote.configured
+      ? [
+          `- MCP URL: ${report.remote.mcpUrl}`,
+          `- Control URL: ${report.remote.controlUrl}`,
+          `- Health URL: ${report.remote.healthUrl}`,
+          `- WebSocket URL: ${report.remote.webSocketUrl}`,
+          `- Auth: ${report.remote.auth}`,
+        ]
+      : []),
+    "",
+    "## Project Binding",
+    `- State: ${report.projectBinding.state}`,
+    `- Project root: ${report.projectBinding.projectRoot}`,
+    `- Project fingerprint: ${report.projectBinding.projectFingerprint}`,
+    `- Workspace path: ${report.projectBinding.workspacePath}`,
+    `- Auth mode: ${report.projectBinding.authMode}`,
+    `- Selected Workspace: ${report.projectBinding.selectedWorkspace ?? "none"}`,
+    `- Binding Session: ${report.projectBinding.state}`,
+    ...(report.projectBinding.sessionSupport !== "unknown"
+      ? [`- Session support: ${report.projectBinding.sessionSupport}`]
+      : []),
+    `- Recovery: ${report.projectBinding.recoveryCommand}`,
+    "",
+    "## Project sync",
+    `- State: ${report.sync.state}`,
+    `- Mutagen: ${report.sync.mutagenVersion ?? report.sync.mutagenBinary}`,
+    ...(report.sync.diagnosticCode ? [`- Diagnostic: ${report.sync.diagnosticCode}`] : []),
+    "",
+    "## Daemon",
+    `- Installed: ${yesNo(Boolean(report.daemon.installed))}`,
+    `- Running: ${yesNo(Boolean(report.daemon.running))}`,
+    ...(report.daemon.nativeState ? [`- Native state: ${report.daemon.nativeState}`] : []),
+    ...(report.daemon.health ? [`- Health: ${doctorOk(report.daemon.health)}`] : []),
+    "",
+    "## Remote Login",
+    `- Configured: ${yesNo(Boolean(report.remoteLogin.configured))}`,
+    `- Authenticated: ${yesNo(Boolean(report.remoteLogin.authenticated))}`,
+    ...(report.remoteLogin.hostUrl ? [`- Host URL: ${report.remoteLogin.hostUrl}`] : []),
+    ...(report.remoteLogin.kind ? [`- Kind: ${report.remoteLogin.kind}`] : []),
+    ...(report.remoteLogin.workspaceSlug || report.remoteLogin.workspaceId
+      ? [
+          `- Selected Workspace: ${report.remoteLogin.workspaceSlug ?? report.remoteLogin.workspaceId}`,
+        ]
+      : []),
+    ...(report.remoteLogin.clientId ? [`- Client: ${report.remoteLogin.clientId}`] : []),
+    "",
+    "## Vault",
+    `- OK: ${yesNo(Boolean(report.vault.ok))}`,
+    ...(!report.vault.ok && typeof report.vault.message === "string"
+      ? [`- Error: ${report.vault.message}`]
+      : []),
+    ...(Array.isArray(report.vault.issues)
+      ? (report.vault.issues as Array<Record<string, unknown>>).map(
+          (issue) => `- ${issue.capletId}: ${issue.reason} ${issue.key} (${issue.recoveryCommand})`,
+        )
+      : []),
+    "",
+    "## Exposure",
+    `- Default: ${report.exposure.default ?? "unknown"}`,
+    `- Discovery timeout: ${report.exposure.discoveryTimeoutMs ?? "unknown"}ms`,
+    `- Discovery concurrency: ${report.exposure.discoveryConcurrency ?? "unknown"}`,
+    `- Callable native tools: ${report.exposure.callableNativeToolCount ?? 0}`,
+    ...(Array.isArray(report.exposure.caplets)
+      ? (report.exposure.caplets as Array<Record<string, unknown>>).map(
+          (caplet) =>
+            `- ${caplet.id}: ${caplet.exposure} (${caplet.callable ? "callable" : `hidden: ${caplet.hiddenReason}`})`,
+        )
+      : []),
+    "",
+    "## Code Mode",
+    `- Types generation: ${doctorOk(report.codeMode.typesGeneration)}`,
+    `- Diagnostics: ${doctorOk(report.codeMode.diagnostics)}`,
+    `- Sandbox smoke: ${doctorOk(report.codeMode.sandboxSmoke)}`,
+    `- Log storage: ${doctorOk(report.codeMode.logStorage)}`,
+    `- Callable index: ${doctorOk(report.codeMode.callableIndex)}`,
+    `- Observed output shapes: ${doctorOk(report.codeMode.observedOutputShapes)}`,
+    ...(observedOutputShapePath(report.codeMode.observedOutputShapes)
+      ? [
+          `- Observed output shape cache: ${observedOutputShapePath(report.codeMode.observedOutputShapes)}`,
         ]
       : []),
   ];

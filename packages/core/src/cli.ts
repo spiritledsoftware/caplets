@@ -2641,18 +2641,20 @@ export function createProgram(io: CliIO = {}): Command {
     .command(cliCommands.doctor)
     .description("Diagnose Caplets local, remote, and project-sync configuration.")
     .option("--json", "print JSON output")
-    .action(async (options: { json?: boolean }) => {
+    .option("--format <format>", "output format: plain, markdown, md, or json", parseOutputFormat)
+    .action(async (options: { json?: boolean; format?: CliOutputFormat }) => {
       const doctorOptions = {
         env,
         ...(io.fetch ? { fetch: io.fetch } : {}),
         ...(io.authDir ? { authDir: io.authDir } : {}),
         ...(io.daemon ? { daemon: io.daemon } : {}),
       };
-      if (options.json) {
+      const format = options.format ?? (options.json ? "json" : "plain");
+      if (format === "json") {
         writeOut(`${JSON.stringify(await doctorJsonReport(doctorOptions), null, 2)}\n`);
         return;
       }
-      writeOut(await formatDoctorReport(doctorOptions));
+      writeOut(await formatDoctorReport(doctorOptions, format));
     });
 
   const vault = program.command(cliCommands.vault).description("Manage Caplets Vault values.");
