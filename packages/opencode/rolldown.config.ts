@@ -11,5 +11,5 @@ export default defineConfig({
   plugins: runtimeSentryPlugins("opencode"),
   platform: "node",
   tsconfig: true,
-  external: ["@opencode-ai/plugin"],
+  external: ["@opencode-ai/plugin", "jsonc-parser"],
 });

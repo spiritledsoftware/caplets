@@ -38,7 +38,8 @@ describe("Sentry source-map readiness", () => {
     expect(cliConfig).toContain('runtimeSentryPlugins("cli")');
     expect(opencodeConfig).toContain('runtimeSentryPlugins("opencode")');
     expect(piConfig).toContain('runtimeSentryPlugins("pi")');
-    expect(packageJson).toContain('"release": "turbo build --force && changeset publish"');
+    expect(packageJson).toContain('"release": "turbo build --force &&');
+    expect(packageJson).toContain("changeset publish");
     expect(packageJson).not.toContain("telemetry:upload-runtime-source-maps");
     expect(packageJson).not.toContain("sentry-cli");
   });

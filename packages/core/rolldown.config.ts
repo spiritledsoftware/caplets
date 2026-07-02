@@ -17,7 +17,7 @@ export default defineConfig([
       sourcemap: sentryConfigured(),
     },
     plugins: runtimeSentryPlugins("core"),
-    external: ["quickjs-emscripten", "typescript"],
+    external: ["jsonc-parser", "quickjs-emscripten", "typescript"],
     platform: "node",
   },
   {
