@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.32.3
+
+### Patch Changes
+
+- Support `caplets doctor --format json`, `--format md`, and `--format plain`.
+
 ## 0.32.2
 
 ### Patch Changes
