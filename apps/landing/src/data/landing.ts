@@ -11,6 +11,17 @@ export const heroCommands = [
 
 export const quickstartCommand = heroCommands.map((item) => item.command).join("\n");
 
+export const manualSetupCommands = {
+  install: "npm install -g caplets",
+  setup: "caplets setup",
+} as const;
+
+export const manualSetupCommand = Object.values(manualSetupCommands).join("\n");
+
+export const agentSetupPrompt = `Read and follow this Caplets bootstrap skill: https://raw.githubusercontent.com/spiritledsoftware/caplets/main/skills/installing-caplets/SKILL.md
+
+Set up Caplets for this environment. Detect the environment first. Do not install packages, modify config, start remote login, or write files until you have asked me the setup questions, shown the exact commands and files/config areas you plan to change, and I approve that plan.`;
+
 export const proofStats = [
   {
     value: "10/10",

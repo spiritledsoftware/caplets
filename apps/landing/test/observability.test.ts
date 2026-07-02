@@ -46,6 +46,19 @@ describe("landing observability", () => {
     );
   });
 
+  it("can copy raw prompt text without command attribution", async () => {
+    document.body.innerHTML = `
+      <button data-copy-value="Read this setup skill" data-copy-label="setup prompt" data-copy-attribution="false"></button>
+      <div data-copy-status></div>
+    `;
+
+    await import("../src/scripts/copy");
+    document.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Read this setup skill");
+  });
+
   it("loads without initializing providers when env is absent", async () => {
     await expect(import("../src/scripts/observability")).resolves.toBeDefined();
   });

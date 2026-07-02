@@ -27,7 +27,8 @@ async function copyValue(button: HTMLButtonElement) {
       ? mobileValue
       : button.dataset.copyValue;
   if (!value) return;
-  const copyValue = attributedLandingCommand(value);
+  const copyValue =
+    button.dataset.copyAttribution === "false" ? value : attributedLandingCommand(value);
 
   if (!navigator.clipboard?.writeText) {
     setCopyFeedback(button, "Copy unavailable", 2200);
