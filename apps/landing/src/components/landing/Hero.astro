@@ -3,10 +3,26 @@ import Check from "@tabler/icons/outline/check.svg";
 import Copy from "@tabler/icons/outline/copy.svg";
 
 import { Button } from "@/components/starwind/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/starwind/tabs";
 
-import { heroCommands } from "../../data/landing";
+import { agentSetupPrompt, manualSetupCommand, manualSetupCommands } from "../../data/landing";
 
-const primaryHeroCommand = heroCommands[0];
+const setupOptions = [
+  {
+    label: "Manual",
+    copyLabel: "manual setup commands",
+    copyValue: manualSetupCommand,
+    copyAttribution: true,
+    lines: [manualSetupCommands.install, manualSetupCommands.setup],
+  },
+  {
+    label: "Agent",
+    copyLabel: "agent setup prompt",
+    copyValue: agentSetupPrompt,
+    copyAttribution: false,
+    lines: ["Read bootstrap skill", "detect -> ask -> plan -> approve"],
+  },
+] as const;
 ---
 
 <section class="landing-hero relative isolate w-full scroll-mt-20 overflow-hidden border-y border-border/70 py-6 md:py-8 lg:py-10" id="trace" aria-labelledby="hero-title">
@@ -20,55 +36,43 @@ const primaryHeroCommand = heroCommands[0];
       <p class="landing-hero__summary mt-5 max-w-2xl text-lg leading-8 text-pretty text-[oklch(88%_0.026_82)]">
         Turn sprawling MCP servers into focused capability cards. Your agent can start with one typed route, zoom into tools only when needed, and keep huge schemas out of the prompt until they matter.
       </p>
-      <div class="landing-hero__route mt-5 max-w-2xl rounded-lg border border-border bg-card/92 p-4 text-sm leading-6 text-foreground md:mt-6" aria-label="Caplets capability route example">
-        <p class="text-muted-foreground">First route the agent sees</p>
-        <p class="landing-hero__route-copy mt-2 text-foreground">One card opens into inspect, search, schema, and call only when needed.</p>
-        <div class="landing-hero__route-path mt-3 flex flex-wrap items-center gap-2 font-mono text-xs text-foreground">
-          <code class="rounded bg-muted px-2 py-1">osv</code>
-          <span class="text-muted-foreground">/</span>
-          <code class="rounded bg-muted px-2 py-1">inspect</code>
-          <span class="text-muted-foreground">/</span>
-          <code class="rounded bg-muted px-2 py-1">search_tools</code>
-          <span class="text-muted-foreground">/</span>
-          <code class="rounded bg-muted px-2 py-1">get_tool</code>
-          <span class="text-muted-foreground">/</span>
-          <code class="rounded bg-muted px-2 py-1">call_tool</code>
-        </div>
-      </div>
-      <div class="landing-hero__actions mt-6 flex flex-wrap gap-3 md:mt-8" aria-label="Primary actions">
-        <Button href="#install" variant="primary">Install & run setup</Button>
-        <Button href="https://catalog.caplets.dev" variant="outline">Browse catalog</Button>
-        <Button href="https://docs.caplets.dev" variant="outline">Read the docs</Button>
-      </div>
-      <div class="landing-hero__quickstart mt-4 max-w-2xl md:mt-6" id="quickstart">
-        <div class="landing-hero__quickstart-card rounded-lg border border-border bg-card p-3 text-card-foreground" aria-label="Quick install command">
-          <div class="flex items-center justify-between gap-3">
-            {
-              primaryHeroCommand && (
-                <>
-                  <code class="min-w-0 overflow-x-auto font-mono text-sm text-muted-foreground">
-                    {primaryHeroCommand.command}
-                  </code>
+
+      <Tabs id="setup" defaultValue="Manual" class="landing-hero__setup mt-6 max-w-2xl" aria-label="Caplets setup options">
+        <TabsList class="border-[oklch(86%_0.024_82_/_0.24)] bg-[oklch(96%_0.018_82_/_0.08)]">
+          {setupOptions.map((option) => <TabsTrigger value={option.label}>{option.label}</TabsTrigger>)}
+        </TabsList>
+        {
+          setupOptions.map((option) => (
+            <TabsContent value={option.label} class="mt-3">
+              <div class="rounded-lg border border-[oklch(86%_0.024_82_/_0.28)] bg-[oklch(10%_0.014_100_/_0.72)] p-3 text-[oklch(94%_0.018_82)]">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="grid gap-1 font-mono text-sm leading-6">
+                      {option.lines.map((line) => <code class="break-words">{line}</code>)}
+                    </div>
+                  </div>
                   <button
-                    class="group inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
+                    class="group inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-[oklch(84%_0.024_82_/_0.34)] px-3 text-sm font-medium text-[oklch(95%_0.018_82)] transition hover:bg-[oklch(96%_0.018_82_/_0.12)] focus-visible:ring-3 focus-visible:ring-[oklch(66%_0.14_38_/_0.45)] focus-visible:outline-none"
                     type="button"
-                    aria-label="Copy install command"
-                    data-copy-value={primaryHeroCommand.command}
-                    data-copy-label="install command"
+                    aria-label={`Copy ${option.copyLabel}`}
+                    data-copy-value={option.copyValue}
+                    data-copy-label={option.copyLabel}
+                    data-copy-attribution={String(option.copyAttribution)}
                   >
                     <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
-                    <Check
-                      class="hidden size-4 text-success group-data-[copied=true]:block"
-                      aria-hidden="true"
-                    />
-                    Copy
+                    <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
+                    <span>Copy</span>
                   </button>
-                </>
-              )
-            }
-          </div>
-          <p class="landing-hero__quickstart-note mt-2 text-sm leading-6 text-muted-foreground">Requires Node 24+. Run setup from the install section next.</p>
-        </div>
+                </div>
+              </div>
+            </TabsContent>
+          ))
+        }
+      </Tabs>
+
+      <div class="landing-hero__actions mt-6 flex flex-wrap gap-3 md:mt-8" aria-label="Primary actions">
+        <Button href="https://catalog.caplets.dev" variant="primary">Browse catalog</Button>
+        <Button href="https://docs.caplets.dev" variant="outline">Read the docs</Button>
       </div>
     </div>
   </div>

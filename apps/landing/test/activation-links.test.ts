@@ -19,18 +19,23 @@ describe("activation links", () => {
 
   it("offers manual and agent setup modes without rendering the full agent prompt", () => {
     const componentSource = readFileSync(
-      join(repoRoot, "apps/landing/src/components/landing/Activation.astro"),
+      join(repoRoot, "apps/landing/src/components/landing/Hero.astro"),
       "utf8",
     );
     const dataSource = readFileSync(join(repoRoot, "apps/landing/src/data/landing.ts"), "utf8");
 
-    expect(componentSource).toContain('TabsTrigger value="manual"');
-    expect(componentSource).toContain('TabsTrigger value="agent"');
-    expect(componentSource).toContain("Copy setup prompt");
+    expect(componentSource).toContain('id="setup"');
+    expect(componentSource).toContain("<TabsList");
+    expect(componentSource).toContain("<TabsTrigger");
+    expect(componentSource).toContain('label: "Manual"');
+    expect(componentSource).toContain('label: "Agent"');
+    expect(componentSource).toContain('copyLabel: "agent setup prompt"');
+    expect(componentSource).toContain("data-copy-attribution={String(option.copyAttribution)}");
     expect(dataSource).toContain("agentSetupPrompt");
     expect(dataSource).toContain(
       "https://raw.githubusercontent.com/spiritledsoftware/caplets/main/skills/installing-caplets/SKILL.md",
     );
     expect(componentSource).not.toContain("Read and follow this Caplets bootstrap skill");
+    expect(componentSource).not.toContain("First route the agent sees");
   });
 });

@@ -1,7 +1,5 @@
 ---
 import ArrowUpRight from "@tabler/icons/outline/arrow-up-right.svg";
-import Check from "@tabler/icons/outline/check.svg";
-import Copy from "@tabler/icons/outline/copy.svg";
 import Terminal from "@tabler/icons/outline/terminal-2.svg";
 
 import { Badge } from "@/components/starwind/badge";
@@ -9,78 +7,19 @@ import { Button } from "@/components/starwind/button";
 import { Card, CardContent } from "@/components/starwind/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/starwind/tabs";
 
-import { agentSetupPrompt, exampleCaplets, manualSetupCommand, manualSetupCommands } from "../../data/landing";
+import { exampleCaplets } from "../../data/landing";
 ---
 
 <section class="mx-auto w-[min(1180px,calc(100vw_-_32px))] scroll-mt-20 py-20" id="install" aria-labelledby="activation-title" data-reveal>
-  <div class="grid gap-8 lg:grid-cols-[0.68fr_1.32fr] lg:items-start [&>*]:min-w-0">
+  <div class="grid gap-8 lg:grid-cols-[0.62fr_1.38fr] lg:items-start [&>*]:min-w-0">
     <div class="min-w-0 max-w-xl">
-      <p class="text-sm font-medium text-muted-foreground">Setup</p>
+      <p class="text-sm font-medium text-muted-foreground">First Caplet</p>
       <h2 id="activation-title" class="mt-3 text-3xl leading-tight font-semibold tracking-[-0.02em] text-balance md:text-5xl">
-        Start with the smallest useful Caplet.
+        Start where auth cannot get in the way.
       </h2>
       <p class="mt-5 text-lg leading-8 text-pretty text-muted-foreground">
-        <code class="rounded bg-muted px-1.5 py-0.5 font-mono text-sm text-foreground">caplets setup</code> wires the agent integrations you choose. Add OSV first because it needs no auth; bring in GitHub or Sourcegraph after the discovery path feels right.
+        Copy setup from the hero, then add OSV first because it needs no auth. Bring in GitHub or Sourcegraph after the discovery path feels right.
       </p>
-
-      <Tabs defaultValue="manual" class="mt-8 max-w-xl">
-        <TabsList class="w-full justify-start">
-          <TabsTrigger value="manual">Manual</TabsTrigger>
-          <TabsTrigger value="agent">Agent</TabsTrigger>
-        </TabsList>
-        <TabsContent value="manual" class="mt-4">
-          <div class="rounded-lg border border-border bg-card p-4 text-card-foreground">
-            <div class="flex items-start justify-between gap-4">
-              <div>
-                <h3 class="font-semibold text-foreground">Install from your terminal</h3>
-                <p class="mt-2 text-sm leading-6 text-muted-foreground">Run the CLI install, then let Caplets wire the agent integrations you pick.</p>
-              </div>
-              <button
-                class="group inline-flex min-h-11 shrink-0 items-center gap-2 rounded-md border border-border px-3 text-sm font-medium text-foreground transition hover:bg-muted focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
-                type="button"
-                aria-label="Copy manual setup commands"
-                data-copy-value={manualSetupCommand}
-                data-copy-label="manual setup commands"
-              >
-                <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
-                <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
-                Copy
-              </button>
-            </div>
-            <div class="mt-4 grid gap-2 rounded-md bg-foreground p-4 font-mono text-sm leading-6 text-background">
-              <code>{manualSetupCommands.install}</code>
-              <code>{manualSetupCommands.setup}</code>
-            </div>
-          </div>
-        </TabsContent>
-        <TabsContent value="agent" class="mt-4">
-          <div class="rounded-lg border border-primary-accent/35 bg-card p-4 text-card-foreground">
-            <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <h3 class="font-semibold text-foreground">Let your agent drive setup</h3>
-                <p class="mt-2 text-sm leading-6 text-muted-foreground">
-                  Copies a guarded prompt that tells the agent to read the bootstrap skill, detect your environment, ask setup questions, and show the exact plan before changing anything.
-                </p>
-              </div>
-              <button
-                class="group inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md bg-foreground px-3 text-sm font-medium text-background transition hover:bg-primary-accent focus-visible:ring-3 focus-visible:ring-outline/50 focus-visible:outline-none"
-                type="button"
-                aria-label="Copy agent setup prompt"
-                data-copy-value={agentSetupPrompt}
-                data-copy-label="setup prompt"
-                data-copy-attribution="false"
-              >
-                <Copy class="size-4 group-data-[copied=true]:hidden" aria-hidden="true" />
-                <Check class="hidden size-4 text-success group-data-[copied=true]:block" aria-hidden="true" />
-                Copy setup prompt
-              </button>
-            </div>
-            <p class="mt-4 rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
-              Read the Caplets bootstrap skill, then detect → ask → plan → wait for approval.
-            </p>
-          </div>
-        </TabsContent>
-      </Tabs>
 
       <Button class="mt-8" href="https://catalog.caplets.dev" variant="outline">
         Explore more Caplets
