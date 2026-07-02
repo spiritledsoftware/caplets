@@ -1,5 +1,13 @@
 # @caplets/pi
 
+## 0.9.13
+
+### Patch Changes
+
+- 15e467e: Fix the published CLI startup path by externalizing jsonc-parser from the Node bundle and checking the built package can answer `caplets --version`.
+- Updated dependencies [15e467e]
+  - @caplets/core@0.32.4
+
 ## 0.9.12
 
 ### Patch Changes
