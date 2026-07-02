@@ -95,6 +95,32 @@ describe("caplets doctor", () => {
     });
   });
 
+  it("supports shared format aliases", async () => {
+    const jsonOut: string[] = [];
+    const markdownOut: string[] = [];
+    const plainOut: string[] = [];
+
+    await runCli(["doctor", "--format", "json"], {
+      env: {},
+      writeOut: (value) => jsonOut.push(value),
+    });
+    await runCli(["doctor", "--format", "md"], {
+      env: {},
+      writeOut: (value) => markdownOut.push(value),
+    });
+    await runCli(["doctor", "--format", "plain"], {
+      env: {},
+      writeOut: (value) => plainOut.push(value),
+    });
+
+    expect(JSON.parse(jsonOut.join(""))).toMatchObject({
+      server: { configured: false },
+      remote: { configured: false },
+    });
+    expect(markdownOut.join("")).toContain("## Server hosting");
+    expect(plainOut.join("")).toContain("Server hosting");
+  });
+
   it("reports ambiguous Cloud Remote Profiles instead of throwing", async () => {
     const path = tempCloudAuthPath();
     const authDir = dirname(path);
