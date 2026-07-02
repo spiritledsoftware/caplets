@@ -26,7 +26,7 @@ npm --version 2>/dev/null || true
 pnpm --version 2>/dev/null || true
 bun --version 2>/dev/null || true
 caplets --version 2>/dev/null || true
-caplets doctor --format json 2>/dev/null || caplets doctor 2>/dev/null || true
+caplets doctor --json 2>/dev/null || caplets doctor 2>/dev/null || true
 ```
 
 Also inspect only relevant sections of existing agent config files when present. Look for Caplets entries, MCP server entries, native plugin/package entries, and top-level `caplets` settings. Redact secrets in summaries. Do not dump full config files into chat.
@@ -98,7 +98,7 @@ Verify both CLI/runtime and agent wiring:
 
 ```sh
 caplets --version
-caplets doctor --format json 2>/dev/null || caplets doctor
+caplets doctor --json 2>/dev/null || caplets doctor
 ```
 
 Then verify the selected target:
