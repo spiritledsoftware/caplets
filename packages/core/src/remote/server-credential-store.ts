@@ -89,6 +89,7 @@ export type DashboardPendingLoginActionInput = {
 
 export type CompletePendingLoginInput = PendingLoginPossessionInput & {
   hostUrl: string;
+  requiredRole?: RemoteClientRole | undefined;
 };
 
 type StoredPairingCode = {
@@ -482,12 +483,17 @@ export class RemoteServerCredentialStore {
         );
       }
 
+      const role = flow.grantedRole ?? flow.requestedRole;
+      if (input.requiredRole !== undefined && role !== input.requiredRole) {
+        throw new CapletsError("AUTH_FAILED", `${input.requiredRole} role is required.`);
+      }
+
       const accessToken = `cap_remote_access_${randomToken(32)}`;
       const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
       const client: StoredRemoteClient = {
         clientId: `rcli_${randomToken(12)}`,
         clientLabel: flow.clientLabel,
-        role: flow.grantedRole ?? flow.requestedRole,
+        role,
         hostUrl: flow.hostUrl,
         accessTokenHash: hashSecret(accessToken),
         accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),

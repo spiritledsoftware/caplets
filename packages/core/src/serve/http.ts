@@ -300,12 +300,10 @@ export function createHttpServeApp(
         hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
           c.req.header(name),
         ),
+        requiredRole: "operator",
         flowId: stringField(parsed, "flowId"),
         pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
       });
-      if (credentials.role !== "operator") {
-        return c.json({ error: "operator_role_required" }, 403);
-      }
       const created = dashboardSessionStore.create({ operatorClientId: credentials.clientId });
       dashboardActivityLog.append({
         actorClientId: credentials.clientId,

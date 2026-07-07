@@ -167,6 +167,33 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
 
+  it("rejects downgraded dashboard approvals without creating orphaned access clients", async () => {
+    const { app, engine, store } = testApp();
+    const started = await startDashboardLogin(app);
+    store.approvePendingLogin({
+      operatorCode: approvalCode(started.approvalCommand),
+      grantedRole: "access",
+    });
+
+    const response = await app.request("http://127.0.0.1:5387/dashboard/api/login/complete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        flowId: started.flowId,
+        pendingCompletionSecret: started.pendingCompletionSecret,
+      }),
+    });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "AUTH_FAILED", message: expect.stringContaining("operator role") },
+    });
+    expect(store.listClients()).toHaveLength(0);
+
+    await engine.close();
+  });
+
   it("sets a Secure dashboard session cookie when HTTPS public origin fronts HTTP proxy traffic", async () => {
     const { app, engine, store } = testApp({
       publicOrigin: "https://caplets.example.com",
