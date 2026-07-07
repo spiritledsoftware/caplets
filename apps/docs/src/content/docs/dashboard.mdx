@@ -1,0 +1,86 @@
+---
+title: Dashboard
+description: Administer a self-hosted Caplets host from the browser.
+---
+
+The Caplets Dashboard is the browser admin surface for a self-hosted Caplets host.
+Use it when you need to approve remote clients, inspect installed Caplets, review catalog
+updates, manage Vault state, or check runtime and activity from the Current Host itself.
+
+## Who it is for
+
+The dashboard is for an **Operator Client**, not an ordinary access session.
+
+- **Access Client** -> runtime access such as Remote Attach, MCP, and Project Binding
+- **Operator Client** -> host administration such as dashboard access, remote-client approval,
+  Caplet and catalog administration, Vault administration, and runtime control
+
+If you only need an agent to use Caplets remotely, use [Remote Attach](/remote-attach/).
+If you need to administer the host, use the dashboard.
+
+## Open the dashboard
+
+For a local or self-hosted HTTP runtime, open the dashboard path on that host:
+
+```text
+http://127.0.0.1:5387/dashboard
+https://caplets.example.com/caplets/dashboard
+```
+
+The exact URL depends on the host, port, and configured serve path.
+If the server is mounted below a base path such as `/caplets`, the dashboard lives under that
+same base path.
+
+## Approval flow
+
+An unauthenticated browser sees an operator approval screen first.
+Selecting **Authorize this browser** creates a pending login and shows the host-side approval command.
+On the host, approve that operator code from the same environment that owns the remote credential state:
+
+```sh
+caplets remote host approve <code> --yes
+```
+
+If the host uses a non-default remote credential state directory, use the matching `--state-path`
+value when approving from the CLI.
+
+After approval, the browser receives an operator dashboard session and can administer the Current Host.
+
+## What the dashboard can do
+
+The first release focuses on the Current Host:
+
+- **Access** -> review pending remote logins, approve or deny them, revoke clients, and change roles
+- **Caplets** -> inspect installed Caplets and update readiness
+- **Catalog** -> review installable or updatable catalog entries before mutating the host
+- **Vault** -> inspect stored keys and grants, add or remove values, and perform explicit reveal actions
+- **Runtime** -> inspect host health, diagnostics, logs, and restart availability
+- **Activity** -> review recent operator activity on the host
+- **Settings** -> inspect the current dashboard session and host connection details
+
+## Vault and dashboard administration
+
+The dashboard can administer Caplets Vault state on the host, but Vault safety rules still apply.
+Reveal actions are explicit operator-only actions and should be treated as host-admin operations,
+not as ordinary agent access.
+
+For CLI-based Vault workflows and setup guidance, see [Caplets Vault](/vault/).
+
+## Current Host model
+
+The dashboard is host-scoped.
+It administers the **Current Host** that served the active dashboard session.
+This release is not a multi-host control plane.
+
+## Local no-auth mode
+
+Development no-auth mode exists for local iteration, but it is not the normal production flow.
+In that mode the browser skips operator approval so you can iterate on the UI and host-admin
+flows locally. Do not treat it as the deployment model for self-hosted administration.
+
+## Related docs
+
+- [Install](/install/) -> install the CLI and open local or self-hosted runtimes
+- [Remote attach](/remote-attach/) -> use Access Clients and remote login without the dashboard
+- [Configuration](/configuration/) -> serve path and public-origin settings that affect dashboard URLs
+- [Caplets Vault](/vault/) -> CLI Vault setup, grants, and diagnostics
