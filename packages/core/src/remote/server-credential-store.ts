@@ -626,17 +626,12 @@ export class RemoteServerCredentialStore {
     });
   }
 
-  changeClientRole(
-    clientId: string,
-    role: RemoteClientRole,
-    now = new Date(),
-  ): RemoteClientStatus | undefined {
+  changeClientRole(clientId: string, role: RemoteClientRole): RemoteClientStatus | undefined {
     return this.withStateLock(() => {
       const state = this.loadState();
       const client = state.clients.find((candidate) => candidate.clientId === clientId);
       if (!client) return undefined;
       client.role = role;
-      client.lastUsedAt = now.toISOString();
       this.saveState(state);
       return clientStatus(client);
     });

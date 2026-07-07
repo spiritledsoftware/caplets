@@ -66,6 +66,20 @@ describe("self-hosted remote pairing", () => {
         now: new Date("2026-06-19T12:04:00.000Z"),
       }),
     ).toMatchObject({ role: "operator" });
+
+    const refreshed = store.refreshClientCredentials({
+      hostUrl: "https://caplets.example.com/caplets",
+      refreshToken: operatorCredentials.refreshToken,
+      now: new Date("2026-06-19T12:05:00.000Z"),
+    });
+    const beforeRoleChange = store
+      .listClients()
+      .find((client) => client.clientId === operatorCredentials.clientId);
+    expect(beforeRoleChange?.lastUsedAt).toBe("2026-06-19T12:05:00.000Z");
+
+    const changed = store.changeClientRole(operatorCredentials.clientId, "access");
+    expect(changed).toMatchObject({ role: "access", lastUsedAt: "2026-06-19T12:05:00.000Z" });
+    expect(refreshed.role).toBe("operator");
   });
 
   it("allows approvers to override the requested remote client role", () => {

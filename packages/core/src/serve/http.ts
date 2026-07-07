@@ -620,7 +620,7 @@ export function createHttpServeApp(
         actorClientId: session.session.operatorClientId,
         action: "vault_set",
         target: { type: "vault", id: status.key },
-        metadata: { valueBytes: status.valueBytes ?? null },
+        metadata: { bytesWritten: status.valueBytes ?? null },
       });
       return c.json({ status });
     } catch (error) {
@@ -1592,6 +1592,9 @@ export function createHttpServeApp(
     | { ok: true; session: ReturnType<DashboardSessionStore["validate"]> }
     | { ok: false; response: Response } {
     if (!remoteCredentialStore && options.auth.type === "development_unauthenticated") {
+      if (csrf.requireCsrf && csrf.csrfToken !== "development_unauthenticated") {
+        return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+      }
       const timestamp = new Date(0).toISOString();
       return {
         ok: true,
@@ -1654,23 +1657,23 @@ export function createHttpServeApp(
           kind: "pending-login",
           severity: "warning",
           label: `${login.clientLabel} is waiting for ${login.requestedRole} approval`,
-          href: "/dashboard#access",
+          href: `${paths.dashboard}#access`,
         })),
       sections: {
-        caplets: { count: caplets.length, href: "/dashboard#caplets" },
-        catalog: { href: "/dashboard#catalog" },
+        caplets: { count: caplets.length, href: `${paths.dashboard}#caplets` },
+        catalog: { href: `${paths.dashboard}#catalog` },
         access: {
           clients: clients.length,
           pending: pendingLogins.filter((login) => login.status === "pending").length,
-          href: "/dashboard#access",
+          href: `${paths.dashboard}#access`,
         },
-        vault: { count: vaultValues.length, href: "/dashboard#vault" },
-        projectBinding: { state: "disconnected", href: "/dashboard#project-binding" },
-        runtime: { status: "ok", href: "/dashboard#runtime" },
-        logs: { href: "/dashboard#logs" },
-        diagnostics: { href: "/dashboard#diagnostics" },
-        activity: { href: "/dashboard#activity" },
-        settings: { href: "/dashboard#settings" },
+        vault: { count: vaultValues.length, href: `${paths.dashboard}#vault` },
+        projectBinding: { state: "disconnected", href: `${paths.dashboard}#project-binding` },
+        runtime: { status: "ok", href: `${paths.dashboard}#runtime` },
+        logs: { href: `${paths.dashboard}#logs` },
+        diagnostics: { href: `${paths.dashboard}#diagnostics` },
+        activity: { href: `${paths.dashboard}#activity` },
+        settings: { href: `${paths.dashboard}#settings` },
       },
     };
   }

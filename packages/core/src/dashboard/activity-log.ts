@@ -1,5 +1,12 @@
 import { Buffer } from "node:buffer";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { randomToken } from "../remote/pairing";
 import type { RemoteClientRole } from "../remote/server-credentials";
@@ -79,8 +86,10 @@ export class DashboardActivityLog {
       ...(input.metadata ? { metadata: sanitizeMetadata(input.metadata) } : {}),
     });
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const entries = [...this.readEntries(), entry];
-    this.writeEntries(retainBoundedEntries(entries));
+    appendFileSync(this.path(), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    const entries = this.readEntries();
+    const retained = retainBoundedEntries(entries);
+    if (retained.length !== entries.length) this.writeEntries(retained);
     return entry;
   }
 
@@ -92,7 +101,7 @@ export class DashboardActivityLog {
     let entries = this.readEntries();
     if (input.after) {
       const index = entries.findIndex((entry) => entry.id === input.after);
-      if (index >= 0) entries = entries.slice(index + 1);
+      if (index >= 0) entries = entries.slice(0, index);
     }
     if (input.action) entries = entries.filter((entry) => entry.action === input.action);
     const newest = entries.slice().reverse();
@@ -189,10 +198,6 @@ function sanitizeMetadata(metadata: DashboardActivityMetadata): DashboardActivit
   );
 }
 
-function isSafeMetadataKey(key: string): boolean {
-  return !/(secret|token|credential|bearer|refresh|value|payload|argument|output|path)/iu.test(key);
-}
-
 function isSafeMetadataValue(value: unknown): value is string | number | boolean | null {
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
   if (typeof value !== "string") return false;
@@ -236,4 +241,8 @@ function isActivityTarget(value: unknown): value is DashboardActivityTarget {
     typeof target.id === "string" &&
     (target.label === undefined || typeof target.label === "string")
   );
+}
+
+function isSafeMetadataKey(key: string): boolean {
+  return !/(secret|token|credential|bearer|refresh|value|payload|argument|output|path)/iu.test(key);
 }

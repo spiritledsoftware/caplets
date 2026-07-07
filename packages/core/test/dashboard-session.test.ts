@@ -74,21 +74,26 @@ describe("dashboard sessions", () => {
   it("logs out development operator sessions without cookie-backed sessions", async () => {
     const { app, engine } = developmentTestApp();
 
-    for (const { name, headers } of [
+    const expectedStatuses = [
       {
         name: "development CSRF token",
         headers: { "x-caplets-csrf": "development_unauthenticated" },
+        status: 200,
       },
-      { name: "missing CSRF token", headers: undefined },
-      { name: "wrong CSRF token", headers: { "x-caplets-csrf": "wrong" } },
-    ] as const) {
+      { name: "missing CSRF token", headers: undefined, status: 403 },
+      { name: "wrong CSRF token", headers: { "x-caplets-csrf": "wrong" }, status: 403 },
+    ] as const;
+
+    for (const { name, headers, status } of expectedStatuses) {
       const response = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {
         method: "POST",
         ...(headers ? { headers } : {}),
       });
 
-      expect(response.status, name).toBe(200);
-      await expect(response.json(), name).resolves.toEqual({ ok: true });
+      expect(response.status, name).toBe(status);
+      if (status === 200) {
+        await expect(response.json(), name).resolves.toEqual({ ok: true });
+      }
     }
 
     await engine.close();

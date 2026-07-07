@@ -38,6 +38,7 @@ describe("dashboard API read model", () => {
         caplets: expect.objectContaining({ count: 1, href: "/dashboard#caplets" }),
         access: expect.objectContaining({ pending: 1 }),
         vault: expect.objectContaining({ count: 1 }),
+        settings: expect.objectContaining({ href: "/dashboard#settings" }),
       }),
     });
     expect(

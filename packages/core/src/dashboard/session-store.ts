@@ -30,7 +30,6 @@ type DashboardSessionState = {
 
 const STATE_FILE = "dashboard-sessions.json";
 const LOCK_DIR = "dashboard-sessions.lock";
-const LOCK_TIMEOUT_MS = 2_000;
 const LOCK_STALE_MS = 30_000;
 const ABSOLUTE_TIMEOUT_MS = 12 * 60 * 60_000;
 const IDLE_TIMEOUT_MS = 60 * 60_000;
@@ -176,18 +175,19 @@ export class DashboardSessionStore {
 
   private acquireLock(): void {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const started = Date.now();
-    while (true) {
-      try {
-        mkdirSync(this.lockPath(), { mode: 0o700 });
-        return;
-      } catch (error) {
-        if (isFileExistsError(error) && this.clearStaleLock()) continue;
-        if (!isFileExistsError(error) || Date.now() - started >= LOCK_TIMEOUT_MS) {
-          throw new CapletsError("SERVER_UNAVAILABLE", "Dashboard session state is locked.");
+    try {
+      mkdirSync(this.lockPath(), { mode: 0o700 });
+      return;
+    } catch (error) {
+      if (isFileExistsError(error) && this.clearStaleLock()) {
+        try {
+          mkdirSync(this.lockPath(), { mode: 0o700 });
+          return;
+        } catch {
+          // fall through to unavailable
         }
-        sleepSync(10);
       }
+      throw new CapletsError("SERVER_UNAVAILABLE", "Dashboard session state is locked.");
     }
   }
 
@@ -281,15 +281,7 @@ function randomToken(bytes: number): string {
   return randomBytes(bytes).toString("base64url");
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 function isFileExistsError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as { code?: unknown }).code === "EEXIST"
-  );
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  return error.code === "EEXIST";
 }

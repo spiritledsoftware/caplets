@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
@@ -137,6 +138,41 @@ describe("dashboard activity and access actions", () => {
     expect(activity.status).toBe(401);
 
     await setup.engine.close();
+  });
+
+  it("paginates activity toward older entries and preserves safe valueBytes metadata", () => {
+    const log = new DashboardActivityLog({ dir: tempDir("caplets-dashboard-activity-log-") });
+
+    log.append({
+      actorClientId: "operator",
+      action: "vault_set",
+      target: { type: "vault", id: "GH_TOKEN" },
+      metadata: { bytesWritten: 42, secretValue: "should-not-log" },
+      now: new Date("2026-07-08T10:00:00.000Z"),
+    });
+    log.append({
+      actorClientId: "operator",
+      action: "catalog_updated",
+      target: { type: "catalog", id: "github" },
+      now: new Date("2026-07-08T10:01:00.000Z"),
+    });
+
+    const firstPage = log.list({ limit: 1 });
+    expect(firstPage.entries).toHaveLength(1);
+    expect(firstPage.entries[0]).toMatchObject({
+      action: "catalog_updated",
+      target: { id: "github" },
+    });
+    expect(firstPage.nextCursor).toBe(firstPage.entries[0]?.id);
+
+    const secondPage = log.list({ limit: 1, after: firstPage.nextCursor });
+    expect(secondPage.entries).toHaveLength(1);
+    expect(secondPage.entries[0]).toMatchObject({
+      action: "vault_set",
+      target: { id: "GH_TOKEN" },
+      metadata: { bytesWritten: 42 },
+    });
+    expect(secondPage.entries[0]?.metadata).not.toHaveProperty("secretValue");
   });
 });
 
