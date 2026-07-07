@@ -192,6 +192,19 @@ describe("dashboard sessions", () => {
     await engine.close();
   });
 
+  it("returns 503 instead of logging out on dashboard session lock contention", async () => {
+    const setup = testApp();
+    const { cookie } = await approvedDashboardSession(setup.app, setup.store);
+
+    mkdirSync(join(setup.stateDir, "dashboard-sessions.lock"), { recursive: true });
+    const response = await setup.app.request("http://127.0.0.1:5387/dashboard/api/session", {
+      headers: { cookie },
+    });
+
+    expect(response.status).toBe(503);
+    await setup.engine.close();
+  });
+
   it("requires a remote-credential session and CSRF on unsafe dashboard APIs and invalidates logout", async () => {
     const { app, engine, store } = testApp();
     const missingSession = await app.request("http://127.0.0.1:5387/dashboard/api/logout", {

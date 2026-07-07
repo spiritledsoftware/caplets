@@ -1,11 +1,31 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tempCwd = mkdtempSync(join(repoRoot, ".tmp-package-runtime-"));
+
+const tempConfigPath = join(tempCwd, "runtime-smoke-config.json");
+writeFileSync(
+  tempConfigPath,
+  `${JSON.stringify(
+    {
+      httpApis: {
+        status: {
+          name: "Status",
+          description: "Runtime smoke API.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    },
+    null,
+    2,
+  )}\n`,
+);
 
 async function main() {
   const versionResult = spawnSync(
@@ -16,6 +36,7 @@ async function main() {
       encoding: "utf8",
       env: {
         ...process.env,
+        CAPLETS_CONFIG: tempConfigPath,
         NO_COLOR: "1",
       },
     },
@@ -54,6 +75,7 @@ async function main() {
       cwd: tempCwd,
       env: {
         ...process.env,
+        CAPLETS_CONFIG: tempConfigPath,
         NO_COLOR: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],

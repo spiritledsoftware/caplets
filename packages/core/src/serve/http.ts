@@ -1628,6 +1628,9 @@ export function createHttpServeApp(
       if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
         return { ok: false, response: new Response("Forbidden", { status: 403 }) };
       }
+      if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
+        return { ok: false, response: new Response("Service Unavailable", { status: 503 }) };
+      }
       return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
     }
   }
