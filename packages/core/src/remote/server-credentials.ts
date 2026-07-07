@@ -1,7 +1,10 @@
+export type RemoteClientRole = "access" | "operator";
+
 export type IssuedRemoteClientCredentials = {
   hostUrl: string;
   clientId: string;
   clientLabel: string;
+  role: RemoteClientRole;
   accessToken: string;
   refreshToken: string;
   tokenType: "Bearer";
@@ -12,6 +15,7 @@ export type IssuedRemoteClientCredentials = {
 export type RemoteClientStatus = {
   clientId: string;
   clientLabel: string;
+  role: RemoteClientRole;
   hostUrl: string;
   createdAt: string;
   lastUsedAt?: string | undefined;
@@ -31,6 +35,8 @@ export type RemotePendingLoginStatus = {
   hostUrl: string;
   hostIdentity?: string | undefined;
   status: RemotePendingLoginState;
+  requestedRole: RemoteClientRole;
+  grantedRole?: RemoteClientRole | undefined;
   operatorCodeFingerprint?: string | undefined;
   clientLabel: string;
   clientFingerprint?: string | undefined;

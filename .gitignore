@@ -12,6 +12,7 @@ benchmark-results/
 # Pi
 .pi-lens/
 !.pi-lens/semgrep.json
+.pi-subagents/
 
 # Playwright
 .playwright-mcp/

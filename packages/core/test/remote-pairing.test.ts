@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +21,115 @@ afterEach(() => {
 });
 
 describe("self-hosted remote pairing", () => {
+  it("persists requested and granted remote client roles for pending login flows", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+
+    const accessPending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    expect(store.listPendingLogins(new Date("2026-06-19T12:00:01.000Z"))).toContainEqual(
+      expect.objectContaining({ flowId: accessPending.flowId, requestedRole: "access" }),
+    );
+
+    const operatorPending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      requestedRole: "operator",
+      clientLabel: "Dashboard",
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+    expect(store.listPendingLogins(new Date("2026-06-19T12:01:01.000Z"))).toContainEqual(
+      expect.objectContaining({ flowId: operatorPending.flowId, requestedRole: "operator" }),
+    );
+
+    expect(
+      store.approvePendingLogin({
+        operatorCode: operatorPending.operatorCode,
+        now: new Date("2026-06-19T12:02:00.000Z"),
+      }),
+    ).toMatchObject({ requestedRole: "operator", grantedRole: "operator" });
+
+    const operatorCredentials = store.completePendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      flowId: operatorPending.flowId,
+      pendingCompletionSecret: operatorPending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:03:00.000Z"),
+    });
+    expect(operatorCredentials.role).toBe("operator");
+    expect(store.listClients()).toContainEqual(
+      expect.objectContaining({ clientId: operatorCredentials.clientId, role: "operator" }),
+    );
+    expect(
+      store.validateAccessToken({
+        hostUrl: "https://caplets.example.com/caplets",
+        accessToken: operatorCredentials.accessToken,
+        now: new Date("2026-06-19T12:04:00.000Z"),
+      }),
+    ).toMatchObject({ role: "operator" });
+  });
+
+  it("allows approvers to override the requested remote client role", () => {
+    const store = new RemoteServerCredentialStore({ dir: tempDir() });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      requestedRole: "operator",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+
+    expect(
+      store.approvePendingLogin({
+        operatorCode: pending.operatorCode,
+        grantedRole: "access",
+        now: new Date("2026-06-19T12:01:00.000Z"),
+      }),
+    ).toMatchObject({ requestedRole: "operator", grantedRole: "access" });
+    expect(
+      store.completePendingLogin({
+        hostUrl: "https://caplets.example.com/caplets",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+        now: new Date("2026-06-19T12:02:00.000Z"),
+      }),
+    ).toMatchObject({ role: "access" });
+  });
+
+  it("reads legacy unrole-scoped credential state as access clients", () => {
+    const dir = tempDir();
+    const store = new RemoteServerCredentialStore({ dir });
+    const pending = store.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      requestedRole: "operator",
+      now: new Date("2026-06-19T12:00:00.000Z"),
+    });
+    store.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      now: new Date("2026-06-19T12:01:00.000Z"),
+    });
+    const credentials = store.completePendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      now: new Date("2026-06-19T12:02:00.000Z"),
+    });
+    const statePath = join(dir, "remote-server-credentials.json");
+    const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+      clients: Array<{ role?: string }>;
+      pendingLogins: Array<{ requestedRole?: string; grantedRole?: string }>;
+    };
+    delete state.clients[0]!.role;
+    delete state.pendingLogins[0]!.requestedRole;
+    delete state.pendingLogins[0]!.grantedRole;
+    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+    const legacy = new RemoteServerCredentialStore({ dir });
+    expect(legacy.listClients()).toContainEqual(
+      expect.objectContaining({ clientId: credentials.clientId, role: "access" }),
+    );
+    expect(legacy.listPendingLogins(new Date("2026-06-19T12:03:00.000Z"))).toContainEqual(
+      expect.objectContaining({ flowId: pending.flowId, requestedRole: "access" }),
+    );
+  });
+
   it("creates pending login flows that approve and complete with separate possession material", () => {
     const store = new RemoteServerCredentialStore({ dir: tempDir() });
     const pending = store.createPendingLogin({

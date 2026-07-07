@@ -126,6 +126,7 @@ describe("createHttpServeApp", () => {
     });
     const store = remoteCredentialStore();
     const credentials = pairedClient(store);
+    const operatorCredentials = pairedClient(store, "http://127.0.0.1:5387/", "operator");
     const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
       control: context,
@@ -160,7 +161,7 @@ describe("createHttpServeApp", () => {
     const control = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${credentials.accessToken}`,
+        authorization: `Bearer ${operatorCredentials.accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ command: "list", arguments: {} }),
@@ -363,6 +364,7 @@ describe("createHttpServeApp", () => {
     const pending = (await started.json()) as {
       flowId: string;
       operatorCode: string;
+      approvalCommand: string;
       pendingRefreshSecret: string;
       pendingCompletionSecret: string;
       codeExpiresAt: string;
@@ -370,6 +372,11 @@ describe("createHttpServeApp", () => {
       intervalSeconds: number;
     };
     expect(pending.operatorCode).toMatch(/^cap_login_/u);
+    expect(pending.approvalCommand).toContain(
+      `caplets remote host approve ${pending.operatorCode}`,
+    );
+    expect(pending.approvalCommand).toContain(`--state-path ${store.dir}`);
+    expect(pending.approvalCommand).toContain("--yes");
     expect(pending.pendingRefreshSecret).toMatch(/^cap_pending_refresh_/u);
     expect(pending.pendingCompletionSecret).toMatch(/^cap_pending_complete_/u);
 
@@ -601,7 +608,8 @@ describe("createHttpServeApp", () => {
       watch: false,
     });
     const store = remoteCredentialStore();
-    const credentials = pairedClient(store);
+    const accessCredentials = pairedClient(store);
+    const operatorCredentials = pairedClient(store, "http://127.0.0.1:5387/", "operator");
     const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
       writeErr: () => {},
       control: context,
@@ -612,10 +620,21 @@ describe("createHttpServeApp", () => {
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBeNull();
 
+    const denied = await app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessCredentials.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "list", arguments: {} }),
+    });
+    expect(denied.status).toBe(403);
+    await expect(denied.text()).resolves.toContain("operator role required");
+
     const listed = await app.request("http://127.0.0.1:5387/v1/admin", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${credentials.accessToken}`,
+        authorization: `Bearer ${operatorCredentials.accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ command: "list", arguments: {} }),
@@ -1128,7 +1147,7 @@ describe("createHttpServeApp", () => {
       watch: false,
     });
     const store = remoteCredentialStore();
-    const credentials = pairedClient(store, "http://127.0.0.1:5387/caplets");
+    const credentials = pairedClient(store, "http://127.0.0.1:5387/caplets", "operator");
     const app = createHttpServeApp(
       httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
       engine,
@@ -2613,15 +2632,25 @@ function remoteCredentialStore(): RemoteServerCredentialStore {
 function pairedClient(
   store: RemoteServerCredentialStore,
   hostUrl = "http://127.0.0.1:5387/",
+  role: "access" | "operator" = "access",
 ): {
   clientId: string;
   accessToken: string;
   refreshToken: string;
 } {
-  const issued = store.createPairingCode({ hostUrl });
-  return store.exchangePairingCode({
+  if (role === "access") {
+    const issued = store.createPairingCode({ hostUrl });
+    return store.exchangePairingCode({
+      hostUrl,
+      code: issued.code,
+    });
+  }
+  const pending = store.createPendingLogin({ hostUrl, requestedRole: role });
+  store.approvePendingLogin({ operatorCode: pending.operatorCode });
+  return store.completePendingLogin({
     hostUrl,
-    code: issued.code,
+    flowId: pending.flowId,
+    pendingCompletionSecret: pending.pendingCompletionSecret,
   });
 }
 

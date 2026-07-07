@@ -39,3 +39,23 @@ _Avoid_: Inline blob, base64 result, download blob
 **Caplets Vault**:
 A runtime-owned encrypted string store whose values can be referenced from Caplets config with `$vault:NAME` or `${vault:NAME}`.
 _Avoid_: Caplets Secrets, project secrets, shared encrypted project vault
+
+**Remote Client Role**:
+The server-side authorization role assigned to a paired remote client after a Pending Remote Login is approved.
+_Avoid_: Device token type, browser permission flag
+
+**Access Client**:
+A paired remote client whose role allows Remote Attach, MCP, and Project Binding access without host administration.
+_Avoid_: Regular device token, user token
+
+**Operator Client**:
+A paired remote client whose role allows dashboard and admin operations against the Caplets host, including remote-client administration, Caplet installation and configuration, and Vault administration.
+_Avoid_: Admin device token, dashboard token
+
+**Current Host**:
+The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
+_Avoid_: Only server, global host singleton
+
+**Operator Activity Log**:
+A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.
+_Avoid_: Daemon logs, compliance audit system
