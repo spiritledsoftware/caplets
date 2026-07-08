@@ -74,6 +74,7 @@ describe("caplets attach CLI", () => {
       runCli(["attach", "--remote-url", "https://caplets.example.com/caplets", "--user", "alice"], {
         env: { CAPLETS_MODE: "remote" },
         attachServe: async () => undefined,
+        writeErr: () => undefined,
       } as never),
     ).rejects.toThrow(/unknown option '--user'/u);
   });

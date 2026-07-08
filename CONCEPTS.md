@@ -261,3 +261,11 @@ Operator Clients can approve or revoke remote clients, administer Caplets and ca
 A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.
 
 Operator Activity Log answers what changed, when it changed, and which Operator Client performed the action. It is narrower than a compliance audit system and separate from daemon or protocol logs.
+
+## Release
+
+### Dev Snapshot Channel
+
+A non-production release channel that publishes traceable package snapshots for dogfooding and release confidence before stable package promotion.
+
+Dev Snapshot Channel publishes immutable snapshot versions first, validates each promoted snapshot line with the required proof for that package set — real `caplets` bootstrap for CLI/core lines, exact package-level install or import smoke for non-CLI-only lines — and only then advances the floating development tag. It is separate from stable release versioning, changelog generation, npm `latest`, and production image tags.
