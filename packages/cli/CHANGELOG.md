@@ -1,5 +1,12 @@
 # caplets
 
+## 0.25.7
+
+### Patch Changes
+
+- Updated dependencies [11c3710]
+  - @caplets/core@0.33.0
+
 ## 0.25.6
 
 ### Patch Changes
