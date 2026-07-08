@@ -150,7 +150,7 @@ export const exampleCaplets = [
       },
       { command: 'codex "try using the osv caplet"', label: "Codex trial command" },
     ],
-    help: ["OSV is public. If the trial fails, check Node 24+ and rerun ", "caplets setup", "."],
+    help: ["OSV is public. If the trial fails, check Node 22+ and rerun ", "caplets setup", "."],
   },
   {
     id: "github",
@@ -169,7 +169,7 @@ export const exampleCaplets = [
       { command: 'codex "try using the github caplet"', label: "Codex trial command" },
     ],
     help: [
-      "If setup fails, check Node 24+, rerun ",
+      "If setup fails, check Node 22+, rerun ",
       "caplets setup",
       ", and confirm ",
       "GH_TOKEN",
@@ -193,7 +193,7 @@ export const exampleCaplets = [
       { command: 'codex "try using the sourcegraph caplet"', label: "Codex trial command" },
     ],
     help: [
-      "If setup fails, check Node 24+, rerun ",
+      "If setup fails, check Node 22+, rerun ",
       "caplets setup",
       ", and finish Sourcegraph OAuth login.",
     ],

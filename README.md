@@ -282,8 +282,8 @@ See [GitHub Releases](https://github.com/spiritledsoftware/caplets/releases) for
 
 ## Repository
 
-This monorepo uses pnpm. Published packages support Node.js `>=22`; repo verification uses
-the root toolchain, which requires Node.js `>=24`.
+This monorepo uses pnpm. Published packages support Node.js `>=22`; CI verifies
+that support floor and the current Node.js LTS, while owned runtime images use current LTS.
 
 ```sh
 pnpm install --frozen-lockfile

@@ -6,7 +6,7 @@
 
 **Architecture:** Starwind owns generic UI primitives and theme tokens; Tailwind utilities own layout and most styling; custom CSS remains only for Caplets-specific page background, complex Three.js/canvas masking, and any browser behavior Tailwind cannot express cleanly. The current monolithic `src/pages/index.astro` is split into data, layout, section components, and small scripts by concern.
 
-**Tech Stack:** Astro 6, Tailwind CSS 4, Starwind UI, Three.js, Tabler icons through Starwind defaults, pnpm 11.5.0, Node 24+.
+**Tech Stack:** Astro 6, Tailwind CSS 4, Starwind UI, Three.js, Tabler icons through Starwind defaults, pnpm 11.5.0, Node 22+.
 
 ---
 
@@ -604,7 +604,7 @@ export const exampleCaplets = [
       "caplets install spiritledsoftware/caplets osv",
       'codex "try using the osv caplet"',
     ],
-    help: ["OSV is public and does not need auth; check Node 24+ and ", "caplets setup", "."],
+    help: ["OSV is public and does not need auth; check Node 22+ and ", "caplets setup", "."],
   },
   {
     id: "github",
@@ -619,7 +619,7 @@ export const exampleCaplets = [
       "caplets install spiritledsoftware/caplets github",
       'codex "try using the github caplet"',
     ],
-    help: ["If setup fails, check Node 24+, ", "caplets setup", ", and ", "GH_TOKEN", "."],
+    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and ", "GH_TOKEN", "."],
   },
   {
     id: "sourcegraph",
@@ -634,7 +634,7 @@ export const exampleCaplets = [
       "caplets auth login sourcegraph",
       'codex "try using the sourcegraph caplet"',
     ],
-    help: ["If setup fails, check Node 24+, ", "caplets setup", ", and Sourcegraph OAuth login."],
+    help: ["If setup fails, check Node 22+, ", "caplets setup", ", and Sourcegraph OAuth login."],
   },
 ] as const;
 

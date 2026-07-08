@@ -7,6 +7,10 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
+    "@caplets/core#build": {
+      "dependsOn": ["@caplets/dashboard#build", "^build"],
+      "outputs": ["dist/**"]
+    },
     "build:watch": {
       "persistent": true,
       "cache": false

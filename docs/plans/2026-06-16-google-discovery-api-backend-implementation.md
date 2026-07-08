@@ -6,7 +6,7 @@
 
 **Architecture:** Add `googleDiscoveryApis` as a new top-level Caplets backend family with its own manager and native Google Discovery parser. Build shared media artifact infrastructure first, wire HTTP/OpenAPI responses through it, then implement Google Discovery on top of shared auth, HTTP request, and artifact primitives. Keep Google Discovery distinct from OpenAPI while returning the same Caplets `Tool` and `CompatibilityCallToolResult` shapes used by other backends.
 
-**Tech Stack:** TypeScript, Zod, Vitest, MCP SDK `Tool`/`CompatibilityCallToolResult`, existing Caplets auth/config/engine/tool surfaces, Node filesystem and fetch APIs, pnpm 11.5.0, Node >=24.
+**Tech Stack:** TypeScript, Zod, Vitest, MCP SDK `Tool`/`CompatibilityCallToolResult`, existing Caplets auth/config/engine/tool surfaces, Node filesystem and fetch APIs, pnpm 11.5.0, Node >=22.
 
 ---
 
