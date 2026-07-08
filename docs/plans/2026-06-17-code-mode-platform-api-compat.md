@@ -6,7 +6,7 @@
 
 **Architecture:** Keep QuickJS as the execution engine and keep all I/O routed through Caplet handles. Install supported APIs as real `globalThis` properties by combining bundled guest-side platform code with narrow host bridges for entropy and timers. Use packages for spec-heavy object models, self-shims for tiny compatibility APIs, and host bridges only where the host must provide time or secure randomness.
 
-**Tech Stack:** TypeScript, QuickJS via `quickjs-emscripten`, Rolldown-generated guest runtime source, Vitest, pnpm 11.5.0, Node >=24.
+**Tech Stack:** TypeScript, QuickJS via `quickjs-emscripten`, Rolldown-generated guest runtime source, Vitest, pnpm 11.5.0, Node >=22.
 
 ---
 
