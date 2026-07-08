@@ -34,6 +34,20 @@ health-checks the daemon before writing agent config, and uses daemon-backed att
 clients so backend execution keeps the full Caplets environment. The OSV Caplet is the
 recommended first install because it is public and does not require credentials.
 
+## Open the dashboard
+
+If you start or expose an HTTP runtime, the same host can now serve the browser admin surface at
+`/dashboard` under the configured serve path:
+
+```text
+http://127.0.0.1:5387/dashboard
+https://caplets.example.com/caplets/dashboard
+```
+
+Use the dashboard when you need an Operator session for host administration rather than an Access
+session for agent/runtime use. Browser approval uses the same host-side remote credential state as
+CLI approval. See [Dashboard](/dashboard/) for the full operator flow.
+
 ## Install lockfiles and updates
 
 Successful installs write a lockfile so the same Caplets can be restored or updated later.

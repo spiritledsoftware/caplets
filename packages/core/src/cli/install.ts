@@ -53,7 +53,7 @@ import {
   type CapletsLockSource,
 } from "./lockfile";
 
-type InstallableCaplet = {
+export type InstallableCaplet = {
   id: string;
   source: string;
   destination: string;
@@ -265,6 +265,7 @@ export function updateCapletsFromLockfile(options: {
   destinationRoot?: string;
   lockfilePath: string;
   force?: boolean;
+  allowRiskIncrease?: boolean;
   capletIds?: string[] | undefined;
   now?: Date | undefined;
 }): { installed: InstallableCaplet[] } {
@@ -290,6 +291,7 @@ export function updateCapletsFromLockfile(options: {
     );
   }
 
+  const allowRiskIncrease = options.allowRiskIncrease ?? options.force ?? false;
   const nextEntries = new Map(lockfile.entries.map((entry) => [entry.id, entry]));
   const results: InstallableCaplet[] = [];
   for (const entry of entries) {
@@ -345,7 +347,7 @@ export function updateCapletsFromLockfile(options: {
         });
         continue;
       }
-      if (!options.force && riskIncrease(entry.risk, nextRisk)) {
+      if (!allowRiskIncrease && riskIncrease(entry.risk, nextRisk)) {
         throw new CapletsError(
           "REQUEST_INVALID",
           `Caplet ${entry.id} update changes its risk profile; pass --force to update it`,

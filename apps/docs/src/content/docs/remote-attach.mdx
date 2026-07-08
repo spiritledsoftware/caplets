@@ -83,6 +83,12 @@ After approval, configure the agent to launch attach:
 caplets attach https://caplets.example.com/caplets
 ```
 
+Remote Attach is the Access Client path. If you need host administration instead of agent runtime
+access, open the browser dashboard on the same host and complete an Operator approval there. The
+same approval lane can issue either Access or Operator authority, but only Operator sessions can
+use the dashboard's Vault, client-administration, and runtime-control surfaces. See
+[Dashboard](/dashboard/).
+
 For a stacked local runtime, run the HTTP service outside the agent process:
 
 ```sh

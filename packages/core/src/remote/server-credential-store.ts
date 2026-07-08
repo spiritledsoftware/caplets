@@ -17,6 +17,7 @@ import { normalizeRemoteProfileHostUrl } from "./options";
 import { createPairingCode, parsePairingCode, randomToken } from "./pairing";
 import type {
   IssuedRemoteClientCredentials,
+  RemoteClientRole,
   RemoteClientStatus,
   RemotePendingLoginStatus,
   RemotePendingLoginState,
@@ -56,6 +57,7 @@ export type RefreshClientCredentialsInput = {
 
 export type CreatePendingLoginInput = {
   hostUrl: string;
+  requestedRole?: RemoteClientRole | undefined;
   hostIdentity?: string | undefined;
   clientLabel?: string | undefined;
   clientFingerprint?: string | undefined;
@@ -75,11 +77,19 @@ export type RefreshPendingLoginInput = PendingLoginPossessionInput & {
 
 export type ApprovePendingLoginInput = {
   operatorCode: string;
+  grantedRole?: RemoteClientRole | undefined;
+  now?: Date | undefined;
+};
+
+export type DashboardPendingLoginActionInput = {
+  flowId: string;
+  grantedRole?: RemoteClientRole | undefined;
   now?: Date | undefined;
 };
 
 export type CompletePendingLoginInput = PendingLoginPossessionInput & {
   hostUrl: string;
+  requiredRole?: RemoteClientRole | undefined;
 };
 
 type StoredPairingCode = {
@@ -97,6 +107,7 @@ type StoredPairingCode = {
 type StoredRemoteClient = {
   clientId: string;
   clientLabel: string;
+  role: RemoteClientRole;
   hostUrl: string;
   accessTokenHash: string;
   accessExpiresAt: string;
@@ -121,6 +132,8 @@ type StoredPendingLogin = {
   pendingCompletionHash: string;
   completionReplay?: CompletionReplay | undefined;
   clientLabel: string;
+  requestedRole: RemoteClientRole;
+  grantedRole?: RemoteClientRole | undefined;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;
   createdAt: string;
@@ -218,6 +231,7 @@ export class RemoteServerCredentialStore {
       state.pendingLogins.push({
         flowId,
         hostUrl: normalizeRemoteProfileHostUrl(input.hostUrl),
+        requestedRole: input.requestedRole ?? "access",
         ...(input.hostIdentity ? { hostIdentity: input.hostIdentity } : {}),
         operatorCodeHash: hashSecret(operatorCode),
         pendingRefreshHash: hashSecret(pendingRefreshSecret),
@@ -338,10 +352,7 @@ export class RemoteServerCredentialStore {
     });
   }
 
-  denyPendingLogin(input: ApprovePendingLoginInput): {
-    flowId: string;
-    status: "denied";
-  } {
+  denyPendingLogin(input: ApprovePendingLoginInput): RemotePendingLoginStatus {
     return this.withStateLock(() => {
       const now = input.now ?? new Date();
       const state = this.loadState();
@@ -351,18 +362,22 @@ export class RemoteServerCredentialStore {
         safeHashEqual(operatorCodeHash, candidate.operatorCodeHash),
       );
       if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login code is unknown.");
-      if (flow.status !== "pending") {
-        throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
-      }
-      if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
-        flow.status = "expired";
-        this.saveState(state);
-        throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
-      }
-      flow.status = "denied";
-      flow.deniedAt = now.toISOString();
+      denyPendingLoginFlow(flow, now);
       this.saveState(state);
-      return { flowId: flow.flowId, status: "denied" };
+      return pendingLoginStatus(flow);
+    });
+  }
+
+  denyPendingLoginFlow(input: DashboardPendingLoginActionInput): RemotePendingLoginStatus {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      cleanupPendingLogins(state, now);
+      const flow = state.pendingLogins.find((candidate) => candidate.flowId === input.flowId);
+      if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login flow is unknown.");
+      denyPendingLoginFlow(flow, now);
+      this.saveState(state);
+      return pendingLoginStatus(flow);
     });
   }
 
@@ -394,6 +409,8 @@ export class RemoteServerCredentialStore {
     flowId: string;
     status: "approved";
     clientLabel: string;
+    requestedRole: RemoteClientRole;
+    grantedRole: RemoteClientRole;
     clientFingerprint?: string | undefined;
     sourceHint?: string | undefined;
   } {
@@ -416,9 +433,23 @@ export class RemoteServerCredentialStore {
       }
       assertPendingOperatorCodeFresh(flow, now);
       flow.status = "approved";
+      flow.grantedRole = input.grantedRole ?? flow.requestedRole;
       flow.approvedAt = now.toISOString();
       this.saveState(state);
       return pendingApprovalStatus(flow);
+    });
+  }
+
+  approvePendingLoginFlow(input: DashboardPendingLoginActionInput): RemotePendingLoginStatus {
+    return this.withStateLock(() => {
+      const now = input.now ?? new Date();
+      const state = this.loadState();
+      cleanupPendingLogins(state, now);
+      const flow = state.pendingLogins.find((candidate) => candidate.flowId === input.flowId);
+      if (!flow) throw new CapletsError("AUTH_FAILED", "Pending login flow is unknown.");
+      approvePendingLoginFlow(flow, input.grantedRole, now);
+      this.saveState(state);
+      return pendingLoginStatus(flow);
     });
   }
 
@@ -452,11 +483,17 @@ export class RemoteServerCredentialStore {
         );
       }
 
+      const role = flow.grantedRole ?? flow.requestedRole;
+      if (input.requiredRole !== undefined && role !== input.requiredRole) {
+        throw new CapletsError("AUTH_FAILED", `${input.requiredRole} role is required.`);
+      }
+
       const accessToken = `cap_remote_access_${randomToken(32)}`;
       const refreshToken = `cap_remote_refresh_${randomToken(32)}`;
       const client: StoredRemoteClient = {
         clientId: `rcli_${randomToken(12)}`,
         clientLabel: flow.clientLabel,
+        role,
         hostUrl: flow.hostUrl,
         accessTokenHash: hashSecret(accessToken),
         accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),
@@ -553,6 +590,7 @@ export class RemoteServerCredentialStore {
       const client: StoredRemoteClient = {
         clientId,
         clientLabel: input.clientLabel ?? pairingCode.clientLabel ?? "Caplets Remote Client",
+        role: "access",
         hostUrl,
         accessTokenHash: hashSecret(accessToken),
         accessExpiresAt: new Date(now.getTime() + DEFAULT_ACCESS_TOKEN_TTL_MS).toISOString(),
@@ -591,6 +629,17 @@ export class RemoteServerCredentialStore {
       client.revokedAt = client.revokedAt ?? now.toISOString();
       this.saveState(state);
       return true;
+    });
+  }
+
+  changeClientRole(clientId: string, role: RemoteClientRole): RemoteClientStatus | undefined {
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      const client = state.clients.find((candidate) => candidate.clientId === clientId);
+      if (!client) return undefined;
+      client.role = role;
+      this.saveState(state);
+      return clientStatus(client);
     });
   }
 
@@ -677,12 +726,15 @@ export class RemoteServerCredentialStore {
       pairingCodes: parsed.pairingCodes ?? [],
       pendingLogins: (parsed.pendingLogins ?? []).map((pending) => ({
         ...pending,
+        requestedRole: parseRemoteClientRole(pending.requestedRole),
+        ...(pending.grantedRole ? { grantedRole: parseRemoteClientRole(pending.grantedRole) } : {}),
         supersededPendingRefreshHashes: parseSupersededRefreshTokens(
           pending.supersededPendingRefreshHashes,
         ),
       })),
       clients: (parsed.clients ?? []).map((client) => ({
         ...client,
+        role: parseRemoteClientRole(client.role),
         supersededRefreshTokenHashes: parseSupersededRefreshTokens(
           client.supersededRefreshTokenHashes,
         ),
@@ -957,6 +1009,7 @@ function decryptCompletionReplay(
     clientId: parsed.clientId,
     clientLabel: parsed.clientLabel,
     hostUrl: parsed.hostUrl,
+    role: parseRemoteClientRole(parsed.role),
     accessToken: parsed.accessToken,
     refreshToken: parsed.refreshToken,
     expiresAt: parsed.expiresAt,
@@ -991,6 +1044,36 @@ function validateClient(
   }
 }
 
+function denyPendingLoginFlow(flow: StoredPendingLogin, now: Date): void {
+  if (flow.status !== "pending") {
+    throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+  }
+  if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
+    flow.status = "expired";
+    throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
+  }
+  flow.status = "denied";
+  flow.deniedAt = now.toISOString();
+}
+
+function approvePendingLoginFlow(
+  flow: StoredPendingLogin,
+  grantedRole: RemoteClientRole | undefined,
+  now: Date,
+): void {
+  if (flow.status !== "pending") {
+    throw new CapletsError("AUTH_FAILED", `Pending login is already ${flow.status}.`);
+  }
+  if (Date.parse(flow.flowExpiresAt) <= now.getTime()) {
+    flow.status = "expired";
+    throw new CapletsError("AUTH_FAILED", "Pending login has expired.");
+  }
+  assertPendingOperatorCodeFresh(flow, now);
+  flow.status = "approved";
+  flow.grantedRole = grantedRole ?? flow.requestedRole;
+  flow.approvedAt = now.toISOString();
+}
+
 function credentialsFromClient(
   client: StoredRemoteClient,
   accessToken: string,
@@ -1000,6 +1083,7 @@ function credentialsFromClient(
     hostUrl: client.hostUrl,
     clientId: client.clientId,
     clientLabel: client.clientLabel,
+    role: client.role,
     accessToken,
     refreshToken,
     tokenType: "Bearer",
@@ -1012,6 +1096,7 @@ function clientStatus(client: StoredRemoteClient): RemoteClientStatus {
   return {
     clientId: client.clientId,
     clientLabel: client.clientLabel,
+    role: client.role,
     hostUrl: client.hostUrl,
     createdAt: client.createdAt,
     ...(client.lastUsedAt ? { lastUsedAt: client.lastUsedAt } : {}),
@@ -1025,6 +1110,8 @@ function pendingLoginStatus(flow: StoredPendingLogin): RemotePendingLoginStatus 
     hostUrl: flow.hostUrl,
     ...(flow.hostIdentity ? { hostIdentity: flow.hostIdentity } : {}),
     status: flow.status,
+    requestedRole: flow.requestedRole,
+    ...(flow.grantedRole ? { grantedRole: flow.grantedRole } : {}),
     ...(flow.operatorCodeFingerprint
       ? { operatorCodeFingerprint: flow.operatorCodeFingerprint }
       : {}),
@@ -1045,6 +1132,8 @@ function pendingApprovalStatus(flow: StoredPendingLogin): {
   flowId: string;
   status: "approved";
   clientLabel: string;
+  requestedRole: RemoteClientRole;
+  grantedRole: RemoteClientRole;
   clientFingerprint?: string | undefined;
   sourceHint?: string | undefined;
 } {
@@ -1052,6 +1141,8 @@ function pendingApprovalStatus(flow: StoredPendingLogin): {
     flowId: flow.flowId,
     status: "approved",
     clientLabel: flow.clientLabel,
+    requestedRole: flow.requestedRole,
+    grantedRole: flow.grantedRole ?? flow.requestedRole,
     ...(flow.clientFingerprint ? { clientFingerprint: flow.clientFingerprint } : {}),
     ...(flow.sourceHint ? { sourceHint: flow.sourceHint } : {}),
   };
@@ -1076,6 +1167,10 @@ function boundedPendingLoginDisplayValue(
 
 function pendingOperatorCodeFingerprint(operatorCode: string): string {
   return hashSecret(operatorCode).slice(0, 8);
+}
+
+function parseRemoteClientRole(value: unknown): RemoteClientRole {
+  return value === "operator" ? "operator" : "access";
 }
 
 function safeHashEqual(left: string, right: string): boolean {

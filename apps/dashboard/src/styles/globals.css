@@ -1,0 +1,174 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-heading: var(--font-sans);
+  --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  color-scheme: light;
+  --caplets-ember: oklch(0.632 0.179 36.9);
+  --caplets-parchment: oklch(0.934 0.045 87.2);
+  --caplets-charred-ink: oklch(0.24 0.015 113.3);
+  --caplets-linen: oklch(0.976 0.015 90.2);
+  --caplets-paper: oklch(0.981 0.02 84.6);
+  --caplets-ash: oklch(0.885 0.034 86.3);
+  --caplets-muted-olive: oklch(0.517 0.044 112.7);
+  --caplets-danger: oklch(0.523 0.159 29.2);
+  --caplets-success: oklch(0.528 0.089 152.7);
+  --background: var(--caplets-linen);
+  --foreground: var(--caplets-charred-ink);
+  --card: var(--caplets-paper);
+  --card-foreground: var(--caplets-charred-ink);
+  --popover: var(--caplets-paper);
+  --popover-foreground: var(--caplets-charred-ink);
+  --primary: var(--caplets-charred-ink);
+  --primary-foreground: var(--caplets-parchment);
+  --secondary: var(--caplets-parchment);
+  --secondary-foreground: var(--caplets-charred-ink);
+  --muted: var(--caplets-parchment);
+  --muted-foreground: var(--caplets-muted-olive);
+  --accent: var(--caplets-parchment);
+  --accent-foreground: var(--caplets-charred-ink);
+  --destructive: var(--caplets-danger);
+  --border: var(--caplets-ash);
+  --input: var(--caplets-ash);
+  --ring: var(--caplets-ember);
+  --radius: 0.625rem;
+  --chart-1: var(--caplets-ember);
+  --chart-2: var(--caplets-success);
+  --chart-3: var(--caplets-muted-olive);
+  --chart-4: var(--caplets-charred-ink);
+  --chart-5: var(--caplets-ash);
+  --sidebar: var(--caplets-parchment);
+  --sidebar-foreground: var(--caplets-charred-ink);
+  --sidebar-primary: var(--caplets-charred-ink);
+  --sidebar-primary-foreground: var(--caplets-parchment);
+  --sidebar-accent: var(--caplets-paper);
+  --sidebar-accent-foreground: var(--caplets-charred-ink);
+  --sidebar-border: var(--caplets-ash);
+  --sidebar-ring: var(--caplets-ember);
+}
+
+.dark {
+  color-scheme: dark;
+  --caplets-ember: oklch(0.73 0.16 42);
+  --caplets-parchment: oklch(0.28 0.035 82);
+  --caplets-charred-ink: oklch(0.92 0.018 86);
+  --caplets-linen: oklch(0.17 0.022 92);
+  --caplets-paper: oklch(0.21 0.02 92);
+  --caplets-ash: oklch(0.39 0.035 82);
+  --caplets-muted-olive: oklch(0.75 0.035 88);
+  --caplets-danger: oklch(0.76 0.16 31);
+  --caplets-success: oklch(0.75 0.12 145);
+  --background: var(--caplets-linen);
+  --foreground: var(--caplets-charred-ink);
+  --card: var(--caplets-paper);
+  --card-foreground: var(--caplets-charred-ink);
+  --popover: color-mix(in oklch, var(--caplets-paper) 90%, black);
+  --popover-foreground: var(--caplets-charred-ink);
+  --primary: var(--caplets-charred-ink);
+  --primary-foreground: var(--caplets-linen);
+  --secondary: var(--caplets-parchment);
+  --secondary-foreground: var(--caplets-charred-ink);
+  --muted: color-mix(in oklch, var(--caplets-paper) 76%, var(--caplets-ash));
+  --muted-foreground: var(--caplets-muted-olive);
+  --accent: var(--caplets-parchment);
+  --accent-foreground: var(--caplets-charred-ink);
+  --destructive: oklch(0.31 0.08 31);
+  --border: var(--caplets-ash);
+  --input: var(--caplets-ash);
+  --ring: var(--caplets-ember);
+  --chart-1: var(--caplets-ember);
+  --chart-2: oklch(0.31 0.065 145);
+  --chart-3: var(--caplets-muted-olive);
+  --chart-4: var(--caplets-charred-ink);
+  --chart-5: var(--caplets-ash);
+  --sidebar: color-mix(in oklch, var(--caplets-paper) 88%, black);
+  --sidebar-foreground: var(--caplets-charred-ink);
+  --sidebar-primary: var(--caplets-charred-ink);
+  --sidebar-primary-foreground: var(--caplets-linen);
+  --sidebar-accent: var(--caplets-parchment);
+  --sidebar-accent-foreground: var(--caplets-charred-ink);
+  --sidebar-border: var(--caplets-ash);
+  --sidebar-ring: var(--caplets-ember);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+:focus-visible {
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}

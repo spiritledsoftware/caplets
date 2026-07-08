@@ -1,0 +1,200 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { CapletsEngine } from "../src/engine";
+import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { createHttpServeApp } from "../src/serve/http";
+import type { HttpServeOptions } from "../src/serve/options";
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("dashboard runtime, diagnostics, logs, and events APIs", () => {
+  it("returns safe runtime, logs, diagnostics, and disabled restart state", async () => {
+    const setup = await authenticatedDashboard();
+
+    const runtime = await dashboardGet(setup, "/dashboard/api/runtime");
+    expect(runtime.status).toBe(200);
+    await expect(runtime.json()).resolves.toMatchObject({
+      runtime: { status: "ok", bind: "127.0.0.1:5387" },
+      daemon: { restartAvailable: false, stopAvailable: false, uninstallAvailable: false },
+    });
+
+    const logs = await dashboardGet(setup, "/dashboard/api/logs?limit=5");
+    expect(logs.status).toBe(200);
+    await expect(logs.json()).resolves.toEqual({ entries: [], limit: 5, truncated: false });
+
+    const diagnostics = await dashboardGet(setup, "/dashboard/api/diagnostics");
+    expect(diagnostics.status).toBe(200);
+    await expect(diagnostics.json()).resolves.toMatchObject({ status: "ok", diagnostics: [] });
+
+    const restart = await dashboardPost(setup, "/dashboard/api/runtime/restart", {});
+    expect(restart.status).toBe(409);
+    await expect(restart.json()).resolves.toEqual({
+      restartAvailable: false,
+      reason: "daemon_manager_unavailable",
+    });
+
+    await setup.engine.close();
+  });
+
+  it("emits a replayable dashboard event stream snapshot", async () => {
+    const setup = await authenticatedDashboard();
+    const response = await dashboardGet(setup, "/dashboard/api/events?after=0");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const text = await response.text();
+    expect(text).toContain("event: runtime_health");
+    expect(text).toContain('"type":"runtime_health"');
+    expect(text).toContain('"state":"disconnected"');
+    await setup.engine.close();
+  });
+});
+type Setup = Awaited<ReturnType<typeof authenticatedDashboard>>;
+
+async function authenticatedDashboard() {
+  const setup = testApp();
+  const started = await appPost(setup, "/dashboard/api/login/start", { clientLabel: "Browser" });
+  const startBody = (await started.json()) as {
+    flowId: string;
+    pendingCompletionSecret: string;
+    approvalCommand: string;
+  };
+  setup.store.approvePendingLogin({ operatorCode: approvalCode(startBody.approvalCommand) });
+  const completed = await appPost(setup, "/dashboard/api/login/complete", {
+    flowId: startBody.flowId,
+    pendingCompletionSecret: startBody.pendingCompletionSecret,
+  });
+  expect(completed.status).toBe(200);
+  const cookie = completed.headers.get("set-cookie") ?? "";
+  const body = (await completed.json()) as {
+    session: { csrfToken: string; operatorClientId: string };
+  };
+  return {
+    ...setup,
+    cookie,
+    csrfToken: body.session.csrfToken,
+    operatorClientId: body.session.operatorClientId,
+  };
+}
+
+async function dashboardGet(setup: Setup, path: string) {
+  return await setup.app.request(`http://127.0.0.1:5387${path}`, {
+    headers: { cookie: setup.cookie },
+  });
+}
+
+async function dashboardPost(setup: Setup, path: string, body: unknown) {
+  return await setup.app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: {
+      cookie: setup.cookie,
+      "x-caplets-csrf": setup.csrfToken,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function appPost(
+  setup: { app: ReturnType<typeof createHttpServeApp> },
+  path: string,
+  body: unknown,
+) {
+  return await setup.app.request(`http://127.0.0.1:5387${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function approvalCode(command: string): string {
+  const code = command.match(/approve\s+(cap_login_[^\s]+)/u)?.[1];
+  if (!code) throw new Error(`Could not find approval code in ${command}`);
+  return code;
+}
+
+function testApp() {
+  const stateDir = tempDir("caplets-dashboard-catalog-state-");
+  const context = testContext();
+  const engine = new CapletsEngine({
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
+    watch: false,
+  });
+  const store = new RemoteServerCredentialStore({ dir: stateDir });
+  const app = createHttpServeApp(httpOptions(stateDir), engine, {
+    writeErr: () => {},
+    control: context,
+    remoteCredentialStore: store,
+  });
+  return { app, engine, store, stateDir, context };
+}
+
+function httpOptions(stateDir: string): HttpServeOptions {
+  return {
+    transport: "http",
+    host: "127.0.0.1",
+    port: 5387,
+    path: "/",
+    auth: { type: "remote_credentials" },
+    remoteCredentialStateDir: stateDir,
+    allowUnauthenticatedHttp: false,
+    warnUnauthenticatedNetwork: false,
+    loopback: true,
+    trustProxy: false,
+  };
+}
+
+function testContext(): {
+  configPath: string;
+  projectConfigPath: string;
+  projectCapletsRoot: string;
+  globalCapletsRoot: string;
+  globalLockfilePath: string;
+  authDir: string;
+} {
+  const dir = tempDir("caplets-dashboard-catalog-");
+  const userRoot = join(dir, "user");
+  const projectRoot = join(dir, "project", ".caplets");
+  const globalCapletsRoot = join(dir, "global-caplets");
+  const authDir = join(dir, "auth");
+  mkdirSync(userRoot, { recursive: true });
+  mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(globalCapletsRoot, { recursive: true });
+  mkdirSync(authDir, { recursive: true });
+  const configPath = join(userRoot, "config.json");
+  const projectConfigPath = join(projectRoot, "config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      httpApis: {
+        status: {
+          name: "Status",
+          description: "Status API.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    }),
+  );
+  return {
+    configPath,
+    projectConfigPath,
+    projectCapletsRoot: projectRoot,
+    globalCapletsRoot,
+    globalLockfilePath: join(dir, "remote-state", "caplets.lock.json"),
+    authDir,
+  };
+}
+
+function tempDir(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  dirs.push(dir);
+  return dir;
+}

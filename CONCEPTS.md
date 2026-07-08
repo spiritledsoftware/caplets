@@ -72,6 +72,18 @@ A per-user native service managed by `caplets daemon` that runs local HTTP `capl
 
 The Caplets Daemon is installed and updated through an install-time service contract. Runtime lifecycle commands operate on the installed service rather than changing its persisted serve or environment configuration.
 
+### Current Host
+
+The Caplets host that served the active dashboard session and owns the runtime state being administered in that session.
+
+Current Host is a session-scoped administration target, not a product-wide singleton. The admin dashboard may initially operate only on the Current Host while preserving host-scoped terms for future multi-host enumeration and switching.
+
+### Caplets Admin Dashboard
+
+A browser UI served by the Caplets host for managing the Current Host's Caplets, remote clients, Vault, Project Binding state, daemon health, logs, and catalog-backed installs.
+
+The Caplets Admin Dashboard is an operator surface over structured Caplets administration. It is not a raw config editor, a separate service, or a generic multi-host control plane in its first release.
+
 ### Daemon-First Setup
 
 The local onboarding path where `caplets setup` prepares the user config and a healthy Caplets Daemon before configuring agent integrations.
@@ -225,3 +237,27 @@ Pairing Codes prove that a server-local operator approved a specific pending log
 The stored local record for a trusted Caplets host, including the normalized host URL, host kind, selected workspace when applicable, and redacted credential status.
 
 Remote Profiles are the source of truth for request credentials. Long-lived clients resolve current profile state when sending remote traffic instead of copying credentials into agent config or one-time startup state.
+
+### Remote Client Role
+
+The server-side authorization role assigned to a paired remote client after a Pending Remote Login is approved.
+
+Remote Client Roles split ordinary runtime access from host administration. They are scoped to the Caplets host that issued the credentials so a future multi-host dashboard can preserve independent authority per host.
+
+### Access Client
+
+A paired remote client whose role allows Remote Attach, MCP, and Project Binding access without host administration.
+
+Access Clients are for agent-facing and attach-facing runtime use. They do not authorize dashboard operations, remote-client administration, catalog install or update, Vault administration, or generic admin control.
+
+### Operator Client
+
+A paired remote client whose role allows dashboard and host administration operations against a Caplets host.
+
+Operator Clients can approve or revoke remote clients, administer Caplets and catalog installs, manage Vault state, view diagnostics, and perform dedicated human-only reveal actions where allowed. Operator authority is granted through the same Pending Remote Login approval lane as ordinary access, but with an operator role request.
+
+### Operator Activity Log
+
+A host-owned record of sensitive Operator Client actions performed through the dashboard or operator admin surfaces.
+
+Operator Activity Log answers what changed, when it changed, and which Operator Client performed the action. It is narrower than a compliance audit system and separate from daemon or protocol logs.

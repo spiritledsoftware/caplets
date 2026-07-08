@@ -113,10 +113,12 @@ provider environment variables.
 
 As an advanced manual fallback, `caplets serve` can still run a foreground HTTP or stdio
 runtime. If you want one local HTTP runtime to own environment, Vault, Remote Login,
-reloads, and logs while composing an upstream host, run:
+dashboard access, reloads, and logs while composing an upstream host, run:
 
 ```sh
 caplets serve --transport http --upstream-url https://caplets.example.com/caplets
 ```
 
-Then configure the MCP client with `caplets attach <local-runtime-url>`.
+Then configure the MCP client with `caplets attach <local-runtime-url>`. If you also need
+host administration, open the same runtime's `/dashboard` path in a browser and complete an
+Operator approval there.

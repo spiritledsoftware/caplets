@@ -1,0 +1,7 @@
+# Split Remote Client Roles Between Access And Operator Authority
+
+Self-hosted remote credentials currently authorize both runtime access and broad admin operations. We will split paired remote clients into Access Clients and Operator Clients: Access Clients can use the attach API, MCP server, and Project Binding API, while Operator Clients can use dashboard and host administration surfaces such as remote-client administration, Caplet installation/configuration, and Vault administration.
+
+This intentionally moves admin capability out of ordinary attach credentials. `/v1/admin` is Operator-only, including read-only remote-control commands; Access Clients inspect callable capability surfaces through MCP and attach paths instead. Raw Vault Reveal is allowed only through a dedicated Operator Client human dashboard action, not by re-enabling generic self-hosted remote-control reveal. The dashboard may request an Operator Client through the existing Pending Remote Login approval flow, and `caplets remote host approve` grants the requested role by default while allowing the server-local operator to override it.
+
+The first dashboard release administers the Current Host: the Caplets host that served the dashboard session. The role model should still be host-scoped rather than singleton-scoped so future multi-host views can enumerate and switch hosts without redefining Access Client and Operator Client authority.

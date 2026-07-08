@@ -89,7 +89,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "pnpm run clean && rolldown -c && tsc -p tsconfig.build.json",
+    "build": "pnpm --dir ../../apps/dashboard build && pnpm run clean && rolldown -c && tsc -p tsconfig.build.json && node ./scripts/copy-dashboard-dist.mjs",
     "build:watch": "pnpm run clean && rolldown -c --watch",
     "prepack": "pnpm build",
     "typecheck": "tsgo --noEmit",

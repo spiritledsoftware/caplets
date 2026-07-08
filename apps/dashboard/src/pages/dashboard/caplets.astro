@@ -1,0 +1,12 @@
+---
+import { DashboardApp } from "@/components/DashboardApp";
+import DashboardHead from "@/components/DashboardHead.astro";
+import "@/styles/globals.css";
+---
+
+<html lang="en">
+  <DashboardHead title="Caplets" />
+  <body>
+    <DashboardApp client:load initialRoute="caplets" />
+  </body>
+</html>

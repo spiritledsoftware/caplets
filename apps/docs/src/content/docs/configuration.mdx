@@ -53,6 +53,11 @@ public origins.
 credential-free loopback daemon before writing agent config, even if user `serve` defaults
 describe a broader foreground or self-hosted HTTP runtime.
 
+These same `serve` defaults also shape the browser dashboard for self-hosted HTTP runtimes. In
+particular, `serve.path` changes the dashboard URL prefix, and `serve.publicOrigins` affects the
+public dashboard origin used for browser-facing request identity and session/cookie behavior. See
+[Dashboard](/dashboard/) if you are exposing host administration through the browser.
+
 ## Project config
 
 Project config lives at:

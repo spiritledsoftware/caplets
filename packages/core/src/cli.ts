@@ -105,6 +105,7 @@ import {
   type FileRemoteProfileStore,
 } from "./remote/profile-store";
 import { RemoteServerCredentialStore } from "./remote/server-credential-store";
+import type { RemoteClientRole } from "./remote/server-credentials";
 import { resolveRemoteSelection } from "./remote/selection";
 import {
   hostedCloudWorkspaceFromRemoteUrl,
@@ -938,6 +939,7 @@ type PendingRemoteLoginStartResponse = {
   flowId: string;
   operatorCode: string;
   operatorCodeFingerprint?: string | undefined;
+  approvalCommand?: string | undefined;
   pendingRefreshSecret: string;
   pendingCompletionSecret: string;
   codeExpiresAt: string;
@@ -1014,6 +1016,9 @@ async function parsePendingRemoteLoginStart(
     ...(typeof record.operatorCodeFingerprint === "string"
       ? { operatorCodeFingerprint: record.operatorCodeFingerprint }
       : {}),
+    ...(typeof record.approvalCommand === "string"
+      ? { approvalCommand: record.approvalCommand }
+      : {}),
     pendingRefreshSecret: record.pendingRefreshSecret,
     pendingCompletionSecret,
     codeExpiresAt: record.codeExpiresAt,
@@ -1077,9 +1082,9 @@ async function selfHostedPendingRemoteLogin(
     if (pending.operatorCodeFingerprint) {
       input.writeOut(`Code fingerprint: ${pending.operatorCodeFingerprint}\n`);
     }
-    input.writeOut(
-      `Approve from the host with caplets remote host approve ${pending.operatorCode} --yes\n`,
-    );
+    const approvalCommand =
+      pending.approvalCommand ?? `caplets remote host approve ${pending.operatorCode} --yes`;
+    input.writeOut(`Approve from the host with ${approvalCommand}\n`);
   }
 
   const intervalMs = numberEnv(
@@ -2253,7 +2258,7 @@ export function createProgram(io: CliIO = {}): Command {
       }
       for (const client of clients) {
         writeOut(
-          `${client.clientId}\t${terminalSafeText(client.clientLabel)}\t${client.hostUrl}\t${client.revokedAt ? "revoked" : "active"}\n`,
+          `${client.clientId}\t${client.role}\t${terminalSafeText(client.clientLabel)}\t${client.hostUrl}\t${client.revokedAt ? "revoked" : "active"}\n`,
         );
       }
     });
@@ -2274,7 +2279,7 @@ export function createProgram(io: CliIO = {}): Command {
       }
       for (const pending of pendingLogins) {
         writeOut(
-          `${pending.flowId}\t${pending.operatorCodeFingerprint ?? "-"}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
+          `${pending.flowId}\t${pending.operatorCodeFingerprint ?? "-"}\t${pending.requestedRole}\t${pending.grantedRole ?? "-"}\t${terminalSafeText(pending.clientLabel)}\t${pending.hostUrl}\t${pending.status}\n`,
         );
       }
     });
@@ -2283,21 +2288,28 @@ export function createProgram(io: CliIO = {}): Command {
     .description("Approve one pending self-hosted Remote Login code from server state.")
     .argument("<code>", "operator-visible Remote Login code")
     .option("--state-path <path>", "server-owned remote credential state directory")
+    .option("--role <role>", "grant role override: access or operator", parseRemoteClientRole)
     .option("--yes", "approve without an interactive confirmation prompt")
     .option("--json", "print JSON output")
-    .action((code: string, options: { statePath?: string; yes?: boolean; json?: boolean }) => {
-      if (!options.yes && !options.json) {
-        throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
-      }
-      const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
-        operatorCode: code,
-      });
-      if (options.json) {
-        writeOut(`${JSON.stringify(approved, null, 2)}\n`);
-        return;
-      }
-      writeOut(`Approved pending Remote Login ${approved.flowId}.\n`);
-    });
+    .action(
+      (
+        code: string,
+        options: { statePath?: string; role?: RemoteClientRole; yes?: boolean; json?: boolean },
+      ) => {
+        if (!options.yes && !options.json) {
+          throw new CapletsError("REQUEST_INVALID", "Use --yes to approve this pending login.");
+        }
+        const approved = remoteServerCredentialStore(options.statePath, env).approvePendingLogin({
+          operatorCode: code,
+          ...(options.role ? { grantedRole: options.role } : {}),
+        });
+        if (options.json) {
+          writeOut(`${JSON.stringify(approved, null, 2)}\n`);
+          return;
+        }
+        writeOut(`Approved pending Remote Login ${approved.flowId} as ${approved.grantedRole}.\n`);
+      },
+    );
   remoteHost
     .command("deny")
     .description("Deny one pending self-hosted Remote Login code from server state.")
@@ -3118,6 +3130,7 @@ export function createProgram(io: CliIO = {}): Command {
           const result = (await remote.request("update", {
             capletIds,
             force: Boolean(options.force),
+            allowRiskIncrease: Boolean(options.force),
             ...(catalogIndexingDisabled(env) ? { disableCatalogIndexing: true } : {}),
           })) as {
             installed: Array<{
@@ -3150,6 +3163,7 @@ export function createProgram(io: CliIO = {}): Command {
         const result = updateCapletsFromLockfile({
           capletIds,
           force: Boolean(options.force),
+          allowRiskIncrease: Boolean(options.force),
           destinationRoot,
           lockfilePath,
         });
@@ -4523,6 +4537,11 @@ function parseLogStream(value: string | undefined): DaemonLogStream {
     return value ?? "all";
   }
   throw new CapletsError("REQUEST_INVALID", "--stream must be stdout, stderr, or all");
+}
+
+function parseRemoteClientRole(value: string): RemoteClientRole {
+  if (value === "access" || value === "operator") return value;
+  throw new CapletsError("REQUEST_INVALID", "Remote client role must be access or operator.");
 }
 
 type CliOutputFormat = "markdown" | "plain" | "json";

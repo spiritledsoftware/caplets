@@ -177,6 +177,10 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
         ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
         ...globalCatalogTarget(),
         ...optionalProp("force", optionalBoolean(request.arguments, "force")),
+        ...optionalProp(
+          "allowRiskIncrease",
+          optionalBoolean(request.arguments, "allowRiskIncrease"),
+        ),
       }),
     };
     await attachRemoteCatalogIndexingResults(

@@ -16,9 +16,28 @@ import {
   defaultCapletsLockfilePath,
   resolveCapletsRoot,
   resolveProjectCapletsRoot,
+  vaultStoreForAuthDir,
+  type ConfigSourceKind,
 } from "../config";
+import { version as packageJsonVersion } from "../../package.json";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
-import { CapletsError, toSafeError } from "../errors";
+import { CapletsError, toSafeError, type CapletsErrorCode } from "../errors";
+import { dashboardSessionCookie, expiredDashboardSessionCookie } from "../dashboard/auth";
+import {
+  dashboardCatalogDetail,
+  dashboardCatalogSearch,
+  dashboardInstallCatalogCaplet,
+  dashboardInstalledCaplets,
+  dashboardUpdateCatalogCaplet,
+  dashboardUpdateReadiness,
+} from "../dashboard/catalog";
+import {
+  DashboardActivityLog,
+  type DashboardActivityAction,
+  roleChangeMetadata,
+} from "../dashboard/activity-log";
+import { dashboardShell, dashboardStaticResponse } from "../dashboard/routes";
+import { DashboardSessionStore } from "../dashboard/session-store";
 import {
   attachErrorResponse,
   buildAttachProjection,
@@ -45,6 +64,7 @@ import {
 import { RemoteAuthFlowStore } from "../remote-control/auth-flow";
 import type { RemoteCliRequest } from "../remote-control/types";
 import { RemoteServerCredentialStore } from "../remote/server-credential-store";
+import type { RemoteClientRole } from "../remote/server-credentials";
 import { isLoopbackHost } from "../server/options";
 import type { HttpServeOptions } from "./options";
 import { CapletsMcpSession } from "./session";
@@ -58,6 +78,8 @@ type HttpServeIo = {
   defaultAttachSessionFactory?: HttpAttachSessionFactory;
   exposeAttach?: boolean;
   remoteCredentialStore?: RemoteServerCredentialStore;
+  dashboardSessionStore?: DashboardSessionStore;
+  dashboardDistDir?: string;
   projectBindingWorkspaceStore?: ProjectBindingWorkspaceStore;
 };
 
@@ -152,6 +174,12 @@ export function createHttpServeApp(
   const exposeAttach = io.exposeAttach ?? true;
   const exposeAttachSessions = exposeAttach && Boolean(io.attachSessionFactory);
   const remoteCredentialStore = remoteCredentialStoreForOptions(options, io.remoteCredentialStore);
+  const dashboardStateDir =
+    options.remoteCredentialStateDir ?? io.dashboardSessionStore?.dir ?? ".";
+  const dashboardSessionStore = new DashboardSessionStore({
+    dir: dashboardStateDir,
+  });
+  const dashboardActivityLog = new DashboardActivityLog({ dir: dashboardStateDir });
   const projectBindingWorkspaceStore =
     io.projectBindingWorkspaceStore ?? new ProjectBindingWorkspaceStore();
   if (
@@ -165,6 +193,7 @@ export function createHttpServeApp(
     );
   }
   const protectedRouteAuth = routeAuth(options, remoteCredentialStore, paths.base);
+  const operatorRouteAuth = routeAuth(options, remoteCredentialStore, paths.base, "operator");
   const attachHostProtection = dnsRebindingProtection(options);
   app.use(
     "*",
@@ -200,6 +229,620 @@ export function createHttpServeApp(
     }),
   );
 
+  app.get(
+    routePath(paths.base, "_astro/*"),
+    (c) =>
+      dashboardStaticResponse(
+        dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
+        io.dashboardDistDir,
+      ) ?? c.notFound(),
+  );
+
+  app.get(paths.dashboard, (c) => {
+    const response = dashboardStaticResponse(
+      dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
+      io.dashboardDistDir,
+    );
+    if (response) return response;
+    return c.html(dashboardShell(), 200, { "cache-control": "no-store" });
+  });
+
+  app.post(paths.dashboardLoginStart, attachHostProtection, async (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard login start request");
+      const clientLabel = optionalStringField(parsed, "clientLabel") ?? "Caplets Dashboard";
+      const clientFingerprint = optionalStringField(parsed, "clientFingerprint");
+      const hostUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+        c.req.header(name),
+      );
+      const pending = remoteCredentialStore.createPendingLogin({
+        hostUrl,
+        hostIdentity: hostUrl,
+        requestedRole: "operator",
+        clientLabel,
+        ...remoteCredentialSourceHint(options.trustProxy, (name) => c.req.header(name)),
+        ...(clientFingerprint ? { clientFingerprint } : {}),
+      });
+      return c.json({
+        ...pending,
+        requestedRole: "operator",
+        approvalCommand: pendingLoginApprovalCommand(
+          pending.operatorCode,
+          remoteCredentialStore.dir,
+        ),
+      });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardLoginPoll, attachHostProtection, async (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard login poll request");
+      return c.json(
+        remoteCredentialStore.pollPendingLogin({
+          flowId: stringField(parsed, "flowId"),
+          pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+        }),
+      );
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardLoginComplete, attachHostProtection, async (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard login complete request");
+      const credentials = remoteCredentialStore.completePendingLogin({
+        hostUrl: remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+          c.req.header(name),
+        ),
+        requiredRole: "operator",
+        flowId: stringField(parsed, "flowId"),
+        pendingCompletionSecret: stringField(parsed, "pendingCompletionSecret"),
+      });
+      const created = dashboardSessionStore.create({ operatorClientId: credentials.clientId });
+      dashboardActivityLog.append({
+        actorClientId: credentials.clientId,
+        action: "dashboard_login_completed",
+        target: { type: "dashboard_session", id: created.session.sessionId },
+      });
+      c.header(
+        "set-cookie",
+        dashboardSessionCookie(created.cookieValue, {
+          path: paths.dashboard,
+          secure: requestIsSecure(c.req.url, options, (name) => c.req.header(name)),
+        }),
+      );
+      return c.json({ authenticated: true, session: created.session });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardSession, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({ authenticated: true, session: session.session });
+  });
+
+  app.get(paths.dashboardSummary, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json(dashboardSummary(c.req.url, (name) => c.req.header(name)));
+  });
+
+  app.get(paths.dashboardCaplets, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({
+      caplets: dashboardInstalledCaplets(engine.enabledServers(), dashboardCatalogContext()),
+    });
+  });
+
+  app.get(paths.dashboardCatalogSearch, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    try {
+      const query = new URL(c.req.url).searchParams;
+      return c.json(
+        dashboardCatalogSearch({
+          source: requiredQueryParam(query, "source"),
+          query: query.get("q") ?? undefined,
+          limit: numberQueryParam(query.get("limit")),
+        }),
+      );
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardCatalogDetail, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    try {
+      const query = new URL(c.req.url).searchParams;
+      return c.json(
+        dashboardCatalogDetail({
+          source: requiredQueryParam(query, "source"),
+          capletId: requiredQueryParam(query, "id"),
+        }),
+      );
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardCatalogUpdates, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json(dashboardUpdateReadiness({ context: dashboardCatalogContext() }));
+  });
+
+  app.post(paths.dashboardCatalogInstall, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard catalog install request");
+      const result = await dashboardInstallCatalogCaplet({
+        source: stringField(parsed, "source"),
+        capletId: stringField(parsed, "capletId"),
+        force: optionalBooleanField(parsed, "force"),
+        context: dashboardCatalogContext(),
+      });
+      for (const installed of result.installed) {
+        dashboardActivityLog.append({
+          actorClientId: session.session.operatorClientId,
+          action: "catalog_installed",
+          target: { type: "catalog", id: installed.id },
+          metadata: { status: installed.status ?? null, kind: installed.kind },
+        });
+      }
+      return c.json(result);
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardCatalogUpdate, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard catalog update request");
+      const result = await dashboardUpdateCatalogCaplet({
+        capletId: stringField(parsed, "capletId"),
+        force: optionalBooleanField(parsed, "force"),
+        allowRiskIncrease: optionalBooleanField(parsed, "acknowledgeRiskIncrease") ?? false,
+        context: dashboardCatalogContext(),
+      });
+      for (const installed of result.installed) {
+        dashboardActivityLog.append({
+          actorClientId: session.session.operatorClientId,
+          action: "catalog_updated",
+          target: { type: "catalog", id: installed.id },
+          metadata: {
+            status: installed.status ?? null,
+            riskAcknowledged: optionalBooleanField(parsed, "acknowledgeRiskIncrease") ?? false,
+          },
+        });
+      }
+      return c.json(result);
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardAccessClients, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({ clients: remoteCredentialStore?.listClients() ?? [] });
+  });
+
+  app.get(paths.dashboardAccessPendingLogins, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({
+      pendingLogins: (remoteCredentialStore?.listPendingLogins() ?? []).filter(
+        (login) => login.status === "pending" || login.status === "approved",
+      ),
+    });
+  });
+
+  app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/approve"), async (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(
+        c.req.json(),
+        "Dashboard pending login approval request",
+      );
+      const pendingLogin = remoteCredentialStore.approvePendingLoginFlow({
+        flowId: requiredRouteParam(c.req.param("flowId")),
+        grantedRole: optionalRemoteClientRole(parsed, "grantedRole"),
+      });
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "pending_login_approved",
+        target: {
+          type: "pending_login",
+          id: pendingLogin.flowId,
+          label: pendingLogin.clientLabel,
+        },
+        metadata: {
+          requestedRole: pendingLogin.requestedRole,
+          grantedRole: pendingLogin.grantedRole ?? pendingLogin.requestedRole,
+        },
+      });
+      return c.json({ pendingLogin });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(routePath(paths.dashboardAccessPendingLogins, ":flowId/deny"), (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const pendingLogin = remoteCredentialStore.denyPendingLoginFlow({
+        flowId: requiredRouteParam(c.req.param("flowId")),
+      });
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "pending_login_denied",
+        target: {
+          type: "pending_login",
+          id: pendingLogin.flowId,
+          label: pendingLogin.clientLabel,
+        },
+        metadata: { requestedRole: pendingLogin.requestedRole },
+      });
+      return c.json({ pendingLogin });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(routePath(paths.dashboardAccessClients, ":clientId/revoke"), (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    const clientId = requiredRouteParam(c.req.param("clientId"));
+    const client = remoteCredentialStore
+      .listClients()
+      .find((candidate) => candidate.clientId === clientId);
+    const revoked = remoteCredentialStore.revokeClient(clientId);
+    if (revoked) {
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "remote_client_revoked",
+        target: {
+          type: "remote_client",
+          id: clientId,
+          ...(client ? { label: client.clientLabel } : {}),
+        },
+        metadata: { role: client?.role ?? null },
+      });
+    }
+    const sessionEnded = clientId === session.session.operatorClientId && revoked;
+    if (sessionEnded) c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
+    return c.json({ revoked, clientId, sessionEnded });
+  });
+
+  app.post(routePath(paths.dashboardAccessClients, ":clientId/role"), async (c) => {
+    if (!remoteCredentialStore) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const clientId = requiredRouteParam(c.req.param("clientId"));
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard remote client role request");
+      const role = requiredRemoteClientRole(parsed, "role");
+      const before = remoteCredentialStore
+        .listClients()
+        .find((candidate) => candidate.clientId === clientId);
+      const client = remoteCredentialStore.changeClientRole(clientId, role);
+      if (!client) return c.json({ error: "client_not_found" }, 404);
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "remote_client_role_changed",
+        target: { type: "remote_client", id: client.clientId, label: client.clientLabel },
+        metadata: roleChangeMetadata(before?.role ?? client.role, client.role),
+      });
+      const sessionEnded =
+        clientId === session.session.operatorClientId && client.role !== "operator";
+      if (sessionEnded) c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
+      return c.json({ client, sessionEnded });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardActivity, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    const query = new URL(c.req.url).searchParams;
+    return c.json(
+      dashboardActivityLog.list({
+        limit: numberQueryParam(query.get("limit")),
+        after: query.get("after") ?? undefined,
+        action: optionalActivityAction(query.get("action") ?? undefined),
+      }),
+    );
+  });
+
+  app.get(paths.dashboardVault, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    const vault = dashboardVaultStore();
+    return c.json({
+      values: vault.listValues(),
+      grants: vault.listAccess().map(redactedVaultGrant),
+    });
+  });
+
+  app.post(paths.dashboardVaultSet, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault set request");
+      const key = stringField(parsed, "key");
+      const status = dashboardVaultStore().set(key, stringField(parsed, "value"), {
+        force: optionalBooleanField(parsed, "force") ?? false,
+      });
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "vault_set",
+        target: { type: "vault", id: status.key },
+        metadata: { bytesWritten: status.valueBytes ?? null },
+      });
+      return c.json({ status });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(routePath(paths.dashboardVaultValues, ":key/delete"), (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const deleted = dashboardVaultStore().delete(requiredRouteParam(c.req.param("key")));
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "vault_deleted",
+        target: { type: "vault", id: deleted.key },
+        metadata: { deleted: deleted.deleted, grantsRetained: deleted.grantsRetained },
+      });
+      return c.json({ deleted });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardVaultGrant, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault grant request");
+      const grant = dashboardVaultStore().grantAccess({
+        storedKey: stringField(parsed, "storedKey"),
+        referenceName: stringField(parsed, "referenceName"),
+        capletId: stringField(parsed, "capletId"),
+        origin: vaultOriginField(parsed),
+      });
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "vault_grant_added",
+        target: { type: "vault", id: grant.storedKey },
+        metadata: {
+          referenceName: grant.referenceName,
+          capletId: grant.capletId,
+          originKind: grant.origin.kind,
+        },
+      });
+      return c.json({ grant: redactedVaultGrant(grant) });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardVaultRevoke, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault revoke request");
+      const revoked = dashboardVaultStore().revokeAccess({
+        storedKey: stringField(parsed, "storedKey"),
+        ...optionalStringObjectProp(parsed, "referenceName"),
+        ...optionalStringObjectProp(parsed, "capletId"),
+      });
+      for (const grant of revoked) {
+        dashboardActivityLog.append({
+          actorClientId: session.session.operatorClientId,
+          action: "vault_grant_revoked",
+          target: { type: "vault", id: grant.storedKey },
+          metadata: {
+            referenceName: grant.referenceName,
+            capletId: grant.capletId,
+            originKind: grant.origin.kind,
+          },
+        });
+      }
+      return c.json({ revoked: revoked.map(redactedVaultGrant) });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.post(paths.dashboardVaultReveal, async (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    try {
+      const parsed = await parseJsonObject(c.req.json(), "Dashboard Vault reveal request");
+      const key = stringField(parsed, "key");
+      if (stringField(parsed, "confirmation") !== `reveal ${key}`) {
+        throw new CapletsError("REQUEST_INVALID", "Vault reveal confirmation is invalid.");
+      }
+      const value = dashboardVaultStore().resolveValue(key);
+      dashboardActivityLog.append({
+        actorClientId: session.session.operatorClientId,
+        action: "vault_value_revealed",
+        target: { type: "vault", id: key },
+        metadata: { confirmed: true },
+      });
+      return c.json({ key, value }, 200, { "cache-control": "no-store" });
+    } catch (error) {
+      return remoteCredentialErrorResponse(error);
+    }
+  });
+
+  app.get(paths.dashboardRuntime, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    const baseUrl = remoteCredentialHostUrl(c.req.url, paths.base, options, (name) =>
+      c.req.header(name),
+    );
+    return c.json({
+      runtime: {
+        status: "ok",
+        version: packageJsonVersion,
+        bind: `${options.host}:${options.port}`,
+        baseUrl,
+        publicOrigin: options.publicOrigin ?? null,
+      },
+      daemon: { restartAvailable: false, stopAvailable: false, uninstallAvailable: false },
+    });
+  });
+
+  app.post(paths.dashboardRuntimeRestart, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    return c.json({ restartAvailable: false, reason: "daemon_manager_unavailable" }, 409);
+  });
+
+  app.get(paths.dashboardLogs, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    const limit = numberQueryParam(new URL(c.req.url).searchParams.get("limit")) ?? 100;
+    return c.json({ entries: [], limit: Math.min(500, Math.max(1, limit)), truncated: false });
+  });
+
+  app.get(paths.dashboardDiagnostics, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({
+      status: "ok",
+      diagnostics: [],
+      checks: [
+        { id: "runtime", status: "ok" },
+        { id: "dashboard", status: "ok" },
+      ],
+    });
+  });
+
+  app.get(paths.dashboardEvents, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    const event = {
+      type: "runtime_health",
+      runtime: { status: "ok", version: packageJsonVersion },
+      projectBinding: { state: "disconnected" },
+    };
+    return new Response(
+      `id: ${Date.now()}\nevent: runtime_health\ndata: ${JSON.stringify(event)}\n\n`,
+      {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        },
+      },
+    );
+  });
+
+  app.get(paths.dashboardProjectBinding, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"));
+    if (!session.ok) return session.response;
+    return c.json({
+      projectBinding: {
+        state: "disconnected",
+        affectedCaplets: [],
+        actions: [
+          {
+            id: "attach-project",
+            label: "Attach project from a client",
+            enabled: false,
+            reason: "Project Binding sessions are started by Access Clients.",
+          },
+        ],
+      },
+    });
+  });
+
+  app.post(paths.dashboardLogout, (c) => {
+    const session = validateDashboardSession(c.req.header("cookie"), {
+      requireCsrf: true,
+      csrfToken: c.req.header("x-caplets-csrf"),
+    });
+    if (!session.ok) return session.response;
+    dashboardActivityLog.append({
+      actorClientId: session.session.operatorClientId,
+      action: "dashboard_logout",
+      target: { type: "dashboard_session", id: session.session.sessionId },
+    });
+    dashboardSessionStore.delete(c.req.header("cookie"));
+    c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
+    return c.json({ ok: true });
+  });
+
+  app.get(
+    routePath(paths.dashboard, "*"),
+    (c) =>
+      dashboardStaticResponse(
+        dashboardStaticRequestPath(new URL(c.req.url).pathname, paths.base),
+        io.dashboardDistDir,
+      ) ?? c.notFound(),
+  );
+
   if (remoteCredentialStore) {
     app.post(paths.remoteLoginStart, attachHostProtection, async (c) => {
       try {
@@ -216,7 +859,13 @@ export function createHttpServeApp(
           ...remoteCredentialSourceHint(options.trustProxy, (name) => c.req.header(name)),
           ...(clientFingerprint ? { clientFingerprint } : {}),
         });
-        return c.json(pending);
+        return c.json({
+          ...pending,
+          approvalCommand: pendingLoginApprovalCommand(
+            pending.operatorCode,
+            remoteCredentialStore.dir,
+          ),
+        });
       } catch (error) {
         return remoteCredentialErrorResponse(error);
       }
@@ -298,6 +947,7 @@ export function createHttpServeApp(
         return c.json({
           clientId: credentials.clientId,
           clientLabel: credentials.clientLabel,
+          role: credentials.role,
           accessToken: credentials.accessToken,
           refreshToken: credentials.refreshToken,
           tokenType: credentials.tokenType,
@@ -538,7 +1188,7 @@ export function createHttpServeApp(
     }
   }
 
-  app.post(paths.control, protectedRouteAuth, async (c) => {
+  app.post(paths.control, operatorRouteAuth, async (c) => {
     let request: RemoteCliRequest;
     try {
       const parsed = await c.req.json();
@@ -916,6 +1566,119 @@ export function createHttpServeApp(
     return value as ProjectBindingState;
   }
 
+  function dashboardCatalogContext() {
+    return {
+      control: io.control
+        ? {
+            ...io.control,
+            projectCapletsRoot: io.control.projectCapletsRoot,
+            globalCapletsRoot: io.control.globalCapletsRoot,
+            globalLockfilePath: io.control.globalLockfilePath,
+          }
+        : undefined,
+    };
+  }
+
+  function dashboardVaultStore() {
+    return vaultStoreForAuthDir(io.control?.authDir);
+  }
+
+  function validateDashboardSession(
+    cookieHeader: string | undefined,
+    csrf: { requireCsrf?: boolean; csrfToken?: string | undefined } = {},
+  ):
+    | { ok: true; session: ReturnType<DashboardSessionStore["validate"]> }
+    | { ok: false; response: Response } {
+    if (!remoteCredentialStore && options.auth.type === "development_unauthenticated") {
+      if (csrf.requireCsrf && csrf.csrfToken !== "development_unauthenticated") {
+        return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+      }
+      const timestamp = new Date(0).toISOString();
+      return {
+        ok: true,
+        session: {
+          sessionId: "development_unauthenticated",
+          operatorClientId: "development_unauthenticated",
+          role: "operator",
+          csrfToken: "development_unauthenticated",
+          createdAt: timestamp,
+          expiresAt: new Date(8_640_000_000_000_000).toISOString(),
+          lastUsedAt: timestamp,
+        },
+      };
+    }
+    if (!remoteCredentialStore) {
+      return {
+        ok: false,
+        response: new Response(JSON.stringify({ error: "not_found" }), { status: 404 }),
+      };
+    }
+    try {
+      return {
+        ok: true,
+        session: dashboardSessionStore.validate({
+          cookieHeader,
+          credentialStore: remoteCredentialStore,
+          ...csrf,
+        }),
+      };
+    } catch (error) {
+      if (error instanceof CapletsError && error.code === "REQUEST_INVALID") {
+        return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+      }
+      if (error instanceof CapletsError && error.code === "SERVER_UNAVAILABLE") {
+        return { ok: false, response: new Response("Service Unavailable", { status: 503 }) };
+      }
+      return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
+    }
+  }
+
+  function dashboardSummary(requestUrl: string, header: (name: string) => string | undefined) {
+    const baseUrl = remoteCredentialHostUrl(requestUrl, paths.base, options, header);
+    const dashboardUrl = new URL(
+      paths.dashboard,
+      publicRequestOrigin(requestUrl, options.trustProxy, header),
+    ).toString();
+    const pendingLogins = remoteCredentialStore?.listPendingLogins() ?? [];
+    const clients = remoteCredentialStore?.listClients() ?? [];
+    const caplets = engine.enabledServers();
+    const vault = vaultStoreForAuthDir(io.control?.authDir);
+    const vaultValues = vault.listValues();
+    return {
+      host: {
+        current: true,
+        baseUrl,
+        dashboardUrl,
+        version: packageJsonVersion,
+        roleModel: "current-host",
+      },
+      attention: pendingLogins
+        .filter((login) => login.status === "pending")
+        .map((login) => ({
+          kind: "pending-login",
+          severity: "warning",
+          label: `${login.clientLabel} is waiting for ${login.requestedRole} approval`,
+          href: `${paths.dashboard}#access`,
+        })),
+      sections: {
+        caplets: { count: caplets.length, href: `${paths.dashboard}#caplets` },
+        catalog: { href: `${paths.dashboard}#catalog` },
+        access: {
+          clients: clients.length,
+          pending: pendingLogins.filter((login) => login.status === "pending").length,
+          href: `${paths.dashboard}#access`,
+        },
+        vault: { count: vaultValues.length, href: `${paths.dashboard}#vault` },
+        projectBinding: { state: "disconnected", href: `${paths.dashboard}#project-binding` },
+        runtime: { status: "ok", href: `${paths.dashboard}#runtime` },
+        logs: { href: `${paths.dashboard}#logs` },
+        diagnostics: { href: `${paths.dashboard}#diagnostics` },
+        activity: { href: `${paths.dashboard}#activity` },
+        settings: { href: `${paths.dashboard}#settings` },
+      },
+    };
+  }
+
   function projectBindingSyncStateField(
     input: Record<string, unknown>,
     key: string,
@@ -1023,6 +1786,33 @@ function publicRequestOrigin(
       : url.protocol.slice(0, -1);
   const host = forwardedHost ?? header("host") ?? url.host;
   return `${proto}://${host}`;
+}
+
+function requestIsSecure(
+  requestUrl: string,
+  options: Pick<HttpServeOptions, "publicOrigin" | "publicOrigins" | "trustProxy">,
+  header: (name: string) => string | undefined,
+): boolean {
+  const publicOrigin = remoteCredentialPublicOrigin(options, header);
+  return (publicOrigin ?? publicRequestOrigin(requestUrl, options.trustProxy, header)).startsWith(
+    "https://",
+  );
+}
+
+function dashboardStaticRequestPath(pathname: string, basePath: string): string {
+  if (basePath === "/") return pathname;
+  if (pathname === basePath) return "/";
+  return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
+}
+
+function pendingLoginApprovalCommand(operatorCode: string, stateDir: string | undefined): string {
+  const statePath = stateDir ? ` --state-path ${shellQuoteArg(stateDir)}` : "";
+  return `caplets remote host approve ${shellQuoteArg(operatorCode)}${statePath} --yes`;
+}
+
+function shellQuoteArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=@%+-]+$/u.test(value)) return value;
+  return `'${value.replace(/'/gu, "'\\''")}'`;
 }
 
 function publicHostUrl(
@@ -1148,6 +1938,7 @@ function versionDiscovery(
     links: {
       mcp: paths.mcp,
       admin: paths.control,
+      dashboard: paths.dashboard,
       ...(exposeAttach
         ? {
             ...(exposeAttachSessions ? { attachSessions: paths.attachSessions } : {}),
@@ -1532,11 +2323,43 @@ export function servicePaths(base: string): {
   remoteLoginCancel: string;
   remoteRefresh: string;
   remoteClient: string;
+  dashboard: string;
+  dashboardApi: string;
+  dashboardLoginStart: string;
+  dashboardLoginPoll: string;
+  dashboardLoginComplete: string;
+  dashboardSession: string;
+  dashboardLogout: string;
+  dashboardSummary: string;
+  dashboardCaplets: string;
+  dashboardCatalogSearch: string;
+  dashboardCatalogDetail: string;
+  dashboardCatalogInstall: string;
+  dashboardCatalogUpdates: string;
+  dashboardCatalogUpdate: string;
+  dashboardAccessClients: string;
+  dashboardAccessPendingLogins: string;
+  dashboardVault: string;
+  dashboardVaultValues: string;
+  dashboardVaultSet: string;
+  dashboardVaultGrant: string;
+  dashboardVaultRevoke: string;
+  dashboardVaultReveal: string;
+  dashboardRuntime: string;
+  dashboardRuntimeRestart: string;
+  dashboardLogs: string;
+  dashboardDiagnostics: string;
+  dashboardEvents: string;
+  dashboardProjectBinding: string;
+  dashboardActivity: string;
   health: string;
 } {
   const version = routePath(base, "v1");
   const attach = routePath(version, "attach");
   const remote = routePath(version, "remote");
+  const dashboard = routePath(base, "dashboard");
+  const dashboardApi = routePath(dashboard, "api");
+  const dashboardLogin = routePath(dashboardApi, "login");
   return {
     base,
     version,
@@ -1555,6 +2378,35 @@ export function servicePaths(base: string): {
     remoteLoginCancel: routePath(remote, "login/cancel"),
     remoteRefresh: routePath(remote, "refresh"),
     remoteClient: routePath(remote, "client"),
+    dashboard,
+    dashboardApi,
+    dashboardLoginStart: routePath(dashboardLogin, "start"),
+    dashboardLoginPoll: routePath(dashboardLogin, "poll"),
+    dashboardLoginComplete: routePath(dashboardLogin, "complete"),
+    dashboardSession: routePath(dashboardApi, "session"),
+    dashboardLogout: routePath(dashboardApi, "logout"),
+    dashboardSummary: routePath(dashboardApi, "summary"),
+    dashboardCaplets: routePath(dashboardApi, "caplets"),
+    dashboardCatalogSearch: routePath(dashboardApi, "catalog/search"),
+    dashboardCatalogDetail: routePath(dashboardApi, "catalog/detail"),
+    dashboardCatalogInstall: routePath(dashboardApi, "catalog/install"),
+    dashboardCatalogUpdates: routePath(dashboardApi, "catalog/updates"),
+    dashboardCatalogUpdate: routePath(dashboardApi, "catalog/update"),
+    dashboardAccessClients: routePath(dashboardApi, "access/clients"),
+    dashboardAccessPendingLogins: routePath(dashboardApi, "access/pending-logins"),
+    dashboardVault: routePath(dashboardApi, "vault"),
+    dashboardVaultValues: routePath(dashboardApi, "vault/values"),
+    dashboardVaultSet: routePath(dashboardApi, "vault/values"),
+    dashboardVaultGrant: routePath(dashboardApi, "vault/grants"),
+    dashboardVaultRevoke: routePath(dashboardApi, "vault/grants/revoke"),
+    dashboardVaultReveal: routePath(dashboardApi, "vault/reveal"),
+    dashboardRuntime: routePath(dashboardApi, "runtime"),
+    dashboardRuntimeRestart: routePath(dashboardApi, "runtime/restart"),
+    dashboardLogs: routePath(dashboardApi, "logs"),
+    dashboardDiagnostics: routePath(dashboardApi, "diagnostics"),
+    dashboardEvents: routePath(dashboardApi, "events"),
+    dashboardProjectBinding: routePath(dashboardApi, "project-binding"),
+    dashboardActivity: routePath(dashboardApi, "activity"),
     health: routePath(version, "healthz"),
   };
 }
@@ -1575,10 +2427,114 @@ async function createHttpSession(
   return { server, transport };
 }
 
+function redactedVaultGrant(grant: {
+  storedKey: string;
+  referenceName: string;
+  capletId: string;
+  origin: { kind: string; path?: string | undefined };
+  createdAt: string;
+  updatedAt: string;
+}) {
+  return {
+    storedKey: grant.storedKey,
+    referenceName: grant.referenceName,
+    capletId: grant.capletId,
+    origin: { kind: grant.origin.kind },
+    createdAt: grant.createdAt,
+    updatedAt: grant.updatedAt,
+  };
+}
+
+function vaultOriginField(input: Record<string, unknown>) {
+  const origin = input.origin;
+  if (!origin || typeof origin !== "object" || Array.isArray(origin)) {
+    throw new CapletsError("REQUEST_INVALID", "origin is required.");
+  }
+  const record = origin as Record<string, unknown>;
+  const kind = stringField(record, "kind");
+  if (
+    kind !== "global-config" &&
+    kind !== "global-file" &&
+    kind !== "project-config" &&
+    kind !== "project-file"
+  ) {
+    throw new CapletsError("REQUEST_INVALID", "origin.kind is invalid.");
+  }
+  return { kind: kind as ConfigSourceKind, path: stringField(record, "path") };
+}
+
+function optionalStringObjectProp(
+  input: Record<string, unknown>,
+  key: string,
+): Record<string, string> {
+  const value = optionalStringField(input, key);
+  return value === undefined ? {} : { [key]: value };
+}
+
+function requiredQueryParam(params: URLSearchParams, key: string): string {
+  const value = params.get(key);
+  if (!value) throw new CapletsError("REQUEST_INVALID", `${key} is required.`);
+  return value;
+}
+
+function optionalBooleanField(input: Record<string, unknown>, key: string): boolean | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be a boolean.`);
+}
+
+function requiredRemoteClientRole(input: Record<string, unknown>, key: string): RemoteClientRole {
+  const value = stringField(input, key);
+  if (value === "access" || value === "operator") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be access or operator.`);
+}
+
+function optionalRemoteClientRole(
+  input: Record<string, unknown>,
+  key: string,
+): RemoteClientRole | undefined {
+  const value = optionalStringField(input, key);
+  if (value === undefined) return undefined;
+  if (value === "access" || value === "operator") return value;
+  throw new CapletsError("REQUEST_INVALID", `${key} must be access or operator.`);
+}
+
+function numberQueryParam(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function optionalActivityAction(value: string | undefined): DashboardActivityAction | undefined {
+  if (value === undefined) return undefined;
+  return isDashboardActivityAction(value) ? value : undefined;
+}
+
+function isDashboardActivityAction(value: string): value is DashboardActivityAction {
+  return (
+    value === "dashboard_login_completed" ||
+    value === "dashboard_logout" ||
+    value === "pending_login_approved" ||
+    value === "pending_login_denied" ||
+    value === "remote_client_revoked" ||
+    value === "remote_client_role_changed" ||
+    value === "catalog_installed" ||
+    value === "catalog_updated" ||
+    value === "vault_set" ||
+    value === "vault_deleted" ||
+    value === "vault_grant_added" ||
+    value === "vault_grant_revoked" ||
+    value === "vault_value_revealed" ||
+    value === "runtime_restart_requested"
+  );
+}
+
 function routeAuth(
   options: HttpServeOptions,
   remoteCredentialStore: RemoteServerCredentialStore | undefined,
   basePath: string,
+  requiredRole?: RemoteClientRole | undefined,
 ): MiddlewareHandler {
   if (options.auth.type === "development_unauthenticated") {
     return async (_c, next) => {
@@ -1598,12 +2554,15 @@ function routeAuth(
       return c.text("Unauthorized", 401);
     }
     try {
-      remoteCredentialStore.validateAccessToken({
+      const client = remoteCredentialStore.validateAccessToken({
         hostUrl: remoteCredentialHostUrl(c.req.url, basePath, options, (name) =>
           c.req.header(name),
         ),
         accessToken: token,
       });
+      if (requiredRole === "operator" && client.role !== "operator") {
+        return c.text("Forbidden: operator role required", 403);
+      }
     } catch {
       return c.text("Unauthorized", 401);
     }
@@ -1761,9 +2720,24 @@ function remoteCredentialErrorResponse(error: unknown): Response {
     error instanceof CapletsError
       ? toSafeError(error, error.code)
       : toSafeError(error, "AUTH_FAILED");
-  const status =
-    safe.code === "REQUEST_INVALID" ? 400 : safe.code === "SERVER_UNAVAILABLE" ? 503 : 401;
-  return Response.json({ ok: false, error: safe }, { status });
+  return Response.json({ ok: false, error: safe }, { status: httpStatusForSafeError(safe.code) });
+}
+
+function httpStatusForSafeError(code: CapletsErrorCode): number {
+  if (code === "REQUEST_INVALID" || code === "CONFIG_INVALID") return 400;
+  if (code === "CONFIG_NOT_FOUND" || code === "SERVER_NOT_FOUND") return 404;
+  if (code === "CONFIG_EXISTS") return 409;
+  if (code === "SERVER_UNAVAILABLE") return 503;
+  if (code === "SERVER_START_TIMEOUT" || code === "TOOL_CALL_TIMEOUT") return 504;
+  if (
+    code === "AUTH_FAILED" ||
+    code === "AUTH_REQUIRED" ||
+    code === "AUTH_REFRESH_FAILED" ||
+    code === "REMOTE_CREDENTIALS_REVOKED"
+  ) {
+    return 401;
+  }
+  return 500;
 }
 
 function legacyPairingCodeUnsupportedError(): CapletsError {

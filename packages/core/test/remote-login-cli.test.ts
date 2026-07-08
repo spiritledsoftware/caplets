@@ -264,6 +264,7 @@ describe("caplets remote CLI", () => {
     const server = new RemoteServerCredentialStore({ dir: tempDir("caplets-remote-cli-server-") });
     const out: string[] = [];
     let pending: ReturnType<RemoteServerCredentialStore["createPendingLogin"]> | undefined;
+    let serverApprovalCommand = "";
 
     await runCli(["remote", "login", "https://caplets.example.com/caplets"], {
       authDir,
@@ -272,7 +273,13 @@ describe("caplets remote CLI", () => {
         const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, string>) : {};
         if (url.pathname.endsWith("/v1/remote/login/start")) {
           pending = server.createPendingLogin({ hostUrl: "https://caplets.example.com/caplets" });
-          return Response.json(pending);
+          serverApprovalCommand = [
+            "sudo -u caplets caplets remote host approve",
+            pending.operatorCode,
+            "--state-path /srv/caplets/remote-state",
+            "--yes",
+          ].join(" ");
+          return Response.json({ ...pending, approvalCommand: serverApprovalCommand });
         }
         if (url.pathname.endsWith("/v1/remote/login/poll")) {
           if (!pending) throw new Error("missing pending flow");
@@ -299,8 +306,9 @@ describe("caplets remote CLI", () => {
       writeOut: (value) => out.push(value),
     });
 
-    expect(out.join("")).toContain(
-      `Approve from the host with caplets remote host approve ${pending?.operatorCode} --yes`,
+    expect(out.join("")).toContain(`Approve from the host with ${serverApprovalCommand}`);
+    expect(out.join("")).not.toContain(
+      `Approve from the host with caplets remote host approve ${pending?.operatorCode} --yes\n`,
     );
     expect(out.join("")).toContain(`Code fingerprint: ${pending?.operatorCodeFingerprint}`);
   });
@@ -994,6 +1002,7 @@ describe("caplets remote CLI", () => {
         {
           flowId: pending.flowId,
           status: "pending",
+          requestedRole: "access",
           operatorCodeFingerprint: pending.operatorCodeFingerprint,
           clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
           clientFingerprint: "fp_test",
@@ -1028,6 +1037,8 @@ describe("caplets remote CLI", () => {
     expect(JSON.parse(approveOut.join(""))).toMatchObject({
       flowId: pending.flowId,
       status: "approved",
+      requestedRole: "access",
+      grantedRole: "access",
       clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`,
     });
     expect(
@@ -1036,7 +1047,47 @@ describe("caplets remote CLI", () => {
         flowId: pending.flowId,
         pendingCompletionSecret: pending.pendingCompletionSecret,
       }),
-    ).toMatchObject({ clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice` });
+    ).toMatchObject({ clientLabel: `Bad${String.fromCharCode(0x1b)}[31mDevice`, role: "access" });
+  });
+
+  it("allows host approval to override requested login roles", async () => {
+    const serverStateDir = tempDir("caplets-remote-cli-server-");
+    const server = new RemoteServerCredentialStore({ dir: serverStateDir });
+    const pending = server.createPendingLogin({
+      hostUrl: "https://caplets.example.com",
+      requestedRole: "operator",
+      clientLabel: "Dashboard",
+    });
+    const approveOut: string[] = [];
+
+    await runCli(
+      [
+        "remote",
+        "host",
+        "approve",
+        pending.operatorCode,
+        "--state-path",
+        serverStateDir,
+        "--role",
+        "access",
+        "--yes",
+        "--json",
+      ],
+      { writeOut: (value) => approveOut.push(value) },
+    );
+
+    expect(JSON.parse(approveOut.join(""))).toMatchObject({
+      flowId: pending.flowId,
+      requestedRole: "operator",
+      grantedRole: "access",
+    });
+    expect(
+      server.completePendingLogin({
+        hostUrl: "https://caplets.example.com",
+        flowId: pending.flowId,
+        pendingCompletionSecret: pending.pendingCompletionSecret,
+      }),
+    ).toMatchObject({ role: "access" });
   });
 
   it("routes Cloud login through Remote Profiles instead of legacy Cloud Auth", async () => {
