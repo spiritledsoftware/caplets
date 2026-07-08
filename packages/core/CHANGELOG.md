@@ -1,5 +1,11 @@
 # @caplets/core
 
+## 0.33.0
+
+### Minor Changes
+
+- 11c3710: Add the self-hosted Caplets Admin Dashboard with Operator Client sessions, role-gated admin routes, dashboard access/catalog/Vault/runtime APIs, redacted operator activity logging, and a static dashboard UI shell.
+
 ## 0.32.4
 
 ### Patch Changes
