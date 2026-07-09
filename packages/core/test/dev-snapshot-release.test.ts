@@ -439,7 +439,6 @@ describe("dev snapshot release helpers", () => {
     );
     const publish = workflowJob(workflow, "publish");
     const promote = workflowJob(workflow, "promote");
-    const reconcilePromotedCliFailure = workflowJob(workflow, "reconcile_promoted_cli_failure");
     const mainOnlyCondition =
       "github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'";
 
@@ -448,14 +447,13 @@ describe("dev snapshot release helpers", () => {
     expect(workflow).not.toContain("cancel-in-progress: true");
     expect(workflow).toContain("needs: [plan, publish, validation_complete]");
     expect(workflow).toContain("name: Validation barrier");
-    expect(workflow).toContain("name: Verify promoted caplets@dev line");
-    expect(workflow).toContain("name: Reconcile failed promoted dev line");
-    expect(workflow).toContain("needs: [plan, promote, verify_promoted_cli]");
+    expect(workflow).not.toMatch(/^  reconcile_promoted_cli_failure:$/m);
+    expect(workflow).not.toMatch(/^  verify_promoted_cli:$/m);
     expect(workflow).toContain(
       "staging_tag=dev-staged-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}",
     );
     expect(workflow.split('export PATH="$INSTALL_ROOT/bin:$PATH"').length - 1).toBe(2);
-    expect(workflow.split("persist-credentials: false").length - 1).toBe(8);
+    expect(workflow.split("persist-credentials: false").length - 1).toBe(6);
     expect(workflow).not.toContain('eval "$command"');
     expect(workflow).not.toContain("Stop when dry run is requested");
     expect(workflow).toContain(
@@ -463,12 +461,20 @@ describe("dev snapshot release helpers", () => {
     );
     expect(publish).toContain(`if: ${mainOnlyCondition}`);
     expect(promote).toContain(`if: ${mainOnlyCondition}`);
-    expect(reconcilePromotedCliFailure).toContain(
-      "if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success' && needs.verify_promoted_cli.result != 'success'",
+    const promotedCliSmoke = workflowStep(promote, "Smoke promoted caplets@dev line");
+    const restorePromotedTags = workflowStep(
+      promote,
+      "Restore dev tags after promoted smoke failure",
     );
-    expect(reconcilePromotedCliFailure).not.toContain(
-      "needs.verify_promoted_cli.result == 'failure'",
+    expect(promote.indexOf("Smoke promoted caplets@dev line")).toBeLessThan(
+      promote.indexOf("Restore dev tags after promoted smoke failure"),
     );
+    expect(promotedCliSmoke).toContain("id: smoke_promoted_cli");
+    expect(restorePromotedTags).toContain("if: ${{ always()");
+    expect(restorePromotedTags).toContain("needs.plan.outputs.validation_kind == 'cli-bootstrap'");
+    expect(restorePromotedTags).toContain("steps.promote_dev_tags.outcome == 'success'");
+    expect(restorePromotedTags).toContain("steps.smoke_promoted_cli.outcome != 'success'");
+    expect(promotedCliSmoke).not.toContain("NODE_AUTH_TOKEN");
     for (const job of [publish, promote]) {
       expect(job).toMatch(
         /git fetch --no-tags origin main\n\s+current_main="\$\(git rev-parse origin\/main\)"\n\s+test "\$GITHUB_SHA" = "\$current_main"/,
@@ -490,20 +496,15 @@ describe("dev snapshot release helpers", () => {
     const releaseWorkflow = readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8");
     const publish = workflowJob(snapshotWorkflow, "publish");
     const promote = workflowJob(snapshotWorkflow, "promote");
-    const reconcilePromotedCliFailure = workflowJob(
-      snapshotWorkflow,
-      "reconcile_promoted_cli_failure",
-    );
     const devImage = workflowJob(snapshotWorkflow, "dev_image");
-    const environmentProtectedJobs = [publish, promote, reconcilePromotedCliFailure, devImage];
-    const registryJobs = [publish, promote, reconcilePromotedCliFailure];
+    const environmentProtectedJobs = [publish, promote, devImage];
+    const registryJobs = [publish, promote];
     const jobsWithoutNpmToken = [
       workflowJob(snapshotWorkflow, "plan"),
       publish,
       workflowJob(snapshotWorkflow, "validate_cli"),
       workflowJob(snapshotWorkflow, "validate_packages"),
       workflowJob(snapshotWorkflow, "validation_complete"),
-      workflowJob(snapshotWorkflow, "verify_promoted_cli"),
       devImage,
     ];
     const jobsWithoutNpmRegistry = jobsWithoutNpmToken.filter((job) => job !== publish);
@@ -516,19 +517,23 @@ describe("dev snapshot release helpers", () => {
           promote,
           "Promote validated versions to dev with reconciliation",
         ),
-        unprivilegedSteps: ["Checkout", "Setup Node", "Download manifest artifact"],
-      },
-      {
-        job: reconcilePromotedCliFailure,
-        mutationStep: workflowStep(
-          reconcilePromotedCliFailure,
-          "Restore dev tags after promoted smoke failure",
-        ),
         unprivilegedSteps: [
           "Checkout",
           "Setup Node",
           "Download manifest artifact",
-          "Download pre-run tag snapshot",
+          "Create install root for promoted smoke",
+          "Smoke promoted caplets@dev line",
+        ],
+      },
+      {
+        job: promote,
+        mutationStep: workflowStep(promote, "Restore dev tags after promoted smoke failure"),
+        unprivilegedSteps: [
+          "Checkout",
+          "Setup Node",
+          "Download manifest artifact",
+          "Create install root for promoted smoke",
+          "Smoke promoted caplets@dev line",
         ],
       },
     ];
@@ -550,20 +555,22 @@ describe("dev snapshot release helpers", () => {
 
     expect(publish).toContain("id-token: write");
     expect(promote).not.toContain("id-token: write");
-    expect(reconcilePromotedCliFailure).not.toContain("id-token: write");
+    expect(
+      workflowStep(promote, "Promote validated versions to dev with reconciliation"),
+    ).toContain("id: promote_dev_tags");
     expect(publish).not.toContain("NODE_AUTH_TOKEN");
 
     for (const job of environmentProtectedJobs) {
       expect(job).toContain("environment: npm-release");
     }
-    expect(snapshotWorkflow.split("environment: npm-release").length - 1).toBe(4);
+    expect(snapshotWorkflow.split("environment: npm-release").length - 1).toBe(3);
 
     for (const job of registryJobs) {
       expect(job).toMatch(npmRegistryUrl);
     }
     expect(
       snapshotWorkflow.match(/registry-url: "?https:\/\/registry\.npmjs\.org"?/g) ?? [],
-    ).toHaveLength(3);
+    ).toHaveLength(2);
 
     for (const { job, mutationStep, unprivilegedSteps } of tokenScopedSteps) {
       const jobDefinition = job.slice(0, job.indexOf("    steps:\n"));
@@ -580,6 +587,8 @@ describe("dev snapshot release helpers", () => {
     for (const job of jobsWithoutNpmToken) {
       expect(job).not.toContain("NODE_AUTH_TOKEN");
     }
+    expect(snapshotWorkflow).not.toContain("reconcile_promoted_cli_failure");
+    expect(snapshotWorkflow).not.toContain("verify_promoted_cli");
     for (const job of jobsWithoutNpmRegistry) {
       expect(job).not.toMatch(npmRegistryUrl);
     }

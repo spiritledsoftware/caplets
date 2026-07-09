@@ -369,6 +369,7 @@ jobs:
           path: .tmp/pre-run-tags.json
 
       - name: Promote validated versions to dev with reconciliation
+        id: promote_dev_tags
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
@@ -454,37 +455,16 @@ jobs:
           }
           NODE
 
-  verify_promoted_cli:
-    name: Verify promoted caplets@dev line
-    needs: [plan, promote]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      - name: Download manifest artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dev-snapshot-manifest
-          path: .tmp
-
       - name: Create install root for promoted smoke
+        if: needs.plan.outputs.validation_kind == 'cli-bootstrap'
         id: install-root
         run: |
           install_root="$(mktemp -d -t caplets-dev-promoted-XXXXXX)"
           echo "install_root=${install_root}" >> "$GITHUB_OUTPUT"
 
       - name: Smoke promoted caplets@dev line
+        if: needs.plan.outputs.validation_kind == 'cli-bootstrap'
+        id: smoke_promoted_cli
         env:
           INSTALL_ROOT: ${{ steps.install-root.outputs.install_root }}
         run: |
@@ -539,39 +519,8 @@ jobs:
           caplets setup mcp-client --output "$INSTALL_ROOT/caplets.mcp.json" --format json
           node scripts/check-dev-snapshot-bootstrap.mjs assert-installed --manifest .tmp/dev-snapshot-manifest.json --install-root "$INSTALL_ROOT"
 
-  reconcile_promoted_cli_failure:
-    name: Reconcile failed promoted dev line
-    needs: [plan, promote, verify_promoted_cli]
-    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success' && needs.verify_promoted_cli.result != 'success'
-    runs-on: ubuntu-latest
-    environment: npm-release
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-
-      - name: Download manifest artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: dev-snapshot-manifest
-          path: .tmp
-
-      - name: Download pre-run tag snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: dev-snapshot-pre-run-tags
-          path: .tmp
-
       - name: Restore dev tags after promoted smoke failure
+        if: ${{ always() && needs.plan.outputs.validation_kind == 'cli-bootstrap' && steps.promote_dev_tags.outcome == 'success' && steps.smoke_promoted_cli.outcome != 'success' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
@@ -634,15 +583,10 @@ jobs:
           }
           NODE
 
-      - name: Fail after reconciliation
-        run: |
-          echo "Promoted caplets@dev did not resolve the validated snapshot line." >&2
-          exit 1
-
   dev_image:
     name: Publish best-effort dev image
-    needs: [plan, promote, verify_promoted_cli]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'success'
+    needs: [plan, promote]
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success'
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
