@@ -439,6 +439,7 @@ describe("dev snapshot release helpers", () => {
     );
     const publish = workflowJob(workflow, "publish");
     const promote = workflowJob(workflow, "promote");
+    const reconcilePromotedCliFailure = workflowJob(workflow, "reconcile_promoted_cli_failure");
     const mainOnlyCondition =
       "github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'";
 
@@ -462,6 +463,12 @@ describe("dev snapshot release helpers", () => {
     );
     expect(publish).toContain(`if: ${mainOnlyCondition}`);
     expect(promote).toContain(`if: ${mainOnlyCondition}`);
+    expect(reconcilePromotedCliFailure).toContain(
+      "if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success' && needs.verify_promoted_cli.result != 'success'",
+    );
+    expect(reconcilePromotedCliFailure).not.toContain(
+      "needs.verify_promoted_cli.result == 'failure'",
+    );
     for (const job of [publish, promote]) {
       expect(job).toMatch(
         /git fetch --no-tags origin main\n\s+current_main="\$\(git rev-parse origin\/main\)"\n\s+test "\$GITHUB_SHA" = "\$current_main"/,

@@ -542,7 +542,7 @@ jobs:
   reconcile_promoted_cli_failure:
     name: Reconcile failed promoted dev line
     needs: [plan, promote, verify_promoted_cli]
-    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'failure'
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success' && needs.verify_promoted_cli.result != 'success'
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
