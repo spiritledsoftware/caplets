@@ -114,7 +114,7 @@ export function chooseValidationMode(releaseNames) {
   if (names.has(CLI_PACKAGE_NAME) || names.has(CORE_PACKAGE_NAME)) {
     return {
       kind: "cli-bootstrap",
-      packages: [CLI_PACKAGE_NAME, CORE_PACKAGE_NAME].filter((name) => names.has(name)),
+      packages: [...names].sort(),
     };
   }
   return {
@@ -135,10 +135,11 @@ export function deriveChangesetManifest(statusJson, options = {}) {
   const directPublicReleases = statusReleases.filter(
     (release) => release?.type && release.type !== "none" && publicByName.has(release.name),
   );
-  const closureNames = expandPublicReleaseClosure(
-    directPublicReleases.map((release) => release.name),
-    manifests,
-  );
+  const releaseSeeds = directPublicReleases.map((release) => release.name);
+  if (releaseSeeds.includes(CLI_PACKAGE_NAME) && publicByName.has(CORE_PACKAGE_NAME)) {
+    releaseSeeds.push(CORE_PACKAGE_NAME);
+  }
+  const closureNames = expandPublicReleaseClosure(releaseSeeds, manifests);
   const releases = closureNames.map((name) => {
     const manifestEntry = publicByName.get(name);
     const release = statusReleases.find((candidate) => candidate.name === name);
@@ -230,7 +231,7 @@ export function patchSnapshotConfig(root = repoRoot) {
     snapshot: {
       ...config.snapshot,
       useCalculatedVersion: true,
-      prereleaseTemplate: "dev-{commit}-{datetime}",
+      prereleaseTemplate: "{tag}-{commit}-{datetime}",
     },
   };
 }
@@ -245,14 +246,27 @@ export function refreshSnapshotManifestVersions(snapshotManifest, root = repoRoo
   const publicPackages = new Map(
     listPublicPublishablePackages(root).map((entry) => [entry.name, readJson(entry.path)]),
   );
+  const snapshotSuffix = snapshotManifest.releases
+    .map((release) => {
+      const version = publicPackages.get(release.name)?.version;
+      const plannedVersion = release.newVersion;
+      if (typeof version !== "string" || typeof plannedVersion !== "string") return undefined;
+      const prefix = `${plannedVersion}-`;
+      return version.startsWith(prefix) ? version.slice(prefix.length) : undefined;
+    })
+    .find(Boolean);
   return {
     ...snapshotManifest,
     releases: snapshotManifest.releases.map((release) => {
-      const manifest = publicPackages.get(release.name);
-      return {
-        ...release,
-        newVersion: typeof manifest?.version === "string" ? manifest.version : release.newVersion,
-      };
+      const version = publicPackages.get(release.name)?.version;
+      if (typeof version !== "string") return release;
+      if (version !== release.newVersion) {
+        return { ...release, newVersion: version };
+      }
+      if (!snapshotSuffix) {
+        throw new Error(`Could not derive a snapshot suffix for closure package ${release.name}.`);
+      }
+      return { ...release, newVersion: `${version}-${snapshotSuffix}` };
     }),
   };
 }

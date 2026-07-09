@@ -74,17 +74,58 @@ export function createIsolatedValidationEnv(
   };
 }
 
-export function findInstalledPackageJson(installRoot, packageName) {
-  return join(installRoot, "lib", "node_modules", packageName, "package.json");
+export function findInstalledPackageJson(installRoot, packageName, parentPackageName) {
+  const globalModules = join(installRoot, "lib", "node_modules");
+  if (parentPackageName) {
+    return join(globalModules, parentPackageName, "node_modules", packageName, "package.json");
+  }
+  return join(globalModules, packageName, "package.json");
 }
 
-export function readInstalledPackageManifest(installRoot, packageName) {
-  const packageJsonPath = findInstalledPackageJson(installRoot, packageName);
+export function readInstalledPackageManifest(installRoot, packageName, parentPackageName) {
+  const packageJsonPath = findInstalledPackageJson(installRoot, packageName, parentPackageName);
   return JSON.parse(readFileSync(packageJsonPath, "utf8"));
 }
-export function readInstalledPackageVersion(installRoot, packageName) {
-  const packageJson = readInstalledPackageManifest(installRoot, packageName);
+
+export function readInstalledPackageVersion(installRoot, packageName, parentPackageName) {
+  const packageJson = readInstalledPackageManifest(installRoot, packageName, parentPackageName);
   return packageJson.version;
+}
+
+function assertInstalledTarget(errors, expectedVersions, installRoot, target, parentPackageName) {
+  const expectedVersion = expectedVersions.get(target.name);
+  if (!expectedVersion) return;
+  try {
+    const installedVersion = readInstalledPackageVersion(
+      installRoot,
+      target.name,
+      parentPackageName,
+    );
+    if (installedVersion !== expectedVersion) {
+      errors.push(
+        `${target.name} installed version ${installedVersion} did not match expected ${expectedVersion}.`,
+      );
+    }
+    if (target.peerDependencies.length > 0) {
+      const installedManifest = readInstalledPackageManifest(
+        installRoot,
+        target.name,
+        parentPackageName,
+      );
+      const installedPeers = installedManifest.peerDependencies ?? {};
+      for (const peerDependency of target.peerDependencies) {
+        if (typeof installedPeers[peerDependency] !== "string") {
+          errors.push(
+            `${target.name} is missing peer dependency declaration for ${peerDependency}.`,
+          );
+        }
+      }
+    }
+  } catch (error) {
+    errors.push(
+      `${target.name} is not installed at ${findInstalledPackageJson(installRoot, target.name, parentPackageName)} (${error instanceof Error ? error.message : String(error)}).`,
+    );
+  }
 }
 
 export function assertInstalledSnapshotLine(snapshotManifest, installRoot) {
@@ -95,49 +136,17 @@ export function assertInstalledSnapshotLine(snapshotManifest, installRoot) {
   const plan = deriveValidationPlan(snapshotManifest);
   if (plan.kind === "cli-bootstrap") {
     for (const packageName of [CLI_PACKAGE_NAME, CORE_PACKAGE_NAME]) {
-      const expectedVersion = expectedVersions.get(packageName);
-      if (!expectedVersion) continue;
-      try {
-        const installedVersion = readInstalledPackageVersion(installRoot, packageName);
-        if (installedVersion !== expectedVersion) {
-          errors.push(
-            `${packageName} installed version ${installedVersion} did not match expected ${expectedVersion}.`,
-          );
-        }
-      } catch (error) {
-        errors.push(
-          `${packageName} is not installed at ${findInstalledPackageJson(installRoot, packageName)} (${error instanceof Error ? error.message : String(error)}).`,
-        );
+      if (!expectedVersions.get(packageName)) {
+        errors.push(`Snapshot manifest is missing an expected version for ${packageName}.`);
       }
     }
-  } else {
-    for (const target of plan.packages) {
-      const expectedVersion = expectedVersions.get(target.name);
-      if (!expectedVersion) continue;
-      try {
-        const installedVersion = readInstalledPackageVersion(installRoot, target.name);
-        if (installedVersion !== expectedVersion) {
-          errors.push(
-            `${target.name} installed version ${installedVersion} did not match expected ${expectedVersion}.`,
-          );
-        }
-        if (target.peerDependencies.length > 0) {
-          const installedManifest = readInstalledPackageManifest(installRoot, target.name);
-          const installedPeers = installedManifest.peerDependencies ?? {};
-          for (const peerDependency of target.peerDependencies) {
-            if (typeof installedPeers[peerDependency] !== "string") {
-              errors.push(
-                `${target.name} is missing peer dependency declaration for ${peerDependency}.`,
-              );
-            }
-          }
-        }
-      } catch (error) {
-        errors.push(
-          `${target.name} is not installed at ${findInstalledPackageJson(installRoot, target.name)} (${error instanceof Error ? error.message : String(error)}).`,
-        );
-      }
-    }
+  }
+  for (const target of derivePackageOnlyTargets(snapshotManifest)) {
+    const parentPackageName =
+      plan.kind === "cli-bootstrap" && target.name === CORE_PACKAGE_NAME
+        ? CLI_PACKAGE_NAME
+        : undefined;
+    assertInstalledTarget(errors, expectedVersions, installRoot, target, parentPackageName);
   }
   return errors;
 }
@@ -146,19 +155,31 @@ export function buildValidationCommands(snapshotManifest, options = {}) {
   const versionByName = new Map(
     snapshotManifest.releases.map((release) => [release.name, release.newVersion]),
   );
+  const installCommand = (packageName) => {
+    const version = versionByName.get(packageName);
+    if (!version) {
+      throw new Error(`Missing snapshot version for ${packageName}.`);
+    }
+    return `npm install -g ${packageName}@${version}`;
+  };
   const plan = deriveValidationPlan(snapshotManifest);
   const installRoot = options.installRoot ?? "${INSTALL_ROOT}";
   if (plan.kind === "cli-bootstrap") {
-    const capletsVersion = versionByName.get(CLI_PACKAGE_NAME);
+    if (!versionByName.get(CORE_PACKAGE_NAME)) {
+      throw new Error(`Missing snapshot version for ${CORE_PACKAGE_NAME}.`);
+    }
     return [
-      `npm install -g ${CLI_PACKAGE_NAME}@${capletsVersion}`,
+      installCommand(CLI_PACKAGE_NAME),
       `${CLI_PACKAGE_NAME} --version`,
       `${CLI_PACKAGE_NAME} setup mcp-client --output ${join(installRoot, "caplets.mcp.json")} --format json`,
+      ...plan.packages
+        .filter(
+          (packageName) => packageName !== CLI_PACKAGE_NAME && packageName !== CORE_PACKAGE_NAME,
+        )
+        .map(installCommand),
     ];
   }
-  return plan.packages.map(
-    (target) => `npm install -g ${target.name}@${versionByName.get(target.name)}`,
-  );
+  return plan.packages.map((target) => installCommand(target.name));
 }
 
 function printJson(result) {

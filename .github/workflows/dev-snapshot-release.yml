@@ -1,16 +1,7 @@
 name: Dev Snapshot Release
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Skip npm and GHCR side effects.
-        required: false
-        default: false
-        type: boolean
+  workflow_call:
 
 permissions:
   contents: read
@@ -83,8 +74,9 @@ jobs:
   publish:
     name: Publish staged snapshots
     needs: plan
-    if: needs.plan.outputs.has_public_releases == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: read
       id-token: write
@@ -105,6 +97,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -133,6 +126,15 @@ jobs:
       - name: Build disposable snapshot workspace artifacts
         run: pnpm build
 
+      - name: Require current main commit before publishing
+        run: |
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse origin/main)"
+          test "$GITHUB_SHA" = "$current_main" || {
+            echo "Refusing to publish stale main commit $GITHUB_SHA; current main is $current_main." >&2
+            exit 1
+          }
+
       - name: Publish exact snapshots with run-scoped staging tag
         run: pnpm changeset publish --tag "$STAGING_TAG" --no-git-tag
 
@@ -146,7 +148,7 @@ jobs:
   validate_cli:
     name: Validate CLI or core snapshot line
     needs: [plan, publish]
-    if: needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,27 +191,32 @@ jobs:
           export CAPLETS_CONFIG="$INSTALL_ROOT/caplets-config.json"
           export NO_COLOR=1
           export PATH="$INSTALL_ROOT/bin:$PATH"
-          node scripts/check-dev-snapshot-bootstrap.mjs plan --manifest .tmp/dev-snapshot-manifest.json > .tmp/bootstrap-plan.json
-          cli_version=$(node --input-type=module <<'NODE'
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
           import { readJson } from './scripts/dev-snapshot-release.mjs';
+          import { buildValidationCommands } from './scripts/check-dev-snapshot-bootstrap.mjs';
           const manifest = readJson('.tmp/dev-snapshot-manifest.json');
-          const release = manifest.releases.find((entry) => entry.name === 'caplets');
-          console.log(release?.newVersion ?? '');
+          const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          for (const command of buildValidationCommands(manifest, { installRoot: process.env.INSTALL_ROOT })) {
+            const [binary, ...args] = command.split(' ');
+            const attempts = binary === 'npm' && args[0] === 'install' ? 12 : 1;
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+              try {
+                execFileSync(binary, args, { stdio: 'inherit', env: process.env });
+                break;
+              } catch (error) {
+                if (attempt === attempts) throw error;
+                await sleep(5_000);
+              }
+            }
+          }
           NODE
-          )
-          if [ -z "$cli_version" ]; then
-            echo "Could not resolve caplets snapshot version from manifest." >&2
-            exit 1
-          fi
-          npm install -g "caplets@${cli_version}"
-          caplets --version
-          caplets setup mcp-client --output "$INSTALL_ROOT/caplets.mcp.json" --format json
           node scripts/check-dev-snapshot-bootstrap.mjs assert-installed --manifest .tmp/dev-snapshot-manifest.json --install-root "$INSTALL_ROOT"
 
   validate_packages:
     name: Validate package-only snapshot line
     needs: [plan, publish]
-    if: needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'package-only'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'package-only'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -256,12 +263,19 @@ jobs:
           import { readJson } from './scripts/dev-snapshot-release.mjs';
           import { buildValidationCommands } from './scripts/check-dev-snapshot-bootstrap.mjs';
           const manifest = readJson('.tmp/dev-snapshot-manifest.json');
+          const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
           for (const command of buildValidationCommands(manifest, { installRoot: process.env.INSTALL_ROOT })) {
             const [binary, ...args] = command.split(' ');
-            execFileSync(binary, args, {
-              stdio: 'inherit',
-              env: process.env,
-            });
+            const attempts = binary === 'npm' && args[0] === 'install' ? 12 : 1;
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+              try {
+                execFileSync(binary, args, { stdio: 'inherit', env: process.env });
+                break;
+              } catch (error) {
+                if (attempt === attempts) throw error;
+                await sleep(5_000);
+              }
+            }
           }
           NODE
           node scripts/check-dev-snapshot-bootstrap.mjs assert-installed --manifest .tmp/dev-snapshot-manifest.json --install-root "$INSTALL_ROOT"
@@ -269,7 +283,7 @@ jobs:
   validation_complete:
     name: Validation barrier
     needs: [plan, validate_cli, validate_packages]
-    if: always() && needs.plan.outputs.has_public_releases == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -290,11 +304,11 @@ jobs:
   promote:
     name: Promote validated snapshots to dev
     needs: [plan, publish, validation_complete]
-    if: needs.plan.outputs.has_public_releases == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Stop if the run was not triggered from main
         run: |
@@ -313,12 +327,22 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - name: Download manifest artifact
         uses: actions/download-artifact@v4
         with:
           name: dev-snapshot-manifest
           path: .tmp
+
+      - name: Require current main commit before promotion
+        run: |
+          git fetch --no-tags origin main
+          current_main="$(git rev-parse origin/main)"
+          test "$GITHUB_SHA" = "$current_main" || {
+            echo "Refusing to promote stale main commit $GITHUB_SHA; current main is $current_main." >&2
+            exit 1
+          }
 
       - name: Capture pre-run dist-tags
         run: |
@@ -345,6 +369,8 @@ jobs:
           path: .tmp/pre-run-tags.json
 
       - name: Promote validated versions to dev with reconciliation
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
@@ -352,43 +378,77 @@ jobs:
           import { readJson } from './scripts/dev-snapshot-release.mjs';
           const manifest = readJson('.tmp/dev-snapshot-manifest.json');
           const preRunTags = JSON.parse(readFileSync('.tmp/pre-run-tags.json', 'utf8'));
-          const promoted = [];
+          const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const readTags = (packageName) => JSON.parse(
+            execFileSync('npm', ['view', packageName, 'dist-tags', '--json'], {
+              encoding: 'utf8',
+              env: process.env,
+            }),
+          );
+          async function waitForTags(packageName, predicate, description) {
+            const deadline = Date.now() + 120_000;
+            let tags;
+            do {
+              tags = readTags(packageName);
+              if (predicate(tags)) return tags;
+              await sleep(5_000);
+            } while (Date.now() < deadline);
+            throw new Error(`${packageName} did not ${description}; last tags: ${JSON.stringify(tags)}`);
+          }
+          const attempted = [];
           try {
             for (const release of manifest.releases) {
+              attempted.push(release);
               execFileSync('npm', ['dist-tag', 'add', `${release.name}@${release.newVersion}`, 'dev'], {
                 stdio: 'inherit',
                 env: process.env,
               });
-              promoted.push(release);
-              const raw = execFileSync('npm', ['view', release.name, 'dist-tags', '--json'], {
-                encoding: 'utf8',
-                env: process.env,
-              });
-              const tags = JSON.parse(raw);
+              const tags = await waitForTags(
+                release.name,
+                (candidate) => candidate.dev === release.newVersion,
+                `publish dev=${release.newVersion}`,
+              );
               if ((preRunTags[release.name]?.latest ?? null) !== (tags.latest ?? null)) {
                 throw new Error(`${release.name} latest changed unexpectedly during dev promotion.`);
               }
             }
           } catch (error) {
-            for (const release of promoted.reverse()) {
-              const raw = execFileSync('npm', ['view', release.name, 'dist-tags', '--json'], {
-                encoding: 'utf8',
-                env: process.env,
-              });
-              const tags = JSON.parse(raw);
-              if (tags.dev !== release.newVersion) continue;
-              const previousDev = preRunTags[release.name]?.dev;
-              if (typeof previousDev === 'string' && previousDev.length > 0) {
-                execFileSync('npm', ['dist-tag', 'add', `${release.name}@${previousDev}`, 'dev'], {
-                  stdio: 'inherit',
-                  env: process.env,
-                });
-              } else {
-                execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
-                  stdio: 'inherit',
-                  env: process.env,
-                });
+            const rollbackFailures = [];
+            for (const release of attempted.reverse()) {
+              try {
+                await waitForTags(
+                  release.name,
+                  (candidate) => candidate.dev === release.newVersion,
+                  `expose attempted dev=${release.newVersion}`,
+                );
+                const previousDev = preRunTags[release.name]?.dev;
+                if (typeof previousDev === 'string' && previousDev.length > 0) {
+                  execFileSync('npm', ['dist-tag', 'add', `${release.name}@${previousDev}`, 'dev'], {
+                    stdio: 'inherit',
+                    env: process.env,
+                  });
+                  await waitForTags(
+                    release.name,
+                    (candidate) => candidate.dev === previousDev,
+                    `restore dev=${previousDev}`,
+                  );
+                } else {
+                  execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
+                    stdio: 'inherit',
+                    env: process.env,
+                  });
+                  await waitForTags(
+                    release.name,
+                    (candidate) => candidate.dev === undefined,
+                    'remove dev tag',
+                  );
+                }
+              } catch (rollbackError) {
+                rollbackFailures.push(rollbackError);
               }
+            }
+            if (rollbackFailures.length > 0) {
+              throw new AggregateError([error, ...rollbackFailures], 'Dev promotion and reconciliation failed.');
             }
             throw error;
           }
@@ -397,7 +457,7 @@ jobs:
   verify_promoted_cli:
     name: Verify promoted caplets@dev line
     needs: [plan, promote]
-    if: needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -437,7 +497,44 @@ jobs:
           export CAPLETS_CONFIG="$INSTALL_ROOT/caplets-config.json"
           export NO_COLOR=1
           export PATH="$INSTALL_ROOT/bin:$PATH"
-          npm install -g caplets@dev
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readJson, CORE_PACKAGE_NAME } from './scripts/dev-snapshot-release.mjs';
+          const manifest = readJson('.tmp/dev-snapshot-manifest.json');
+          const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const readTags = (packageName) => JSON.parse(
+            execFileSync('npm', ['view', packageName, 'dist-tags', '--json'], {
+              encoding: 'utf8',
+              env: process.env,
+            }),
+          );
+          for (const release of manifest.releases) {
+            const deadline = Date.now() + 120_000;
+            let tags;
+            do {
+              tags = readTags(release.name);
+              if (tags.dev === release.newVersion) break;
+              await sleep(5_000);
+            } while (Date.now() < deadline);
+            if (tags.dev !== release.newVersion) {
+              throw new Error(`${release.name} dev resolved to ${tags.dev}, expected ${release.newVersion}.`);
+            }
+            if (release.name !== CORE_PACKAGE_NAME) {
+              for (let attempt = 1; attempt <= 12; attempt += 1) {
+                try {
+                  execFileSync('npm', ['install', '-g', `${release.name}@dev`], {
+                    stdio: 'inherit',
+                    env: process.env,
+                  });
+                  break;
+                } catch (error) {
+                  if (attempt === 12) throw error;
+                  await sleep(5_000);
+                }
+              }
+            }
+          }
+          NODE
           caplets --version
           caplets setup mcp-client --output "$INSTALL_ROOT/caplets.mcp.json" --format json
           node scripts/check-dev-snapshot-bootstrap.mjs assert-installed --manifest .tmp/dev-snapshot-manifest.json --install-root "$INSTALL_ROOT"
@@ -445,11 +542,11 @@ jobs:
   reconcile_promoted_cli_failure:
     name: Reconcile failed promoted dev line
     needs: [plan, promote, verify_promoted_cli]
-    if: always() && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'failure' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'failure'
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -460,6 +557,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - name: Download manifest artifact
         uses: actions/download-artifact@v4
@@ -474,6 +572,8 @@ jobs:
           path: .tmp
 
       - name: Restore dev tags after promoted smoke failure
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
@@ -481,25 +581,56 @@ jobs:
           import { readJson } from './scripts/dev-snapshot-release.mjs';
           const manifest = readJson('.tmp/dev-snapshot-manifest.json');
           const preRunTags = JSON.parse(readFileSync('.tmp/pre-run-tags.json', 'utf8'));
-          for (const release of [...manifest.releases].reverse()) {
-            const raw = execFileSync('npm', ['view', release.name, 'dist-tags', '--json'], {
+          const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const readTags = (packageName) => JSON.parse(
+            execFileSync('npm', ['view', packageName, 'dist-tags', '--json'], {
               encoding: 'utf8',
               env: process.env,
-            });
-            const tags = JSON.parse(raw);
-            if (tags.dev !== release.newVersion) continue;
-            const previousDev = preRunTags[release.name]?.dev;
-            if (typeof previousDev === 'string' && previousDev.length > 0) {
-              execFileSync('npm', ['dist-tag', 'add', `${release.name}@${previousDev}`, 'dev'], {
-                stdio: 'inherit',
-                env: process.env,
-              });
-            } else {
-              execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
-                stdio: 'inherit',
-                env: process.env,
-              });
+            }),
+          );
+          async function waitForTags(packageName, predicate, description) {
+            const deadline = Date.now() + 120_000;
+            let tags;
+            do {
+              tags = readTags(packageName);
+              if (predicate(tags)) return;
+              await sleep(5_000);
+            } while (Date.now() < deadline);
+            throw new Error(`${packageName} did not ${description}; last tags: ${JSON.stringify(tags)}`);
+          }
+          const failures = [];
+          for (const release of [...manifest.releases].reverse()) {
+            try {
+              const tags = readTags(release.name);
+              if (tags.dev !== release.newVersion) continue;
+              const previousDev = preRunTags[release.name]?.dev;
+              if (typeof previousDev === 'string' && previousDev.length > 0) {
+                execFileSync('npm', ['dist-tag', 'add', `${release.name}@${previousDev}`, 'dev'], {
+                  stdio: 'inherit',
+                  env: process.env,
+                });
+                await waitForTags(
+                  release.name,
+                  (candidate) => candidate.dev === previousDev,
+                  `restore dev=${previousDev}`,
+                );
+              } else {
+                execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
+                  stdio: 'inherit',
+                  env: process.env,
+                });
+                await waitForTags(
+                  release.name,
+                  (candidate) => candidate.dev === undefined,
+                  'remove dev tag',
+                );
+              }
+            } catch (error) {
+              failures.push(error);
             }
+          }
+          if (failures.length > 0) {
+            throw new AggregateError(failures, 'Failed to reconcile all promoted dev tags.');
           }
           NODE
 
@@ -511,8 +642,9 @@ jobs:
   dev_image:
     name: Publish best-effort dev image
     needs: [plan, promote, verify_promoted_cli]
-    if: needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'success' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.verify_promoted_cli.result == 'success'
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: read
       packages: write
@@ -538,7 +670,7 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          "push": true
           tags: |
             ghcr.io/spiritledsoftware/caplets:dev
             ghcr.io/spiritledsoftware/caplets:dev-${{ github.sha }}

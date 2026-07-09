@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -133,3 +132,11 @@ jobs:
             CAPLETS_RUNTIME_SENTRY_DSN=${{ secrets.CAPLETS_RUNTIME_SENTRY_DSN }}
             CAPLETS_SENTRY_RELEASE=caplets-runtime@${{ github.sha }}
             CAPLETS_SENTRY_ENVIRONMENT=production
+  dev_snapshot:
+    name: Release dev snapshots
+    needs: release
+    uses: ./.github/workflows/dev-snapshot-release.yml
+    permissions:
+      contents: read
+      id-token: write
+      packages: write

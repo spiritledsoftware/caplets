@@ -46,12 +46,21 @@ export function derivePackageOnlyTargets(
 ): PackageOnlyTarget[];
 export function deriveValidationPlan(snapshotManifest: BootstrapManifest): ValidationPlan;
 export function createIsolatedValidationEnv(baseDirectory?: string): IsolatedValidationEnv;
-export function findInstalledPackageJson(installRoot: string, packageName: string): string;
+export function findInstalledPackageJson(
+  installRoot: string,
+  packageName: string,
+  parentPackageName?: string,
+): string;
 export function readInstalledPackageManifest(
   installRoot: string,
   packageName: string,
+  parentPackageName?: string,
 ): Record<string, unknown>;
-export function readInstalledPackageVersion(installRoot: string, packageName: string): string;
+export function readInstalledPackageVersion(
+  installRoot: string,
+  packageName: string,
+  parentPackageName?: string,
+): string;
 export function assertInstalledSnapshotLine(
   snapshotManifest: BootstrapManifest,
   installRoot: string,
