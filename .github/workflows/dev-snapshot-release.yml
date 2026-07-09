@@ -21,6 +21,7 @@ jobs:
       has_public_releases: ${{ steps.manifest.outputs.has_public_releases }}
       validation_kind: ${{ steps.manifest.outputs.validation_kind }}
       staging_tag: ${{ steps.manifest.outputs.staging_tag }}
+      recovery_action: ${{ steps.manifest.outputs.recovery_action }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -49,20 +50,55 @@ jobs:
           pnpm changeset status --output .tmp/changeset-status.json
           node scripts/dev-snapshot-release.mjs status \
             --status-file .tmp/changeset-status.json \
+            --source-commit "$GITHUB_SHA" \
+            --run-identity "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --output .tmp/dev-snapshot-manifest.json
 
+      - name: Recover stable public snapshot state
+        run: |
+          node --input-type=module <<'NODE'
+          import {
+            classifyRegistrySnapshot,
+            createStagingTag,
+            fetchPublicPackument,
+            readJson,
+            recoverSnapshotManifest,
+            writeJson,
+          } from './scripts/dev-snapshot-release.mjs';
+          const manifestPath = '.tmp/dev-snapshot-manifest.json';
+          const manifest = readJson(manifestPath);
+          const expectedStagingTag = createStagingTag(manifest.fingerprint, `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
+          if (manifest.stagingTag !== expectedStagingTag) {
+            throw new Error(`Snapshot manifest staging tag ${manifest.stagingTag} does not match this run.`);
+          }
+          const recovery = await recoverSnapshotManifest(manifest);
+          const packuments = Object.fromEntries(
+            await Promise.all(
+              recovery.manifest.releases.map(async (release) => [
+                release.name,
+                await fetchPublicPackument(release.name),
+              ]),
+            ),
+          );
+          const result = classifyRegistrySnapshot(recovery.manifest, packuments);
+          if (result.action !== recovery.action) {
+            throw new Error(
+              `Registry snapshot state changed during final observation: ${recovery.action} to ${result.action}.`,
+            );
+          }
+          writeJson(manifestPath, { ...result.manifest, recoveryAction: result.action });
+          NODE
       - name: Derive workflow outputs
         id: manifest
         run: |
           node --input-type=module <<'NODE'
-          import { readFileSync, appendFileSync } from 'node:fs';
-          const manifest = JSON.parse(readFileSync('.tmp/dev-snapshot-manifest.json', 'utf8'));
+          import { appendFileSync } from 'node:fs';
+          import { readJson } from './scripts/dev-snapshot-release.mjs';
+          const manifest = readJson('.tmp/dev-snapshot-manifest.json');
           appendFileSync(process.env.GITHUB_OUTPUT, `has_public_releases=${manifest.hasPublicReleases}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `validation_kind=${manifest.validation.kind}\n`);
-          appendFileSync(
-            process.env.GITHUB_OUTPUT,
-            `staging_tag=dev-staged-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}\n`,
-          );
+          appendFileSync(process.env.GITHUB_OUTPUT, `staging_tag=${manifest.stagingTag}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `recovery_action=${manifest.recoveryAction}\n`);
           NODE
 
       - name: Upload manifest artifact
@@ -74,7 +110,7 @@ jobs:
   publish:
     name: Publish staged snapshots
     needs: plan
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.recovery_action == 'fresh'
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -123,6 +159,13 @@ jobs:
       - name: Rewrite public closure
         run: node scripts/dev-snapshot-release.mjs rewrite-closure --manifest .tmp/dev-snapshot-manifest.json
 
+      - name: Stamp snapshot registry identity
+        run: |
+          node --input-type=module <<'NODE'
+          import { readJson, stampSnapshotMetadata } from './scripts/dev-snapshot-release.mjs';
+          stampSnapshotMetadata(readJson('.tmp/dev-snapshot-manifest.json'));
+          NODE
+
       - name: Build disposable snapshot workspace artifacts
         run: pnpm build
 
@@ -138,6 +181,35 @@ jobs:
       - name: Publish exact snapshots with run-scoped staging tag
         run: pnpm changeset publish --tag "$STAGING_TAG" --no-git-tag
 
+      - name: Verify published snapshot registry identity
+        run: |
+          node --input-type=module <<'NODE'
+          import {
+            classifyRegistrySnapshot,
+            fetchPublicPackument,
+            readJson,
+            recoverSnapshotManifest,
+            writeJson,
+          } from './scripts/dev-snapshot-release.mjs';
+          const manifestPath = '.tmp/dev-snapshot-manifest.json';
+          const recovery = await recoverSnapshotManifest(readJson(manifestPath), {
+            requiredAction: 'reuse-staged',
+          });
+          const packuments = Object.fromEntries(
+            await Promise.all(
+              recovery.manifest.releases.map(async (release) => [
+                release.name,
+                await fetchPublicPackument(release.name),
+              ]),
+            ),
+          );
+          const result = classifyRegistrySnapshot(recovery.manifest, packuments);
+          if (result.action !== 'reuse-staged') {
+            throw new Error(`Published snapshot registry identity is ${result.action}, expected reuse-staged.`);
+          }
+          writeJson(manifestPath, result.manifest);
+          NODE
+
       - name: Upload refreshed snapshot manifest
         uses: actions/upload-artifact@v4
         with:
@@ -148,7 +220,7 @@ jobs:
   validate_cli:
     name: Validate CLI or core snapshot line
     needs: [plan, publish]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap'
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && ((needs.plan.outputs.recovery_action == 'fresh' && needs.publish.result == 'success') || (needs.plan.outputs.recovery_action == 'reuse-staged' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -216,7 +288,7 @@ jobs:
   validate_packages:
     name: Validate package-only snapshot line
     needs: [plan, publish]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'package-only'
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'package-only' && ((needs.plan.outputs.recovery_action == 'fresh' && needs.publish.result == 'success') || (needs.plan.outputs.recovery_action == 'reuse-staged' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -282,8 +354,8 @@ jobs:
 
   validation_complete:
     name: Validation barrier
-    needs: [plan, validate_cli, validate_packages]
-    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
+    needs: [plan, publish, validate_cli, validate_packages]
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && ((needs.plan.outputs.recovery_action == 'fresh' && needs.publish.result == 'success') || (needs.plan.outputs.recovery_action == 'reuse-staged' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -304,7 +376,7 @@ jobs:
   promote:
     name: Promote validated snapshots to dev
     needs: [plan, publish, validation_complete]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true'
+    if: always() && github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.result == 'success' && needs.validation_complete.result == 'success' && ((needs.plan.outputs.recovery_action == 'fresh' && needs.publish.result == 'success') || (needs.plan.outputs.recovery_action == 'reuse-staged' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -367,6 +439,10 @@ jobs:
         with:
           name: dev-snapshot-pre-run-tags
           path: .tmp/pre-run-tags.json
+
+      - name: Mark promotion transaction started
+        id: promotion_transaction_started
+        run: echo "started=true" >> "$GITHUB_OUTPUT"
 
       - name: Promote validated versions to dev with reconciliation
         id: promote_dev_tags
@@ -520,7 +596,7 @@ jobs:
           node scripts/check-dev-snapshot-bootstrap.mjs assert-installed --manifest .tmp/dev-snapshot-manifest.json --install-root "$INSTALL_ROOT"
 
       - name: Restore dev tags after promoted smoke failure
-        if: ${{ always() && needs.plan.outputs.validation_kind == 'cli-bootstrap' && steps.promote_dev_tags.outcome == 'success' && steps.smoke_promoted_cli.outcome != 'success' }}
+        if: ${{ always() && steps.promotion_transaction_started.outputs.started == 'true' && (steps.promote_dev_tags.outcome != 'success' || (needs.plan.outputs.validation_kind == 'cli-bootstrap' && steps.smoke_promoted_cli.outcome != 'success')) }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: |
@@ -550,8 +626,6 @@ jobs:
           const failures = [];
           for (const release of [...manifest.releases].reverse()) {
             try {
-              const tags = readTags(release.name);
-              if (tags.dev !== release.newVersion) continue;
               const previousDev = preRunTags[release.name]?.dev;
               if (typeof previousDev === 'string' && previousDev.length > 0) {
                 execFileSync('npm', ['dist-tag', 'add', `${release.name}@${previousDev}`, 'dev'], {
@@ -564,10 +638,14 @@ jobs:
                   `restore dev=${previousDev}`,
                 );
               } else {
-                execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
-                  stdio: 'inherit',
-                  env: process.env,
-                });
+                try {
+                  execFileSync('npm', ['dist-tag', 'rm', release.name, 'dev'], {
+                    stdio: 'inherit',
+                    env: process.env,
+                  });
+                } catch (error) {
+                  if (readTags(release.name).dev !== undefined) throw error;
+                }
                 await waitForTags(
                   release.name,
                   (candidate) => candidate.dev === undefined,
@@ -586,7 +664,7 @@ jobs:
   dev_image:
     name: Publish best-effort dev image
     needs: [plan, promote]
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success'
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_public_releases == 'true' && needs.plan.outputs.validation_kind == 'cli-bootstrap' && needs.promote.result == 'success' && (needs.plan.outputs.recovery_action == 'fresh' || needs.plan.outputs.recovery_action == 'reuse-staged')
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -597,6 +675,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
