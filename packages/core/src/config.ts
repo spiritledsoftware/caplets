@@ -390,12 +390,15 @@ export type ConfigWithSources = {
   shadows: Record<string, ConfigSource[]>;
 };
 
-export type LocalOverlayConfigWarning = {
+type GenericLocalOverlayConfigWarning = {
+  type?: undefined;
   kind: ConfigSourceKind;
   path: string;
   message: string;
   recoverable?: boolean | undefined;
 };
+
+export type LocalOverlayConfigWarning = GenericLocalOverlayConfigWarning | VaultQuarantineOutcome;
 
 export type LocalOverlayConfigWithSources = ConfigWithSources & {
   warnings: LocalOverlayConfigWarning[];
@@ -418,6 +421,21 @@ export type ConfigVaultResolution =
       capletId: string;
       origin: VaultConfigOrigin;
     };
+
+export type VaultQuarantineOutcome = {
+  type: "vault-quarantine";
+  kind: ConfigSourceKind;
+  path: string;
+  message: string;
+  recoverable: true;
+  capletId: string;
+  referencePath: string;
+  referenceName: string;
+  storedKey?: string | undefined;
+  effectiveKey: string;
+  reason: Exclude<ConfigVaultResolution, { value: string }>["reason"];
+  target: "global" | "remote";
+};
 
 export type ConfigVaultResolver = (reference: ConfigVaultReference) => ConfigVaultResolution;
 
@@ -2078,12 +2096,9 @@ function quarantineUnresolvedReferenceCaplets(
         });
       }
       for (const issue of vaultIssues) {
-        warnings.push({
-          kind,
-          path: capletSourcePath,
-          message: formatVaultReferenceWarning(id, issue, options.vaultRecoveryTarget),
-          recoverable: true,
-        });
+        warnings.push(
+          vaultQuarantineOutcome(kind, capletSourcePath, id, issue, options.vaultRecoveryTarget),
+        );
       }
     }
   }
@@ -2213,22 +2228,51 @@ function unresolvedVaultReferencesInString(
   return issues;
 }
 
-function formatVaultReferenceWarning(
-  id: string,
+function vaultQuarantineOutcome(
+  kind: ConfigSourceKind,
+  path: string,
+  capletId: string,
   issue: VaultReferenceIssue,
   target: ConfigParseOptions["vaultRecoveryTarget"],
-): string {
-  const key = issue.storedKey ?? issue.name;
-  const targetFlag = target === "remote" ? " --remote" : "";
-  if (issue.reason === "invalid-key-source") {
-    return `Caplet ${id} references invalid-key-source Vault key ${key} at ${issue.path}; run \`caplets doctor\` for key-source details, then reload Caplets; skipping Caplet ${id}.`;
+): VaultQuarantineOutcome {
+  const outcome: VaultQuarantineOutcome = {
+    type: "vault-quarantine",
+    kind,
+    path,
+    message: "",
+    recoverable: true,
+    capletId,
+    referencePath: issue.path,
+    referenceName: issue.name,
+    ...(issue.storedKey ? { storedKey: issue.storedKey } : {}),
+    effectiveKey: issue.storedKey ?? issue.name,
+    reason: issue.reason,
+    target: target ?? "global",
+  };
+  outcome.message = formatVaultReferenceWarning(outcome);
+  return outcome;
+}
+
+function formatVaultReferenceWarning(outcome: VaultQuarantineOutcome): string {
+  const command = formatVaultRecoveryCommand(outcome);
+  if (outcome.reason === "invalid-key-source") {
+    return `Caplet ${outcome.capletId} references invalid-key-source Vault key ${outcome.effectiveKey} at ${outcome.referencePath}; run \`${command}\` for key-source details, then reload Caplets; skipping Caplet ${outcome.capletId}.`;
   }
-  if (issue.reason === "missing") {
-    return `Caplet ${id} references missing Vault key ${key} at ${issue.path}; run \`caplets vault set ${key}${targetFlag}\`, then reload Caplets; skipping Caplet ${id}.`;
+  if (outcome.reason === "missing") {
+    return `Caplet ${outcome.capletId} references missing Vault key ${outcome.effectiveKey} at ${outcome.referencePath}; run \`${command}\`, then reload Caplets; skipping Caplet ${outcome.capletId}.`;
   }
-  const remapFlag = key !== issue.name ? ` --as ${issue.name}` : "";
-  const grantCommand = `caplets vault access grant ${key} ${id}${targetFlag}${remapFlag}`;
-  return `Caplet ${id} references ${issue.reason} Vault key ${key} at ${issue.path}; run \`${grantCommand}\` after setting the value, then reload Caplets; skipping Caplet ${id}.`;
+  return `Caplet ${outcome.capletId} references ${outcome.reason} Vault key ${outcome.effectiveKey} at ${outcome.referencePath}; run \`${command}\` after setting the value, then reload Caplets; skipping Caplet ${outcome.capletId}.`;
+}
+
+export function formatVaultRecoveryCommand(outcome: VaultQuarantineOutcome): string {
+  if (outcome.reason === "invalid-key-source") return "caplets doctor";
+  const targetFlag = outcome.target === "remote" ? " --remote" : "";
+  if (outcome.reason === "missing") {
+    return `caplets vault set ${outcome.effectiveKey}${targetFlag}`;
+  }
+  const remapFlag =
+    outcome.effectiveKey !== outcome.referenceName ? ` --as ${outcome.referenceName}` : "";
+  return `caplets vault access grant ${outcome.effectiveKey} ${outcome.capletId}${targetFlag}${remapFlag}`;
 }
 
 export function defaultVaultResolver(store = new FileVaultStore()): ConfigVaultResolver {

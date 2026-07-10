@@ -29,7 +29,13 @@ import {
   resolveProjectConfigPath,
 } from "../config/paths";
 import { FileObservedOutputShapeStore } from "../observed-output-shapes";
-import { loadConfig, loadLocalOverlayConfigWithSources, type CapletConfig } from "../config";
+import {
+  formatVaultRecoveryCommand,
+  loadConfig,
+  loadLocalOverlayConfigWithSources,
+  type CapletConfig,
+  type VaultQuarantineOutcome,
+} from "../config";
 import { resolveExposure } from "../exposure/policy";
 import { daemonStatus, type DaemonOperationOptions } from "../daemon";
 
@@ -310,10 +316,23 @@ function resolveVaultSection(
     : resolveProjectConfigPath(cwd);
   try {
     const overlay = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    const loaderFailure = overlay.warnings.find(
+      (warning) => warning.type === undefined && warning.recoverable !== true,
+    );
+    if (loaderFailure) {
+      return { ok: false, issues: [], message: loaderFailure.message };
+    }
     const issues = overlay.warnings
-      .filter((warning) => warning.message.includes("Vault key"))
-      .map((warning) => vaultIssueFromWarning(warning.message, warning.path))
-      .filter((issue): issue is NonNullable<typeof issue> => issue !== undefined);
+      .filter((warning): warning is VaultQuarantineOutcome => warning.type === "vault-quarantine")
+      .map((warning) => ({
+        capletId: warning.capletId,
+        reason: warning.reason,
+        key: warning.effectiveKey,
+        configPath: warning.path,
+        referencePath: warning.referencePath,
+        target: warning.target,
+        recoveryCommand: formatVaultRecoveryCommand(warning),
+      }));
     return { ok: issues.length === 0, issues };
   } catch (error) {
     return {
@@ -322,23 +341,6 @@ function resolveVaultSection(
       message: error instanceof Error ? error.message : String(error),
     };
   }
-}
-
-function vaultIssueFromWarning(message: string, path: string) {
-  const match = message.match(
-    /^Caplet ([^ ]+) references ([^ ]+) Vault key ([^ ]+) at ([^;]+); run `([^`]+)`/u,
-  );
-  if (!match) return undefined;
-  const recoveryCommand = match[5] ?? "";
-  return {
-    capletId: match[1],
-    reason: match[2],
-    key: match[3],
-    configPath: path,
-    referencePath: match[4],
-    target: recoveryCommand.includes("--remote") ? "remote" : "global",
-    recoveryCommand,
-  };
 }
 
 function projectBindingRecovery(

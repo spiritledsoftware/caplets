@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   capletJsonSchema,
   loadCapletFiles,
@@ -1759,6 +1759,247 @@ describe("config", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("returns structured Vault quarantine outcomes with source-local safe recovery facts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-structured-outcomes-"));
+    try {
+      const userRoot = join(dir, "user");
+      const projectRoot = join(dir, "project");
+      const userConfigPath = join(userRoot, "config.json");
+      const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+      const globalFilePath = join(userRoot, "global-ungranted.md");
+      const projectFilePath = join(projectRoot, ".caplets", "project-invalid.md");
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(dirname(projectConfigPath), { recursive: true });
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            missing: {
+              name: "Missing",
+              description: "Uses a missing Vault key.",
+              command: "missing-mcp",
+              env: { TOKEN: "$vault:GLOBAL_MISSING" },
+            },
+            healthy: {
+              name: "Healthy",
+              description: "Has no unresolved Vault references.",
+              command: "healthy-mcp",
+              env: { TOKEN: "$vault:AVAILABLE_SECRET" },
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        globalFilePath,
+        [
+          "---",
+          "name: Global ungranted",
+          "description: Uses an ungranted Vault key.",
+          "mcpServer:",
+          "  command: global-ungranted-mcp",
+          "  env:",
+          "    TOKEN: $vault:GLOBAL_UNGRANTED",
+          "---",
+          "# Global ungranted",
+        ].join("\n"),
+      );
+      writeFileSync(
+        projectConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            unavailable: {
+              name: "Unavailable",
+              description: "Uses an unavailable Vault key.",
+              command: "unavailable-mcp",
+              env: { TOKEN: "$vault:PROJECT_UNAVAILABLE" },
+            },
+          },
+        }),
+      );
+      writeFileSync(
+        projectFilePath,
+        [
+          "---",
+          "name: Project invalid",
+          "description: Uses an invalid Vault key source.",
+          "mcpServer:",
+          "  command: project-invalid-mcp",
+          "  env:",
+          "    TOKEN: $vault:invalid_key",
+          "---",
+          "# Project invalid",
+        ].join("\n"),
+      );
+
+      const { config, sources, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+        {
+          vaultResolver: (reference) => {
+            if (reference.referenceName === "AVAILABLE_SECRET") {
+              return { storedKey: reference.referenceName, value: "resolved_vault_secret" };
+            }
+            if (reference.referenceName === "GLOBAL_MISSING") {
+              return {
+                reason: "missing" as const,
+                storedKey: "GLOBAL_MISSING_STORED",
+                referenceName: reference.referenceName,
+                capletId: reference.capletId,
+                origin: reference.origin,
+              };
+            }
+            if (reference.referenceName === "GLOBAL_UNGRANTED") {
+              return {
+                reason: "ungranted" as const,
+                referenceName: reference.referenceName,
+                capletId: reference.capletId,
+                origin: reference.origin,
+              };
+            }
+            return {
+              reason: "unavailable" as const,
+              referenceName: reference.referenceName,
+              capletId: reference.capletId,
+              origin: reference.origin,
+            };
+          },
+        },
+      );
+
+      const outcomes = warnings.filter((warning) => warning.type === "vault-quarantine");
+      expect(outcomes).toEqual([
+        {
+          type: "vault-quarantine",
+          kind: "global-config",
+          path: userConfigPath,
+          message:
+            "Caplet missing references missing Vault key GLOBAL_MISSING_STORED at mcpServers.missing.env.TOKEN; run `caplets vault set GLOBAL_MISSING_STORED`, then reload Caplets; skipping Caplet missing.",
+          recoverable: true,
+          capletId: "missing",
+          referencePath: "mcpServers.missing.env.TOKEN",
+          referenceName: "GLOBAL_MISSING",
+          storedKey: "GLOBAL_MISSING_STORED",
+          effectiveKey: "GLOBAL_MISSING_STORED",
+          reason: "missing",
+          target: "global",
+        },
+        {
+          type: "vault-quarantine",
+          kind: "global-file",
+          path: globalFilePath,
+          message:
+            "Caplet global-ungranted references ungranted Vault key GLOBAL_UNGRANTED at mcpServers.global-ungranted.env.TOKEN; run `caplets vault access grant GLOBAL_UNGRANTED global-ungranted` after setting the value, then reload Caplets; skipping Caplet global-ungranted.",
+          recoverable: true,
+          capletId: "global-ungranted",
+          referencePath: "mcpServers.global-ungranted.env.TOKEN",
+          referenceName: "GLOBAL_UNGRANTED",
+          effectiveKey: "GLOBAL_UNGRANTED",
+          reason: "ungranted",
+          target: "global",
+        },
+        {
+          type: "vault-quarantine",
+          kind: "project-config",
+          path: projectConfigPath,
+          message:
+            "Caplet unavailable references unavailable Vault key PROJECT_UNAVAILABLE at mcpServers.unavailable.env.TOKEN; run `caplets vault access grant PROJECT_UNAVAILABLE unavailable` after setting the value, then reload Caplets; skipping Caplet unavailable.",
+          recoverable: true,
+          capletId: "unavailable",
+          referencePath: "mcpServers.unavailable.env.TOKEN",
+          referenceName: "PROJECT_UNAVAILABLE",
+          effectiveKey: "PROJECT_UNAVAILABLE",
+          reason: "unavailable",
+          target: "global",
+        },
+        {
+          type: "vault-quarantine",
+          kind: "project-file",
+          path: projectFilePath,
+          message:
+            "Caplet project-invalid references invalid-key-source Vault key invalid_key at mcpServers.project-invalid.env.TOKEN; run `caplets doctor` for key-source details, then reload Caplets; skipping Caplet project-invalid.",
+          recoverable: true,
+          capletId: "project-invalid",
+          referencePath: "mcpServers.project-invalid.env.TOKEN",
+          referenceName: "invalid_key",
+          effectiveKey: "invalid_key",
+          reason: "invalid-key-source",
+          target: "global",
+        },
+      ]);
+      expect(config.mcpServers).toEqual({
+        healthy: expect.objectContaining({
+          command: "healthy-mcp",
+          env: { TOKEN: "resolved_vault_secret" },
+        }),
+      });
+      expect(sources.healthy).toEqual({ kind: "global-config", path: userConfigPath });
+      expect(sources.missing).toBeUndefined();
+      expect(JSON.stringify(outcomes)).not.toContain("resolved_vault_secret");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps each unresolved Vault reference as a separate structured outcome", () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-multiple-outcomes-"));
+    try {
+      const userConfigPath = join(dir, "config.json");
+      const projectConfigPath = join(dir, "project", ".caplets", "config.json");
+      writeFileSync(
+        userConfigPath,
+        JSON.stringify({
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "Uses two Vault references.",
+              command: "github-mcp",
+              env: {
+                PRIMARY: "$vault:PRIMARY_TOKEN",
+                SECONDARY: "${vault:SECONDARY_TOKEN}",
+              },
+            },
+          },
+        }),
+      );
+
+      const { config, warnings } = loadLocalOverlayConfigWithSources(
+        userConfigPath,
+        projectConfigPath,
+        {
+          vaultResolver: (reference) => ({
+            reason: "ungranted",
+            ...(reference.referenceName === "SECONDARY_TOKEN"
+              ? { storedKey: "SECONDARY_TOKEN_STORED" }
+              : {}),
+            referenceName: reference.referenceName,
+            capletId: reference.capletId,
+            origin: reference.origin,
+          }),
+        },
+      );
+
+      expect(config.mcpServers.github).toBeUndefined();
+      expect(warnings.filter((warning) => warning.type === "vault-quarantine")).toEqual([
+        expect.objectContaining({
+          capletId: "github",
+          referencePath: "mcpServers.github.env.PRIMARY",
+          referenceName: "PRIMARY_TOKEN",
+          effectiveKey: "PRIMARY_TOKEN",
+          reason: "ungranted",
+        }),
+        expect.objectContaining({
+          capletId: "github",
+          referencePath: "mcpServers.github.env.SECONDARY",
+          referenceName: "SECONDARY_TOKEN",
+          storedKey: "SECONDARY_TOKEN_STORED",
+          effectiveKey: "SECONDARY_TOKEN_STORED",
+          reason: "ungranted",
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("reports remapped missing Vault keys with the stored key repair command", () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-vault-remap-warning-"));
@@ -1831,6 +2072,11 @@ describe("config", () => {
       });
 
       expect(warnings[0]?.message).toContain("caplets vault access grant GH_TOKEN github --remote");
+      expect(warnings[0]).toMatchObject({
+        type: "vault-quarantine",
+        target: "remote",
+        effectiveKey: "GH_TOKEN",
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
