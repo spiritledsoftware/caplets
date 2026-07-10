@@ -56,6 +56,14 @@ The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, atta
 
 `/v1/attach` is the Caplets runtime attach API. Attached clients read `/v1/attach/manifest`, subscribe to `/v1/attach/events`, and invoke revision-scoped exports through `/v1/attach/invoke` before merging remote projections with local/project overlays.
 
+### Current Host Administration
+
+`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic query or command, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, safe Vault administration, Operator activity, redaction, and actor-specific `sessionEnded` outcomes.
+
+The human dashboard and `/v1/admin` Operator bearer routes are separate Adapters over that Interface. The dashboard retains cookie, CSRF, session, and browser presentation ceremony; the bearer Adapter retains the existing `RemoteCliRequest` selection and safe response envelope. Access Clients remain limited to MCP, Attach, and Project Binding routes. Both Access and Operator Clients may revoke only their own credential through the role-neutral self-revoke route.
+
+Raw Vault Reveal is not a shared operation. It remains a dashboard-only human confirmation path with `no-store` responses and an ephemeral browser timer; generic bearer administration rejects it.
+
 ### Caplets Daemon
 
 `packages/core/src/daemon/` owns the default per-user daemon lifecycle. `caplets daemon install` persists HTTP `caplets serve` configuration, explicit service environment variables, optional shell inheritance intent, user-only log paths, and native service descriptors under the `daemon/default` identity. Runtime lifecycle commands (`start`, `restart`, `stop`, `status`, `logs`, and `uninstall`) read that installed service state instead of accepting serve flags.

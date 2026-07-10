@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
@@ -105,6 +105,26 @@ describe("dashboard API read model", () => {
         actions: expect.any(Array),
       },
     });
+
+    await setup.engine.close();
+  });
+  it("maps authenticated collaborator faults to internal errors without ending the session", async () => {
+    const setup = await authenticatedDashboard();
+    vi.spyOn(setup.engine, "enabledServers").mockImplementation(() => {
+      throw new Error("collaborator failed with cap_remote_access_sensitive_value");
+    });
+
+    const response = await dashboardGet(setup, "/dashboard/api/caplets");
+
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({
+      ok: false,
+      error: { code: "INTERNAL_ERROR" },
+    });
+    expect(body).not.toContain("collaborator failed");
+    expect(body).not.toContain("cap_remote_access_sensitive_value");
+    expect(response.headers.get("set-cookie")).toBeNull();
 
     await setup.engine.close();
   });

@@ -21,16 +21,12 @@ import {
   type CatalogEntry,
   type CatalogSourceIdentity,
 } from "../catalog";
-import {
-  dispatchRemoteCliRequest,
-  type RemoteControlDispatchContext,
-} from "../remote-control/dispatch";
 
-export type DashboardCatalogContext = {
-  control?: RemoteControlDispatchContext | undefined;
+export type CurrentHostCatalogContext = {
+  globalLockfilePath?: string | undefined;
 };
 
-export type DashboardInstalledCaplet = {
+export type CurrentHostInstalledCapletProjection = {
   id: string;
   name: string;
   description: string;
@@ -41,10 +37,10 @@ export type DashboardInstalledCaplet = {
   projectBindingRequired: boolean;
   source?: string | undefined;
   updateState: "unknown" | "locked";
-  setupActions: DashboardSetupAction[];
+  setupActions: CurrentHostSetupAction[];
 };
 
-export type DashboardSetupAction = {
+export type CurrentHostSetupAction = {
   kind:
     | "auth"
     | "vault"
@@ -56,7 +52,7 @@ export type DashboardSetupAction = {
   required: boolean;
 };
 
-export type DashboardInstalledCatalogCaplet = {
+export type CurrentHostInstalledCatalogCaplet = {
   id: string;
   source: string;
   destination: string;
@@ -67,15 +63,15 @@ export type DashboardInstalledCatalogCaplet = {
   catalogIndexing?: unknown;
 };
 
-export type DashboardCatalogInstallResult = {
-  installed: DashboardInstalledCatalogCaplet[];
-  setupActions: DashboardSetupAction[];
+export type CurrentHostCatalogInstallResult = {
+  installed: CurrentHostInstalledCatalogCaplet[];
+  setupActions: CurrentHostSetupAction[];
 };
 
-export function dashboardInstalledCaplets(
+export function currentHostInstalledCaplets(
   caplets: CapletConfig[],
-  context: DashboardCatalogContext,
-): DashboardInstalledCaplet[] {
+  context: CurrentHostCatalogContext,
+): CurrentHostInstalledCapletProjection[] {
   const lockEntries = safeLockEntries(lockfilePath(context));
   return caplets
     .map((caplet) => {
@@ -108,7 +104,7 @@ export function dashboardInstalledCaplets(
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function dashboardCatalogSearch(input: {
+export function currentHostCatalogSearch(input: {
   source: string;
   query?: string | undefined;
   limit?: number | undefined;
@@ -126,9 +122,9 @@ export function dashboardCatalogSearch(input: {
   return { entries: filtered.slice(0, boundedLimit(input.limit)) };
 }
 
-export function dashboardCatalogDetail(input: { source: string; capletId: string }): {
+export function currentHostCatalogDetail(input: { source: string; capletId: string }): {
   entry: CatalogEntry;
-  setupActions: DashboardSetupAction[];
+  setupActions: CurrentHostSetupAction[];
   projectScopedInstallAvailable: false;
 } {
   const entry = catalogEntriesFromSource(input.source).find(
@@ -143,56 +139,7 @@ export function dashboardCatalogDetail(input: { source: string; capletId: string
   };
 }
 
-export async function dashboardInstallCatalogCaplet(input: {
-  source: string;
-  capletId: string;
-  force?: boolean | undefined;
-  context: DashboardCatalogContext;
-}): Promise<DashboardCatalogInstallResult> {
-  const response = await dispatchRemoteCliRequest(
-    {
-      command: "install",
-      arguments: {
-        repo: installSourceFor(input.source),
-        capletIds: [input.capletId],
-        disableCatalogIndexing: true,
-        ...(input.force === undefined ? {} : { force: input.force }),
-      },
-    },
-    requiredControlContext(input.context),
-  );
-  if (!response.ok) throw new CapletsError(response.error.code, response.error.message);
-  return {
-    installed: installedFromDispatchResult(response.result),
-    setupActions: setupActionsForInstalled(input.source, input.capletId),
-  };
-}
-
-export async function dashboardUpdateCatalogCaplet(input: {
-  capletId: string;
-  force?: boolean | undefined;
-  allowRiskIncrease?: boolean | undefined;
-  context: DashboardCatalogContext;
-}): Promise<DashboardCatalogInstallResult> {
-  const response = await dispatchRemoteCliRequest(
-    {
-      command: "update",
-      arguments: {
-        capletIds: [input.capletId],
-        disableCatalogIndexing: true,
-        ...(input.force === undefined ? {} : { force: input.force }),
-        ...(input.allowRiskIncrease === undefined
-          ? {}
-          : { allowRiskIncrease: input.allowRiskIncrease }),
-      },
-    },
-    requiredControlContext(input.context),
-  );
-  if (!response.ok) throw new CapletsError(response.error.code, response.error.message);
-  return { installed: installedFromDispatchResult(response.result), setupActions: [] };
-}
-
-export function dashboardUpdateReadiness(input: { context: DashboardCatalogContext }): {
+export function currentHostCatalogUpdateReadiness(input: { context: CurrentHostCatalogContext }): {
   updates: Array<{ id: string; status: "locked"; risk: unknown }>;
 } {
   return {
@@ -204,37 +151,54 @@ export function dashboardUpdateReadiness(input: { context: DashboardCatalogConte
   };
 }
 
+export function currentHostSetupActionsForInstalled(
+  source: string,
+  capletId: string,
+): CurrentHostSetupAction[] {
+  try {
+    return setupActionsForEntry(currentHostCatalogDetail({ source, capletId }).entry);
+  } catch {
+    return [];
+  }
+}
+
 const officialCatalogRepository = "spiritledsoftware/caplets";
 
-type ResolvedDashboardCatalogSource = {
+export function currentHostCatalogInstallSource(source: string): string {
+  return source.trim() === "official" ? officialCatalogRepository : source;
+}
+
+type ResolvedCurrentHostCatalogSource = {
   root: string;
   source: CatalogSourceIdentity;
   trustLevel: "official" | "community";
 };
 
+type LockEntry = { id: string; source?: { type?: string; repository?: string }; risk?: unknown };
+
 function catalogEntriesFromSource(sourceInput: string): CatalogEntry[] {
-  const resolved = resolveDashboardCatalogSource(sourceInput);
-  const sourceRoot = join(resolved.root, "caplets");
+  const resolvedSource = resolveCurrentHostCatalogSource(sourceInput);
+  const sourceRoot = join(resolvedSource.root, "caplets");
   const files = discoverCapletFiles(sourceRoot);
   return files
     .map(({ id, path }) => {
       const contentMarkdown = readFileSync(path, "utf8");
       const frontmatter = readCatalogCapletFrontmatterFromMarkdown(contentMarkdown);
-      const sourcePath = sourceRelativePath(resolved.root, path);
+      const sourcePath = sourceRelativePath(resolvedSource.root, path);
       return createCatalogEntry({
         id,
         name: catalogStringFromFrontmatter(frontmatter.name) ?? id,
         description:
           catalogStringFromFrontmatter(frontmatter.description) ?? `Catalog Caplet ${id}.`,
-        source: resolved.source,
+        source: resolvedSource.source,
         sourcePath,
-        trustLevel: resolved.trustLevel,
+        trustLevel: resolvedSource.trustLevel,
         contentMarkdown,
         icon: catalogIconFromFrontmatter(frontmatter, {
           id,
-          source: resolved.source,
+          source: resolvedSource.source,
           sourcePath,
-          trustLevel: resolved.trustLevel,
+          trustLevel: resolvedSource.trustLevel,
         }),
         tags: catalogStringArrayFromFrontmatter(frontmatter.tags),
         useWhen: catalogStringFromFrontmatter(frontmatter.useWhen),
@@ -253,9 +217,8 @@ function catalogEntriesFromSource(sourceInput: string): CatalogEntry[] {
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function resolveDashboardCatalogSource(sourceInput: string): ResolvedDashboardCatalogSource {
-  const trimmed = sourceInput.trim();
-  if (trimmed === "official") {
+function resolveCurrentHostCatalogSource(sourceInput: string): ResolvedCurrentHostCatalogSource {
+  if (sourceInput.trim() === "official") {
     const source = normalizeCatalogSourceIdentity(officialCatalogRepository);
     if (!source.eligible) {
       throw new CapletsError("CONFIG_INVALID", "Official catalog source is invalid.");
@@ -272,10 +235,6 @@ function resolveDashboardCatalogSource(sourceInput: string): ResolvedDashboardCa
         ? "official"
         : "community",
   };
-}
-
-function installSourceFor(sourceInput: string): string {
-  return sourceInput.trim() === "official" ? officialCatalogRepository : sourceInput;
 }
 
 function officialCatalogRoot(): string {
@@ -313,15 +272,7 @@ function sourceRelativePath(source: string, path: string): string {
     : path;
 }
 
-function setupActionsForInstalled(source: string, capletId: string): DashboardSetupAction[] {
-  try {
-    return setupActionsForEntry(dashboardCatalogDetail({ source, capletId }).entry);
-  } catch {
-    return [];
-  }
-}
-
-function setupActionsForEntry(entry: CatalogEntry): DashboardSetupAction[] {
+function setupActionsForEntry(entry: CatalogEntry): CurrentHostSetupAction[] {
   return setupActionsForFlags({
     setupRequired: entry.setupReadiness === "required",
     authRequired: entry.authReadiness === "required",
@@ -333,7 +284,7 @@ function setupActionsForFlags(input: {
   setupRequired: boolean;
   authRequired: boolean;
   projectBindingRequired: boolean;
-}): DashboardSetupAction[] {
+}): CurrentHostSetupAction[] {
   return [
     ...(input.authRequired
       ? [{ kind: "auth" as const, label: "Connect required auth", required: true }]
@@ -349,11 +300,14 @@ function setupActionsForFlags(input: {
   ];
 }
 
-function lockfilePath(context: DashboardCatalogContext): string {
-  return context.control?.globalLockfilePath ?? defaultCapletsLockfilePath();
+function authRequired(caplet: CapletConfig): boolean {
+  const auth = "auth" in caplet ? caplet.auth : undefined;
+  return Boolean(auth) && auth?.type !== "none";
 }
 
-type LockEntry = { id: string; source?: { type?: string; repository?: string }; risk?: unknown };
+function lockfilePath(context: CurrentHostCatalogContext): string {
+  return context.globalLockfilePath ?? defaultCapletsLockfilePath();
+}
 
 function safeLockEntries(path: string): Map<string, LockEntry> {
   try {
@@ -366,54 +320,6 @@ function safeLockEntries(path: string): Map<string, LockEntry> {
   } catch {
     return new Map();
   }
-}
-
-function requiredControlContext(context: DashboardCatalogContext): RemoteControlDispatchContext {
-  if (!context.control) {
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      "Dashboard catalog actions require server control context.",
-    );
-  }
-  return context.control;
-}
-
-function installedFromDispatchResult(result: unknown): DashboardInstalledCatalogCaplet[] {
-  if (
-    !result ||
-    typeof result !== "object" ||
-    !Array.isArray((result as { installed?: unknown }).installed)
-  ) {
-    return [];
-  }
-  return (result as { installed: unknown[] }).installed.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const value = entry as Partial<DashboardInstalledCatalogCaplet>;
-    if (
-      typeof value.id !== "string" ||
-      typeof value.destination !== "string" ||
-      typeof value.kind !== "string"
-    ) {
-      return [];
-    }
-    return [
-      {
-        id: value.id,
-        source: typeof value.source === "string" ? value.source : "unknown",
-        destination: value.destination,
-        kind: value.kind === "directory" ? "directory" : "file",
-        ...(typeof value.hash === "string" ? { hash: value.hash } : {}),
-        ...(typeof value.status === "string" ? { status: value.status } : {}),
-        ...(typeof value.lockfile === "string" ? { lockfile: value.lockfile } : {}),
-        ...(value.catalogIndexing ? { catalogIndexing: value.catalogIndexing } : {}),
-      },
-    ];
-  });
-}
-
-function authRequired(caplet: CapletConfig): boolean {
-  const auth = "auth" in caplet ? caplet.auth : undefined;
-  return Boolean(auth) && auth?.type !== "none";
 }
 
 function boundedLimit(limit: number | undefined): number {

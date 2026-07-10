@@ -6,6 +6,7 @@ import { serve, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { CapletsEngine } from "../src/engine";
+import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import type { CapletsEngineOptions } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
@@ -21,6 +22,7 @@ import {
 import * as serveHttpModule from "../src/serve/http";
 import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/serve/http";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
+import { buildManifestExposureProjection } from "../src/exposure/projection";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
@@ -213,6 +215,37 @@ describe("createHttpServeApp", () => {
     });
     expect(mcp.status).toBe(200);
 
+    const operatorAttach = await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+      headers: { authorization: `Bearer ${operatorCredentials.accessToken}` },
+    });
+    expect(operatorAttach.status).toBe(403);
+
+    const operatorProjectBinding = await app.request(
+      "http://127.0.0.1:5387/v1/attach/project-bindings/bind_123/status",
+      { headers: { authorization: `Bearer ${operatorCredentials.accessToken}` } },
+    );
+    expect(operatorProjectBinding.status).toBe(403);
+
+    const operatorMcp = await app.request("http://127.0.0.1:5387/v1/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operatorCredentials.accessToken}`,
+        host: "127.0.0.1:5387",
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "operator", version: "1.0.0" },
+        },
+      }),
+    });
+    expect(operatorMcp.status).toBe(403);
     await engine.close();
   });
 
@@ -537,6 +570,85 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("allows both credential roles to revoke only their own remote client", async () => {
+    const context = testContext();
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const store = remoteCredentialStore();
+    const access = pairedClient(store);
+    const otherAccess = pairedClient(store);
+    const operator = pairedClient(store, "http://127.0.0.1:5387/", "operator");
+    const otherOperator = pairedClient(store, "http://127.0.0.1:5387/", "operator");
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      control: context,
+      remoteCredentialStore: store,
+    });
+
+    const revokedAccess = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${access.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ clientId: otherAccess.clientId }),
+    });
+    expect(revokedAccess.status).toBe(200);
+    await expect(revokedAccess.json()).resolves.toEqual({
+      revoked: true,
+      clientId: access.clientId,
+    });
+    expect(
+      await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+        headers: { authorization: `Bearer ${access.accessToken}` },
+      }),
+    ).toHaveProperty("status", 401);
+    expect(
+      await app.request("http://127.0.0.1:5387/v1/attach/manifest", {
+        headers: { authorization: `Bearer ${otherAccess.accessToken}` },
+      }),
+    ).toHaveProperty("status", 200);
+
+    const revokedOperator = await app.request("http://127.0.0.1:5387/v1/remote/client", {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ clientId: otherOperator.clientId }),
+    });
+    expect(revokedOperator.status).toBe(200);
+    await expect(revokedOperator.json()).resolves.toEqual({
+      revoked: true,
+      clientId: operator.clientId,
+    });
+    expect(
+      await app.request("http://127.0.0.1:5387/v1/admin", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${operator.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ command: "list", arguments: {} }),
+      }),
+    ).toHaveProperty("status", 401);
+    expect(
+      await app.request("http://127.0.0.1:5387/v1/admin", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${otherOperator.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ command: "list", arguments: {} }),
+      }),
+    ).toHaveProperty("status", 200);
+
+    await engine.close();
+  });
+
   it("requires explicit public origin before trusted proxy headers select remote credential audiences", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
@@ -664,6 +776,50 @@ describe("createHttpServeApp", () => {
     });
     expect(listed.status).toBe(200);
     await expect(listed.json()).resolves.toMatchObject({ ok: true });
+
+    await engine.close();
+  });
+
+  it("records the validated Operator client for administrative Vault mutations", async () => {
+    const context = testContext();
+    const authDir = tempDir("caplets-http-admin-vault-auth-");
+    const engine = new CapletsEngine({
+      configPath: context.configPath,
+      projectConfigPath: context.projectConfigPath,
+      watch: false,
+    });
+    const store = remoteCredentialStore();
+    const operator = pairedClient(store, "http://127.0.0.1:5387/", "operator");
+    const app = createHttpServeApp(
+      httpOptions({ auth: { type: "remote_credentials" }, remoteCredentialStateDir: store.dir }),
+      engine,
+      {
+        writeErr: () => {},
+        control: { ...context, authDir },
+        remoteCredentialStore: store,
+      },
+    );
+
+    const response = await app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: "vault_set",
+        arguments: { name: "GH_TOKEN", value: "administrative_secret" },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      result: { key: "GH_TOKEN", present: true },
+    });
+    expect(
+      new DashboardActivityLog({ dir: store.dir }).list({ action: "vault_set" }).entries,
+    ).toEqual([expect.objectContaining({ actorClientId: operator.clientId, action: "vault_set" })]);
 
     await engine.close();
   });
@@ -1364,16 +1520,24 @@ describe("createHttpServeApp", () => {
       projectConfigPath: context.projectConfigPath,
       watch: false,
     });
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
-      writeErr: () => {},
-      control: context,
-    });
+    const store = remoteCredentialStore();
+    const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
+    const app = createHttpServeApp(
+      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+        remoteCredentialStore: store,
+      },
+    );
 
-    const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
+    const response = await app.request("https://10.0.0.5:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
+        authorization: `Bearer ${operator.accessToken}`,
         "content-type": "application/json",
-        "x-forwarded-proto": "https",
+        "x-forwarded-proto": "http",
         "x-forwarded-host": "caplets.example.com",
       },
       body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
@@ -1385,7 +1549,7 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^http:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
+      /^https:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
@@ -1398,14 +1562,22 @@ describe("createHttpServeApp", () => {
       projectConfigPath: context.projectConfigPath,
       watch: false,
     });
-    const app = createHttpServeApp(httpOptions({ path: "/caplets" }), engine, {
-      writeErr: () => {},
-      control: context,
-    });
+    const store = remoteCredentialStore();
+    const operator = pairedClient(store, "https://10.0.0.5:5387/caplets/", "operator");
+    const app = createHttpServeApp(
+      httpOptions({ path: "/caplets", auth: { type: "remote_credentials" } }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+        remoteCredentialStore: store,
+      },
+    );
 
-    const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
+    const response = await app.request("https://10.0.0.5:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
+        authorization: `Bearer ${operator.accessToken}`,
         "content-type": "application/json",
         host: "attacker.example.com",
       },
@@ -1418,30 +1590,43 @@ describe("createHttpServeApp", () => {
     const result = (body as { result: { authorizationUrl: string } }).result;
     const authorizationUrl = new URL(result.authorizationUrl);
     expect(authorizationUrl.searchParams.get("redirect_uri")).toMatch(
-      /^http:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
+      /^https:\/\/10\.0\.0\.5:5387\/caplets\/v1\/admin\/auth\/callback\//u,
     );
 
     await engine.close();
   });
 
-  it("uses forwarded host and proto for remote auth callback URLs when proxy trust is enabled", async () => {
+  it("uses explicit public origin for auth callback URLs behind trusted proxies", async () => {
     const context = testContext({ oauth: true });
     const engine = new CapletsEngine({
       configPath: context.configPath,
       projectConfigPath: context.projectConfigPath,
       watch: false,
     });
-    const app = createHttpServeApp(httpOptions({ path: "/caplets", trustProxy: true }), engine, {
-      writeErr: () => {},
-      control: context,
-    });
+    const store = remoteCredentialStore();
+    const operator = pairedClient(store, "https://caplets.example.com/caplets/", "operator");
+    const app = createHttpServeApp(
+      httpOptions({
+        path: "/caplets",
+        auth: { type: "remote_credentials" },
+        trustProxy: true,
+        publicOrigin: "https://caplets.example.com",
+      }),
+      engine,
+      {
+        writeErr: () => {},
+        control: context,
+        remoteCredentialStore: store,
+      },
+    );
 
     const response = await app.request("http://10.0.0.5:5387/caplets/v1/admin", {
       method: "POST",
       headers: {
+        authorization: `Bearer ${operator.accessToken}`,
         "content-type": "application/json",
         "x-forwarded-proto": "https",
-        "x-forwarded-host": "caplets.example.com",
+        "x-forwarded-host": "attacker.example.net",
       },
       body: JSON.stringify({ command: "auth_login_start", arguments: { server: "remote" } }),
     });
@@ -1507,6 +1692,67 @@ describe("createHttpServeApp", () => {
         }),
       ],
       diagnostics: [],
+    });
+
+    await engine.close();
+  });
+
+  it("rejects an old HTTP Attach export after reload hides its Caplet", async () => {
+    const config = {
+      options: { exposure: "direct" },
+      httpApis: {
+        status: {
+          name: "Status",
+          description: "Read status.",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { check: { method: "GET", path: "/check" } },
+        },
+      },
+    };
+    const { engine, configPath } = testEngine(config);
+    const app = createHttpServeApp(httpOptions(), engine, { writeErr: () => {} });
+    const manifestResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const previous = (await manifestResponse.json()) as AttachManifest;
+    const previousTool = previous.tools[0];
+    expect(previousTool).toBeDefined();
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        ...config,
+        httpApis: {
+          status: {
+            ...config.httpApis.status,
+            disabled: true,
+          },
+        },
+      }),
+    );
+    await engine.reload();
+
+    const nextResponse = await app.request("http://127.0.0.1:5387/v1/attach/manifest");
+    const next = (await nextResponse.json()) as AttachManifest;
+    expect(next.revision).not.toBe(previous.revision);
+    expect(next.tools).toEqual([]);
+    expect(next.diagnostics).toEqual([
+      expect.objectContaining({ code: "ATTACH_CAPLET_DISABLED", capletId: "status" }),
+    ]);
+
+    const invoked = await app.request("http://127.0.0.1:5387/v1/attach/invoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        revision: previous.revision,
+        kind: "tool",
+        exportId: previousTool?.exportId,
+        input: {},
+      }),
+    });
+    expect(invoked.status).toBe(409);
+    await expect(invoked.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "ATTACH_MANIFEST_STALE" },
     });
 
     await engine.close();
@@ -2282,32 +2528,29 @@ describe("createHttpServeApp", () => {
   });
 
   it("recomputes attach projections before invokes so stale downstream surfaces are rejected", async () => {
-    const caplet = {
-      server: "docs",
-      name: "Docs",
-      description: "Docs.",
-      backend: "mcp",
-      command: process.execPath,
-    };
     let downstreamToolName = "read";
     const engine = {
       onReload: () => () => undefined,
-      exposureSnapshot: async () => ({
-        callableCaplets: [],
-        progressiveCaplets: [],
-        codeModeCaplets: [],
-        directTools: [
-          {
-            caplet,
-            downstreamName: downstreamToolName,
-            name: `docs__${downstreamToolName}`,
-            tool: { name: downstreamToolName, inputSchema: { type: "object" } },
-          },
-        ],
-        directResources: [],
-        directResourceTemplates: [],
-        directPrompts: [],
-        hiddenCaplets: [],
+      currentExposureGeneration: () => 0,
+      exposureProjection: async () => ({
+        generation: 0,
+        projection: buildManifestExposureProjection({
+          caplets: [],
+          tools: [
+            {
+              kind: "tool",
+              capletId: "docs",
+              downstreamName: downstreamToolName,
+              name: `docs__${downstreamToolName}`,
+              inputSchema: { type: "object" },
+              shadowing: "forbid",
+            },
+          ],
+          resources: [],
+          resourceTemplates: [],
+          prompts: [],
+          completions: [],
+        }),
       }),
       execute: async () => ({ called: true }),
     } as unknown as CapletsEngine;
@@ -2816,7 +3059,11 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-function testEngine(config: Record<string, unknown> = {}): { engine: CapletsEngine } {
+function testEngine(config: Record<string, unknown> = {}): {
+  engine: CapletsEngine;
+  configPath: string;
+  projectConfigPath: string;
+} {
   const context = testContext(config);
   return {
     engine: new CapletsEngine({
@@ -2824,6 +3071,8 @@ function testEngine(config: Record<string, unknown> = {}): { engine: CapletsEngi
       projectConfigPath: context.projectConfigPath,
       watch: false,
     }),
+    configPath: context.configPath,
+    projectConfigPath: context.projectConfigPath,
   };
 }
 

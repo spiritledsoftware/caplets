@@ -34,8 +34,12 @@ export type RemoteCliCommand =
   | "vault_access_revoke"
   | "vault_access_list";
 
+/**
+ * Parsed wire input. `command` stays open so the adapter can safely envelope
+ * unknown protocol commands instead of forcing callers to bypass the type system.
+ */
 export type RemoteCliRequest = {
-  command: RemoteCliCommand;
+  command: string;
   arguments: Record<string, unknown>;
 };
 
