@@ -358,6 +358,7 @@ export async function handleServerTool(
       const result = await mcpBackendFor(server, runtime.mcp, "direct")!.complete(server as never, {
         ref: parsed.ref,
         argument: parsed.argument,
+        ...(parsed.context ? { context: parsed.context } : {}),
       });
       return annotateMcpResult(result, metadataFor(server, "complete", undefined, startedAt));
     }
@@ -873,10 +874,15 @@ export function validateOperationRequest(
       }
       return { operation: "get_prompt", name: value.name, args: value.args ?? {} };
     case "complete":
-      allowed(["ref", "argument"]);
+      allowed(["ref", "argument", "context"]);
       if (!value.ref) throw new CapletsError("REQUEST_INVALID", "complete requires ref");
       if (!value.argument) throw new CapletsError("REQUEST_INVALID", "complete requires argument");
-      return { operation: "complete", ref: value.ref, argument: value.argument };
+      return {
+        operation: "complete",
+        ref: value.ref,
+        argument: value.argument,
+        ...(value.context ? { context: value.context } : {}),
+      };
   }
   throw new CapletsError("INTERNAL_ERROR", "Unhandled operation");
 }
@@ -939,6 +945,7 @@ type RequiredOperationRequest =
       operation: "complete";
       ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
       argument: { name: string; value: string };
+      context?: { arguments?: Record<string, string> | undefined } | undefined;
     };
 
 export type CapletArtifact =

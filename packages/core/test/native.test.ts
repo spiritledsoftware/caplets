@@ -9,7 +9,9 @@ import {
   nativeCapletPromptGuidance,
   nativeCapletToolName,
   nativeCapletsSystemGuidance,
+  type NativeCapletsService,
 } from "../src/native";
+import { CapletsEngine, type ResolvedExposureProjection } from "../src/engine";
 import { recordTelemetryNoticeShown } from "../src/telemetry";
 import { FileVaultStore } from "../src/vault";
 
@@ -59,6 +61,8 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    expect(service.listTools()).toEqual([]);
+    await waitForInitialProjection(service);
 
     try {
       const tools = service.listTools();
@@ -124,6 +128,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       const result = await service.execute("alpha", { operation: "inspect" });
@@ -181,6 +186,7 @@ describe("native Caplets service", () => {
       telemetryEnv: {},
       telemetryDispatcher: { capture, shutdown: vi.fn() },
     });
+    await waitForInitialProjection(service);
 
     try {
       await service.execute("alpha", { operation: "inspect" });
@@ -211,6 +217,7 @@ describe("native Caplets service", () => {
       telemetryEnv: {},
       telemetryDispatcher: { capture, shutdown: vi.fn() },
     });
+    await waitForInitialProjection(service);
 
     try {
       await service.execute("alpha", { operation: "inspect" });
@@ -246,8 +253,10 @@ describe("native Caplets service", () => {
     process.env.XDG_STATE_HOME = join(dir, "state");
 
     const ungranted = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(ungranted);
     try {
       expect(ungranted.listTools().map((tool) => tool.caplet)).not.toContain("github");
+      expect(ungranted.listTools().map((tool) => tool.caplet)).not.toContain("code_mode");
     } finally {
       await ungranted.close();
     }
@@ -262,6 +271,7 @@ describe("native Caplets service", () => {
     });
 
     const granted = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(granted);
     try {
       expect(granted.listTools()).toEqual(
         expect.arrayContaining([
@@ -269,6 +279,7 @@ describe("native Caplets service", () => {
             caplet: "github",
             toolName: "caplets__github",
           }),
+          expect.objectContaining({ caplet: "code_mode" }),
         ]),
       );
     } finally {
@@ -285,6 +296,9 @@ describe("native Caplets service", () => {
           exposure: "direct",
           baseUrl: "http://127.0.0.1:1",
           auth: { type: "none" },
+          useWhen: "Use when the service health is needed.",
+          avoidWhen: "Avoid for mutation requests.",
+          shadowing: "namespace",
           actions: {
             ping: {
               method: "GET",
@@ -301,6 +315,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       expect(service.listTools()).toEqual([
@@ -313,8 +328,37 @@ describe("native Caplets service", () => {
             type: "object",
             properties: { verbose: { type: "boolean" } },
           },
+          useWhen: "Use when the service health is needed.",
+          avoidWhen: "Avoid for mutation requests.",
+          shadowing: "namespace",
         }),
       ]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("omits native completion when direct MCP does not advertise that capability", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        docs: {
+          name: "Docs",
+          description: "MCP prompts and resources without completion.",
+          exposure: "direct",
+          command: process.execPath,
+          args: ["--import", tsxImport, join(fixturesDir, "stdio-server.ts"), "--no-completions"],
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
+
+    try {
+      expect(service.listTools().map((tool) => tool.caplet)).toEqual(
+        expect.arrayContaining(["docs__list_prompts", "docs__get_prompt"]),
+      );
+      expect(service.listTools().map((tool) => tool.caplet)).not.toContain("docs__complete");
     } finally {
       await service.close();
     }
@@ -338,6 +382,7 @@ describe("native Caplets service", () => {
       });
       dirs.push(dir);
       const service = createNativeCapletsService({ configPath, projectConfigPath });
+      await waitForInitialProjection(service);
 
       try {
         expect(service.listTools()).toEqual(
@@ -397,6 +442,7 @@ describe("native Caplets service", () => {
       projectConfigPath,
       projectRoot,
     });
+    await waitForInitialProjection(service);
 
     try {
       expect(service.listTools()).toEqual(
@@ -497,8 +543,20 @@ describe("native Caplets service", () => {
             "fixture__echo",
             "fixture__list_resources",
             "fixture__get_prompt",
+            "fixture__complete",
           ]),
         );
+      expect(
+        service.listTools().find((tool) => tool.caplet === "fixture__complete")?.inputSchema,
+      ).toMatchObject({
+        properties: {
+          context: {
+            properties: {
+              arguments: { additionalProperties: { type: "string" } },
+            },
+          },
+        },
+      });
 
       await expect(service.execute("fixture__echo", { message: "cold" })).resolves.toMatchObject({
         structuredContent: { message: "cold" },
@@ -509,6 +567,15 @@ describe("native Caplets service", () => {
             exposure: "direct",
           }),
         },
+      });
+      await expect(
+        service.execute("fixture__complete", {
+          ref: { type: "resourceTemplate", uri: "repo://{owner}/{name}{?region}" },
+          argument: { name: "name", value: "co" },
+          context: { arguments: { owner: "caplets", region: "eu" } },
+        }),
+      ).resolves.toMatchObject({
+        completion: { values: ["core"] },
       });
     } finally {
       await service.close();
@@ -600,11 +667,224 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       expect(service.listTools().map((tool) => tool.toolName)).toEqual(["caplets__code_mode"]);
     } finally {
       await service.close();
+    }
+  });
+
+  it("removes Code Mode identities after refreshed discovery fails", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Call status over HTTP.",
+          exposure: "code_mode",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
+    expect(service.listTools().map((tool) => tool.caplet)).toEqual(["code_mode"]);
+    const events: string[][] = [];
+    service.onToolsChanged((tools) => events.push(tools.map((tool) => tool.caplet)));
+
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              broken: {
+                name: "Broken MCP",
+                description: "Unavailable MCP.",
+                exposure: "direct_and_code_mode",
+                command: join(dir, "missing-command"),
+              },
+            },
+          }),
+        ),
+      );
+      await expect(service.reload()).resolves.toBe(true);
+
+      expect(service.listTools()).toEqual([]);
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events.every((tools) => tools.length === 0)).toBe(true);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("fails native execution closed until the current projection resolves and after refreshed discovery fails", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const initialProjection = Promise.withResolvers<ResolvedExposureProjection>();
+    const originalExposureProjection = CapletsEngine.prototype.exposureProjection;
+    let projectionCalls = 0;
+    const exposureProjection = vi
+      .spyOn(CapletsEngine.prototype, "exposureProjection")
+      .mockImplementation(async (): Promise<ResolvedExposureProjection> => {
+        if (projectionCalls++ === 0) return await initialProjection.promise;
+        throw new Error("refreshed discovery failed");
+      });
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const createdEngine = exposureProjection.mock.instances[0] as CapletsEngine | undefined;
+    if (!createdEngine) throw new Error("expected native service to begin projection discovery");
+    const execute = vi.spyOn(createdEngine, "execute");
+
+    try {
+      await expect(service.execute("alpha", { operation: "inspect" })).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+      });
+      await expect(
+        service.execute("code_mode", { code: "return await caplets.alpha.inspect();" }),
+      ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+      expect(execute).not.toHaveBeenCalled();
+
+      const initialReady = waitForInitialProjection(service);
+      initialProjection.resolve(
+        await originalExposureProjection.call(createdEngine, {
+          discoverNonDirectMcpSurfaces: false,
+        }),
+      );
+      await initialReady;
+      expect(configuredCapletIds(service.listTools())).toEqual(["alpha"]);
+
+      await expect(service.reload()).resolves.toBe(true);
+      expect(service.listTools()).toEqual([]);
+      await expect(service.execute("alpha", { operation: "inspect" })).rejects.toMatchObject({
+        code: "SERVER_UNAVAILABLE",
+      });
+      await expect(
+        service.execute("code_mode", { code: "return await caplets.alpha.inspect();" }),
+      ).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+      exposureProjection.mockRestore();
+    }
+  });
+
+  it("keeps native projections latest-wins across overlapping refreshes", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const initialProjection = Promise.withResolvers<ResolvedExposureProjection>();
+    const olderProjection = Promise.withResolvers<ResolvedExposureProjection>();
+    const newerProjection = Promise.withResolvers<ResolvedExposureProjection>();
+    const originalExposureProjection = CapletsEngine.prototype.exposureProjection;
+    let projectionCalls = 0;
+    const exposureProjection = vi
+      .spyOn(CapletsEngine.prototype, "exposureProjection")
+      .mockImplementation(async (): Promise<ResolvedExposureProjection> => {
+        switch (projectionCalls++) {
+          case 0:
+            return await initialProjection.promise;
+          case 1:
+            return await olderProjection.promise;
+          case 2:
+            return await newerProjection.promise;
+          default:
+            throw new Error("unexpected projection refresh");
+        }
+      });
+    const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    const createdEngine = exposureProjection.mock.instances[0] as CapletsEngine | undefined;
+    if (!createdEngine) throw new Error("expected native service to begin projection discovery");
+
+    try {
+      const initialReady = waitForInitialProjection(service);
+      initialProjection.resolve(
+        await originalExposureProjection.call(createdEngine, {
+          discoverNonDirectMcpSurfaces: false,
+        }),
+      );
+      await initialReady;
+      const events: string[][] = [];
+      service.onToolsChanged((tools) => events.push(configuredCapletIds(tools)));
+
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              beta: {
+                name: "Beta",
+                description: "Search beta project documents.",
+                command: process.execPath,
+              },
+            },
+          }),
+        ),
+      );
+      const olderReload = service.reload();
+      await expect.poll(() => projectionCalls).toBe(2);
+      const olderResolved = await originalExposureProjection.call(createdEngine, {
+        discoverNonDirectMcpSurfaces: false,
+      });
+
+      writeFileSync(
+        configPath,
+        JSON.stringify(
+          progressiveTestConfig({
+            mcpServers: {
+              gamma: {
+                name: "Gamma",
+                description: "Search gamma project documents.",
+                command: process.execPath,
+              },
+            },
+          }),
+        ),
+      );
+      const newerReload = service.reload();
+      await expect.poll(() => projectionCalls).toBe(3);
+      newerProjection.resolve(
+        await originalExposureProjection.call(createdEngine, {
+          discoverNonDirectMcpSurfaces: false,
+        }),
+      );
+      await expect(newerReload).resolves.toBe(true);
+
+      olderProjection.resolve({
+        ...olderResolved,
+        generation: createdEngine.currentExposureGeneration(),
+      });
+      await expect(olderReload).resolves.toBe(true);
+
+      expect(configuredCapletIds(service.listTools())).toEqual(["gamma"]);
+      expect(events).toEqual([["gamma"]]);
+      const execute = vi.spyOn(createdEngine, "execute").mockResolvedValue({ ok: true });
+      await expect(service.execute("gamma", { operation: "inspect" })).resolves.toEqual({
+        ok: true,
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith("gamma", { operation: "inspect" });
+    } finally {
+      await service.close();
+      exposureProjection.mockRestore();
     }
   });
 
@@ -623,6 +903,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       const result = await service.execute("code_mode", {
@@ -675,6 +956,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       await expect(service.execute("code_mode", { timeoutMs: 1_000 })).resolves.toMatchObject({
@@ -710,6 +992,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
 
     try {
       const result = await service.execute("missing", { operation: "inspect" });
@@ -768,6 +1051,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
 
     try {
       expect(configuredCapletIds(service.listTools())).toEqual(["alpha"]);
@@ -808,6 +1092,7 @@ describe("native Caplets service", () => {
     );
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
 
     try {
       expect(service.listTools().map((tool) => tool.caplet)).toEqual(["code_mode"]);
@@ -834,6 +1119,7 @@ describe("native Caplets service", () => {
       watch: false,
       writeErr: (value) => errors.push(value),
     });
+    await waitForInitialProjection(service);
     const events: string[][] = [];
     const unsubscribe = service.onToolsChanged((tools) => {
       events.push(configuredCapletIds(tools));
@@ -860,7 +1146,7 @@ describe("native Caplets service", () => {
         ),
       );
       await expect(service.reload()).resolves.toBe(true);
-      expect(events).toEqual([["gamma"]]);
+      expect(events).toEqual([[], ["gamma"]]);
 
       unsubscribe();
       writeFileSync(
@@ -878,7 +1164,7 @@ describe("native Caplets service", () => {
         ),
       );
       await expect(service.reload()).resolves.toBe(true);
-      expect(events).toEqual([["gamma"]]);
+      expect(events).toEqual([[], ["gamma"]]);
     } finally {
       await service.close();
     }
@@ -897,6 +1183,7 @@ describe("native Caplets service", () => {
     });
     dirs.push(dir);
     const service = createNativeCapletsService({ configPath, projectConfigPath, watch: false });
+    await waitForInitialProjection(service);
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
       events.push(configuredCapletIds(tools));
@@ -921,6 +1208,7 @@ describe("native Caplets service", () => {
 
       await expect(service.reload()).resolves.toBe(true);
       expect(events).toEqual([
+        [],
         expect.arrayContaining(["fixture__echo", "fixture__list_resources", "fixture__get_prompt"]),
       ]);
     } finally {
@@ -951,6 +1239,7 @@ describe("native Caplets service", () => {
       async () => {
         throw new Error("close failed");
       };
+    await waitForInitialProjection(service);
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
       events.push(configuredCapletIds(tools));
@@ -974,7 +1263,7 @@ describe("native Caplets service", () => {
       );
 
       await expect(service.reload()).resolves.toBe(false);
-      expect(events).toEqual([["beta"]]);
+      expect(events).toEqual([[], ["beta"]]);
       expect(errors.join("")).toContain("backend invalidation failed");
     } finally {
       await service.close();
@@ -997,6 +1286,7 @@ describe("native Caplets service", () => {
       projectConfigPath,
       watchDebounceMs: 10,
     });
+    await waitForInitialProjection(service);
     const events: string[][] = [];
     service.onToolsChanged((tools) => {
       events.push(configuredCapletIds(tools));
@@ -1047,6 +1337,15 @@ describe("native Caplets service", () => {
     return { dir, configPath, projectConfigPath };
   }
 });
+
+async function waitForInitialProjection(service: NativeCapletsService): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const unsubscribe = service.onToolsChanged(() => {
+      unsubscribe();
+      resolve();
+    });
+  });
+}
 
 async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   const server = createServer((_request, response) => {

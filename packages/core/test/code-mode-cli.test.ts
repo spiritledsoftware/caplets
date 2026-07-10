@@ -119,6 +119,33 @@ describe("Code Mode CLI", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("waits for the initial resolved projection before running one-shot Code Mode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = writeConfig(dir, {
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "GitHub repo operations.",
+            command: "node",
+            exposure: "code_mode",
+          },
+        },
+      });
+
+      await runCli(["code-mode", "return Object.keys(caplets).sort();", "--json"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        ok: true,
+        value: ["debug", "github"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("reads --file paths relative to the current working directory", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
@@ -213,6 +240,42 @@ describe("Code Mode CLI", () => {
         runtimeScope: "local",
       });
       expect(JSON.parse(out.join("")).declarationHash).toMatch(/^[a-f0-9]{64}$/u);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("derives generated callable counts from resolved Code Mode entries", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-code-mode-cli-"));
+    const out: string[] = [];
+    try {
+      process.env.CAPLETS_CONFIG = writeConfig(dir, {
+        options: { exposureDiscoveryTimeoutMs: 100 },
+        mcpServers: {
+          github: {
+            name: "GitHub",
+            description: "GitHub repo operations.",
+            command: "node",
+            exposure: "code_mode",
+          },
+        },
+        openapiEndpoints: {
+          unavailable: {
+            name: "Unavailable API",
+            description: "An unavailable OpenAPI service.",
+            specUrl: "http://127.0.0.1:1/openapi.json",
+            auth: { type: "none" },
+            exposure: "code_mode",
+          },
+        },
+      });
+
+      await runCli(["code-mode", "types", "--json"], {
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        callableCount: 1,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

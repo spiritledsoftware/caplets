@@ -695,6 +695,8 @@ describe("RemoteNativeCapletsService", () => {
               name: "Remote",
               title: "Remote",
               description: "Remote Code Mode handle.",
+              useWhen: "Use for remote repository work.",
+              avoidWhen: "Avoid for local-only operations.",
               inputSchema: { type: "object", additionalProperties: true },
               schemaHash: "hash-code-mode",
               capletId: "remote",
@@ -713,7 +715,18 @@ describe("RemoteNativeCapletsService", () => {
       pollIntervalMs: 60_000,
     });
 
-    await remote.listTools();
+    const tools = await remote.listTools();
+    expect(tools).toEqual([
+      expect.objectContaining({
+        codeModeCaplets: [
+          expect.objectContaining({
+            capletId: "remote",
+            useWhen: "Use for remote repository work.",
+            avoidWhen: "Avoid for local-only operations.",
+          }),
+        ],
+      }),
+    ]);
     await expect(remote.callTool("remote", { operation: "inspect" })).resolves.toEqual({
       invoked: true,
     });
@@ -2553,6 +2566,7 @@ describe("createNativeCapletsService remote mode", () => {
       projectConfigPath,
       writeErr,
     });
+    await waitForInitialProjection(service);
 
     expect(configuredCapletIds(service.listTools())).toEqual(["local"]);
     expect(writeErr).toHaveBeenCalledTimes(1);
@@ -3038,6 +3052,7 @@ describe("createNativeCapletsService remote mode", () => {
       configPath,
       projectConfigPath,
     });
+    await waitForInitialProjection(service);
 
     try {
       expect(service.listTools()).toContainEqual(
@@ -4074,7 +4089,7 @@ describe("createNativeCapletsService remote mode", () => {
       );
     expect(bodies[0]).toMatchObject({
       projectRoot,
-      allowedCapletIds: ["local", "code_mode"],
+      allowedCapletIds: [],
     });
     expect(fetch).toHaveBeenCalledWith(
       new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
@@ -4427,6 +4442,15 @@ describe("createNativeCapletsService remote mode", () => {
     ).toThrow(/https/u);
   });
 });
+
+async function waitForInitialProjection(service: NativeCapletsService): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const unsubscribe = service.onToolsChanged(() => {
+      unsubscribe();
+      resolve();
+    });
+  });
+}
 
 function tempConfig(config: unknown) {
   const dir = mkdtempSync(join(tmpdir(), "caplets-native-remote-"));

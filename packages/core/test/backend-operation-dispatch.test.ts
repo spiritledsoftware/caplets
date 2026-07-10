@@ -179,6 +179,20 @@ describe("backend operation dispatch", () => {
         registry,
         runtime,
       );
+      const contextualCompletion = await handleServerTool(
+        server,
+        {
+          operation: "complete",
+          ref: {
+            type: "resourceTemplate",
+            uri: "repo://{owner}/{name}{?region}",
+          },
+          argument: { name: "name", value: "co" },
+          context: { arguments: { owner: "caplets", region: "eu" } },
+        } as Parameters<typeof handleServerTool>[1],
+        registry,
+        runtime,
+      );
 
       expect(resources.structuredContent).toMatchObject({
         result: {
@@ -188,7 +202,11 @@ describe("backend operation dispatch", () => {
         },
       });
       expect(templates.structuredContent).toMatchObject({
-        result: { items: [{ uriTemplate: "file:///repo/{path}" }] },
+        result: {
+          items: expect.arrayContaining([
+            expect.objectContaining({ uriTemplate: "file:///repo/{path}" }),
+          ]),
+        },
       });
       expect(resource.contents).toEqual([
         {
@@ -204,6 +222,7 @@ describe("backend operation dispatch", () => {
         { role: "user", content: { type: "text", text: "Review CAP-123" } },
       ]);
       expect(completion.completion.values).toEqual(["README.md"]);
+      expect(contextualCompletion).toMatchObject({ completion: { values: ["core"] } });
     } finally {
       await mcp.close();
     }

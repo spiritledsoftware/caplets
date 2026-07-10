@@ -3,7 +3,11 @@ import {
   decodeDirectResourceUri,
   directResourceUriMatchesTemplate,
 } from "../exposure/direct-names";
-import { generatedToolInputJsonSchemaForCaplet, operations } from "../generated-tool-input-schema";
+import {
+  completionContextJsonSchema,
+  generatedToolInputJsonSchemaForCaplet,
+  operations,
+} from "../generated-tool-input-schema";
 import {
   buildManifestExposureProjection,
   type ExposureProjectionEntry,
@@ -48,6 +52,8 @@ export type RemoteCapletsTool = {
   shadowing?: CapletShadowingPolicy | undefined;
   title?: string | undefined;
   description?: string | undefined;
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
   inputSchema?: unknown;
   outputSchema?: unknown;
   annotations?: unknown;
@@ -526,6 +532,8 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
     caplet: capletId,
     ...(sourceCaplet && sourceCaplet !== capletId ? { sourceCaplet } : {}),
     ...(tool.shadowing ? { shadowing: tool.shadowing } : {}),
+    ...(tool.useWhen ? { useWhen: tool.useWhen } : {}),
+    ...(tool.avoidWhen ? { avoidWhen: tool.avoidWhen } : {}),
     toolName,
     title: tool.title ?? capletId,
     description: [
@@ -545,6 +553,8 @@ function remoteToolToNativeTool(tool: RemoteCapletsTool): NativeCapletTool {
             ...(caplet.sourceCapletId ? { sourceCapletId: caplet.sourceCapletId } : {}),
             name: caplet.name,
             description: caplet.description ?? "",
+            ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+            ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
             shadowing: caplet.shadowing,
           })),
         }
@@ -563,6 +573,8 @@ function remoteCodeModeToolDescription(tool: RemoteCapletsTool): string | undefi
       id: caplet.capletId,
       name: caplet.name,
       description: caplet.description ?? "",
+      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
+      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
       shadowing: caplet.shadowing,
     })),
   });
@@ -927,6 +939,8 @@ function progressiveToolFromProjection(
       title: entry.title,
       description: entry.description,
       inputSchema: entry.inputSchema,
+      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
       ...codeModeMarker,
     },
@@ -948,6 +962,8 @@ function directToolFromProjection(
       inputSchema: entry.inputSchema,
       outputSchema: entry.outputSchema,
       annotations: entry.annotations,
+      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
       shadowing: entry.shadowing,
       ...codeModeMarker,
     },
@@ -975,14 +991,21 @@ function primitiveToolsFromProjection(
       prompts: boolean;
       completions: boolean;
       shadowing: CapletShadowingPolicy;
+      useWhen?: string;
+      avoidWhen?: string;
     }
   >();
-  const entryFor = (capletId: string, shadowing: CapletShadowingPolicy) => {
-    const existing = byCaplet.get(capletId);
+  const entryFor = (entry: ExposureProjectionEntry) => {
+    const existing = byCaplet.get(entry.capletId);
     if (existing) {
-      if (shadowing === "forbid" || (shadowing === "namespace" && existing.shadowing === "allow")) {
-        existing.shadowing = shadowing;
+      if (
+        entry.shadowing === "forbid" ||
+        (entry.shadowing === "namespace" && existing.shadowing === "allow")
+      ) {
+        existing.shadowing = entry.shadowing;
       }
+      if (!existing.useWhen && entry.useWhen) existing.useWhen = entry.useWhen;
+      if (!existing.avoidWhen && entry.avoidWhen) existing.avoidWhen = entry.avoidWhen;
       return existing;
     }
     const next = {
@@ -990,19 +1013,20 @@ function primitiveToolsFromProjection(
       resourceTemplates: false,
       prompts: false,
       completions: false,
-      shadowing,
+      shadowing: entry.shadowing,
+      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     };
-    byCaplet.set(capletId, next);
+    byCaplet.set(entry.capletId, next);
     return next;
   };
   for (const entry of entries) {
-    if (entry.kind === "direct-resource")
-      entryFor(entry.capletId, entry.shadowing).resources = true;
+    if (entry.kind === "direct-resource") entryFor(entry).resources = true;
     if (entry.kind === "direct-resource-template") {
-      entryFor(entry.capletId, entry.shadowing).resourceTemplates = true;
+      entryFor(entry).resourceTemplates = true;
     }
-    if (entry.kind === "direct-prompt") entryFor(entry.capletId, entry.shadowing).prompts = true;
-    if (entry.kind === "completion") entryFor(entry.capletId, entry.shadowing).completions = true;
+    if (entry.kind === "direct-prompt") entryFor(entry).prompts = true;
+    if (entry.kind === "completion") entryFor(entry).completions = true;
   }
 
   const tools: RemoteCapletsTool[] = [];
@@ -1010,26 +1034,34 @@ function primitiveToolsFromProjection(
     capletId: string,
     operation: string,
     shadowing: CapletShadowingPolicy,
+    useWhen?: string,
+    avoidWhen?: string,
   ) => {
     const name = `${capletId}__${operation}`;
     if (directToolNames.has(name)) return;
-    tools.push(primitiveTool(capletId, operation, shadowing, codeModeMarker));
+    tools.push(primitiveTool(capletId, operation, shadowing, codeModeMarker, useWhen, avoidWhen));
   };
   for (const [capletId, flags] of byCaplet) {
     if (flags.resources) {
-      addPrimitiveTool(capletId, "list_resources", flags.shadowing);
-      addPrimitiveTool(capletId, "read_resource", flags.shadowing);
+      addPrimitiveTool(capletId, "list_resources", flags.shadowing, flags.useWhen, flags.avoidWhen);
+      addPrimitiveTool(capletId, "read_resource", flags.shadowing, flags.useWhen, flags.avoidWhen);
     }
     if (flags.resourceTemplates) {
-      addPrimitiveTool(capletId, "list_resource_templates", flags.shadowing);
-      addPrimitiveTool(capletId, "read_resource", flags.shadowing);
+      addPrimitiveTool(
+        capletId,
+        "list_resource_templates",
+        flags.shadowing,
+        flags.useWhen,
+        flags.avoidWhen,
+      );
+      addPrimitiveTool(capletId, "read_resource", flags.shadowing, flags.useWhen, flags.avoidWhen);
     }
     if (flags.prompts) {
-      addPrimitiveTool(capletId, "list_prompts", flags.shadowing);
-      addPrimitiveTool(capletId, "get_prompt", flags.shadowing);
+      addPrimitiveTool(capletId, "list_prompts", flags.shadowing, flags.useWhen, flags.avoidWhen);
+      addPrimitiveTool(capletId, "get_prompt", flags.shadowing, flags.useWhen, flags.avoidWhen);
     }
     if (flags.completions) {
-      addPrimitiveTool(capletId, "complete", flags.shadowing);
+      addPrimitiveTool(capletId, "complete", flags.shadowing, flags.useWhen, flags.avoidWhen);
     }
   }
   return [...new Map(tools.map((tool) => [tool.name, tool])).values()];
@@ -1040,6 +1072,8 @@ function primitiveTool(
   operation: string,
   shadowing: CapletShadowingPolicy,
   codeModeMarker: Pick<RemoteCapletsTool, "codeModeCaplets"> | Record<string, never>,
+  useWhen?: string,
+  avoidWhen?: string,
 ): RemoteCapletsTool {
   return {
     name: `${capletId}__${operation}`,
@@ -1048,6 +1082,8 @@ function primitiveTool(
     title: operation,
     description: `MCP ${operation.replace(/_/g, " ")}.`,
     inputSchema: primitiveInputSchema(operation),
+    ...(useWhen ? { useWhen } : {}),
+    ...(avoidWhen ? { avoidWhen } : {}),
     shadowing,
     ...codeModeMarker,
   };
@@ -1087,6 +1123,7 @@ function primitiveInputSchema(operation: string): Record<string, unknown> {
       properties: {
         ref: { type: "object", additionalProperties: true },
         argument: { type: "object", additionalProperties: true },
+        context: completionContextJsonSchema,
       },
       required: ["ref", "argument"],
       additionalProperties: false,

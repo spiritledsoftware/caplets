@@ -33,6 +33,7 @@ import type { ProjectBindingExecutionContext } from "./project-binding/execution
 import { ServerRegistry } from "./registry";
 import { extractArtifacts, handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
+import { buildExposureProjection, type ExposureProjection } from "./exposure/projection";
 import {
   captureRuntimeReliabilityEvent,
   captureRuntimeTelemetryEvent,
@@ -51,6 +52,11 @@ import type {
 } from "./telemetry";
 
 type ToolSummary = { name: string; description?: string };
+
+export type ResolvedExposureProjection = {
+  generation: number;
+  projection: ExposureProjection;
+};
 
 export type CapletsEngineOptions = {
   configPath?: string;
@@ -122,7 +128,7 @@ export class CapletsEngine {
   private readonly telemetry: RuntimeTelemetryContext;
   private readonly telemetryExecuteExposureMode: "progressive" | "code_mode";
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
-  private lastExposureSnapshot: ExposureSnapshot | undefined;
+  private exposureGeneration = 0;
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
@@ -200,12 +206,28 @@ export class CapletsEngine {
     return nextEnabledServers(this.registry.config);
   }
 
+  currentExposureGeneration(): number {
+    return this.exposureGeneration;
+  }
+
+  async exposureProjection(
+    options: { discoverNonDirectMcpSurfaces?: boolean | undefined } = {},
+  ): Promise<ResolvedExposureProjection> {
+    const generation = this.exposureGeneration;
+    return {
+      generation,
+      projection: buildExposureProjection(await this.exposureSnapshot(options)),
+    };
+  }
+
   async exposureSnapshot(
     options: { discoverNonDirectMcpSurfaces?: boolean | undefined } = {},
   ): Promise<ExposureSnapshot> {
-    this.lastExposureSnapshot = await discoverExposureSnapshot({
-      config: this.registry.config,
-      caplets: this.enabledServers(),
+    const config = this.registry.config;
+    const caplets = allCaplets(config);
+    return await discoverExposureSnapshot({
+      config,
+      caplets,
       ...(options.discoverNonDirectMcpSurfaces === undefined
         ? {}
         : { discoverNonDirectMcpSurfaces: options.discoverNonDirectMcpSurfaces }),
@@ -219,12 +241,8 @@ export class CapletsEngine {
         this.optionalMcpList(caplet, () => this.downstream.listResourceTemplates(caplet, true)),
       listPrompts: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listPrompts(caplet, true)),
+      supportsCompletions: async (caplet) => await this.downstream.supportsCompletions(caplet),
     });
-    return this.lastExposureSnapshot;
-  }
-
-  currentExposureSnapshot(): ExposureSnapshot | undefined {
-    return this.lastExposureSnapshot;
   }
 
   currentProjectBindingContext(): ProjectBindingExecutionContext | undefined {
@@ -325,6 +343,33 @@ export class CapletsEngine {
       this.captureReliabilityError("call_tool", "direct", result);
       this.captureToolActivation(caplet, "call_tool", "direct", result, started);
       return result;
+    }
+  }
+
+  async completeDirectReference(
+    serverId: string,
+    ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string },
+    argument: { name: string; value: string },
+    context?: { arguments?: Record<string, string> | undefined } | undefined,
+  ): Promise<string[]> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
+    try {
+      caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
+      if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP completions`);
+      const result = await this.downstream.complete(caplet, {
+        ref,
+        argument,
+        ...(context ? { context } : {}),
+      });
+      this.captureToolActivation(caplet, "complete", "direct", result, started);
+      return result.completion.values;
+    } catch (error) {
+      const result = errorResult(error);
+      this.captureReliabilityError("complete", "direct", result);
+      this.captureToolActivation(caplet, "complete", "direct", result, started);
+      throw error;
     }
   }
 
@@ -507,6 +552,7 @@ export class CapletsEngine {
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     this.registry = nextRegistry;
+    this.exposureGeneration += 1;
     this.telemetry.config = nextConfig;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);

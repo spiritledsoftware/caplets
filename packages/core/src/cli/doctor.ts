@@ -585,6 +585,7 @@ async function resolveExposureSection(env: NodeJS.ProcessEnv | Record<string, st
       writeErr: () => undefined,
     });
     try {
+      await service.reload();
       const nativeTools = service.listTools();
       const callableIds = new Set(nativeTools.map((tool) => tool.caplet));
       return {
@@ -827,6 +828,7 @@ async function resolveCallableIndexDoctor(
       writeErr: () => undefined,
     });
     try {
+      await service.reload();
       return { ok: true, callableCount: listCodeModeCallableCaplets(service).length };
     } finally {
       await service.close();

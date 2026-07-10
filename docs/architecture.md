@@ -38,7 +38,9 @@ Backend managers provide a common shape for listing tools, searching tools, desc
 
 The global default is `code_mode`. Per-Caplet config may choose `direct`, `progressive`, `code_mode`, `direct_and_code_mode`, or `progressive_and_code_mode`.
 
-`packages/core/src/exposure/projection.ts` turns resolved discovery snapshots and attach manifests into the Caplets exposure projection: the adapter-neutral view of Code Mode handles, progressive tools, direct downstream operations, direct MCP surfaces, route descriptors, hidden diagnostic breadcrumbs, and local/remote merge outcomes. MCP serving, native integrations, and attach/remote clients render this projection; they do not re-own exposure identity, namespace shadowing, or hidden-Caplet policy.
+`packages/core/src/exposure/projection.ts` turns resolved discovery snapshots and attach manifests into the Caplets exposure projection: the adapter-neutral, registration-ready view of Code Mode handles, progressive tools, direct downstream operations, direct MCP surfaces, schemas, prompt arguments, resource metadata, route descriptors, hidden diagnostic breadcrumbs, and local/remote merge outcomes. MCP serving, native integrations, and attach/remote clients render this projection; they do not re-own exposure identity, namespace shadowing, registration facts, or hidden-Caplet policy.
+
+The engine tags each projection with the config generation captured before discovery. Adapters publish only a projection that still matches the current generation, discard out-of-order discovery, and reject callbacks rendered from an older generation. Until initial or refreshed discovery resolves, Code Mode declarations and native execution allowlists fail closed rather than falling back to configured Caplet IDs.
 
 ### MCP Server
 

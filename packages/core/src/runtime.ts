@@ -1,7 +1,7 @@
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import type { CapletsConfig } from "./config";
 import { CapletsEngine, type CapletsEngineOptions } from "./engine";
-import { CapletsMcpSession, type ToolServer } from "./serve/session";
+import { CapletsMcpSession, type CapletsMcpSessionOptions, type ToolServer } from "./serve/session";
 
 type CapletsRuntimeOptions = {
   configPath?: string;
@@ -36,7 +36,12 @@ export class CapletsRuntime {
   }
 
   async reload(): Promise<boolean> {
-    return await this.engine.reload();
+    const previousGeneration = this.engine.currentExposureGeneration();
+    const reloaded = await this.engine.reload();
+    if (this.engine.currentExposureGeneration() !== previousGeneration) {
+      await this.session.waitForReloadRefresh().catch(() => undefined);
+    }
+    return reloaded;
   }
 
   async close(): Promise<void> {
@@ -60,8 +65,11 @@ export class CapletsRuntime {
   }
 }
 
-function selectSessionOptions(options: CapletsRuntimeOptions): { server?: ToolServer } {
-  return options.server === undefined ? {} : { server: options.server };
+function selectSessionOptions(options: CapletsRuntimeOptions): CapletsMcpSessionOptions {
+  return {
+    ...(options.server === undefined ? {} : { server: options.server }),
+    ...(options.writeErr === undefined ? {} : { writeErr: options.writeErr }),
+  };
 }
 
 function engineOptions(options: CapletsRuntimeOptions): CapletsEngineOptions {

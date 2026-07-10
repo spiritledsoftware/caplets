@@ -7,10 +7,11 @@ import {
   type RegisteredResourceTemplate,
   type RegisteredTool,
 } from "@modelcontextprotocol/sdk/server/mcp";
+import { completable } from "@modelcontextprotocol/sdk/server/completable";
+import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { z } from "zod";
 import { version as packageJsonVersion } from "../../package.json";
-import type { CapletConfig, CapletsConfig } from "../config";
 import {
   generateCodeModeDeclarations,
   generateCodeModeRunToolDescription,
@@ -24,28 +25,21 @@ import {
   codeModeRunParamsSchema,
   emptyCodeModeRunMeta,
 } from "../code-mode/tool";
-import type { CapletsEngine } from "../engine";
+import type { CapletsEngine, ResolvedExposureProjection } from "../engine";
+import { CapletsError } from "../errors";
 import type {
-  CallableCaplet,
-  DirectPromptRegistration,
-  DirectResourceRegistration,
-  DirectResourceTemplateRegistration,
-  DirectToolRegistration,
-  ExposureSnapshot,
-} from "../exposure/discovery";
-import { buildExposureProjection, type ExposureProjection } from "../exposure/projection";
+  ExposureProjection,
+  ExposureProjectionCodeModeCaplet,
+  ExposureProjectionDirectPrompt,
+  ExposureProjectionDirectResource,
+  ExposureProjectionDirectResourceTemplate,
+  ExposureProjectionDirectTool,
+  ExposureProjectionProgressiveCaplet,
+  ExposureProjectionPromptArgument,
+} from "../exposure/projection";
 import { decodeDirectResourceUri } from "../exposure/direct-names";
-import { resolveExposure } from "../exposure/policy";
-import { generatedToolInputSchemaForCaplet } from "../generated-tool-input-schema";
 import type { NativeCapletTool, NativeCapletsService } from "../native/service";
-import { projectBindingMissingContextDiagnostic } from "../project-binding/errors";
-import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
-import {
-  nativeCapletPromptGuidance,
-  nativeCapletToolDescription,
-  nativeCapletToolName,
-} from "../native/tools";
-import { capabilityDescription } from "../registry";
+import { nativeCapletToolName } from "../native/tools";
 
 const directToolSchemaAjv = new Ajv({
   allErrors: true,
@@ -60,11 +54,17 @@ export type ToolServer = Pick<McpServer, "registerTool" | "connect" | "close"> &
 
 export type CapletsMcpSessionOptions = {
   server?: ToolServer;
+  writeErr?: ((value: string) => void) | undefined;
 };
 
 type ToolRegistrationPlan = {
   register(): RegisteredTool;
   update(tool: RegisteredTool): void;
+};
+
+type ExposureProjectionBinding = {
+  generation: number;
+  epoch: number;
 };
 
 export class CapletsMcpSession {
@@ -75,7 +75,12 @@ export class CapletsMcpSession {
   private codeModeTool: RegisteredTool | undefined;
   private readonly codeModeSessions = new CodeModeSessionManager();
   private readonly unsubscribeReload: () => void;
+  private resolvedProjection: ResolvedExposureProjection | undefined;
+  private refreshSequence = 0;
+  private projectionEpoch = 0;
+  private reloadRefresh: Promise<void> = Promise.resolve();
   private closed = false;
+  private readonly writeErr: (value: string) => void;
 
   constructor(
     private readonly engine: CapletsEngine,
@@ -87,27 +92,23 @@ export class CapletsMcpSession {
         name: "caplets",
         version: packageJsonVersion,
       });
-    this.unsubscribeReload = this.engine.onReload(({ previous, next }) => {
-      this.reconcileFromSnapshot(
-        staticExposureSnapshot(
-          next,
-          this.engine.enabledServers(),
-          this.engine.currentProjectBindingContext(),
-        ),
-      );
-      void this.refreshExposure(previous, next);
+    this.writeErr =
+      options.writeErr ??
+      ((value) => {
+        process.stderr.write(value);
+      });
+    this.unsubscribeReload = this.engine.onReload(() => {
+      this.reloadRefresh = this.refreshExposure();
+      void this.reloadRefresh.catch((error) => {
+        this.writeErr(
+          `Caplets exposure refresh failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
     });
-    this.reconcileFromSnapshot(
-      staticExposureSnapshot(
-        this.engine.currentConfig(),
-        this.engine.enabledServers(),
-        this.engine.currentProjectBindingContext(),
-      ),
-    );
   }
 
   async connect(transport: Transport): Promise<void> {
-    await this.refreshExposure(undefined, this.engine.currentConfig());
+    await this.refreshExposure();
     await this.server.connect(transport);
   }
 
@@ -115,12 +116,35 @@ export class CapletsMcpSession {
     return [...this.tools.keys()].sort();
   }
 
-  async refreshExposure(
-    _previous: CapletsConfig | undefined = undefined,
-    _next: CapletsConfig = this.engine.currentConfig(),
-  ): Promise<void> {
+  async refreshExposure(): Promise<void> {
     if (this.closed) return;
-    this.reconcileFromSnapshot(await this.engine.exposureSnapshot());
+    const sequence = ++this.refreshSequence;
+    const resolved = await this.engine.exposureProjection({
+      discoverNonDirectMcpSurfaces: false,
+    });
+    if (
+      this.closed ||
+      sequence !== this.refreshSequence ||
+      resolved.generation !== this.engine.currentExposureGeneration()
+    ) {
+      return;
+    }
+    const binding = {
+      generation: resolved.generation,
+      epoch: ++this.projectionEpoch,
+    };
+    try {
+      this.reconcileFromProjection(resolved.projection, binding);
+      this.resolvedProjection = resolved;
+    } catch (error) {
+      this.resolvedProjection = undefined;
+      this.clearRegistrations();
+      throw error;
+    }
+  }
+
+  async waitForReloadRefresh(): Promise<void> {
+    await this.reloadRefresh;
   }
 
   async close(): Promise<void> {
@@ -132,88 +156,77 @@ export class CapletsMcpSession {
     await this.server.close();
   }
 
-  private reconcileFromSnapshot(snapshot: ExposureSnapshot): void {
-    this.reconcileFromProjection(buildExposureProjection(snapshot), snapshot);
-  }
-
   private reconcileFromProjection(
     projection: ExposureProjection,
-    snapshot: ExposureSnapshot,
+    binding: ExposureProjectionBinding,
   ): void {
-    const codeModeCaplets = projection.entries
-      .filter((entry) => entry.kind === "code-mode-caplet")
-      .flatMap((entry) => {
-        const caplet = snapshot.codeModeCaplets.find(
-          (candidate) => candidate.caplet.server === entry.capletId,
-        );
-        return caplet ? [caplet] : [];
-      });
+    const codeModeCaplets = projection.entries.filter(
+      (entry): entry is ExposureProjectionCodeModeCaplet => entry.kind === "code-mode-caplet",
+    );
+    const completionCapletIds = new Set(
+      projection.entries
+        .filter((entry) => entry.kind === "completion")
+        .map((entry) => entry.route.capletId),
+    );
     if (codeModeCaplets.length > 0) {
+      const callback = async (request: unknown) =>
+        this.handleCodeModeRunTool(request, binding, codeModeCaplets);
       if (this.codeModeTool) {
         this.codeModeTool.update({
           title: "Code Mode",
           description: codeModeRunToolDescription(codeModeCaplets),
           paramsSchema: codeModeRunParamsSchema,
-          callback: async (request: unknown) => this.handleCodeModeRunTool(request),
+          callback,
           enabled: true,
         });
       } else {
-        this.codeModeTool = this.registerCodeModeTool(codeModeCaplets);
+        this.codeModeTool = this.registerCodeModeTool(codeModeCaplets, binding);
       }
     } else if (this.codeModeTool) {
       this.codeModeTool.remove();
       this.codeModeTool = undefined;
     }
 
-    const progressiveById = new Map(
-      snapshot.progressiveCaplets.map((entry) => [entry.caplet.server, entry]),
-    );
-    const directToolsById = new Map(snapshot.directTools.map((entry) => [entry.name, entry]));
     const desiredTools = new Map<string, ToolRegistrationPlan>();
     for (const entry of projection.entries) {
       if (entry.kind === "progressive-caplet") {
-        const capletEntry = progressiveById.get(entry.id);
-        if (!capletEntry) continue;
+        const inputSchema = zodSchemaForDirectTool(entry.inputSchema);
         desiredTools.set(entry.id, {
-          register: () => this.registerCapletTool(capletEntry.caplet),
+          register: () => this.registerCapletTool(entry, binding),
           update: (tool) =>
             (tool.update as (updates: Record<string, unknown>) => void)({
-              title: capletEntry.caplet.name,
-              description: capabilityDescription(capletEntry.caplet),
-              paramsSchema: generatedToolInputSchemaForCaplet(capletEntry.caplet).shape,
-              callback: async (request: unknown) =>
-                this.engine.execute(capletEntry.caplet.server, request) as never,
+              title: entry.title,
+              description: entry.description,
+              paramsSchema: inputSchema?.shape,
+              callback: async (request: unknown) => {
+                this.assertProjectionBinding(binding);
+                return this.engine.execute(entry.route.capletId, request) as never;
+              },
               enabled: true,
             }),
         });
       }
       if (entry.kind === "direct-tool") {
-        const directTool = directToolsById.get(entry.id);
-        if (!directTool) continue;
-        const inputSchema = zodSchemaForDirectTool(directTool.tool.inputSchema);
-        const outputSchema = zodSchemaForDirectTool(directTool.tool.outputSchema);
+        const inputSchema = zodSchemaForDirectTool(entry.inputSchema);
+        const outputSchema = zodSchemaForDirectTool(entry.outputSchema);
         desiredTools.set(entry.id, {
-          register: () => this.registerDirectTool(directTool),
+          register: () => this.registerDirectTool(entry, binding),
           update: (tool) =>
             (tool.update as (updates: Record<string, unknown>) => void)({
-              title: directTool.tool.name,
-              description: directTool.tool.description,
+              title: entry.title,
+              description: entry.description,
               paramsSchema: inputSchema,
               outputSchema,
-              annotations: directTool.tool.annotations,
-              _meta: {
-                caplets: {
-                  capletId: directTool.caplet.server,
-                  downstreamName: directTool.downstreamName,
-                  exposure: "direct",
-                },
-              },
-              callback: async (request: unknown) =>
-                this.engine.executeDirectTool(
-                  directTool.caplet.server,
-                  directTool.downstreamName,
+              annotations: entry.annotations,
+              _meta: directToolMetadata(entry),
+              callback: async (request: unknown) => {
+                this.assertProjectionBinding(binding);
+                return this.engine.executeDirectTool(
+                  entry.route.capletId,
+                  entry.route.downstreamName,
                   isRecord(request) ? request : {},
-                ) as never,
+                ) as never;
+              },
               enabled: true,
             }),
         });
@@ -238,23 +251,25 @@ export class CapletsMcpSession {
     for (const prompt of this.prompts.values()) prompt.remove();
     this.resources.clear();
     this.prompts.clear();
-    const resourcesById = new Map(snapshot.directResources.map((entry) => [entry.uri, entry]));
-    const resourceTemplatesById = new Map(
-      snapshot.directResourceTemplates.map((entry) => [entry.uriTemplate, entry]),
-    );
-    const promptsById = new Map(snapshot.directPrompts.map((entry) => [entry.name, entry]));
     for (const entry of projection.entries) {
       if (entry.kind === "direct-resource") {
-        const resource = resourcesById.get(entry.id);
-        if (resource) this.resources.set(entry.id, this.registerDirectResource(resource));
+        this.resources.set(entry.id, this.registerDirectResource(entry, binding));
       }
       if (entry.kind === "direct-resource-template") {
-        const template = resourceTemplatesById.get(entry.id);
-        if (template) this.resources.set(entry.id, this.registerDirectResourceTemplate(template));
+        this.resources.set(
+          entry.id,
+          this.registerDirectResourceTemplate(
+            entry,
+            binding,
+            completionCapletIds.has(entry.route.capletId),
+          ),
+        );
       }
       if (entry.kind === "direct-prompt") {
-        const prompt = promptsById.get(entry.id);
-        if (prompt) this.prompts.set(entry.id, this.registerDirectPrompt(prompt));
+        this.prompts.set(
+          entry.id,
+          this.registerDirectPrompt(entry, binding, completionCapletIds.has(entry.route.capletId)),
+        );
       }
     }
   }
@@ -270,7 +285,10 @@ export class CapletsMcpSession {
     this.prompts.clear();
   }
 
-  private registerCodeModeTool(codeModeCaplets: CallableCaplet[]): RegisteredTool {
+  private registerCodeModeTool(
+    codeModeCaplets: ExposureProjectionCodeModeCaplet[],
+    binding: ExposureProjectionBinding,
+  ): RegisteredTool {
     return this.server.registerTool(
       "code_mode",
       {
@@ -278,17 +296,27 @@ export class CapletsMcpSession {
         description: codeModeRunToolDescription(codeModeCaplets),
         inputSchema: codeModeRunParamsSchema,
       },
-      async (request: unknown) => this.handleCodeModeRunTool(request),
+      async (request: unknown) => this.handleCodeModeRunTool(request, binding, codeModeCaplets),
     );
   }
 
-  private async handleCodeModeRunTool(request: unknown): Promise<any> {
+  private async handleCodeModeRunTool(
+    request: unknown,
+    binding: ExposureProjectionBinding,
+    codeModeCaplets: ExposureProjectionCodeModeCaplet[],
+  ): Promise<any> {
+    this.assertProjectionBinding(binding);
     const started = Date.now();
     const parsed = codeModeRunInputSchema.safeParse(request);
     const envelope = parsed.success
       ? await runCodeMode({
           code: parsed.data.code,
-          service: new EngineNativeCapletsService(this.engine),
+          service: new EngineNativeCapletsService(
+            this.engine,
+            binding.generation,
+            codeModeCaplets,
+            () => this.isProjectionBindingCurrent(binding),
+          ),
           ...(parsed.data.timeoutMs === undefined ? {} : { timeoutMs: parsed.data.timeoutMs }),
           ...(parsed.data.sessionId === undefined ? {} : { sessionId: parsed.data.sessionId }),
           logStore: new CodeModeLogStore(),
@@ -322,96 +350,181 @@ export class CapletsMcpSession {
     };
   }
 
-  private registerCapletTool(caplet: CapletConfig): RegisteredTool {
+  private registerCapletTool(
+    entry: ExposureProjectionProgressiveCaplet,
+    binding: ExposureProjectionBinding,
+  ): RegisteredTool {
+    const inputSchema = zodSchemaForDirectTool(entry.inputSchema);
     return this.server.registerTool(
-      caplet.server,
+      entry.id,
       {
-        title: caplet.name,
-        description: capabilityDescription(caplet),
-        inputSchema: generatedToolInputSchemaForCaplet(caplet).shape,
+        ...(entry.title ? { title: entry.title } : {}),
+        ...(entry.description ? { description: entry.description } : {}),
+        ...(inputSchema ? { inputSchema: inputSchema.shape } : {}),
       },
-      async (request: unknown) => this.engine.execute(caplet.server, request) as never,
+      async (request: unknown) => {
+        this.assertProjectionBinding(binding);
+        return this.engine.execute(entry.route.capletId, request) as never;
+      },
     );
   }
 
-  private registerDirectTool(entry: DirectToolRegistration): RegisteredTool {
-    const inputSchema = zodSchemaForDirectTool(entry.tool.inputSchema);
-    const outputSchema = zodSchemaForDirectTool(entry.tool.outputSchema);
+  private registerDirectTool(
+    entry: ExposureProjectionDirectTool,
+    binding: ExposureProjectionBinding,
+  ): RegisteredTool {
+    const inputSchema = zodSchemaForDirectTool(entry.inputSchema);
+    const outputSchema = zodSchemaForDirectTool(entry.outputSchema);
     return (this.server.registerTool as (...args: unknown[]) => RegisteredTool)(
-      entry.name,
+      entry.id,
       {
-        title: entry.tool.name,
-        ...(entry.tool.description ? { description: entry.tool.description } : {}),
+        title: entry.title,
+        ...(entry.description ? { description: entry.description } : {}),
         ...(inputSchema ? { inputSchema } : {}),
         ...(outputSchema ? { outputSchema } : {}),
-        ...(entry.tool.annotations ? { annotations: entry.tool.annotations } : {}),
-        _meta: {
-          caplets: {
-            capletId: entry.caplet.server,
-            downstreamName: entry.downstreamName,
-            exposure: "direct",
-          },
-        },
+        ...(entry.annotations ? { annotations: entry.annotations } : {}),
+        _meta: directToolMetadata(entry),
       },
-      async (request: unknown) =>
-        this.engine.executeDirectTool(
-          entry.caplet.server,
-          entry.downstreamName,
+      async (request: unknown) => {
+        this.assertProjectionBinding(binding);
+        return this.engine.executeDirectTool(
+          entry.route.capletId,
+          entry.route.downstreamName,
           isRecord(request) ? request : {},
-        ) as never,
+        ) as never;
+      },
     );
   }
 
-  private registerDirectResource(entry: DirectResourceRegistration): RegisteredResource {
+  private registerDirectResource(
+    entry: ExposureProjectionDirectResource,
+    binding: ExposureProjectionBinding,
+  ): RegisteredResource {
     if (!this.server.registerResource) {
       throw new Error("MCP server does not support resource registration");
     }
     return this.server.registerResource(
-      entry.resource.name ?? entry.uri,
-      entry.uri,
-      resourceMetadata(entry.resource),
-      async () => this.directResourceResult(entry.caplet.server, entry.downstreamUri),
+      entry.title ?? entry.id,
+      entry.id,
+      resourceMetadata(entry),
+      async () =>
+        this.directResourceResult(binding, entry.route.capletId, entry.route.downstreamUri),
     );
   }
 
   private registerDirectResourceTemplate(
-    entry: DirectResourceTemplateRegistration,
+    entry: ExposureProjectionDirectResourceTemplate,
+    binding: ExposureProjectionBinding,
+    completionEnabled: boolean,
   ): RegisteredResourceTemplate {
     if (!this.server.registerResource) {
       throw new Error("MCP server does not support resource registration");
     }
     return this.server.registerResource(
-      `${entry.caplet.server}:${entry.resourceTemplate.name ?? entry.downstreamUriTemplate}`,
-      new ResourceTemplate(entry.uriTemplate, { list: undefined }),
-      resourceTemplateMetadata(entry.resourceTemplate),
+      `${entry.route.capletId}:${entry.title ?? entry.route.downstreamUriTemplate}`,
+      new ResourceTemplate(entry.id, {
+        list: undefined,
+        ...(completionEnabled ? { complete: this.resourceTemplateCompleters(entry, binding) } : {}),
+      }),
+      resourceTemplateMetadata(entry),
       async (uri) => {
+        this.assertProjectionBinding(binding);
         const decoded = decodeDirectResourceUri(uri.toString());
-        return this.directResourceResult(decoded.capletId, decoded.downstreamUri);
+        return this.directResourceResult(binding, entry.route.capletId, decoded.downstreamUri);
       },
     );
   }
 
-  private registerDirectPrompt(entry: DirectPromptRegistration): RegisteredPrompt {
+  private registerDirectPrompt(
+    entry: ExposureProjectionDirectPrompt,
+    binding: ExposureProjectionBinding,
+    completionEnabled: boolean,
+  ): RegisteredPrompt {
     if (!this.server.registerPrompt) {
       throw new Error("MCP server does not support prompt registration");
     }
     return this.server.registerPrompt(
-      entry.name,
+      entry.id,
       {
-        title: entry.prompt.name,
-        ...(entry.prompt.description ? { description: entry.prompt.description } : {}),
-        argsSchema: promptArgsSchema(entry.prompt.arguments),
+        ...(entry.title ? { title: entry.title } : {}),
+        ...(entry.description ? { description: entry.description } : {}),
+        argsSchema: promptArgsSchema(
+          entry.arguments,
+          completionEnabled
+            ? async (name, value, context) => {
+                this.assertProjectionBinding(binding);
+                return await this.engine.completeDirectReference(
+                  entry.route.capletId,
+                  { type: "prompt", name: entry.route.downstreamName },
+                  { name, value },
+                  context,
+                );
+              }
+            : undefined,
+        ),
       },
-      async (args) =>
-        (await this.engine.getDirectPrompt(
-          entry.caplet.server,
-          entry.downstreamName,
+      async (args) => {
+        this.assertProjectionBinding(binding);
+        return (await this.engine.getDirectPrompt(
+          entry.route.capletId,
+          entry.route.downstreamName,
           isRecord(args) ? stringifyRecord(args) : {},
-        )) as never,
+        )) as never;
+      },
     );
   }
 
-  private async directResourceResult(serverId: string, downstreamUri: string): Promise<any> {
+  private resourceTemplateCompleters(
+    entry: ExposureProjectionDirectResourceTemplate,
+    binding: ExposureProjectionBinding,
+  ): Record<
+    string,
+    (
+      value: string,
+      context?: { arguments?: Record<string, string> | undefined },
+    ) => Promise<string[]>
+  > {
+    const exposedTemplate = new UriTemplate(entry.id);
+    const downstreamTemplate = new UriTemplate(entry.route.downstreamUriTemplate);
+    const downstreamVariables = new Set(downstreamTemplate.variableNames);
+    return Object.fromEntries(
+      exposedTemplate.variableNames.map((variable) => [
+        variable,
+        async (value: string, context?: { arguments?: Record<string, string> | undefined }) => {
+          this.assertProjectionBinding(binding);
+          const target = resourceTemplateCompletionTarget(entry.route.downstreamUriTemplate, value);
+          if (!target) return [];
+          const completionArguments = {
+            ...Object.fromEntries(
+              Object.entries(context?.arguments ?? {}).filter(([name]) =>
+                downstreamVariables.has(name),
+              ),
+            ),
+            ...target.arguments,
+          };
+          const completions = await this.engine.completeDirectReference(
+            entry.route.capletId,
+            { type: "resourceTemplate", uri: entry.route.downstreamUriTemplate },
+            { name: target.name, value: target.value },
+            { arguments: completionArguments },
+          );
+          return completions.map((completion) =>
+            downstreamTemplate.expand({
+              ...completionArguments,
+              [target.name]: completion,
+            }),
+          );
+        },
+      ]),
+    );
+  }
+
+  private async directResourceResult(
+    binding: ExposureProjectionBinding,
+    serverId: string,
+    downstreamUri: string,
+  ): Promise<any> {
+    this.assertProjectionBinding(binding);
     const result = await this.engine.readDirectResource(serverId, downstreamUri);
     if (isRecord(result) && "contents" in result) return result;
     return {
@@ -423,6 +536,22 @@ export class CapletsMcpSession {
         },
       ],
     };
+  }
+
+  private isProjectionBindingCurrent(binding: ExposureProjectionBinding): boolean {
+    return (
+      this.projectionEpoch === binding.epoch &&
+      this.resolvedProjection?.generation === binding.generation &&
+      this.engine.currentExposureGeneration() === binding.generation
+    );
+  }
+
+  private assertProjectionBinding(binding: ExposureProjectionBinding): void {
+    if (this.isProjectionBindingCurrent(binding)) return;
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Caplets exposure changed; wait for the current projection to resolve.",
+    );
   }
 }
 
@@ -459,82 +588,248 @@ function zodSchemaForDirectTool(schema: unknown): z.ZodObject | undefined {
   return converted;
 }
 
-function codeModeRunToolDescription(caplets: CallableCaplet[]): string {
+function codeModeRunToolDescription(caplets: ExposureProjectionCodeModeCaplet[]): string {
   const declaration = generateCodeModeDeclarations({
     caplets: caplets.map((entry) => ({
-      id: entry.caplet.server,
-      name: entry.caplet.name,
-      description: capabilityDescription(entry.caplet),
-      ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
-      ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
+      id: entry.id,
+      name: entry.title ?? entry.id,
+      description: entry.description ?? "",
+      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     })),
   });
   return generateCodeModeRunToolDescription(declaration);
 }
 
 class EngineNativeCapletsService implements NativeCapletsService {
-  constructor(private readonly engine: CapletsEngine) {}
+  constructor(
+    private readonly engine: CapletsEngine,
+    private readonly generation: number,
+    private readonly caplets: ExposureProjectionCodeModeCaplet[],
+    private readonly isCurrentProjection: () => boolean,
+  ) {}
 
   listTools(): NativeCapletTool[] {
-    const snapshot = this.engine.currentExposureSnapshot();
-    const caplets =
-      snapshot?.codeModeCaplets.map((entry) => entry.caplet) ?? this.engine.enabledServers();
-    return caplets.map((caplet) => {
-      const toolName = nativeCapletToolName(caplet.server);
-      return {
-        caplet: caplet.server,
-        toolName,
-        title: caplet.name,
-        description: nativeCapletToolDescription(toolName, caplet),
-        promptGuidance: nativeCapletPromptGuidance(toolName, caplet),
-      };
-    });
+    if (
+      this.engine.currentExposureGeneration() !== this.generation ||
+      !this.isCurrentProjection()
+    ) {
+      return [];
+    }
+    return this.caplets.map((entry) => ({
+      caplet: entry.id,
+      ...(entry.sourceCapletId ? { sourceCaplet: entry.sourceCapletId } : {}),
+      toolName: nativeCapletToolName(entry.id),
+      title: entry.title ?? entry.id,
+      description: entry.description ?? "",
+      ...(entry.shadowing ? { shadowing: entry.shadowing } : {}),
+      ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+      ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
+      promptGuidance: [],
+    }));
   }
 
   async execute(capletId: string, request: unknown): Promise<unknown> {
+    this.assertCurrent();
     return await this.engine.execute(capletId, request);
   }
 
   async reload(): Promise<boolean> {
+    this.assertCurrent();
     return await this.engine.reload();
   }
 
   onToolsChanged(listener: (tools: NativeCapletTool[]) => void): () => void {
-    return this.engine.onReload(() => listener(this.listTools()));
+    return this.engine.onReload(() => listener([]));
   }
 
   async close(): Promise<void> {
     return;
   }
+
+  private assertCurrent(): void {
+    if (this.engine.currentExposureGeneration() === this.generation && this.isCurrentProjection()) {
+      return;
+    }
+    throw new CapletsError(
+      "SERVER_UNAVAILABLE",
+      "Caplets exposure changed during Code Mode execution.",
+    );
+  }
 }
 
-function resourceMetadata(resource: DirectResourceRegistration["resource"]) {
+function directToolMetadata(entry: ExposureProjectionDirectTool) {
   return {
-    ...(resource.description ? { description: resource.description } : {}),
-    ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
-    ...(typeof resource.size === "number" ? { size: resource.size } : {}),
-    _meta: { caplets: { downstreamUri: resource.uri, exposure: "direct" } },
-  };
-}
-
-function resourceTemplateMetadata(
-  resourceTemplate: DirectResourceTemplateRegistration["resourceTemplate"],
-) {
-  return {
-    ...(resourceTemplate.description ? { description: resourceTemplate.description } : {}),
-    ...(resourceTemplate.mimeType ? { mimeType: resourceTemplate.mimeType } : {}),
-    _meta: {
-      caplets: { downstreamUriTemplate: resourceTemplate.uriTemplate, exposure: "direct" },
+    caplets: {
+      capletId: entry.route.capletId,
+      downstreamName: entry.route.downstreamName,
+      exposure: "direct",
     },
   };
 }
 
-function promptArgsSchema(args: DirectPromptRegistration["prompt"]["arguments"]) {
+function resourceMetadata(resource: ExposureProjectionDirectResource) {
+  return {
+    ...(resource.description ? { description: resource.description } : {}),
+    ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
+    ...(typeof resource.size === "number" ? { size: resource.size } : {}),
+    _meta: {
+      caplets: { downstreamUri: resource.route.downstreamUri, exposure: "direct" },
+    },
+  };
+}
+
+function resourceTemplateMetadata(resourceTemplate: ExposureProjectionDirectResourceTemplate) {
+  return {
+    ...(resourceTemplate.description ? { description: resourceTemplate.description } : {}),
+    ...(resourceTemplate.mimeType ? { mimeType: resourceTemplate.mimeType } : {}),
+    _meta: {
+      caplets: {
+        downstreamUriTemplate: resourceTemplate.route.downstreamUriTemplate,
+        exposure: "direct",
+      },
+    },
+  };
+}
+
+function promptArgsSchema(
+  args: ExposureProjectionPromptArgument[],
+  complete?:
+    | ((
+        name: string,
+        value: string,
+        context?: { arguments?: Record<string, string> | undefined },
+      ) => Promise<string[]>)
+    | undefined,
+) {
   const shape: Record<string, z.ZodTypeAny> = {};
-  for (const arg of args ?? []) {
-    shape[arg.name] = z.string().optional();
+  for (const arg of args) {
+    const described = arg.description ? z.string().describe(arg.description) : z.string();
+    const schema = arg.required ? described : described.optional();
+    shape[arg.name] = complete
+      ? completable(
+          schema,
+          async (value, context) => await complete(arg.name, String(value ?? ""), context),
+        )
+      : schema;
   }
   return shape;
+}
+
+function resourceTemplateCompletionTarget(
+  template: string,
+  partialUri: string,
+):
+  | {
+      name: string;
+      value: string;
+      arguments: Record<string, string>;
+    }
+  | undefined {
+  const slots = resourceTemplateSlots(template);
+  if (slots.length === 0) return undefined;
+  const namedTarget = namedResourceTemplateCompletionTarget(template, partialUri);
+  if (namedTarget) return namedTarget;
+  const arguments_: Record<string, string> = {};
+  let offset = 0;
+  for (const [index, slot] of slots.entries()) {
+    const rawFirstVariable = index === 0 && !partialUri.startsWith(slot.prefix);
+    if (!rawFirstVariable) {
+      if (!partialUri.startsWith(slot.prefix, offset)) return undefined;
+      offset += slot.prefix.length;
+    }
+    const nextPrefix = slots[index + 1]?.prefix;
+    const nextOffset = nextPrefix ? partialUri.indexOf(nextPrefix, offset) : -1;
+    if (!nextPrefix || nextOffset === -1) {
+      return {
+        name: slot.name,
+        value: decodeCompletionComponent(partialUri.slice(offset)),
+        arguments: arguments_,
+      };
+    }
+    arguments_[slot.name] = decodeCompletionComponent(partialUri.slice(offset, nextOffset));
+    offset = nextOffset;
+  }
+  return undefined;
+}
+
+function namedResourceTemplateCompletionTarget(
+  template: string,
+  partialUri: string,
+): { name: string; value: string; arguments: Record<string, string> } | undefined {
+  const queryIndex = partialUri.indexOf("?");
+  if (queryIndex === -1) return undefined;
+  const namedVariables = new Set(
+    [...template.matchAll(/\{[?&;]([^}]+)\}/gu)].flatMap((match) =>
+      (match[1] ?? "")
+        .split(",")
+        .map((name) => name.replace(/[:*].*$/u, "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const query = partialUri.slice(queryIndex + 1);
+  const current = query.split(/[&;]/u).at(-1) ?? "";
+  const separator = current.indexOf("=");
+  if (separator === -1) return undefined;
+  const name = decodeCompletionComponent(current.slice(0, separator));
+  if (!namedVariables.has(name)) return undefined;
+  const value = decodeCompletionComponent(current.slice(separator + 1));
+  const arguments_: Record<string, string> = {};
+  for (const [argumentName, argumentValue] of new URLSearchParams(query)) {
+    if (argumentName !== name && namedVariables.has(argumentName)) {
+      arguments_[argumentName] = argumentValue;
+    }
+  }
+  const positionalTemplate = template.replace(/\{[?&;][^}]+\}/gu, "");
+  const matched = new UriTemplate(positionalTemplate).match(partialUri.slice(0, queryIndex));
+  for (const [argumentName, argumentValue] of Object.entries(matched ?? {})) {
+    if (argumentName !== name && typeof argumentValue === "string") {
+      arguments_[argumentName] = decodeCompletionComponent(argumentValue);
+    }
+  }
+  return { name, value, arguments: arguments_ };
+}
+
+function resourceTemplateSlots(template: string): Array<{ name: string; prefix: string }> {
+  const slots: Array<{ name: string; prefix: string }> = [];
+  let pending = "";
+  let offset = 0;
+  for (const match of template.matchAll(/\{([^}]+)\}/gu)) {
+    pending += template.slice(offset, match.index);
+    const expression = match[1] ?? "";
+    const operator = expression.match(/^[+#./;?&]/u)?.[0] ?? "";
+    const names = (operator ? expression.slice(1) : expression)
+      .split(",")
+      .map((name) => name.replace(/[:*].*$/u, "").trim())
+      .filter(Boolean);
+    for (const [index, name] of names.entries()) {
+      slots.push({
+        name,
+        prefix: pending + resourceTemplateVariablePrefix(operator, name, index),
+      });
+      pending = "";
+    }
+    offset = (match.index ?? 0) + match[0].length;
+  }
+  return slots;
+}
+
+function resourceTemplateVariablePrefix(operator: string, name: string, index: number): string {
+  if (operator === "/") return "/";
+  if (operator === ".") return ".";
+  if (operator === ";") return `;${name}=`;
+  if (operator === "?") return `${index === 0 ? "?" : "&"}${name}=`;
+  if (operator === "&") return `&${name}=`;
+  if (operator === "#") return index === 0 ? "#" : ",";
+  return index === 0 ? "" : ",";
+}
+
+function decodeCompletionComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function stringifyRecord(value: Record<string, unknown>): Record<string, string> {
@@ -545,54 +840,4 @@ function stringifyRecord(value: Record<string, unknown>): Record<string, string>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function staticExposureSnapshot(
-  config: CapletsConfig,
-  caplets: CapletConfig[],
-  projectBindingContext?: ProjectBindingExecutionContext | undefined,
-): ExposureSnapshot {
-  const callableCaplets = caplets
-    .filter(
-      (caplet) =>
-        !caplet.disabled &&
-        !caplet.setup &&
-        (!caplet.projectBinding?.required || projectBindingContext),
-    )
-    .map((caplet) => ({
-      caplet,
-      exposure: resolveExposure(caplet.exposure, config.options.exposure),
-      tools: [],
-      resources: [],
-      resourceTemplates: [],
-      prompts: [],
-      discoveredAt: Date.now(),
-    }));
-  return {
-    callableCaplets,
-    progressiveCaplets: callableCaplets.filter((entry) => entry.exposure.progressive),
-    codeModeCaplets: callableCaplets.filter((entry) => entry.exposure.codeMode),
-    directTools: [],
-    directResources: [],
-    directResourceTemplates: [],
-    directPrompts: [],
-    hiddenCaplets: caplets
-      .filter(
-        (caplet) =>
-          caplet.disabled ||
-          caplet.setup ||
-          (caplet.projectBinding?.required && !projectBindingContext),
-      )
-      .map((caplet) => ({
-        capletId: caplet.server,
-        reason: caplet.disabled
-          ? ("disabled" as const)
-          : caplet.setup
-            ? ("setup_required" as const)
-            : ("project_binding_missing_context" as const),
-        ...(caplet.projectBinding?.required && !projectBindingContext
-          ? { error: projectBindingMissingContextDiagnostic() }
-          : {}),
-      })),
-  };
 }

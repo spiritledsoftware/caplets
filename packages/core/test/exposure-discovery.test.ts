@@ -2,6 +2,7 @@ import type { ResourceTemplate, Tool } from "@modelcontextprotocol/sdk/types";
 import { describe, expect, it, vi } from "vitest";
 import type { CapletConfig, CapletsConfig } from "../src/config";
 import { discoverExposureSnapshot } from "../src/exposure/discovery";
+import { buildExposureProjection } from "../src/exposure/projection";
 
 describe("exposure discovery", () => {
   it("discovers callable direct and Code Mode surfaces", async () => {
@@ -11,11 +12,40 @@ describe("exposure discovery", () => {
       caplets: [caplet],
       listTools: async () => [tool("query")],
     });
+    const projection = buildExposureProjection(snapshot);
 
     expect(snapshot.callableCaplets.map((entry) => entry.caplet.server)).toEqual(["osv"]);
-    expect(snapshot.codeModeCaplets.map((entry) => entry.caplet.server)).toEqual(["osv"]);
-    expect(snapshot.directTools.map((entry) => entry.name)).toEqual(["osv__query"]);
-    expect(snapshot.progressiveCaplets).toEqual([]);
+    expect(
+      projection.entries
+        .filter((entry) => entry.kind === "code-mode-caplet")
+        .map((entry) => entry.capletId),
+    ).toEqual(["osv"]);
+    expect(
+      projection.entries.filter((entry) => entry.kind === "direct-tool").map((entry) => entry.id),
+    ).toEqual(["osv__query"]);
+    expect(projection.entries.filter((entry) => entry.kind === "progressive-caplet")).toEqual([]);
+  });
+
+  it("keeps disabled and setup-required Code Mode Caplets out of callable projection", async () => {
+    const disabled = { ...httpCaplet("disabled", "code_mode"), disabled: true };
+    const setupRequired = {
+      ...httpCaplet("setup", "code_mode"),
+      setup: { commands: [{ label: "Install", command: "install-setup" }] },
+    };
+    const listTools = vi.fn(async () => [tool("run")]);
+    const snapshot = await discoverExposureSnapshot({
+      config: configFor([disabled, setupRequired]),
+      caplets: [disabled, setupRequired],
+      listTools,
+    });
+    const projection = buildExposureProjection(snapshot);
+
+    expect(projection.entries).toEqual([]);
+    expect(projection.hiddenCaplets).toEqual([
+      expect.objectContaining({ capletId: "disabled", reason: "disabled" }),
+      expect.objectContaining({ capletId: "setup", reason: "setup_required" }),
+    ]);
+    expect(listTools).not.toHaveBeenCalled();
   });
 
   it("hides failed discovery without failing the whole snapshot", async () => {
@@ -29,11 +59,14 @@ describe("exposure discovery", () => {
         return [tool("search")];
       },
     });
+    const projection = buildExposureProjection(snapshot);
 
-    expect(snapshot.directTools).toEqual([]);
-    expect(snapshot.progressiveCaplets.map((entry) => entry.caplet.server)).toEqual([
-      "progressive",
-    ]);
+    expect(projection.entries.filter((entry) => entry.kind === "direct-tool")).toEqual([]);
+    expect(
+      projection.entries
+        .filter((entry) => entry.kind === "progressive-caplet")
+        .map((entry) => entry.capletId),
+    ).toEqual(["progressive"]);
     expect(snapshot.hiddenCaplets).toEqual([
       expect.objectContaining({ capletId: "direct", reason: "discovery_failed" }),
     ]);
@@ -163,8 +196,13 @@ describe("exposure discovery", () => {
         resourceTemplate("git://repo/{ref}/{path}"),
       ],
     });
+    const projection = buildExposureProjection(snapshot);
 
-    expect(snapshot.directResourceTemplates.map((entry) => entry.uriTemplate)).toEqual([
+    expect(
+      projection.entries
+        .filter((entry) => entry.kind === "direct-resource-template")
+        .map((entry) => entry.id),
+    ).toEqual([
       "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2Frepo%2F%7Bpath%7D",
       "caplets://docs/resources/{encodedUri}?template=git%3A%2F%2Frepo%2F%7Bref%7D%2F%7Bpath%7D",
     ]);
@@ -189,8 +227,9 @@ describe("exposure discovery", () => {
         return [tool("run")];
       }),
     });
+    const projection = buildExposureProjection(snapshot);
 
-    expect(snapshot.directTools).toHaveLength(3);
+    expect(projection.entries.filter((entry) => entry.kind === "direct-tool")).toHaveLength(3);
     expect(maxActive).toBeLessThanOrEqual(2);
   });
 });
