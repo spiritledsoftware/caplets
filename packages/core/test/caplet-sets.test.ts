@@ -10,6 +10,7 @@ import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
 import { FileVaultStore } from "../src/vault";
 import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("CapletSetManager", () => {
   const dirs: string[] = [];
@@ -115,12 +116,7 @@ describe("CapletSetManager", () => {
           args: { operation: "call_tool", name: "mixed", args: {} },
         },
         registry,
-        downstream,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        manager,
+        testBackendOperationRuntime(registry, { mcp: downstream, caplets: manager }),
       );
 
       expect(result.content).toEqual([
@@ -272,8 +268,7 @@ describe("CapletSetManager", () => {
       },
     });
     const caplet = config.capletSets.nested!;
-    const artifactDir = join(dir, "artifacts");
-    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
+    const manager = new CapletSetManager(new ServerRegistry(config));
 
     const result = await manager.callTool(caplet, "drive", { operation: "tools" });
 
@@ -284,12 +279,6 @@ describe("CapletSetManager", () => {
         items: [{ name: "drive.files.list" }],
       },
     });
-    const child = (
-      manager as unknown as {
-        children: Map<string, { googleDiscovery: { options: { artifactDir?: string } } }>;
-      }
-    ).children.get("nested");
-    expect(child?.googleDiscovery.options.artifactDir).toBe(artifactDir);
   });
 
   it("propagates Media thresholds, artifact roots, and hidden paths to nested HTTP Actions", async () => {

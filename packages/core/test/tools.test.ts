@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Tool } from "@modelcontextprotocol/sdk/types";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
 import { z } from "zod";
 import { parseConfig } from "../src/config";
+import type { BackendOperationDispatch } from "../src/backend-operation-dispatch";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 import { DownstreamManager } from "../src/downstream";
 import { CapletsError } from "../src/errors";
 import type { GraphQLManager, GraphqlEndpointConfig } from "../src/graphql";
@@ -19,6 +21,7 @@ import {
   projectCallToolResult,
   validateOperationRequest,
 } from "../src/tools";
+import type { CapletResultMetadata } from "../src/tools";
 
 describe("generated tool request validation", () => {
   it("rejects operation-specific extra fields", () => {
@@ -192,7 +195,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "inspect" },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     )) as any;
     expect(result.structuredContent?.caplets).toEqual({
       id: "alpha",
@@ -237,7 +240,7 @@ describe("generated tool handlers", () => {
       openApiConfig.openapiEndpoints.users!,
       { operation: "inspect" },
       openApiRegistry,
-      downstream,
+      testBackendOperationRuntime(openApiRegistry, { mcp: downstream }),
     )) as any;
 
     expect(result.structuredContent?.result).toMatchObject({
@@ -246,33 +249,6 @@ describe("generated tool handlers", () => {
         type: "openapi",
         source: "specPath",
       },
-    });
-  });
-
-  it("fails explicitly for Google Discovery tools until the manager is configured", async () => {
-    const config = parseConfig({
-      googleDiscoveryApis: {
-        drive: {
-          name: "Google Drive",
-          description: "Access Google Drive files and permissions.",
-          discoveryUrl: "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
-          auth: { type: "none" },
-        },
-      },
-    });
-    const googleRegistry = new ServerRegistry(config);
-    const downstream = {} as unknown as DownstreamManager;
-
-    await expect(
-      handleServerTool(
-        config.googleDiscoveryApis.drive!,
-        { operation: "tools" },
-        googleRegistry,
-        downstream,
-      ),
-    ).rejects.toMatchObject({
-      code: "INTERNAL_ERROR",
-      message: "Google Discovery manager is not configured",
     });
   });
 
@@ -295,7 +271,7 @@ describe("generated tool handlers", () => {
       httpConfig.httpApis.status!,
       { operation: "inspect" },
       httpRegistry,
-      downstream,
+      testBackendOperationRuntime(httpRegistry, { mcp: downstream }),
     )) as any;
 
     expect(result.structuredContent?.result).toMatchObject({
@@ -314,15 +290,16 @@ describe("generated tool handlers", () => {
       listTools: vi.fn(),
       callTool: vi.fn(),
     } as unknown as DownstreamManager;
-    const result = (await handleServerTool(
-      server,
-      { operation: "check" },
-      registry,
-      downstream,
-    )) as any;
+    const operations = {
+      check: vi.fn().mockResolvedValue(status),
+    } as unknown as BackendOperationDispatch;
+    const result = (await handleServerTool(server, { operation: "check" }, registry, {
+      operations,
+      mcp: downstream,
+    })) as unknown as { structuredContent?: { result?: unknown } };
 
     expect(result.structuredContent?.result).toEqual(status);
-    expect(downstream.checkServer).toHaveBeenCalledWith(server);
+    expect(operations.check).toHaveBeenCalledWith(server);
     expect(downstream.listTools).not.toHaveBeenCalled();
     expect(downstream.callTool).not.toHaveBeenCalled();
   });
@@ -344,19 +321,19 @@ describe("generated tool handlers", () => {
       browserConfig.mcpServers.browser!,
       { operation: "tools" },
       browserRegistry,
-      downstream,
+      testBackendOperationRuntime(browserRegistry, { mcp: downstream }),
     )) as any;
     const stealth = (await handleServerTool(
       browserConfig.mcpServers.stealth!,
       { operation: "tools" },
       browserRegistry,
-      downstream,
+      testBackendOperationRuntime(browserRegistry, { mcp: downstream }),
     )) as any;
 
-    expect(browser.content[0]?.text).toContain("browser_click");
-    expect(stealth.content[0]?.text).toContain("browser_click");
-    expect(browser.content[0]?.text).toContain("Browser");
-    expect(stealth.content[0]?.text).toContain("Stealth Browser");
+    expect(textContent(browser, 0)).toContain("browser_click");
+    expect(textContent(stealth, 0)).toContain("browser_click");
+    expect(textContent(browser, 0)).toContain("Browser");
+    expect(textContent(stealth, 0)).toContain("Stealth Browser");
     expect(browser.structuredContent?.result.items).toEqual([{ name: "browser_click" }]);
     expect(stealth.structuredContent?.result.items).toEqual([{ name: "browser_click" }]);
   });
@@ -378,9 +355,9 @@ describe("generated tool handlers", () => {
       server,
       { operation: "tools" },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     )) as any;
-    const text = list.content[0]?.text ?? "";
+    const text = textContent(list, 0) ?? "";
 
     expect(text).toContain("1. `search` — Search records by query.");
     expect(text).toContain("2. `list` — List recent records.");
@@ -425,14 +402,14 @@ describe("generated tool handlers", () => {
       server,
       { operation: "tools" },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     )) as any;
-    expect(list.content[0]?.text).toContain("read");
-    expect(list.content[0]?.text).toContain("supports fields");
-    expect(list.content[0]?.text).toContain('args template: {"path":""}');
-    expect(list.content[0]?.text).toContain("read-only");
-    expect(list.content[0]?.text).toContain("structuredContent.result");
-    expect(list.content[0]?.text).not.toContain("## Full Result");
+    expect(textContent(list, 0)).toContain("read");
+    expect(textContent(list, 0)).toContain("supports fields");
+    expect(textContent(list, 0)).toContain('args template: {"path":""}');
+    expect(textContent(list, 0)).toContain("read-only");
+    expect(textContent(list, 0)).toContain("structuredContent.result");
+    expect(textContent(list, 0)).not.toContain("## Full Result");
     expect(list.structuredContent?.caplets).toEqual({
       id: "alpha",
       name: "Alpha",
@@ -473,7 +450,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "describe_tool", name: "write" },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     )) as any;
     expect(full.structuredContent?.caplets).toEqual({
       id: "alpha",
@@ -501,7 +478,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "tools", limit: 1 },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     )) as any;
 
     expect(list.structuredContent?.result.items).toEqual([{ name: "read" }]);
@@ -606,24 +583,14 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "write", args: {} },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
       { observedOutputShapeStore: store, projectFingerprint: "project-a" },
     );
     const described = (await handleServerTool(
       server,
       { operation: "describe_tool", name: "write" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
       { observedOutputShapeStore: store, projectFingerprint: "project-a" },
     )) as any;
 
@@ -657,24 +624,14 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: {} },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
       { observedOutputShapeStore: store },
     );
     const described = (await handleServerTool(
       server,
       { operation: "describe_tool", name: "read" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
       { observedOutputShapeStore: store },
     )) as any;
 
@@ -700,17 +657,12 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "write", args: {} },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
       { observedOutputShapeStore: store },
     )) as any;
 
     expect(result.structuredContent).toEqual({ items: [{ id: 1 }] });
-    expect(result._meta.caplets.status).toBe("ok");
+    expect(capletsMetadata(result).status).toBe("ok");
   });
 
   it("returns descriptor-driven guidance for wrong call_tool argument names", async () => {
@@ -735,7 +687,7 @@ describe("generated tool handlers", () => {
         server,
         { operation: "call_tool", name: "search_issues", args: { q: "repo:o/r", per_page: 10 } },
         registry,
-        downstream,
+        testBackendOperationRuntime(registry, { mcp: downstream }),
       ),
     ).rejects.toMatchObject({
       code: "REQUEST_INVALID",
@@ -791,7 +743,7 @@ describe("generated tool handlers", () => {
           },
         },
         registry,
-        downstream,
+        testBackendOperationRuntime(registry, { mcp: downstream }),
       ),
     ).rejects.toMatchObject({
       code: "REQUEST_INVALID",
@@ -831,13 +783,13 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: { path: "x" } },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
     expect(result).not.toBe(downstreamResult);
     expect(downstreamResult).toEqual(originalDownstreamResult);
-    expect(result.content[0]?.text).toContain("ok");
+    expect(textContent(result, 0)).toContain("ok");
     expect(result.content).toHaveLength(1);
-    expect(result.content[0]?.text).not.toContain("## Structured Content");
+    expect(textContent(result, 0)).not.toContain("## Structured Content");
     expect({ ...result, content: originalDownstreamResult.content }).toEqual({
       ...originalDownstreamResult,
       _meta: {
@@ -867,11 +819,11 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "write", args: {} },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
-    expect(result.content[0]?.text).toContain("ok");
+    expect(textContent(result, 0)).toContain("ok");
     expect(result.content).toHaveLength(1);
-    expect(result.content[0]?.text).not.toContain("## Structured Content");
+    expect(textContent(result, 0)).not.toContain("## Structured Content");
     expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {
@@ -909,7 +861,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: {} },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
 
     expect(result).toEqual({
@@ -945,11 +897,11 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: { path: "x" } },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
-    expect(result.content[0]?.text).toContain("failed");
+    expect(textContent(result, 0)).toContain("failed");
     expect(result.content).toHaveLength(1);
-    expect(result.content[0]?.text).not.toContain("## Structured Content");
+    expect(textContent(result, 0)).not.toContain("## Structured Content");
     expect({ ...result, content: downstreamResult.content }).toEqual({
       ...downstreamResult,
       _meta: {
@@ -970,7 +922,7 @@ describe("generated tool handlers", () => {
   it("extracts screenshot artifact links from call_tool text", async () => {
     const result = await callToolWithText("Saved [Screenshot of viewport](./file.png)");
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "screenshot",
         presentation: "local-path",
@@ -983,7 +935,7 @@ describe("generated tool handlers", () => {
   it("extracts snapshot artifact links from call_tool text", async () => {
     const result = await callToolWithText("Saved [ARIA snapshot](./snapshot.yaml)");
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "snapshot",
         presentation: "local-path",
@@ -996,7 +948,7 @@ describe("generated tool handlers", () => {
   it("extracts console-log artifact links from call_tool text", async () => {
     const result = await callToolWithText("Console output: [log](./browser-console.txt)");
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "console-log",
         presentation: "local-path",
@@ -1011,7 +963,7 @@ describe("generated tool handlers", () => {
       "Saved [Screenshot](./screen.png), [Network log](/tmp/network.har), and [Download](files/report.pdf)",
     );
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "screenshot",
         presentation: "local-path",
@@ -1054,10 +1006,10 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: {} },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "file",
         presentation: "local-path",
@@ -1087,18 +1039,20 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: {} },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "file",
         presentation: "reference",
         reference: "caplets://artifacts/http/call-1/report.pdf",
       },
     ]);
-    expect(result._meta.caplets.artifacts[0]).not.toHaveProperty("displayPath");
-    expect(result._meta.caplets.artifacts[0]).not.toHaveProperty("pathResolution");
+    const artifacts = capletsMetadata(result).artifacts;
+    expect(artifacts).toBeDefined();
+    expect(artifacts?.[0]).not.toHaveProperty("displayPath");
+    expect(artifacts?.[0]).not.toHaveProperty("pathResolution");
   });
 
   it("extracts artifact links with spaces, title attributes, and parentheses", async () => {
@@ -1106,7 +1060,7 @@ describe("generated tool handlers", () => {
       'Saved artifact [Screenshot](./screenshots/final view.png), file [Trace](./trace.zip "trace"), and artifact [Archive](./run(1).zip)',
     );
 
-    expect(result._meta.caplets.artifacts).toEqual([
+    expect(capletsMetadata(result).artifacts).toEqual([
       {
         kind: "screenshot",
         presentation: "local-path",
@@ -1133,13 +1087,13 @@ describe("generated tool handlers", () => {
       "Read [README](README.md), see [details](docs/result.md), [data](data:text/plain,hi), and [js](javascript:alert(1))",
     );
 
-    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+    expect(capletsMetadata(result)).not.toHaveProperty("artifacts");
   });
 
   it("omits artifacts metadata when call_tool text has no artifact links", async () => {
     const result = await callToolWithText("No files were saved.");
 
-    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+    expect(capletsMetadata(result)).not.toHaveProperty("artifacts");
   });
 
   it("ignores external and fragment-only markdown links", async () => {
@@ -1147,7 +1101,7 @@ describe("generated tool handlers", () => {
       "Ignored [site](https://example.com/a.png), [mail](mailto:a@example.com), [section](#details), [http](http://example.com/a.png)",
     );
 
-    expect(result._meta.caplets).not.toHaveProperty("artifacts");
+    expect(capletsMetadata(result)).not.toHaveProperty("artifacts");
   });
 
   async function callToolWithText(text: string): Promise<any> {
@@ -1161,7 +1115,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: {} },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
   }
 
@@ -1191,12 +1145,12 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
 
-    expect(result.content[0]?.text).toContain("# Alpha call_tool read");
-    expect(result.content[0]?.text).toContain("## Result");
-    expect(result.content[0]?.text).toContain('"message": "ok"');
+    expect(textContent(result, 0)).toContain("# Alpha call_tool read");
+    expect(textContent(result, 0)).toContain("## Result");
+    expect(textContent(result, 0)).toContain('"message": "ok"');
     expect(result).toEqual({
       ...downstreamResult,
       content: result.content,
@@ -1261,16 +1215,15 @@ describe("generated tool handlers", () => {
       openApiServer,
       { operation: "call_tool", name: "getUser", args: { id: "42" }, fields: ["body.name"] },
       openApiRegistry,
-      downstream,
-      openapi,
+      testBackendOperationRuntime(openApiRegistry, { mcp: downstream, openapi }),
     );
 
     expect(result).toMatchObject({
       structuredContent: { body: { name: "Ada" } },
     });
-    expect(result.content[0]?.text).toContain("# Users API call_tool getUser");
-    expect(result.content[0]?.text).toContain("## Body");
-    expect(result.content[0]?.text).toContain('"name": "Ada"');
+    expect(textContent(result, 0)).toContain("# Users API call_tool getUser");
+    expect(textContent(result, 0)).toContain("## Body");
+    expect(textContent(result, 0)).toContain('"name": "Ada"');
     expect(openapi.getTool).toHaveBeenCalledWith(openApiServer, "getUser");
     expect(openapi.callTool).toHaveBeenCalledWith(openApiServer, "getUser", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -1314,18 +1267,15 @@ describe("generated tool handlers", () => {
       httpServer,
       { operation: "call_tool", name: "check", args: { id: "42" }, fields: ["ok"] },
       httpRegistry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(httpRegistry, { mcp: downstream, http }),
     );
 
     expect(result).toMatchObject({
       structuredContent: { ok: true },
     });
-    expect(result.content[0]?.text).toContain("# Status HTTP call_tool check");
-    expect(result.content[0]?.text).toContain("## Result");
-    expect(result.content[0]?.text).toContain('"ok": true');
+    expect(textContent(result, 0)).toContain("# Status HTTP call_tool check");
+    expect(textContent(result, 0)).toContain("## Result");
+    expect(textContent(result, 0)).toContain('"ok": true');
     expect(http.getTool).toHaveBeenCalledWith(httpServer, "check");
     expect(http.callTool).toHaveBeenCalledWith(httpServer, "check", { id: "42" });
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -1423,7 +1373,7 @@ describe("generated tool handlers", () => {
       server,
       { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
       registry,
-      downstream,
+      testBackendOperationRuntime(registry, { mcp: downstream }),
     );
 
     expect(result).not.toBe(downstreamResult);
@@ -1466,7 +1416,7 @@ describe("generated tool handlers", () => {
         server,
         { operation: "call_tool", name: "read", args: { path: "x" }, fields: ["message"] },
         registry,
-        downstream,
+        testBackendOperationRuntime(registry, { mcp: downstream }),
       ),
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" } satisfies Partial<CapletsError>);
   });
@@ -1485,7 +1435,7 @@ describe("generated tool handlers", () => {
         server,
         { operation: "call_tool", name: "write", args: {}, fields: ["secret"] },
         registry,
-        downstream,
+        testBackendOperationRuntime(registry, { mcp: downstream }),
       ),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -1514,7 +1464,7 @@ describe("generated tool handlers", () => {
         server,
         { operation: "call_tool", name: "read", args: {}, fields: ["secret"] },
         registry,
-        downstream,
+        testBackendOperationRuntime(registry, { mcp: downstream }),
       ),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" } satisfies Partial<CapletsError>);
     expect(downstream.callTool).not.toHaveBeenCalled();
@@ -1552,9 +1502,7 @@ describe("generated tool handlers", () => {
       graphqlCaplet as never,
       { operation: "call_tool", name: "query_user", args: { id: "42" } },
       graphRegistry,
-      downstream,
-      undefined,
-      graphql,
+      testBackendOperationRuntime(graphRegistry, { mcp: downstream, graphql }),
     );
 
     expect(result).not.toBe(graphqlResult);
@@ -1608,9 +1556,7 @@ describe("generated tool handlers", () => {
         graphqlCaplet as never,
         { operation: "call_tool", name: "query_user", args: { id: "42" }, fields: ["user"] },
         graphRegistry,
-        downstream,
-        undefined,
-        graphql,
+        testBackendOperationRuntime(graphRegistry, { mcp: downstream, graphql }),
       ),
     ).rejects.toMatchObject({
       code: "REQUEST_INVALID",
@@ -1649,10 +1595,7 @@ describe("generated tool handlers", () => {
       httpCaplet,
       { operation: "call_tool", name: "check", args: { id: "42" } },
       httpRegistry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(httpRegistry, { mcp: downstream, http }),
     );
 
     expect(result).not.toBe(httpResult);
@@ -1680,3 +1623,30 @@ describe("generated tool handlers", () => {
     expect(downstream.callTool).not.toHaveBeenCalled();
   });
 });
+
+function textContent(result: CallToolResult, index: number): string | undefined {
+  const block = result.content[index];
+  return block?.type === "text" ? block.text : undefined;
+}
+
+function capletsMetadata(result: CallToolResult): CapletResultMetadata {
+  const value = result._meta?.caplets;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !("name" in value) ||
+    typeof value.name !== "string" ||
+    !("backend" in value) ||
+    typeof value.backend !== "string" ||
+    !("operation" in value) ||
+    typeof value.operation !== "string" ||
+    !("status" in value) ||
+    (value.status !== "ok" && value.status !== "error")
+  ) {
+    throw new Error("expected Caplets result metadata");
+  }
+  return value as CapletResultMetadata;
+}

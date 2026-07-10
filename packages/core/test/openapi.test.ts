@@ -9,6 +9,7 @@ import { DownstreamManager } from "../src/downstream";
 import { OpenApiManager } from "../src/openapi";
 import { handleServerTool } from "../src/tools";
 import { writeTokenBundle } from "../src/auth";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("native OpenAPI Caplets", () => {
   let baseUrl = "";
@@ -205,8 +206,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "tools" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(
         list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
@@ -225,8 +225,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "describe_tool", name: "GET /users/{id}" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(tool.structuredContent.result.tool.inputSchema).toMatchObject({
         type: "object",
@@ -275,8 +274,7 @@ describe("native OpenAPI Caplets", () => {
           args: { path: { id: "42" }, query: { active: true } },
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(result.structuredContent).toMatchObject({
         status: 200,
@@ -292,8 +290,7 @@ describe("native OpenAPI Caplets", () => {
           fields: ["body.name"],
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(projected.structuredContent).toEqual({ body: { name: "Ada" } });
 
@@ -305,8 +302,7 @@ describe("native OpenAPI Caplets", () => {
           args: { body: { name: "Ada" } },
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(create.structuredContent).toMatchObject({
         status: 201,
@@ -322,8 +318,7 @@ describe("native OpenAPI Caplets", () => {
             fields: ["body.created"],
           },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       expect(requests.some((request) => request.headers["x-api-key"] === "secret-key")).toBe(true);
@@ -678,8 +673,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "describe_tool", name: "schemaLess" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(tool.structuredContent.result.tool.outputSchema).toBeUndefined();
 
@@ -689,8 +683,7 @@ describe("native OpenAPI Caplets", () => {
           caplet,
           { operation: "call_tool", name: "schemaLess", args: {}, fields: ["body"] },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       expect(requests.some((request) => request.url === "/schema-less")).toBe(false);
@@ -1076,8 +1069,7 @@ describe("native OpenAPI Caplets", () => {
             fields: ["body.name"],
           },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
     } finally {

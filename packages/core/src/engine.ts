@@ -1,5 +1,9 @@
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
+import {
+  createBackendOperationRuntime,
+  type BackendOperationRuntime,
+} from "./backend-operation-dispatch";
 import { CapletSetManager } from "./caplet-sets";
 import { CliToolsManager } from "./cli-tools";
 import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
@@ -105,6 +109,7 @@ export class CapletsEngine {
   private readonly http: HttpActionManager;
   private readonly cli: CliToolsManager;
   private readonly capletSets: CapletSetManager;
+  private readonly backendRuntime: BackendOperationRuntime;
   private readonly paths: RuntimePaths;
   private readonly watchDebounceMs: number;
   private readonly watchEnabled: boolean;
@@ -163,6 +168,15 @@ export class CapletsEngine {
       projectBindingContext: options.projectBindingContext,
     });
     this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
+    this.backendRuntime = createBackendOperationRuntime({
+      mcp: this.downstream,
+      openapi: this.openapi,
+      googleDiscovery: this.googleDiscovery,
+      graphql: this.graphql,
+      http: this.http,
+      cli: this.cli,
+      caplets: this.capletSets,
+    });
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.observedOutputShapeStore =
@@ -198,7 +212,7 @@ export class CapletsEngine {
       ...(this.projectBindingContext === undefined
         ? {}
         : { projectBindingContext: this.projectBindingContext }),
-      listTools: async (caplet) => this.listTools(caplet),
+      listTools: async (caplet) => this.backendRuntime.operations.listTools(caplet),
       listResources: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listResources(caplet, true)),
       listResourceTemplates: async (caplet) =>
@@ -261,23 +275,11 @@ export class CapletsEngine {
     try {
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
-      const result = await handleServerTool(
-        caplet,
-        request,
-        this.registry,
-        this.downstream,
-        this.openapi,
-        this.graphql,
-        this.http,
-        this.cli,
-        this.capletSets,
-        {
-          observedOutputShapeStore: this.observedOutputShapeStore,
-          observedOutputShapeScope: this.observedOutputShapeScope,
-          projectFingerprint: this.projectFingerprint,
-        },
-        this.googleDiscovery,
-      );
+      const result = await handleServerTool(caplet, request, this.registry, this.backendRuntime, {
+        observedOutputShapeStore: this.observedOutputShapeStore,
+        observedOutputShapeScope: this.observedOutputShapeScope,
+        projectFingerprint: this.projectFingerprint,
+      });
       this.captureToolActivation(
         caplet,
         operationFromRequest(request),
@@ -314,7 +316,7 @@ export class CapletsEngine {
     try {
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
-      const result = await this.callTool(caplet, toolName, args);
+      const result = await this.backendRuntime.operations.callTool(caplet, toolName, args);
       const annotated = annotateDirectResult(result, caplet, toolName);
       this.captureToolActivation(caplet, "call_tool", "direct", annotated, started);
       return annotated;
@@ -436,20 +438,7 @@ export class CapletsEngine {
   }
 
   private async listCompletionTools(server: CapletConfig): Promise<ToolSummary[]> {
-    const tools =
-      server.backend === "mcp"
-        ? await this.downstream.listTools(server)
-        : server.backend === "openapi"
-          ? await this.openapi.listTools(server)
-          : server.backend === "googleDiscovery"
-            ? await this.googleDiscovery.listTools(server)
-            : server.backend === "graphql"
-              ? await this.graphql.listTools(server)
-              : server.backend === "http"
-                ? await this.http.listTools(server)
-                : server.backend === "cli"
-                  ? await this.cli.listTools(server)
-                  : await this.capletSets.listTools(server);
+    const tools = await this.backendRuntime.operations.listTools(server);
     return tools.map((tool) => ({
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
@@ -485,38 +474,6 @@ export class CapletsEngine {
         },
       },
     );
-  }
-
-  private async listTools(server: CapletConfig) {
-    return server.backend === "mcp"
-      ? await this.downstream.listTools(server)
-      : server.backend === "openapi"
-        ? await this.openapi.listTools(server)
-        : server.backend === "googleDiscovery"
-          ? await this.googleDiscovery.listTools(server)
-          : server.backend === "graphql"
-            ? await this.graphql.listTools(server)
-            : server.backend === "http"
-              ? await this.http.listTools(server)
-              : server.backend === "cli"
-                ? await this.cli.listTools(server)
-                : await this.capletSets.listTools(server);
-  }
-
-  private async callTool(server: CapletConfig, toolName: string, args: Record<string, unknown>) {
-    return server.backend === "mcp"
-      ? await this.downstream.callTool(server, toolName, args)
-      : server.backend === "openapi"
-        ? await this.openapi.callTool(server, toolName, args)
-        : server.backend === "googleDiscovery"
-          ? await this.googleDiscovery.callTool(server, toolName, args)
-          : server.backend === "graphql"
-            ? await this.graphql.callTool(server, toolName, args)
-            : server.backend === "http"
-              ? await this.http.callTool(server, toolName, args)
-              : server.backend === "cli"
-                ? await this.cli.callTool(server, toolName, args)
-                : await this.capletSets.callTool(server, toolName, args);
   }
 
   private async optionalMcpList<T>(

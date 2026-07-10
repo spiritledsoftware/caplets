@@ -8,6 +8,7 @@ import { CapletsError } from "../src/errors";
 import { ServerRegistry } from "../src/registry";
 import { handleServerTool } from "../src/tools";
 import { DownstreamManager } from "../src/downstream";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("CliToolsManager", () => {
   const dirs: string[] = [];
@@ -231,6 +232,7 @@ describe("CliToolsManager", () => {
     const registry = new ServerRegistry(config);
     const manager = new CliToolsManager(registry);
 
+    const downstream = new DownstreamManager(registry);
     const result = await handleServerTool(
       caplet,
       {
@@ -240,11 +242,7 @@ describe("CliToolsManager", () => {
         fields: ["json.message"],
       },
       registry,
-      new DownstreamManager(registry),
-      undefined,
-      undefined,
-      undefined,
-      manager,
+      testBackendOperationRuntime(registry, { mcp: downstream, cli: manager }),
     );
 
     expect(result.structuredContent).toEqual({ json: { message: "hello" } });

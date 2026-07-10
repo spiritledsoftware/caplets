@@ -9,6 +9,7 @@ import { HttpActionManager } from "../src/http-actions";
 import { ServerRegistry } from "../src/registry";
 import { CapletsEngine } from "../src/engine";
 import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("HttpActionManager", () => {
   let baseUrl = "";
@@ -223,10 +224,7 @@ describe("HttpActionManager", () => {
       caplet,
       { operation: "describe_tool", name: "ping" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(registry, { mcp: downstream, http }),
     )) as any;
     expect(fetched.structuredContent.result.tool.outputSchema).toMatchObject({
       properties: { body: { properties: { ok: { type: "boolean" } } } },
@@ -236,10 +234,7 @@ describe("HttpActionManager", () => {
       caplet,
       { operation: "call_tool", name: "ping", args: {}, fields: ["body.ok"] },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(registry, { mcp: downstream, http }),
     )) as any;
     expect(projected.structuredContent).toEqual({ body: { ok: true } });
     expect(projected.content[0].text).toContain("# HTTP API call_tool ping");
@@ -380,10 +375,7 @@ describe("HttpActionManager", () => {
         config.httpApis.http!,
         { operation: "call_tool", name: "pdf", args: {} },
         registry,
-        downstream,
-        undefined,
-        undefined,
-        http,
+        testBackendOperationRuntime(registry, { mcp: downstream, http }),
       );
 
       expect(localArtifactPath(result)).toContain(artifactDir);

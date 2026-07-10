@@ -11,6 +11,7 @@ import type { CapletsError } from "../src/errors";
 import { writeTokenBundle } from "../src/auth";
 import { handleServerTool } from "../src/tools";
 import type { Tool } from "@modelcontextprotocol/sdk/types";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 const fixturesDir = fileURLToPath(new URL("fixtures", import.meta.url));
 const tsxImport = import.meta.resolve("tsx");
@@ -224,7 +225,7 @@ describe("downstream stdio lifecycle", () => {
           fields: ["message"],
         },
         registry,
-        manager,
+        testBackendOperationRuntime(registry, { mcp: manager }),
       )) as any;
 
       expect(result).toMatchObject({

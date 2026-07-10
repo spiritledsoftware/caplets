@@ -1,14 +1,18 @@
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types";
+import type {
+  CallToolResult,
+  CompleteResult,
+  GetPromptResult,
+  ReadResourceResult,
+} from "@modelcontextprotocol/sdk/types";
 import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
-import type { CapletSetManager } from "./caplet-sets";
+import type {
+  BackendCallToolResult,
+  BackendOperationDispatch,
+  BackendOperationRuntime,
+  McpOperationAdapter,
+} from "./backend-operation-dispatch";
 import type { CapletConfig } from "./config";
-import type { CliToolsManager } from "./cli-tools";
-import type { DownstreamManager } from "./downstream";
 import { CapletsError } from "./errors";
-import type { GoogleDiscoveryManager } from "./google-discovery";
-import type { GraphQLManager } from "./graphql";
-import type { HttpActionManager } from "./http-actions";
-import type { OpenApiManager } from "./openapi";
 import {
   normalizedObservableValue,
   observeOutputShape,
@@ -43,6 +47,13 @@ const MAX_SCHEMA_ERRORS = 8;
 export type GeneratedServerToolRequest = RequiredOperationRequest;
 
 type ParsedOperationRequest = RequiredOperationRequest & Record<string, unknown>;
+type ReadResourceRequest = Extract<RequiredOperationRequest, { operation: "read_resource" }>;
+type GetPromptRequest = Extract<RequiredOperationRequest, { operation: "get_prompt" }>;
+type CompleteRequest = Extract<RequiredOperationRequest, { operation: "complete" }>;
+type CommonServerToolRequest = Exclude<
+  RequiredOperationRequest,
+  ReadResourceRequest | GetPromptRequest | CompleteRequest
+>;
 
 export type HandleServerToolOptions = {
   observedOutputShapeStore?: ObservedOutputShapeStore | undefined;
@@ -51,19 +62,51 @@ export type HandleServerToolOptions = {
   projectFingerprint?: string | undefined;
 };
 
+export type HandleServerToolResult = BackendCallToolResult;
+
+export function handleServerTool(
+  server: CapletConfig,
+  request: ReadResourceRequest,
+  registry: ServerRegistry,
+  runtime: BackendOperationRuntime,
+  options?: HandleServerToolOptions,
+): Promise<ReadResourceResult>;
+export function handleServerTool(
+  server: CapletConfig,
+  request: GetPromptRequest,
+  registry: ServerRegistry,
+  runtime: BackendOperationRuntime,
+  options?: HandleServerToolOptions,
+): Promise<GetPromptResult>;
+export function handleServerTool(
+  server: CapletConfig,
+  request: CompleteRequest,
+  registry: ServerRegistry,
+  runtime: BackendOperationRuntime,
+  options?: HandleServerToolOptions,
+): Promise<CompleteResult>;
+export function handleServerTool(
+  server: CapletConfig,
+  request: CommonServerToolRequest,
+  registry: ServerRegistry,
+  runtime: BackendOperationRuntime,
+  options?: HandleServerToolOptions,
+): Promise<CallToolResult>;
+export function handleServerTool(
+  server: CapletConfig,
+  request: unknown,
+  registry: ServerRegistry,
+  runtime: BackendOperationRuntime,
+  options?: HandleServerToolOptions,
+): Promise<HandleServerToolResult>;
+
 export async function handleServerTool(
   server: CapletConfig,
   request: unknown,
   registry: ServerRegistry,
-  downstream: DownstreamManager,
-  openapi?: OpenApiManager,
-  graphql?: GraphQLManager,
-  http?: HttpActionManager,
-  cli?: CliToolsManager,
-  caplets?: CapletSetManager,
+  runtime: BackendOperationRuntime,
   options: HandleServerToolOptions = {},
-  googleDiscovery?: GoogleDiscoveryManager,
-): Promise<any> {
+): Promise<HandleServerToolResult> {
   const startedAt = Date.now();
   const parsed = validateOperationRequest(
     request,
@@ -78,32 +121,14 @@ export async function handleServerTool(
         metadataFor(server, "inspect", undefined, startedAt),
       );
     case "check": {
-      const result = await backendFor(
-        server,
-        downstream,
-        openapi,
-        graphql,
-        http,
-        cli,
-        caplets,
-        googleDiscovery,
-      ).check(server as never);
+      const result = await runtime.operations.check(server);
       return jsonResult(result, metadataFor(server, "check", undefined, startedAt));
     }
     case "tools": {
-      const backend = backendFor(
-        server,
-        downstream,
-        openapi,
-        graphql,
-        http,
-        cli,
-        caplets,
-        googleDiscovery,
-      );
-      const tools = await backend.listTools(server as never);
+      const backend = runtime.operations;
+      const tools = await backend.listTools(server);
       const page = pageItems(
-        tools.map((tool) => backend.compact(server as never, tool)),
+        tools.map((tool) => backend.compact(server, tool)),
         parsed,
         registry.config.options.maxSearchLimit,
       );
@@ -117,19 +142,10 @@ export async function handleServerTool(
       );
     }
     case "search_tools": {
-      const backend = backendFor(
-        server,
-        downstream,
-        openapi,
-        graphql,
-        http,
-        cli,
-        caplets,
-        googleDiscovery,
-      );
-      const tools = await backend.listTools(server as never);
+      const backend = runtime.operations;
+      const tools = await backend.listTools(server);
       const limit = parsed.limit ?? registry.config.options.defaultSearchLimit;
-      const matches = backend.search(server as never, tools, parsed.query, limit);
+      const matches = backend.search(server, tools, parsed.query, limit);
       const page = pageItems(matches, parsed, registry.config.options.maxSearchLimit);
       return jsonResult(
         {
@@ -142,17 +158,8 @@ export async function handleServerTool(
       );
     }
     case "describe_tool": {
-      const backend = backendFor(
-        server,
-        downstream,
-        openapi,
-        graphql,
-        http,
-        cli,
-        caplets,
-        googleDiscovery,
-      );
-      const tool = await backend.getTool(server as never, parsed.name);
+      const backend = runtime.operations;
+      const tool = await backend.getTool(server, parsed.name);
       const observedOutputShape = await readObservedOutputShape(
         options,
         server,
@@ -170,20 +177,11 @@ export async function handleServerTool(
       );
     }
     case "call_tool": {
-      const backend = backendFor(
-        server,
-        downstream,
-        openapi,
-        graphql,
-        http,
-        cli,
-        caplets,
-        googleDiscovery,
-      );
+      const backend = runtime.operations;
       const tool = await maybeGetToolForValidation(backend, server, parsed.name);
       validateToolArgsForAgent(tool, parsed.name, parsed.args);
       if (parsed.fields === undefined) {
-        const result = await backend.callTool(server as never, parsed.name, parsed.args);
+        const result = await backend.callTool(server, parsed.name, parsed.args);
         await writeObservedOutputShape(options, server, parsed.name, result);
         return annotateCallToolResult(
           result,
@@ -197,7 +195,7 @@ export async function handleServerTool(
         );
       }
 
-      const fieldSelectionTool = tool ?? (await backend.getTool(server as never, parsed.name));
+      const fieldSelectionTool = tool ?? (await backend.getTool(server, parsed.name));
       if (!fieldSelectionTool.outputSchema) {
         throw new CapletsError(
           "REQUEST_INVALID",
@@ -207,7 +205,7 @@ export async function handleServerTool(
       validateFieldSelection(fieldSelectionTool.outputSchema, parsed.fields);
 
       const metadata = metadataFor(server, "call_tool", parsed.name, startedAt);
-      const rawResult = await backend.callTool(server as never, parsed.name, parsed.args);
+      const rawResult = await backend.callTool(server, parsed.name, parsed.args);
       await writeObservedOutputShape(options, server, parsed.name, rawResult);
       const result = projectCallToolResult(
         rawResult,
@@ -218,7 +216,7 @@ export async function handleServerTool(
       return annotateCallToolResult(result, metadata);
     }
     case "resources": {
-      const backend = mcpBackendFor(server, downstream, "page");
+      const backend = mcpBackendFor(server, runtime.mcp, "page");
       if (!backend) {
         return jsonResult(
           { id: server.server, name: server.name, items: [] },
@@ -241,7 +239,7 @@ export async function handleServerTool(
       );
     }
     case "search_resources": {
-      const backend = mcpBackendFor(server, downstream, "page");
+      const backend = mcpBackendFor(server, runtime.mcp, "page");
       if (!backend) {
         return jsonResult(
           { id: server.server, name: server.name, query: parsed.query, items: [] },
@@ -268,7 +266,7 @@ export async function handleServerTool(
       );
     }
     case "resource_templates": {
-      const backend = mcpBackendFor(server, downstream, "page");
+      const backend = mcpBackendFor(server, runtime.mcp, "page");
       if (!backend) {
         return jsonResult(
           { id: server.server, name: server.name, items: [] },
@@ -291,7 +289,7 @@ export async function handleServerTool(
       );
     }
     case "read_resource": {
-      const result = await mcpBackendFor(server, downstream, "direct")!.readResource(
+      const result = await mcpBackendFor(server, runtime.mcp, "direct")!.readResource(
         server as never,
         parsed.uri,
       );
@@ -301,7 +299,7 @@ export async function handleServerTool(
       );
     }
     case "prompts": {
-      const backend = mcpBackendFor(server, downstream, "page");
+      const backend = mcpBackendFor(server, runtime.mcp, "page");
       if (!backend) {
         return jsonResult(
           { id: server.server, name: server.name, items: [] },
@@ -324,7 +322,7 @@ export async function handleServerTool(
       );
     }
     case "search_prompts": {
-      const backend = mcpBackendFor(server, downstream, "page");
+      const backend = mcpBackendFor(server, runtime.mcp, "page");
       if (!backend) {
         return jsonResult(
           { id: server.server, name: server.name, query: parsed.query, items: [] },
@@ -346,7 +344,7 @@ export async function handleServerTool(
       );
     }
     case "get_prompt": {
-      const result = await mcpBackendFor(server, downstream, "direct")!.getPrompt(
+      const result = await mcpBackendFor(server, runtime.mcp, "direct")!.getPrompt(
         server as never,
         parsed.name,
         parsed.args,
@@ -357,7 +355,7 @@ export async function handleServerTool(
       );
     }
     case "complete": {
-      const result = await mcpBackendFor(server, downstream, "direct")!.complete(server as never, {
+      const result = await mcpBackendFor(server, runtime.mcp, "direct")!.complete(server as never, {
         ref: parsed.ref,
         argument: parsed.argument,
       });
@@ -380,13 +378,12 @@ function fieldSelectionFor(
 }
 
 async function maybeGetToolForValidation(
-  backend: unknown,
+  backend: BackendOperationDispatch,
   server: CapletConfig,
   toolName: string,
 ): Promise<{ inputSchema?: unknown; outputSchema?: unknown } | undefined> {
-  if (!hasGetTool(backend)) return undefined;
   try {
-    return await backend.getTool(server as never, toolName);
+    return await backend.getTool(server, toolName);
   } catch {
     return undefined;
   }
@@ -643,17 +640,6 @@ function placeholderValueForSchema(schema: unknown, depth: number): unknown {
     return value;
   }
   return null;
-}
-
-function hasGetTool(backend: unknown): backend is {
-  getTool(server: never, name: string): Promise<{ inputSchema?: unknown; outputSchema?: unknown }>;
-} {
-  return Boolean(
-    backend &&
-    typeof backend === "object" &&
-    "getTool" in backend &&
-    typeof (backend as { getTool?: unknown }).getTool === "function",
-  );
 }
 
 function schemaToTypeScript(schema: unknown, fallbackName: string): string {
@@ -921,9 +907,9 @@ function pageItems<T>(
 
 function mcpBackendFor(
   server: CapletConfig,
-  downstream: DownstreamManager,
+  mcp: McpOperationAdapter,
   mode: "page" | "direct",
-): DownstreamManager | undefined {
+): McpOperationAdapter | undefined {
   if (server.backend !== "mcp") {
     if (mode === "page") return undefined;
     throw new CapletsError(
@@ -931,7 +917,7 @@ function mcpBackendFor(
       "MCP resource, prompt, and completion operations require an MCP-backed Caplet",
     );
   }
-  return downstream;
+  return mcp;
 }
 
 type RequiredOperationRequest =
@@ -1363,112 +1349,4 @@ function artifactKindFromText(text: string): CapletArtifact["kind"] {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function backendFor(
-  server: CapletConfig | { backend: string },
-  downstream: DownstreamManager,
-  openapi?: OpenApiManager,
-  graphql?: GraphQLManager,
-  http?: HttpActionManager,
-  cli?: CliToolsManager,
-  caplets?: CapletSetManager,
-  googleDiscovery?: GoogleDiscoveryManager,
-) {
-  if (server.backend === "mcp") {
-    return {
-      check: (...args: Parameters<DownstreamManager["checkServer"]>) =>
-        downstream.checkServer(...args),
-      listTools: (...args: Parameters<DownstreamManager["listTools"]>) =>
-        downstream.listTools(...args),
-      getTool: (...args: Parameters<DownstreamManager["getTool"]>) => downstream.getTool(...args),
-      callTool: (...args: Parameters<DownstreamManager["callTool"]>) =>
-        downstream.callTool(...args),
-      compact: (...args: Parameters<DownstreamManager["compact"]>) => downstream.compact(...args),
-      search: (...args: Parameters<DownstreamManager["search"]>) => downstream.search(...args),
-    };
-  }
-  if (server.backend === "googleDiscovery") {
-    if (!googleDiscovery) {
-      throw new CapletsError("INTERNAL_ERROR", "Google Discovery manager is not configured");
-    }
-    return {
-      check: (...args: Parameters<GoogleDiscoveryManager["checkApi"]>) =>
-        googleDiscovery.checkApi(...args),
-      listTools: (...args: Parameters<GoogleDiscoveryManager["listTools"]>) =>
-        googleDiscovery.listTools(...args),
-      getTool: (...args: Parameters<GoogleDiscoveryManager["getTool"]>) =>
-        googleDiscovery.getTool(...args),
-      callTool: (...args: Parameters<GoogleDiscoveryManager["callTool"]>) =>
-        googleDiscovery.callTool(...args),
-      compact: (...args: Parameters<GoogleDiscoveryManager["compact"]>) =>
-        googleDiscovery.compact(...args),
-      search: (...args: Parameters<GoogleDiscoveryManager["search"]>) =>
-        googleDiscovery.search(...args),
-    };
-  }
-  if (server.backend === "graphql") {
-    if (!graphql) {
-      throw new CapletsError("INTERNAL_ERROR", "GraphQL manager is not configured");
-    }
-    return {
-      check: (...args: Parameters<GraphQLManager["checkEndpoint"]>) =>
-        graphql.checkEndpoint(...args),
-      listTools: (...args: Parameters<GraphQLManager["listTools"]>) => graphql.listTools(...args),
-      getTool: (...args: Parameters<GraphQLManager["getTool"]>) => graphql.getTool(...args),
-      callTool: (...args: Parameters<GraphQLManager["callTool"]>) => graphql.callTool(...args),
-      compact: (...args: Parameters<GraphQLManager["compact"]>) => graphql.compact(...args),
-      search: (...args: Parameters<GraphQLManager["search"]>) => graphql.search(...args),
-    };
-  }
-  if (server.backend === "http") {
-    if (!http) {
-      throw new CapletsError("INTERNAL_ERROR", "HTTP action manager is not configured");
-    }
-    return {
-      check: (...args: Parameters<HttpActionManager["checkApi"]>) => http.checkApi(...args),
-      listTools: (...args: Parameters<HttpActionManager["listTools"]>) => http.listTools(...args),
-      getTool: (...args: Parameters<HttpActionManager["getTool"]>) => http.getTool(...args),
-      callTool: (...args: Parameters<HttpActionManager["callTool"]>) => http.callTool(...args),
-      compact: (...args: Parameters<HttpActionManager["compact"]>) => http.compact(...args),
-      search: (...args: Parameters<HttpActionManager["search"]>) => http.search(...args),
-    };
-  }
-  if (server.backend === "cli") {
-    if (!cli) {
-      throw new CapletsError("INTERNAL_ERROR", "CLI tools manager is not configured");
-    }
-    return {
-      check: (...args: Parameters<CliToolsManager["checkTools"]>) => cli.checkTools(...args),
-      listTools: (...args: Parameters<CliToolsManager["listTools"]>) => cli.listTools(...args),
-      getTool: (...args: Parameters<CliToolsManager["getTool"]>) => cli.getTool(...args),
-      callTool: (...args: Parameters<CliToolsManager["callTool"]>) => cli.callTool(...args),
-      compact: (...args: Parameters<CliToolsManager["compact"]>) => cli.compact(...args),
-      search: (...args: Parameters<CliToolsManager["search"]>) => cli.search(...args),
-    };
-  }
-  if (server.backend === "caplets") {
-    if (!caplets) {
-      throw new CapletsError("INTERNAL_ERROR", "Caplet set manager is not configured");
-    }
-    return {
-      check: (...args: Parameters<CapletSetManager["checkSet"]>) => caplets.checkSet(...args),
-      listTools: (...args: Parameters<CapletSetManager["listTools"]>) => caplets.listTools(...args),
-      getTool: (...args: Parameters<CapletSetManager["getTool"]>) => caplets.getTool(...args),
-      callTool: (...args: Parameters<CapletSetManager["callTool"]>) => caplets.callTool(...args),
-      compact: (...args: Parameters<CapletSetManager["compact"]>) => caplets.compact(...args),
-      search: (...args: Parameters<CapletSetManager["search"]>) => caplets.search(...args),
-    };
-  }
-  if (!openapi) {
-    throw new CapletsError("INTERNAL_ERROR", "OpenAPI manager is not configured");
-  }
-  return {
-    check: (...args: Parameters<OpenApiManager["checkEndpoint"]>) => openapi.checkEndpoint(...args),
-    listTools: (...args: Parameters<OpenApiManager["listTools"]>) => openapi.listTools(...args),
-    getTool: (...args: Parameters<OpenApiManager["getTool"]>) => openapi.getTool(...args),
-    callTool: (...args: Parameters<OpenApiManager["callTool"]>) => openapi.callTool(...args),
-    compact: (...args: Parameters<OpenApiManager["compact"]>) => openapi.compact(...args),
-    search: (...args: Parameters<OpenApiManager["search"]>) => openapi.search(...args),
-  };
 }

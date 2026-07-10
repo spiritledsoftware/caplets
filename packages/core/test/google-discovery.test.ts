@@ -15,6 +15,7 @@ import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
 import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 const fixture = JSON.parse(
   readFileSync(join(__dirname, "fixtures/google-discovery/drive.discovery.json"), "utf8"),
@@ -1156,19 +1157,14 @@ describe("GoogleDiscoveryManager", () => {
       caplet,
       { operation: "tools" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream, googleDiscovery: manager }),
       {},
-      manager,
     );
+    const listed = list.structuredContent as unknown as {
+      result: { items: Array<{ name: string }> };
+    };
 
-    expect(
-      list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
-    ).toContain("drive.files.list");
+    expect(listed.result.items.map((tool) => tool.name)).toContain("drive.files.list");
 
     const call = await handleServerTool(
       caplet,
@@ -1179,14 +1175,8 @@ describe("GoogleDiscoveryManager", () => {
         fields: ["body.files"],
       },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream, googleDiscovery: manager }),
       {},
-      manager,
     );
 
     expect(call.structuredContent).toEqual({ body: { files: [{ id: "1", name: "Report" }] } });
