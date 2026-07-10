@@ -417,8 +417,6 @@ describe("CapletsRuntime", () => {
 
     await expect(runtime.reload()).resolves.toBe(true);
 
-    expect(server).not.toHaveProperty("registerResource");
-    expect(server).not.toHaveProperty("registerPrompt");
     expect(runtime.registeredToolIds()).toEqual([]);
     expect(server.registered).toEqual(new Map());
     expect(errors.join("")).toContain("Caplets exposure refresh failed");

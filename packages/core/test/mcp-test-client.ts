@@ -22,6 +22,7 @@ class LinkedTransport implements Transport {
   onclose?: () => void;
   onerror?: (error: Error) => void;
   onmessage?: NonNullable<Transport["onmessage"]>;
+  private closed = false;
 
   async start(): Promise<void> {}
 
@@ -37,6 +38,15 @@ class LinkedTransport implements Transport {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    const peer = this.peer;
+    delete this.peer;
+    if (peer && !peer.closed) {
+      peer.closed = true;
+      delete peer.peer;
+      peer.onclose?.();
+    }
     this.onclose?.();
   }
 }

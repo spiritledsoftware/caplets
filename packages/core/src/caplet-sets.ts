@@ -1,4 +1,4 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { resolve } from "node:path";
 import {
   createBackendOperationRuntime,
@@ -151,7 +151,7 @@ export class CapletSetManager {
     try {
       return await handleServerTool(caplet, args, child.registry, child.runtime);
     } catch (error) {
-      return errorResult(error) as CompatibilityCallToolResult;
+      return errorResult(error) as BackendCallToolResult;
     }
   }
 

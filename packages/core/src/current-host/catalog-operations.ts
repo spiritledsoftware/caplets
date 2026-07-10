@@ -118,10 +118,7 @@ async function catalogInstallOutcome(
           );
     return { kind: "catalog_install", installed, setupActions };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "catalog_installed", {
-      type: "catalog",
-      id: capletIds?.[0] ?? "current-host",
-    });
+    appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);
     throw error;
   }
 }
@@ -156,11 +153,19 @@ async function catalogUpdateOutcome(
     }
     return { kind: "catalog_update", installed, setupActions: [] };
   } catch (error) {
-    appendFailureActivity(dependencies, principal, "catalog_updated", {
-      type: "catalog",
-      id: capletIds?.[0] ?? "current-host",
-    });
+    appendCatalogFailureActivities(dependencies, principal, "catalog_updated", capletIds);
     throw error;
+  }
+}
+
+function appendCatalogFailureActivities(
+  dependencies: CurrentHostOperationsDependencies,
+  principal: CurrentHostOperatorPrincipal,
+  action: "catalog_installed" | "catalog_updated",
+  capletIds: string[] | undefined,
+): void {
+  for (const id of capletIds && capletIds.length > 0 ? capletIds : ["current-host"]) {
+    appendFailureActivity(dependencies, principal, action, { type: "catalog", id });
   }
 }
 

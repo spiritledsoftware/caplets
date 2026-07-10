@@ -157,6 +157,33 @@ describe("Current Host administration operations", () => {
       await setup.engine.close();
     }
   });
+
+  it("records every requested catalog target when a batch update fails", async () => {
+    const setup = testOperations();
+    try {
+      await expect(
+        setup.operations.execute(setup.principal, {
+          kind: "catalog_update",
+          capletIds: ["alpha", "beta"],
+          disableCatalogIndexing: true,
+        }),
+      ).rejects.toBeDefined();
+      const targets = setup.activity
+        .list()
+        .entries.filter((entry) => entry.action === "catalog_updated")
+        .map((entry) => entry.target);
+      expect(targets).toHaveLength(2);
+      expect(targets).toEqual(
+        expect.arrayContaining([
+          { type: "catalog", id: "alpha" },
+          { type: "catalog", id: "beta" },
+        ]),
+      );
+    } finally {
+      await setup.engine.close();
+    }
+  });
+
   it("redacts credential assignments and filesystem paths from classified failures", () => {
     const safe = toCurrentHostSafeError(
       new CapletsError(

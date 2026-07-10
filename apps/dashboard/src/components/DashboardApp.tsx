@@ -2381,7 +2381,7 @@ function VaultPage({
   const values = data.vault?.values ?? [];
   const isMounted = useRef(true);
   const revealGeneration = useRef(0);
-  const expiry = useMemo(() => createEphemeralRevealExpiry(() => setRevealed(undefined)), []);
+  const [expiry] = useState(() => createEphemeralRevealExpiry(() => setRevealed(undefined)));
   function clearRevealed() {
     revealGeneration.current += 1;
     expiry.cancel();

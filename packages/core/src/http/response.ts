@@ -59,12 +59,7 @@ async function readResponseBody(
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
   let writer: MediaArtifactWriter | undefined;
-  const inspectChunk =
-    settings.mimeType === "application/json" ||
-    settings.mimeType.endsWith("+json") ||
-    settings.mimeType.endsWith("/json")
-      ? options.inspectChunk
-      : undefined;
+  const inspectChunk = isJsonMime(settings.mimeType) ? options.inspectChunk : undefined;
   try {
     if (!settings.allowInline) {
       writer = await createResponseArtifactWriter(response, options, settings.mimeType);
@@ -185,12 +180,12 @@ function shouldInline(response: Response, mimeType: string): boolean {
   if (isAttachment(response)) {
     return false;
   }
+  return mimeType === "" || isJsonMime(mimeType) || mimeType.startsWith("text/");
+}
+
+function isJsonMime(mimeType: string): boolean {
   return (
-    mimeType === "" ||
-    mimeType === "application/json" ||
-    mimeType.endsWith("+json") ||
-    mimeType.endsWith("/json") ||
-    mimeType.startsWith("text/")
+    mimeType === "application/json" || mimeType.endsWith("+json") || mimeType.endsWith("/json")
   );
 }
 

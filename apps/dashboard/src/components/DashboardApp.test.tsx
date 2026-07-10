@@ -234,5 +234,8 @@ describe("Vault reveal races", () => {
       current.resolve({ value: "current secret" });
     });
     await flush();
+    expect(container?.textContent).toContain("current secret");
+    expect(dashboardApi).toHaveBeenCalledWith("vault");
+    expect(toast.success).toHaveBeenCalledWith("Vault value revealed");
   });
 });

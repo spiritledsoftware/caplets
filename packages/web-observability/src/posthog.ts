@@ -97,7 +97,7 @@ function categoricalProperties(input: Record<string, unknown>): WebEventProperty
   for (const [key, value] of Object.entries(input)) {
     if (typeof value !== "string") continue;
     try {
-      assertWebEventSafeProperties({ [key]: value } as never);
+      assertWebEventSafeProperties({ [key]: value });
       properties[key] = value;
     } catch {
       // Final provider payloads silently drop SDK and application additions.

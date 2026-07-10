@@ -1,5 +1,3 @@
-import type { WebEventPropertySet } from "./events";
-
 const ALLOWED_WEB_KEYS = new Set([
   "surface",
   "route_family",
@@ -56,9 +54,7 @@ const RAW_VALUE_PATTERNS = [
   /^gh[pousr]_[a-z0-9]/iu,
 ];
 
-export function assertWebEventSafeProperties(
-  properties: WebEventPropertySet & Record<string, unknown>,
-): void {
+export function assertWebEventSafeProperties(properties: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(properties)) {
     if (!ALLOWED_WEB_KEYS.has(key)) {
       throw new Error(`unknown web telemetry property: ${key}`);
@@ -186,7 +182,7 @@ function filterSentryTags(tags: Record<string, unknown>): Record<string, string>
   for (const [key, value] of Object.entries(tags)) {
     if (!ALLOWED_WEB_KEYS.has(key) || typeof value !== "string") continue;
     try {
-      assertWebEventSafeProperties({ [key]: value } as never);
+      assertWebEventSafeProperties({ [key]: value });
       filtered[key] = value;
     } catch {
       // Drop unsafe SDK or caller-provided tags.
