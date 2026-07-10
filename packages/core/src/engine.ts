@@ -27,7 +27,7 @@ import {
 } from "./observed-output-shapes";
 import type { ProjectBindingExecutionContext } from "./project-binding/execution-context";
 import { ServerRegistry } from "./registry";
-import { handleServerTool } from "./tools";
+import { extractArtifacts, handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
 import {
   captureRuntimeReliabilityEvent,
@@ -54,6 +54,8 @@ export type CapletsEngineOptions = {
   authDir?: string;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
+  mediaInlineThresholdBytes?: number;
+  mediaArtifactMaxBytes?: number;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
@@ -155,7 +157,7 @@ export class CapletsEngine {
       this.registry,
       selectHttpLikeOptions(options),
     );
-    this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
+    this.graphql = new GraphQLManager(this.registry, selectHttpLikeOptions(options));
     this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
     this.cli = new CliToolsManager(this.registry, {
       projectBindingContext: options.projectBindingContext,
@@ -779,11 +781,19 @@ function selectHttpLikeOptions(options: CapletsEngineOptions): {
   authDir?: string;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
+  mediaInlineThresholdBytes?: number;
+  mediaArtifactMaxBytes?: number;
 } {
   return {
     ...selectAuthOptions(options.authDir),
     ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
     ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
+    ...(options.mediaInlineThresholdBytes === undefined
+      ? {}
+      : { mediaInlineThresholdBytes: options.mediaInlineThresholdBytes }),
+    ...(options.mediaArtifactMaxBytes === undefined
+      ? {}
+      : { mediaArtifactMaxBytes: options.mediaArtifactMaxBytes }),
   };
 }
 
@@ -876,6 +886,7 @@ function annotateDirectResult(result: unknown, caplet: CapletConfig, operation: 
     return result;
   }
   const existingMeta = (result as { _meta?: unknown })._meta;
+  const artifacts = extractArtifacts(result);
   return {
     ...result,
     _meta: {
@@ -885,6 +896,7 @@ function annotateDirectResult(result: unknown, caplet: CapletConfig, operation: 
         backend: caplet.backend,
         operation,
         exposure: "direct",
+        ...(artifacts.length === 0 ? {} : { artifacts }),
       },
     },
   };

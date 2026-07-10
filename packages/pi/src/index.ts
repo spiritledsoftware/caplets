@@ -475,9 +475,10 @@ function createPiTool(service: NativeCapletsService, caplet: NativeCapletTool): 
       const header = capletsResultHeader(metadata);
       const statusView = capletsStatusView(metadata.status);
       if (expanded) {
-        const artifactLines = metadata.artifacts.map(
-          (artifact) =>
-            `Artifact: ${artifact.kind} ${artifact.displayPath} (${artifact.pathResolution})`,
+        const artifactLines = metadata.artifacts.map((artifact) =>
+          artifact.presentation === "local-path"
+            ? `Artifact: ${artifact.kind} ${artifact.displayPath} (${artifact.pathResolution})`
+            : `Artifact: ${artifact.kind} ${artifact.reference}`,
         );
         const output = resultFullContent(result.content);
         return textComponent(
@@ -522,11 +523,18 @@ function fitLineToWidth(line: string, width: number): string {
   return truncateToWidth(line, width);
 }
 
-type CapletsResultArtifact = {
-  kind: string;
-  displayPath: string;
-  pathResolution: string;
-};
+type CapletsResultArtifact =
+  | {
+      kind: string;
+      presentation: "local-path";
+      displayPath: string;
+      pathResolution: string;
+    }
+  | {
+      kind: string;
+      presentation: "reference";
+      reference: string;
+    };
 
 type CapletsResultMetadata = {
   name?: string;
@@ -579,11 +587,19 @@ function capletsMetadata(details: unknown): CapletsResultMetadata | undefined {
   resultMetadata.artifacts = arrayProperty(metadata, "artifacts")
     .map((artifact) => {
       const kind = stringProperty(artifact, "kind");
-      const displayPath = stringProperty(artifact, "displayPath");
-      const pathResolution = stringProperty(artifact, "pathResolution");
-      return kind && displayPath && pathResolution
-        ? { kind, displayPath, pathResolution }
-        : undefined;
+      const presentation = stringProperty(artifact, "presentation");
+      if (presentation === "local-path") {
+        const displayPath = stringProperty(artifact, "displayPath");
+        const pathResolution = stringProperty(artifact, "pathResolution");
+        return kind && displayPath && pathResolution
+          ? { kind, presentation, displayPath, pathResolution }
+          : undefined;
+      }
+      if (presentation === "reference") {
+        const reference = stringProperty(artifact, "reference");
+        return kind && reference ? { kind, presentation, reference } : undefined;
+      }
+      return undefined;
     })
     .filter((artifact): artifact is CapletsResultArtifact => Boolean(artifact));
   return resultMetadata;

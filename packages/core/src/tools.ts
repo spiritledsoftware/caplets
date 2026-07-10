@@ -955,11 +955,21 @@ type RequiredOperationRequest =
       argument: { name: string; value: string };
     };
 
-export type CapletArtifact = {
-  kind: "screenshot" | "snapshot" | "console-log" | "network-log" | "file";
-  displayPath: string;
-  pathResolution: "absolute" | "relative-to-mcp-server";
-};
+export type CapletArtifact =
+  | {
+      kind: "screenshot" | "snapshot" | "console-log" | "network-log" | "file";
+      presentation: "local-path";
+      displayPath: string;
+      pathResolution: "absolute" | "relative-to-mcp-server";
+      reference?: never;
+    }
+  | {
+      kind: "screenshot" | "snapshot" | "console-log" | "network-log" | "file";
+      presentation: "reference";
+      reference: string;
+      displayPath?: never;
+      pathResolution?: never;
+    };
 
 export type CapletExecutionMetadata = {
   kind: "local" | "remote" | "cloud" | "local-fallback";
@@ -1054,20 +1064,24 @@ export function annotateCallToolResult<T extends object>(
   result: T,
   metadata: CapletResultMetadata,
 ): T & CallToolResult {
-  const existingMeta = (result as { _meta?: unknown })._meta;
+  const existingMeta = "_meta" in result ? result._meta : undefined;
+  const existingContent =
+    "content" in result && Array.isArray(result.content) ? result.content : undefined;
+  const resultIsError = "isError" in result && result.isError === true;
+  const callToolResult = result as CallToolResult;
   const artifacts = extractArtifacts(result);
   const annotatedMetadata = {
     ...metadata,
-    status: (result as { isError?: unknown }).isError === true ? "error" : metadata.status,
+    status: resultIsError ? "error" : metadata.status,
     ...(artifacts.length === 0 ? {} : { artifacts }),
   };
 
   return {
     ...result,
-    content: markdownCallToolResultContent(
-      result as CallToolResult,
-      markdownContextFor(annotatedMetadata),
-    ),
+    content:
+      existingContent === undefined
+        ? markdownCallToolResultContent(callToolResult, markdownContextFor(annotatedMetadata))
+        : [...existingContent],
     _meta: {
       ...(isPlainObject(existingMeta) ? existingMeta : {}),
       caplets: annotatedMetadata,
@@ -1111,22 +1125,14 @@ function hasArtifactPlaceholderForSelectedFields(
   structuredContent: Record<string, unknown>,
   fields: string[],
 ): boolean {
-  const body = structuredContent.body;
   return (
-    isPlainObject(body) &&
-    isPlainObject(body.artifact) &&
-    isArtifactPlaceholder(body.artifact) &&
+    isArtifactMediaResult(structuredContent) &&
     fields.some((field) => field === "body" || field.startsWith("body."))
   );
 }
 
-function isArtifactPlaceholder(value: Record<string, unknown>): boolean {
-  return (
-    typeof value.uri === "string" &&
-    value.uri.startsWith("caplets://artifacts/") &&
-    typeof value.byteLength === "number" &&
-    typeof value.sha256 === "string"
-  );
+function isArtifactMediaResult(value: Record<string, unknown>): boolean {
+  return value.kind === "local-artifact" || value.kind === "remote-reference";
 }
 
 export function extractArtifacts(result: unknown): CapletArtifact[] {
@@ -1173,6 +1179,7 @@ export function extractArtifacts(result: unknown): CapletArtifact[] {
       seen.add(displayPath);
       artifacts.push({
         kind: artifactKind(displayPath, label, surroundingText),
+        presentation: "local-path",
         displayPath,
         pathResolution: isAbsoluteLocalPath(displayPath) ? "absolute" : "relative-to-mcp-server",
       });
@@ -1186,18 +1193,28 @@ function addStructuredArtifact(
   seen: Set<string>,
   structuredContent: unknown,
 ): void {
-  if (!isPlainObject(structuredContent)) return;
-  const body = structuredContent.body;
-  if (!isPlainObject(body) || !isPlainObject(body.artifact)) return;
-  const path = typeof body.artifact.path === "string" ? body.artifact.path : undefined;
-  const uri = typeof body.artifact.uri === "string" ? body.artifact.uri : undefined;
-  const displayPath = path ?? uri;
-  if (!displayPath || seen.has(displayPath)) return;
-  seen.add(displayPath);
+  if (!isPlainObject(structuredContent) || !isArtifactMediaResult(structuredContent)) return;
+
+  if (structuredContent.kind === "local-artifact") {
+    const path = typeof structuredContent.path === "string" ? structuredContent.path : undefined;
+    if (!path || seen.has(path)) return;
+    seen.add(path);
+    artifacts.push({
+      kind: "file",
+      presentation: "local-path",
+      displayPath: path,
+      pathResolution: "absolute",
+    });
+    return;
+  }
+
+  const reference = typeof structuredContent.uri === "string" ? structuredContent.uri : undefined;
+  if (!reference || seen.has(reference)) return;
+  seen.add(reference);
   artifacts.push({
     kind: "file",
-    displayPath,
-    pathResolution: path ? "absolute" : "relative-to-mcp-server",
+    presentation: "reference",
+    reference,
   });
 }
 

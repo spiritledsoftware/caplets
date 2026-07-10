@@ -890,6 +890,47 @@ describe("generated tool handlers", () => {
     });
   });
 
+  it("preserves ordered downstream MCP blocks, errors, structured content, and metadata", async () => {
+    const downstreamResult = {
+      content: [
+        { type: "text", text: "before" },
+        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        { type: "resource_link", uri: "file:///tmp/report.pdf", name: "Report" },
+      ],
+      structuredContent: { snapshot: { complete: true } },
+      isError: true,
+      _meta: { requestId: "req-mixed", trace: { id: "trace-1" } },
+    };
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue(downstreamResult),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", name: "read", args: {} },
+      registry,
+      downstream,
+    );
+
+    expect(result).toEqual({
+      ...downstreamResult,
+      content: downstreamResult.content,
+      _meta: {
+        requestId: "req-mixed",
+        trace: { id: "trace-1" },
+        caplets: {
+          id: "alpha",
+          name: "Alpha",
+          backend: "mcp",
+          operation: "call_tool",
+          tool: "read",
+          status: "error",
+          elapsedMs: expect.any(Number),
+        },
+      },
+    });
+  });
+
   it("annotates downstream error call_tool results without changing content", async () => {
     const downstreamResult = {
       content: [{ type: "text" as const, text: "failed" }],
@@ -932,6 +973,7 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "screenshot",
+        presentation: "local-path",
         displayPath: "./file.png",
         pathResolution: "relative-to-mcp-server",
       },
@@ -944,6 +986,7 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "snapshot",
+        presentation: "local-path",
         displayPath: "./snapshot.yaml",
         pathResolution: "relative-to-mcp-server",
       },
@@ -956,6 +999,7 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "console-log",
+        presentation: "local-path",
         displayPath: "./browser-console.txt",
         pathResolution: "relative-to-mcp-server",
       },
@@ -970,38 +1014,38 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "screenshot",
+        presentation: "local-path",
         displayPath: "./screen.png",
         pathResolution: "relative-to-mcp-server",
       },
       {
         kind: "network-log",
+        presentation: "local-path",
         displayPath: "/tmp/network.har",
         pathResolution: "absolute",
       },
       {
         kind: "file",
+        presentation: "local-path",
         displayPath: "files/report.pdf",
         pathResolution: "relative-to-mcp-server",
       },
     ]);
   });
 
-  it("extracts structured artifact envelopes from call_tool results", async () => {
+  it("presents canonical local artifacts as local paths", async () => {
     const downstream = {
       callTool: vi.fn().mockResolvedValue({
         content: [{ type: "text" as const, text: "downloaded" }],
         structuredContent: {
           status: 200,
-          body: {
-            artifact: {
-              uri: "caplets://artifacts/http/call-1/report.pdf",
-              path: "/tmp/caplets/report.pdf",
-              filename: "report.pdf",
-              mimeType: "application/pdf",
-              byteLength: 12,
-              sha256: "a".repeat(64),
-            },
-          },
+          kind: "local-artifact",
+          uri: "caplets://artifacts/http/call-1/report.pdf",
+          path: "/tmp/caplets/report.pdf",
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+          byteLength: 12,
+          sha256: "a".repeat(64),
         },
       }),
     } as unknown as DownstreamManager;
@@ -1016,10 +1060,45 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "file",
+        presentation: "local-path",
         displayPath: "/tmp/caplets/report.pdf",
         pathResolution: "absolute",
       },
     ]);
+  });
+
+  it("presents canonical remote references without filesystem metadata", async () => {
+    const downstream = {
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text" as const, text: "downloaded" }],
+        structuredContent: {
+          status: 200,
+          kind: "remote-reference",
+          uri: "caplets://artifacts/http/call-1/report.pdf",
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+          byteLength: 12,
+          sha256: "a".repeat(64),
+        },
+      }),
+    } as unknown as DownstreamManager;
+
+    const result = await handleServerTool(
+      server,
+      { operation: "call_tool", name: "read", args: {} },
+      registry,
+      downstream,
+    );
+
+    expect(result._meta.caplets.artifacts).toEqual([
+      {
+        kind: "file",
+        presentation: "reference",
+        reference: "caplets://artifacts/http/call-1/report.pdf",
+      },
+    ]);
+    expect(result._meta.caplets.artifacts[0]).not.toHaveProperty("displayPath");
+    expect(result._meta.caplets.artifacts[0]).not.toHaveProperty("pathResolution");
   });
 
   it("extracts artifact links with spaces, title attributes, and parentheses", async () => {
@@ -1030,16 +1109,19 @@ describe("generated tool handlers", () => {
     expect(result._meta.caplets.artifacts).toEqual([
       {
         kind: "screenshot",
+        presentation: "local-path",
         displayPath: "./screenshots/final view.png",
         pathResolution: "relative-to-mcp-server",
       },
       {
         kind: "file",
+        presentation: "local-path",
         displayPath: "./trace.zip",
         pathResolution: "relative-to-mcp-server",
       },
       {
         kind: "file",
+        presentation: "local-path",
         displayPath: "./run(1).zip",
         pathResolution: "relative-to-mcp-server",
       },
@@ -1481,10 +1563,8 @@ describe("generated tool handlers", () => {
       structuredContent: { ok: true },
       isError: false,
     });
-    expect(result.content[0]?.text).toContain("# Graph call_tool query_user");
-    expect(result.content[0]?.text).toContain("## Result");
-    expect(result.content[0]?.text).toContain('"ok": true');
-    expect({ ...result, content: graphqlResult.content }).toEqual({
+    expect(result.content).toEqual(graphqlResult.content);
+    expect(result).toEqual({
       ...graphqlResult,
       _meta: {
         caplets: {
@@ -1581,10 +1661,8 @@ describe("generated tool handlers", () => {
       structuredContent: { ok: true },
       isError: false,
     });
-    expect(result.content[0]?.text).toContain("# Status HTTP call_tool check");
-    expect(result.content[0]?.text).toContain("## Result");
-    expect(result.content[0]?.text).toContain('"ok": true');
-    expect({ ...result, content: httpResult.content }).toEqual({
+    expect(result.content).toEqual(httpResult.content);
+    expect(result).toEqual({
       ...httpResult,
       _meta: {
         caplets: {

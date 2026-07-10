@@ -9,6 +9,8 @@ type CapletsRuntimeOptions = {
   authDir?: string;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
+  mediaInlineThresholdBytes?: number;
+  mediaArtifactMaxBytes?: number;
   watchDebounceMs?: number;
   server?: ToolServer;
   writeErr?: (value: string) => void;
@@ -78,6 +80,12 @@ function engineOptions(options: CapletsRuntimeOptions): CapletsEngineOptions {
   }
   if (options.exposeLocalArtifactPaths !== undefined) {
     engineOptions.exposeLocalArtifactPaths = options.exposeLocalArtifactPaths;
+  }
+  if (options.mediaInlineThresholdBytes !== undefined) {
+    engineOptions.mediaInlineThresholdBytes = options.mediaInlineThresholdBytes;
+  }
+  if (options.mediaArtifactMaxBytes !== undefined) {
+    engineOptions.mediaArtifactMaxBytes = options.mediaArtifactMaxBytes;
   }
   if (options.watchDebounceMs !== undefined) {
     engineOptions.watchDebounceMs = options.watchDebounceMs;

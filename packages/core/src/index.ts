@@ -25,7 +25,7 @@ export type {
 } from "./runtime-plan";
 export { capabilityDescription, ServerRegistry } from "./registry";
 export { generatedToolInputSchema, handleServerTool } from "./tools";
-export type { CapletExecutionMetadata, CapletResultMetadata } from "./tools";
+export type { CapletArtifact, CapletExecutionMetadata, CapletResultMetadata } from "./tools";
 export { createCodeModeCapletsApi, listCodeModeCallableCaplets } from "./code-mode/api";
 export type {
   CodeModeCapletHandle,

@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildAttachProjection,
@@ -6,8 +10,10 @@ import {
   invokeNativeAttachExport,
   type AttachProjection,
 } from "../src/attach/api";
-import type { CapletsEngine } from "../src/engine";
+import { parseConfig } from "../src/config";
+import { CapletsEngine } from "../src/engine";
 import type { NativeCapletsService } from "../src/native/service";
+import { sanitizeRemoteEngineOptions } from "../src/serve/http";
 
 describe("Attach API dispatch", () => {
   it("sorts attach exports before hashing revisions", async () => {
@@ -445,6 +451,68 @@ describe("Attach API dispatch", () => {
     ]);
   });
 
+  it("returns reference-only HTTP artifacts from Attach exports", async () => {
+    const http = await startPdfServer();
+    try {
+      const artifactDir = mkdtempSync(join(tmpdir(), "caplets-attach-artifacts-"));
+      const engine = new CapletsEngine(
+        sanitizeRemoteEngineOptions({
+          artifactDir,
+          exposeLocalArtifactPaths: true,
+          watch: false,
+          configLoader: () =>
+            parseConfig({
+              options: { exposure: "direct" },
+              httpApis: {
+                status: {
+                  name: "Status HTTP",
+                  description: "Download an Attach report.",
+                  exposure: "direct",
+                  baseUrl: http.baseUrl,
+                  auth: { type: "none" },
+                  actions: { download: { method: "GET", path: "/report" } },
+                },
+              },
+            }),
+        }),
+      );
+
+      try {
+        const projection = await buildAttachProjection(engine);
+        const tool = projection.manifest.tools.find((entry) => entry.name === "status__download");
+        if (!tool) throw new Error("expected the HTTP Attach export");
+        const result = await invokeAttachExport(engine, projection, {
+          revision: projection.manifest.revision,
+          kind: "tool",
+          exportId: tool.exportId,
+          input: {},
+        });
+        const structuredContent = remoteArtifact(result);
+        const reference = artifactReference(result);
+
+        expect(structuredContent).toMatchObject({
+          kind: "remote-reference",
+          uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+          mimeType: "application/pdf",
+          byteLength: 15,
+        });
+        expect(structuredContent).not.toHaveProperty("path");
+        expect(structuredContent).not.toHaveProperty("pathResolution");
+        expect(reference).toMatchObject({
+          presentation: "reference",
+          reference: structuredContent.uri,
+        });
+        expect(reference).not.toHaveProperty("path");
+        expect(reference).not.toHaveProperty("pathResolution");
+      } finally {
+        await engine.close();
+        rmSync(artifactDir, { recursive: true, force: true });
+      }
+    } finally {
+      await http.close();
+    }
+  });
+
   it("reads resource template exports from an explicit expanded URI", async () => {
     const engine = {
       execute: vi.fn(async () => ({ ok: true })),
@@ -861,3 +929,44 @@ describe("Attach API dispatch", () => {
     });
   });
 });
+
+async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/pdf");
+    response.end(Buffer.from("%PDF-1.7 attach"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("Attach HTTP test server did not bind");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+function remoteArtifact(result: unknown): Record<string, unknown> {
+  if (isRecord(result) && isRecord(result.structuredContent)) {
+    return result.structuredContent;
+  }
+  throw new Error("expected structured artifact content");
+}
+
+function artifactReference(result: unknown): Record<string, unknown> {
+  if (!isRecord(result) || !isRecord(result._meta) || !isRecord(result._meta.caplets)) {
+    throw new Error("expected Caplets result metadata");
+  }
+  const artifacts = result._meta.caplets.artifacts;
+  if (Array.isArray(artifacts) && isRecord(artifacts[0])) {
+    return artifacts[0];
+  }
+  throw new Error("expected artifact reference metadata");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}

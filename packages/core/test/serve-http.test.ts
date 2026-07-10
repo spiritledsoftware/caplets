@@ -1,16 +1,25 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve, type WebSocketServerLike } from "@hono/node-server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { CapletsEngine } from "../src/engine";
+import type { CapletsEngineOptions } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
+import { FileRemoteProfileStore } from "../src/remote/profile-store";
 import type { ProjectBindingLease } from "../src/project-binding";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
-import { CAPLETS_STACK_CHAIN_HEADER, createHttpServeApp } from "../src/serve/http";
+import {
+  CAPLETS_STACK_CHAIN_HEADER,
+  createHttpServeApp,
+  sanitizeRemoteEngineOptions,
+} from "../src/serve/http";
+import * as serveHttpModule from "../src/serve/http";
+import type { HttpAttachSessionFactory, HttpMcpSessionFactory } from "../src/serve/http";
 import { CAPLETS_ATTACH_SESSION_HEADER, type AttachManifest } from "../src/attach/api";
 import type { HttpServeOptions } from "../src/serve/options";
 
@@ -22,6 +31,20 @@ afterEach(() => {
   }
 });
 
+it("forces remote artifact paths off after caller engine options", () => {
+  const options = sanitizeRemoteEngineOptions({
+    artifactDir: "/tmp/caplets-artifacts",
+    exposeLocalArtifactPaths: true,
+    mediaInlineThresholdBytes: 128,
+  });
+
+  expect(options).toMatchObject({
+    artifactDir: "/tmp/caplets-artifacts",
+    exposeLocalArtifactPaths: false,
+    mediaInlineThresholdBytes: 128,
+    vaultRecoveryTarget: "remote",
+  });
+});
 describe("createHttpServeApp", () => {
   it("serves root info and health without auth", async () => {
     const { engine } = testEngine();
@@ -1663,6 +1686,139 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("keeps caller-enabled artifact paths out of stacked MCP and Attach results", async () => {
+    const downstream = await startPdfServer();
+    const upstreamContext = testContext();
+    const upstreamEngine = new CapletsEngine({
+      configPath: upstreamContext.configPath,
+      projectConfigPath: upstreamContext.projectConfigPath,
+      watch: false,
+    });
+    const upstreamApp = createHttpServeApp(httpOptions(), upstreamEngine, { writeErr: () => {} });
+    const upstream = await startTestHttpServer(upstreamApp);
+    let captured: CapturedUpstreamServe | undefined;
+    const captureSessionFactory = async (
+      _options: HttpServeOptions,
+      sessionFactory: HttpMcpSessionFactory,
+      _writeErr: ((value: string) => void) | undefined,
+      io: {
+        attachSessionFactory?: HttpAttachSessionFactory;
+        defaultAttachSessionFactory?: HttpAttachSessionFactory;
+        exposeAttach?: boolean;
+      },
+      engineOptions: CapletsEngineOptions,
+    ): Promise<void> => {
+      captured = {
+        sessionFactory,
+        ...(io.attachSessionFactory ? { attachSessionFactory: io.attachSessionFactory } : {}),
+        ...(io.defaultAttachSessionFactory
+          ? { defaultAttachSessionFactory: io.defaultAttachSessionFactory }
+          : {}),
+        ...(io.exposeAttach === undefined ? {} : { exposeAttach: io.exposeAttach }),
+        engineOptions,
+      };
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/serve/http", () => ({
+      ...serveHttpModule,
+      serveHttpWithSessionFactory: captureSessionFactory,
+    }));
+    try {
+      const wrapperContext = testContext();
+      const authDir = tempDir("caplets-stacked-auth-");
+      await new FileRemoteProfileStore({
+        root: join(authDir, "remote-profiles"),
+      }).saveSelfHostedProfile({
+        hostUrl: upstream.origin,
+        clientId: "stacked_test_client",
+        clientLabel: "Stacked Test",
+        credentials: {
+          accessToken: "stacked-access-token",
+          refreshToken: "stacked-refresh-token",
+          tokenType: "Bearer",
+          expiresAt: "2999-01-01T00:00:00.000Z",
+        },
+      });
+      const artifactDir = tempDir("caplets-stacked-artifacts-");
+      writeFileSync(
+        wrapperContext.configPath,
+        JSON.stringify({
+          options: { exposure: "direct" },
+          httpApis: {
+            overlay: {
+              name: "Overlay HTTP",
+              description: "Download a stacked runtime report.",
+              exposure: "direct",
+              baseUrl: downstream.baseUrl,
+              auth: { type: "none" },
+              actions: { download: { method: "GET", path: "/report" } },
+            },
+          },
+        }),
+      );
+
+      // The module must load after the mock so the public upstream entrypoint builds its closures.
+      const { serveResolvedCaplets } = await import("../src/serve");
+      await serveResolvedCaplets(
+        httpOptions({ port: 5399, upstreamUrl: upstream.origin }),
+        {
+          configPath: wrapperContext.configPath,
+          projectConfigPath: wrapperContext.projectConfigPath,
+          authDir,
+          artifactDir,
+          exposeLocalArtifactPaths: true,
+          watch: false,
+        },
+        () => {},
+      );
+      if (!captured) throw new Error("expected stacked serve wiring to capture session factories");
+
+      const wrapperEngine = new CapletsEngine(captured.engineOptions);
+      const wrapperApp = createHttpServeApp(httpOptions({ loopback: false }), wrapperEngine, {
+        writeErr: () => {},
+        ...(captured.exposeAttach === undefined ? {} : { exposeAttach: captured.exposeAttach }),
+        sessionFactory: captured.sessionFactory,
+        ...(captured.attachSessionFactory
+          ? { attachSessionFactory: captured.attachSessionFactory }
+          : {}),
+        ...(captured.defaultAttachSessionFactory
+          ? { defaultAttachSessionFactory: captured.defaultAttachSessionFactory }
+          : {}),
+      });
+      const wrapper = await startTestHttpServer(wrapperApp);
+      try {
+        expectRemoteArtifactResult(await callMcpTool(wrapper.origin, "overlay__download", {}));
+
+        expectRemoteArtifactResult(await invokeAttachTool(wrapper.origin));
+
+        const created = await fetch(`${wrapper.origin}/v1/attach/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        expect(created.status).toBe(201);
+        const sessionId = attachSessionId(await created.json());
+        expectRemoteArtifactResult(
+          await invokeAttachTool(wrapper.origin, {
+            [CAPLETS_ATTACH_SESSION_HEADER]: sessionId,
+          }),
+        );
+      } finally {
+        await wrapperApp.closeCapletsSessions();
+        await withTimeout(wrapper.close(), "close stacked HTTP server");
+        await wrapperEngine.close();
+      }
+    } finally {
+      vi.doUnmock("../src/serve/http");
+      vi.resetModules();
+      await upstreamApp.closeCapletsSessions();
+      await withTimeout(upstream.close(), "close upstream HTTP server");
+      await upstreamEngine.close();
+      await downstream.close();
+    }
+  });
+
   it("rejects attach requests that would cycle through the same stacked runtime", async () => {
     const { engine } = testEngine();
     const app = createHttpServeApp(httpOptions(), engine, {
@@ -2720,4 +2876,208 @@ function testContext(options: { oauth?: boolean } & Record<string, unknown> = {}
     ),
   );
   return { configPath, projectConfigPath, projectCapletsRoot: projectRoot };
+}
+
+type CapturedUpstreamServe = {
+  sessionFactory: HttpMcpSessionFactory;
+  attachSessionFactory?: HttpAttachSessionFactory;
+  defaultAttachSessionFactory?: HttpAttachSessionFactory;
+  exposeAttach?: boolean;
+  engineOptions: CapletsEngineOptions;
+};
+
+async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/pdf");
+    response.end(Buffer.from("%PDF-1.7 stacked"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("stacked HTTP artifact server did not bind");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function callMcpTool(
+  origin: string,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const headers = {
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+  };
+  const initialized = await fetch(`${origin}/v1/mcp`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "host-boundary-test", version: "1.0.0" },
+      },
+    }),
+  });
+  expect(initialized.status).toBe(200);
+  const sessionId = initialized.headers.get("mcp-session-id");
+  if (!sessionId) throw new Error("expected MCP session ID");
+  try {
+    await fetch(`${origin}/v1/mcp`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "mcp-session-id": sessionId,
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    });
+    const response = await fetch(`${origin}/v1/mcp`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "mcp-session-id": sessionId,
+        "mcp-protocol-version": "2025-03-26",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    });
+    expect(response.status).toBe(200);
+    return mcpToolCallResult(await response.text());
+  } finally {
+    const deleted = await fetch(`${origin}/v1/mcp`, {
+      method: "DELETE",
+      headers: {
+        "mcp-session-id": sessionId,
+        "mcp-protocol-version": "2025-03-26",
+      },
+    });
+    expect(deleted.status).toBe(200);
+  }
+}
+
+function mcpToolCallResult(text: string): unknown {
+  const payloadText = text.trimStart().startsWith("{")
+    ? text
+    : text
+        .split("\n")
+        .find((line) => line.startsWith("data:"))
+        ?.slice("data:".length)
+        .trim();
+  if (!payloadText) throw new Error(`Could not parse MCP response: ${text}`);
+  const payload: unknown = JSON.parse(payloadText);
+  if (!isRecord(payload) || !("result" in payload)) {
+    throw new Error("MCP tool call did not return a result");
+  }
+  return payload.result;
+}
+
+function attachToolInvocation(
+  manifest: unknown,
+  name: string,
+): { revision: string; exportId: string } {
+  if (
+    !isRecord(manifest) ||
+    typeof manifest.revision !== "string" ||
+    !Array.isArray(manifest.tools)
+  ) {
+    throw new Error("expected Attach manifest");
+  }
+  const tool = manifest.tools.find(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) && candidate.name === name && typeof candidate.exportId === "string",
+  );
+  if (!tool) throw new Error(`expected Attach export ${name}`);
+  const exportId = tool.exportId;
+  if (typeof exportId !== "string") throw new Error(`expected Attach export ID for ${name}`);
+  return { revision: manifest.revision, exportId };
+}
+
+function attachResponseData(response: unknown): unknown {
+  if (!isRecord(response) || response.ok !== true || !("data" in response)) {
+    throw new Error("expected successful Attach response");
+  }
+  return response.data;
+}
+
+async function invokeAttachTool(
+  origin: string,
+  headers: Record<string, string> = {},
+): Promise<unknown> {
+  const manifestResponse = await fetch(`${origin}/v1/attach/manifest`, { headers });
+  expect(manifestResponse.status).toBe(200);
+  const attachExport = attachToolInvocation(await manifestResponse.json(), "overlay__download");
+  const invokeResponse = await fetch(`${origin}/v1/attach/invoke`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({
+      revision: attachExport.revision,
+      kind: "tool",
+      exportId: attachExport.exportId,
+      input: {},
+    }),
+  });
+  expect(invokeResponse.status).toBe(200);
+  return attachResponseData(await invokeResponse.json());
+}
+
+function attachSessionId(response: unknown): string {
+  if (!isRecord(response) || typeof response.sessionId !== "string") {
+    throw new Error("expected Attach session ID");
+  }
+  return response.sessionId;
+}
+
+function expectRemoteArtifactResult(result: unknown): void {
+  const structuredContent = remoteArtifact(result);
+  const reference = artifactReference(result);
+  expect(structuredContent).toMatchObject({
+    kind: "remote-reference",
+    uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+    mimeType: "application/pdf",
+    byteLength: 16,
+  });
+  expect(structuredContent).not.toHaveProperty("path");
+  expect(structuredContent).not.toHaveProperty("pathResolution");
+  expect(reference).toMatchObject({
+    presentation: "reference",
+    reference: structuredContent.uri,
+  });
+  expect(reference).not.toHaveProperty("path");
+  expect(reference).not.toHaveProperty("pathResolution");
+}
+
+function remoteArtifact(result: unknown): Record<string, unknown> {
+  if (isRecord(result) && isRecord(result.structuredContent)) {
+    return result.structuredContent;
+  }
+  throw new Error("expected structured artifact content");
+}
+
+function artifactReference(result: unknown): Record<string, unknown> {
+  if (!isRecord(result) || !isRecord(result._meta) || !isRecord(result._meta.caplets)) {
+    throw new Error("expected Caplets result metadata");
+  }
+  const artifacts = result._meta.caplets.artifacts;
+  if (Array.isArray(artifacts) && isRecord(artifacts[0])) {
+    return artifacts[0];
+  }
+  throw new Error("expected artifact reference metadata");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

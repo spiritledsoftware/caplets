@@ -70,18 +70,23 @@ describe("result content helpers", () => {
     expect(text).toContain('"matches": []');
   });
 
-  it("preserves downstream MCP text without duplicating structured content", () => {
+  it("preserves mixed downstream MCP blocks in order without adding structured-content prose", () => {
+    const downstreamContent = [
+      { type: "text", text: "Downstream text" },
+      { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+      { type: "resource_link", uri: "file:///tmp/report.pdf", name: "Report" },
+    ];
     const content = markdownCallToolResultContent(
       {
-        content: [{ type: "text", text: "Downstream text" }],
+        content: downstreamContent,
         structuredContent: { snapshot: { title: "Example" } },
+        isError: true,
       },
       { title: "Browser call_tool browser_snapshot", backend: "mcp" },
     );
 
-    expect(content[0]?.text).toContain("Downstream text");
-    expect(content).toHaveLength(1);
-    expect(content[0]?.text).not.toContain("## Structured Content");
+    expect(content).toEqual(downstreamContent);
+    expect(content).toHaveLength(3);
   });
 
   it("detects renderable structured content while ignoring metadata-only objects", () => {

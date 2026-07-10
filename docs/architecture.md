@@ -122,6 +122,10 @@ OpenAPI, Google Discovery, GraphQL, and HTTP backends expose explicit operation/
 
 Google Discovery backends load local or remote Google Discovery documents, infer request base URLs from the document unless overridden, expose filtered Discovery methods as tools, and infer OAuth scopes from the exposed operation set. Google media downloads and oversized or binary HTTP-like responses are written as Caplets media artifacts under the configured artifact root instead of being forced inline.
 
+HTTP-like backend results cross one internal Media contract. Small textual or JSON bodies use the `inline` variant. Non-inline results use `local-artifact` only when the host explicitly exposes its Caplets-managed artifact filesystem; remote and hosted boundaries use `remote-reference`, which carries an artifact URI and never filesystem path semantics. Backend managers produce this contract, while terminal, MCP, Attach, native, and browser Adapters own their local presentation.
+
+Each configurable HTTP-like backend retains its configured maximum response size as a hard failure cap. The shared HTTP reader's default remains 1 MiB. GraphQL operation results use the same 1 MiB inline threshold and a separate 100 MiB artifact cap; GraphQL schema and introspection remain bounded-text control paths.
+
 ### CLI Tools
 
 CLI-backed Caplets expose curated actions only. Actions spawn declared commands and args without shell interpolation. Inputs are validated before spawn, and outputs are bounded.

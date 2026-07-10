@@ -1,3 +1,4 @@
+import Ajv from "ajv";
 import {
   McpServer,
   ResourceTemplate,
@@ -45,6 +46,14 @@ import {
   nativeCapletToolName,
 } from "../native/tools";
 import { capabilityDescription } from "../registry";
+
+const directToolSchemaAjv = new Ajv({
+  allErrors: true,
+  strict: false,
+  validateFormats: false,
+  validateSchema: false,
+});
+const directToolSchemaCache = new WeakMap<Record<string, unknown>, z.ZodObject>();
 
 export type ToolServer = Pick<McpServer, "registerTool" | "connect" | "close"> &
   Partial<Pick<McpServer, "registerResource" | "registerPrompt">>;
@@ -181,14 +190,16 @@ export class CapletsMcpSession {
       if (entry.kind === "direct-tool") {
         const directTool = directToolsById.get(entry.id);
         if (!directTool) continue;
+        const inputSchema = zodSchemaForDirectTool(directTool.tool.inputSchema);
+        const outputSchema = zodSchemaForDirectTool(directTool.tool.outputSchema);
         desiredTools.set(entry.id, {
           register: () => this.registerDirectTool(directTool),
           update: (tool) =>
             (tool.update as (updates: Record<string, unknown>) => void)({
               title: directTool.tool.name,
               description: directTool.tool.description,
-              paramsSchema: directTool.tool.inputSchema as never,
-              outputSchema: directTool.tool.outputSchema as never,
+              paramsSchema: inputSchema,
+              outputSchema,
               annotations: directTool.tool.annotations,
               _meta: {
                 caplets: {
@@ -324,13 +335,15 @@ export class CapletsMcpSession {
   }
 
   private registerDirectTool(entry: DirectToolRegistration): RegisteredTool {
+    const inputSchema = zodSchemaForDirectTool(entry.tool.inputSchema);
+    const outputSchema = zodSchemaForDirectTool(entry.tool.outputSchema);
     return (this.server.registerTool as (...args: unknown[]) => RegisteredTool)(
       entry.name,
       {
         title: entry.tool.name,
         ...(entry.tool.description ? { description: entry.tool.description } : {}),
-        ...(entry.tool.inputSchema ? { inputSchema: entry.tool.inputSchema as never } : {}),
-        ...(entry.tool.outputSchema ? { outputSchema: entry.tool.outputSchema as never } : {}),
+        ...(inputSchema ? { inputSchema } : {}),
+        ...(outputSchema ? { outputSchema } : {}),
         ...(entry.tool.annotations ? { annotations: entry.tool.annotations } : {}),
         _meta: {
           caplets: {
@@ -411,6 +424,39 @@ export class CapletsMcpSession {
       ],
     };
   }
+}
+
+function zodSchemaForDirectTool(schema: unknown): z.ZodObject | undefined {
+  if (!isRecord(schema)) return undefined;
+  const cached = directToolSchemaCache.get(schema);
+  if (cached) return cached;
+
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const required = new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((value): value is string => typeof value === "string")
+      : [],
+  );
+  const shape: Record<string, z.ZodType> = {};
+  for (const [name, propertySchema] of Object.entries(properties)) {
+    const jsonPropertySchema = propertySchema as Parameters<typeof z.fromJSONSchema>[0];
+    const property = z.fromJSONSchema(jsonPropertySchema, { defaultTarget: "draft-7" });
+    shape[name] = required.has(name) ? property : property.optional();
+  }
+
+  const base = schema.additionalProperties === false ? z.strictObject(shape) : z.looseObject(shape);
+  const validate = directToolSchemaAjv.compile(schema);
+  const converted = base.superRefine((value, context) => {
+    if (validate(value)) return;
+    for (const error of validate.errors ?? []) {
+      context.addIssue({
+        code: "custom",
+        message: `${error.instancePath || "value"} ${error.message ?? "is invalid"}`,
+      });
+    }
+  });
+  directToolSchemaCache.set(schema, converted);
+  return converted;
 }
 
 function codeModeRunToolDescription(caplets: CallableCaplet[]): string {

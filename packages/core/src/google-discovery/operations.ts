@@ -1,3 +1,4 @@
+import { httpLikeMediaOutputSchema } from "../media/results";
 import { googleDiscoverySchemaToJsonSchema } from "./schema";
 import type {
   GoogleDiscoveryDocument,
@@ -190,7 +191,7 @@ function scopePreferenceRank(scope: string): number {
 }
 
 function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {
-  return {
+  return httpLikeMediaOutputSchema({
     type: "object",
     additionalProperties: false,
     required: ["status", "statusText", "headers"],
@@ -207,7 +208,7 @@ function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<str
       },
       body: bodySchema,
     },
-  };
+  });
 }
 
 function buildInputSchema(

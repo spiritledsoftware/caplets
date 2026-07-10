@@ -9,7 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import Ajv from "ajv";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   artifactUri,
   readMediaInput,
@@ -17,6 +18,7 @@ import {
   writeMediaArtifact,
 } from "../src/media";
 import { readHttpLikeResponse } from "../src/http/response";
+import { httpLikeMediaOutputSchema } from "../src/media/results";
 
 describe("media artifacts", () => {
   const dirs: string[] = [];
@@ -30,6 +32,75 @@ describe("media artifacts", () => {
     dirs.push(dir);
     return dir;
   }
+
+  it("validates the three Media variants without accepting locality leaks", () => {
+    const schema = httpLikeMediaOutputSchema({
+      type: "object",
+      additionalProperties: false,
+      required: ["status", "statusText", "headers", "body"],
+      properties: {
+        status: { type: "number" },
+        statusText: { type: "string" },
+        headers: {
+          type: "object",
+          additionalProperties: false,
+          required: ["content-type"],
+          properties: { "content-type": { type: "string" } },
+        },
+        body: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ok"],
+          properties: { ok: { type: "boolean" } },
+        },
+      },
+    });
+    const validate = new Ajv({ strict: false }).compile(schema);
+    const response = {
+      status: 200,
+      statusText: "OK",
+      headers: { "content-type": "application/json" },
+    };
+    const facts = {
+      uri: "caplets://artifacts/reports/call-1/report.pdf",
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      byteLength: 9,
+      sha256: "a".repeat(64),
+    };
+
+    expect(validate({ ...response, kind: "inline", body: { ok: true } })).toBe(true);
+    expect(
+      validate({ ...response, kind: "local-artifact", ...facts, path: "/tmp/report.pdf" }),
+    ).toBe(true);
+    expect(validate({ ...response, kind: "remote-reference", ...facts })).toBe(true);
+
+    expect(
+      validate({
+        ...response,
+        kind: "inline",
+        body: { ok: true },
+        uri: facts.uri,
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        ...response,
+        kind: "local-artifact",
+        ...facts,
+        path: "/tmp/report.pdf",
+        body: { ok: true },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        ...response,
+        kind: "remote-reference",
+        ...facts,
+        path: "/tmp/report.pdf",
+      }),
+    ).toBe(false);
+  });
 
   it("writes artifact files with stable metadata", async () => {
     const root = tempDir("caplets-artifacts-");
@@ -156,10 +227,13 @@ describe("media artifacts", () => {
       },
     );
 
-    const artifact = (result.body as { artifact: { path?: string } }).artifact;
     expect(result.status).toBe(404);
+    expect(result.kind).toBe("local-artifact");
+    if (result.kind !== "local-artifact") {
+      throw new Error("forced artifact response must retain a local artifact result");
+    }
     expect(readFileSync(outputPath, "utf8")).toBe("previous-pdf");
-    expect(artifact.path).not.toBe(outputPath);
+    expect(result.path).not.toBe(outputPath);
   });
 
   it("cancels oversized responses rejected by content-length before reading", async () => {
@@ -181,6 +255,36 @@ describe("media artifacts", () => {
         { capletId: "drive", maxBytes: 4 },
       ),
     ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+
+    expect(cancelled).toBe(true);
+  });
+
+  it("cancels locked response readers when semantic inspection fails", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const inspectionFailure = new Error("semantic inspection failed");
+    let cancelled = false;
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"data":"streaming"}'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(
+      readHttpLikeResponse(
+        new Response(body, { headers: { "content-type": "application/json" } }),
+        {
+          capletId: "drive",
+          artifactDir: root,
+          maxInlineBytes: 0,
+          inspectChunk: () => {
+            throw inspectionFailure;
+          },
+        },
+      ),
+    ).rejects.toBe(inspectionFailure);
 
     expect(cancelled).toBe(true);
   });
@@ -242,6 +346,27 @@ describe("media artifacts", () => {
         bytes: Buffer.from("x"),
       }),
     ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+  });
+
+  it("rejects symlinked artifact metadata sidecars", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const outside = tempDir("caplets-artifacts-outside-");
+    const outputPath = join(root, "drive", "call-1", "report.pdf");
+    const outsideFile = join(outside, "metadata.json");
+    mkdirSync(join(root, "drive", "call-1"), { recursive: true });
+    writeFileSync(outsideFile, "outside");
+    symlinkSync(outsideFile, `${outputPath}.caplets.json`);
+
+    await expect(
+      writeMediaArtifact({
+        rootDir: root,
+        capletId: "drive",
+        outputPath,
+        mimeType: "application/pdf",
+        bytes: Buffer.from("report"),
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
+    expect(readFileSync(outsideFile, "utf8")).toBe("outside");
   });
 
   it("rejects symlinked artifact roots", async () => {
@@ -342,6 +467,74 @@ describe("media artifacts", () => {
     });
   });
 
+  it("returns discriminated local artifacts and remote references without fabricating paths", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const options = {
+      capletId: "drive",
+      artifactDir: root,
+      maxInlineBytes: 1,
+      maxBytes: 16,
+    };
+    const local = await readHttpLikeResponse(
+      new Response(Buffer.from("pdf-bytes"), {
+        headers: { "content-type": "application/pdf" },
+      }),
+      options,
+    );
+    const remote = await readHttpLikeResponse(
+      new Response(Buffer.from("pdf-bytes"), {
+        headers: { "content-type": "application/pdf" },
+      }),
+      { ...options, exposeLocalPath: false },
+    );
+
+    expect(local).toMatchObject({
+      kind: "local-artifact",
+      path: expect.stringContaining(root),
+      filename: "response.bin",
+      mimeType: "application/pdf",
+      byteLength: 9,
+      sha256: expect.any(String),
+    });
+    expect(remote).toMatchObject({
+      kind: "remote-reference",
+      uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+      filename: "response.bin",
+      mimeType: "application/pdf",
+      byteLength: 9,
+      sha256: expect.any(String),
+    });
+    expect(remote).not.toHaveProperty("path");
+    expect(remote).not.toHaveProperty("pathResolution");
+  });
+
+  it("does not decode artifact bytes without a semantic inspector", async () => {
+    const root = tempDir("caplets-artifacts-");
+    let decoded = false;
+    vi.stubGlobal(
+      "TextDecoder",
+      class {
+        decode(): string {
+          decoded = true;
+          throw new Error("artifact bytes must not be decoded");
+        }
+      },
+    );
+
+    try {
+      const result = await readHttpLikeResponse(
+        new Response(Buffer.from([0, 255, 128, 64]), {
+          headers: { "content-type": "application/octet-stream" },
+        }),
+        { capletId: "drive", artifactDir: root },
+      );
+
+      expect(result.kind).toBe("local-artifact");
+      expect(decoded).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("rejects multiple media input sources and non-base64 data URLs", async () => {
     const root = tempDir("caplets-artifacts-");
     await expect(

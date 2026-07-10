@@ -37,7 +37,9 @@ import {
   type CompactTool,
 } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
-import { isAbortError, parseHttpBody, readLimitedText } from "./http/utils";
+import { readHttpLikeResponse } from "./http/response";
+import { DEFAULT_MAX_RESPONSE_BYTES, isAbortError, readLimitedText } from "./http/utils";
+import { MEDIA_ARTIFACT_MAX_BYTES } from "./media/results";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -76,7 +78,13 @@ export class GraphQLManager {
 
   constructor(
     private registry: ServerRegistry,
-    private readonly options: { authDir?: string } = {},
+    private readonly options: {
+      authDir?: string;
+      artifactDir?: string;
+      exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
+      mediaArtifactMaxBytes?: number;
+    } = {},
   ) {}
 
   updateRegistry(registry: ServerRegistry): void {
@@ -183,18 +191,21 @@ export class GraphQLManager {
           },
         );
       }
-      const body = parseHttpBody(
-        response.headers.get("content-type") ?? "",
-        await readGraphQlText(response),
-      );
-      const result = {
-        status: response.status,
-        statusText: response.statusText,
-        headers: {
-          "content-type": response.headers.get("content-type") ?? "",
+      const graphQlErrorInspector = new GraphQlErrorInspector();
+      const result = await readHttpLikeResponse(response, {
+        capletId: endpoint.server,
+        ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
+        ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        maxInlineBytes: this.options.mediaInlineThresholdBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+        maxBytes: Math.min(
+          this.options.mediaArtifactMaxBytes ?? MEDIA_ARTIFACT_MAX_BYTES,
+          MEDIA_ARTIFACT_MAX_BYTES,
+        ),
+        inspectChunk: (chunk) => {
+          graphQlErrorInspector.write(chunk);
         },
-        body,
-      };
+      });
+      const graphQlErrors = graphQlErrorInspector.finish();
       return {
         content: markdownStructuredContent(result, {
           title: `${endpoint.name} call_tool ${toolName}`,
@@ -203,9 +214,7 @@ export class GraphQLManager {
           tool: toolName,
         }),
         structuredContent: result,
-        isError:
-          !response.ok ||
-          Boolean(body && typeof body === "object" && "errors" in body && (body as any).errors),
+        isError: !response.ok || graphQlErrors,
       };
     } catch (error) {
       if (isAbortError(error)) {
@@ -719,6 +728,520 @@ function shouldSendSchemaAuth(endpoint: GraphQlEndpointConfig): boolean {
     endpoint.schemaUrl &&
     new URL(endpoint.schemaUrl).origin === new URL(endpoint.endpointUrl).origin,
   );
+}
+
+type JsonContainer =
+  | {
+      kind: "array";
+      state: "valueOrEnd" | "value" | "commaOrEnd";
+      isErrorValue: boolean;
+    }
+  | {
+      kind: "object";
+      state: "keyOrEnd" | "key" | "colon" | "value" | "commaOrEnd";
+      isRoot: boolean;
+      keyIsErrors: boolean;
+      isErrorValue: boolean;
+    };
+
+type JsonToken =
+  | {
+      kind: "string";
+      role: "key" | "value";
+      isErrorValue: boolean;
+      trackKey: boolean;
+      keyMatches: boolean;
+      keyLength: number;
+      hasContent: boolean;
+      escaping: boolean;
+      unicode: string | undefined;
+    }
+  | {
+      kind: "literal";
+      expected: "true" | "false" | "null";
+      index: number;
+      truthiness: boolean;
+      isErrorValue: boolean;
+    }
+  | {
+      kind: "number";
+      state:
+        | "sign"
+        | "zero"
+        | "integer"
+        | "fractionStart"
+        | "fraction"
+        | "exponentStart"
+        | "exponentSign"
+        | "exponent";
+      mantissaNonZero: boolean;
+      isErrorValue: boolean;
+    };
+
+class GraphQlErrorInspector {
+  private readonly decoder = new TextDecoder();
+  private readonly stack: JsonContainer[] = [];
+  private token: JsonToken | undefined;
+  private rootState: "value" | "complete" = "value";
+  private errorsValue = false;
+  private valid = true;
+  private finished = false;
+
+  write(chunk: Uint8Array): void {
+    if (!this.finished && this.valid) {
+      this.consume(this.decoder.decode(chunk, { stream: true }));
+    }
+  }
+
+  finish(): boolean {
+    if (!this.finished) {
+      this.consume(this.decoder.decode());
+      this.finishToken();
+      if (this.stack.length > 0 || this.rootState !== "complete") {
+        this.invalidate();
+      }
+      this.finished = true;
+    }
+    return this.valid && this.errorsValue;
+  }
+
+  private consume(text: string): void {
+    for (const character of text) {
+      this.consumeCharacter(character);
+      if (!this.valid) {
+        return;
+      }
+    }
+  }
+
+  private consumeCharacter(character: string): void {
+    const token = this.token;
+    if (token) {
+      this.consumeToken(token, character);
+      return;
+    }
+    const context = this.stack[this.stack.length - 1];
+    if (!context) {
+      if (this.rootState === "complete") {
+        if (!this.isWhitespace(character)) {
+          this.invalidate();
+        }
+        return;
+      }
+      this.startValue(character, false);
+      return;
+    }
+    if (context.kind === "object") {
+      this.consumeObject(context, character);
+      return;
+    }
+    this.consumeArray(context, character);
+  }
+
+  private consumeObject(
+    context: Extract<JsonContainer, { kind: "object" }>,
+    character: string,
+  ): void {
+    if (context.state === "keyOrEnd" || context.state === "key") {
+      if (this.isWhitespace(character)) {
+        return;
+      }
+      if (character === "}" && context.state === "keyOrEnd") {
+        this.closeContainer(context);
+        return;
+      }
+      if (character === '"') {
+        this.startString("key", false, context.isRoot);
+        return;
+      }
+      this.invalidate();
+      return;
+    }
+    if (context.state === "colon") {
+      if (this.isWhitespace(character)) {
+        return;
+      }
+      if (character === ":") {
+        context.state = "value";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (context.state === "value") {
+      this.startValue(character, context.isRoot && context.keyIsErrors);
+      return;
+    }
+    if (this.isWhitespace(character)) {
+      return;
+    }
+    if (character === ",") {
+      context.state = "key";
+    } else if (character === "}") {
+      this.closeContainer(context);
+    } else {
+      this.invalidate();
+    }
+  }
+
+  private consumeArray(
+    context: Extract<JsonContainer, { kind: "array" }>,
+    character: string,
+  ): void {
+    if (context.state === "valueOrEnd" || context.state === "value") {
+      if (this.isWhitespace(character)) {
+        return;
+      }
+      if (character === "]" && context.state === "valueOrEnd") {
+        this.closeContainer(context);
+      } else {
+        this.startValue(character, false);
+      }
+      return;
+    }
+    if (this.isWhitespace(character)) {
+      return;
+    }
+    if (character === ",") {
+      context.state = "value";
+    } else if (character === "]") {
+      this.closeContainer(context);
+    } else {
+      this.invalidate();
+    }
+  }
+
+  private startValue(character: string, isErrorValue: boolean): void {
+    if (this.isWhitespace(character)) {
+      return;
+    }
+    if (character === "{") {
+      this.stack.push({
+        kind: "object",
+        state: "keyOrEnd",
+        isRoot: this.stack.length === 0 && this.rootState === "value",
+        keyIsErrors: false,
+        isErrorValue,
+      });
+      return;
+    }
+    if (character === "[") {
+      this.stack.push({ kind: "array", state: "valueOrEnd", isErrorValue });
+      return;
+    }
+    if (character === '"') {
+      this.startString("value", isErrorValue, false);
+      return;
+    }
+    if (character === "t" || character === "f" || character === "n") {
+      const expected = character === "t" ? "true" : character === "f" ? "false" : "null";
+      this.token = {
+        kind: "literal",
+        expected,
+        index: 1,
+        truthiness: character === "t",
+        isErrorValue,
+      };
+      return;
+    }
+    if (character === "-" || (character >= "0" && character <= "9")) {
+      this.token = {
+        kind: "number",
+        state: character === "-" ? "sign" : character === "0" ? "zero" : "integer",
+        mantissaNonZero: character >= "1" && character <= "9",
+        isErrorValue,
+      };
+      return;
+    }
+    this.invalidate();
+  }
+
+  private startString(role: "key" | "value", isErrorValue: boolean, trackKey: boolean): void {
+    this.token = {
+      kind: "string",
+      role,
+      isErrorValue,
+      trackKey,
+      keyMatches: true,
+      keyLength: 0,
+      hasContent: false,
+      escaping: false,
+      unicode: undefined,
+    };
+  }
+
+  private consumeToken(token: JsonToken, character: string): void {
+    if (token.kind === "string") {
+      this.consumeString(token, character);
+      return;
+    }
+    if (token.kind === "literal") {
+      this.consumeLiteral(token, character);
+      return;
+    }
+    this.consumeNumber(token, character);
+  }
+
+  private consumeString(token: Extract<JsonToken, { kind: "string" }>, character: string): void {
+    if (token.unicode !== undefined) {
+      if (!/^[\da-f]$/iu.test(character)) {
+        this.invalidate();
+        return;
+      }
+      token.unicode += character;
+      if (token.unicode.length === 4) {
+        this.recordStringCharacter(token, String.fromCodePoint(Number.parseInt(token.unicode, 16)));
+        token.unicode = undefined;
+      }
+      return;
+    }
+    if (token.escaping) {
+      token.escaping = false;
+      if (character === "u") {
+        token.unicode = "";
+        return;
+      }
+      const escaped = {
+        '"': '"',
+        "\\": "\\",
+        "/": "/",
+        b: "\b",
+        f: "\f",
+        n: "\n",
+        r: "\r",
+        t: "\t",
+      }[character];
+      if (escaped === undefined) {
+        this.invalidate();
+      } else {
+        this.recordStringCharacter(token, escaped);
+      }
+      return;
+    }
+    if (character === '"') {
+      this.token = undefined;
+      if (token.role === "key") {
+        const context = this.stack[this.stack.length - 1];
+        if (
+          !context ||
+          context.kind !== "object" ||
+          (context.state !== "keyOrEnd" && context.state !== "key")
+        ) {
+          this.invalidate();
+          return;
+        }
+        context.keyIsErrors = token.trackKey && token.keyMatches && token.keyLength === 6;
+        context.state = "colon";
+      } else {
+        this.completeValue(token.hasContent, token.isErrorValue);
+      }
+      return;
+    }
+    if (character === "\\") {
+      token.escaping = true;
+      return;
+    }
+    if (character.codePointAt(0)! < 0x20) {
+      this.invalidate();
+      return;
+    }
+    this.recordStringCharacter(token, character);
+  }
+
+  private recordStringCharacter(
+    token: Extract<JsonToken, { kind: "string" }>,
+    character: string,
+  ): void {
+    token.hasContent = true;
+    if (token.trackKey) {
+      token.keyMatches = token.keyMatches && "errors"[token.keyLength] === character;
+      token.keyLength += 1;
+    }
+  }
+
+  private consumeLiteral(token: Extract<JsonToken, { kind: "literal" }>, character: string): void {
+    if (token.index < token.expected.length) {
+      if (character !== token.expected[token.index]) {
+        this.invalidate();
+      } else {
+        token.index += 1;
+      }
+      return;
+    }
+    if (!this.isValueTerminator(character)) {
+      this.invalidate();
+      return;
+    }
+    this.token = undefined;
+    this.completeValue(token.truthiness, token.isErrorValue);
+    this.consumeCharacter(character);
+  }
+
+  private consumeNumber(token: Extract<JsonToken, { kind: "number" }>, character: string): void {
+    if (this.isValueTerminator(character)) {
+      this.token = undefined;
+      this.finishNumber(token);
+      this.consumeCharacter(character);
+      return;
+    }
+    const digit = character >= "0" && character <= "9";
+    if (token.state === "sign") {
+      if (character === "0") {
+        token.state = "zero";
+      } else if (character >= "1" && character <= "9") {
+        token.state = "integer";
+        token.mantissaNonZero = true;
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "zero") {
+      if (character === ".") {
+        token.state = "fractionStart";
+      } else if (character === "e" || character === "E") {
+        token.state = "exponentStart";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "integer") {
+      if (digit) {
+        token.mantissaNonZero ||= character !== "0";
+      } else if (character === ".") {
+        token.state = "fractionStart";
+      } else if (character === "e" || character === "E") {
+        token.state = "exponentStart";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "fractionStart") {
+      if (digit) {
+        token.state = "fraction";
+        token.mantissaNonZero ||= character !== "0";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "fraction") {
+      if (digit) {
+        token.mantissaNonZero ||= character !== "0";
+      } else if (character === "e" || character === "E") {
+        token.state = "exponentStart";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "exponentStart") {
+      if (character === "+" || character === "-") {
+        token.state = "exponentSign";
+      } else if (digit) {
+        token.state = "exponent";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (token.state === "exponentSign") {
+      if (digit) {
+        token.state = "exponent";
+      } else {
+        this.invalidate();
+      }
+      return;
+    }
+    if (!digit) {
+      this.invalidate();
+    }
+  }
+
+  private closeContainer(context: JsonContainer): void {
+    const allowed =
+      context.kind === "object"
+        ? context.state === "keyOrEnd" || context.state === "commaOrEnd"
+        : context.state === "valueOrEnd" || context.state === "commaOrEnd";
+    if (!allowed) {
+      this.invalidate();
+      return;
+    }
+    this.stack.pop();
+    this.completeValue(true, context.isErrorValue);
+  }
+
+  private completeValue(truthiness: boolean, isErrorValue: boolean): void {
+    if (isErrorValue) {
+      this.errorsValue = truthiness;
+    }
+    const parent = this.stack[this.stack.length - 1];
+    if (!parent) {
+      this.rootState = "complete";
+      return;
+    }
+    if (parent.kind === "object") {
+      if (parent.state !== "value") {
+        this.invalidate();
+        return;
+      }
+      parent.state = "commaOrEnd";
+      parent.keyIsErrors = false;
+    } else if (parent.state === "valueOrEnd" || parent.state === "value") {
+      parent.state = "commaOrEnd";
+    } else {
+      this.invalidate();
+    }
+  }
+
+  private finishToken(): void {
+    const token = this.token;
+    if (!token) {
+      return;
+    }
+    this.token = undefined;
+    if (token.kind === "string") {
+      this.invalidate();
+    } else if (token.kind === "literal") {
+      if (token.index === token.expected.length) {
+        this.completeValue(token.truthiness, token.isErrorValue);
+      } else {
+        this.invalidate();
+      }
+    } else {
+      this.finishNumber(token);
+    }
+  }
+
+  private finishNumber(token: Extract<JsonToken, { kind: "number" }>): void {
+    if (
+      token.state !== "zero" &&
+      token.state !== "integer" &&
+      token.state !== "fraction" &&
+      token.state !== "exponent"
+    ) {
+      this.invalidate();
+      return;
+    }
+    this.completeValue(token.mantissaNonZero, token.isErrorValue);
+  }
+
+  private isWhitespace(character: string): boolean {
+    return character === " " || character === "\n" || character === "\r" || character === "\t";
+  }
+
+  private isValueTerminator(character: string): boolean {
+    return (
+      this.isWhitespace(character) || character === "," || character === "]" || character === "}"
+    );
+  }
+
+  private invalidate(): void {
+    this.valid = false;
+    this.token = undefined;
+  }
 }
 
 async function readGraphQlText(response: Response): Promise<string> {

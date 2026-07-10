@@ -2196,18 +2196,14 @@ export async function serveHttp(
   engineOptions: CapletsEngineOptions = {},
   writeErr: (value: string) => void = (value) => process.stderr.write(value),
 ): Promise<void> {
-  const resolvedEngineOptions = {
-    exposeLocalArtifactPaths: false,
-    vaultRecoveryTarget: "remote" as const,
-    ...engineOptions,
-  };
-  const engine = new CapletsEngine(resolvedEngineOptions);
+  const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
+  const engine = new CapletsEngine(remoteEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
     control: {
-      ...resolvedEngineOptions,
-      projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
-      globalCapletsRoot: resolveCapletsRoot(resolvedEngineOptions.configPath),
+      ...remoteEngineOptions,
+      projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
+      globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
@@ -2244,12 +2240,8 @@ export async function serveHttpWithSessionFactory(
   > = {},
   engineOptions: CapletsEngineOptions = {},
 ): Promise<void> {
-  const resolvedEngineOptions = {
-    exposeLocalArtifactPaths: false,
-    vaultRecoveryTarget: "remote" as const,
-    ...engineOptions,
-  };
-  const engine = new CapletsEngine(resolvedEngineOptions);
+  const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
+  const engine = new CapletsEngine(remoteEngineOptions);
   const app = createHttpServeApp(options, engine, {
     writeErr,
     exposeAttach: io.exposeAttach ?? false,
@@ -2259,9 +2251,9 @@ export async function serveHttpWithSessionFactory(
       ? { defaultAttachSessionFactory: io.defaultAttachSessionFactory }
       : {}),
     control: {
-      ...resolvedEngineOptions,
-      projectCapletsRoot: projectCapletsRootForEngineOptions(resolvedEngineOptions),
-      globalCapletsRoot: resolveCapletsRoot(resolvedEngineOptions.configPath),
+      ...remoteEngineOptions,
+      projectCapletsRoot: projectCapletsRootForEngineOptions(remoteEngineOptions),
+      globalCapletsRoot: resolveCapletsRoot(remoteEngineOptions.configPath),
       globalLockfilePath: defaultCapletsLockfilePath(),
     },
   });
@@ -2287,6 +2279,15 @@ export async function serveHttpWithSessionFactory(
   installHttpSignalHandlers(server, app, engine, writeErr);
 }
 
+export function sanitizeRemoteEngineOptions(
+  engineOptions: CapletsEngineOptions,
+): CapletsEngineOptions {
+  return {
+    ...engineOptions,
+    exposeLocalArtifactPaths: false,
+    vaultRecoveryTarget: "remote" as const,
+  };
+}
 function projectCapletsRootForEngineOptions(engineOptions: CapletsEngineOptions): string {
   return engineOptions.projectConfigPath
     ? resolveProjectCapletsRootForConfigPath(engineOptions.projectConfigPath)

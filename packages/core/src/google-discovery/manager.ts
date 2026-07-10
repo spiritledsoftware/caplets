@@ -48,6 +48,7 @@ export class GoogleDiscoveryManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
     } = {},
   ) {}
 
@@ -138,6 +139,9 @@ export class GoogleDiscoveryManager {
         method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        ...(this.options.mediaInlineThresholdBytes === undefined
+          ? {}
+          : { maxInlineBytes: this.options.mediaInlineThresholdBytes }),
         ...(typeof args.filename === "string" ? { filename: args.filename } : {}),
         ...(typeof args.outputPath === "string" ? { outputPath: args.outputPath } : {}),
         maxBytes: DEFAULT_MEDIA_RESPONSE_MAX_BYTES,
@@ -208,6 +212,9 @@ export class GoogleDiscoveryManager {
         method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        ...(this.options.mediaInlineThresholdBytes === undefined
+          ? {}
+          : { maxInlineBytes: this.options.mediaInlineThresholdBytes }),
       });
       return {
         content: markdownStructuredContent(parsed, {

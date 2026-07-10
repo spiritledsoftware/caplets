@@ -8,7 +8,12 @@ import {
 import { createNativeCapletsService } from "../native/service";
 import type { NativeCapletsService } from "../native/service";
 import { isCapletsCloudUrl } from "../remote/options";
-import { CAPLETS_STACK_CHAIN_HEADER, serveHttp, serveHttpWithSessionFactory } from "./http";
+import {
+  CAPLETS_STACK_CHAIN_HEADER,
+  sanitizeRemoteEngineOptions,
+  serveHttp,
+  serveHttpWithSessionFactory,
+} from "./http";
 import { resolveServeOptions, type RawServeOptions, type ServeOptions } from "./options";
 import { NativeCapletsMcpSession } from "./native-session";
 import { serveStdio } from "./stdio";
@@ -54,12 +59,19 @@ async function serveHttpWithUpstream(
   engineOptions: CapletsEngineOptions,
   writeErr?: (value: string) => void,
 ): Promise<void> {
+  const remoteEngineOptions = sanitizeRemoteEngineOptions(engineOptions);
   const stackChain = [serveStackIdentity(resolved)];
   await serveHttpWithSessionFactory(
     resolved,
     async () =>
       new NativeCapletsMcpSession(
-        await createReloadedUpstreamService(upstreamUrl, engineOptions, writeErr, {}, stackChain),
+        await createReloadedUpstreamService(
+          upstreamUrl,
+          remoteEngineOptions,
+          writeErr,
+          {},
+          stackChain,
+        ),
       ),
     writeErr,
     {
@@ -68,7 +80,7 @@ async function serveHttpWithUpstream(
         nativeAttachSession(
           await createReloadedUpstreamService(
             upstreamUrl,
-            engineOptions,
+            remoteEngineOptions,
             writeErr,
             {},
             context.stackChain,
@@ -78,7 +90,7 @@ async function serveHttpWithUpstream(
         return nativeAttachSession(
           await createReloadedUpstreamService(
             upstreamUrl,
-            engineOptions,
+            remoteEngineOptions,
             writeErr,
             metadata,
             context.stackChain,
@@ -86,7 +98,7 @@ async function serveHttpWithUpstream(
         );
       },
     },
-    engineOptions,
+    remoteEngineOptions,
   );
 }
 

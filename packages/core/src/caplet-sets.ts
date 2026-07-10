@@ -48,6 +48,8 @@ export class CapletSetManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
+      mediaArtifactMaxBytes?: number;
       ancestry?: Set<string>;
     } = {},
   ) {}
@@ -232,6 +234,12 @@ export class CapletSetManager {
         ...(this.options.exposeLocalArtifactPaths === false
           ? { exposeLocalArtifactPaths: false }
           : {}),
+        ...(this.options.mediaInlineThresholdBytes === undefined
+          ? {}
+          : { mediaInlineThresholdBytes: this.options.mediaInlineThresholdBytes }),
+        ...(this.options.mediaArtifactMaxBytes === undefined
+          ? {}
+          : { mediaArtifactMaxBytes: this.options.mediaArtifactMaxBytes }),
       };
       const childAncestry = new Set([...ancestry, cacheKey]);
       child = {

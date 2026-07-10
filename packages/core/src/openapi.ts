@@ -13,6 +13,7 @@ import {
 import { CapletsError, toSafeError } from "./errors";
 import { readHttpLikeResponse } from "./http/response";
 import { isAbortError, readLimitedText } from "./http/utils";
+import { httpLikeMediaOutputSchema } from "./media/results";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -66,6 +67,7 @@ export class OpenApiManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
     } = {},
   ) {}
 
@@ -162,6 +164,9 @@ export class OpenApiManager {
         method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        ...(this.options.mediaInlineThresholdBytes === undefined
+          ? {}
+          : { maxInlineBytes: this.options.mediaInlineThresholdBytes }),
         maxBytes: DEFAULT_OPENAPI_RESPONSE_MAX_BYTES,
       });
       return {
@@ -493,7 +498,7 @@ function actualSchema(value: unknown): Record<string, unknown> | undefined {
 }
 
 function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<string, unknown> {
-  return {
+  return httpLikeMediaOutputSchema({
     type: "object",
     additionalProperties: false,
     required: ["status", "statusText", "headers"],
@@ -511,7 +516,7 @@ function structuredOutputSchema(bodySchema: Record<string, unknown>): Record<str
       },
       body: bodySchema,
     },
-  };
+  });
 }
 
 function inputSchemaFor(

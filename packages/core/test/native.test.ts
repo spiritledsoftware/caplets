@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -316,6 +317,59 @@ describe("native Caplets service", () => {
       ]);
     } finally {
       await service.close();
+    }
+  });
+
+  it("returns local HTTP artifacts with an absolute managed path in the native service", async () => {
+    const http = await startPdfServer();
+    let artifactCallDir: string | undefined;
+    try {
+      const { dir, configPath, projectConfigPath } = tempConfig({
+        httpApis: {
+          status: {
+            name: "Status HTTP",
+            description: "Download a local report.",
+            exposure: "direct",
+            baseUrl: http.baseUrl,
+            auth: { type: "none" },
+            actions: { download: { method: "GET", path: "/report" } },
+          },
+        },
+      });
+      dirs.push(dir);
+      const service = createNativeCapletsService({ configPath, projectConfigPath });
+
+      try {
+        expect(service.listTools()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              caplet: "status__download",
+              toolName: "caplets__status__download",
+            }),
+          ]),
+        );
+        const result = await service.execute("status__download", {});
+        const path = localArtifactPath(result);
+        artifactCallDir = dirname(path);
+
+        expect(isAbsolute(path)).toBe(true);
+        expect(readFileSync(path, "utf8")).toBe("%PDF-1.7 native");
+        expect(result).toMatchObject({
+          structuredContent: {
+            kind: "local-artifact",
+            path,
+            mimeType: "application/pdf",
+            byteLength: 15,
+          },
+        });
+      } finally {
+        await service.close();
+      }
+    } finally {
+      if (artifactCallDir) {
+        rmSync(artifactCallDir, { recursive: true, force: true });
+      }
+      await http.close();
     }
   });
 
@@ -993,6 +1047,42 @@ describe("native Caplets service", () => {
     return { dir, configPath, projectConfigPath };
   }
 });
+
+async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/pdf");
+    response.end(Buffer.from("%PDF-1.7 native"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("native HTTP test server did not bind");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+function localArtifactPath(result: unknown): string {
+  if (
+    result &&
+    typeof result === "object" &&
+    "structuredContent" in result &&
+    result.structuredContent &&
+    typeof result.structuredContent === "object" &&
+    "kind" in result.structuredContent &&
+    result.structuredContent.kind === "local-artifact" &&
+    "path" in result.structuredContent &&
+    typeof result.structuredContent.path === "string"
+  ) {
+    return result.structuredContent.path;
+  }
+  throw new Error("expected a local artifact result");
+}
 
 function progressiveTestConfig(config: unknown): unknown {
   if (!config || typeof config !== "object" || Array.isArray(config)) return config;

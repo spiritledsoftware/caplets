@@ -196,12 +196,15 @@ full setup and repair workflow.
 
 ### Download returned an artifact
 
-Expected symptom: a tool result contains `body.artifact` instead of inline bytes or text.
+Expected symptom: a tool result has a top-level `kind` of `local-artifact` or
+`remote-reference` instead of inline bytes or text.
 
-Binary downloads, Google media downloads, and oversized HTTP-like responses are written as
-Caplets media artifacts. Use the artifact `path` locally, or pass the artifact URI back to
-another media-capable tool as `media.artifact`. If you need a specific destination for a
-download, retry with `filename` or `outputPath` when the tool schema exposes those fields.
+Binary downloads, Google media downloads, and oversized HTTP-like responses use Caplets media
+results. Local runtimes return `local-artifact`; read its `path` locally or pass its artifact URI
+back to another media-capable tool as `media.artifact`. Hosted runtimes return
+`remote-reference`; use its `uri` because hosted results intentionally do not expose filesystem
+paths. If you need a specific destination for a download, retry with `filename` or `outputPath`
+when the tool schema exposes those fields.
 
 ### Remote attach fails
 

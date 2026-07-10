@@ -617,6 +617,7 @@ describe("@caplets/pi", () => {
           artifacts: [
             {
               kind: "screenshot",
+              presentation: "local-path",
               displayPath: "./browser-caplet-localhost-4199.png",
               pathResolution: "relative-to-mcp-server",
             },
@@ -649,6 +650,53 @@ describe("@caplets/pi", () => {
     expect(rendered.indexOf("Artifact: screenshot")).toBeLessThan(
       rendered.indexOf("# Page snapshot"),
     );
+  });
+
+  it("renders remote artifact references without local-path affordances", async () => {
+    const service = mockService([
+      {
+        caplet: "reports",
+        toolName: "caplets__reports",
+        title: "Reports",
+        description: "Reports Caplet",
+        promptGuidance: ["Use caplets__reports for Reports."],
+      },
+    ]);
+    service.execute.mockResolvedValueOnce({
+      content: [{ type: "text", text: "downloaded" }],
+      _meta: {
+        caplets: {
+          name: "Reports",
+          operation: "call_tool",
+          tool: "download",
+          artifacts: [
+            {
+              kind: "file",
+              presentation: "reference",
+              reference: "caplets://artifacts/reports/call-1/report.pdf",
+            },
+          ],
+        },
+      },
+    });
+    const registered: RegisteredTool[] = [];
+
+    createCapletsPiExtension({ service })({
+      registerTool: (definition) => registered.push(definition as unknown as RegisteredTool),
+    });
+
+    const tool = registered[0];
+    const result = await tool?.execute("call-1", {
+      operation: "call_tool",
+      tool: "download",
+    });
+    const rendered = renderText(
+      tool?.renderResult(result!, { expanded: true, isPartial: false }, plainTheme),
+    );
+
+    expect(rendered).toContain("Artifact: file caplets://artifacts/reports/call-1/report.pdf");
+    expect(rendered).not.toContain("relative-to-mcp-server");
+    expect(rendered).not.toContain("(absolute)");
   });
 
   it("renders expanded caplet results with a metadata header before serialized output", async () => {
