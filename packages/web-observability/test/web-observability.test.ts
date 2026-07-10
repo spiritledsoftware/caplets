@@ -6,7 +6,6 @@ import {
   bucketResultCount,
   bucketSearchTerm,
   classifyRouteFamily,
-  filterPostHogProperties,
   filterSentryBrowserEvent,
 } from "../src/index";
 
@@ -132,18 +131,6 @@ describe("web observability contract", () => {
     expect(
       attributedInstallCommand("caplets telemetry attribution docs_install\ncaplets setup", "docs"),
     ).toBe("caplets telemetry attribution docs_install\ncaplets setup");
-  });
-
-  it("filters PostHog SDK properties down to allowed categories", () => {
-    expect(
-      filterPostHogProperties({
-        surface: "landing",
-        route_family: "home",
-        $current_url: "https://caplets.ai/",
-        distinct_id: "visitor-123",
-        token: "secret",
-      }),
-    ).toEqual({ surface: "landing", route_family: "home" });
   });
 
   it("filters Sentry browser events without raw messages, urls, user, request, or extra payloads", () => {

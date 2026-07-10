@@ -75,20 +75,6 @@ export function assertWebEventSafeProperties(
   }
 }
 
-export function filterPostHogProperties(input: Record<string, unknown>): WebEventPropertySet {
-  const properties: WebEventPropertySet = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (!ALLOWED_WEB_KEYS.has(key) || typeof value !== "string") continue;
-    try {
-      assertWebEventSafeProperties({ [key]: value } as never);
-      Object.assign(properties, { [key]: value });
-    } catch {
-      // Provider filters are defensive and should silently drop SDK-added raw fields.
-    }
-  }
-  return properties;
-}
-
 export function filterSentryBrowserEvent(event: Record<string, unknown>): Record<string, unknown> {
   const filtered: Record<string, unknown> = {};
   if (typeof event.release === "string") filtered.release = event.release;

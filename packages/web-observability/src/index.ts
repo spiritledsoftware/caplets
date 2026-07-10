@@ -15,8 +15,13 @@ export {
   attributionMarkerForSurface,
   type WebAttributionMarker,
 } from "./attribution";
+export { assertWebEventSafeProperties, filterSentryBrowserEvent } from "./privacy";
 export {
-  assertWebEventSafeProperties,
-  filterPostHogProperties,
-  filterSentryBrowserEvent,
-} from "./privacy";
+  capturePostHogEvent,
+  createPostHogBeforeSend,
+  sanitizePostHogCapture,
+  type PostHogCaptureCapability,
+  type PostHogFinalCapture,
+  type PostHogFinalProperties,
+  type PostHogFinalSanitizer,
+} from "./posthog";

@@ -2,8 +2,11 @@ import * as Sentry from "@sentry/browser";
 import {
   attributedInstallCommand,
   buildWebEvent,
+  capturePostHogEvent,
   classifyRouteFamily,
+  createPostHogBeforeSend,
   filterSentryBrowserEvent,
+  sanitizePostHogCapture,
   type WebEventName,
   type WebEventPropertySet,
   type WebEventProperties,
@@ -19,17 +22,26 @@ const environment = import.meta.env.PUBLIC_CAPLETS_ENVIRONMENT ?? import.meta.en
 let posthogEnabled = false;
 
 if (posthogToken) {
-  posthog.init(posthogToken, {
-    api_host: posthogHost || "https://us.i.posthog.com",
-    autocapture: false,
-    capture_pageview: false,
-    disable_session_recording: true,
-    disable_surveys: true,
-    disable_web_experiments: true,
-    disable_persistence: true,
-    persistence: "memory",
-  });
-  posthogEnabled = true;
+  try {
+    posthog.init(posthogToken, {
+      api_host: posthogHost || "https://us.i.posthog.com",
+      advanced_disable_flags: true,
+      autocapture: false,
+      capture_pageview: false,
+      disable_session_recording: true,
+      disable_surveys: true,
+      disable_web_experiments: true,
+      disable_persistence: true,
+      persistence: "memory",
+      person_profiles: "never",
+      save_campaign_params: false,
+      save_referrer: false,
+      before_send: createPostHogBeforeSend(sanitizePostHogCapture),
+    });
+    posthogEnabled = true;
+  } catch {
+    // Analytics initialization must never interrupt landing behavior.
+  }
 }
 
 if (sentryDsn) {
@@ -98,11 +110,7 @@ function captureLandingEvent(name: WebEventName, properties: WebEventPropertySet
       name,
       properties: { surface, ...properties } as WebEventProperties<typeof name>,
     });
-    posthog.capture(event.name, {
-      ...event.properties,
-      $process_person_profile: false,
-      $geoip_disable: true,
-    });
+    capturePostHogEvent(posthog, event);
   } catch {
     // Analytics must never affect site behavior.
   }

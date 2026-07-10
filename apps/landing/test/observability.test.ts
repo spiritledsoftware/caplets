@@ -1,9 +1,11 @@
 // @vitest-environment happy-dom
 
+import type * as WebObservabilityModule from "@caplets/web-observability";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const posthogCapture = vi.hoisted(() => vi.fn());
 const posthogInit = vi.hoisted(() => vi.fn());
+const posthogSanitizer = vi.hoisted(() => vi.fn());
 
 vi.mock("posthog-js", () => ({
   default: { capture: posthogCapture, init: posthogInit },
@@ -11,8 +13,13 @@ vi.mock("posthog-js", () => ({
 
 vi.mock("@sentry/browser", () => ({ init: vi.fn() }));
 
+vi.mock("@caplets/web-observability", async (importOriginal) => {
+  const actual = await importOriginal<typeof WebObservabilityModule>();
+  return { ...actual, sanitizePostHogCapture: posthogSanitizer };
+});
+
 describe("landing observability", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.restoreAllMocks();
     window.history.pushState({}, "", "/");
@@ -22,8 +29,13 @@ describe("landing observability", () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     vi.unstubAllEnvs();
-    posthogCapture.mockClear();
-    posthogInit.mockClear();
+    posthogCapture.mockReset();
+    posthogInit.mockReset();
+    posthogSanitizer.mockReset();
+    const actual = await vi.importActual<typeof WebObservabilityModule>(
+      "@caplets/web-observability",
+    );
+    posthogSanitizer.mockImplementation(actual.sanitizePostHogCapture);
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: vi.fn(),
@@ -59,11 +71,119 @@ describe("landing observability", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Read this setup skill");
   });
 
-  it("loads without initializing providers when env is absent", async () => {
+  it("does not initialize or capture when the PostHog env is absent", async () => {
     await expect(import("../src/scripts/observability")).resolves.toBeDefined();
+
+    expect(posthogInit).not.toHaveBeenCalled();
+    expect(posthogCapture).not.toHaveBeenCalled();
   });
 
-  it("classifies /caplets links as catalog navigation", async () => {
+  it("installs privacy options and the shared final hook during initial initialization", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+
+    await import("../src/scripts/observability");
+
+    expect(posthogInit).toHaveBeenCalledWith(
+      "phc_test",
+      expect.objectContaining({
+        api_host: "https://us.i.posthog.com",
+        advanced_disable_flags: true,
+        autocapture: false,
+        capture_pageview: false,
+        disable_persistence: true,
+        disable_session_recording: true,
+        disable_surveys: true,
+        disable_web_experiments: true,
+        person_profiles: "never",
+        persistence: "memory",
+        save_campaign_params: false,
+        save_referrer: false,
+        before_send: expect.any(Function),
+      }),
+    );
+    const options = posthogInit.mock.calls[0]?.[1] as {
+      before_send: (payload: unknown) => unknown;
+    };
+
+    expect(
+      options.before_send({
+        uuid: "0189d14f-4f1a-7000-8000-000000000001",
+        event: "caplets_site_pageview",
+        timestamp: new Date("2026-07-10T12:00:00.000Z"),
+        properties: {
+          token: "phc_test",
+          distinct_id: "anonymous-browser-identity",
+          $device_id: "anonymous-browser-identity",
+          $is_identified: false,
+          surface: "landing",
+          route_family: "home",
+          page_family: "home",
+          referrer_category: "direct",
+          $current_url: "https://caplets.dev/?secret=value",
+          $set: { email: "person@example.com" },
+          unknown_application_property: "not allowed",
+        },
+        $set: { email: "person@example.com" },
+      }),
+    ).toEqual({
+      uuid: "0189d14f-4f1a-7000-8000-000000000001",
+      event: "caplets_site_pageview",
+      timestamp: new Date("2026-07-10T12:00:00.000Z"),
+      properties: {
+        token: "phc_test",
+        distinct_id: "anonymous-browser-identity",
+        surface: "landing",
+        route_family: "home",
+        page_family: "home",
+        referrer_category: "direct",
+        $process_person_profile: false,
+        $geoip_disable: true,
+      },
+    });
+  });
+
+  it("leaves analytics disabled while listener registration continues when init throws", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    posthogInit.mockImplementationOnce(() => {
+      throw new Error("init failure");
+    });
+    const addEventListener = vi.spyOn(document, "addEventListener");
+
+    await expect(import("../src/scripts/observability")).resolves.toBeDefined();
+
+    expect(posthogCapture).not.toHaveBeenCalled();
+    expect(addEventListener).toHaveBeenCalledWith("click", expect.any(Function));
+  });
+
+  it("returns null from the installed hook when the injected sanitizer throws", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    posthogSanitizer.mockImplementation(() => {
+      throw new Error("hook failure");
+    });
+
+    await import("../src/scripts/observability");
+
+    const options = posthogInit.mock.calls[0]?.[1] as {
+      before_send: (payload: unknown) => unknown;
+    };
+    expect(() => options.before_send({})).not.toThrow();
+    expect(options.before_send({})).toBeNull();
+  });
+
+  it("swallows capture failure while link interaction continues", async () => {
+    vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
+    posthogCapture.mockImplementation(() => {
+      throw new Error("capture failure");
+    });
+    document.body.innerHTML = `<main><a href="/docs/">Read docs</a></main>`;
+
+    await expect(import("../src/scripts/observability")).resolves.toBeDefined();
+    expect(() =>
+      document.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    ).not.toThrow();
+  });
+
+  it("classifies /caplets links as categorical catalog navigation", async () => {
     vi.stubEnv("PUBLIC_CAPLETS_POSTHOG_TOKEN", "phc_test");
     document.body.innerHTML = `<main><a href="/caplets/osv/">Browse catalog</a></main>`;
 
