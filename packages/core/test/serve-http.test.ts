@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -1034,6 +1035,79 @@ describe("createHttpServeApp", () => {
     await engine.close();
   });
 
+  it("prunes an expired active Project Binding restart lease when HTTP starts", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const workspaces = new ProjectBindingWorkspaceStore({
+      root: workspaceRoot,
+      now: () => now,
+      inactiveWorkspaceTtlMs: 0,
+    });
+    await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-restart-expired",
+      projectRoot: "/repo",
+      lastActiveAt: now.toISOString(),
+    });
+    await workspaces.writeLease({
+      bindingId: "bind_restart_expired",
+      projectFingerprint: "sha256-restart-expired",
+      state: "ready",
+      active: true,
+      updatedAt: now.toISOString(),
+      expiresAt: now.toISOString(),
+    });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      await withTimeout(
+        waitFor(async () => {
+          await expect(workspaces.listLeases("sha256-restart-expired")).resolves.toEqual([]);
+        }),
+        "prune restart lease at HTTP startup",
+      );
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+    }
+  });
+
+  it("bounds workspace cleanup to one startup-or-prune run while cleanup is pending", async () => {
+    vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const workspaces = new DeferredWorkspaceCleanupStore({ root: workspaceRoot });
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: workspaces,
+      });
+      cleanup = async () => {
+        workspaces.releaseCleanup.resolve();
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
+
+      expect(workspaces.cleanupCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      expect(workspaces.cleanupCalls).toBe(1);
+      workspaces.releaseCleanup.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await cleanup();
+      cleanup = undefined;
+    } finally {
+      await cleanup?.();
+      vi.useRealTimers();
+    }
+  });
+
   it("expires inactive Project Binding sessions from in-memory lookups", async () => {
     vi.useFakeTimers();
     let cleanup: (() => Promise<void>) | undefined;
@@ -1087,6 +1161,449 @@ describe("createHttpServeApp", () => {
     } finally {
       await cleanup?.();
       vi.useRealTimers();
+    }
+  });
+
+  it("terminalizes a post-TTL heartbeat before the next Project Binding prune tick", async () => {
+    vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      vi.setSystemTime(new Date("2026-06-25T12:00:00.000Z"));
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const workspaces = new ProjectBindingWorkspaceStore({ root: workspaceRoot });
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: workspaces,
+      });
+      cleanup = async () => {
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
+
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      vi.setSystemTime(new Date("2026-06-25T12:01:00.001Z"));
+
+      const heartbeat = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+        },
+      );
+      expect(heartbeat.status).toBe(404);
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+      ]);
+
+      await cleanup();
+      cleanup = undefined;
+    } finally {
+      await cleanup?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps prune racing a deferred heartbeat terminal rather than reviving its lease", async () => {
+    vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      vi.setSystemTime(new Date("2026-06-25T12:00:00.000Z"));
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: workspaces,
+      });
+      cleanup = async () => {
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
+
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      workspaces.deferNextWrite();
+      const heartbeat = app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+        },
+      );
+      await workspaces.nextWriteStarted;
+      await vi.advanceTimersByTimeAsync(60_000);
+      workspaces.releaseNextWrite();
+
+      expect((await heartbeat).status).toBe(403);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+      ]);
+      const status = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+      );
+      await expect(status.json()).resolves.toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "not_attached",
+      });
+
+      await cleanup();
+      cleanup = undefined;
+    } finally {
+      await cleanup?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("deduplicates ownerless terminal cleanup while a prune write is pending and retries after failure", async () => {
+    vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      vi.setSystemTime(new Date("2026-06-25T12:00:00.000Z"));
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: workspaces,
+      });
+      cleanup = async () => {
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
+
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string; expiresAt: string };
+      };
+      const statusUrl = `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`;
+      workspaces.deferNextWrite();
+      workspaces.failNextWrite();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await workspaces.nextWriteStarted;
+      await app.request(statusUrl);
+      await app.request(statusUrl);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(workspaces.writeLeases).toHaveLength(1);
+
+      workspaces.releaseNextWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(workspaces.writeLeases).toHaveLength(2);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([]);
+
+      await app.request(statusUrl);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(workspaces.writeLeases).toHaveLength(3);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          bindingId: created.binding.bindingId,
+          active: false,
+          state: "ended",
+        }),
+      ]);
+
+      await cleanup();
+      cleanup = undefined;
+    } finally {
+      await cleanup?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds concurrent HTTP heartbeats to the in-flight write and the latest pending state", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const heartbeatUrl = `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`;
+      workspaces.deferNextWrite();
+      const first = app.request(heartbeatUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+      });
+      await workspaces.nextWriteStarted;
+      const pending = [
+        app.request(heartbeatUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionId: created.sessionId,
+            state: "offline",
+            syncState: "failed",
+          }),
+        }),
+        app.request(heartbeatUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionId: created.sessionId,
+            state: "degraded",
+            syncState: "failed",
+          }),
+        }),
+      ];
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      workspaces.releaseNextWrite();
+
+      expect((await first).status).toBe(200);
+      await expect(Promise.all(pending)).resolves.toEqual([
+        expect.objectContaining({ status: 200 }),
+        expect.objectContaining({ status: 200 }),
+      ]);
+      expect(workspaces.writeLeases).toHaveLength(3);
+      expect(workspaces.writeLeases.at(-1)).toMatchObject({
+        bindingId: created.binding.bindingId,
+        state: "degraded",
+      });
+    } finally {
+      await app.closeCapletsSessions();
+      await engine.close();
+    }
+  });
+
+  it("makes shutdown terminal when a Project Binding heartbeat write is in flight", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      workspaces.deferNextWrite();
+      const heartbeat = app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/heartbeat`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId: created.sessionId, state: "ready", syncState: "idle" }),
+        },
+      );
+      await workspaces.nextWriteStarted;
+      const closing = app.closeCapletsSessions();
+      workspaces.releaseNextWrite();
+
+      expect((await heartbeat).status).toBe(403);
+      await closing;
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+      ]);
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("does not acknowledge an HTTP Project Binding end when terminal lease persistence fails", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new FailingProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+      };
+      workspaces.failNextWrite();
+
+      const ended = await app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
+      );
+      expect(ended.status).toBe(500);
+      await app.closeCapletsSessions();
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+      ]);
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("rejects failed shutdown cleanup and lets a later shutdown retry terminal persistence", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new FailingProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+      };
+      workspaces.failNextWrite();
+
+      await expect(app.closeCapletsSessions()).rejects.toThrow("terminal lease write failed");
+      await app.closeCapletsSessions();
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+      ]);
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("terminalizes a staged session lease when shutdown wins creation", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+
+    try {
+      workspaces.deferNextWrite();
+      const creating = app.request("http://127.0.0.1:5387/v1/attach/project-bindings/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      await workspaces.nextWriteStarted;
+      const closing = app.closeCapletsSessions();
+      workspaces.releaseNextWrite();
+
+      expect((await creating).status).toBe(503);
+      await closing;
+      const rejectedAfterShutdown = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            projectRoot: "/repo",
+            projectFingerprint: "sha256_after_shutdown",
+          }),
+        },
+      );
+      expect(rejectedAfterShutdown.status).toBe(503);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([expect.objectContaining({ active: false, state: "ended" })]);
+    } finally {
+      await engine.close();
     }
   });
 
@@ -1204,6 +1721,215 @@ describe("createHttpServeApp", () => {
     }
   });
 
+  it("keeps two-socket heartbeat and end races terminal in either ordering", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      for (const heartbeatFirst of [true, false]) {
+        const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        });
+        const created = (await session.json()) as {
+          binding: { bindingId: string };
+          sessionId: string;
+        };
+        const socketUrl =
+          `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
+          `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
+        const first = new WebSocket(socketUrl);
+        const second = new WebSocket(socketUrl);
+        try {
+          await withTimeout(waitForSocketOpen(first), "open first Project Binding socket");
+          await withTimeout(waitForSocketOpen(second), "open second Project Binding socket");
+          await withTimeout(nextSocketJson(first), "receive first Project Binding ready");
+          await withTimeout(nextSocketJson(second), "receive second Project Binding ready");
+
+          const heartbeatSocket = heartbeatFirst ? first : second;
+          const endingSocket = heartbeatFirst ? second : first;
+          const heartbeatMessages: unknown[] = [];
+          heartbeatSocket.on("message", (data) => {
+            heartbeatMessages.push(JSON.parse(data.toString()) as unknown);
+          });
+          const heartbeat = JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          });
+          const end = JSON.stringify({
+            type: "end",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          });
+
+          workspaces.deferNextWrite();
+          if (heartbeatFirst) {
+            heartbeatSocket.send(heartbeat);
+            await withTimeout(workspaces.nextWriteStarted, "start deferred first heartbeat");
+            const ended = nextSocketJson(endingSocket);
+            endingSocket.send(end);
+            workspaces.releaseNextWrite();
+            await expect(withTimeout(ended, "receive Project Binding end")).resolves.toMatchObject({
+              type: "ended",
+            });
+            const staleClose = waitForSocketClose(heartbeatSocket);
+            heartbeatSocket.send(heartbeat);
+            await expect(
+              withTimeout(staleClose, "close stale first Project Binding socket"),
+            ).resolves.toMatchObject({ code: 1008 });
+          } else {
+            const ended = nextSocketJson(endingSocket);
+            endingSocket.send(end);
+            await withTimeout(workspaces.nextWriteStarted, "start deferred Project Binding end");
+            const staleClose = waitForSocketClose(heartbeatSocket);
+            heartbeatSocket.send(heartbeat);
+            workspaces.releaseNextWrite();
+            await expect(withTimeout(ended, "receive Project Binding end")).resolves.toMatchObject({
+              type: "ended",
+            });
+            await expect(
+              withTimeout(staleClose, "close stale second Project Binding socket"),
+            ).resolves.toMatchObject({ code: 1008 });
+          }
+
+          expect(heartbeatMessages).toEqual([]);
+          const status = await app.request(
+            `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+          );
+          await expect(status.json()).resolves.toMatchObject({
+            bindingId: created.binding.bindingId,
+            state: "not_attached",
+          });
+          await expect(
+            workspaces.listLeases(
+              projectBindingWorkspaceFingerprintForTest(
+                "development_unauthenticated",
+                "sha256_repo",
+              ),
+            ),
+          ).resolves.toContainEqual(
+            expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+          );
+        } finally {
+          first.terminate();
+          second.terminate();
+        }
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  }, 30_000);
+
+  it("makes a peer socket close terminal against a deferred heartbeat", async () => {
+    const { engine } = testEngine();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions(), engine, {
+      writeErr: () => {},
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socketUrl =
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=` +
+        `${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`;
+      const heartbeatSocket = new WebSocket(socketUrl);
+      const peer = new WebSocket(socketUrl);
+      try {
+        await withTimeout(waitForSocketOpen(heartbeatSocket), "open heartbeat socket");
+        await withTimeout(waitForSocketOpen(peer), "open peer socket");
+        await withTimeout(nextSocketJson(heartbeatSocket), "receive heartbeat socket ready");
+        await withTimeout(nextSocketJson(peer), "receive peer socket ready");
+        workspaces.deferNextWrite();
+        heartbeatSocket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+        await withTimeout(workspaces.nextWriteStarted, "start deferred heartbeat");
+        const peerClosed = waitForSocketClose(peer);
+        peer.close();
+        await withTimeout(peerClosed, "close peer socket");
+        const firstIoTurn = Promise.withResolvers<void>();
+        setImmediate(firstIoTurn.resolve);
+        await firstIoTurn.promise;
+        const secondIoTurn = Promise.withResolvers<void>();
+        setImmediate(secondIoTurn.resolve);
+        await secondIoTurn.promise;
+        workspaces.releaseNextWrite();
+
+        await withTimeout(
+          waitFor(async () => {
+            const status = await app.request(
+              `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+            );
+            await expect(status.json()).resolves.toMatchObject({
+              bindingId: created.binding.bindingId,
+              state: "not_attached",
+            });
+          }),
+          "observe peer close terminal cleanup",
+        );
+        await expect(
+          workspaces.listLeases(
+            projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+          ),
+        ).resolves.toContainEqual(
+          expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+        );
+        const staleClose = waitForSocketClose(heartbeatSocket);
+        heartbeatSocket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+        await expect(
+          withTimeout(staleClose, "close stale heartbeat socket"),
+        ).resolves.toMatchObject({
+          code: 1008,
+        });
+      } finally {
+        heartbeatSocket.terminate();
+        peer.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  }, 30_000);
+
   it("authenticates Project Binding WebSocket connections with bearer subprotocols", async () => {
     const { engine } = testEngine();
     const store = remoteCredentialStore();
@@ -1250,6 +1976,532 @@ describe("createHttpServeApp", () => {
           bindingId: created.binding.bindingId,
           sessionId: created.sessionId,
         });
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("keeps a socket authorized across token rotation", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new ProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await withTimeout(
+        fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        }),
+        "create authenticated Project Binding session",
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}&projectFingerprint=sha256_repo`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open authenticated Project Binding socket");
+        await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+
+        const rotated = store.refreshClientCredentials({
+          hostUrl: `${server.origin}/`,
+          refreshToken: credentials.refreshToken,
+        });
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+        await withTimeout(
+          waitFor(async () => {
+            const status = await fetch(
+              `${server.origin}/v1/attach/project-bindings/${created.binding.bindingId}/status`,
+              { headers: { authorization: `Bearer ${rotated.accessToken}` } },
+            );
+            await expect(status.json()).resolves.toMatchObject({
+              state: "ready",
+              syncState: "idle",
+            });
+          }),
+          "observe heartbeat after token rotation",
+        );
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("rechecks role loss after a queued first heartbeat commits but before the next mutation starts", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credentials.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open queued authorization socket");
+        await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+        workspaces.deferNextWrite();
+        workspaces.runAfterNextWritePostCommit(() => {
+          store.changeClientRole(credentials.clientId, "operator");
+        });
+        const closed = waitForSocketClose(socket);
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+        await withTimeout(workspaces.nextWriteStarted, "start queued first heartbeat");
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "syncing",
+            syncState: "syncing",
+          }),
+        );
+        const firstNodeIoTurn = Promise.withResolvers<void>();
+        setImmediate(firstNodeIoTurn.resolve);
+        await firstNodeIoTurn.promise;
+        expect(workspaces.writeLeases).toHaveLength(1);
+        const secondNodeIoTurn = Promise.withResolvers<void>();
+        setImmediate(secondNodeIoTurn.resolve);
+        await secondNodeIoTurn.promise;
+        expect(workspaces.writeLeases).toHaveLength(1);
+        workspaces.releaseNextWrite();
+
+        await expect(withTimeout(closed, "close demoted queued socket")).resolves.toMatchObject({
+          code: 1008,
+        });
+        expect(workspaces.writeLeases).toHaveLength(3);
+        expect(workspaces.writeLeases[1]).toMatchObject({
+          bindingId: created.binding.bindingId,
+          state: "ready",
+          active: true,
+        });
+        expect(workspaces.writeLeases).not.toContainEqual(
+          expect.objectContaining({ bindingId: created.binding.bindingId, state: "syncing" }),
+        );
+        await expect(
+          workspaces.listLeases(
+            projectBindingWorkspaceFingerprintForTest(credentials.clientId, "sha256_repo"),
+          ),
+        ).resolves.toEqual([
+          expect.objectContaining({
+            bindingId: created.binding.bindingId,
+            state: "ended",
+            active: false,
+            expiresAt: workspaces.writeLeases[1]!.expiresAt,
+          }),
+        ]);
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("rejects in-flight heartbeat state after post-write durable role loss", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credentials.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      const created = (await session.json()) as {
+        binding: { bindingId: string; expiresAt: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open post-write authorization socket");
+        await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+        workspaces.deferNextWrite();
+        const closed = waitForSocketClose(socket);
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "syncing",
+            syncState: "syncing",
+          }),
+        );
+        await withTimeout(workspaces.nextWriteStarted, "start in-flight candidate lease write");
+        store.changeClientRole(credentials.clientId, "operator");
+        workspaces.releaseNextWrite();
+
+        await expect(withTimeout(closed, "close post-write demoted socket")).resolves.toMatchObject(
+          {
+            code: 1008,
+          },
+        );
+        expect(workspaces.writeLeases).toHaveLength(3);
+        expect(workspaces.writeLeases[1]).toMatchObject({
+          bindingId: created.binding.bindingId,
+          state: "syncing",
+          active: true,
+        });
+        await expect(
+          workspaces.listLeases(
+            projectBindingWorkspaceFingerprintForTest(credentials.clientId, "sha256_repo"),
+          ),
+        ).resolves.toEqual([
+          expect.objectContaining({
+            bindingId: created.binding.bindingId,
+            state: "ended",
+            active: false,
+            expiresAt: created.binding.expiresAt,
+          }),
+        ]);
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("does not return a successful HTTP end after post-write role loss", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const credentials = pairedClient(store);
+
+    try {
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string; expiresAt: string };
+      };
+      workspaces.deferNextWrite();
+      const ending = app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        {
+          method: "DELETE",
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      );
+      await workspaces.nextWriteStarted;
+      store.changeClientRole(credentials.clientId, "operator");
+      workspaces.releaseNextWrite();
+
+      expect((await ending).status).toBe(403);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest(credentials.clientId, "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          bindingId: created.binding.bindingId,
+          state: "ended",
+          active: false,
+          expiresAt: created.binding.expiresAt,
+        }),
+      ]);
+    } finally {
+      await engine.close();
+    }
+  });
+
+  it("does not return a successful deferred end after its captured lease expires", async () => {
+    vi.useFakeTimers();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+      const { engine } = testEngine();
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+      dirs.push(workspaceRoot);
+      const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+      const app = createHttpServeApp(httpOptions(), engine, {
+        writeErr: () => {},
+        projectBindingWorkspaceStore: workspaces,
+      });
+      cleanup = async () => {
+        await app.closeCapletsSessions();
+        await engine.close();
+      };
+
+      const session = await app.request(
+        "http://127.0.0.1:5387/v1/attach/project-bindings/sessions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+        },
+      );
+      const created = (await session.json()) as {
+        binding: { bindingId: string; expiresAt: string };
+      };
+      workspaces.deferNextWrite();
+      const ending = app.request(
+        `http://127.0.0.1:5387/v1/attach/project-bindings/${created.binding.bindingId}/session`,
+        { method: "DELETE", headers: { "content-type": "application/json" }, body: "{}" },
+      );
+      await workspaces.nextWriteStarted;
+      await vi.advanceTimersByTimeAsync(60_000);
+      workspaces.releaseNextWrite();
+
+      expect((await ending).status).toBe(403);
+      await expect(
+        workspaces.listLeases(
+          projectBindingWorkspaceFingerprintForTest("development_unauthenticated", "sha256_repo"),
+        ),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          bindingId: created.binding.bindingId,
+          state: "ended",
+          active: false,
+          expiresAt: created.binding.expiresAt,
+        }),
+      ]);
+
+      await cleanup();
+      cleanup = undefined;
+    } finally {
+      await cleanup?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not acknowledge a socket end after post-write durable role loss", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new DeferredProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credentials.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open end authorization socket");
+        await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+        const messages: unknown[] = [];
+        socket.on("message", (data) => {
+          messages.push(JSON.parse(data.toString()) as unknown);
+        });
+        workspaces.deferNextWrite();
+        const closed = waitForSocketClose(socket);
+        socket.send(
+          JSON.stringify({
+            type: "end",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            reason: { code: "completed", message: "Project Binding completed." },
+          }),
+        );
+        await withTimeout(workspaces.nextWriteStarted, "start in-flight terminal lease write");
+        store.changeClientRole(credentials.clientId, "operator");
+        workspaces.releaseNextWrite();
+
+        await expect(
+          withTimeout(closed, "close post-write demoted end socket"),
+        ).resolves.toMatchObject({
+          code: 1008,
+        });
+        expect(messages).toEqual([]);
+      } finally {
+        socket.terminate();
+      }
+    } finally {
+      await withTimeout(server.close(), "close test HTTP server");
+      await engine.close();
+    }
+  });
+
+  it("terminalizes an active Project Binding socket after durable client revocation", async () => {
+    const { engine } = testEngine();
+    const store = remoteCredentialStore();
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "caplets-binding-workspaces-"));
+    dirs.push(workspaceRoot);
+    const workspaces = new ProjectBindingWorkspaceStore({ root: workspaceRoot });
+    const app = createHttpServeApp(httpOptions({ auth: { type: "remote_credentials" } }), engine, {
+      writeErr: () => {},
+      remoteCredentialStore: store,
+      projectBindingWorkspaceStore: workspaces,
+    });
+    const server = await withTimeout(startTestHttpServer(app), "start test HTTP server");
+    const credentials = pairedClient(store, `${server.origin}/`);
+
+    try {
+      const session = await fetch(`${server.origin}/v1/attach/project-bindings/sessions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credentials.accessToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ projectRoot: "/repo", projectFingerprint: "sha256_repo" }),
+      });
+      const created = (await session.json()) as {
+        binding: { bindingId: string };
+        sessionId: string;
+      };
+      const socket = new WebSocket(
+        `${server.origin.replace("http:", "ws:")}/v1/attach/project-bindings/connect?bindingId=${encodeURIComponent(created.binding.bindingId)}&sessionId=${encodeURIComponent(created.sessionId)}`,
+        [
+          "caplets.project-binding.v1",
+          `caplets.bearer.${Buffer.from(credentials.accessToken).toString("base64url")}`,
+        ],
+      );
+      try {
+        await withTimeout(waitForSocketOpen(socket), "open revocable Project Binding socket");
+        await withTimeout(nextSocketJson(socket), "receive Project Binding ready");
+        store.revokeClient(credentials.clientId);
+        const closed = waitForSocketClose(socket);
+        socket.send(
+          JSON.stringify({
+            type: "heartbeat",
+            bindingId: created.binding.bindingId,
+            sessionId: created.sessionId,
+            state: "ready",
+            syncState: "idle",
+          }),
+        );
+
+        await expect(
+          withTimeout(closed, "close revoked Project Binding socket"),
+        ).resolves.toMatchObject({
+          code: 1008,
+        });
+        await expect(
+          workspaces.listLeases(
+            projectBindingWorkspaceFingerprintForTest(credentials.clientId, "sha256_repo"),
+          ),
+        ).resolves.toEqual([
+          expect.objectContaining({ bindingId: created.binding.bindingId, active: false }),
+        ]);
       } finally {
         socket.terminate();
       }
@@ -2934,6 +4186,13 @@ async function nextSocketJson(socket: WebSocket): Promise<unknown> {
   });
 }
 
+async function waitForSocketClose(socket: WebSocket): Promise<{ code: number; reason: string }> {
+  const { promise, resolve, reject } = Promise.withResolvers<{ code: number; reason: string }>();
+  socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+  socket.once("error", reject);
+  return await promise;
+}
+
 async function waitFor(assertion: () => Promise<void>, attempts = 20): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -2948,7 +4207,7 @@ async function waitFor(assertion: () => Promise<void>, attempts = 20): Promise<v
   throw lastError;
 }
 
-async function withTimeout<T>(promise: Promise<T>, label: string, ms = 1_000): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, label: string, ms = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -3026,6 +4285,93 @@ function attachManifest(revision: string, capletId: string): AttachManifest {
 
 function remoteCredentialStore(): RemoteServerCredentialStore {
   return new RemoteServerCredentialStore({ dir: tempDir("caplets-http-remote-credentials-") });
+}
+
+class DeferredProjectBindingWorkspaceStore extends ProjectBindingWorkspaceStore {
+  nextWriteStarted: Promise<void> = Promise.resolve();
+  writeLeases: ProjectBindingLease[] = [];
+  private afterNextWritePostCommit: (() => void) | undefined;
+  private failedWrites = 0;
+  private deferredWrite:
+    | {
+        started: PromiseWithResolvers<void>;
+        release: PromiseWithResolvers<void>;
+      }
+    | undefined;
+
+  deferNextWrite(): void {
+    this.deferredWrite = {
+      started: Promise.withResolvers<void>(),
+      release: Promise.withResolvers<void>(),
+    };
+    this.nextWriteStarted = this.deferredWrite.started.promise;
+  }
+
+  releaseNextWrite(): void {
+    this.deferredWrite?.release.resolve();
+  }
+
+  failNextWrite(): void {
+    this.failedWrites += 1;
+  }
+
+  runAfterNextWritePostCommit(action: () => void): void {
+    this.afterNextWritePostCommit = action;
+  }
+
+  override async writeLease(lease: ProjectBindingLease): Promise<void> {
+    const deferred = this.deferredWrite;
+    if (deferred) {
+      deferred.started.resolve();
+      await deferred.release.promise;
+      if (this.deferredWrite === deferred) this.deferredWrite = undefined;
+    }
+    this.writeLeases.push(lease);
+    if (this.failedWrites > 0) {
+      this.failedWrites -= 1;
+      throw new Error("terminal lease write failed");
+    }
+    await super.writeLease(lease);
+    const afterNextWritePostCommit = this.afterNextWritePostCommit;
+    this.afterNextWritePostCommit = undefined;
+    if (afterNextWritePostCommit) {
+      queueMicrotask(() => queueMicrotask(afterNextWritePostCommit));
+    }
+  }
+}
+
+class DeferredWorkspaceCleanupStore extends ProjectBindingWorkspaceStore {
+  cleanupCalls = 0;
+  readonly releaseCleanup = Promise.withResolvers<void>();
+
+  override async cleanup() {
+    this.cleanupCalls += 1;
+    await this.releaseCleanup.promise;
+    return await super.cleanup();
+  }
+}
+
+class FailingProjectBindingWorkspaceStore extends ProjectBindingWorkspaceStore {
+  private failedWrites = 0;
+
+  failNextWrite(): void {
+    this.failedWrites += 1;
+  }
+
+  override async writeLease(lease: ProjectBindingLease): Promise<void> {
+    if (this.failedWrites > 0) {
+      this.failedWrites -= 1;
+      throw new Error("terminal lease write failed");
+    }
+    await super.writeLease(lease);
+  }
+}
+
+function projectBindingWorkspaceFingerprintForTest(
+  ownerKey: string,
+  projectFingerprint: string,
+): string {
+  return `sha256_${createHash("sha256").update(ownerKey).update("\0").update(projectFingerprint).digest("hex")}`;
 }
 
 function pairedClient(

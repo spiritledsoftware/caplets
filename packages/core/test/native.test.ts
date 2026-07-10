@@ -140,6 +140,37 @@ describe("native Caplets service", () => {
     }
   });
 
+  it("executes accepted projection routes without rebuilding native tools", async () => {
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      mcpServers: {
+        alpha: {
+          name: "Alpha",
+          description: "Search alpha project documents.",
+          command: process.execPath,
+        },
+      },
+    });
+    dirs.push(dir);
+    const service = createNativeCapletsService({ configPath, projectConfigPath });
+    await waitForInitialProjection(service);
+
+    try {
+      const listTools = vi.spyOn(service, "listTools");
+      await expect(service.execute("alpha", { operation: "inspect" })).resolves.toBeDefined();
+      await expect(service.execute("alpha", { operation: "inspect" })).resolves.toBeDefined();
+
+      expect(listTools).not.toHaveBeenCalled();
+
+      await service.reload();
+      listTools.mockClear();
+      await expect(service.execute("alpha", { operation: "inspect" })).resolves.toBeDefined();
+
+      expect(listTools).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+    }
+  });
+
   it("uses daemon mode as a credential-free loopback remote client", async () => {
     const remoteOptions: unknown[] = [];
     const service = createNativeCapletsService({
@@ -1146,7 +1177,7 @@ describe("native Caplets service", () => {
         ),
       );
       await expect(service.reload()).resolves.toBe(true);
-      expect(events).toEqual([[], ["gamma"]]);
+      expect(events).toEqual([["gamma"]]);
 
       unsubscribe();
       writeFileSync(
@@ -1164,7 +1195,7 @@ describe("native Caplets service", () => {
         ),
       );
       await expect(service.reload()).resolves.toBe(true);
-      expect(events).toEqual([[], ["gamma"]]);
+      expect(events).toEqual([["gamma"]]);
     } finally {
       await service.close();
     }
@@ -1208,7 +1239,6 @@ describe("native Caplets service", () => {
 
       await expect(service.reload()).resolves.toBe(true);
       expect(events).toEqual([
-        [],
         expect.arrayContaining(["fixture__echo", "fixture__list_resources", "fixture__get_prompt"]),
       ]);
     } finally {
@@ -1263,7 +1293,7 @@ describe("native Caplets service", () => {
       );
 
       await expect(service.reload()).resolves.toBe(false);
-      expect(events).toEqual([[], ["beta"]]);
+      expect(events).toEqual([["beta"]]);
       expect(errors.join("")).toContain("backend invalidation failed");
     } finally {
       await service.close();

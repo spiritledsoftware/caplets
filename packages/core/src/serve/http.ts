@@ -133,6 +133,20 @@ type ProjectBindingHttpRecord = {
   updatedAt: string;
   expiresAt: string;
   active: boolean;
+  generation: number;
+  mutationTail: Promise<void>;
+  terminal: boolean;
+  ownerlessCleanup: Promise<boolean> | undefined;
+  heartbeatInFlight: Promise<boolean> | undefined;
+  pendingHeartbeat:
+    | {
+        message: Extract<ProjectBindingSocketClientMessage, { type: "heartbeat" }>;
+        ownerKey: string;
+        promise: Promise<boolean>;
+        resolve: (value: boolean) => void;
+        reject: (reason?: unknown) => void;
+      }
+    | undefined;
 };
 
 type AttachEventSource = {
@@ -155,6 +169,8 @@ export function createHttpServeApp(
   const defaultAttachSessions = new Map<string, HttpAttachSession>();
   const defaultAttachSessionPromises = new Map<string, Promise<HttpAttachSession>>();
   const projectBindingSessions = new Map<string, ProjectBindingHttpRecord>();
+  let projectBindingSessionsClosing = false;
+  let projectBindingWorkspaceCleanup: Promise<unknown> | undefined;
   const attachEventStreams = new Set<AttachEventStream>();
   const attachSessionPruneTimer = setInterval(() => {
     pruneIdleAttachSessions();
@@ -197,6 +213,7 @@ export function createHttpServeApp(
   };
   const projectBindingWorkspaceStore =
     io.projectBindingWorkspaceStore ?? new ProjectBindingWorkspaceStore();
+  pruneProjectBindingWorkspaces();
   if (
     options.auth.type === "remote_credentials" &&
     options.trustProxy === true &&
@@ -378,12 +395,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "summary", baseUrl, dashboardUrl, dashboardPath: paths.dashboard },
       );
-      if (outcome.kind !== "summary") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host summary returned an invalid outcome.",
-        );
-      }
+
       return c.json(outcome.summary);
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -398,12 +410,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "caplets_list" },
       );
-      if (outcome.kind !== "caplets_list") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Caplets returned an invalid outcome.",
-        );
-      }
+
       return c.json({ caplets: outcome.caplets });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -424,12 +431,7 @@ export function createHttpServeApp(
           limit: numberQueryParam(query.get("limit")),
         },
       );
-      if (outcome.kind !== "catalog_search") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host catalog search returned an invalid outcome.",
-        );
-      }
+
       return c.json({ entries: outcome.entries });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -449,12 +451,7 @@ export function createHttpServeApp(
           capletId: requiredQueryParam(query, "id"),
         },
       );
-      if (outcome.kind !== "catalog_detail") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host catalog detail returned an invalid outcome.",
-        );
-      }
+
       return c.json({
         entry: outcome.entry,
         setupActions: outcome.setupActions,
@@ -473,12 +470,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "catalog_updates" },
       );
-      if (outcome.kind !== "catalog_updates") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host catalog updates returned an invalid outcome.",
-        );
-      }
+
       return c.json({ updates: outcome.updates });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -503,12 +495,7 @@ export function createHttpServeApp(
           disableCatalogIndexing: true,
         },
       );
-      if (outcome.kind !== "catalog_install") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host catalog install returned an invalid outcome.",
-        );
-      }
+
       return c.json({ installed: outcome.installed, setupActions: outcome.setupActions });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -533,12 +520,7 @@ export function createHttpServeApp(
           disableCatalogIndexing: true,
         },
       );
-      if (outcome.kind !== "catalog_update") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host catalog update returned an invalid outcome.",
-        );
-      }
+
       return c.json({ installed: outcome.installed, setupActions: outcome.setupActions });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -553,12 +535,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "clients_list" },
       );
-      if (outcome.kind !== "clients_list") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host clients returned an invalid outcome.",
-        );
-      }
+
       return c.json({ clients: outcome.clients });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -573,12 +550,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "pending_logins_list" },
       );
-      if (outcome.kind !== "pending_logins_list") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host pending logins returned an invalid outcome.",
-        );
-      }
+
       return c.json({ pendingLogins: outcome.pendingLogins });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -604,12 +576,7 @@ export function createHttpServeApp(
           grantedRole: optionalRemoteClientRole(parsed, "grantedRole"),
         },
       );
-      if (outcome.kind !== "pending_login_approve") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host approval returned an invalid outcome.",
-        );
-      }
+
       if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
       return c.json({ pendingLogin: outcome.pendingLogin });
     } catch (error) {
@@ -628,12 +595,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "pending_login_deny", flowId: requiredRouteParam(c.req.param("flowId")) },
       );
-      if (outcome.kind !== "pending_login_deny") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host denial returned an invalid outcome.",
-        );
-      }
+
       if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
       return c.json({ pendingLogin: outcome.pendingLogin });
     } catch (error) {
@@ -652,12 +614,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "client_revoke", clientId: requiredRouteParam(c.req.param("clientId")) },
       );
-      if (outcome.kind !== "client_revoke") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host revocation returned an invalid outcome.",
-        );
-      }
+
       if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
       if (outcome.sessionEnded) {
         dashboardSessionStore.delete(c.req.header("cookie"));
@@ -689,12 +646,7 @@ export function createHttpServeApp(
           role: requiredRemoteClientRole(parsed, "role"),
         },
       );
-      if (outcome.kind !== "client_change_role") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host role change returned an invalid outcome.",
-        );
-      }
+
       if (outcome.status === "credential_store_unavailable") {
         return c.json({ error: "dashboard_auth_unavailable" }, 404);
       }
@@ -723,12 +675,7 @@ export function createHttpServeApp(
           action: optionalActivityAction(query.get("action") ?? undefined),
         },
       );
-      if (outcome.kind !== "activity_list") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host activity returned an invalid outcome.",
-        );
-      }
+
       return c.json(outcome.activity);
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -743,12 +690,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "vault_list" },
       );
-      if (outcome.kind !== "vault_list") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Vault list returned an invalid outcome.",
-        );
-      }
+
       return c.json({ values: outcome.values, grants: outcome.grants });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -772,12 +714,7 @@ export function createHttpServeApp(
           force: optionalBooleanField(parsed, "force"),
         },
       );
-      if (outcome.kind !== "vault_set") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Vault set returned an invalid outcome.",
-        );
-      }
+
       return c.json({ status: outcome.status });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -795,12 +732,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "vault_delete", name: requiredRouteParam(c.req.param("key")) },
       );
-      if (outcome.kind !== "vault_delete") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Vault delete returned an invalid outcome.",
-        );
-      }
+
       return c.json({ deleted: outcome.deleted });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -824,12 +756,7 @@ export function createHttpServeApp(
           capletId: stringField(parsed, "capletId"),
         },
       );
-      if (outcome.kind !== "vault_access_grant") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Vault grant returned an invalid outcome.",
-        );
-      }
+
       return c.json({ grant: outcome.grant });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -853,12 +780,7 @@ export function createHttpServeApp(
           capletId: optionalStringField(parsed, "capletId"),
         },
       );
-      if (outcome.kind !== "vault_access_revoke") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Vault revoke returned an invalid outcome.",
-        );
-      }
+
       return c.json({ revoked: outcome.revoked });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -905,12 +827,7 @@ export function createHttpServeApp(
           publicOrigin: options.publicOrigin ?? null,
         },
       );
-      if (outcome.kind !== "runtime") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host runtime returned an invalid outcome.",
-        );
-      }
+
       return c.json({ runtime: outcome.runtime, daemon: outcome.daemon });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -928,12 +845,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "runtime_restart" },
       );
-      if (outcome.kind !== "runtime_restart") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host restart returned an invalid outcome.",
-        );
-      }
+
       return c.json({ restartAvailable: outcome.restartAvailable, reason: outcome.reason }, 409);
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -948,9 +860,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "logs", limit: numberQueryParam(new URL(c.req.url).searchParams.get("limit")) },
       );
-      if (outcome.kind !== "logs") {
-        throw new CapletsError("INTERNAL_ERROR", "Current Host logs returned an invalid outcome.");
-      }
+
       return c.json({
         entries: outcome.entries,
         limit: outcome.limit,
@@ -969,12 +879,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "diagnostics" },
       );
-      if (outcome.kind !== "diagnostics") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host diagnostics returned an invalid outcome.",
-        );
-      }
+
       return c.json({
         status: outcome.status,
         diagnostics: outcome.diagnostics,
@@ -993,9 +898,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "runtime_event" },
       );
-      if (outcome.kind !== "runtime_event") {
-        throw new CapletsError("INTERNAL_ERROR", "Current Host event returned an invalid outcome.");
-      }
+
       return new Response(
         `id: ${Date.now()}\nevent: runtime_health\ndata: ${JSON.stringify(outcome.event)}\n\n`,
         {
@@ -1019,12 +922,7 @@ export function createHttpServeApp(
         dashboardPrincipalForSession(c, session.session),
         { kind: "project_binding" },
       );
-      if (outcome.kind !== "project_binding") {
-        throw new CapletsError(
-          "INTERNAL_ERROR",
-          "Current Host Project Binding returned an invalid outcome.",
-        );
-      }
+
       return c.json({ projectBinding: outcome.projectBinding });
     } catch (error) {
       return currentHostErrorResponse(error);
@@ -1387,11 +1285,33 @@ export function createHttpServeApp(
     }
   }
 
+  function pruneProjectBindingWorkspaces(): void {
+    if (projectBindingWorkspaceCleanup) return;
+    const cleanup = projectBindingWorkspaceStore.cleanup();
+    projectBindingWorkspaceCleanup = cleanup;
+    void cleanup.then(
+      () => {
+        if (projectBindingWorkspaceCleanup === cleanup) {
+          projectBindingWorkspaceCleanup = undefined;
+        }
+      },
+      (error) => {
+        if (projectBindingWorkspaceCleanup === cleanup) {
+          projectBindingWorkspaceCleanup = undefined;
+        }
+        writeErr(`Could not prune Project Binding workspaces: ${errorMessage(error)}\n`);
+      },
+    );
+  }
+
   function pruneExpiredProjectBindingSessions(): void {
+    pruneProjectBindingWorkspaces();
     const now = Date.now();
-    for (const [bindingId, record] of projectBindingSessions) {
-      if (record.active && Date.parse(record.expiresAt) > now) continue;
-      projectBindingSessions.delete(bindingId);
+    for (const record of projectBindingSessions.values()) {
+      if (!record.terminal && record.active && Date.parse(record.expiresAt) > now) continue;
+      void endProjectBindingRecord(record).catch((error) => {
+        writeErr(`Could not prune Project Binding session: ${errorMessage(error)}\n`);
+      });
     }
   }
 
@@ -1462,10 +1382,23 @@ export function createHttpServeApp(
                 return;
               }
               if (message.type === "heartbeat") {
-                await updateProjectBindingHeartbeat(validation.record, message);
+                const updated = await updateProjectBindingHeartbeat(
+                  validation.record,
+                  message,
+                  validation.durableClientId,
+                );
+                if (!updated) ws.close(1008, "Project Binding session is no longer authorized.");
                 return;
               }
-              await endProjectBindingRecord(validation.record, message.reason);
+              const ended = await endProjectBindingRecord(
+                validation.record,
+                validation.durableClientId,
+                message.reason,
+              );
+              if (!ended) {
+                ws.close(1008, "Project Binding session is no longer authorized.");
+                return;
+              }
               ws.send(JSON.stringify({ type: "ended", reason: message.reason }));
               ws.close(1000, message.reason.message);
             })
@@ -1479,7 +1412,7 @@ export function createHttpServeApp(
         },
         onClose: () => {
           if (!validation.ok) return;
-          void endProjectBindingRecord(validation.record, {
+          void endProjectBindingRecord(validation.record, undefined, {
             code: "interrupted",
             message: "Project Binding WebSocket closed.",
           }).catch((error) => {
@@ -1499,6 +1432,9 @@ export function createHttpServeApp(
 
   app.post(routePath(paths.projectBindings, "sessions"), accessRouteAuth, async (c) => {
     try {
+      if (projectBindingSessionsClosing) {
+        return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
+      }
       const parsed = await parseJsonObject(c.req.json(), "Project Binding session request");
       const projectRoot = stringField(parsed, "projectRoot");
       const projectFingerprint =
@@ -1517,6 +1453,9 @@ export function createHttpServeApp(
         projectRoot,
         lastActiveAt: now.toISOString(),
       });
+      if (projectBindingSessionsClosing) {
+        return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
+      }
       const record: ProjectBindingHttpRecord = {
         ownerKey,
         bindingId,
@@ -1530,8 +1469,20 @@ export function createHttpServeApp(
         updatedAt: now.toISOString(),
         expiresAt,
         active: true,
+        generation: 0,
+        mutationTail: Promise.resolve(),
+        terminal: false,
+        ownerlessCleanup: undefined,
+        heartbeatInFlight: undefined,
+        pendingHeartbeat: undefined,
       };
       await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+      if (projectBindingSessionsClosing) {
+        await projectBindingWorkspaceStore.writeLease(
+          projectBindingLease(terminalProjectBindingCandidate(record)),
+        );
+        return c.json({ ok: false, error: { code: "SERVER_UNAVAILABLE" } }, 503);
+      }
       projectBindingSessions.set(bindingId, record);
       return c.json({ binding: projectBindingResponse(record), sessionId }, 201);
     } catch (error) {
@@ -1569,13 +1520,18 @@ export function createHttpServeApp(
       if (sessionId !== record.sessionId) {
         return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 403);
       }
-      await updateProjectBindingHeartbeat(record, {
-        type: "heartbeat",
-        bindingId,
-        sessionId,
-        state: projectBindingStateField(parsed, "state", record.state),
-        syncState: projectBindingSyncStateField(parsed, "syncState", record.syncState),
-      });
+      const updated = await updateProjectBindingHeartbeat(
+        record,
+        {
+          type: "heartbeat",
+          bindingId,
+          sessionId,
+          state: projectBindingStateField(parsed, "state", record.state),
+          syncState: projectBindingSyncStateField(parsed, "syncState", record.syncState),
+        },
+        ownerKey,
+      );
+      if (!updated) return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
       return c.json({ ok: true, binding: projectBindingResponse(record) });
     } catch (error) {
       const safe = toSafeError(
@@ -1587,21 +1543,34 @@ export function createHttpServeApp(
   });
 
   app.delete(routePath(paths.projectBindings, ":bindingId/session"), accessRouteAuth, async (c) => {
-    const bindingId = requiredRouteParam(c.req.param("bindingId"));
-    const record = projectBindingRecordFor(bindingId, projectBindingOwnerKey(c));
-    if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
-    await endProjectBindingRecord(record);
-    return c.json({ ok: true, binding: projectBindingResponse(record) });
+    try {
+      const bindingId = requiredRouteParam(c.req.param("bindingId"));
+      const ownerKey = projectBindingOwnerKey(c);
+      const record = projectBindingRecordFor(bindingId, ownerKey);
+      if (!record) return c.json({ ok: false, error: { code: "REQUEST_INVALID" } }, 404);
+      const ended = await endProjectBindingRecord(record, ownerKey);
+      if (!ended) return c.json({ ok: false, error: { code: "AUTH_FAILED" } }, 403);
+      return c.json({ ok: true, binding: projectBindingResponse(record) });
+    } catch (error) {
+      const safe = toSafeError(
+        error,
+        error instanceof CapletsError ? error.code : "REQUEST_INVALID",
+      );
+      return c.json({ ok: false, error: safe }, error instanceof CapletsError ? 400 : 500);
+    }
   });
 
   function projectBindingSocketRecordForRequest(
     c: Parameters<MiddlewareHandler>[0],
-  ): { ok: true; record: ProjectBindingHttpRecord } | { ok: false; response: Response } {
+  ):
+    | { ok: true; record: ProjectBindingHttpRecord; durableClientId: string }
+    | { ok: false; response: Response } {
     const url = new URL(c.req.url);
     const bindingId = url.searchParams.get("bindingId") ?? "";
     const sessionId = url.searchParams.get("sessionId") ?? "";
     const projectFingerprint = url.searchParams.get("projectFingerprint") ?? "";
-    const record = projectBindingRecordFor(bindingId, projectBindingOwnerKey(c));
+    const durableClientId = projectBindingOwnerKey(c);
+    const record = projectBindingRecordFor(bindingId, durableClientId);
     if (!record) {
       return {
         ok: false,
@@ -1629,21 +1598,170 @@ export function createHttpServeApp(
         }),
       };
     }
-    return { ok: true, record };
+    return { ok: true, record, durableClientId };
   }
 
   async function updateProjectBindingHeartbeat(
     record: ProjectBindingHttpRecord,
     message: Extract<ProjectBindingSocketClientMessage, { type: "heartbeat" }>,
+    ownerKey: string,
+  ): Promise<boolean> {
+    if (record.heartbeatInFlight) {
+      if (record.pendingHeartbeat) {
+        record.pendingHeartbeat.message = message;
+        record.pendingHeartbeat.ownerKey = ownerKey;
+        return await record.pendingHeartbeat.promise;
+      }
+      const pending = Promise.withResolvers<boolean>();
+      record.pendingHeartbeat = {
+        message,
+        ownerKey,
+        promise: pending.promise,
+        resolve: pending.resolve,
+        reject: pending.reject,
+      };
+      return await pending.promise;
+    }
+
+    const heartbeat = enqueueProjectBindingMutation(record, async () => {
+      if (!canMutateProjectBindingRecord(record, ownerKey)) {
+        await terminalizeProjectBindingRecordInQueue(record);
+        return false;
+      }
+
+      const generation = record.generation;
+      const expiresAt = record.expiresAt;
+      const updatedAt = new Date().toISOString();
+      const candidate: ProjectBindingHttpRecord = {
+        ...record,
+        state: message.state,
+        syncState: message.syncState,
+        updatedAt,
+        expiresAt: new Date(Date.parse(updatedAt) + PROJECT_BINDING_LEASE_TTL_MS).toISOString(),
+        generation: generation + 1,
+      };
+      await projectBindingWorkspaceStore.writeLease(projectBindingLease(candidate));
+
+      if (!canCommitProjectBindingHeartbeat(record, ownerKey, generation, expiresAt)) {
+        await terminalizeProjectBindingRecordInQueue(record, candidate);
+        return false;
+      }
+
+      record.state = candidate.state;
+      record.syncState = candidate.syncState;
+      record.updatedAt = candidate.updatedAt;
+      record.expiresAt = candidate.expiresAt;
+      record.generation = candidate.generation;
+      return true;
+    });
+    record.heartbeatInFlight = heartbeat;
+    void heartbeat.then(
+      () => continuePendingProjectBindingHeartbeat(record, heartbeat),
+      () => continuePendingProjectBindingHeartbeat(record, heartbeat),
+    );
+    return await heartbeat;
+  }
+
+  function continuePendingProjectBindingHeartbeat(
+    record: ProjectBindingHttpRecord,
+    completed: Promise<boolean>,
+  ): void {
+    if (record.heartbeatInFlight !== completed) return;
+    record.heartbeatInFlight = undefined;
+    const pending = record.pendingHeartbeat;
+    record.pendingHeartbeat = undefined;
+    if (!pending) return;
+    void updateProjectBindingHeartbeat(record, pending.message, pending.ownerKey).then(
+      pending.resolve,
+      pending.reject,
+    );
+  }
+
+  function enqueueProjectBindingMutation<T>(
+    record: ProjectBindingHttpRecord,
+    mutation: () => Promise<T>,
+  ): Promise<T> {
+    const queued = record.mutationTail.then(mutation, mutation);
+    record.mutationTail = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  function canMutateProjectBindingRecord(
+    record: ProjectBindingHttpRecord,
+    ownerKey: string,
+  ): boolean {
+    return (
+      !projectBindingSessionsClosing &&
+      projectBindingSessions.get(record.bindingId) === record &&
+      record.active &&
+      !record.terminal &&
+      Date.parse(record.expiresAt) > Date.now() &&
+      isCurrentProjectBindingAccessOwner(record, ownerKey)
+    );
+  }
+
+  function canCommitProjectBindingHeartbeat(
+    record: ProjectBindingHttpRecord,
+    ownerKey: string,
+    generation: number,
+    expiresAt: string,
+  ): boolean {
+    return (
+      canMutateProjectBindingRecord(record, ownerKey) &&
+      record.generation === generation &&
+      record.expiresAt === expiresAt
+    );
+  }
+
+  function isCurrentProjectBindingAccessOwner(
+    record: ProjectBindingHttpRecord,
+    ownerKey: string,
+  ): boolean {
+    if (record.ownerKey !== ownerKey) return false;
+    if (!remoteCredentialStore) return ownerKey === "development_unauthenticated";
+    const client = remoteCredentialStore
+      .listClients()
+      .find((candidate) => candidate.clientId === ownerKey);
+    return client?.role === "access" && client.revokedAt === undefined;
+  }
+
+  async function terminalizeProjectBindingRecordInQueue(
+    record: ProjectBindingHttpRecord,
+    candidate?: ProjectBindingHttpRecord,
+    removeCurrent = true,
   ): Promise<void> {
-    record.state = message.state;
-    record.syncState = message.syncState;
+    const current = projectBindingSessions.get(record.bindingId) === record;
+    const target = current ? record : candidate;
+    if (!target) return;
+    if (current && !record.terminal) terminalizeProjectBindingRecord(record);
+    const terminal = current ? record : terminalProjectBindingCandidate(target);
+
+    await projectBindingWorkspaceStore.writeLease(projectBindingLease(terminal));
+    if (current) {
+      if (removeCurrent && projectBindingSessions.get(record.bindingId) === record) {
+        projectBindingSessions.delete(record.bindingId);
+      }
+    }
+  }
+
+  function terminalizeProjectBindingRecord(record: ProjectBindingHttpRecord): void {
+    record.state = "ended";
+    record.syncState = "not_started";
+    record.active = false;
     record.updatedAt = new Date().toISOString();
-    record.expiresAt = new Date(
-      Date.parse(record.updatedAt) + PROJECT_BINDING_LEASE_TTL_MS,
-    ).toISOString();
-    record.active = true;
-    await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
+    record.generation += 1;
+    record.terminal = true;
+  }
+
+  function terminalProjectBindingCandidate(
+    record: ProjectBindingHttpRecord,
+  ): ProjectBindingHttpRecord {
+    const terminal = { ...record };
+    terminalizeProjectBindingRecord(terminal);
+    return terminal;
   }
 
   function sendProjectBindingReadyWhenOpen(
@@ -1669,15 +1787,51 @@ export function createHttpServeApp(
 
   async function endProjectBindingRecord(
     record: ProjectBindingHttpRecord,
+    ownerKey?: string | undefined,
     _reason?: BindingTerminalReason | undefined,
-  ): Promise<void> {
-    if (!projectBindingSessions.has(record.bindingId) || !record.active) return;
-    record.state = "ended";
-    record.syncState = "not_started";
-    record.active = false;
-    record.updatedAt = new Date().toISOString();
-    await projectBindingWorkspaceStore.writeLease(projectBindingLease(record));
-    projectBindingSessions.delete(record.bindingId);
+  ): Promise<boolean> {
+    if (ownerKey === undefined) {
+      if (record.ownerlessCleanup) return await record.ownerlessCleanup;
+      if (projectBindingSessions.get(record.bindingId) !== record) return false;
+      const cleanup = enqueueProjectBindingMutation(record, async () => {
+        if (projectBindingSessions.get(record.bindingId) !== record) return false;
+        await terminalizeProjectBindingRecordInQueue(record);
+        return true;
+      });
+      record.ownerlessCleanup = cleanup;
+      void cleanup.then(
+        () => {
+          if (record.ownerlessCleanup === cleanup) record.ownerlessCleanup = undefined;
+        },
+        () => {
+          if (record.ownerlessCleanup === cleanup) record.ownerlessCleanup = undefined;
+        },
+      );
+      return await cleanup;
+    }
+
+    return await enqueueProjectBindingMutation(record, async () => {
+      const generation = record.generation;
+      const expiresAt = record.expiresAt;
+      if (!canMutateProjectBindingRecord(record, ownerKey)) {
+        await terminalizeProjectBindingRecordInQueue(record);
+        return false;
+      }
+      await terminalizeProjectBindingRecordInQueue(record, undefined, false);
+      const canAcknowledge =
+        !projectBindingSessionsClosing &&
+        projectBindingSessions.get(record.bindingId) === record &&
+        record.terminal &&
+        !record.active &&
+        record.generation === generation + 1 &&
+        record.expiresAt === expiresAt &&
+        Date.parse(expiresAt) > Date.now() &&
+        isCurrentProjectBindingAccessOwner(record, ownerKey);
+      if (projectBindingSessions.get(record.bindingId) === record) {
+        projectBindingSessions.delete(record.bindingId);
+      }
+      return canAcknowledge;
+    });
   }
 
   function projectBindingOwnerKey(c: Parameters<MiddlewareHandler>[0]): string {
@@ -1695,8 +1849,15 @@ export function createHttpServeApp(
   ): ProjectBindingHttpRecord | undefined {
     const record = projectBindingSessions.get(bindingId);
     if (!record || record.ownerKey !== ownerKey) return undefined;
-    if (!record.active || Date.parse(record.expiresAt) <= Date.now()) {
-      projectBindingSessions.delete(bindingId);
+    if (
+      projectBindingSessionsClosing ||
+      record.terminal ||
+      !record.active ||
+      Date.parse(record.expiresAt) <= Date.now()
+    ) {
+      void endProjectBindingRecord(record).catch((error) => {
+        writeErr(`Could not expire Project Binding session: ${errorMessage(error)}\n`);
+      });
       return undefined;
     }
     return record;
@@ -1910,6 +2071,7 @@ export function createHttpServeApp(
 
   app.closeCapletsSessions = async () => {
     clearInterval(attachSessionPruneTimer);
+    projectBindingSessionsClosing = true;
     for (const stream of attachEventStreams) {
       stream.close();
     }
@@ -1924,7 +2086,9 @@ export function createHttpServeApp(
     await Promise.allSettled([...defaultAttachSessions.values()].map((session) => session.close()));
     defaultAttachSessions.clear();
     defaultAttachSessionPromises.clear();
-    projectBindingSessions.clear();
+    await Promise.all(
+      [...projectBindingSessions.values()].map((record) => endProjectBindingRecord(record)),
+    );
   };
 
   if (options.warnUnauthenticatedNetwork) {

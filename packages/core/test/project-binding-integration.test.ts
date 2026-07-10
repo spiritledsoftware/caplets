@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -12,6 +13,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManagedMutagenProjectSync } from "../src/project-binding/mutagen";
 import { ProjectBindingWorkspaceStore } from "../src/project-binding/workspaces";
+import type { ProjectBindingLease } from "../src/project-binding";
 import { createNativeCapletsService } from "../src/native/service";
 import type { RemoteCapletsClient } from "../src/native/remote";
 
@@ -60,6 +62,150 @@ describe("Project Binding integration", () => {
     expect(sync.snapshot()).toMatchObject({ state: "ready", bindingId: "bind_fixture" });
     expect(existsSync(join(workspace.project, "package.json"))).toBe(true);
     expect(readFileSync(join(workspace.project, "build.js"), "utf8")).toContain("process.cwd()");
+  });
+
+  it("reclaims a workspace after the server records its binding lease as terminal", async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "caplets-project-binding-state-"));
+    dirs.push(stateRoot);
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const workspaces = new ProjectBindingWorkspaceStore({
+      root: stateRoot,
+      now: () => now,
+      inactiveWorkspaceTtlMs: 0,
+    });
+    const workspace = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-terminal",
+      projectRoot: fixtureProjectRoot,
+      lastActiveAt: now.toISOString(),
+    });
+    const lease: ProjectBindingLease = {
+      bindingId: "bind_terminal",
+      projectFingerprint: "sha256-terminal",
+      state: "ended",
+      active: false,
+      updatedAt: now.toISOString(),
+      expiresAt: now.toISOString(),
+    };
+    await workspaces.writeLease(lease);
+
+    await expect(workspaces.cleanup()).resolves.toEqual({
+      expiredLeases: [workspace.lease(lease.bindingId)],
+      deletedWorkspaces: [workspace.root],
+      retainedWorkspaces: [],
+    });
+    expect(existsSync(workspace.root)).toBe(false);
+  });
+
+  it("prunes an expired active restart lease while retaining a nonexpired active lease", async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "caplets-project-binding-state-"));
+    dirs.push(stateRoot);
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const workspaces = new ProjectBindingWorkspaceStore({
+      root: stateRoot,
+      now: () => now,
+      inactiveWorkspaceTtlMs: 0,
+    });
+    const expired = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-expired-restart",
+      projectRoot: fixtureProjectRoot,
+      lastActiveAt: now.toISOString(),
+    });
+    const active = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-active-restart",
+      projectRoot: fixtureProjectRoot,
+      lastActiveAt: now.toISOString(),
+    });
+    await workspaces.writeLease({
+      bindingId: "bind_expired_restart",
+      projectFingerprint: "sha256-expired-restart",
+      state: "ready",
+      active: true,
+      updatedAt: now.toISOString(),
+      expiresAt: now.toISOString(),
+    });
+    await workspaces.writeLease({
+      bindingId: "bind_active_restart",
+      projectFingerprint: "sha256-active-restart",
+      state: "ready",
+      active: true,
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+    });
+
+    await expect(workspaces.cleanup()).resolves.toEqual({
+      expiredLeases: [expired.lease("bind_expired_restart")],
+      deletedWorkspaces: [expired.root],
+      retainedWorkspaces: [active.root],
+    });
+    expect(existsSync(expired.root)).toBe(false);
+    await expect(workspaces.listLeases("sha256-active-restart")).resolves.toEqual([
+      expect.objectContaining({ bindingId: "bind_active_restart", active: true }),
+    ]);
+  });
+
+  it("isolates corrupt workspace JSON while reclaiming valid expired leases", async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "caplets-project-binding-state-"));
+    dirs.push(stateRoot);
+    const now = new Date("2026-07-10T12:00:00.000Z");
+    const workspaces = new ProjectBindingWorkspaceStore({
+      root: stateRoot,
+      now: () => now,
+      inactiveWorkspaceTtlMs: 0,
+    });
+    const valid = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-valid-expired",
+      projectRoot: fixtureProjectRoot,
+      lastActiveAt: now.toISOString(),
+    });
+    await workspaces.writeLease({
+      bindingId: "bind_valid_expired",
+      projectFingerprint: "sha256-valid-expired",
+      state: "ended",
+      active: false,
+      updatedAt: now.toISOString(),
+      expiresAt: now.toISOString(),
+    });
+    const corrupt = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-corrupt",
+      projectRoot: fixtureProjectRoot,
+    });
+    writeFileSync(corrupt.metadata, "{", "utf8");
+    writeFileSync(corrupt.lease("bind_corrupt"), "{", "utf8");
+
+    await expect(workspaces.listLeases("sha256-corrupt")).resolves.toEqual([]);
+    await expect(workspaces.cleanup()).resolves.toEqual(
+      expect.objectContaining({ expiredLeases: [valid.lease("bind_valid_expired")] }),
+    );
+    expect(existsSync(valid.root)).toBe(false);
+  });
+
+  it("atomically finalizes managed lease writes without leaving temporary entries", async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "caplets-project-binding-state-"));
+    dirs.push(stateRoot);
+    const workspaces = new ProjectBindingWorkspaceStore({ root: stateRoot });
+    const workspace = await workspaces.ensureWorkspace({
+      projectFingerprint: "sha256-atomic",
+      projectRoot: fixtureProjectRoot,
+    });
+    const lease: ProjectBindingLease = {
+      bindingId: "bind_atomic",
+      projectFingerprint: "sha256-atomic",
+      state: "ready",
+      active: true,
+      updatedAt: "2026-07-10T12:00:00.000Z",
+      expiresAt: "2026-07-10T12:01:00.000Z",
+    };
+    await workspaces.writeLease(lease);
+    await workspaces.writeLease({ ...lease, state: "ended", active: false });
+
+    await expect(workspaces.listLeases("sha256-atomic")).resolves.toEqual([
+      expect.objectContaining({ bindingId: lease.bindingId, state: "ended", active: false }),
+    ]);
+    expect(JSON.parse(readFileSync(workspace.lease(lease.bindingId), "utf8"))).toMatchObject({
+      state: "ended",
+      active: false,
+    });
+    expect(readdirSync(workspace.leases)).toEqual([`${lease.bindingId}.json`]);
   });
 
   it("suppresses local overlay duplicates while remote-only Caplets execute remotely", async () => {

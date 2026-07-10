@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ProjectBindingSessionManager } from "../src/cloud/presence";
+import {
+  NativeProjectBindingLifecycle,
+  type ProjectBindingSessionAdapter,
+} from "../src/native/project-binding-lifecycle";
 import { CAPLETS_ATTACH_SESSION_HEADER, buildNativeAttachProjection } from "../src/attach/api";
 import { listCodeModeCallableCaplets } from "../src/code-mode/api";
-import type { CapletsError } from "../src/errors";
+import { CapletsError } from "../src/errors";
 import { CloudAuthStore } from "../src/cloud-auth/store";
 import { CapletsEngine } from "../src/engine";
 import {
@@ -2190,6 +2193,86 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("recreates a fresh binding adapter after a profile replacement binding start gets 503", async () => {
+    const authDir = mkdtempSync(join(tmpdir(), "caplets-native-remote-auth-"));
+    dirs.push(authDir);
+    const store = new FileRemoteProfileStore({ root: join(authDir, "remote-profiles") });
+    await store.saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "old-access-token",
+        refreshToken: "old-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    let sessionStarts = 0;
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (url.pathname.endsWith("/v1/attach/sessions") && init?.method === "POST") {
+          return Response.json({ sessionId: "attach_session_1" }, { status: 201 });
+        }
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          sessionStarts += 1;
+          if (sessionStarts === 2) {
+            return new Response("temporarily unavailable", { status: 503 });
+          }
+          return Response.json(
+            {
+              binding: { bindingId: `binding_${sessionStarts}`, state: "attaching" },
+              sessionId: `session_${sessionStarts}`,
+            },
+            { status: 201 },
+          );
+        }
+        if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+          return Response.json({ ok: true });
+        }
+        if (url.pathname.endsWith("/session") && init?.method === "DELETE") {
+          return Response.json({ ok: true });
+        }
+        if (url.pathname.endsWith("/manifest")) {
+          return Response.json(attachManifest("rev-1", "export-1"));
+        }
+        return Response.json({ ok: true });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      authDir,
+      remote: { url: "http://127.0.0.1:5387", fetch },
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+    });
+
+    await service.reload();
+    await vi.waitFor(() => expect(sessionStarts).toBe(1));
+    await store.saveSelfHostedProfile({
+      hostUrl: "http://127.0.0.1:5387",
+      clientId: "client_123",
+      clientLabel: "Native Test",
+      credentials: {
+        accessToken: "new-access-token",
+        refreshToken: "new-refresh-token",
+        expiresAt: "2999-06-19T12:00:00.000Z",
+      },
+    });
+    await service.reload();
+    await vi.waitFor(() => expect(sessionStarts).toBe(2));
+    await service.reload();
+    await vi.waitFor(() => expect(sessionStarts).toBe(3));
+
+    await service.close();
+  });
+
   it("does not start replacement presence when closed during remote replacement", async () => {
     const fixture = client([{ name: "alpha", title: "Alpha" }]);
     const previousCloseStarted = deferred();
@@ -2213,8 +2296,8 @@ describe("createNativeCapletsService remote mode", () => {
     }) as NativeCapletsService & {
       replaceRemote(
         remote: NativeCapletsService,
-        presence?: ProjectBindingSessionManager,
-      ): Promise<void>;
+        presence?: ProjectBindingSessionAdapter,
+      ): Promise<boolean>;
     };
     const replacement = {
       listTools: vi.fn(() => []),
@@ -2227,7 +2310,8 @@ describe("createNativeCapletsService remote mode", () => {
       start: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
       updateAllowedCapletIds: vi.fn(async () => undefined),
-    } as unknown as ProjectBindingSessionManager;
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
 
     const replacing = service.replaceRemote(replacement, replacementPresence);
     await previousCloseStarted.promise;
@@ -2235,7 +2319,7 @@ describe("createNativeCapletsService remote mode", () => {
     releasePreviousClose.resolve();
     await Promise.all([replacing, closing]);
 
-    expect(replacementPresence.close).toHaveBeenCalledTimes(1);
+    expect(replacementPresence.dispose).toHaveBeenCalledTimes(1);
     expect(replacementPresence.start).not.toHaveBeenCalled();
   });
 
@@ -4008,11 +4092,16 @@ describe("createNativeCapletsService remote mode", () => {
       .map(([, init]) => init?.body)
       .filter((body): body is string => typeof body === "string")
       .map(
-        (body) => JSON.parse(body) as { projectFiles?: Array<{ path: string; content: string }> },
+        (body) =>
+          JSON.parse(body) as {
+            projectFiles?: Array<{ path: string; content: string }>;
+            allowedCapletIds?: string[];
+          },
       );
     expect(projectBindingBodies[0]?.projectFiles).toEqual([
       { path: ".caplets/config.json", content: "{}" },
     ]);
+    expect(projectBindingBodies[0]?.allowedCapletIds).toEqual(["code_mode", "local"]);
     expect(fetch).toHaveBeenCalledWith(
       new URL("https://cloud.caplets.dev/api/project-bindings/presence_1"),
       expect.objectContaining({
@@ -4038,6 +4127,9 @@ describe("createNativeCapletsService remote mode", () => {
             },
             { status: 201 },
           );
+        }
+        if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+          return Response.json({ ok: true });
         }
         if (
           url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
@@ -4089,7 +4181,7 @@ describe("createNativeCapletsService remote mode", () => {
       );
     expect(bodies[0]).toMatchObject({
       projectRoot,
-      allowedCapletIds: [],
+      allowedCapletIds: ["code_mode", "local"],
     });
     expect(fetch).toHaveBeenCalledWith(
       new URL("http://127.0.0.1:5387/v1/attach/project-bindings/binding_1/session"),
@@ -4436,10 +4528,1006 @@ describe("createNativeCapletsService remote mode", () => {
     await service.close();
   });
 
+  it("updates binding IDs from resolved local watches and retains the last accepted IDs on failed reload", async () => {
+    const fixture = client();
+    const localListeners = new Set<(tools: NativeCapletTool[]) => void>();
+    const localTool = (caplet: string): NativeCapletTool => ({
+      caplet,
+      toolName: caplet,
+      title: caplet,
+      description: caplet,
+      promptGuidance: [],
+    });
+    let localTools: NativeCapletTool[] = [];
+    let localReloadSucceeds = true;
+    const localService: NativeCapletsService = {
+      listTools: () => localTools,
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => localReloadSucceeds),
+      onToolsChanged: (listener) => {
+        localListeners.add(listener);
+        return () => localListeners.delete(listener);
+      },
+      close: vi.fn(async () => undefined),
+    };
+    const registrations: string[][] = [];
+    const updates: string[][] = [];
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        const body = JSON.parse(String(init?.body ?? "{}")) as { allowedCapletIds?: string[] };
+        if (url.pathname.endsWith("/api/project-bindings") && init?.method === "POST") {
+          registrations.push(body.allowedCapletIds ?? []);
+          return Response.json({ binding: { bindingId: "presence_1" } });
+        }
+        if (url.pathname.endsWith("/api/project-bindings/presence_1") && init?.method === "PATCH") {
+          if (body.allowedCapletIds) updates.push(body.allowedCapletIds);
+          return Response.json({ binding: { bindingId: "presence_1" } });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: {
+        url: "http://127.0.0.1:5387",
+        fetch,
+        cloud: {
+          url: "https://cloud.caplets.dev",
+          accessToken: "token",
+          workspaceId: "ws_1",
+          projectRoot: dirname(dirname(projectConfigPath)),
+        },
+      },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+      configPath,
+      projectConfigPath,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    localTools = [localTool("alpha")];
+    for (const listener of localListeners) listener(localTools);
+
+    await vi.waitFor(() => expect(registrations).toEqual([["alpha"]]));
+    localTools = [localTool("bravo")];
+    for (const listener of localListeners) listener(localTools);
+    await vi.waitFor(() => expect(updates).toEqual([["bravo"]]));
+    for (const listener of localListeners) listener(localTools);
+    await Promise.resolve();
+
+    expect(updates).toEqual([["bravo"]]);
+
+    localTools = [localTool("charlie")];
+    localReloadSucceeds = false;
+    await service.reload();
+    expect(updates).toEqual([["bravo"]]);
+
+    localReloadSucceeds = true;
+    await service.reload();
+    await vi.waitFor(() => expect(updates).toEqual([["bravo"], ["charlie"]]));
+    await service.close();
+  });
+
+  it("restores the current remote subscription and closes an uncommitted remote after old cleanup fails", async () => {
+    const fixture = client();
+    const localService: NativeCapletsService = {
+      listTools: () => [],
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+    const oldListeners = new Set<(tools: NativeCapletTool[]) => void>();
+    const oldClose = vi.fn(async (): Promise<void> => {
+      throw new Error("old remote close failed");
+    });
+    const oldRemote: NativeCapletsService = {
+      listTools: () => [],
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: (listener) => {
+        oldListeners.add(listener);
+        return () => oldListeners.delete(listener);
+      },
+      close: oldClose,
+    };
+    const candidateClose = vi.fn(async () => undefined);
+    const candidate: NativeCapletsService = {
+      listTools: () => [],
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: candidateClose,
+    };
+    type CompositeRemoteProbe = NativeCapletsService & {
+      remote: NativeCapletsService;
+      replaceRemote(remote: NativeCapletsService, remoteIdentity?: string): Promise<boolean>;
+    };
+    const composite = service as unknown as CompositeRemoteProbe;
+    composite.remote = oldRemote;
+
+    await expect(composite.replaceRemote(candidate, "candidate")).rejects.toThrow(
+      "old remote close failed",
+    );
+
+    expect(composite.remote).toBe(oldRemote);
+    expect(oldListeners.size).toBe(1);
+    expect(candidateClose).toHaveBeenCalledOnce();
+
+    oldClose.mockResolvedValue(undefined);
+    await service.close();
+  });
+
+  it("silently latches the exact legacy unsupported binding error during replacement", async () => {
+    const fixture = client();
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          return Response.json(
+            {
+              binding: { bindingId: "binding_1", state: "attaching" },
+              sessionId: "session_1",
+            },
+            { status: 201 },
+          );
+        }
+        if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+          return Response.json({ ok: true });
+        }
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+          init?.method === "DELETE"
+        ) {
+          return Response.json({ ok: true });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const writeErr = vi.fn();
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387", fetch },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+    const replacementClose = vi.fn(async () => undefined);
+    const replacement: NativeCapletsService = {
+      listTools: () => [],
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: replacementClose,
+    };
+    const unsupportedCandidate = {
+      start: vi.fn(async () => {
+        throw new CapletsError(
+          "UNSUPPORTED_CAPABILITY",
+          "Self-hosted Project Binding sessions are not implemented by this runtime.",
+        );
+      }),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    type CompositeReplacementProbe = NativeCapletsService & {
+      replaceRemote(
+        remote: NativeCapletsService,
+        remoteIdentity: string,
+        presence: ProjectBindingSessionAdapter,
+      ): Promise<boolean>;
+    };
+
+    await vi.waitFor(() =>
+      expect(
+        fetch.mock.calls.some(
+          ([input, init]) =>
+            new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST",
+        ),
+      ).toBe(true),
+    );
+    const composite = service as unknown as CompositeReplacementProbe;
+    await composite.replaceRemote(replacement, "replacement", unsupportedCandidate);
+
+    expect(unsupportedCandidate.dispose).toHaveBeenCalledOnce();
+    expect(writeErr).not.toHaveBeenCalled();
+    await service.close();
+    expect(replacementClose).toHaveBeenCalledOnce();
+  });
+
+  it("disconnects and re-registers self-hosted bindings after an allowed-ID heartbeat rejection", async () => {
+    const fixture = client();
+    const sessionBodies: string[] = [];
+    let sessionCount = 0;
+    const writeErr = vi.fn();
+    const fetch = vi.fn(
+      async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+        const url = new URL(input.toString());
+        if (
+          url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+          init?.method === "POST"
+        ) {
+          sessionCount += 1;
+          sessionBodies.push(String(init.body));
+          return Response.json(
+            {
+              binding: { bindingId: `binding_${sessionCount}`, state: "attaching" },
+              sessionId: `session_${sessionCount}`,
+            },
+            { status: 201 },
+          );
+        }
+        if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+          return new Response("expired", { status: 503 });
+        }
+        return Response.json({ ok: true });
+      },
+    );
+    const { dir, configPath, projectConfigPath } = tempConfig({});
+    dirs.push(dir);
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387", fetch },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      configPath,
+      projectConfigPath,
+      projectRoot: dirname(dirname(projectConfigPath)),
+      writeErr,
+    });
+    type BindingLifecycleProbe = {
+      start(): Promise<void>;
+      updateAllowedCapletIds(allowedCapletIds: string[]): Promise<void>;
+    };
+    type CompositeBindingProbe = {
+      projectBinding: BindingLifecycleProbe | undefined;
+    };
+
+    await vi.waitFor(() => expect(sessionCount).toBe(1));
+    const projectBinding = (service as unknown as CompositeBindingProbe).projectBinding;
+    if (!projectBinding) throw new Error("Project Binding lifecycle was not created.");
+    await expect(projectBinding.updateAllowedCapletIds(["bravo"])).rejects.toThrow(
+      "Project Binding request failed (503).",
+    );
+    await vi.waitFor(() =>
+      expect(writeErr).toHaveBeenCalledWith(
+        "Remote Project Binding heartbeat failed: Project Binding request failed (503).\n",
+      ),
+    );
+    await projectBinding.start();
+    await vi.waitFor(() => expect(sessionCount).toBe(2));
+
+    expect(sessionBodies[1]).toContain('"bravo"');
+    await service.close();
+  });
+
+  it("keeps cleanup IDs through an in-flight self-hosted heartbeat failure during close", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client();
+      const heartbeatStarted = Promise.withResolvers<void>();
+      const releaseHeartbeat = Promise.withResolvers<void>();
+      let deleteCalls = 0;
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            return Response.json(
+              {
+                binding: { bindingId: "binding_1", state: "attaching" },
+                sessionId: "session_1",
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+            heartbeatStarted.resolve();
+            await releaseHeartbeat.promise;
+            return new Response("expired", { status: 503 });
+          }
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+            init?.method === "DELETE"
+          ) {
+            deleteCalls += 1;
+            return Response.json({ ok: true });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387", fetch },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          fetch.mock.calls.some(
+            ([input, init]) =>
+              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+              init?.method === "POST",
+          ),
+        ).toBe(true),
+      );
+      const advancing = vi.advanceTimersByTimeAsync(30_000);
+      await heartbeatStarted.promise;
+      const closing = service.close();
+      releaseHeartbeat.resolve();
+      await Promise.all([advancing, closing]);
+
+      expect(deleteCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a stalled self-hosted heartbeat and releases re-registration and close", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client();
+      const heartbeatStarted = Promise.withResolvers<void>();
+      let heartbeatSignal: AbortSignal | undefined;
+      let sessionCount = 0;
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            sessionCount += 1;
+            return Response.json(
+              {
+                binding: { bindingId: `binding_${sessionCount}`, state: "attaching" },
+                sessionId: `session_${sessionCount}`,
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+            heartbeatSignal = init?.signal ?? undefined;
+            heartbeatStarted.resolve();
+            return await new Promise<never>(() => undefined);
+          }
+          if (url.pathname.endsWith("/session") && init?.method === "DELETE") {
+            return Response.json({ ok: true });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const writeErr = vi.fn();
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387", fetch },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+        writeErr,
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          fetch.mock.calls.some(
+            ([input, init]) =>
+              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+              init?.method === "POST",
+          ),
+        ).toBe(true),
+      );
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await heartbeatStarted.promise;
+      vi.advanceTimersToNextTimer();
+      await vi.waitFor(() =>
+        expect(writeErr).toHaveBeenCalledWith(
+          "Remote Project Binding heartbeat failed: Project Binding mutation timed out after 10000ms.\n",
+        ),
+      );
+      type BindingLifecycleProbe = { start(): Promise<void> };
+      const projectBinding = (service as unknown as { projectBinding?: BindingLifecycleProbe })
+        .projectBinding;
+      if (!projectBinding) throw new Error("Project Binding lifecycle was not created.");
+      await projectBinding.start();
+      await vi.waitFor(() => expect(sessionCount).toBe(2));
+      await service.close();
+
+      expect(heartbeatSignal?.aborted).toBe(true);
+      expect(
+        fetch.mock.calls.some(
+          ([input, init]) =>
+            new URL(input.toString()).pathname.endsWith(
+              "/v1/attach/project-bindings/binding_2/session",
+            ) && init?.method === "DELETE",
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("converges when a timed-out self-hosted DELETE later commits and retry gets 404", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client();
+      const deleteStarted = Promise.withResolvers<void>();
+      const releaseDelete = Promise.withResolvers<Response>();
+      let deleteSignal: AbortSignal | undefined;
+      let deleteCalls = 0;
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            return Response.json(
+              {
+                binding: { bindingId: "binding_1", state: "attaching" },
+                sessionId: "session_1",
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session")) {
+            deleteCalls += 1;
+            if (deleteCalls === 1) {
+              deleteSignal = init?.signal ?? undefined;
+              deleteStarted.resolve();
+              return await releaseDelete.promise;
+            }
+            return new Response("not found", { status: 404 });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387", fetch },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+      });
+
+      await vi.waitFor(() =>
+        expect(
+          fetch.mock.calls.some(
+            ([input, init]) =>
+              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+              init?.method === "POST",
+          ),
+        ).toBe(true),
+      );
+      const firstClose = service.close();
+      await deleteStarted.promise;
+      vi.advanceTimersToNextTimer();
+      await expect(firstClose).rejects.toThrow("timed out");
+      expect(deleteSignal?.aborted).toBe(true);
+
+      releaseDelete.resolve(Response.json({ ok: true }));
+      await Promise.resolve();
+      await service.close();
+
+      expect(deleteCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces self-hosted timer heartbeats while close remains the final mutation", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = client();
+      const heartbeatStarted = Promise.withResolvers<void>();
+      const releaseHeartbeat = Promise.withResolvers<void>();
+      let heartbeatCalls = 0;
+      let deleteCalls = 0;
+      const localListeners = new Set<(tools: NativeCapletTool[]) => void>();
+      const localService: NativeCapletsService = {
+        listTools: () => [],
+        execute: vi.fn(async () => undefined),
+        reload: vi.fn(async () => true),
+        onToolsChanged: (listener) => {
+          localListeners.add(listener);
+          return () => localListeners.delete(listener);
+        },
+        close: vi.fn(async () => undefined),
+      };
+      const fetch = vi.fn(
+        async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+          const url = new URL(input.toString());
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+            init?.method === "POST"
+          ) {
+            return Response.json(
+              {
+                binding: { bindingId: "binding_1", state: "attaching" },
+                sessionId: "session_1",
+              },
+              { status: 201 },
+            );
+          }
+          if (url.pathname.endsWith("/heartbeat") && init?.method === "POST") {
+            heartbeatCalls += 1;
+            heartbeatStarted.resolve();
+            await releaseHeartbeat.promise;
+            return Response.json({ ok: true });
+          }
+          if (
+            url.pathname.endsWith("/v1/attach/project-bindings/binding_1/session") &&
+            init?.method === "DELETE"
+          ) {
+            deleteCalls += 1;
+            return Response.json({ ok: true });
+          }
+          return new Response("not found", { status: 404 });
+        },
+      );
+      const { dir, configPath, projectConfigPath } = tempConfig({});
+      dirs.push(dir);
+      const service = createNativeCapletsService({
+        mode: "remote",
+        remote: { url: "http://127.0.0.1:5387", fetch },
+        remoteClientFactory: vi.fn(() => fixture.api),
+        localServiceFactory: vi.fn(() => localService),
+        configPath,
+        projectConfigPath,
+        projectRoot: dirname(dirname(projectConfigPath)),
+      });
+      for (const listener of localListeners) listener([]);
+
+      await vi.waitFor(() =>
+        expect(
+          fetch.mock.calls.some(
+            ([input, init]) =>
+              new URL(input.toString()).pathname.endsWith("/v1/attach/project-bindings/sessions") &&
+              init?.method === "POST",
+          ),
+        ).toBe(true),
+      );
+      vi.advanceTimersByTime(90_000);
+      await heartbeatStarted.promise;
+      releaseHeartbeat.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await service.close();
+
+      expect(heartbeatCalls).toBe(1);
+      expect(deleteCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("retries Composite close after Project Binding cleanup fails", async () => {
+    const fixture = client();
+    const localClose = vi.fn(async () => undefined);
+    const localService: NativeCapletsService = {
+      listTools: () => [],
+      execute: vi.fn(async () => undefined),
+      reload: vi.fn(async () => true),
+      onToolsChanged: vi.fn(() => () => undefined),
+      close: localClose,
+    };
+    const service = createNativeCapletsService({
+      mode: "remote",
+      remote: { url: "http://127.0.0.1:5387" },
+      remoteClientFactory: vi.fn(() => fixture.api),
+      localServiceFactory: vi.fn(() => localService),
+    });
+    let cleanupAttempts = 0;
+    const bindingAdapter = {
+      start: vi.fn(async () => true),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => {
+        cleanupAttempts += 1;
+        if (cleanupAttempts === 1) throw new Error("delete timed out");
+      }),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(bindingAdapter, ["alpha"]);
+    await lifecycle.start();
+    type CompositeCloseProbe = {
+      projectBinding: NativeProjectBindingLifecycle | undefined;
+    };
+    (service as unknown as CompositeCloseProbe).projectBinding = lifecycle;
+
+    await expect(service.close()).rejects.toThrow("delete timed out");
+    expect(fixture.api.close).not.toHaveBeenCalled();
+    expect(localClose).not.toHaveBeenCalled();
+
+    await service.close();
+
+    expect(bindingAdapter.close).toHaveBeenCalledTimes(2);
+    expect(fixture.api.close).toHaveBeenCalledOnce();
+    expect(localClose).toHaveBeenCalledOnce();
+  });
+
   it("fails fast for invalid remote config", () => {
     expect(() =>
       createNativeCapletsService({ mode: "remote", remote: { url: "http://example.com" } }),
     ).toThrow(/https/u);
+  });
+});
+
+describe("NativeProjectBindingLifecycle", () => {
+  it("coalesces concurrent starts and latest-wins updates before cleanup", async () => {
+    const updateStarted = deferred();
+    const releaseUpdate = deferred();
+    const events: string[] = [];
+    let updateCount = 0;
+    const adapter = {
+      start: vi.fn(async (ids: string[]) => {
+        events.push(`start:${ids.join(",")}`);
+      }),
+      updateAllowedCapletIds: vi.fn(async (ids: string[]) => {
+        events.push(`update:${ids.join(",")}`);
+        if (updateCount++ === 0) {
+          updateStarted.resolve();
+          await releaseUpdate.promise;
+        }
+      }),
+      prepareClose: vi.fn(() => {
+        events.push("prepare-close");
+      }),
+      close: vi.fn(async () => {
+        events.push("close");
+      }),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(adapter, ["beta", "alpha", "alpha"]);
+
+    const firstStart = lifecycle.start();
+    const secondStart = lifecycle.start();
+    const duringStart = lifecycle.updateAllowedCapletIds(["charlie", "alpha", "charlie"]);
+    await Promise.all([firstStart, secondStart, duringStart]);
+
+    expect(adapter.start).toHaveBeenCalledOnce();
+    expect(adapter.start).toHaveBeenCalledWith(["alpha", "charlie"]);
+    expect(adapter.updateAllowedCapletIds).not.toHaveBeenCalled();
+
+    const updateA = lifecycle.updateAllowedCapletIds(["alpha"]);
+    await updateStarted.promise;
+    const updateB = lifecycle.updateAllowedCapletIds(["bravo"]);
+    const updateC = lifecycle.updateAllowedCapletIds(["charlie"]);
+    const closing = lifecycle.close();
+
+    expect(adapter.close).not.toHaveBeenCalled();
+    releaseUpdate.resolve();
+    await Promise.all([updateA, updateB, updateC, closing]);
+
+    expect(events).toEqual([
+      "start:alpha,charlie",
+      "update:alpha",
+      "prepare-close",
+      "update:charlie",
+      "close",
+    ]);
+  });
+
+  it("sends a newer accepted set after an in-flight update rejects", async () => {
+    const updateStarted = Promise.withResolvers<void>();
+    const releaseUpdate = Promise.withResolvers<void>();
+    const updates: string[][] = [];
+    const adapter = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async (ids: string[]) => {
+        updates.push(ids);
+        if (ids[0] === "bravo") {
+          updateStarted.resolve();
+          await releaseUpdate.promise;
+          throw new Error("bravo rejected");
+        }
+      }),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(adapter, ["alpha"]);
+
+    await lifecycle.start();
+    const updateB = lifecycle.updateAllowedCapletIds(["bravo"]);
+    await updateStarted.promise;
+    const updateC = lifecycle.updateAllowedCapletIds(["charlie"]);
+    releaseUpdate.resolve();
+    await expect(updateB).rejects.toThrow("bravo rejected");
+    await expect(updateC).rejects.toThrow("bravo rejected");
+    await vi.waitFor(() => expect(updates).toEqual([["bravo"], ["charlie"]]));
+  });
+
+  it("re-registers the newest accepted IDs after a self-hosted update disconnects", async () => {
+    let active = false;
+    const registrations: string[][] = [];
+    const updates: string[][] = [];
+    const adapter = {
+      start: vi.fn(async (ids: string[]) => {
+        registrations.push(ids);
+        active = true;
+        return true;
+      }),
+      updateAllowedCapletIds: vi.fn(async (ids: string[]) => {
+        updates.push(ids);
+        if (ids[0] === "bravo") {
+          active = false;
+          throw new Error("heartbeat disconnected");
+        }
+      }),
+      hasActiveSession: () => active,
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(adapter, ["alpha"]);
+
+    await lifecycle.start();
+    await expect(lifecycle.updateAllowedCapletIds(["bravo"])).rejects.toThrow(
+      "heartbeat disconnected",
+    );
+    await lifecycle.updateAllowedCapletIds(["charlie"]);
+
+    expect(registrations).toEqual([["alpha"], ["charlie"]]);
+    expect(updates).toEqual([["bravo"]]);
+  });
+
+  it("cleans the old adapter when close wins a deferred replacement", async () => {
+    const updateStarted = Promise.withResolvers<void>();
+    const releaseUpdate = Promise.withResolvers<void>();
+    const events: string[] = [];
+    const old = {
+      start: vi.fn(async () => true),
+      updateAllowedCapletIds: vi.fn(async () => {
+        events.push("update");
+        updateStarted.resolve();
+        await releaseUpdate.promise;
+      }),
+      prepareClose: vi.fn(() => {
+        events.push("prepare-close");
+      }),
+      close: vi.fn(async () => {
+        events.push("close");
+      }),
+      dispose: vi.fn(() => {
+        events.push("dispose-old");
+      }),
+    } satisfies ProjectBindingSessionAdapter;
+    const candidate = {
+      start: vi.fn(async () => {
+        events.push("start-candidate");
+      }),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => {
+        events.push("close-candidate");
+      }),
+      dispose: vi.fn(() => {
+        events.push("dispose-candidate");
+      }),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    const updating = lifecycle.updateAllowedCapletIds(["bravo"]);
+    await updateStarted.promise;
+    const replacing = lifecycle.replace(candidate);
+    const closing = lifecycle.close();
+    releaseUpdate.resolve();
+    await Promise.all([updating, replacing, closing]);
+
+    expect(events).toEqual([
+      "update",
+      "prepare-close",
+      "prepare-close",
+      "close",
+      "dispose-old",
+      "dispose-candidate",
+    ]);
+    expect(candidate.start).not.toHaveBeenCalled();
+    expect(candidate.close).not.toHaveBeenCalled();
+  });
+
+  it("disposes a never-started binding when close wins the start turn", async () => {
+    const adapter = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(adapter, ["alpha"]);
+
+    await Promise.all([lifecycle.start(), lifecycle.close()]);
+
+    expect(adapter.start).not.toHaveBeenCalled();
+    expect(adapter.close).not.toHaveBeenCalled();
+    expect(adapter.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("starts a replacement with IDs accepted while old cleanup is pending", async () => {
+    const cleanupStarted = Promise.withResolvers<void>();
+    const releaseCleanup = Promise.withResolvers<void>();
+    const old = {
+      start: vi.fn(async () => true),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => {
+        cleanupStarted.resolve();
+        await releaseCleanup.promise;
+      }),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const candidate = {
+      start: vi.fn(async () => true),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    const replacing = lifecycle.replace(candidate);
+    await cleanupStarted.promise;
+    await lifecycle.updateAllowedCapletIds(["charlie", "bravo", "charlie"]);
+    releaseCleanup.resolve();
+    await replacing;
+
+    expect(candidate.start).toHaveBeenCalledWith(["bravo", "charlie"]);
+    expect(candidate.updateAllowedCapletIds).not.toHaveBeenCalled();
+  });
+
+  it("flushes IDs accepted while replacement registration is in flight", async () => {
+    const candidateStartEntered = Promise.withResolvers<void>();
+    const releaseCandidateStart = Promise.withResolvers<void>();
+    const old = {
+      start: vi.fn(async () => true),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const candidate = {
+      start: vi.fn(async () => {
+        candidateStartEntered.resolve();
+        await releaseCandidateStart.promise;
+        return true;
+      }),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    const replacing = lifecycle.replace(candidate);
+    await candidateStartEntered.promise;
+    await lifecycle.updateAllowedCapletIds(["bravo"]);
+    releaseCandidateStart.resolve();
+    await replacing;
+
+    expect(candidate.start).toHaveBeenCalledWith(["alpha"]);
+    expect(candidate.updateAllowedCapletIds).toHaveBeenCalledWith(["bravo"]);
+  });
+
+  it("retains a cleanup-failed owner and only starts a later replacement after retry", async () => {
+    let cleanupAttempts = 0;
+    const old = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      prepareClose: vi.fn(),
+      close: vi.fn(async () => {
+        cleanupAttempts += 1;
+        if (cleanupAttempts === 1) throw new Error("cleanup unavailable");
+      }),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const rejectedCandidate = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const replacement = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    await expect(lifecycle.replace(rejectedCandidate)).rejects.toThrow("cleanup unavailable");
+    await lifecycle.updateAllowedCapletIds(["bravo"]);
+
+    expect(old.updateAllowedCapletIds).not.toHaveBeenCalled();
+    expect(rejectedCandidate.start).not.toHaveBeenCalled();
+    expect(rejectedCandidate.close).not.toHaveBeenCalled();
+    expect(rejectedCandidate.dispose).toHaveBeenCalledOnce();
+
+    await lifecycle.replace(replacement);
+
+    expect(old.close).toHaveBeenCalledTimes(2);
+    expect(replacement.start).toHaveBeenCalledOnce();
+    await lifecycle.close();
+  });
+
+  it("disposes a candidate when its replacement start fails", async () => {
+    const old = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const candidate = {
+      start: vi.fn(async () => {
+        throw new Error("candidate start failed");
+      }),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    await expect(lifecycle.replace(candidate)).rejects.toThrow("candidate start failed");
+    await lifecycle.start();
+
+    expect(candidate.dispose).toHaveBeenCalledOnce();
+    expect(candidate.start).toHaveBeenCalledOnce();
+  });
+
+  it("retires the old adapter when remote teardown fails after binding cleanup", async () => {
+    const old = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      prepareClose: vi.fn(),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const candidate = {
+      start: vi.fn(async () => undefined),
+      updateAllowedCapletIds: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    } satisfies ProjectBindingSessionAdapter;
+    const lifecycle = new NativeProjectBindingLifecycle(old, ["alpha"]);
+
+    await lifecycle.start();
+    await expect(
+      lifecycle.replace(candidate, async () => {
+        throw new Error("old remote close failed");
+      }),
+    ).rejects.toThrow("old remote close failed");
+    await lifecycle.updateAllowedCapletIds(["bravo"]);
+
+    expect(old.close).toHaveBeenCalledOnce();
+    expect(old.dispose).toHaveBeenCalledOnce();
+    expect(old.updateAllowedCapletIds).not.toHaveBeenCalled();
+    expect(candidate.start).not.toHaveBeenCalled();
+    expect(candidate.dispose).toHaveBeenCalledOnce();
   });
 });
 

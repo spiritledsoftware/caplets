@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -183,7 +184,10 @@ export class ProjectBindingWorkspaceStore {
     for (const paths of this.workspacePaths()) {
       const leases = this.leasesFor(paths);
       for (const entry of leases) {
-        if (!entry.lease.active && this.isStaleLease(entry.lease)) {
+        if (
+          this.isStaleLease(entry.lease) &&
+          (!entry.lease.active || entry.lease.expiresAt !== undefined)
+        ) {
           rmSync(entry.path, { force: true });
           expiredLeases.push(entry.path);
         }
@@ -230,7 +234,12 @@ export class ProjectBindingWorkspaceStore {
   private readMetadata(projectFingerprint: string): ProjectBindingWorkspaceMetadata | undefined {
     const path = this.paths(projectFingerprint).metadata;
     if (!existsSync(path)) return undefined;
-    return JSON.parse(readFileSync(path, "utf8")) as ProjectBindingWorkspaceMetadata;
+    try {
+      const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+      return isWorkspaceMetadata(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private workspacePaths(): ProjectBindingWorkspacePaths[] {
@@ -244,12 +253,18 @@ export class ProjectBindingWorkspaceStore {
     paths: ProjectBindingWorkspacePaths,
   ): { path: string; lease: ProjectBindingLease }[] {
     if (!existsSync(paths.leases)) return [];
-    return readdirSync(paths.leases, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => {
-        const path = join(paths.leases, entry.name);
-        return { path, lease: JSON.parse(readFileSync(path, "utf8")) as ProjectBindingLease };
-      });
+    const leases: { path: string; lease: ProjectBindingLease }[] = [];
+    for (const entry of readdirSync(paths.leases, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      const path = join(paths.leases, entry.name);
+      try {
+        const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+        if (isProjectBindingLease(value)) leases.push({ path, lease: value });
+      } catch {
+        // Ignore a torn or corrupt managed lease; valid leases remain reclaimable.
+      }
+    }
+    return leases;
   }
 
   private isStaleLease(lease: ProjectBindingLease): boolean {
@@ -272,7 +287,41 @@ type WorkspaceCandidate = {
 };
 
 function writeJson(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+function isWorkspaceMetadata(value: unknown): value is ProjectBindingWorkspaceMetadata {
+  return (
+    isRecord(value) &&
+    typeof value.projectFingerprint === "string" &&
+    typeof value.projectRoot === "string" &&
+    typeof value.createdAt === "string" &&
+    typeof value.lastActiveAt === "string"
+  );
+}
+
+function isProjectBindingLease(value: unknown): value is ProjectBindingLease {
+  return (
+    isRecord(value) &&
+    typeof value.bindingId === "string" &&
+    typeof value.projectFingerprint === "string" &&
+    typeof value.state === "string" &&
+    typeof value.active === "boolean" &&
+    typeof value.updatedAt === "string" &&
+    (value.expiresAt === undefined || typeof value.expiresAt === "string") &&
+    (value.diagnosticCode === undefined || typeof value.diagnosticCode === "string")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function directorySize(path: string): number {

@@ -118,6 +118,10 @@ Remote control under `packages/core/src/remote-control/` lets CLI and native int
 
 Project Binding under `packages/core/src/project-binding/` connects a local project root to a remote runtime. The foreground attach loop owns session state, heartbeat, reconnect behavior, sync preflight, and terminal recovery commands.
 
+Native Project Binding lifecycle ordering lives in `packages/core/src/native/project-binding-lifecycle.ts`. The owner retains the last accepted local allowed-Caplet set, serializes and coalesces remote updates, makes cleanup the final mutation, and commits remote replacement only after the previous Adapter cleans up. Cloud and self-hosted remain distinct Adapters: Cloud heartbeat failures report without re-registration, while self-hosted failures disconnect and permit a later registration attempt.
+
+Self-hosted Binding Session records serialize heartbeat, end, expiry, prune, and shutdown mutations per record. Active socket work reauthorizes the durable Client ID at execution time, stages lease writes, and commits only after authorization, record generation, identity, and expiry remain current; terminal cleanup prevents stale or second-socket work from resurrecting a lease.
+
 `docs/project-binding.md` is the living operational contract for Project Binding.
 
 ## Backend Contracts
