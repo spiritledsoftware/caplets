@@ -1,15 +1,17 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp } from "../src/serve/http";
+import { FileVaultStore } from "../src/vault";
 import type { HttpServeOptions } from "../src/serve/options";
 
 const dirs: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -35,12 +37,17 @@ describe("dashboard Vault APIs", () => {
       storedKey: "GH_TOKEN",
       referenceName: "API_TOKEN",
       capletId: "status",
-      origin: { kind: "global-config", path: setup.context.configPath },
     });
     expect(grant.status).toBe(200);
-    const grantText = await grant.text();
-    expect(grantText).toContain('"referenceName":"API_TOKEN"');
-    expect(grantText).not.toContain(setup.context.configPath);
+    const grantBody = await grant.json();
+    expect(grantBody).toMatchObject({
+      grant: {
+        referenceName: "API_TOKEN",
+        capletId: "status",
+        origin: { kind: "global-config" },
+      },
+    });
+    expect(JSON.stringify(grantBody)).not.toContain(setup.context.configPath);
 
     const revoke = await dashboardPost(setup, "/dashboard/api/vault/grants/revoke", {
       storedKey: "GH_TOKEN",
@@ -99,6 +106,72 @@ describe("dashboard Vault APIs", () => {
     const text = await activity.text();
     expect(text).toContain('"action":"vault_value_revealed"');
     expect(text).not.toContain("remote_secret");
+
+    await setup.engine.close();
+  });
+  it("maps reveal collaborator faults to internal errors without ending the session", async () => {
+    const setup = await authenticatedDashboard();
+    await dashboardPost(setup, "/dashboard/api/vault/values", {
+      key: "GH_TOKEN",
+      value: "remote_secret",
+    });
+    vi.spyOn(FileVaultStore.prototype, "resolveValue").mockImplementation(() => {
+      throw new Error("Vault read failed at /tmp/private token=cap_remote_access_sensitive_value");
+    });
+
+    const response = await dashboardPost(setup, "/dashboard/api/vault/reveal", {
+      key: "GH_TOKEN",
+      confirmation: "reveal GH_TOKEN",
+    });
+
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({
+      ok: false,
+      error: { code: "INTERNAL_ERROR", message: "Current Host administration failed." },
+    });
+    expect(body).not.toContain("/tmp/private");
+    expect(body).not.toContain("cap_remote_access_sensitive_value");
+    expect(response.headers.get("set-cookie")).toBeNull();
+
+    await setup.engine.close();
+  });
+  it("preserves identical opaque Vault bytes through dashboard and bearer adapters", async () => {
+    const setup = await authenticatedDashboard();
+    const value = " \t\r\n ";
+
+    const dashboardResponse = await dashboardPost(setup, "/dashboard/api/vault/values", {
+      key: "DASHBOARD_WHITESPACE",
+      value,
+    });
+    expect(dashboardResponse.status).toBe(200);
+
+    const pending = setup.store.createPendingLogin({
+      hostUrl: "http://127.0.0.1:5387/",
+      requestedRole: "operator",
+    });
+    setup.store.approvePendingLogin({ operatorCode: pending.operatorCode });
+    const operator = setup.store.completePendingLogin({
+      hostUrl: "http://127.0.0.1:5387/",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    });
+    const bearerResponse = await setup.app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: "vault_set",
+        arguments: { name: "BEARER_WHITESPACE", value },
+      }),
+    });
+    expect(bearerResponse.status).toBe(200);
+
+    const vault = new FileVaultStore({ root: join(setup.context.authDir, "vault") });
+    expect(vault.resolveValue("DASHBOARD_WHITESPACE")).toBe(value);
+    expect(vault.resolveValue("BEARER_WHITESPACE")).toBe(value);
 
     await setup.engine.close();
   });

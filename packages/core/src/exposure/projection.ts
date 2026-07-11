@@ -1,4 +1,4 @@
-import type { CapletShadowingPolicy } from "../config";
+import type { CapletConfig, CapletShadowingPolicy } from "../config";
 import {
   resolveNamespaceExposure,
   type NamespaceDiagnostic,
@@ -6,12 +6,15 @@ import {
 } from "./namespace";
 import type { SafeErrorSummary } from "../errors";
 import { generatedToolInputJsonSchemaForCaplet } from "../generated-tool-input-schema";
+import { capabilityDescription } from "../registry";
+import {
+  directPromptName,
+  directResourceTemplateUri,
+  directResourceUri,
+  directToolName,
+} from "./direct-names";
 import type {
   CallableCaplet,
-  DirectPromptRegistration,
-  DirectResourceRegistration,
-  DirectResourceTemplateRegistration,
-  DirectToolRegistration,
   ExposureSnapshot,
   HiddenCaplet,
   HiddenCapletReason,
@@ -42,21 +45,89 @@ export type ExposureProjectionRoute =
   | { kind: "direct-prompt"; capletId: string; downstreamName: string }
   | { kind: "completion"; capletId: string };
 
-export type ExposureProjectionEntry = {
-  kind: ExposureProjectionEntryKind;
+type ExposureProjectionEntryBase<
+  Kind extends ExposureProjectionEntryKind,
+  Route extends ExposureProjectionRoute,
+> = {
+  kind: Kind;
   id: string;
   capletId: string;
   title?: string | undefined;
   description?: string | undefined;
+  sourceCapletId?: string | undefined;
+  shadowing: CapletShadowingPolicy;
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
+  route: Route;
+};
+
+export type ExposureProjectionProgressiveCaplet = ExposureProjectionEntryBase<
+  "progressive-caplet",
+  Extract<ExposureProjectionRoute, { kind: "progressive-caplet" }>
+> & {
+  backend?: CapletConfig["backend"] | undefined;
+  inputSchema?: unknown;
+  operationNames?: string[] | undefined;
+};
+
+export type ExposureProjectionCodeModeCaplet = ExposureProjectionEntryBase<
+  "code-mode-caplet",
+  Extract<ExposureProjectionRoute, { kind: "code-mode-caplet" }>
+> & {
+  backend?: CapletConfig["backend"] | undefined;
+};
+
+export type ExposureProjectionDirectTool = ExposureProjectionEntryBase<
+  "direct-tool",
+  Extract<ExposureProjectionRoute, { kind: "direct-tool" }>
+> & {
   inputSchema?: unknown;
   outputSchema?: unknown;
   annotations?: unknown;
+};
+
+export type ExposureProjectionDirectResource = ExposureProjectionEntryBase<
+  "direct-resource",
+  Extract<ExposureProjectionRoute, { kind: "direct-resource" }>
+> & {
   mimeType?: string | undefined;
   size?: number | undefined;
-  sourceCapletId?: string | undefined;
-  shadowing: CapletShadowingPolicy;
-  route: ExposureProjectionRoute;
 };
+
+export type ExposureProjectionDirectResourceTemplate = ExposureProjectionEntryBase<
+  "direct-resource-template",
+  Extract<ExposureProjectionRoute, { kind: "direct-resource-template" }>
+> & {
+  mimeType?: string | undefined;
+};
+
+export type ExposureProjectionPromptArgument = {
+  name: string;
+  description?: string | undefined;
+  required?: boolean | undefined;
+};
+
+export type ExposureProjectionDirectPrompt = ExposureProjectionEntryBase<
+  "direct-prompt",
+  Extract<ExposureProjectionRoute, { kind: "direct-prompt" }>
+> & {
+  inputSchema?: unknown;
+  arguments: ExposureProjectionPromptArgument[];
+};
+
+export type ExposureProjectionCompletion = ExposureProjectionEntryBase<
+  "completion",
+  Extract<ExposureProjectionRoute, { kind: "completion" }>
+>;
+
+export type ExposureProjectionEntry =
+  | ExposureProjectionProgressiveCaplet
+  | ExposureProjectionCodeModeCaplet
+  | ExposureProjectionDirectTool
+  | ExposureProjectionDirectResource
+  | ExposureProjectionDirectResourceTemplate
+  | ExposureProjectionDirectPrompt
+  | ExposureProjectionCompletion;
 
 export type ExposureProjectionHiddenCaplet = {
   capletId: string;
@@ -78,15 +149,7 @@ export function exposureProjectionRouteKey(
 }
 
 export function buildExposureProjection(snapshot: ExposureSnapshot): ExposureProjection {
-  const entries = [
-    ...snapshot.progressiveCaplets.map(progressiveCapletEntry),
-    ...snapshot.codeModeCaplets.map(codeModeCapletEntry),
-    ...snapshot.directTools.map(directToolEntry),
-    ...snapshot.directResources.map(directResourceEntry),
-    ...snapshot.directResourceTemplates.map(directResourceTemplateEntry),
-    ...snapshot.directPrompts.map(directPromptEntry),
-    ...completionEntries(snapshot),
-  ];
+  const entries = snapshot.callableCaplets.flatMap(entriesForCallableCaplet);
 
   return {
     availability: { state: "ready" },
@@ -115,6 +178,8 @@ type ManifestProjectionBase = {
   outputSchema?: unknown;
   annotations?: unknown;
   shadowing: CapletShadowingPolicy;
+  useWhen?: string | undefined;
+  avoidWhen?: string | undefined;
 };
 
 type ManifestProjectionCaplet = ManifestProjectionBase & {
@@ -188,6 +253,8 @@ function manifestProgressiveCapletEntry(entry: ManifestProjectionCaplet): Exposu
     title: entry.title ?? entry.name,
     description: entry.description,
     inputSchema: entry.inputSchema,
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: { kind: "progressive-caplet", capletId: entry.capletId },
   };
@@ -204,6 +271,8 @@ function manifestDirectToolEntry(entry: ManifestProjectionTool): ExposureProject
     inputSchema: entry.inputSchema,
     outputSchema: entry.outputSchema,
     annotations: entry.annotations,
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: { kind: "direct-tool", capletId: entry.capletId, downstreamName: entry.downstreamName },
   };
@@ -219,6 +288,8 @@ function manifestDirectResourceEntry(entry: ManifestProjectionResource): Exposur
     description: entry.description,
     ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
     ...(typeof entry.size === "number" ? { size: entry.size } : {}),
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: {
       kind: "direct-resource",
@@ -239,6 +310,8 @@ function manifestDirectResourceTemplateEntry(
     title: entry.title,
     description: entry.description,
     ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: {
       kind: "direct-resource-template",
@@ -257,6 +330,9 @@ function manifestDirectPromptEntry(entry: ManifestProjectionPrompt): ExposurePro
     title: entry.title ?? entry.name,
     description: entry.description,
     inputSchema: entry.inputSchema,
+    arguments: promptArgumentsFromSchema(entry.inputSchema),
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: {
       kind: "direct-prompt",
@@ -264,6 +340,24 @@ function manifestDirectPromptEntry(entry: ManifestProjectionPrompt): ExposurePro
       downstreamName: entry.downstreamName,
     },
   };
+}
+
+function promptArgumentsFromSchema(inputSchema: unknown): ExposureProjectionPromptArgument[] {
+  if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) return [];
+  const args = (inputSchema as Record<string, unknown>).arguments;
+  if (!Array.isArray(args)) return [];
+  return args.flatMap((argument) => {
+    if (!argument || typeof argument !== "object" || Array.isArray(argument)) return [];
+    const record = argument as Record<string, unknown>;
+    if (typeof record.name !== "string") return [];
+    return [
+      {
+        name: record.name,
+        ...(typeof record.description === "string" ? { description: record.description } : {}),
+        ...(typeof record.required === "boolean" ? { required: record.required } : {}),
+      },
+    ];
+  });
 }
 
 function manifestCompletionEntry(entry: ManifestProjectionCompletion): ExposureProjectionEntry {
@@ -274,6 +368,8 @@ function manifestCompletionEntry(entry: ManifestProjectionCompletion): ExposureP
     ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title,
     description: entry.description,
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: { kind: "completion", capletId: entry.capletId },
   };
@@ -289,130 +385,168 @@ function manifestCodeModeCapletEntry(
     ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
     title: entry.title ?? entry.name,
     description: entry.description,
+    ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+    ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
     shadowing: entry.shadowing,
     route: { kind: "code-mode-caplet", capletId: entry.capletId },
   };
 }
 
-function progressiveCapletEntry(entry: CallableCaplet): ExposureProjectionEntry {
+function entriesForCallableCaplet(entry: CallableCaplet): ExposureProjectionEntry[] {
+  const entries: ExposureProjectionEntry[] = [];
+  if (entry.exposure.progressive) entries.push(progressiveCapletEntry(entry));
+  if (entry.exposure.codeMode) entries.push(codeModeCapletEntry(entry));
+  if (!entry.exposure.direct) return entries;
+
+  entries.push(...entry.tools.map((tool) => directToolEntry(entry, tool)));
+  if (entry.caplet.backend !== "mcp") return entries;
+
+  entries.push(...entry.resources.map((resource) => directResourceEntry(entry, resource)));
+  entries.push(
+    ...entry.resourceTemplates.map((resourceTemplate) =>
+      directResourceTemplateEntry(entry, resourceTemplate),
+    ),
+  );
+  entries.push(...entry.prompts.map((prompt) => directPromptEntry(entry, prompt)));
+  if (entry.completions && (entry.resourceTemplates.length > 0 || entry.prompts.length > 0)) {
+    entries.push(completionEntry(entry));
+  }
+  return entries;
+}
+
+function progressiveCapletEntry(entry: CallableCaplet): ExposureProjectionProgressiveCaplet {
   const capletId = entry.caplet.server;
+  const inputSchema = generatedToolInputJsonSchemaForCaplet(entry.caplet);
   return {
     kind: "progressive-caplet",
     id: capletId,
     capletId,
     title: entry.caplet.name,
-    description: entry.caplet.description,
-    inputSchema: generatedToolInputJsonSchemaForCaplet(entry.caplet),
+    description: capabilityDescription(entry.caplet),
+    backend: entry.caplet.backend,
+    inputSchema,
+    operationNames: [...inputSchema.properties.operation.enum],
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
     route: { kind: "progressive-caplet", capletId },
   };
 }
 
-function codeModeCapletEntry(entry: CallableCaplet): ExposureProjectionEntry {
+function codeModeCapletEntry(entry: CallableCaplet): ExposureProjectionCodeModeCaplet {
   const capletId = entry.caplet.server;
   return {
     kind: "code-mode-caplet",
     id: capletId,
     capletId,
     title: entry.caplet.name,
-    description: entry.caplet.description,
+    description: capabilityDescription(entry.caplet),
+    backend: entry.caplet.backend,
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
     route: { kind: "code-mode-caplet", capletId },
   };
 }
 
-function directToolEntry(entry: DirectToolRegistration): ExposureProjectionEntry {
+function directToolEntry(
+  entry: CallableCaplet,
+  tool: CallableCaplet["tools"][number],
+): ExposureProjectionDirectTool {
+  const capletId = entry.caplet.server;
   return {
     kind: "direct-tool",
-    id: entry.name,
-    capletId: entry.caplet.server,
-    title: entry.tool.name,
-    description: entry.tool.description,
-    inputSchema: entry.tool.inputSchema,
-    outputSchema: entry.tool.outputSchema,
-    annotations: entry.tool.annotations,
+    id: directToolName(capletId, tool.name),
+    capletId,
+    title: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
+    annotations: tool.annotations,
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
-    route: {
-      kind: "direct-tool",
-      capletId: entry.caplet.server,
-      downstreamName: entry.downstreamName,
-    },
+    route: { kind: "direct-tool", capletId, downstreamName: tool.name },
   };
 }
 
-function directResourceEntry(entry: DirectResourceRegistration): ExposureProjectionEntry {
+function directResourceEntry(
+  entry: CallableCaplet,
+  resource: CallableCaplet["resources"][number],
+): ExposureProjectionDirectResource {
+  const capletId = entry.caplet.server;
   return {
     kind: "direct-resource",
-    id: entry.uri,
-    capletId: entry.caplet.server,
-    title: entry.resource.name,
-    description: entry.resource.description,
-    ...(entry.resource.mimeType ? { mimeType: entry.resource.mimeType } : {}),
-    ...(typeof entry.resource.size === "number" ? { size: entry.resource.size } : {}),
+    id: directResourceUri(capletId, resource.uri),
+    capletId,
+    title: resource.name,
+    description: resource.description,
+    ...(resource.mimeType ? { mimeType: resource.mimeType } : {}),
+    ...(typeof resource.size === "number" ? { size: resource.size } : {}),
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
-    route: {
-      kind: "direct-resource",
-      capletId: entry.caplet.server,
-      downstreamUri: entry.downstreamUri,
-    },
+    route: { kind: "direct-resource", capletId, downstreamUri: resource.uri },
   };
 }
 
 function directResourceTemplateEntry(
-  entry: DirectResourceTemplateRegistration,
-): ExposureProjectionEntry {
+  entry: CallableCaplet,
+  resourceTemplate: CallableCaplet["resourceTemplates"][number],
+): ExposureProjectionDirectResourceTemplate {
+  const capletId = entry.caplet.server;
   return {
     kind: "direct-resource-template",
-    id: entry.uriTemplate,
-    capletId: entry.caplet.server,
-    title: entry.resourceTemplate.name,
-    description: entry.resourceTemplate.description,
-    ...(entry.resourceTemplate.mimeType ? { mimeType: entry.resourceTemplate.mimeType } : {}),
+    id: directResourceTemplateUri(capletId, resourceTemplate.uriTemplate),
+    capletId,
+    title: resourceTemplate.name,
+    description: resourceTemplate.description,
+    ...(resourceTemplate.mimeType ? { mimeType: resourceTemplate.mimeType } : {}),
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
     route: {
       kind: "direct-resource-template",
-      capletId: entry.caplet.server,
-      downstreamUriTemplate: entry.downstreamUriTemplate,
+      capletId,
+      downstreamUriTemplate: resourceTemplate.uriTemplate,
     },
   };
 }
 
-function directPromptEntry(entry: DirectPromptRegistration): ExposureProjectionEntry {
-  const inputSchema = { arguments: entry.prompt.arguments ?? [] };
+function directPromptEntry(
+  entry: CallableCaplet,
+  prompt: CallableCaplet["prompts"][number],
+): ExposureProjectionDirectPrompt {
+  const capletId = entry.caplet.server;
+  const args = (prompt.arguments ?? []).map((argument) => ({ ...argument }));
   return {
     kind: "direct-prompt",
-    id: entry.name,
-    capletId: entry.caplet.server,
-    title: entry.prompt.name,
-    description: entry.prompt.description,
-    inputSchema,
+    id: directPromptName(capletId, prompt.name),
+    capletId,
+    title: prompt.name,
+    description: prompt.description,
+    inputSchema: { arguments: args },
+    arguments: args,
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
     shadowing: shadowingPolicy(entry.caplet),
-    route: {
-      kind: "direct-prompt",
-      capletId: entry.caplet.server,
-      downstreamName: entry.downstreamName,
-    },
+    route: { kind: "direct-prompt", capletId, downstreamName: prompt.name },
   };
 }
 
-function completionEntries(snapshot: ExposureSnapshot): ExposureProjectionEntry[] {
-  const caplets = new Map(
-    [...snapshot.directPrompts, ...snapshot.directResourceTemplates].map((entry) => [
-      entry.caplet.server,
-      entry.caplet,
-    ]),
-  );
-  return [...caplets.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([capletId, caplet]) => ({
-      kind: "completion" as const,
-      id: `${capletId}:complete`,
-      capletId,
-      title: "Complete",
-      description: `MCP completion for ${capletId}.`,
-      shadowing: shadowingPolicy(caplet),
-      route: { kind: "completion" as const, capletId },
-    }));
+function completionEntry(entry: CallableCaplet): ExposureProjectionCompletion {
+  const capletId = entry.caplet.server;
+  return {
+    kind: "completion",
+    id: `${capletId}:complete`,
+    capletId,
+    title: "Complete",
+    description: `MCP completion for ${capletId}.`,
+    ...(entry.caplet.useWhen ? { useWhen: entry.caplet.useWhen } : {}),
+    ...(entry.caplet.avoidWhen ? { avoidWhen: entry.caplet.avoidWhen } : {}),
+    shadowing: shadowingPolicy(entry.caplet),
+    route: { kind: "completion", capletId },
+  };
 }
 
 function hiddenCapletEntry(hidden: HiddenCaplet): ExposureProjectionHiddenCaplet {

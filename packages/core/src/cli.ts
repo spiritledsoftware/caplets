@@ -80,6 +80,7 @@ import {
   defaultUpdateCheckCacheDir,
   defaultUpdateCheckStateDir,
   defaultCapletsLockfilePath,
+  formatVaultRecoveryCommand,
   loadGlobalServeDefaults,
   loadConfigWithSources,
   loadLocalOverlayConfigWithSources,
@@ -3073,7 +3074,7 @@ export function createProgram(io: CliIO = {}): Command {
             lockfilePath,
           });
           await attachCatalogIndexingResults(result.installed, env);
-          attachVaultSetupResults(result.installed, target, io);
+          attachVaultSetupResults(result.installed, io);
           if (options.json) {
             writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
             return;
@@ -3094,7 +3095,7 @@ export function createProgram(io: CliIO = {}): Command {
           lockfilePath,
         });
         await attachCatalogIndexingResults(result.installed, env);
-        attachVaultSetupResults(result.installed, target, io);
+        attachVaultSetupResults(result.installed, io);
         if (options.json) {
           writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
           return;
@@ -3168,7 +3169,7 @@ export function createProgram(io: CliIO = {}): Command {
           lockfilePath,
         });
         await attachCatalogIndexingResults(result.installed, env);
-        attachVaultSetupResults(result.installed, target, io);
+        attachVaultSetupResults(result.installed, io);
         if (options.json) {
           writeOut(`${JSON.stringify(installJsonResult(result.installed), null, 2)}\n`);
           return;
@@ -4325,12 +4326,10 @@ function writeCatalogIndexingNotice(
 
 function attachVaultSetupResults(
   installed: Array<{ id: string; vaultSetup?: unknown }>,
-  target: Exclude<MutationTarget, "remote">,
   io: CliIO,
 ): void {
   const statuses = vaultSetupStatusesForInstalled(
     installed.map((entry) => entry.id),
-    target,
     io,
   );
   for (const entry of installed) {
@@ -4338,11 +4337,7 @@ function attachVaultSetupResults(
   }
 }
 
-function vaultSetupStatusesForInstalled(
-  ids: string[],
-  target: Exclude<MutationTarget, "remote">,
-  io: CliIO,
-): Map<string, VaultSetupStatus> {
+function vaultSetupStatusesForInstalled(ids: string[], io: CliIO): Map<string, VaultSetupStatus> {
   const statuses = new Map<string, VaultSetupStatus>(
     ids.map((id) => [id, { status: "ready", recoveryCommands: [], messages: [] }]),
   );
@@ -4351,16 +4346,22 @@ function vaultSetupStatusesForInstalled(
     const configPath = resolveConfigPath(envConfigPath(env));
     const projectConfigPath = envProjectConfigPath(env);
     const result = loadLocalOverlayConfigWithSources(configPath, projectConfigPath);
+    if (
+      result.warnings.some((warning) => warning.type === undefined && warning.recoverable !== true)
+    ) {
+      for (const status of statuses.values()) {
+        status.status = "unknown";
+      }
+      return statuses;
+    }
     for (const warning of result.warnings) {
-      if (!warning.recoverable || !warning.message.includes("Vault key")) continue;
-      const id = /^Caplet ([^ ]+) references /u.exec(warning.message)?.[1];
-      if (!id || !statuses.has(id)) continue;
-      const status = statuses.get(id);
+      if (warning.type !== "vault-quarantine" || !statuses.has(warning.capletId)) continue;
+      const status = statuses.get(warning.capletId);
       if (!status) continue;
       status.status = "unresolved";
       status.messages.push(warning.message);
-      const command = /run `([^`]+)`/u.exec(warning.message)?.[1];
-      if (command && !status.recoveryCommands.includes(command)) {
+      const command = formatVaultRecoveryCommand(warning);
+      if (!status.recoveryCommands.includes(command)) {
         status.recoveryCommands.push(command);
       }
     }

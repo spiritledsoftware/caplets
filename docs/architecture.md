@@ -38,7 +38,9 @@ Backend managers provide a common shape for listing tools, searching tools, desc
 
 The global default is `code_mode`. Per-Caplet config may choose `direct`, `progressive`, `code_mode`, `direct_and_code_mode`, or `progressive_and_code_mode`.
 
-`packages/core/src/exposure/projection.ts` turns resolved discovery snapshots and attach manifests into the Caplets exposure projection: the adapter-neutral view of Code Mode handles, progressive tools, direct downstream operations, direct MCP surfaces, route descriptors, hidden diagnostic breadcrumbs, and local/remote merge outcomes. MCP serving, native integrations, and attach/remote clients render this projection; they do not re-own exposure identity, namespace shadowing, or hidden-Caplet policy.
+`packages/core/src/exposure/projection.ts` turns resolved discovery snapshots and attach manifests into the Caplets exposure projection: the adapter-neutral, registration-ready view of Code Mode handles, progressive tools, direct downstream operations, direct MCP surfaces, schemas, prompt arguments, resource metadata, route descriptors, hidden diagnostic breadcrumbs, and local/remote merge outcomes. MCP serving, native integrations, and attach/remote clients render this projection; they do not re-own exposure identity, namespace shadowing, registration facts, or hidden-Caplet policy.
+
+The engine tags each projection with the config generation captured before discovery. Adapters publish only a projection that still matches the current generation, discard out-of-order discovery, and reject callbacks rendered from an older generation. Until initial or refreshed discovery resolves, Code Mode declarations and native execution allowlists fail closed rather than falling back to configured Caplet IDs.
 
 ### MCP Server
 
@@ -53,6 +55,14 @@ The HTTP server in `packages/core/src/serve/http.ts` exposes versioned MCP, atta
 `/v1/mcp` is the configured agent-facing MCP surface. It honors exposure policy, so a default `code_mode` server can expose only the `code_mode` tool to ordinary MCP clients.
 
 `/v1/attach` is the Caplets runtime attach API. Attached clients read `/v1/attach/manifest`, subscribe to `/v1/attach/events`, and invoke revision-scoped exports through `/v1/attach/invoke` before merging remote projections with local/project overlays.
+
+### Current Host Administration
+
+`packages/core/src/current-host/operations.ts` is the Current Host administration Module. Its typed Interface accepts a trusted host-scoped Operator principal plus a semantic query or command, then owns safe read models, catalog and Caplet administration, Pending Remote Login and Remote Client mutations, safe Vault administration, Operator activity, redaction, and actor-specific `sessionEnded` outcomes.
+
+The human dashboard and `/v1/admin` Operator bearer routes are separate Adapters over that Interface. The dashboard retains cookie, CSRF, session, and browser presentation ceremony; the bearer Adapter retains the existing `RemoteCliRequest` selection and safe response envelope. Access Clients remain limited to MCP, Attach, and Project Binding routes. Both Access and Operator Clients may revoke only their own credential through the role-neutral self-revoke route.
+
+Raw Vault Reveal is not a shared operation. It remains a dashboard-only human confirmation path with `no-store` responses and an ephemeral browser timer; generic bearer administration rejects it.
 
 ### Caplets Daemon
 
@@ -108,6 +118,10 @@ Remote control under `packages/core/src/remote-control/` lets CLI and native int
 
 Project Binding under `packages/core/src/project-binding/` connects a local project root to a remote runtime. The foreground attach loop owns session state, heartbeat, reconnect behavior, sync preflight, and terminal recovery commands.
 
+Native Project Binding lifecycle ordering lives in `packages/core/src/native/project-binding-lifecycle.ts`. The owner retains the last accepted local allowed-Caplet set, serializes and coalesces remote updates, makes cleanup the final mutation, and commits remote replacement only after the previous Adapter cleans up. Cloud and self-hosted remain distinct Adapters: Cloud heartbeat failures report without re-registration, while self-hosted failures disconnect and permit a later registration attempt.
+
+Self-hosted Binding Session records serialize heartbeat, end, expiry, prune, and shutdown mutations per record. Active socket work reauthorizes the durable Client ID at execution time, stages lease writes, and commits only after authorization, record generation, identity, and expiry remain current; terminal cleanup prevents stale or second-socket work from resurrecting a lease.
+
 `docs/project-binding.md` is the living operational contract for Project Binding.
 
 ## Backend Contracts
@@ -121,6 +135,10 @@ MCP-backed Caplets preserve downstream tool results and expose resources, templa
 OpenAPI, Google Discovery, GraphQL, and HTTP backends expose explicit operation/action tools. They do not synthesize MCP resources or prompts. HTTP-like backends enforce safe URL handling, bounded response bodies, timeouts, and redacted errors.
 
 Google Discovery backends load local or remote Google Discovery documents, infer request base URLs from the document unless overridden, expose filtered Discovery methods as tools, and infer OAuth scopes from the exposed operation set. Google media downloads and oversized or binary HTTP-like responses are written as Caplets media artifacts under the configured artifact root instead of being forced inline.
+
+HTTP-like backend results cross one internal Media contract. Small textual or JSON bodies use the `inline` variant. Non-inline results use `local-artifact` only when the host explicitly exposes its Caplets-managed artifact filesystem; remote and hosted boundaries use `remote-reference`, which carries an artifact URI and never filesystem path semantics. Backend managers produce this contract, while terminal, MCP, Attach, native, and browser Adapters own their local presentation.
+
+Each configurable HTTP-like backend retains its configured maximum response size as a hard failure cap. The shared HTTP reader's default remains 1 MiB. GraphQL operation results use the same 1 MiB inline threshold and a separate 100 MiB artifact cap; GraphQL schema and introspection remain bounded-text control paths.
 
 ### CLI Tools
 

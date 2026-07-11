@@ -9,6 +9,7 @@ import { DownstreamManager } from "../src/downstream";
 import { OpenApiManager } from "../src/openapi";
 import { handleServerTool } from "../src/tools";
 import { writeTokenBundle } from "../src/auth";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("native OpenAPI Caplets", () => {
   let baseUrl = "";
@@ -205,8 +206,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "tools" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(
         list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
@@ -225,8 +225,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "describe_tool", name: "GET /users/{id}" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(tool.structuredContent.result.tool.inputSchema).toMatchObject({
         type: "object",
@@ -243,7 +242,7 @@ describe("native OpenAPI Caplets", () => {
       });
       expect(tool.structuredContent.result.tool.outputSchema).toMatchObject({
         type: "object",
-        required: ["status", "statusText", "headers"],
+        required: ["status", "statusText", "headers", "kind"],
         properties: {
           status: { type: "number" },
           statusText: { type: "string" },
@@ -260,7 +259,11 @@ describe("native OpenAPI Caplets", () => {
               name: { type: "string" },
             },
           },
+          kind: { enum: ["inline", "local-artifact", "remote-reference"] },
+          uri: { type: "string" },
+          path: { type: "string" },
         },
+        oneOf: expect.any(Array),
       });
 
       const result = (await handleServerTool(
@@ -271,8 +274,7 @@ describe("native OpenAPI Caplets", () => {
           args: { path: { id: "42" }, query: { active: true } },
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(result.structuredContent).toMatchObject({
         status: 200,
@@ -288,8 +290,7 @@ describe("native OpenAPI Caplets", () => {
           fields: ["body.name"],
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(projected.structuredContent).toEqual({ body: { name: "Ada" } });
 
@@ -301,8 +302,7 @@ describe("native OpenAPI Caplets", () => {
           args: { body: { name: "Ada" } },
         },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(create.structuredContent).toMatchObject({
         status: 201,
@@ -318,8 +318,7 @@ describe("native OpenAPI Caplets", () => {
             fields: ["body.created"],
           },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       expect(requests.some((request) => request.headers["x-api-key"] === "secret-key")).toBe(true);
@@ -674,8 +673,7 @@ describe("native OpenAPI Caplets", () => {
         caplet,
         { operation: "describe_tool", name: "schemaLess" },
         registry,
-        downstream,
-        openapi,
+        testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
       )) as any;
       expect(tool.structuredContent.result.tool.outputSchema).toBeUndefined();
 
@@ -685,8 +683,7 @@ describe("native OpenAPI Caplets", () => {
           caplet,
           { operation: "call_tool", name: "schemaLess", args: {}, fields: ["body"] },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
       expect(requests.some((request) => request.url === "/schema-less")).toBe(false);
@@ -990,23 +987,15 @@ describe("native OpenAPI Caplets", () => {
       const result = await openapi.callTool(config.openapiEndpoints.reports!, "getReport", {
         path: { id: "42" },
       });
-      const structured = result.structuredContent as {
-        status: number;
-        headers: { "content-type": string };
-        body: { artifact: { path: string; mimeType: string; byteLength: number } };
-      };
 
-      expect(structured).toMatchObject({
+      expect(result.structuredContent).toMatchObject({
         status: 200,
         headers: { "content-type": "application/pdf" },
-        body: {
-          artifact: {
-            mimeType: "application/pdf",
-            byteLength: 13,
-          },
-        },
+        kind: "local-artifact",
+        mimeType: "application/pdf",
+        byteLength: 13,
       });
-      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("%PDF-1.7 test");
+      expect(readFileSync(localArtifactPath(result), "utf8")).toBe("%PDF-1.7 test");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1035,21 +1024,14 @@ describe("native OpenAPI Caplets", () => {
       const result = await openapi.callTool(config.openapiEndpoints.reports!, "getReport", {
         path: { id: "large" },
       });
-      const structured = result.structuredContent as {
-        status: number;
-        body: { artifact: { path: string; mimeType: string; byteLength: number } };
-      };
 
-      expect(structured).toMatchObject({
+      expect(result.structuredContent).toMatchObject({
         status: 200,
-        body: {
-          artifact: {
-            mimeType: "application/pdf",
-            byteLength: 1024 * 1024 + 1,
-          },
-        },
+        kind: "local-artifact",
+        mimeType: "application/pdf",
+        byteLength: 1024 * 1024 + 1,
       });
-      expect(readFileSync(structured.body.artifact.path).byteLength).toBe(1024 * 1024 + 1);
+      expect(readFileSync(localArtifactPath(result)).byteLength).toBe(1024 * 1024 + 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1087,8 +1069,7 @@ describe("native OpenAPI Caplets", () => {
             fields: ["body.name"],
           },
           registry,
-          downstream,
-          openapi,
+          testBackendOperationRuntime(registry, { mcp: downstream, openapi }),
         ),
       ).rejects.toMatchObject({ code: "REQUEST_INVALID" });
     } finally {
@@ -1299,4 +1280,21 @@ function headerDefaultSpec(baseUrl: string) {
       },
     },
   };
+}
+
+function localArtifactPath(result: unknown): string {
+  if (
+    result &&
+    typeof result === "object" &&
+    "structuredContent" in result &&
+    result.structuredContent &&
+    typeof result.structuredContent === "object" &&
+    "kind" in result.structuredContent &&
+    result.structuredContent.kind === "local-artifact" &&
+    "path" in result.structuredContent &&
+    typeof result.structuredContent.path === "string"
+  ) {
+    return result.structuredContent.path;
+  }
+  throw new Error("expected a local artifact result");
 }

@@ -120,6 +120,7 @@ type PromptResult = unknown;
 type CompleteInput = {
   ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
   argument: { name: string; value: string };
+  context?: { arguments?: Record<string, string> };
 };
 type CompleteResult = unknown;
 

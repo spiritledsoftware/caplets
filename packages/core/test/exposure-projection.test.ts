@@ -27,43 +27,19 @@ describe("Caplets exposure projection", () => {
       tools: [tool("read")],
       resources: [resource("file:///README.md")],
       resourceTemplates: [resourceTemplate("file:///{path}")],
-      prompts: [prompt("summarize")],
+      prompts: [
+        {
+          ...prompt("summarize"),
+          arguments: [{ name: "topic", description: "Topic to summarize.", required: true }],
+        },
+      ],
+      completions: true,
       exposure: { value: "direct", progressive: false, direct: true, codeMode: false },
     });
 
     const projection = buildExposureProjection(
       snapshot({
         callableCaplets: [http, docs],
-        progressiveCaplets: [http],
-        codeModeCaplets: [http],
-        directTools: [
-          { caplet: docsCaplet, downstreamName: "read", name: "docs__read", tool: tool("read") },
-        ],
-        directResources: [
-          {
-            caplet: docsCaplet,
-            downstreamUri: "file:///README.md",
-            uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
-            resource: resource("file:///README.md"),
-          },
-        ],
-        directResourceTemplates: [
-          {
-            caplet: docsCaplet,
-            downstreamUriTemplate: "file:///{path}",
-            uriTemplate:
-              "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
-            resourceTemplate: resourceTemplate("file:///{path}"),
-          },
-        ],
-        directPrompts: [
-          {
-            caplet: docsCaplet,
-            downstreamName: "summarize",
-            name: "docs__summarize",
-            prompt: prompt("summarize"),
-          },
-        ],
       }),
     );
 
@@ -97,6 +73,101 @@ describe("Caplets exposure projection", () => {
     expect(projection.routes.get("direct-tool:docs__read")).not.toEqual(
       expect.objectContaining({ callback: expect.any(Function) }),
     );
+    expect(projection.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "progressive-caplet",
+          id: "search",
+          title: "search",
+          description: expect.stringContaining("Call search actions."),
+          backend: "http",
+          inputSchema: expect.objectContaining({ type: "object" }),
+          operationNames: [
+            "inspect",
+            "check",
+            "tools",
+            "search_tools",
+            "describe_tool",
+            "call_tool",
+          ],
+          route: { kind: "progressive-caplet", capletId: "search" },
+        }),
+        expect.objectContaining({
+          kind: "code-mode-caplet",
+          id: "search",
+          title: "search",
+          description: expect.stringContaining("Call search actions."),
+          backend: "http",
+          route: { kind: "code-mode-caplet", capletId: "search" },
+        }),
+        expect.objectContaining({
+          kind: "direct-tool",
+          id: "docs__read",
+          title: "read",
+          description: "Run read.",
+          inputSchema: { type: "object" },
+          route: { kind: "direct-tool", capletId: "docs", downstreamName: "read" },
+        }),
+        expect.objectContaining({
+          kind: "direct-resource",
+          id: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
+          title: "file:///README.md",
+          route: {
+            kind: "direct-resource",
+            capletId: "docs",
+            downstreamUri: "file:///README.md",
+          },
+        }),
+        expect.objectContaining({
+          kind: "direct-resource-template",
+          title: "file:///{path}",
+          route: {
+            kind: "direct-resource-template",
+            capletId: "docs",
+            downstreamUriTemplate: "file:///{path}",
+          },
+        }),
+        expect.objectContaining({
+          kind: "direct-prompt",
+          id: "docs__summarize",
+          inputSchema: {
+            arguments: [{ name: "topic", description: "Topic to summarize.", required: true }],
+          },
+          arguments: [{ name: "topic", description: "Topic to summarize.", required: true }],
+          route: { kind: "direct-prompt", capletId: "docs", downstreamName: "summarize" },
+        }),
+        expect.objectContaining({
+          kind: "completion",
+          id: "docs:complete",
+          route: { kind: "completion", capletId: "docs" },
+        }),
+      ]),
+    );
+  });
+
+  it("projects completion only when the downstream capability was discovered", () => {
+    const caplet = mcpCaplet("docs", "direct");
+    const withoutCompletions = callable(caplet, {
+      exposure: { value: "direct", progressive: false, direct: true, codeMode: false },
+      resourceTemplates: [resourceTemplate("file:///{path}")],
+      completions: false,
+    });
+    const withCompletions = callable(caplet, {
+      exposure: { value: "direct", progressive: false, direct: true, codeMode: false },
+      resourceTemplates: [resourceTemplate("file:///{path}")],
+      completions: true,
+    });
+
+    expect(
+      buildExposureProjection(snapshot({ callableCaplets: [withoutCompletions] })).entries.some(
+        (entry) => entry.kind === "completion",
+      ),
+    ).toBe(false);
+    expect(
+      buildExposureProjection(snapshot({ callableCaplets: [withCompletions] })).entries.some(
+        (entry) => entry.kind === "completion",
+      ),
+    ).toBe(true);
   });
 
   it("keeps hidden Caplets non-callable while exposing safe diagnostic breadcrumbs", () => {
@@ -154,8 +225,6 @@ describe("Caplets exposure projection", () => {
     const projection = buildExposureProjection(
       snapshot({
         callableCaplets: [docs],
-        progressiveCaplets: [docs],
-        codeModeCaplets: [docs],
       }),
     );
 
@@ -536,14 +605,9 @@ function renameMergeTool(tool: MergeTool, visibleBaseId: string): MergeTool {
 }
 
 function snapshot(overrides: Partial<ExposureSnapshot>): ExposureSnapshot {
+  const callableCaplets = overrides.callableCaplets ?? [];
   return {
-    callableCaplets: [],
-    progressiveCaplets: [],
-    codeModeCaplets: [],
-    directTools: [],
-    directResources: [],
-    directResourceTemplates: [],
-    directPrompts: [],
+    callableCaplets,
     hiddenCaplets: [],
     ...overrides,
   };
@@ -557,6 +621,7 @@ function callable(
     resources?: Resource[] | undefined;
     resourceTemplates?: ResourceTemplate[] | undefined;
     prompts?: Prompt[] | undefined;
+    completions?: boolean | undefined;
   },
 ): CallableCaplet {
   return {
@@ -566,6 +631,7 @@ function callable(
     resources: options.resources ?? [],
     resourceTemplates: options.resourceTemplates ?? [],
     prompts: options.prompts ?? [],
+    completions: options.completions ?? false,
     discoveredAt,
   };
 }

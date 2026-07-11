@@ -13,6 +13,8 @@ vi.mock("@modelcontextprotocol/sdk/client/auth", async (importOriginal) => ({
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
 import { RemoteAuthFlowStore } from "../src/remote-control/auth-flow";
 import { dispatchRemoteCliRequest } from "../src/remote-control/dispatch";
+import { createCurrentHostOperations } from "../src/current-host/operations";
+import { DashboardActivityLog } from "../src/dashboard/activity-log";
 import { FileVaultStore } from "../src/vault";
 
 const dirs: string[] = [];
@@ -136,7 +138,7 @@ describe("dispatchRemoteCliRequest", () => {
 
     const response = await dispatchRemoteCliRequest(
       {
-        command: "password=hunter2" as never,
+        command: "password=hunter2",
         arguments: {
           authorization: "Authorization: Basic abc123",
           clientSecret: "client_secret=secret-value",
@@ -184,10 +186,12 @@ describe("dispatchRemoteCliRequest", () => {
         },
       },
       { ...context, authDir },
+      currentHostAdministration({ ...context, authDir }),
     );
     const list = await dispatchRemoteCliRequest(
       { command: "vault_access_list", arguments: {} },
       { ...context, authDir },
+      currentHostAdministration({ ...context, authDir }),
     );
     const inspect = await dispatchRemoteCliRequest(
       {
@@ -237,6 +241,7 @@ describe("dispatchRemoteCliRequest", () => {
         },
       },
       { ...context, authDir },
+      currentHostAdministration({ ...context, authDir }),
     );
 
     const store = new FileVaultStore({ root: join(authDir, "vault") });
@@ -262,6 +267,7 @@ describe("dispatchRemoteCliRequest", () => {
         },
       },
       { ...context, authDir },
+      currentHostAdministration({ ...context, authDir }),
     );
 
     expect(response).toMatchObject({ ok: false });
@@ -461,6 +467,7 @@ describe("dispatchRemoteCliRequest", () => {
       dispatchRemoteCliRequest(
         { command: "install", arguments: { repo: sourceRepo } },
         installContext,
+        currentHostAdministration(installContext),
       ),
     ).resolves.toMatchObject({ ok: true, result: { remote: true } });
   });
@@ -497,6 +504,11 @@ describe("dispatchRemoteCliRequest", () => {
       dispatchRemoteCliRequest(
         { command: "install", arguments: { repo: sourceRepo, capletIds: ["sample"] } },
         { ...context, globalCapletsRoot: globalRoot, globalLockfilePath },
+        currentHostAdministration({
+          ...context,
+          globalCapletsRoot: globalRoot,
+          globalLockfilePath,
+        }),
       ),
     ).resolves.toMatchObject({ ok: true, result: { remote: true } });
 
@@ -543,6 +555,7 @@ describe("dispatchRemoteCliRequest", () => {
         },
       },
       context,
+      currentHostAdministration(context),
     );
 
     expect(response).toMatchObject({
@@ -865,6 +878,37 @@ function testContext(options: { writeConfig?: boolean } = {}) {
     projectConfigPath,
     projectCapletsRoot: projectRoot,
     watch: false,
+  };
+}
+
+type DispatchAdministrationContext = {
+  tempRoot: string;
+  configPath: string;
+  projectConfigPath: string;
+  authDir?: string | undefined;
+  globalCapletsRoot?: string | undefined;
+  globalLockfilePath?: string | undefined;
+};
+
+function currentHostAdministration(context: DispatchAdministrationContext) {
+  return {
+    operations: createCurrentHostOperations({
+      engine: { enabledServers: () => [] },
+      control: {
+        configPath: context.configPath,
+        projectConfigPath: context.projectConfigPath,
+        authDir: context.authDir,
+        globalCapletsRoot: context.globalCapletsRoot,
+        globalLockfilePath: context.globalLockfilePath,
+      },
+      activityLog: new DashboardActivityLog({ dir: join(context.tempRoot, "activity") }),
+      version: "test-version",
+    }),
+    principal: {
+      clientId: "rcli_abcdefghijklmnop",
+      hostUrl: "http://127.0.0.1:5387/",
+      role: "operator" as const,
+    },
   };
 }
 

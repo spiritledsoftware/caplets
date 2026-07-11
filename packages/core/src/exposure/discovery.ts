@@ -7,12 +7,6 @@ import {
 } from "../project-binding/errors";
 import type { ProjectBindingExecutionContext } from "../project-binding/execution-context";
 import type { ProjectBindingQuarantineRecord } from "../project-binding/types";
-import {
-  directPromptName,
-  directResourceTemplateUri,
-  directResourceUri,
-  directToolName,
-} from "./direct-names";
 import { resolveExposure, type ResolvedExposure } from "./policy";
 
 export type HiddenCapletReason =
@@ -44,45 +38,12 @@ export type CallableCaplet = {
   resources: Resource[];
   resourceTemplates: ResourceTemplate[];
   prompts: Prompt[];
+  completions: boolean;
   discoveredAt: number;
-};
-
-export type DirectToolRegistration = {
-  caplet: CapletConfig;
-  downstreamName: string;
-  name: string;
-  tool: Tool;
-};
-
-export type DirectResourceRegistration = {
-  caplet: Extract<CapletConfig, { backend: "mcp" }>;
-  downstreamUri: string;
-  uri: string;
-  resource: Resource;
-};
-
-export type DirectResourceTemplateRegistration = {
-  caplet: Extract<CapletConfig, { backend: "mcp" }>;
-  downstreamUriTemplate: string;
-  uriTemplate: string;
-  resourceTemplate: ResourceTemplate;
-};
-
-export type DirectPromptRegistration = {
-  caplet: Extract<CapletConfig, { backend: "mcp" }>;
-  downstreamName: string;
-  name: string;
-  prompt: Prompt;
 };
 
 export type ExposureSnapshot = {
   callableCaplets: CallableCaplet[];
-  progressiveCaplets: CallableCaplet[];
-  codeModeCaplets: CallableCaplet[];
-  directTools: DirectToolRegistration[];
-  directResources: DirectResourceRegistration[];
-  directResourceTemplates: DirectResourceTemplateRegistration[];
-  directPrompts: DirectPromptRegistration[];
   hiddenCaplets: HiddenCaplet[];
 };
 
@@ -97,6 +58,7 @@ export type DiscoverExposureSnapshotOptions = {
     caplet: Extract<CapletConfig, { backend: "mcp" }>,
   ): Promise<ResourceTemplate[]>;
   listPrompts?(caplet: Extract<CapletConfig, { backend: "mcp" }>): Promise<Prompt[]>;
+  supportsCompletions?(caplet: Extract<CapletConfig, { backend: "mcp" }>): Promise<boolean>;
 };
 
 export async function discoverExposureSnapshot(
@@ -108,64 +70,10 @@ export async function discoverExposureSnapshot(
     async (caplet) => discoverCaplet(options, caplet),
   );
 
-  const callableCaplets = results.flatMap((result) => (result.callable ? [result.callable] : []));
-  const hiddenCaplets = results.flatMap((result) => (result.hidden ? [result.hidden] : []));
   return {
-    callableCaplets,
-    progressiveCaplets: callableCaplets.filter((entry) => entry.exposure.progressive),
-    codeModeCaplets: callableCaplets.filter((entry) => entry.exposure.codeMode),
-    directTools: callableCaplets.flatMap((entry) =>
-      entry.exposure.direct
-        ? entry.tools.map((tool) => ({
-            caplet: entry.caplet,
-            downstreamName: tool.name,
-            name: directToolName(entry.caplet.server, tool.name),
-            tool,
-          }))
-        : [],
-    ),
-    directResources: callableCaplets.flatMap(directResourcesFor),
-    directResourceTemplates: callableCaplets.flatMap(directResourceTemplatesFor),
-    directPrompts: callableCaplets.flatMap(directPromptsFor),
-    hiddenCaplets,
+    callableCaplets: results.flatMap((result) => (result.callable ? [result.callable] : [])),
+    hiddenCaplets: results.flatMap((result) => (result.hidden ? [result.hidden] : [])),
   };
-}
-
-function directResourcesFor(entry: CallableCaplet): DirectResourceRegistration[] {
-  if (!entry.exposure.direct || !isMcpCaplet(entry.caplet)) return [];
-  const caplet = entry.caplet;
-  return entry.resources.map((resource) => ({
-    caplet,
-    downstreamUri: resource.uri,
-    uri: directResourceUri(caplet.server, resource.uri),
-    resource,
-  }));
-}
-
-function directResourceTemplatesFor(entry: CallableCaplet): DirectResourceTemplateRegistration[] {
-  if (!entry.exposure.direct || !isMcpCaplet(entry.caplet)) return [];
-  const caplet = entry.caplet;
-  return entry.resourceTemplates.map((resourceTemplate) => ({
-    caplet,
-    downstreamUriTemplate: resourceTemplate.uriTemplate,
-    uriTemplate: directResourceTemplateUri(caplet.server, resourceTemplate.uriTemplate),
-    resourceTemplate,
-  }));
-}
-
-function directPromptsFor(entry: CallableCaplet): DirectPromptRegistration[] {
-  if (!entry.exposure.direct || !isMcpCaplet(entry.caplet)) return [];
-  const caplet = entry.caplet;
-  return entry.prompts.map((prompt) => ({
-    caplet,
-    downstreamName: prompt.name,
-    name: directPromptName(caplet.server, prompt.name),
-    prompt,
-  }));
-}
-
-function isMcpCaplet(caplet: CapletConfig): caplet is Extract<CapletConfig, { backend: "mcp" }> {
-  return caplet.backend === "mcp";
 }
 
 async function discoverCaplet(
@@ -210,6 +118,7 @@ async function discoverCaplet(
         resources: [],
         resourceTemplates: [],
         prompts: [],
+        completions: false,
         discoveredAt: Date.now(),
       },
     };
@@ -240,6 +149,13 @@ async function discoverCaplet(
             options.config.options.exposureDiscoveryTimeoutMs,
           )
         : [];
+    const completions =
+      caplet.backend === "mcp" && options.supportsCompletions
+        ? await withTimeout(
+            options.supportsCompletions(caplet),
+            options.config.options.exposureDiscoveryTimeoutMs,
+          )
+        : false;
     if (
       tools.length === 0 &&
       resources.length === 0 &&
@@ -256,6 +172,7 @@ async function discoverCaplet(
         resources,
         resourceTemplates,
         prompts,
+        completions,
         discoveredAt: Date.now(),
       },
     };

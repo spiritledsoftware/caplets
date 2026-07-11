@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,8 @@ import { runCli } from "../src/cli";
 import { doctorJsonReport } from "../src/cli/doctor";
 import { hostedCredentials, tempCloudAuthPath } from "./fixtures/cloud-auth";
 import { FileRemoteProfileStore } from "../src/remote/profile-store";
+import * as configModule from "../src/config";
+import type { VaultQuarantineOutcome } from "../src/config";
 
 describe("caplets doctor", () => {
   it("shows sectioned local diagnostics without stale presence wording", async () => {
@@ -500,6 +502,210 @@ describe("caplets doctor", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it("maps structured Vault outcomes into Doctor JSON and Markdown without warning parsing", async () => {
+    const configPath = "/tmp/caplets-doctor-structured-config.json";
+    const warnings: VaultQuarantineOutcome[] = [
+      {
+        type: "vault-quarantine",
+        kind: "project-file" as const,
+        path: "/tmp/caplets-project/.caplets/github/CAPLET.md",
+        message: "Human wording and punctuation do not encode Vault facts",
+        recoverable: true as const,
+        capletId: "github",
+        referencePath: "mcpServers.github.env.GH_TOKEN",
+        referenceName: "GH_TOKEN",
+        storedKey: "GH_TOKEN_PERSONAL",
+        effectiveKey: "GH_TOKEN_PERSONAL",
+        reason: "ungranted" as const,
+        target: "remote" as const,
+      },
+      {
+        type: "vault-quarantine",
+        kind: "global-config" as const,
+        path: configPath,
+        message: "No regular-expression recovery data appears here",
+        recoverable: true as const,
+        capletId: "missing",
+        referencePath: "mcpServers.missing.env.TOKEN",
+        referenceName: "MISSING_TOKEN",
+        effectiveKey: "MISSING_TOKEN",
+        reason: "missing" as const,
+        target: "global" as const,
+      },
+      {
+        type: "vault-quarantine",
+        kind: "project-config" as const,
+        path: "/tmp/caplets-project/.caplets/config.json",
+        message: "The value is intentionally omitted from this outcome",
+        recoverable: true as const,
+        capletId: "unavailable",
+        referencePath: "mcpServers.unavailable.env.TOKEN",
+        referenceName: "UNAVAILABLE_TOKEN",
+        effectiveKey: "UNAVAILABLE_TOKEN",
+        reason: "unavailable" as const,
+        target: "global" as const,
+      },
+      {
+        type: "vault-quarantine",
+        kind: "global-file" as const,
+        path: "/tmp/caplets-invalid.md",
+        message: "The key-source wording is irrelevant to this diagnostic",
+        recoverable: true as const,
+        capletId: "invalid",
+        referencePath: "mcpServers.invalid.env.TOKEN",
+        referenceName: "invalid_key",
+        effectiveKey: "invalid_key",
+        reason: "invalid-key-source" as const,
+        target: "global" as const,
+      },
+    ];
+    const loader = vi.spyOn(configModule, "loadLocalOverlayConfigWithSources").mockReturnValue({
+      config: configModule.parseConfig({}),
+      sources: {},
+      shadows: {},
+      sourceFound: true,
+      warnings,
+    });
+    try {
+      const report = await doctorJsonReport({
+        env: {
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: "/tmp/caplets-project/.caplets/config.json",
+        },
+      });
+
+      expect(report.vault).toEqual({
+        ok: false,
+        issues: [
+          {
+            capletId: "github",
+            reason: "ungranted",
+            key: "GH_TOKEN_PERSONAL",
+            configPath: "/tmp/caplets-project/.caplets/github/CAPLET.md",
+            referencePath: "mcpServers.github.env.GH_TOKEN",
+            target: "remote",
+            recoveryCommand:
+              "caplets vault access grant GH_TOKEN_PERSONAL github --remote --as GH_TOKEN",
+          },
+          {
+            capletId: "missing",
+            reason: "missing",
+            key: "MISSING_TOKEN",
+            configPath,
+            referencePath: "mcpServers.missing.env.TOKEN",
+            target: "global",
+            recoveryCommand: "caplets vault set MISSING_TOKEN",
+          },
+          {
+            capletId: "unavailable",
+            reason: "unavailable",
+            key: "UNAVAILABLE_TOKEN",
+            configPath: "/tmp/caplets-project/.caplets/config.json",
+            referencePath: "mcpServers.unavailable.env.TOKEN",
+            target: "global",
+            recoveryCommand: "caplets vault access grant UNAVAILABLE_TOKEN unavailable",
+          },
+          {
+            capletId: "invalid",
+            reason: "invalid-key-source",
+            key: "invalid_key",
+            configPath: "/tmp/caplets-invalid.md",
+            referencePath: "mcpServers.invalid.env.TOKEN",
+            target: "global",
+            recoveryCommand: "caplets doctor",
+          },
+        ],
+      });
+      expect(JSON.stringify(report.vault)).not.toContain("secret");
+    } finally {
+      loader.mockRestore();
+    }
+  });
+
+  it("reports Vault loader failure without fabricating Doctor issues", async () => {
+    const loader = vi
+      .spyOn(configModule, "loadLocalOverlayConfigWithSources")
+      .mockImplementation(() => {
+        throw new Error("Vault overlay loader failed");
+      });
+    try {
+      await expect(doctorJsonReport({ env: {} })).resolves.toMatchObject({
+        vault: {
+          ok: false,
+          issues: [],
+          message: "Vault overlay loader failed",
+        },
+      });
+    } finally {
+      loader.mockRestore();
+    }
+  });
+
+  it("reports nonrecoverable best-effort overlay warnings as Vault loader failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-loader-failure-"));
+    const configPath = join(dir, "config.json");
+    try {
+      writeFileSync(configPath, "{ malformed JSON");
+
+      await expect(
+        doctorJsonReport({
+          env: {
+            CAPLETS_CONFIG: configPath,
+            CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+          },
+        }),
+      ).resolves.toMatchObject({
+        vault: {
+          ok: false,
+          issues: [],
+          message: expect.stringContaining("not valid JSON"),
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Vault diagnostics OK for recoverable non-Vault overlay warnings", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-vault-recoverable-warning-"));
+    const configPath = join(dir, "config.json");
+    const missingEnvName = "CAPLETS_U4_DOCTOR_RECOVERABLE_WARNING";
+    const originalMissingEnv = process.env[missingEnvName];
+    try {
+      delete process.env[missingEnvName];
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            recoverable: {
+              name: "Recoverable",
+              description: "Only a missing environment variable.",
+              command: "recoverable-mcp",
+              env: { TOKEN: `$env:${missingEnvName}` },
+            },
+          },
+        }),
+      );
+
+      await expect(
+        doctorJsonReport({
+          env: {
+            CAPLETS_CONFIG: configPath,
+            CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+          },
+        }),
+      ).resolves.toMatchObject({
+        vault: { ok: true, issues: [] },
+      });
+    } finally {
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it("reports project-bound Caplets as missing session context in exposure diagnostics", async () => {
     const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-project-binding-"));
@@ -540,6 +746,51 @@ describe("caplets doctor", () => {
             hiddenReason: "project_binding_missing_context",
           }),
         ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("waits for resolved callable projection entries and excludes failed discovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-doctor-callable-projection-"));
+    const configPath = join(dir, "config.json");
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          options: { exposureDiscoveryTimeoutMs: 100 },
+          mcpServers: {
+            github: {
+              name: "GitHub",
+              description: "GitHub repo operations.",
+              command: "node",
+              exposure: "code_mode",
+            },
+          },
+          openapiEndpoints: {
+            unavailable: {
+              name: "Unavailable API",
+              description: "An unavailable OpenAPI service.",
+              specUrl: "http://127.0.0.1:1/openapi.json",
+              auth: { type: "none" },
+              exposure: "code_mode",
+            },
+          },
+        }),
+      );
+
+      const report = await doctorJsonReport({
+        env: {
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: join(dir, "project", ".caplets", "config.json"),
+        },
+      });
+
+      expect(report.exposure).toMatchObject({
+        callableNativeToolCount: 1,
+      });
+      expect(report.codeMode).toMatchObject({
+        callableIndex: { ok: true, callableCount: 1 },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

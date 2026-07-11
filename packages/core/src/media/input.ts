@@ -3,6 +3,7 @@ import type { Stats } from "node:fs";
 import { basename, extname } from "node:path";
 import { CapletsError } from "../errors";
 import { resolveMediaArtifact } from "./artifacts";
+import { MEDIA_ARTIFACT_MAX_BYTES } from "./results";
 
 export type MediaInput =
   | { path: string; artifact?: never; dataUrl?: never; filename?: string; mimeType?: string }
@@ -14,8 +15,6 @@ export type ResolvedMediaInput = {
   filename: string;
   mimeType?: string;
 };
-
-const DEFAULT_MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 
 export async function readMediaInput(
   input: unknown,
@@ -55,7 +54,7 @@ export async function readMediaInput(
   if (typeof media.artifact === "string") {
     const artifactOptions: { artifactRoot?: string; maxBytes?: number } = {};
     if (options.artifactRoot !== undefined) artifactOptions.artifactRoot = options.artifactRoot;
-    artifactOptions.maxBytes = options.maxBytes ?? DEFAULT_MAX_MEDIA_BYTES;
+    artifactOptions.maxBytes = options.maxBytes ?? MEDIA_ARTIFACT_MAX_BYTES;
     const artifact = resolveMediaArtifact(media.artifact, artifactOptions);
     if (!artifact.path) {
       throw new CapletsError("REQUEST_INVALID", "Media artifact cannot be read from this runtime");
@@ -161,7 +160,7 @@ function readMediaFile(path: string): Buffer {
   }
 }
 
-function enforceSize(size: number, maxBytes = DEFAULT_MAX_MEDIA_BYTES): void {
+function enforceSize(size: number, maxBytes = MEDIA_ARTIFACT_MAX_BYTES): void {
   if (size > maxBytes) {
     throw new CapletsError("REQUEST_INVALID", `media exceeds byte limit ${maxBytes}`);
   }

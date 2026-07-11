@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentProps,
   type ReactNode,
@@ -93,7 +94,11 @@ import {
   setDashboardSession,
   type DashboardSession,
 } from "@/lib/api";
+import { EPHEMERAL_REVEAL_TTL_MS, createEphemeralRevealExpiry } from "@/lib/ephemeral-reveal";
 import { dashboardBasePath, dashboardPath } from "@/lib/paths";
+
+const REVEAL_DURATION_SECONDS = EPHEMERAL_REVEAL_TTL_MS / 1_000;
+const ACTION_DISCARDED = Symbol("dashboard-action-discarded");
 
 type RouteKey =
   | "overview"
@@ -203,11 +208,19 @@ type ConfirmationRequest = ConfirmationOptions & {
 const ConfirmContext = createContext<
   ((options: ConfirmationOptions) => Promise<ConfirmationResult>) | null
 >(null);
+const ConfirmDismissContext = createContext<(() => void) | null>(null);
 
 function useConfirm() {
   const confirm = useContext(ConfirmContext);
   if (!confirm) throw new Error("useConfirm must be used inside DashboardApp.");
   return confirm;
+}
+
+function useDismissConfirmation() {
+  const dismissConfirmation = useContext(ConfirmDismissContext);
+  if (!dismissConfirmation)
+    throw new Error("useDismissConfirmation must be used inside DashboardApp.");
+  return dismissConfirmation;
 }
 
 function useActionConfirm() {
@@ -237,22 +250,31 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
   const [authCommand, setAuthCommand] = useState("");
   const [authMessage, setAuthMessage] = useState("Restoring dashboard session…");
   const [confirmation, setConfirmation] = useState<ConfirmationRequest>();
+  const confirmationRef = useRef<ConfirmationRequest | undefined>(undefined);
 
-  const confirm = useCallback((options: ConfirmationOptions) => {
-    const finalFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    return new Promise<ConfirmationResult>((resolve) =>
-      setConfirmation({ ...options, finalFocus, resolve }),
-    );
+  const resolveConfirmation = useCallback((confirmed: ConfirmationResult) => {
+    const activeConfirmation = confirmationRef.current;
+    if (!activeConfirmation) return;
+    confirmationRef.current = undefined;
+    activeConfirmation.resolve(confirmed);
+    setConfirmation(undefined);
   }, []);
 
-  const resolveConfirmation = useCallback(
-    (confirmed: ConfirmationResult) => {
-      confirmation?.resolve(confirmed);
-      setConfirmation(undefined);
+  const confirm = useCallback(
+    (options: ConfirmationOptions) => {
+      const finalFocus =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      return new Promise<ConfirmationResult>((resolve) => {
+        resolveConfirmation(false);
+        const request = { ...options, finalFocus, resolve };
+        confirmationRef.current = request;
+        setConfirmation(request);
+      });
     },
-    [confirmation],
+    [resolveConfirmation],
   );
+
+  const dismissConfirmation = useCallback(() => resolveConfirmation(false), [resolveConfirmation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -408,7 +430,8 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
 
   async function action(label: string, callback: () => Promise<unknown>) {
     try {
-      await callback();
+      const result = await callback();
+      if (result === ACTION_DISCARDED) return;
       const refreshed = await refresh();
       if (refreshed) toast.success(label);
     } catch (error) {
@@ -506,111 +529,113 @@ export function DashboardApp({ initialRoute = "overview" }: { initialRoute?: Rou
     const isDevelopmentSession = session.operatorClientId === "development_unauthenticated";
     content = (
       <ConfirmContext.Provider value={confirm}>
-        <TooltipProvider>
-          <SidebarProvider>
-            <a
-              href="#dashboard-main"
-              className="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
-            >
-              Skip to dashboard content
-            </a>
-            <Sidebar id="dashboard-sidebar">
-              <SidebarHeader>
-                <div className="flex items-center gap-2 px-2 py-1">
-                  <img
-                    src={dashboardPath("icon-header-dark.png")}
-                    alt=""
-                    className="size-8 rounded-lg border border-border bg-card object-cover"
-                    width={32}
-                    height={32}
-                  />
-                  <div>
-                    <div className="font-semibold">Caplets</div>
-                    <div className="text-xs text-muted-foreground">Operator console</div>
+        <ConfirmDismissContext.Provider value={dismissConfirmation}>
+          <TooltipProvider>
+            <SidebarProvider>
+              <a
+                href="#dashboard-main"
+                className="sr-only z-50 rounded-lg bg-primary px-3 py-2 text-primary-foreground focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
+              >
+                Skip to dashboard content
+              </a>
+              <Sidebar id="dashboard-sidebar">
+                <SidebarHeader>
+                  <div className="flex items-center gap-2 px-2 py-1">
+                    <img
+                      src={dashboardPath("icon-header-dark.png")}
+                      alt=""
+                      className="size-8 rounded-lg border border-border bg-card object-cover"
+                      width={32}
+                      height={32}
+                    />
+                    <div>
+                      <div className="font-semibold">Caplets</div>
+                      <div className="text-xs text-muted-foreground">Operator console</div>
+                    </div>
                   </div>
-                </div>
-              </SidebarHeader>
-              <SidebarContent>
-                <SidebarGroup>
-                  <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
-                  <SidebarGroupContent>
-                    <nav aria-label="Dashboard">
-                      <SidebarMenu>
-                        {routes.map((item) => (
-                          <DashboardNavItem
-                            key={item.key}
-                            item={item}
-                            active={route === item.key}
-                            onNavigate={navigate}
-                          />
-                        ))}
-                      </SidebarMenu>
-                    </nav>
-                  </SidebarGroupContent>
-                </SidebarGroup>
-              </SidebarContent>
-              <SidebarFooter>
-                <div className="grid gap-3">
-                  <DashboardThemeSelect />
-                  {isDevelopmentSession ? (
-                    <div className="rounded-lg border bg-secondary px-3 py-2 text-xs text-secondary-foreground">
-                      <div className="font-mono font-bold">No-auth mode</div>
-                      <div className="mt-1 text-muted-foreground">
-                        Operator checks are bypassed locally.
+                </SidebarHeader>
+                <SidebarContent>
+                  <SidebarGroup>
+                    <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
+                    <SidebarGroupContent>
+                      <nav aria-label="Dashboard">
+                        <SidebarMenu>
+                          {routes.map((item) => (
+                            <DashboardNavItem
+                              key={item.key}
+                              item={item}
+                              active={route === item.key}
+                              onNavigate={navigate}
+                            />
+                          ))}
+                        </SidebarMenu>
+                      </nav>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                </SidebarContent>
+                <SidebarFooter>
+                  <div className="grid gap-3">
+                    <DashboardThemeSelect />
+                    {isDevelopmentSession ? (
+                      <div className="rounded-lg border bg-secondary px-3 py-2 text-xs text-secondary-foreground">
+                        <div className="font-mono font-bold">No-auth mode</div>
+                        <div className="mt-1 text-muted-foreground">
+                          Operator checks are bypassed locally.
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="flex justify-end px-2">
-                      <TooltipIconButton
-                        variant="ghost"
-                        size="icon"
-                        label="Logout"
-                        onClick={() => void logout()}
-                      >
-                        <LogOutIcon />
-                      </TooltipIconButton>
-                    </div>
-                  )}
-                </div>
-              </SidebarFooter>
-            </Sidebar>
-            <SidebarInset id="dashboard-main" tabIndex={-1}>
-              <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-                <SidebarTrigger className="md:size-11" aria-controls="dashboard-sidebar">
-                  <MenuIcon />
-                </SidebarTrigger>
-                <Separator orientation="vertical" className="h-6" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm text-muted-foreground">
-                    {data.summary?.host?.baseUrl ?? "Current Host"}
+                    ) : (
+                      <div className="flex justify-end px-2">
+                        <TooltipIconButton
+                          variant="ghost"
+                          size="icon"
+                          label="Logout"
+                          onClick={() => void logout()}
+                        >
+                          <LogOutIcon />
+                        </TooltipIconButton>
+                      </div>
+                    )}
                   </div>
+                </SidebarFooter>
+              </Sidebar>
+              <SidebarInset id="dashboard-main" tabIndex={-1}>
+                <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                  <SidebarTrigger className="md:size-11" aria-controls="dashboard-sidebar">
+                    <MenuIcon />
+                  </SidebarTrigger>
+                  <Separator orientation="vertical" className="h-6" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-muted-foreground">
+                      {data.summary?.host?.baseUrl ?? "Current Host"}
+                    </div>
+                  </div>
+                  <TooltipIconButton
+                    variant="outline"
+                    size="icon"
+                    className="md:size-11"
+                    label={dataLoading ? "Refreshing dashboard" : "Refresh dashboard"}
+                    disabled={dataLoading}
+                    aria-busy={dataLoading}
+                    onClick={() => action("Dashboard refreshed", refresh)}
+                  >
+                    <RefreshCwIcon className={dataLoading ? "animate-spin" : undefined} />
+                  </TooltipIconButton>
+                </header>
+                <div className="flex flex-col gap-4 p-4 md:p-6">
+                  <Page
+                    route={route}
+                    data={data}
+                    loading={dataLoading}
+                    action={action}
+                    session={session}
+                  />
                 </div>
-                <TooltipIconButton
-                  variant="outline"
-                  size="icon"
-                  className="md:size-11"
-                  label={dataLoading ? "Refreshing dashboard" : "Refresh dashboard"}
-                  disabled={dataLoading}
-                  aria-busy={dataLoading}
-                  onClick={() => action("Dashboard refreshed", refresh)}
-                >
-                  <RefreshCwIcon className={dataLoading ? "animate-spin" : undefined} />
-                </TooltipIconButton>
-              </header>
-              <div className="flex flex-col gap-4 p-4 md:p-6">
-                <Page
-                  route={route}
-                  data={data}
-                  loading={dataLoading}
-                  action={action}
-                  session={session}
-                />
-              </div>
-            </SidebarInset>
-            <Toaster />
-            <ConfirmationDialog request={confirmation} onResolve={resolveConfirmation} />
-          </SidebarProvider>
-        </TooltipProvider>
+              </SidebarInset>
+              <Toaster />
+              <ConfirmationDialog request={confirmation} onResolve={resolveConfirmation} />
+            </SidebarProvider>
+          </TooltipProvider>
+        </ConfirmDismissContext.Provider>
       </ConfirmContext.Provider>
     );
   }
@@ -2347,20 +2372,35 @@ function VaultPage({
   action: (label: string, callback: () => Promise<unknown>) => Promise<void>;
 }) {
   const confirm = useConfirm();
+  const dismissConfirmation = useDismissConfirmation();
   const { confirmTyped } = useActionConfirm();
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [revealed, setRevealed] = useState<{ key: string; value: string; expiresAt: number }>();
   const [now, setNow] = useState(Date.now());
   const values = data.vault?.values ?? [];
+  const isMounted = useRef(true);
+  const revealGeneration = useRef(0);
+  const [expiry] = useState(() => createEphemeralRevealExpiry(() => setRevealed(undefined)));
+  function clearRevealed() {
+    revealGeneration.current += 1;
+    expiry.cancel();
+    setRevealed(undefined);
+  }
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      dismissConfirmation();
+      isMounted.current = false;
+      revealGeneration.current += 1;
+      expiry.cancel();
+    };
+  }, [dismissConfirmation, expiry]);
   useEffect(() => {
     if (!revealed) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [revealed]);
-  useEffect(() => {
-    if (revealed && now >= revealed.expiresAt) setRevealed(undefined);
-  }, [now, revealed]);
   async function setVaultValue() {
     if (!key || !value) return;
     const replacing = values.some((entry) => String(entry.key) === key);
@@ -2437,7 +2477,7 @@ function VaultPage({
         <SecretRevealPanel
           secret={revealed}
           secondsRemaining={Math.max(0, Math.ceil((revealed.expiresAt - now) / 1000))}
-          onHide={() => setRevealed(undefined)}
+          onHide={clearRevealed}
         />
       ) : null}
       <Card>
@@ -2477,25 +2517,44 @@ function VaultPage({
                         onClick={async () => {
                           const confirmation = await confirm({
                             title: "Reveal secret value?",
-                            description: `${rawKey} will be visible in a dedicated panel for 30 seconds in this browser session only.`,
+                            description: `${rawKey} will be visible in a dedicated panel for ${REVEAL_DURATION_SECONDS} seconds in this browser session only.`,
                             expectedPhrase: `reveal ${rawKey}`,
-                            confirmLabel: "Reveal for 30s",
+                            confirmLabel: `Reveal for ${REVEAL_DURATION_SECONDS}s`,
                             destructive: true,
                           });
-                          if (confirmation !== `reveal ${rawKey}`) return;
+                          if (!isMounted.current || confirmation !== `reveal ${rawKey}`) return;
+                          const requestGeneration = ++revealGeneration.current;
                           await action("Vault value revealed", async () => {
-                            const revealed = await dashboardApi<{ value: string }>("vault/reveal", {
-                              method: "POST",
-                              body: JSON.stringify({
-                                key: entry.key,
-                                confirmation,
-                              }),
-                            });
+                            let revealed: { value: string };
+                            try {
+                              revealed = await dashboardApi<{ value: string }>("vault/reveal", {
+                                method: "POST",
+                                body: JSON.stringify({
+                                  key: entry.key,
+                                  confirmation,
+                                }),
+                              });
+                            } catch (error) {
+                              if (
+                                !isMounted.current ||
+                                requestGeneration !== revealGeneration.current
+                              )
+                                return ACTION_DISCARDED;
+                              throw error;
+                            }
+                            if (
+                              !isMounted.current ||
+                              requestGeneration !== revealGeneration.current
+                            )
+                              return ACTION_DISCARDED;
+                            const revealedAt = Date.now();
+                            setNow(revealedAt);
                             setRevealed({
                               key: rawKey,
                               value: revealed.value,
-                              expiresAt: Date.now() + 30_000,
+                              expiresAt: revealedAt + EPHEMERAL_REVEAL_TTL_MS,
                             });
+                            expiry.replace();
                           });
                         }}
                       >

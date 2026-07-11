@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildAttachProjection,
@@ -6,48 +10,48 @@ import {
   invokeNativeAttachExport,
   type AttachProjection,
 } from "../src/attach/api";
-import type { CapletsEngine } from "../src/engine";
+import { parseConfig } from "../src/config";
+import { CapletsEngine } from "../src/engine";
 import type { NativeCapletsService } from "../src/native/service";
+import { sanitizeRemoteEngineOptions } from "../src/serve/http";
+import {
+  buildExposureProjection,
+  buildManifestExposureProjection,
+  type ExposureProjection,
+} from "../src/exposure/projection";
 
 describe("Attach API dispatch", () => {
   it("sorts attach exports before hashing revisions", async () => {
-    const caplet = {
-      server: "docs",
-      name: "Docs",
-      description: "Docs.",
-      backend: "mcp",
-      command: process.execPath,
-    };
     let reversed = false;
     const tools = [
       {
-        caplet,
+        kind: "tool" as const,
+        capletId: "docs",
         downstreamName: "beta",
         name: "docs__beta",
-        tool: { name: "beta", inputSchema: { type: "object" } },
+        inputSchema: { type: "object" },
+        shadowing: "forbid" as const,
       },
       {
-        caplet,
+        kind: "tool" as const,
+        capletId: "docs",
         downstreamName: "alpha",
         name: "docs__alpha",
-        tool: { name: "alpha", inputSchema: { type: "object" } },
+        inputSchema: { type: "object" },
+        shadowing: "forbid" as const,
       },
     ];
-    const engine = {
-      exposureSnapshot: async () => {
-        reversed = !reversed;
-        return {
-          callableCaplets: [],
-          progressiveCaplets: [],
-          codeModeCaplets: [],
-          directTools: reversed ? tools : [...tools].reverse(),
-          directResources: [],
-          directResourceTemplates: [],
-          directPrompts: [],
-          hiddenCaplets: [],
-        };
-      },
-    } as unknown as CapletsEngine;
+    const engine = projectionEngine(() => {
+      reversed = !reversed;
+      return buildManifestExposureProjection({
+        caplets: [],
+        tools: reversed ? tools : [...tools].reverse(),
+        resources: [],
+        resourceTemplates: [],
+        prompts: [],
+        completions: [],
+      });
+    });
 
     const first = await buildAttachProjection(engine);
     const second = await buildAttachProjection(engine);
@@ -60,36 +64,26 @@ describe("Attach API dispatch", () => {
   });
 
   it("preserves direct tool annotations in attach manifests", async () => {
-    const caplet = {
-      server: "docs",
-      name: "Docs",
-      description: "Docs.",
-      backend: "mcp",
-      command: process.execPath,
-    };
-    const engine = {
-      exposureSnapshot: async () => ({
-        callableCaplets: [],
-        progressiveCaplets: [],
-        codeModeCaplets: [],
-        directTools: [
+    const engine = projectionEngine(() =>
+      buildManifestExposureProjection({
+        caplets: [],
+        tools: [
           {
-            caplet,
+            kind: "tool",
+            capletId: "docs",
             downstreamName: "delete",
             name: "docs__delete",
-            tool: {
-              name: "delete",
-              inputSchema: { type: "object" },
-              annotations: { destructiveHint: true },
-            },
+            inputSchema: { type: "object" },
+            annotations: { destructiveHint: true },
+            shadowing: "forbid",
           },
         ],
-        directResources: [],
-        directResourceTemplates: [],
-        directPrompts: [],
-        hiddenCaplets: [],
+        resources: [],
+        resourceTemplates: [],
+        prompts: [],
+        completions: [],
       }),
-    } as unknown as CapletsEngine;
+    );
 
     const projection = await buildAttachProjection(engine);
 
@@ -101,15 +95,9 @@ describe("Attach API dispatch", () => {
   });
 
   it("sanitizes hidden discovery diagnostics through exposure projection", async () => {
-    const engine = {
-      exposureSnapshot: async () => ({
+    const engine = projectionEngine(() =>
+      buildExposureProjection({
         callableCaplets: [],
-        progressiveCaplets: [],
-        codeModeCaplets: [],
-        directTools: [],
-        directResources: [],
-        directResourceTemplates: [],
-        directPrompts: [],
         hiddenCaplets: [
           {
             capletId: "vaulted",
@@ -125,7 +113,7 @@ describe("Attach API dispatch", () => {
           },
         ],
       }),
-    } as unknown as CapletsEngine;
+    );
 
     const projection = await buildAttachProjection(engine);
 
@@ -143,15 +131,9 @@ describe("Attach API dispatch", () => {
   });
 
   it("includes authoritative Project Binding metadata for hidden Caplets", async () => {
-    const engine = {
-      exposureSnapshot: async () => ({
+    const engine = projectionEngine(() =>
+      buildExposureProjection({
         callableCaplets: [],
-        progressiveCaplets: [],
-        codeModeCaplets: [],
-        directTools: [],
-        directResources: [],
-        directResourceTemplates: [],
-        directPrompts: [],
         hiddenCaplets: [
           {
             capletId: "workspace",
@@ -171,7 +153,7 @@ describe("Attach API dispatch", () => {
           },
         ],
       }),
-    } as unknown as CapletsEngine;
+    );
 
     const projection = await buildAttachProjection(engine);
 
@@ -192,33 +174,40 @@ describe("Attach API dispatch", () => {
   });
 
   it("uses configured Caplet shadowing policy in attach manifests", async () => {
-    const caplet = {
-      server: "docs",
-      name: "Docs",
-      description: "Docs.",
-      backend: "mcp",
-      command: process.execPath,
-      shadowing: "namespace",
-    };
-    const engine = {
-      exposureSnapshot: async () => ({
-        callableCaplets: [],
-        progressiveCaplets: [{ caplet }],
-        codeModeCaplets: [{ caplet }],
-        directTools: [
+    const engine = projectionEngine(() =>
+      buildManifestExposureProjection({
+        caplets: [
           {
-            caplet,
-            downstreamName: "read",
-            name: "docs__read",
-            tool: { name: "read", inputSchema: { type: "object" } },
+            kind: "caplet",
+            name: "Docs",
+            capletId: "docs",
+            shadowing: "namespace",
           },
         ],
-        directResources: [],
-        directResourceTemplates: [],
-        directPrompts: [],
-        hiddenCaplets: [],
+        tools: [
+          {
+            kind: "tool",
+            capletId: "docs",
+            downstreamName: "read",
+            name: "docs__read",
+            inputSchema: { type: "object" },
+            shadowing: "namespace",
+          },
+        ],
+        resources: [],
+        resourceTemplates: [],
+        prompts: [],
+        completions: [],
+        codeModeCaplets: [
+          {
+            kind: "caplet",
+            name: "Docs",
+            capletId: "docs",
+            shadowing: "namespace",
+          },
+        ],
       }),
-    } as unknown as CapletsEngine;
+    );
 
     const projection = await buildAttachProjection(engine);
 
@@ -358,6 +347,8 @@ describe("Attach API dispatch", () => {
               id: "filesystem",
               name: "Filesystem",
               description: "Filesystem.",
+              useWhen: "Use for repository files.",
+              avoidWhen: "Avoid for network calls.",
               shadowing: "allow",
             },
           ],
@@ -378,57 +369,48 @@ describe("Attach API dispatch", () => {
         kind: "caplet",
         name: "Filesystem",
         capletId: "filesystem",
+        useWhen: "Use for repository files.",
+        avoidWhen: "Avoid for network calls.",
         shadowing: "allow",
       }),
     ]);
   });
 
   it("preserves direct resource metadata in attach manifests", async () => {
-    const caplet = {
-      server: "docs",
-      name: "Docs",
-      description: "Docs.",
-      backend: "mcp",
-      command: process.execPath,
-    };
-    const engine = {
-      exposureSnapshot: async () => ({
-        callableCaplets: [],
-        progressiveCaplets: [],
-        codeModeCaplets: [],
-        directTools: [],
-        directResources: [
+    const engine = projectionEngine(() =>
+      buildManifestExposureProjection({
+        caplets: [],
+        tools: [],
+        resources: [
           {
-            caplet,
-            downstreamUri: "file:///README.md",
+            kind: "resource",
+            capletId: "docs",
             uri: "caplets://docs/resources/file%3A%2F%2F%2FREADME.md",
-            resource: {
-              uri: "file:///README.md",
-              name: "README",
-              description: "README resource.",
-              mimeType: "text/markdown",
-              size: 42,
-            },
+            downstreamUri: "file:///README.md",
+            title: "README",
+            description: "README resource.",
+            mimeType: "text/markdown",
+            size: 42,
+            shadowing: "forbid",
           },
         ],
-        directResourceTemplates: [
+        resourceTemplates: [
           {
-            caplet,
-            downstreamUriTemplate: "file:///{path}",
+            kind: "resourceTemplate",
+            capletId: "docs",
             uriTemplate:
               "caplets://docs/resources/{encodedUri}?template=file%3A%2F%2F%2F%7Bpath%7D",
-            resourceTemplate: {
-              uriTemplate: "file:///{path}",
-              name: "File",
-              description: "File resource.",
-              mimeType: "text/plain",
-            },
+            downstreamUriTemplate: "file:///{path}",
+            title: "File",
+            description: "File resource.",
+            mimeType: "text/plain",
+            shadowing: "forbid",
           },
         ],
-        directPrompts: [],
-        hiddenCaplets: [],
+        prompts: [],
+        completions: [],
       }),
-    } as unknown as CapletsEngine;
+    );
 
     const projection = await buildAttachProjection(engine);
 
@@ -443,6 +425,68 @@ describe("Attach API dispatch", () => {
         mimeType: "text/plain",
       }),
     ]);
+  });
+
+  it("returns reference-only HTTP artifacts from Attach exports", async () => {
+    const http = await startPdfServer();
+    try {
+      const artifactDir = mkdtempSync(join(tmpdir(), "caplets-attach-artifacts-"));
+      const engine = new CapletsEngine(
+        sanitizeRemoteEngineOptions({
+          artifactDir,
+          exposeLocalArtifactPaths: true,
+          watch: false,
+          configLoader: () =>
+            parseConfig({
+              options: { exposure: "direct" },
+              httpApis: {
+                status: {
+                  name: "Status HTTP",
+                  description: "Download an Attach report.",
+                  exposure: "direct",
+                  baseUrl: http.baseUrl,
+                  auth: { type: "none" },
+                  actions: { download: { method: "GET", path: "/report" } },
+                },
+              },
+            }),
+        }),
+      );
+
+      try {
+        const projection = await buildAttachProjection(engine);
+        const tool = projection.manifest.tools.find((entry) => entry.name === "status__download");
+        if (!tool) throw new Error("expected the HTTP Attach export");
+        const result = await invokeAttachExport(engine, projection, {
+          revision: projection.manifest.revision,
+          kind: "tool",
+          exportId: tool.exportId,
+          input: {},
+        });
+        const structuredContent = remoteArtifact(result);
+        const reference = artifactReference(result);
+
+        expect(structuredContent).toMatchObject({
+          kind: "remote-reference",
+          uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+          mimeType: "application/pdf",
+          byteLength: 15,
+        });
+        expect(structuredContent).not.toHaveProperty("path");
+        expect(structuredContent).not.toHaveProperty("pathResolution");
+        expect(reference).toMatchObject({
+          presentation: "reference",
+          reference: structuredContent.uri,
+        });
+        expect(reference).not.toHaveProperty("path");
+        expect(reference).not.toHaveProperty("pathResolution");
+      } finally {
+        await engine.close();
+        rmSync(artifactDir, { recursive: true, force: true });
+      }
+    } finally {
+      await http.close();
+    }
   });
 
   it("reads resource template exports from an explicit expanded URI", async () => {
@@ -723,6 +767,7 @@ describe("Attach API dispatch", () => {
       input: {
         ref: { type: "prompt", name: "docs__review" },
         argument: { name: "topic", value: "attach" },
+        context: { arguments: { owner: "caplets" } },
       },
     });
 
@@ -730,6 +775,7 @@ describe("Attach API dispatch", () => {
       operation: "complete",
       ref: { type: "prompt", name: "review" },
       argument: { name: "topic", value: "attach" },
+      context: { arguments: { owner: "caplets" } },
     });
   });
 
@@ -860,4 +906,80 @@ describe("Attach API dispatch", () => {
       argument: { name: "topic", value: "attach" },
     });
   });
+  it("rejects a projection that becomes stale before Attach publishes it", async () => {
+    const pending = Promise.withResolvers<{
+      generation: number;
+      projection: ExposureProjection;
+    }>();
+    let generation = 0;
+    const engine = {
+      exposureProjection: async () => await pending.promise,
+      currentExposureGeneration: () => generation,
+    } as unknown as CapletsEngine;
+
+    const building = buildAttachProjection(engine);
+    generation = 1;
+    pending.resolve({
+      generation: 0,
+      projection: buildManifestExposureProjection({
+        caplets: [],
+        tools: [],
+        resources: [],
+        resourceTemplates: [],
+        prompts: [],
+        completions: [],
+        codeModeCaplets: [],
+      }),
+    });
+
+    await expect(building).rejects.toMatchObject({ code: "SERVER_UNAVAILABLE" });
+  });
 });
+
+function projectionEngine(factory: () => ExposureProjection): CapletsEngine {
+  return {
+    exposureProjection: async () => ({ generation: 0, projection: factory() }),
+    currentExposureGeneration: () => 0,
+  } as unknown as CapletsEngine;
+}
+
+async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/pdf");
+    response.end(Buffer.from("%PDF-1.7 attach"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("Attach HTTP test server did not bind");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+function remoteArtifact(result: unknown): Record<string, unknown> {
+  if (isRecord(result) && isRecord(result.structuredContent)) {
+    return result.structuredContent;
+  }
+  throw new Error("expected structured artifact content");
+}
+
+function artifactReference(result: unknown): Record<string, unknown> {
+  if (!isRecord(result) || !isRecord(result._meta) || !isRecord(result._meta.caplets)) {
+    throw new Error("expected Caplets result metadata");
+  }
+  const artifacts = result._meta.caplets.artifacts;
+  if (Array.isArray(artifacts) && isRecord(artifacts[0])) {
+    return artifacts[0];
+  }
+  throw new Error("expected artifact reference metadata");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}

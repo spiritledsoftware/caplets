@@ -23,9 +23,26 @@ export type {
   RuntimeRouteKind,
   SetupTargetKind as RuntimePlanSetupTargetKind,
 } from "./runtime-plan";
+export {
+  createBackendOperationDispatch,
+  createBackendOperationRuntime,
+} from "./backend-operation-dispatch";
+export type {
+  BackendCallToolResult,
+  BackendCheckResult,
+  BackendOperationDispatch,
+  BackendOperationManagers,
+  BackendOperationRuntime,
+  McpOperationAdapter,
+} from "./backend-operation-dispatch";
 export { capabilityDescription, ServerRegistry } from "./registry";
 export { generatedToolInputSchema, handleServerTool } from "./tools";
-export type { CapletExecutionMetadata, CapletResultMetadata } from "./tools";
+export type {
+  CapletArtifact,
+  CapletExecutionMetadata,
+  CapletResultMetadata,
+  HandleServerToolResult,
+} from "./tools";
 export { createCodeModeCapletsApi, listCodeModeCallableCaplets } from "./code-mode/api";
 export type {
   CodeModeCapletHandle,

@@ -11,7 +11,6 @@ import type {
   CodeModeTypesJson,
 } from "../code-mode/types";
 import { CapletsEngine } from "../engine";
-import { resolveExposure } from "../exposure/policy";
 
 export type CodeModeCliOptions = {
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
@@ -63,7 +62,9 @@ export async function runCodeModeCli(options: CodeModeCliOptions): Promise<void>
       options.setExitCode(1);
       return;
     }
+    const initialProjection = service.reload();
     const code = await readCodeModeCliCode(options);
+    await initialProjection;
     const started = Date.now();
     const result = await runCodeMode({
       code,
@@ -150,7 +151,7 @@ export async function codeModeTypesCli(
     telemetryStateDir: options.telemetryStateDir ?? defaultTelemetryStateDir(options.env),
   });
   try {
-    const caplets = listCodeModeCallableCaplets(engine);
+    const caplets = await listCodeModeCallableCaplets(engine);
     const declaration = generateCodeModeDeclarations({ caplets });
     if (!options.json) {
       options.writeOut(declaration);
@@ -197,20 +198,26 @@ function runtimeScope(env: NodeJS.ProcessEnv | Record<string, string | undefined
   return env.CAPLETS_MODE?.trim() || "local";
 }
 
-function listCodeModeCallableCaplets(engine: CapletsEngine): CodeModeCallableCaplet[] {
-  const defaultExposure = engine.currentConfig().options.exposure;
-  return engine
-    .enabledServers()
-    .filter((caplet) => {
-      if (caplet.setup || caplet.projectBinding?.required) return false;
-      return resolveExposure(caplet.exposure, defaultExposure).codeMode;
+async function listCodeModeCallableCaplets(
+  engine: CapletsEngine,
+): Promise<CodeModeCallableCaplet[]> {
+  const { projection } = await engine.exposureProjection({
+    discoverNonDirectMcpSurfaces: false,
+  });
+  return projection.entries
+    .flatMap((entry) => {
+      if (entry.kind !== "code-mode-caplet") return [];
+      return [
+        {
+          id: entry.id,
+          ...(entry.sourceCapletId ? { sourceCapletId: entry.sourceCapletId } : {}),
+          name: entry.title ?? entry.id,
+          description: entry.description ?? "",
+          shadowing: entry.shadowing,
+          ...(entry.useWhen ? { useWhen: entry.useWhen } : {}),
+          ...(entry.avoidWhen ? { avoidWhen: entry.avoidWhen } : {}),
+        },
+      ];
     })
-    .map((caplet) => ({
-      id: caplet.server,
-      name: caplet.name,
-      description: caplet.description,
-      ...(caplet.useWhen ? { useWhen: caplet.useWhen } : {}),
-      ...(caplet.avoidWhen ? { avoidWhen: caplet.avoidWhen } : {}),
-    }))
     .sort((left, right) => left.id.localeCompare(right.id));
 }

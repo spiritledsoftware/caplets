@@ -22,7 +22,8 @@ import {
   readHiddenInputForTest,
   runCli,
 } from "../src/cli";
-import { loadConfig, parseConfig } from "../src/config";
+import { loadConfig, parseConfig, type VaultQuarantineOutcome } from "../src/config";
+import * as configModule from "../src/config";
 import type { CapletsError } from "../src/errors";
 import { readCapletsLockfile } from "../src/cli/lockfile";
 import { readTokenBundle, writeTokenBundle } from "../src/auth";
@@ -2194,6 +2195,257 @@ describe("cli init", () => {
         ],
       });
     } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it("uses structured Vault outcomes for install, restore, and update setup without parsing warning copy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-setup-structured-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const configPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    const warnings: VaultQuarantineOutcome[] = [
+      {
+        type: "vault-quarantine",
+        kind: "project-file" as const,
+        path: join(projectRoot, ".caplets", "github", "CAPLET.md"),
+        message: "Warning punctuation changed completely",
+        recoverable: true as const,
+        capletId: "github",
+        referencePath: "mcpServers.github.env.PRIMARY",
+        referenceName: "GH_TOKEN",
+        effectiveKey: "GH_TOKEN",
+        reason: "ungranted" as const,
+        target: "global" as const,
+      },
+      {
+        type: "vault-quarantine",
+        kind: "project-file" as const,
+        path: join(projectRoot, ".caplets", "github", "CAPLET.md"),
+        message: "The human warning is deliberately unrelated to recovery facts",
+        recoverable: true as const,
+        capletId: "github",
+        referencePath: "mcpServers.github.env.SECONDARY",
+        referenceName: "GH_TOKEN",
+        effectiveKey: "GH_TOKEN",
+        reason: "ungranted" as const,
+        target: "global" as const,
+      },
+      {
+        type: "vault-quarantine",
+        kind: "project-file" as const,
+        path: join(projectRoot, ".caplets", "github", "CAPLET.md"),
+        message: "No parser should need this message",
+        recoverable: true as const,
+        capletId: "github",
+        referencePath: "mcpServers.github.env.TERTIARY",
+        referenceName: "SECONDARY_TOKEN",
+        effectiveKey: "SECONDARY_TOKEN",
+        reason: "missing" as const,
+        target: "global" as const,
+      },
+    ];
+    const loader = vi.spyOn(configModule, "loadLocalOverlayConfigWithSources").mockReturnValue({
+      config: parseConfig({}),
+      sources: {},
+      shadows: {},
+      sourceFound: true,
+      warnings,
+    });
+    const env = {
+      ...process.env,
+      CAPLETS_CONFIG: configPath,
+      CAPLETS_PROJECT_CONFIG: projectConfigPath,
+      CAPLETS_DISABLE_CATALOG_INDEXING: "1",
+    };
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github", "filesystem", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      const installed = JSON.parse(out.join(""));
+      expect(installed.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "github",
+            status: "installed",
+            vaultSetup: {
+              status: "unresolved",
+              recoveryCommands: [
+                "caplets vault access grant GH_TOKEN github",
+                "caplets vault set SECONDARY_TOKEN",
+              ],
+              messages: warnings.map((warning) => warning.message),
+            },
+          }),
+          expect.objectContaining({
+            id: "filesystem",
+            status: "installed",
+            vaultSetup: { status: "ready", recoveryCommands: [], messages: [] },
+          }),
+        ]),
+      );
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+
+      out.length = 0;
+      await runCli(["install", "github", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          expect.objectContaining({
+            vaultSetup: expect.objectContaining({ status: "unresolved" }),
+          }),
+        ],
+      });
+
+      out.length = 0;
+      await runCli(["update", "github", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          expect.objectContaining({
+            vaultSetup: expect.objectContaining({ status: "unresolved" }),
+          }),
+        ],
+      });
+
+      loader.mockImplementation(() => {
+        throw new Error("overlay loader unavailable");
+      });
+      out.length = 0;
+      await runCli(["update", "github", "filesystem", "--json"], {
+        env,
+        writeOut: (value) => out.push(value),
+      });
+      const afterLoaderFailure = JSON.parse(out.join(""));
+      expect(afterLoaderFailure.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "github",
+            vaultSetup: expect.objectContaining({ status: "unknown" }),
+          }),
+          expect.objectContaining({
+            id: "filesystem",
+            vaultSetup: expect.objectContaining({ status: "unknown" }),
+          }),
+        ]),
+      );
+    } finally {
+      loader.mockRestore();
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks every Setup status unknown when the best-effort overlay reports a loader failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-setup-loader-failure-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const configPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      writeInstallableRepo(repo);
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, "{ malformed JSON");
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github", "filesystem", "--json"], {
+        env: {
+          ...process.env,
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          CAPLETS_DISABLE_CATALOG_INDEXING: "1",
+        },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join("")).entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "github",
+            vaultSetup: expect.objectContaining({ status: "unknown" }),
+          }),
+          expect.objectContaining({
+            id: "filesystem",
+            vaultSetup: expect.objectContaining({ status: "unknown" }),
+          }),
+        ]),
+      );
+      expect(existsSync(join(projectRoot, ".caplets", "github", "CAPLET.md"))).toBe(true);
+    } finally {
+      process.chdir(cwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Setup statuses ready for recoverable non-Vault overlay warnings", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-vault-setup-recoverable-warning-"));
+    const repo = join(dir, "repo");
+    const projectRoot = join(dir, "project");
+    const configPath = join(dir, "user", "config.json");
+    const projectConfigPath = join(projectRoot, ".caplets", "config.json");
+    const missingEnvName = "CAPLETS_U4_RECOVERABLE_OVERLAY_WARNING";
+    const originalMissingEnv = process.env[missingEnvName];
+    const out: string[] = [];
+    const cwd = process.cwd();
+    try {
+      delete process.env[missingEnvName];
+      writeInstallableRepo(repo);
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          mcpServers: {
+            recoverable: {
+              name: "Recoverable",
+              description: "Only a missing environment variable.",
+              command: "recoverable-mcp",
+              env: { TOKEN: `$env:${missingEnvName}` },
+            },
+          },
+        }),
+      );
+      mkdirSync(projectRoot, { recursive: true });
+      process.chdir(projectRoot);
+
+      await runCli(["install", repo, "github", "--json"], {
+        env: {
+          ...process.env,
+          CAPLETS_CONFIG: configPath,
+          CAPLETS_PROJECT_CONFIG: projectConfigPath,
+          CAPLETS_DISABLE_CATALOG_INDEXING: "1",
+        },
+        writeOut: (value) => out.push(value),
+      });
+
+      expect(JSON.parse(out.join(""))).toMatchObject({
+        entries: [
+          expect.objectContaining({
+            id: "github",
+            vaultSetup: expect.objectContaining({ status: "ready" }),
+          }),
+        ],
+      });
+    } finally {
+      if (originalMissingEnv === undefined) {
+        delete process.env[missingEnvName];
+      } else {
+        process.env[missingEnvName] = originalMissingEnv;
+      }
       process.chdir(cwd);
       rmSync(dir, { recursive: true, force: true });
     }

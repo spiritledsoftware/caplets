@@ -180,6 +180,57 @@ describe("dashboard caplets and catalog APIs", () => {
 
     await setup.engine.close();
   });
+  it("returns the same redacted catalog failure through dashboard and bearer adapters", async () => {
+    const setup = await authenticatedDashboard();
+    const source =
+      "https://operator:credential@127.0.0.1:1/private-repository?token=transport_secret";
+
+    const dashboardResponse = await dashboardPost(setup, "/dashboard/api/catalog/install", {
+      source,
+      capletId: "sample",
+    });
+    expect(dashboardResponse.status).toBe(404);
+    const dashboardError = (await dashboardResponse.json()) as {
+      error: { code: string; message: string };
+    };
+
+    const pending = setup.store.createPendingLogin({
+      hostUrl: "http://127.0.0.1:5387/",
+      requestedRole: "operator",
+    });
+    setup.store.approvePendingLogin({ operatorCode: pending.operatorCode });
+    const operator = setup.store.completePendingLogin({
+      hostUrl: "http://127.0.0.1:5387/",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+    });
+    const bearerResponse = await setup.app.request("http://127.0.0.1:5387/v1/admin", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${operator.accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: "install",
+        arguments: { repo: source, capletIds: ["sample"] },
+      }),
+    });
+    expect(bearerResponse.status).toBe(200);
+    const bearerError = (await bearerResponse.json()) as {
+      error: { code: string; message: string };
+    };
+
+    expect(dashboardError.error).toEqual({
+      code: "CONFIG_NOT_FOUND",
+      message: "Could not clone repo [REDACTED]",
+    });
+    expect(bearerError.error).toEqual(dashboardError.error);
+    expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("credential");
+    expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("transport_secret");
+    expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("127.0.0.1");
+
+    await setup.engine.close();
+  });
 });
 
 interface DashboardCatalogTestContext {

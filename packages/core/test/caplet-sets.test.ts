@@ -1,11 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { CapletSetManager } from "../src/caplet-sets";
 import { parseConfig } from "../src/config";
+import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
 import { FileVaultStore } from "../src/vault";
+import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("CapletSetManager", () => {
   const dirs: string[] = [];
@@ -66,6 +71,70 @@ describe("CapletSetManager", () => {
       exitCode: 0,
       json: { message: "hello" },
     });
+  });
+
+  it("preserves nested MCP mixed content through the outer Caplet-set annotation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-set-mixed-mcp-"));
+    dirs.push(dir);
+    const childConfigPath = join(dir, "child.json");
+    const fixture = fileURLToPath(
+      new URL("fixtures/stdio-mixed-content-server.ts", import.meta.url),
+    );
+    writeFileSync(
+      childConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          mixed: {
+            name: "Mixed MCP",
+            description: "Return ordered mixed content blocks.",
+            command: process.execPath,
+            args: ["--import", import.meta.resolve("tsx"), fixture],
+          },
+        },
+      }),
+    );
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const registry = new ServerRegistry(config);
+    const downstream = new DownstreamManager(registry);
+    const manager = new CapletSetManager(registry);
+
+    try {
+      const result = await handleServerTool(
+        caplet,
+        {
+          operation: "call_tool",
+          name: "mixed",
+          args: { operation: "call_tool", name: "mixed", args: {} },
+        },
+        registry,
+        testBackendOperationRuntime(registry, { mcp: downstream, caplets: manager }),
+      );
+
+      expect(result.content).toEqual([
+        { type: "text", text: "Downstream text" },
+        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        {
+          type: "resource_link",
+          uri: "file:///tmp/report.pdf",
+          name: "Report",
+          mimeType: "application/pdf",
+        },
+      ]);
+      expect(result.structuredContent).toEqual({ snapshot: { title: "Example" } });
+      expect(result.isError).toBe(true);
+    } finally {
+      await manager.close();
+      await downstream.close();
+    }
   });
 
   it("loads child config and child Caplet files from independently configured sources", async () => {
@@ -199,8 +268,7 @@ describe("CapletSetManager", () => {
       },
     });
     const caplet = config.capletSets.nested!;
-    const artifactDir = join(dir, "artifacts");
-    const manager = new CapletSetManager(new ServerRegistry(config), { artifactDir });
+    const manager = new CapletSetManager(new ServerRegistry(config));
 
     const result = await manager.callTool(caplet, "drive", { operation: "tools" });
 
@@ -211,12 +279,74 @@ describe("CapletSetManager", () => {
         items: [{ name: "drive.files.list" }],
       },
     });
-    const child = (
-      manager as unknown as {
-        children: Map<string, { googleDiscovery: { options: { artifactDir?: string } } }>;
-      }
-    ).children.get("nested");
-    expect(child?.googleDiscovery.options.artifactDir).toBe(artifactDir);
+  });
+
+  it("propagates Media thresholds, artifact roots, and hidden paths to nested HTTP Actions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-set-http-media-"));
+    dirs.push(dir);
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "text/plain");
+      response.end("x".repeat(256));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("nested HTTP test server did not bind");
+    }
+
+    const artifactDir = join(dir, "artifacts");
+    const childConfigPath = join(dir, "child.json");
+    writeFileSync(
+      childConfigPath,
+      JSON.stringify({
+        httpApis: {
+          child: {
+            name: "Child HTTP",
+            description: "Nested HTTP response.",
+            baseUrl: `http://127.0.0.1:${address.port}`,
+            auth: { type: "none" },
+            maxResponseBytes: 512,
+            actions: { read: { method: "GET", path: "/response" } },
+          },
+        },
+      }),
+    );
+    const config = parseConfig({
+      capletSets: {
+        nested: {
+          name: "Nested Caplets",
+          description: "Expose child Caplets through a nested collection.",
+          configPath: childConfigPath,
+        },
+      },
+    });
+    const caplet = config.capletSets.nested!;
+    const manager = new CapletSetManager(new ServerRegistry(config), {
+      artifactDir,
+      exposeLocalArtifactPaths: false,
+      mediaInlineThresholdBytes: 128,
+      mediaArtifactMaxBytes: 1024,
+    });
+
+    try {
+      const result = await manager.callTool(caplet, "child", {
+        operation: "call_tool",
+        name: "read",
+        args: {},
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        kind: "remote-reference",
+        uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+        byteLength: 256,
+      });
+      expect(existsSync(join(artifactDir, "child"))).toBe(true);
+      expect(result.structuredContent).not.toHaveProperty("path");
+      expect(result.structuredContent).not.toHaveProperty("pathResolution");
+    } finally {
+      await manager.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("serializes concurrent refreshes for one parent Caplet set", async () => {

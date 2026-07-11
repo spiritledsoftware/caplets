@@ -1,6 +1,7 @@
-import type { MediaArtifact } from "../media";
+import type { MediaArtifact, MediaArtifactWriter } from "../media/artifacts";
+import { createMediaArtifactWriter } from "../media";
+import { mediaResultForArtifact, type HttpLikeMediaResult } from "../media/results";
 import { CapletsError } from "../errors";
-import { writeMediaArtifact } from "../media";
 import { DEFAULT_MAX_RESPONSE_BYTES, parseHttpBody } from "./utils";
 
 export type ReadHttpLikeResponseOptions = {
@@ -13,12 +14,13 @@ export type ReadHttpLikeResponseOptions = {
   maxBytes?: number;
   forceArtifact?: boolean;
   exposeLocalPath?: boolean;
+  inspectChunk?: (chunk: Uint8Array) => void;
 };
 
 export async function readHttpLikeResponse(
   response: Response,
   options: ReadHttpLikeResponseOptions,
-): Promise<Record<string, unknown>> {
+): Promise<HttpLikeMediaResult> {
   const contentType = response.headers.get("content-type") ?? "";
   const mimeType = mimeFromContentType(contentType);
   const maxInlineBytes = options.maxInlineBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -26,71 +28,99 @@ export async function readHttpLikeResponse(
   const method = options.method?.toUpperCase();
   await rejectOversizedContentLength(response, maxBytes, method);
   if (method === "HEAD") {
-    return responseEnvelope(response, contentType);
+    return inlineResponseEnvelope(response, contentType);
   }
 
-  if (!options.forceArtifact && shouldInline(response, mimeType)) {
-    const inline = await readInlineCandidate(response, { maxInlineBytes, maxBytes });
-    if (!inline.exceeded) {
-      const body = parseHttpBody(contentType, new TextDecoder().decode(inline.bytes));
-      return responseEnvelope(response, contentType, body);
-    }
-    const artifact = await writeResponseArtifact(response, options, mimeType, inline.bytes);
-    return responseEnvelope(response, contentType, { artifact });
-  }
-
-  const bytes = await readBoundedBytes(response, maxBytes);
-  const artifact = await writeResponseArtifact(response, options, mimeType, bytes);
-  return responseEnvelope(response, contentType, { artifact });
+  return await readResponseBody(response, options, {
+    contentType,
+    mimeType,
+    maxInlineBytes,
+    maxBytes,
+    allowInline: !options.forceArtifact && shouldInline(response, mimeType),
+  });
 }
 
-async function readInlineCandidate(
+function inspectResponseBody(contentType: string, bytes: Buffer): unknown {
+  return parseHttpBody(contentType, new TextDecoder().decode(bytes));
+}
+
+async function readResponseBody(
   response: Response,
-  options: { maxInlineBytes: number; maxBytes: number },
-): Promise<{ bytes: Buffer; exceeded: boolean }> {
-  if (!response.body) {
-    return { bytes: Buffer.alloc(0), exceeded: false };
-  }
-  const reader = response.body.getReader();
+  options: ReadHttpLikeResponseOptions,
+  settings: {
+    contentType: string;
+    mimeType: string;
+    maxInlineBytes: number;
+    maxBytes: number;
+    allowInline: boolean;
+  },
+): Promise<HttpLikeMediaResult> {
+  const reader = response.body?.getReader();
   const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  let exceeded = false;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      bytes += value.byteLength;
-      if (bytes > options.maxBytes) {
-        await reader.cancel();
-        throw responseExceededLimit(options.maxBytes);
-      }
-      if (bytes > options.maxInlineBytes) exceeded = true;
-      chunks.push(value);
+  let byteLength = 0;
+  let writer: MediaArtifactWriter | undefined;
+  const inspectChunk = isJsonMime(settings.mimeType) ? options.inspectChunk : undefined;
+  try {
+    if (!settings.allowInline) {
+      writer = await createResponseArtifactWriter(response, options, settings.mimeType);
     }
+    while (reader) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      byteLength += value.byteLength;
+      if (byteLength > settings.maxBytes) {
+        await reader.cancel();
+        throw responseExceededLimit(settings.maxBytes);
+      }
+      if (!writer && byteLength <= settings.maxInlineBytes) {
+        chunks.push(value);
+        inspectChunk?.(value);
+        continue;
+      }
+      if (!writer) {
+        writer = await createResponseArtifactWriter(response, options, settings.mimeType);
+        for (const chunk of chunks) {
+          await writer.write(chunk);
+        }
+        chunks.length = 0;
+      }
+      await writer.write(value);
+      inspectChunk?.(value);
+    }
+    if (writer) {
+      return artifactResponseEnvelope(response, settings.contentType, await writer.complete());
+    }
+    return inlineResponseEnvelope(
+      response,
+      settings.contentType,
+      inspectResponseBody(settings.contentType, Buffer.concat(chunks)),
+    );
+  } catch (error) {
+    await reader?.cancel().catch(() => {});
+    await writer?.abort().catch(() => {});
+    throw error;
   }
-  return { bytes: Buffer.concat(chunks), exceeded };
 }
 
-async function readBoundedBytes(response: Response, maxBytes: number): Promise<Buffer> {
-  if (!response.body) {
-    return Buffer.alloc(0);
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      bytes += value.byteLength;
-      if (bytes > maxBytes) {
-        await reader.cancel();
-        throw responseExceededLimit(maxBytes);
-      }
-      chunks.push(value);
-    }
-  }
-  return Buffer.concat(chunks);
+async function createResponseArtifactWriter(
+  response: Response,
+  options: ReadHttpLikeResponseOptions,
+  mimeType: string,
+): Promise<MediaArtifactWriter> {
+  return await createMediaArtifactWriter({
+    capletId: options.capletId,
+    ...(options.artifactDir ? { rootDir: options.artifactDir } : {}),
+    ...(response.ok && options.outputPath ? { outputPath: options.outputPath } : {}),
+    ...(options.exposeLocalPath === false ? { exposeLocalPath: false } : {}),
+    suggestedFilename:
+      options.filename ?? filenameFromContentDisposition(response) ?? "response.bin",
+    ...(mimeType ? { mimeType } : {}),
+  });
 }
 
 async function rejectOversizedContentLength(
@@ -115,36 +145,34 @@ function responseExceededLimit(maxBytes: number): CapletsError {
   );
 }
 
-async function writeResponseArtifact(
-  response: Response,
-  options: ReadHttpLikeResponseOptions,
-  mimeType: string,
-  bytes: Buffer,
-): Promise<MediaArtifact> {
-  return await writeMediaArtifact({
-    capletId: options.capletId,
-    ...(options.artifactDir ? { rootDir: options.artifactDir } : {}),
-    ...(response.ok && options.outputPath ? { outputPath: options.outputPath } : {}),
-    ...(options.exposeLocalPath === false ? { exposeLocalPath: false } : {}),
-    suggestedFilename:
-      options.filename ?? filenameFromContentDisposition(response) ?? "response.bin",
-    ...(mimeType ? { mimeType } : {}),
-    bytes,
-  });
-}
-
-function responseEnvelope(
+function inlineResponseEnvelope(
   response: Response,
   contentType: string,
   body?: unknown,
-): Record<string, unknown> {
+): HttpLikeMediaResult {
   return {
     status: response.status,
     statusText: response.statusText,
     headers: {
       "content-type": contentType,
     },
+    kind: "inline",
     ...(body === undefined ? {} : { body }),
+  };
+}
+
+function artifactResponseEnvelope(
+  response: Response,
+  contentType: string,
+  artifact: MediaArtifact,
+): HttpLikeMediaResult {
+  return {
+    status: response.status,
+    statusText: response.statusText,
+    headers: {
+      "content-type": contentType,
+    },
+    ...mediaResultForArtifact(artifact),
   };
 }
 
@@ -152,12 +180,12 @@ function shouldInline(response: Response, mimeType: string): boolean {
   if (isAttachment(response)) {
     return false;
   }
+  return mimeType === "" || isJsonMime(mimeType) || mimeType.startsWith("text/");
+}
+
+function isJsonMime(mimeType: string): boolean {
   return (
-    mimeType === "" ||
-    mimeType === "application/json" ||
-    mimeType.endsWith("+json") ||
-    mimeType.endsWith("/json") ||
-    mimeType.startsWith("text/")
+    mimeType === "application/json" || mimeType.endsWith("+json") || mimeType.endsWith("/json")
   );
 }
 
@@ -199,4 +227,4 @@ function parseQuotedFilename(contentDisposition: string): string | undefined {
   return /(?:^|;)\s*filename=([^;]+)/iu.exec(contentDisposition)?.[1]?.trim();
 }
 
-export type { MediaArtifact };
+export type { HttpLikeMediaResult };

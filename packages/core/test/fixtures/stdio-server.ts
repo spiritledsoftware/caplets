@@ -1,7 +1,9 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp";
+import { completable } from "@modelcontextprotocol/sdk/server/completable";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio";
 import { z } from "zod";
 
+const completionsEnabled = !process.argv.includes("--no-completions");
 const server = new McpServer({ name: "fixture-stdio", version: "1.0.0" });
 
 server.registerTool(
@@ -43,9 +45,14 @@ server.registerResource(
         { uri: "file:///repo/src/index.ts", name: "src/index.ts", mimeType: "text/typescript" },
       ],
     }),
-    complete: {
-      path: (value) => ["README.md", "src/index.ts"].filter((path) => path.startsWith(value)),
-    },
+    ...(completionsEnabled
+      ? {
+          complete: {
+            path: (value: string) =>
+              ["README.md", "src/index.ts"].filter((path) => path.startsWith(value)),
+          },
+        }
+      : {}),
   }),
   { description: "Read a repository file", mimeType: "text/plain" },
   async (uri) => ({
@@ -53,11 +60,71 @@ server.registerResource(
   }),
 );
 
+server.registerResource(
+  "Repository package",
+  new ResourceTemplate("repo://{owner}/{name}{?region}", {
+    list: undefined,
+    ...(completionsEnabled
+      ? {
+          complete: {
+            owner: (value: string) =>
+              ["caplets", "other"].filter((owner) => owner.startsWith(value)),
+            name: (value: string, context?: { arguments?: Record<string, string> }) =>
+              (["caplets", "caplets inc"].includes(context?.arguments?.owner ?? "") &&
+              context?.arguments?.region === "eu"
+                ? ["core", "cli"]
+                : ["unknown"]
+              ).filter((name) => name.startsWith(value)),
+            region: (value: string) => ["eu", "us"].filter((region) => region.startsWith(value)),
+          },
+        }
+      : {}),
+  }),
+  { description: "Read a repository package", mimeType: "text/plain" },
+  async (uri) => ({
+    contents: [{ uri: uri.href, text: `package:${uri.href}`, mimeType: "text/plain" }],
+  }),
+);
+
+server.registerResource(
+  "Repository query",
+  new ResourceTemplate("repo://{tenant}/items{?owner,region}", {
+    list: undefined,
+    ...(completionsEnabled
+      ? {
+          complete: {
+            tenant: (value: string) =>
+              ["acme", "other"].filter((tenant) => tenant.startsWith(value)),
+            owner: (value: string) =>
+              ["caplets", "other"].filter((owner) => owner.startsWith(value)),
+            region: (value: string, context?: { arguments?: Record<string, string> }) =>
+              (context?.arguments?.tenant === "acme" ? ["eu", "us"] : ["unknown"]).filter(
+                (region) => region.startsWith(value),
+              ),
+          },
+        }
+      : {}),
+  }),
+  { description: "Read repository query results", mimeType: "text/plain" },
+  async (uri) => ({
+    contents: [{ uri: uri.href, text: `query:${uri.href}`, mimeType: "text/plain" }],
+  }),
+);
+
 server.registerPrompt(
   "review_issue",
   {
     description: "Review an issue before implementation.",
-    argsSchema: { issueId: z.string().describe("Issue ID") },
+    argsSchema: {
+      owner: z.string().optional(),
+      issueId: completionsEnabled
+        ? completable(z.string().describe("Issue ID"), (value, context) =>
+            (context?.arguments?.owner === "caplets" ? ["CAP-123"] : ["123", "124"]).filter(
+              (issueId) => issueId.startsWith(value),
+            ),
+          )
+        : z.string().describe("Issue ID"),
+    },
   },
   ({ issueId }) => ({
     messages: [{ role: "user", content: { type: "text", text: `Review ${issueId}` } }],

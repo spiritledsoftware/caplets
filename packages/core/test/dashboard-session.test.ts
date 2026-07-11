@@ -70,6 +70,54 @@ describe("dashboard sessions", () => {
 
     await engine.close();
   });
+  it("denies non-loopback development administration while preserving runtime access", async () => {
+    const { app, engine } = developmentTestApp({ host: "0.0.0.0", loopback: false });
+    const baseUrl = "http://10.0.0.5:5387";
+
+    const session = await app.request(`${baseUrl}/dashboard/api/session`);
+    expect(session.status).toBe(403);
+
+    const admin = await app.request(`${baseUrl}/v1/admin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "list", arguments: {} }),
+    });
+    expect(admin.status).toBe(403);
+
+    const reveal = await app.request(`${baseUrl}/dashboard/api/vault/reveal`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-caplets-csrf": "development_unauthenticated",
+      },
+      body: JSON.stringify({ key: "GH_TOKEN", confirmation: "reveal GH_TOKEN" }),
+    });
+    expect(reveal.status).toBe(403);
+
+    const attach = await app.request(`${baseUrl}/v1/attach/manifest`);
+    expect(attach.status).toBe(200);
+
+    const mcp = await app.request(`${baseUrl}/v1/mcp`, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "development-test", version: "1.0.0" },
+        },
+      }),
+    });
+    expect(mcp.status).toBe(200);
+
+    await engine.close();
+  });
 
   it("logs out development operator sessions without cookie-backed sessions", async () => {
     const { app, engine } = developmentTestApp();
@@ -346,11 +394,11 @@ function testApp(overrides: Partial<HttpServeOptions> = {}) {
   return { app, engine, store, stateDir, context };
 }
 
-function developmentTestApp() {
+function developmentTestApp(overrides: Partial<HttpServeOptions> = {}) {
   const stateDir = tempDir("caplets-dashboard-dev-state-");
   const context = testContext();
   const engine = engineFor(context);
-  const app = createHttpServeApp(developmentHttpOptions(stateDir), engine, {
+  const app = createHttpServeApp(developmentHttpOptions(stateDir, overrides), engine, {
     writeErr: () => {},
     control: context,
   });
@@ -384,11 +432,15 @@ function httpOptions(
   };
 }
 
-function developmentHttpOptions(stateDir: string): HttpServeOptions {
+function developmentHttpOptions(
+  stateDir: string,
+  overrides: Partial<HttpServeOptions> = {},
+): HttpServeOptions {
   return {
     ...httpOptions(stateDir),
     auth: { type: "development_unauthenticated" },
     allowUnauthenticatedHttp: true,
+    ...overrides,
   };
 }
 

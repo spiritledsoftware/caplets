@@ -16,28 +16,17 @@ import {
 } from "./../cli/auth";
 import { completionShells, type CompletionShell } from "./../cli/completion";
 import { initConfig } from "./../cli/init";
-import {
-  installCaplets,
-  indexInstalledCapletsFromLockfile,
-  restoreCapletsFromLockfile,
-  updateCapletsFromLockfile,
-} from "./../cli/install";
-import type { CatalogIndexingResult } from "../catalog-indexing/payload";
 import { listCaplets } from "./../cli/inspection";
-import {
-  loadConfigWithSources,
-  loadLocalOverlayConfigWithSources,
-  defaultCapletsLockfilePath,
-  resolveCapletsRoot,
-  vaultBootstrapResolver,
-  vaultResolverForAuthDir,
-  vaultStoreForAuthDir,
-} from "../config";
+import { loadConfigWithSources, vaultBootstrapResolver, vaultResolverForAuthDir } from "../config";
 import { CapletsEngine, type CapletsEngineOptions } from "../engine";
 import { CapletsError, toSafeError } from "../errors";
 import { startGenericOAuthFlow, startOAuthFlow } from "../auth";
-import { FileVaultStore, validateVaultKeyName, type VaultAccessGrantInput } from "../vault";
 import type { RemoteAuthFlowStore } from "./auth-flow";
+import {
+  toCurrentHostSafeError,
+  type CurrentHostOperatorPrincipal,
+  type CurrentHostOperations,
+} from "../current-host/operations";
 import type { RemoteCliRequest, RemoteCliResponse } from "./types";
 
 export type RemoteControlDispatchContext = CapletsEngineOptions & {
@@ -74,28 +63,39 @@ const ENGINE_COMMANDS = new Set<RemoteCliRequest["command"]>([
   "complete",
 ]);
 
+type CurrentHostRemoteAdministration = {
+  operations: CurrentHostOperations;
+  principal: CurrentHostOperatorPrincipal;
+};
+
 export async function dispatchRemoteCliRequest(
   request: RemoteCliRequest,
   context: RemoteControlDispatchContext,
+  currentHostAdministration?: CurrentHostRemoteAdministration | undefined,
 ): Promise<RemoteCliResponse> {
   try {
-    const result = await dispatch(request, context);
+    const result = await dispatch(request, context, currentHostAdministration);
     return { ok: true, result };
   } catch (error) {
-    const safe = toSafeError(error);
+    const currentHostOperation = isCurrentHostAdministrationCommand(request.command);
+    const safe = currentHostOperation ? toCurrentHostSafeError(error) : toSafeError(error);
     const action = nextAction(safe.details);
     return {
       ok: false,
       error: {
         code: safe.code,
-        message: redactControlErrorMessage(safe.message),
+        message: currentHostOperation ? safe.message : redactControlErrorMessage(safe.message),
         ...(action ? { nextAction: action } : {}),
       },
     };
   }
 }
 
-async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatchContext) {
+async function dispatch(
+  request: RemoteCliRequest,
+  context: RemoteControlDispatchContext,
+  currentHostAdministration?: CurrentHostRemoteAdministration | undefined,
+) {
   assertObject(request, "remote control request");
   assertObject(request.arguments, "remote control request arguments");
 
@@ -133,61 +133,35 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
     return dispatchAdd(request.arguments, context);
   }
 
-  const globalCatalogTarget = () => ({
-    destinationRoot: context.globalCapletsRoot ?? resolveCapletsRoot(context.configPath),
-    lockfilePath: context.globalLockfilePath ?? defaultCapletsLockfilePath(),
-  });
-
   if (request.command === "install") {
+    const administration = requireCurrentHostAdministration(currentHostAdministration);
     const repo = optionalString(request.arguments, "repo");
-    if (!repo) {
-      const result = {
-        remote: true,
-        ...restoreCapletsFromLockfile({
-          ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-          ...globalCatalogTarget(),
-          ...optionalProp("force", optionalBoolean(request.arguments, "force")),
-        }),
-      };
-      await attachRemoteCatalogIndexingResults(
-        result.installed,
-        optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
-      );
-      return result;
-    }
-    const result = {
-      remote: true,
-      ...installCaplets(repo, {
-        ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-        ...globalCatalogTarget(),
-        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
-      }),
-    };
-    await attachRemoteCatalogIndexingResults(
-      result.installed,
-      optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
-    );
-    return result;
+    const outcome = await administration.operations.execute(administration.principal, {
+      kind: "catalog_install",
+      ...(repo ? { repo } : {}),
+      ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
+      ...optionalProp("force", optionalBoolean(request.arguments, "force")),
+      ...optionalProp(
+        "disableCatalogIndexing",
+        optionalBoolean(request.arguments, "disableCatalogIndexing"),
+      ),
+    });
+    return { remote: true, installed: outcome.installed };
   }
 
   if (request.command === "update") {
-    const result = {
-      remote: true,
-      ...updateCapletsFromLockfile({
-        ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
-        ...globalCatalogTarget(),
-        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
-        ...optionalProp(
-          "allowRiskIncrease",
-          optionalBoolean(request.arguments, "allowRiskIncrease"),
-        ),
-      }),
-    };
-    await attachRemoteCatalogIndexingResults(
-      result.installed,
-      optionalBoolean(request.arguments, "disableCatalogIndexing") ?? false,
-    );
-    return result;
+    const administration = requireCurrentHostAdministration(currentHostAdministration);
+    const outcome = await administration.operations.execute(administration.principal, {
+      kind: "catalog_update",
+      ...optionalProp("capletIds", optionalStringArray(request.arguments, "capletIds")),
+      ...optionalProp("force", optionalBoolean(request.arguments, "force")),
+      ...optionalProp("allowRiskIncrease", optionalBoolean(request.arguments, "allowRiskIncrease")),
+      ...optionalProp(
+        "disableCatalogIndexing",
+        optionalBoolean(request.arguments, "disableCatalogIndexing"),
+      ),
+    });
+    return { remote: true, installed: outcome.installed };
   }
 
   if (request.command === "complete_cli") {
@@ -209,7 +183,19 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   }
 
   if (request.command.startsWith("vault_")) {
-    return dispatchVault(request, context);
+    if (
+      request.command === "vault_get" &&
+      (optionalBoolean(request.arguments, "reveal") ?? false)
+    ) {
+      throw new CapletsError(
+        "REQUEST_INVALID",
+        "Self-hosted remote Vault reveal is not supported through remote control.",
+      );
+    }
+    return await dispatchCurrentHostVault(
+      request,
+      requireCurrentHostAdministration(currentHostAdministration),
+    );
   }
 
   if (request.command === "auth_logout") {
@@ -244,115 +230,89 @@ async function dispatch(request: RemoteCliRequest, context: RemoteControlDispatc
   );
 }
 
-async function attachRemoteCatalogIndexingResults(
-  installed: Array<{
-    id: string;
-    lockfile?: string | undefined;
-    catalogIndexing?: CatalogIndexingResult | undefined;
-  }>,
-  disableCatalogIndexing: boolean,
-): Promise<void> {
-  const results = await indexInstalledCapletsFromLockfile(installed, { disableCatalogIndexing });
-  for (const entry of installed) {
-    entry.catalogIndexing = results.get(entry.id);
-  }
+function isCurrentHostAdministrationCommand(command: unknown): boolean {
+  return command === "install" || command === "update" || String(command).startsWith("vault_");
 }
 
-function dispatchVault(request: RemoteCliRequest, context: RemoteControlDispatchContext) {
-  const store = remoteVaultStore(context);
+function requireCurrentHostAdministration(
+  administration: CurrentHostRemoteAdministration | undefined,
+): CurrentHostRemoteAdministration {
+  if (administration) return administration;
+  throw new CapletsError(
+    "AUTH_FAILED",
+    "Current Host administration requires an Operator principal.",
+  );
+}
+
+async function dispatchCurrentHostVault(
+  request: RemoteCliRequest,
+  administration: CurrentHostRemoteAdministration,
+) {
   switch (request.command) {
     case "vault_set": {
-      const name = requiredString(request.arguments, "name");
-      const value = requiredString(request.arguments, "value");
-      const grant = optionalString(request.arguments, "grant");
-      const grantInput = grant
-        ? ({
-            storedKey: validateVaultKeyName(name),
-            referenceName: validateVaultKeyName(
-              optionalString(request.arguments, "referenceName") ?? name,
-            ),
-            capletId: grant,
-            origin: remoteVaultAccessOrigin(grant, context),
-          } satisfies VaultAccessGrantInput)
-        : undefined;
-      const existed = store.getStatus(name).present;
-      const previousValue = existed && grantInput ? store.resolveValue(name) : undefined;
-      const status = store.set(name, value, {
-        force: optionalBoolean(request.arguments, "force") ?? false,
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_set",
+        name: requiredString(request.arguments, "name"),
+        value: requiredString(request.arguments, "value"),
+        ...optionalProp("grant", optionalString(request.arguments, "grant")),
+        ...optionalProp("referenceName", optionalString(request.arguments, "referenceName")),
+        ...optionalProp("force", optionalBoolean(request.arguments, "force")),
       });
-      try {
-        if (grantInput) store.grantAccess(grantInput);
-      } catch (error) {
-        if (existed && previousValue !== undefined) {
-          store.set(name, previousValue, { force: true });
-        } else {
-          store.delete(name);
-        }
-        throw error;
-      }
-      return { remote: true, ...status };
+      return { remote: true, ...outcome.status };
     }
-    case "vault_list":
-      return store.listValues();
+    case "vault_list": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_list",
+      });
+      return outcome.values;
+    }
     case "vault_get": {
-      const name = requiredString(request.arguments, "name");
-      const reveal = optionalBoolean(request.arguments, "reveal") ?? false;
-      if (reveal) {
-        throw new CapletsError(
-          "REQUEST_INVALID",
-          "Self-hosted remote Vault reveal is not supported through remote control.",
-        );
-      }
-      return store.getStatus(name);
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_get",
+        name: requiredString(request.arguments, "name"),
+      });
+      return outcome.status;
     }
-    case "vault_delete":
-      return store.delete(requiredString(request.arguments, "name"));
+    case "vault_delete": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_delete",
+        name: requiredString(request.arguments, "name"),
+      });
+      return outcome.deleted;
+    }
     case "vault_access_grant": {
       const storedKey = requiredString(request.arguments, "name");
-      const capletId = requiredString(request.arguments, "capletId");
-      return store.grantAccess({
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_access_grant",
         storedKey,
         referenceName: optionalString(request.arguments, "referenceName") ?? storedKey,
-        capletId,
-        origin: remoteVaultAccessOrigin(capletId, context),
+        capletId: requiredString(request.arguments, "capletId"),
       });
+      return outcome.grant;
     }
-    case "vault_access_revoke":
-      return store.revokeAccess({
+    case "vault_access_revoke": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_access_revoke",
         storedKey: requiredString(request.arguments, "name"),
         capletId: requiredString(request.arguments, "capletId"),
         ...optionalProp("referenceName", optionalString(request.arguments, "referenceName")),
       });
-    case "vault_access_list":
-      return store.listAccess({
+      return outcome.revoked;
+    }
+    case "vault_access_list": {
+      const outcome = await administration.operations.execute(administration.principal, {
+        kind: "vault_access_list",
         ...optionalProp("storedKey", optionalString(request.arguments, "name")),
         ...optionalProp("capletId", optionalString(request.arguments, "capletId")),
       });
+      return outcome.grants;
+    }
     default:
       throw new CapletsError(
         "UNKNOWN_OPERATION",
         `Unsupported remote control command ${request.command}`,
       );
   }
-}
-
-function remoteVaultStore(context: RemoteControlDispatchContext): FileVaultStore {
-  return vaultStoreForAuthDir(context.authDir);
-}
-
-function remoteVaultAccessOrigin(capletId: string, context: RemoteControlDispatchContext) {
-  const overlay = loadLocalOverlayConfigWithSources(context.configPath, context.projectConfigPath, {
-    vaultResolver: vaultBootstrapResolver,
-  });
-  const origin = overlay.sources[capletId];
-  if (!origin) throw new CapletsError("SERVER_NOT_FOUND", `Caplet ${capletId} is not configured.`);
-  if (overlay.shadows[capletId]?.length) {
-    throw new CapletsError(
-      "REQUEST_INVALID",
-      `Caplet ${capletId} is shadowed in multiple config sources; resolve the active config before granting Vault access.`,
-    );
-  }
-  return origin;
 }
 
 async function startRemoteAuthLogin(serverId: string, context: RemoteControlDispatchContext) {

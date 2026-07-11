@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isAbsolute, join } from "node:path";
 import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport";
 import { nativeCapletToolName } from "../src/native";
 import { CapletsRuntime } from "../src/runtime";
 
@@ -34,6 +37,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["alpha"]);
     expect(server.registerTool).toHaveBeenCalledTimes(2);
@@ -56,6 +60,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
 
     try {
       expect(runtime.registeredToolIds()).toEqual(["git-hub"]);
@@ -80,6 +85,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["status"]);
     expect(server.registerTool).toHaveBeenCalledWith(
@@ -89,6 +95,71 @@ describe("CapletsRuntime", () => {
     );
 
     await runtime.close();
+  });
+
+  it("returns local HTTP artifacts with an absolute managed path in the local runtime", async () => {
+    const http = await startPdfServer();
+    try {
+      const { dir, configPath, projectConfigPath } = tempConfig({
+        httpApis: {
+          status: {
+            name: "Status HTTP",
+            description: "Download a local report.",
+            baseUrl: http.baseUrl,
+            auth: { type: "none" },
+            actions: { download: { method: "GET", path: "/report" } },
+          },
+        },
+      });
+      dirs.push(dir);
+      const artifactDir = join(dir, "artifacts");
+      const server = mockServer();
+      const runtime = new CapletsRuntime({
+        configPath,
+        projectConfigPath,
+        artifactDir,
+        server,
+      });
+      await connectRuntime(runtime);
+
+      try {
+        const handler = server.handlers.get("status");
+        expect(handler).toBeDefined();
+        const result = await handler!({
+          operation: "call_tool",
+          name: "download",
+          args: {},
+        });
+        const path = localArtifactPath(result);
+
+        expect(path).toContain(artifactDir);
+        expect(isAbsolute(path)).toBe(true);
+        expect(readFileSync(path, "utf8")).toBe("%PDF-1.7 runtime");
+        expect(result).toMatchObject({
+          structuredContent: {
+            kind: "local-artifact",
+            path,
+            mimeType: "application/pdf",
+            byteLength: 16,
+          },
+          _meta: {
+            caplets: {
+              artifacts: [
+                {
+                  presentation: "local-path",
+                  displayPath: path,
+                  pathResolution: "absolute",
+                },
+              ],
+            },
+          },
+        });
+      } finally {
+        await runtime.close();
+      }
+    } finally {
+      await http.close();
+    }
   });
 
   it("registers CLI tools Caplets", async () => {
@@ -109,6 +180,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["repo"]);
     expect(server.registerTool).toHaveBeenCalledWith(
@@ -121,18 +193,39 @@ describe("CapletsRuntime", () => {
   });
 
   it("registers Caplet set Caplets", async () => {
+    const childDir = mkdtempSync(join(tmpdir(), "caplets-runtime-child-"));
+    dirs.push(childDir);
+    const childConfigPath = join(childDir, "config.json");
+    writeFileSync(
+      childConfigPath,
+      JSON.stringify({
+        cliTools: {
+          echoes: {
+            name: "Echoes",
+            description: "Echo child operations.",
+            actions: {
+              echo: {
+                command: process.execPath,
+                args: ["--version"],
+              },
+            },
+          },
+        },
+      }),
+    );
     const { dir, configPath, projectConfigPath } = tempConfig({
       capletSets: {
         nested: {
           name: "Nested Caplets",
           description: "Expose child Caplets through a nested collection.",
-          capletsRoot: join(tmpdir(), "caplets-child"),
+          configPath: childConfigPath,
         },
       },
     });
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
 
     expect(runtime.registeredToolIds()).toEqual(["nested"]);
     expect(server.registerTool).toHaveBeenCalledWith(
@@ -157,6 +250,7 @@ describe("CapletsRuntime", () => {
     dirs.push(dir);
     const server = mockServer();
     const runtime = new CapletsRuntime({ configPath, projectConfigPath, server });
+    await connectRuntime(runtime);
     const alpha = server.registered.get("alpha")!;
 
     writeConfig(configPath, {
@@ -222,6 +316,7 @@ describe("CapletsRuntime", () => {
       server,
       writeErr: (value) => errors.push(value),
     });
+    await connectRuntime(runtime);
 
     writeFileSync(configPath, "{not json");
     const reloaded = await runtime.reload();
@@ -253,6 +348,7 @@ describe("CapletsRuntime", () => {
       server,
       writeErr: (value) => errors.push(value),
     });
+    await connectRuntime(runtime);
     const alpha = server.registered.get("alpha")!;
     const engine = (runtime as unknown as { engine: unknown }).engine;
     (engine as { invalidateChangedBackends: () => Promise<void> }).invalidateChangedBackends =
@@ -276,6 +372,55 @@ describe("CapletsRuntime", () => {
     expect(runtime.registeredToolIds()).toEqual(["gamma"]);
     expect(server.registered.get("gamma")).toBeDefined();
     expect(errors.join("")).toContain("backend invalidation failed");
+
+    await runtime.close();
+  });
+
+  it("returns the engine reload outcome when direct surfaces cannot register", async () => {
+    const fixture = fileURLToPath(new URL("fixtures/stdio-server.ts", import.meta.url));
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      options: { exposure: "direct" },
+      httpApis: {
+        status: {
+          name: "Status HTTP",
+          description: "Check service status.",
+          exposure: "direct",
+          baseUrl: "http://127.0.0.1:1",
+          auth: { type: "none" },
+          actions: { ping: { method: "GET", path: "/ping" } },
+        },
+      },
+    });
+    dirs.push(dir);
+    const server = mockServer();
+    const errors: string[] = [];
+    const runtime = new CapletsRuntime({
+      configPath,
+      projectConfigPath,
+      server,
+      writeErr: (value) => errors.push(value),
+    });
+    await connectRuntime(runtime);
+    expect(runtime.registeredToolIds()).toEqual(["status__ping"]);
+
+    writeConfig(configPath, {
+      options: { exposure: "direct" },
+      mcpServers: {
+        docs: {
+          name: "Docs",
+          description: "Fixture direct MCP surface.",
+          command: process.execPath,
+          args: ["--import", import.meta.resolve("tsx"), fixture],
+        },
+      },
+    });
+
+    await expect(runtime.reload()).resolves.toBe(true);
+
+    expect(runtime.registeredToolIds()).toEqual([]);
+    expect(server.registered).toEqual(new Map());
+    expect(errors.join("")).toContain("Caplets exposure refresh failed");
+    expect(errors.join("")).toContain("MCP server does not support resource registration");
 
     await runtime.close();
   });
@@ -337,6 +482,10 @@ describe("CapletsRuntime", () => {
   }
 });
 
+async function connectRuntime(runtime: CapletsRuntime): Promise<void> {
+  await runtime.connect({} as unknown as Transport);
+}
+
 function writeConfig(path: string, config: unknown): void {
   writeFileSync(path, JSON.stringify(progressiveTestConfig(config)));
 }
@@ -350,9 +499,12 @@ function progressiveTestConfig(config: unknown): unknown {
 
 function mockServer() {
   const registered = new Map<string, RegisteredTool>();
+  const handlers = new Map<string, (request: unknown) => Promise<unknown>>();
   return {
     registered,
-    registerTool: vi.fn((name: string) => {
+    handlers,
+    registerTool: vi.fn((name: string, ...args: unknown[]) => {
+      const handler = args[1];
       const tool = {
         update: vi.fn(),
         remove: vi.fn(() => registered.delete(name)),
@@ -361,10 +513,49 @@ function mockServer() {
         enabled: true,
         handler: vi.fn(),
       } as unknown as RegisteredTool;
+      if (typeof handler === "function") {
+        handlers.set(name, async (request) => await Reflect.apply(handler, undefined, [request]));
+      }
       registered.set(name, tool);
       return tool;
     }),
     connect: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
+}
+
+async function startPdfServer(): Promise<{ baseUrl: string; close: () => Promise<void> }> {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "application/pdf");
+    response.end(Buffer.from("%PDF-1.7 runtime"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error("runtime HTTP test server did not bind");
+  }
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+function localArtifactPath(result: unknown): string {
+  if (
+    result &&
+    typeof result === "object" &&
+    "structuredContent" in result &&
+    result.structuredContent &&
+    typeof result.structuredContent === "object" &&
+    "kind" in result.structuredContent &&
+    result.structuredContent.kind === "local-artifact" &&
+    "path" in result.structuredContent &&
+    typeof result.structuredContent.path === "string"
+  ) {
+    return result.structuredContent.path;
+  }
+  throw new Error("expected a local artifact result");
 }

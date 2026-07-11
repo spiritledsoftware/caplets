@@ -11,7 +11,7 @@ import {
 } from "../downstream";
 import { CapletsError, toSafeError } from "../errors";
 import { readHttpLikeResponse } from "../http/response";
-import { isAbortError, readLimitedText } from "../http/utils";
+import { DEFAULT_MAX_RESPONSE_BYTES, isAbortError, readLimitedText } from "../http/utils";
 import { readMediaInput, type ResolvedMediaInput } from "../media";
 import type { ServerRegistry } from "../registry";
 import { markdownStructuredContent } from "../result-content";
@@ -48,6 +48,7 @@ export class GoogleDiscoveryManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
     } = {},
   ) {}
 
@@ -138,6 +139,7 @@ export class GoogleDiscoveryManager {
         method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        maxInlineBytes: this.options.mediaInlineThresholdBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
         ...(typeof args.filename === "string" ? { filename: args.filename } : {}),
         ...(typeof args.outputPath === "string" ? { outputPath: args.outputPath } : {}),
         maxBytes: DEFAULT_MEDIA_RESPONSE_MAX_BYTES,
@@ -208,6 +210,7 @@ export class GoogleDiscoveryManager {
         method: operation.method,
         ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
         ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
+        maxInlineBytes: this.options.mediaInlineThresholdBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
       });
       return {
         content: markdownStructuredContent(parsed, {

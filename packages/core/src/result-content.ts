@@ -48,33 +48,21 @@ export function markdownStructuredContent(
 export function markdownCallToolResultContent(
   result: CallToolResultLike,
   context: ResultMarkdownContext = {},
-): TextContentBlock[] {
-  const downstreamText = textBlocksToString(result.content);
-  const structuredContent = result.structuredContent;
-  const hasStructured = hasRenderableStructuredContent(structuredContent);
-
-  if (context.backend === "mcp" && hasStructured) {
-    if (downstreamText) {
-      return textContent(downstreamText);
-    }
-    return [
-      ...(result.content ?? []),
-      {
-        type: "text",
-        text: ["## Structured Content", "", jsonFence(structuredContent)].join("\n"),
-      },
-    ] as TextContentBlock[];
+): ContentBlockLike[] {
+  if (context.backend === "mcp") {
+    return [...(result.content ?? [])];
   }
 
-  if (hasStructured) {
+  const structuredContent = result.structuredContent;
+  if (hasRenderableStructuredContent(structuredContent)) {
     return markdownStructuredContent(structuredContent, {
       ...context,
       isError: context.isError ?? result.isError,
     });
   }
 
-  if (downstreamText) {
-    return textContent(downstreamText);
+  if (result.content?.length) {
+    return [...result.content];
   }
 
   return textContent(renderStructuredMarkdown(result, context));
@@ -90,7 +78,7 @@ export function compactStructuredContent(
 export function compactCallToolResultContent(
   result: CallToolResultLike,
   context: ResultMarkdownContext = {},
-): TextContentBlock[] {
+): ContentBlockLike[] {
   return markdownCallToolResultContent(result, context);
 }
 
@@ -305,18 +293,6 @@ function jsonFence(value: unknown): string {
 }
 function escapeCodeFence(value: string): string {
   return value.replace(/```/gu, "`\u200b``");
-}
-function textBlocksToString(content: CallToolResultLike["content"] | undefined): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((item): item is ContentBlockLike & { type: "text"; text: string } =>
-      Boolean(
-        item && typeof item === "object" && item.type === "text" && typeof item.text === "string",
-      ),
-    )
-    .map((item) => item.text)
-    .filter(Boolean)
-    .join("\n");
 }
 function renderNamedList(items: unknown[], nameKey: string): string {
   if (items.length === 0) return "_No items._";

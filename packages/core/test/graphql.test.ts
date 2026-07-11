@@ -1,10 +1,58 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+  type PathLike,
+} from "node:fs";
+import type * as FsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GraphQLManager, type GraphqlEndpointConfig } from "../src/graphql";
+import { MEDIA_ARTIFACT_MAX_BYTES } from "../src/media/results";
 import { ServerRegistry } from "../src/registry";
+import {
+  createMediaArtifactWriter,
+  resolveMediaArtifact,
+  writeMediaArtifact,
+} from "../src/media/artifacts";
+
+const mediaArtifactFailure = vi.hoisted(() => ({
+  metadataPublication: false,
+  backupCleanup: false,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fsPromises = (await importOriginal()) as typeof FsPromises;
+  return {
+    ...fsPromises,
+    rename: async (from: PathLike, to: PathLike): Promise<void> => {
+      if (
+        mediaArtifactFailure.metadataPublication &&
+        String(from).endsWith(".partial.caplets.json") &&
+        String(to).endsWith("response.bin.caplets.json")
+      ) {
+        throw new Error("metadata publication failed");
+      }
+      await fsPromises.rename(from, to);
+    },
+    rm: async (...args: Parameters<typeof fsPromises.rm>): Promise<void> => {
+      if (
+        mediaArtifactFailure.backupCleanup &&
+        String(args[0]).endsWith(".previous.caplets.json")
+      ) {
+        throw new Error("backup cleanup failed");
+      }
+      await fsPromises.rm(...args);
+    },
+  };
+});
 
 describe("GraphQLManager", () => {
   let baseUrl = "";
@@ -53,6 +101,33 @@ describe("GraphQLManager", () => {
             operationName?: string;
           };
           response.setHeader("content-type", "application/json");
+          if (payload.variables?.id === "large-error") {
+            response.end(
+              JSON.stringify({
+                errors: [{ message: "response too large" }],
+                padding: "x".repeat(1024 * 1024),
+              }),
+            );
+            return;
+          }
+          if (payload.variables?.id === "exact-inline") {
+            response.end(graphQlPayload(1024 * 1024));
+            return;
+          }
+          if (payload.variables?.id === "over-inline") {
+            response.end(graphQlPayload(1024 * 1024 + 1));
+            return;
+          }
+          if (payload.variables?.id === "advertised-over-cap") {
+            response.setHeader("content-length", String(MEDIA_ARTIFACT_MAX_BYTES + 1));
+            response.end("x");
+            return;
+          }
+          if (payload.variables?.id === "streamed-over-cap") {
+            response.write("x".repeat(9));
+            response.end("x".repeat(8));
+            return;
+          }
           if (payload.variables?.id === "missing") {
             response.end(JSON.stringify({ errors: [{ message: "not found" }] }));
             return;
@@ -196,6 +271,332 @@ describe("GraphQLManager", () => {
       status: 200,
       body: { errors: [{ message: "not found" }] },
     });
+  });
+
+  it("artifactizes oversized GraphQL errors without losing error classification", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-artifacts-"));
+    const manager = new GraphQLManager(registry(), {
+      artifactDir,
+      exposeLocalArtifactPaths: false,
+    });
+    const endpoint = graphqlEndpoint({
+      schemaUrl: `${baseUrl}/schema.graphql`,
+      endpointUrl: `${baseUrl}/graphql`,
+    });
+
+    try {
+      const result = await manager.callTool(endpoint, "query_user", { id: "large-error" });
+
+      expect(result).toMatchObject({
+        isError: true,
+        structuredContent: {
+          kind: "remote-reference",
+          uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+          filename: "response.bin",
+          byteLength: expect.any(Number),
+          sha256: expect.any(String),
+        },
+      });
+      expect(result.structuredContent).not.toHaveProperty("path");
+      expect(result.structuredContent).not.toHaveProperty("pathResolution");
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams oversized GraphQL artifacts before the upstream response completes", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-streaming-artifacts-"));
+    let releaseResponse: (() => void) | undefined;
+    let artifactWatcher: FSWatcher | undefined;
+    const partialArtifactCreated = new Promise<void>((resolve) => {
+      artifactWatcher = watch(artifactDir, { recursive: true }, (_event, filename) => {
+        if (String(filename).endsWith(".partial")) {
+          artifactWatcher?.close();
+          resolve();
+        }
+      });
+    });
+    let markFirstChunkSent: (() => void) | undefined;
+    const firstChunkSent = new Promise<void>((resolve) => {
+      markFirstChunkSent = resolve;
+    });
+    const artifactServer = createServer(async (_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.write('{"data":{"user":{"id":"42"}},"padding":"');
+      response.write("x".repeat(4096));
+      markFirstChunkSent?.();
+      await new Promise<void>((resolve) => {
+        releaseResponse = resolve;
+      });
+      response.end('"}');
+    });
+
+    try {
+      await new Promise<void>((resolve) => artifactServer.listen(0, "127.0.0.1", resolve));
+      const address = artifactServer.address();
+      if (!address || typeof address === "string") {
+        throw new Error("streaming GraphQL test server did not bind");
+      }
+      const manager = new GraphQLManager(registry(), {
+        artifactDir,
+        mediaInlineThresholdBytes: 1024,
+      });
+      const endpoint = graphqlEndpoint({
+        schemaUrl: `${baseUrl}/schema.graphql`,
+        endpointUrl: `http://127.0.0.1:${address.port}/graphql`,
+        requestTimeoutMs: 1000,
+      });
+      const resultPromise = manager.callTool(endpoint, "query_user", { id: "streaming" });
+
+      await firstChunkSent;
+      const observedBeforeUpstreamCompleted = await Promise.race([
+        partialArtifactCreated.then(() => "artifact"),
+        resultPromise.then(
+          () => "result",
+          () => "failed",
+        ),
+      ]);
+      expect(observedBeforeUpstreamCompleted).toBe("artifact");
+      releaseResponse?.();
+
+      await expect(resultPromise).resolves.toMatchObject({
+        isError: false,
+        structuredContent: {
+          kind: "local-artifact",
+          byteLength: expect.any(Number),
+          sha256: expect.any(String),
+        },
+      });
+    } finally {
+      artifactWatcher?.close();
+      releaseResponse?.();
+      await new Promise<void>((resolve) => artifactServer.close(() => resolve()));
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes partial GraphQL artifacts when the streamed hard cap is exceeded", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-streaming-cap-"));
+    const manager = new GraphQLManager(registry(), {
+      artifactDir,
+      mediaInlineThresholdBytes: 8,
+      mediaArtifactMaxBytes: 16,
+    });
+    const endpoint = graphqlEndpoint({
+      schemaUrl: `${baseUrl}/schema.graphql`,
+      endpointUrl: `${baseUrl}/graphql`,
+    });
+
+    try {
+      await expect(
+        manager.callTool(endpoint, "query_user", { id: "streamed-over-cap" }),
+      ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+      const artifactFiles = readdirSync(artifactDir, {
+        recursive: true,
+        withFileTypes: true,
+      }).filter((entry) => entry.isFile());
+      expect(artifactFiles).toEqual([]);
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores an existing GraphQL artifact when metadata publication fails", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-transaction-"));
+    const outputPath = join(artifactDir, "users", "call-1", "response.bin");
+    const original = await writeMediaArtifact({
+      rootDir: artifactDir,
+      capletId: "users",
+      callId: "call-1",
+      outputPath,
+      mimeType: "application/json",
+      bytes: Buffer.from("original GraphQL artifact"),
+    });
+    const originalBytes = readFileSync(outputPath);
+    const originalMetadata = readFileSync(`${outputPath}.caplets.json`);
+    mediaArtifactFailure.metadataPublication = true;
+
+    try {
+      await expect(
+        writeMediaArtifact({
+          rootDir: artifactDir,
+          capletId: "users",
+          callId: "call-1",
+          outputPath,
+          mimeType: "application/json",
+          bytes: Buffer.from("replacement GraphQL artifact"),
+        }),
+      ).rejects.toThrow("metadata publication failed");
+      expect(readFileSync(outputPath)).toEqual(originalBytes);
+      expect(readFileSync(`${outputPath}.caplets.json`)).toEqual(originalMetadata);
+      expect(
+        readdirSync(artifactDir, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile())
+          .map((entry) => entry.name)
+          .sort(),
+      ).toEqual(["response.bin", "response.bin.caplets.json"]);
+      expect(original.path).toBe(outputPath);
+    } finally {
+      mediaArtifactFailure.metadataPublication = false;
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a published GraphQL artifact when backup cleanup fails", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-cleanup-"));
+    const outputPath = join(artifactDir, "users", "call-1", "response.bin");
+    await writeMediaArtifact({
+      rootDir: artifactDir,
+      capletId: "users",
+      callId: "call-1",
+      outputPath,
+      mimeType: "application/json",
+      bytes: Buffer.from("original GraphQL artifact"),
+    });
+    mediaArtifactFailure.backupCleanup = true;
+
+    try {
+      await expect(
+        writeMediaArtifact({
+          rootDir: artifactDir,
+          capletId: "users",
+          callId: "call-1",
+          outputPath,
+          mimeType: "application/json",
+          bytes: Buffer.from("replacement GraphQL artifact"),
+        }),
+      ).rejects.toMatchObject({ code: "DOWNSTREAM_TOOL_ERROR" });
+      expect(readFileSync(outputPath)).toEqual(Buffer.from("replacement GraphQL artifact"));
+      expect(readFileSync(`${outputPath}.caplets.json`, "utf8")).toContain("application/json");
+      mediaArtifactFailure.backupCleanup = false;
+      await writeMediaArtifact({
+        rootDir: artifactDir,
+        capletId: "users",
+        callId: "call-1",
+        outputPath,
+        mimeType: "text/plain",
+        bytes: Buffer.from("cleanup retry GraphQL artifact"),
+      });
+      expect(
+        readdirSync(artifactDir, { recursive: true, withFileTypes: true }).filter((entry) =>
+          entry.name.includes(".previous"),
+        ),
+      ).toEqual([]);
+    } finally {
+      mediaArtifactFailure.backupCleanup = false;
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent GraphQL artifact publication for one output path", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-concurrent-"));
+    const outputPath = join(artifactDir, "users", "call-1", "response.bin");
+    const firstWriter = await createMediaArtifactWriter({
+      rootDir: artifactDir,
+      capletId: "users",
+      callId: "call-1",
+      outputPath,
+      mimeType: "text/plain",
+    });
+    const secondWriter = await createMediaArtifactWriter({
+      rootDir: artifactDir,
+      capletId: "users",
+      callId: "call-1",
+      outputPath,
+      mimeType: "application/json",
+    });
+
+    try {
+      await Promise.all([
+        firstWriter.write(Buffer.from("first GraphQL artifact")),
+        secondWriter.write(Buffer.from('{"artifact":"second"}')),
+      ]);
+      const [first, second] = await Promise.all([firstWriter.complete(), secondWriter.complete()]);
+      const stored = resolveMediaArtifact(first.uri, { artifactRoot: artifactDir });
+      const published = [first, second].find(
+        (candidate) =>
+          candidate.byteLength === stored.byteLength &&
+          candidate.sha256 === stored.sha256 &&
+          candidate.mimeType === stored.mimeType,
+      );
+
+      expect(published).toBeDefined();
+      expect(stored.sha256).toBe(
+        createHash("sha256").update(readFileSync(outputPath)).digest("hex"),
+      );
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify errors from invalid JSON split across GraphQL response chunks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "caplets-graphql-invalid-json-"));
+    const schemaPath = join(dir, "schema.graphql");
+    writeFileSync(schemaPath, schemaSdl);
+    vi.stubGlobal(
+      "fetch",
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"errors":[{"message":"bad"}],'));
+              controller.enqueue(new TextEncoder().encode("}"));
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    const manager = new GraphQLManager(registry());
+    const endpoint = graphqlEndpoint({ schemaPath });
+
+    try {
+      const result = await manager.callTool(endpoint, "query_user", { id: "invalid-json" });
+
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toMatchObject({
+        kind: "inline",
+        body: '{"errors":[{"message":"bad"}],}',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the 1 MiB GraphQL inline threshold and bounded artifact cap", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-graphql-boundaries-"));
+    const endpoint = graphqlEndpoint({
+      schemaUrl: `${baseUrl}/schema.graphql`,
+      endpointUrl: `${baseUrl}/graphql`,
+    });
+    const manager = new GraphQLManager(registry(), { artifactDir });
+    const boundedManager = new GraphQLManager(registry(), { mediaArtifactMaxBytes: 16 });
+    const overCapOverrideManager = new GraphQLManager(registry(), {
+      mediaArtifactMaxBytes: MEDIA_ARTIFACT_MAX_BYTES * 2,
+    });
+
+    try {
+      const exact = await manager.callTool(endpoint, "query_user", { id: "exact-inline" });
+      const over = await manager.callTool(endpoint, "query_user", { id: "over-inline" });
+
+      expect(exact.structuredContent).toMatchObject({ kind: "inline" });
+      expect(over.structuredContent).toMatchObject({
+        kind: "local-artifact",
+        byteLength: 1024 * 1024 + 1,
+      });
+      await expect(
+        manager.callTool(endpoint, "query_user", { id: "advertised-over-cap" }),
+      ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+      await expect(
+        boundedManager.callTool(endpoint, "query_user", { id: "streamed-over-cap" }),
+      ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+      await expect(
+        overCapOverrideManager.callTool(endpoint, "query_user", { id: "advertised-over-cap" }),
+      ).rejects.toMatchObject({ code: "DOWNSTREAM_PROTOCOL_ERROR" });
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
   });
 
   it("redacts GraphQL auth failures without returning downstream error bodies", async () => {
@@ -360,6 +761,12 @@ const schemaSdl = `
     title: String!
   }
 `;
+
+function graphQlPayload(byteLength: number): string {
+  const payload = { data: { user: { id: "42", name: "Ada" } }, padding: "" };
+  const paddingLength = byteLength - Buffer.byteLength(JSON.stringify(payload));
+  return JSON.stringify({ ...payload, padding: "x".repeat(paddingLength) });
+}
 
 function graphqlEndpoint(overrides: Partial<GraphqlEndpointConfig> = {}): GraphqlEndpointConfig {
   return {

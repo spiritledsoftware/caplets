@@ -25,6 +25,7 @@ describe("Code Mode MCP tool", () => {
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
 
     expect(session.registeredToolIds()).toEqual(["github"]);
     expect(server.registered.get("github")).toBeDefined();
@@ -46,6 +47,50 @@ describe("Code Mode MCP tool", () => {
     await engine.close();
   });
 
+  it("exposes only ready Code Mode Caplets and rejects hidden handle references", async () => {
+    const ready = {
+      name: "Ready",
+      description: "Ready HTTP Caplet.",
+      exposure: "code_mode",
+      baseUrl: "http://127.0.0.1:1",
+      auth: { type: "none" },
+      actions: { ping: { method: "GET", path: "/ping" } },
+    };
+    const { dir, configPath, projectConfigPath } = tempConfig({
+      httpApis: {
+        ready,
+        disabled: { ...ready, name: "Disabled", disabled: true },
+        setup: {
+          ...ready,
+          name: "Setup",
+          setup: { commands: [{ label: "Install", command: "install-setup" }] },
+        },
+      },
+    });
+    dirs.push(dir);
+    const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
+    const server = mockServer();
+    const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
+    const callback = server.callbacks.get("code_mode");
+    const execute = vi.spyOn(engine, "execute");
+
+    const listed = await callback?.({ code: "return Object.keys(caplets);" });
+    const disabled = await callback?.({ code: "return caplets.disabled.inspect();" });
+    const setup = await callback?.({ code: "return caplets.setup.inspect();" });
+
+    expect(listed?.structuredContent).toMatchObject({
+      ok: true,
+      value: ["ready", "debug"],
+    });
+    expect(disabled?.structuredContent).toMatchObject({ ok: false });
+    expect(setup?.structuredContent).toMatchObject({ ok: false });
+    expect(execute).not.toHaveBeenCalled();
+
+    await session.close();
+    await engine.close();
+  });
+
   it("returns a structured run envelope from the code_mode tool", async () => {
     const { dir, configPath, projectConfigPath } = tempConfig({
       mcpServers: {
@@ -56,6 +101,7 @@ describe("Code Mode MCP tool", () => {
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
     const callback = server.callbacks.get("code_mode");
 
     const result = await callback?.({ code: "return { ok: true };" });
@@ -85,6 +131,7 @@ describe("Code Mode MCP tool", () => {
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
     const callback = server.callbacks.get("code_mode");
 
     const first = await callback?.({ code: "var counter = 1;\nreturn counter;" });
@@ -124,6 +171,7 @@ describe("Code Mode MCP tool", () => {
     const engine = new CapletsEngine({ configPath, projectConfigPath, watch: false });
     const server = mockServer();
     const session = new CapletsMcpSession(engine, { server });
+    await session.refreshExposure();
     const callback = server.callbacks.get("code_mode");
 
     const result = await callback?.({ timeoutMs: 1000 });

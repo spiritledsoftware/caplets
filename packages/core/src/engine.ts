@@ -1,5 +1,9 @@
 import { existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { dirname, join, parse } from "node:path";
+import {
+  createBackendOperationRuntime,
+  type BackendOperationRuntime,
+} from "./backend-operation-dispatch";
 import { CapletSetManager } from "./caplet-sets";
 import { CliToolsManager } from "./cli-tools";
 import { findProjectRoot, fingerprintProjectRoot } from "./cloud/project-root";
@@ -27,8 +31,9 @@ import {
 } from "./observed-output-shapes";
 import type { ProjectBindingExecutionContext } from "./project-binding/execution-context";
 import { ServerRegistry } from "./registry";
-import { handleServerTool } from "./tools";
+import { extractArtifacts, handleServerTool } from "./tools";
 import { discoverExposureSnapshot, type ExposureSnapshot } from "./exposure/discovery";
+import { buildExposureProjection, type ExposureProjection } from "./exposure/projection";
 import {
   captureRuntimeReliabilityEvent,
   captureRuntimeTelemetryEvent,
@@ -48,12 +53,19 @@ import type {
 
 type ToolSummary = { name: string; description?: string };
 
+export type ResolvedExposureProjection = {
+  generation: number;
+  projection: ExposureProjection;
+};
+
 export type CapletsEngineOptions = {
   configPath?: string;
   projectConfigPath?: string;
   authDir?: string;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
+  mediaInlineThresholdBytes?: number;
+  mediaArtifactMaxBytes?: number;
   watchDebounceMs?: number;
   watch?: boolean;
   writeErr?: (value: string) => void;
@@ -103,6 +115,7 @@ export class CapletsEngine {
   private readonly http: HttpActionManager;
   private readonly cli: CliToolsManager;
   private readonly capletSets: CapletSetManager;
+  private readonly backendRuntime: BackendOperationRuntime;
   private readonly paths: RuntimePaths;
   private readonly watchDebounceMs: number;
   private readonly watchEnabled: boolean;
@@ -115,7 +128,7 @@ export class CapletsEngine {
   private readonly telemetry: RuntimeTelemetryContext;
   private readonly telemetryExecuteExposureMode: "progressive" | "code_mode";
   private readonly reloadListeners = new Set<(event: CapletsEngineReloadEvent) => void>();
-  private lastExposureSnapshot: ExposureSnapshot | undefined;
+  private exposureGeneration = 0;
   private watchers: FSWatcher[] = [];
   private reloadTimer: NodeJS.Timeout | undefined;
   private watcherRefreshTimer: NodeJS.Timeout | undefined;
@@ -155,12 +168,21 @@ export class CapletsEngine {
       this.registry,
       selectHttpLikeOptions(options),
     );
-    this.graphql = new GraphQLManager(this.registry, selectAuthOptions(options.authDir));
+    this.graphql = new GraphQLManager(this.registry, selectHttpLikeOptions(options));
     this.http = new HttpActionManager(this.registry, selectHttpLikeOptions(options));
     this.cli = new CliToolsManager(this.registry, {
       projectBindingContext: options.projectBindingContext,
     });
     this.capletSets = new CapletSetManager(this.registry, selectHttpLikeOptions(options));
+    this.backendRuntime = createBackendOperationRuntime({
+      mcp: this.downstream,
+      openapi: this.openapi,
+      googleDiscovery: this.googleDiscovery,
+      graphql: this.graphql,
+      http: this.http,
+      cli: this.cli,
+      caplets: this.capletSets,
+    });
     this.watchDebounceMs = options.watchDebounceMs ?? 250;
     this.watchEnabled = options.watch ?? true;
     this.observedOutputShapeStore =
@@ -184,31 +206,43 @@ export class CapletsEngine {
     return nextEnabledServers(this.registry.config);
   }
 
+  currentExposureGeneration(): number {
+    return this.exposureGeneration;
+  }
+
+  async exposureProjection(
+    options: { discoverNonDirectMcpSurfaces?: boolean | undefined } = {},
+  ): Promise<ResolvedExposureProjection> {
+    const generation = this.exposureGeneration;
+    return {
+      generation,
+      projection: buildExposureProjection(await this.exposureSnapshot(options)),
+    };
+  }
+
   async exposureSnapshot(
     options: { discoverNonDirectMcpSurfaces?: boolean | undefined } = {},
   ): Promise<ExposureSnapshot> {
-    this.lastExposureSnapshot = await discoverExposureSnapshot({
-      config: this.registry.config,
-      caplets: this.enabledServers(),
+    const config = this.registry.config;
+    const caplets = allCaplets(config);
+    return await discoverExposureSnapshot({
+      config,
+      caplets,
       ...(options.discoverNonDirectMcpSurfaces === undefined
         ? {}
         : { discoverNonDirectMcpSurfaces: options.discoverNonDirectMcpSurfaces }),
       ...(this.projectBindingContext === undefined
         ? {}
         : { projectBindingContext: this.projectBindingContext }),
-      listTools: async (caplet) => this.listTools(caplet),
+      listTools: async (caplet) => this.backendRuntime.operations.listTools(caplet),
       listResources: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listResources(caplet, true)),
       listResourceTemplates: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listResourceTemplates(caplet, true)),
       listPrompts: async (caplet) =>
         this.optionalMcpList(caplet, () => this.downstream.listPrompts(caplet, true)),
+      supportsCompletions: async (caplet) => await this.downstream.supportsCompletions(caplet),
     });
-    return this.lastExposureSnapshot;
-  }
-
-  currentExposureSnapshot(): ExposureSnapshot | undefined {
-    return this.lastExposureSnapshot;
   }
 
   currentProjectBindingContext(): ProjectBindingExecutionContext | undefined {
@@ -259,23 +293,11 @@ export class CapletsEngine {
     try {
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
-      const result = await handleServerTool(
-        caplet,
-        request,
-        this.registry,
-        this.downstream,
-        this.openapi,
-        this.graphql,
-        this.http,
-        this.cli,
-        this.capletSets,
-        {
-          observedOutputShapeStore: this.observedOutputShapeStore,
-          observedOutputShapeScope: this.observedOutputShapeScope,
-          projectFingerprint: this.projectFingerprint,
-        },
-        this.googleDiscovery,
-      );
+      const result = await handleServerTool(caplet, request, this.registry, this.backendRuntime, {
+        observedOutputShapeStore: this.observedOutputShapeStore,
+        observedOutputShapeScope: this.observedOutputShapeScope,
+        projectFingerprint: this.projectFingerprint,
+      });
       this.captureToolActivation(
         caplet,
         operationFromRequest(request),
@@ -312,7 +334,7 @@ export class CapletsEngine {
     try {
       caplet = this.registry.require(serverId);
       this.assertProjectBindingCallable(caplet);
-      const result = await this.callTool(caplet, toolName, args);
+      const result = await this.backendRuntime.operations.callTool(caplet, toolName, args);
       const annotated = annotateDirectResult(result, caplet, toolName);
       this.captureToolActivation(caplet, "call_tool", "direct", annotated, started);
       return annotated;
@@ -321,6 +343,33 @@ export class CapletsEngine {
       this.captureReliabilityError("call_tool", "direct", result);
       this.captureToolActivation(caplet, "call_tool", "direct", result, started);
       return result;
+    }
+  }
+
+  async completeDirectReference(
+    serverId: string,
+    ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string },
+    argument: { name: string; value: string },
+    context?: { arguments?: Record<string, string> | undefined } | undefined,
+  ): Promise<string[]> {
+    const started = Date.now();
+    let caplet: CapletConfig | undefined;
+    try {
+      caplet = this.registry.require(serverId);
+      this.assertProjectBindingCallable(caplet);
+      if (caplet.backend !== "mcp") throw new Error(`Caplet ${serverId} has no MCP completions`);
+      const result = await this.downstream.complete(caplet, {
+        ref,
+        argument,
+        ...(context ? { context } : {}),
+      });
+      this.captureToolActivation(caplet, "complete", "direct", result, started);
+      return result.completion.values;
+    } catch (error) {
+      const result = errorResult(error);
+      this.captureReliabilityError("complete", "direct", result);
+      this.captureToolActivation(caplet, "complete", "direct", result, started);
+      throw error;
     }
   }
 
@@ -434,20 +483,7 @@ export class CapletsEngine {
   }
 
   private async listCompletionTools(server: CapletConfig): Promise<ToolSummary[]> {
-    const tools =
-      server.backend === "mcp"
-        ? await this.downstream.listTools(server)
-        : server.backend === "openapi"
-          ? await this.openapi.listTools(server)
-          : server.backend === "googleDiscovery"
-            ? await this.googleDiscovery.listTools(server)
-            : server.backend === "graphql"
-              ? await this.graphql.listTools(server)
-              : server.backend === "http"
-                ? await this.http.listTools(server)
-                : server.backend === "cli"
-                  ? await this.cli.listTools(server)
-                  : await this.capletSets.listTools(server);
+    const tools = await this.backendRuntime.operations.listTools(server);
     return tools.map((tool) => ({
       name: tool.name,
       ...(tool.description ? { description: tool.description } : {}),
@@ -485,38 +521,6 @@ export class CapletsEngine {
     );
   }
 
-  private async listTools(server: CapletConfig) {
-    return server.backend === "mcp"
-      ? await this.downstream.listTools(server)
-      : server.backend === "openapi"
-        ? await this.openapi.listTools(server)
-        : server.backend === "googleDiscovery"
-          ? await this.googleDiscovery.listTools(server)
-          : server.backend === "graphql"
-            ? await this.graphql.listTools(server)
-            : server.backend === "http"
-              ? await this.http.listTools(server)
-              : server.backend === "cli"
-                ? await this.cli.listTools(server)
-                : await this.capletSets.listTools(server);
-  }
-
-  private async callTool(server: CapletConfig, toolName: string, args: Record<string, unknown>) {
-    return server.backend === "mcp"
-      ? await this.downstream.callTool(server, toolName, args)
-      : server.backend === "openapi"
-        ? await this.openapi.callTool(server, toolName, args)
-        : server.backend === "googleDiscovery"
-          ? await this.googleDiscovery.callTool(server, toolName, args)
-          : server.backend === "graphql"
-            ? await this.graphql.callTool(server, toolName, args)
-            : server.backend === "http"
-              ? await this.http.callTool(server, toolName, args)
-              : server.backend === "cli"
-                ? await this.cli.callTool(server, toolName, args)
-                : await this.capletSets.callTool(server, toolName, args);
-  }
-
   private async optionalMcpList<T>(
     caplet: Extract<CapletConfig, { backend: "mcp" }>,
     list: () => Promise<T[]>,
@@ -548,6 +552,7 @@ export class CapletsEngine {
     const previousConfig = this.registry.config;
     const nextRegistry = new ServerRegistry(nextConfig);
     this.registry = nextRegistry;
+    this.exposureGeneration += 1;
     this.telemetry.config = nextConfig;
     this.downstream.updateRegistry(nextRegistry);
     this.openapi.updateRegistry(nextRegistry);
@@ -779,11 +784,19 @@ function selectHttpLikeOptions(options: CapletsEngineOptions): {
   authDir?: string;
   artifactDir?: string;
   exposeLocalArtifactPaths?: boolean;
+  mediaInlineThresholdBytes?: number;
+  mediaArtifactMaxBytes?: number;
 } {
   return {
     ...selectAuthOptions(options.authDir),
     ...(options.artifactDir ? { artifactDir: options.artifactDir } : {}),
     ...(options.exposeLocalArtifactPaths === false ? { exposeLocalArtifactPaths: false } : {}),
+    ...(options.mediaInlineThresholdBytes === undefined
+      ? {}
+      : { mediaInlineThresholdBytes: options.mediaInlineThresholdBytes }),
+    ...(options.mediaArtifactMaxBytes === undefined
+      ? {}
+      : { mediaArtifactMaxBytes: options.mediaArtifactMaxBytes }),
   };
 }
 
@@ -876,6 +889,7 @@ function annotateDirectResult(result: unknown, caplet: CapletConfig, operation: 
     return result;
   }
   const existingMeta = (result as { _meta?: unknown })._meta;
+  const artifacts = extractArtifacts(result);
   return {
     ...result,
     _meta: {
@@ -885,6 +899,7 @@ function annotateDirectResult(result: unknown, caplet: CapletConfig, operation: 
         backend: caplet.backend,
         operation,
         exposure: "direct",
+        ...(artifacts.length === 0 ? {} : { artifacts }),
       },
     },
   };

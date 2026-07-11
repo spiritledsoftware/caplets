@@ -8,13 +8,16 @@ Catalog indexing is separate from anonymous telemetry.
 Set `CAPLETS_DISABLE_CATALOG_INDEXING=1` to disable catalog indexing submissions.
 
 Anonymous telemetry intentionally excludes source URLs, Caplet IDs, hostnames, local paths,
-tool arguments, tool outputs, and raw config. Public catalog indexing needs different data:
-it publishes public-source metadata so other users can search for public Caplets.
+tool arguments, tool outputs, raw config, raw search text, session replay, and raw browser URLs.
+Public catalog indexing needs different data: it publishes public-source metadata so other users
+can search for public Caplets.
 
-Landing, docs, and catalog analytics are anonymous telemetry, not public catalog indexing.
-They use categorical page, search, filter, and install-intent events. They do not publish
-source identity, Caplet identity, browser identity, raw URLs, raw search text, session
-replay, or known-user profiles.
+Landing, docs, and catalog analytics are anonymous telemetry, not public catalog indexing. They
+use categorical page, search, filter, and install-intent events. A final browser PostHog envelope
+retains only the configured public project token and anonymous `distinct_id` for provider routing;
+they are not user credentials, management keys, or token-shaped application data.
+They do not publish source identity, Caplet identity, raw URLs, raw search text, session replay, or
+known-user or person-profile attribution, and they never hand browser identity into CLI or runtime telemetry.
 
 ## What can become public
 

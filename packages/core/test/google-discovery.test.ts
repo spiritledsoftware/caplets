@@ -15,6 +15,7 @@ import { parseConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { ServerRegistry } from "../src/registry";
 import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 const fixture = JSON.parse(
   readFileSync(join(__dirname, "fixtures/google-discovery/drive.discovery.json"), "utf8"),
@@ -1156,19 +1157,14 @@ describe("GoogleDiscoveryManager", () => {
       caplet,
       { operation: "tools" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream, googleDiscovery: manager }),
       {},
-      manager,
     );
+    const listed = list.structuredContent as unknown as {
+      result: { items: Array<{ name: string }> };
+    };
 
-    expect(
-      list.structuredContent.result.items.map((tool: { name: string }) => tool.name),
-    ).toContain("drive.files.list");
+    expect(listed.result.items.map((tool) => tool.name)).toContain("drive.files.list");
 
     const call = await handleServerTool(
       caplet,
@@ -1179,14 +1175,8 @@ describe("GoogleDiscoveryManager", () => {
         fields: ["body.files"],
       },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      testBackendOperationRuntime(registry, { mcp: downstream, googleDiscovery: manager }),
       {},
-      manager,
     );
 
     expect(call.structuredContent).toEqual({ body: { files: [{ id: "1", name: "Report" }] } });
@@ -1218,7 +1208,9 @@ describe("GoogleDiscoveryManager", () => {
 
     expect(result.structuredContent).toMatchObject({
       status: 200,
-      body: { artifact: { filename: "report.pdf", mimeType: "application/pdf" } },
+      kind: "local-artifact",
+      filename: "report.pdf",
+      mimeType: "application/pdf",
     });
   });
 
@@ -1250,7 +1242,10 @@ describe("GoogleDiscoveryManager", () => {
       expect(existsSync(outputPath)).toBe(true);
       expect(result.structuredContent).toMatchObject({
         status: 200,
-        body: { artifact: { path: outputPath, filename: "export.txt", mimeType: "text/plain" } },
+        kind: "local-artifact",
+        path: outputPath,
+        filename: "export.txt",
+        mimeType: "text/plain",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1276,7 +1271,9 @@ describe("GoogleDiscoveryManager", () => {
 
     expect(result.structuredContent).toMatchObject({
       status: 200,
-      body: { artifact: { filename: "export.pdf", mimeType: "application/pdf" } },
+      kind: "local-artifact",
+      filename: "export.pdf",
+      mimeType: "application/pdf",
     });
     expect(requests.find((request) => request.url === "/drive/v3/files/1?alt=media")).toBeDefined();
   });
@@ -1305,13 +1302,10 @@ describe("GoogleDiscoveryManager", () => {
 
     expect(result.structuredContent).toMatchObject({
       status: 200,
-      body: {
-        artifact: {
-          filename: "large.pdf",
-          mimeType: "application/pdf",
-          byteLength: 1024 * 1024 + 1,
-        },
-      },
+      kind: "local-artifact",
+      filename: "large.pdf",
+      mimeType: "application/pdf",
+      byteLength: 1024 * 1024 + 1,
     });
   });
 
@@ -1335,17 +1329,11 @@ describe("GoogleDiscoveryManager", () => {
 
     expect(result.structuredContent).toMatchObject({
       status: 200,
-      body: {
-        artifact: {
-          mimeType: "application/json",
-          byteLength: expect.any(Number),
-        },
-      },
+      kind: "local-artifact",
+      mimeType: "application/json",
+      byteLength: expect.any(Number),
     });
-    expect(
-      (result.structuredContent as { body: { artifact: { byteLength: number } } }).body.artifact
-        .byteLength,
-    ).toBeGreaterThan(1024 * 1024);
+    expect(artifactByteLength(result)).toBeGreaterThan(1024 * 1024);
   });
 
   it("uploads media from dataUrl using multipart when metadata body is present", async () => {
@@ -1670,3 +1658,21 @@ describe("GoogleDiscoveryManager", () => {
     }
   });
 });
+
+function artifactByteLength(result: unknown): number {
+  if (
+    result &&
+    typeof result === "object" &&
+    "structuredContent" in result &&
+    result.structuredContent &&
+    typeof result.structuredContent === "object" &&
+    "kind" in result.structuredContent &&
+    (result.structuredContent.kind === "local-artifact" ||
+      result.structuredContent.kind === "remote-reference") &&
+    "byteLength" in result.structuredContent &&
+    typeof result.structuredContent.byteLength === "number"
+  ) {
+    return result.structuredContent.byteLength;
+  }
+  throw new Error("expected an artifact result");
+}

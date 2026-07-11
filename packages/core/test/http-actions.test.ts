@@ -7,7 +7,9 @@ import { parseConfig, type HttpApiConfig } from "../src/config";
 import { DownstreamManager } from "../src/downstream";
 import { HttpActionManager } from "../src/http-actions";
 import { ServerRegistry } from "../src/registry";
+import { CapletsEngine } from "../src/engine";
 import { handleServerTool } from "../src/tools";
+import { testBackendOperationRuntime } from "./backend-operation-runtime";
 
 describe("HttpActionManager", () => {
   let baseUrl = "";
@@ -46,6 +48,14 @@ describe("HttpActionManager", () => {
         }
         if (request.url === "/large") {
           response.end("x".repeat(2 * 1024 * 1024));
+          return;
+        }
+        if (request.url === "/inline-threshold") {
+          response.end("x".repeat(1024 * 1024));
+          return;
+        }
+        if (request.url === "/over-inline-threshold") {
+          response.end("x".repeat(1024 * 1024 + 1));
           return;
         }
         if (request.url === "/large-stream") {
@@ -127,31 +137,33 @@ describe("HttpActionManager", () => {
 
     const tools = await manager.listTools(api);
 
-    expect(tools).toEqual([
-      {
-        name: "ping",
-        description: "Ping the service.",
-        inputSchema: { type: "object", additionalProperties: true },
-        annotations: { readOnlyHint: true, destructiveHint: false },
-      },
-      {
-        name: "update_user",
-        inputSchema: { type: "object", required: ["id"] },
-        outputSchema: {
-          type: "object",
-          required: ["status", "body"],
-          properties: {
-            status: { type: "number" },
-            body: {
-              type: "object",
-              required: ["ok"],
-              properties: { ok: { type: "boolean" } },
-            },
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toEqual({
+      name: "ping",
+      description: "Ping the service.",
+      inputSchema: { type: "object", additionalProperties: true },
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    });
+    expect(tools[1]).toMatchObject({
+      name: "update_user",
+      inputSchema: { type: "object", required: ["id"] },
+      outputSchema: {
+        type: "object",
+        required: ["status", "statusText", "headers", "kind"],
+        properties: {
+          body: {
+            type: "object",
+            required: ["ok"],
+            properties: { ok: { type: "boolean" } },
           },
+          kind: { enum: ["inline", "local-artifact", "remote-reference"] },
+          uri: { type: "string" },
+          path: { type: "string" },
         },
-        annotations: { readOnlyHint: false, destructiveHint: false },
+        oneOf: expect.any(Array),
       },
-    ]);
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    });
   });
 
   it("exposes output schemas through describe_tool, compact metadata, and call_tool.fields", async () => {
@@ -192,8 +204,13 @@ describe("HttpActionManager", () => {
     const tool = await http.getTool(caplet, "ping");
     expect(tool.outputSchema).toMatchObject({
       type: "object",
-      required: ["status", "body"],
-      properties: { body: { properties: { ok: { type: "boolean" } } } },
+      required: ["status", "statusText", "headers", "kind"],
+      properties: {
+        body: { properties: { ok: { type: "boolean" } } },
+        kind: { enum: ["inline", "local-artifact", "remote-reference"] },
+        uri: { type: "string" },
+      },
+      oneOf: expect.any(Array),
     });
     expect(http.compact(caplet, tool)).toMatchObject({
       name: "ping",
@@ -207,10 +224,7 @@ describe("HttpActionManager", () => {
       caplet,
       { operation: "describe_tool", name: "ping" },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(registry, { mcp: downstream, http }),
     )) as any;
     expect(fetched.structuredContent.result.tool.outputSchema).toMatchObject({
       properties: { body: { properties: { ok: { type: "boolean" } } } },
@@ -220,10 +234,7 @@ describe("HttpActionManager", () => {
       caplet,
       { operation: "call_tool", name: "ping", args: {}, fields: ["body.ok"] },
       registry,
-      downstream,
-      undefined,
-      undefined,
-      http,
+      testBackendOperationRuntime(registry, { mcp: downstream, http }),
     )) as any;
     expect(projected.structuredContent).toEqual({ body: { ok: true } });
     expect(projected.content[0].text).toContain("# HTTP API call_tool ping");
@@ -307,23 +318,15 @@ describe("HttpActionManager", () => {
 
     try {
       const result = await manager.callTool(api, "pdf", {});
-      const structured = result.structuredContent as {
-        status: number;
-        headers: { "content-type": string };
-        body: { artifact: { path: string; mimeType: string; byteLength: number } };
-      };
 
-      expect(structured).toMatchObject({
+      expect(result.structuredContent).toMatchObject({
         status: 200,
         headers: { "content-type": "application/pdf" },
-        body: {
-          artifact: {
-            mimeType: "application/pdf",
-            byteLength: 13,
-          },
-        },
+        kind: "local-artifact",
+        mimeType: "application/pdf",
+        byteLength: 13,
       });
-      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("%PDF-1.7 test");
+      expect(readFileSync(localArtifactPath(result), "utf8")).toBe("%PDF-1.7 test");
     } finally {
       rmSync(artifactDir, { recursive: true, force: true });
     }
@@ -336,25 +339,15 @@ describe("HttpActionManager", () => {
 
     try {
       const result = await manager.callTool(api, "attachment", {});
-      const structured = result.structuredContent as {
-        body: {
-          artifact: {
-            uri: string;
-            path: string;
-            filename: string;
-            byteLength: number;
-            sha256: string;
-          };
-        };
-      };
 
-      expect(structured.body.artifact).toMatchObject({
+      expect(result.structuredContent).toMatchObject({
+        kind: "local-artifact",
         filename: "report.bin",
         byteLength: 4,
+        uri: expect.stringMatching(/^caplets:\/\/artifacts\//u),
+        sha256: expect.any(String),
       });
-      expect(structured.body.artifact.uri).toContain("caplets://artifacts/");
-      expect(structured.body.artifact.sha256).toHaveLength(64);
-      expect(readFileSync(structured.body.artifact.path)).toEqual(Buffer.from([0, 1, 2, 3]));
+      expect(readFileSync(localArtifactPath(result))).toEqual(Buffer.from([0, 1, 2, 3]));
     } finally {
       rmSync(artifactDir, { recursive: true, force: true });
     }
@@ -378,20 +371,15 @@ describe("HttpActionManager", () => {
     const downstream = new DownstreamManager(registry);
 
     try {
-      const result = (await handleServerTool(
+      const result = await handleServerTool(
         config.httpApis.http!,
         { operation: "call_tool", name: "pdf", args: {} },
         registry,
-        downstream,
-        undefined,
-        undefined,
-        http,
-      )) as any;
-
-      expect(result.structuredContent.body.artifact.path).toContain(artifactDir);
-      expect(readFileSync(result.structuredContent.body.artifact.path, "utf8")).toBe(
-        "%PDF-1.7 test",
+        testBackendOperationRuntime(registry, { mcp: downstream, http }),
       );
+
+      expect(localArtifactPath(result)).toContain(artifactDir);
+      expect(readFileSync(localArtifactPath(result), "utf8")).toBe("%PDF-1.7 test");
     } finally {
       rmSync(artifactDir, { recursive: true, force: true });
     }
@@ -399,37 +387,115 @@ describe("HttpActionManager", () => {
 
   it("writes oversized streamed text responses as media artifacts", async () => {
     const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-stream-artifacts-"));
-    const manager = new HttpActionManager(registry(), { artifactDir, maxInlineBytes: 100 });
+    const manager = new HttpActionManager(registry(), {
+      artifactDir,
+      mediaInlineThresholdBytes: 100,
+    });
     const api = httpApi({
       actions: { large_stream: { method: "GET", path: "/large-stream" } },
     });
 
     try {
       const result = await manager.callTool(api, "large_stream", {});
-      const structured = result.structuredContent as {
-        status: number;
-        headers: { "content-type": string };
-        body: { artifact: { path: string; mimeType: string; byteLength: number } };
-      };
 
-      expect(structured).toMatchObject({
+      expect(result.structuredContent).toMatchObject({
         status: 200,
-        body: {
-          artifact: {
-            mimeType: "application/json",
-            byteLength: 256,
+        kind: "local-artifact",
+        mimeType: "application/json",
+        byteLength: 256,
+      });
+      expect(readFileSync(localArtifactPath(result), "utf8")).toBe("x".repeat(256));
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the default inline threshold distinct from an HTTP Action hard cap", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-default-threshold-"));
+    const manager = new HttpActionManager(registry(), { artifactDir });
+    const api = httpApi({
+      maxResponseBytes: 2 * 1024 * 1024,
+      actions: {
+        exact: { method: "GET", path: "/inline-threshold" },
+        over: { method: "GET", path: "/over-inline-threshold" },
+      },
+    });
+
+    try {
+      const exact = await manager.callTool(api, "exact", {});
+      const over = await manager.callTool(api, "over", {});
+
+      expect(exact.structuredContent).toMatchObject({ kind: "inline" });
+      expect(over.structuredContent).toMatchObject({
+        kind: "local-artifact",
+        byteLength: 1024 * 1024 + 1,
+      });
+      expect(readFileSync(localArtifactPath(over)).byteLength).toBe(1024 * 1024 + 1);
+    } finally {
+      rmSync(artifactDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the engine Media inline threshold below an action hard cap", async () => {
+    const artifactDir = mkdtempSync(join(tmpdir(), "caplets-engine-http-artifacts-"));
+    const config = parseConfig({
+      httpApis: {
+        http: {
+          name: "HTTP API",
+          description: "Call configured HTTP service actions.",
+          baseUrl,
+          auth: { type: "none" },
+          maxResponseBytes: 512,
+          actions: {
+            large_stream: {
+              method: "GET",
+              path: "/large-stream",
+            },
           },
         },
+      },
+    });
+    const engine = new CapletsEngine({
+      watch: false,
+      artifactDir,
+      mediaInlineThresholdBytes: 128,
+      configLoader: () => config,
+    });
+
+    try {
+      const progressive = await engine.execute("http", {
+        operation: "call_tool",
+        name: "large_stream",
+        args: {},
       });
-      expect(readFileSync(structured.body.artifact.path, "utf8")).toBe("x".repeat(256));
+      const direct = await engine.executeDirectTool("http", "large_stream", {});
+
+      expect(progressive).toMatchObject({
+        structuredContent: {
+          kind: "local-artifact",
+          byteLength: 256,
+          path: expect.stringContaining(artifactDir),
+        },
+      });
+      expect(direct).toMatchObject({
+        structuredContent: {
+          kind: "local-artifact",
+          byteLength: 256,
+          path: expect.stringContaining(artifactDir),
+        },
+      });
     } finally {
+      await engine.close();
       rmSync(artifactDir, { recursive: true, force: true });
     }
   });
 
   it("enforces maxResponseBytes as a hard response cap", async () => {
     const artifactDir = mkdtempSync(join(tmpdir(), "caplets-http-cap-artifacts-"));
-    const manager = new HttpActionManager(registry(), { artifactDir, maxInlineBytes: 100 });
+    const manager = new HttpActionManager(registry(), {
+      artifactDir,
+      mediaInlineThresholdBytes: 100,
+    });
     const api = httpApi({
       maxResponseBytes: 200,
       actions: { large_stream: { method: "GET", path: "/large-stream" } },
@@ -594,4 +660,21 @@ function registry(): ServerRegistry {
       },
     }),
   );
+}
+
+function localArtifactPath(result: unknown): string {
+  if (
+    result &&
+    typeof result === "object" &&
+    "structuredContent" in result &&
+    result.structuredContent &&
+    typeof result.structuredContent === "object" &&
+    "kind" in result.structuredContent &&
+    result.structuredContent.kind === "local-artifact" &&
+    "path" in result.structuredContent &&
+    typeof result.structuredContent.path === "string"
+  ) {
+    return result.structuredContent.path;
+  }
+  throw new Error("expected a local artifact result");
 }

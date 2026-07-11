@@ -10,7 +10,8 @@ import {
 } from "./downstream";
 import { CapletsError, toSafeError } from "./errors";
 import { readHttpLikeResponse } from "./http/response";
-import { isAbortError } from "./http/utils";
+import { DEFAULT_MAX_RESPONSE_BYTES, isAbortError } from "./http/utils";
+import { httpLikeMediaOutputSchema } from "./media/results";
 import type { ServerRegistry } from "./registry";
 import { markdownStructuredContent } from "./result-content";
 import { searchToolList } from "./tool-search";
@@ -25,7 +26,7 @@ export class HttpActionManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
-      maxInlineBytes?: number;
+      mediaInlineThresholdBytes?: number;
     } = {},
   ) {}
 
@@ -112,7 +113,7 @@ export class HttpActionManager {
           method: operation.method,
           ...(this.options.artifactDir ? { artifactDir: this.options.artifactDir } : {}),
           ...(this.options.exposeLocalArtifactPaths === false ? { exposeLocalPath: false } : {}),
-          maxInlineBytes: this.options.maxInlineBytes ?? api.maxResponseBytes,
+          maxInlineBytes: this.options.mediaInlineThresholdBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
           maxBytes: api.maxResponseBytes,
         })),
         elapsedMs: Date.now() - startedAt,
@@ -172,7 +173,9 @@ export class HttpActionManager {
       ...(operation.avoidWhen ? { avoidWhen: operation.avoidWhen } : {}),
       inputSchema: (operation.inputSchema ?? DEFAULT_INPUT_SCHEMA) as Tool["inputSchema"],
       ...(operation.outputSchema
-        ? { outputSchema: operation.outputSchema as Tool["outputSchema"] }
+        ? {
+            outputSchema: httpLikeMediaOutputSchema(operation.outputSchema) as Tool["outputSchema"],
+          }
         : {}),
       annotations: {
         readOnlyHint: operation.method === "GET",

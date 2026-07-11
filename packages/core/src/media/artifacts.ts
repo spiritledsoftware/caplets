@@ -1,15 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_ARTIFACT_DIR } from "../config/paths";
 import { CapletsError } from "../errors";
 
@@ -33,6 +36,14 @@ export type WriteMediaArtifactInput = {
   exposeLocalPath?: boolean;
 };
 
+export type WriteMediaArtifactStreamInput = Omit<WriteMediaArtifactInput, "bytes">;
+
+export type MediaArtifactWriter = {
+  write(bytes: Uint8Array): Promise<void>;
+  complete(): Promise<MediaArtifact>;
+  abort(): Promise<void>;
+};
+
 type StoredMediaArtifactMetadata = {
   mimeType?: string;
 };
@@ -43,6 +54,155 @@ type ParsedArtifactUri = {
   filename: string;
 };
 
+const artifactPublicationLocks = new Map<string, Promise<void>>();
+const PUBLICATION_LOCK_WAIT_MS = 30_000;
+const OWNERLESS_LOCK_STALE_MS = 1_000;
+
+async function serializeArtifactPublication<T>(
+  target: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = artifactPublicationLocks.get(target) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => {}).then(() => gate);
+  artifactPublicationLocks.set(target, queued);
+  await previous.catch(() => {});
+  try {
+    return await withArtifactPublicationFileLock(target, operation);
+  } finally {
+    release?.();
+    if (artifactPublicationLocks.get(target) === queued) {
+      artifactPublicationLocks.delete(target);
+    }
+  }
+}
+
+async function withArtifactPublicationFileLock<T>(
+  target: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockDir = resolve(dirname(target), `.${basename(target)}.publication.lock`);
+  const ownerPath = resolve(lockDir, "owner.json");
+  const startedAt = Date.now();
+  for (;;) {
+    try {
+      await mkdir(lockDir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (await publicationLockIsStale(lockDir, ownerPath)) {
+        await rm(lockDir, { force: true, recursive: true });
+        continue;
+      }
+      if (Date.now() - startedAt >= PUBLICATION_LOCK_WAIT_MS) {
+        throw new CapletsError(
+          "DOWNSTREAM_TOOL_ERROR",
+          `Timed out waiting to publish media artifact ${target}`,
+        );
+      }
+      await delay(25);
+      continue;
+    }
+    try {
+      await writeFile(ownerPath, JSON.stringify({ pid: process.pid }), {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      return await operation();
+    } finally {
+      await rm(lockDir, { force: true, recursive: true });
+    }
+  }
+}
+
+async function publicationLockIsStale(lockDir: string, ownerPath: string): Promise<boolean> {
+  try {
+    const owner = JSON.parse(await readFile(ownerPath, "utf8")) as { pid?: unknown };
+    if (!Number.isInteger(owner.pid)) {
+      return true;
+    }
+    try {
+      process.kill(owner.pid as number, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return true;
+    }
+    try {
+      return Date.now() - (await stat(lockDir)).mtimeMs >= OWNERLESS_LOCK_STALE_MS;
+    } catch (statError) {
+      return (statError as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+}
+
+async function removeArtifactBackups(paths: string[], errorMessage: string): Promise<void> {
+  let pending = paths;
+  for (let attempt = 0; attempt < 2 && pending.length > 0; attempt += 1) {
+    const results = await Promise.allSettled(
+      pending.map(async (path) => await rm(path, { force: true })),
+    );
+    pending = results.flatMap((result, index) =>
+      result.status === "rejected" ? [pending[index]!] : [],
+    );
+  }
+  if (pending.length > 0) {
+    throw new CapletsError("DOWNSTREAM_TOOL_ERROR", errorMessage);
+  }
+}
+
+async function recoverOrScavengeArtifactBackups(target: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(dirname(target));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  const prefix = `.${basename(target)}.`;
+  const backupPaths = entries
+    .filter((entry) => entry.startsWith(prefix) && entry.endsWith(".previous"))
+    .map((entry) => resolve(dirname(target), entry))
+    .filter((path) => lstatSync(path).isFile());
+  let recoveredPaths: string[] = [];
+  if (!existsSync(target) && backupPaths.length > 0) {
+    const candidates = await Promise.all(
+      backupPaths.map(async (path) => ({ path, modifiedAt: (await stat(path)).mtimeMs })),
+    );
+    candidates.sort((left, right) => right.modifiedAt - left.modifiedAt);
+    const recoveryPath = candidates[0]!.path;
+    const recoveryMetadataPath = artifactMetadataPath(recoveryPath);
+    await rename(recoveryPath, target);
+    recoveredPaths = [recoveryPath];
+    if (existsSync(recoveryMetadataPath) && lstatSync(recoveryMetadataPath).isFile()) {
+      await rm(artifactMetadataPath(target), { force: true });
+      await rename(recoveryMetadataPath, artifactMetadataPath(target));
+      recoveredPaths.push(recoveryMetadataPath);
+    }
+  }
+  await removeArtifactBackups(
+    entries
+      .filter(
+        (entry) =>
+          entry.startsWith(prefix) &&
+          (entry.endsWith(".previous") || entry.endsWith(".previous.caplets.json")),
+      )
+      .map((entry) => resolve(dirname(target), entry))
+      .filter((path) => !recoveredPaths.includes(path)),
+    "Could not remove stale media artifact publication backups",
+  );
+}
+
 export function artifactUri(capletId: string, callId: string, filename: string): string {
   return `caplets://artifacts/${encodeURIComponent(capletId)}/${encodeURIComponent(
     callId,
@@ -50,6 +210,20 @@ export function artifactUri(capletId: string, callId: string, filename: string):
 }
 
 export async function writeMediaArtifact(input: WriteMediaArtifactInput): Promise<MediaArtifact> {
+  const { bytes, ...streamInput } = input;
+  const writer = await createMediaArtifactWriter(streamInput);
+  try {
+    await writer.write(bytes);
+    return await writer.complete();
+  } catch (error) {
+    await writer.abort();
+    throw error;
+  }
+}
+
+export async function createMediaArtifactWriter(
+  input: WriteMediaArtifactStreamInput,
+): Promise<MediaArtifactWriter> {
   const rootDir = resolve(input.rootDir ?? DEFAULT_ARTIFACT_DIR);
   const capletId = requiredSafePathSegment(input.capletId, "capletId");
   const callId = safePathSegment(input.callId ?? defaultCallId(), "call");
@@ -60,24 +234,142 @@ export async function writeMediaArtifact(input: WriteMediaArtifactInput): Promis
     ? assertInsideRoot(rootDir, input.outputPath)
     : assertInsideRoot(rootDir, resolve(rootDir, capletId, callId, filename));
   rejectSymlinkPathComponents(rootDir, target, true);
+  rejectSymlinkPathComponents(rootDir, artifactMetadataPath(target), true);
   const uriParts = input.outputPath
     ? uriPartsForOutputPath(rootDir, target)
     : { capletId, callId, filename: safeFilename(basename(target)) };
-  const bytes = Buffer.from(input.bytes);
+  const stagingId = randomUUID();
+  const targetMetadataPath = artifactMetadataPath(target);
+  const tempPath = resolve(dirname(target), `.${basename(target)}.${stagingId}.partial`);
+  const tempMetadataPath = artifactMetadataPath(tempPath);
+  const backupPath = resolve(dirname(target), `.${basename(target)}.${stagingId}.previous`);
+  const backupMetadataPath = artifactMetadataPath(backupPath);
 
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  writeFileSync(target, bytes, { mode: 0o600 });
-  chmodSync(target, 0o600);
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+  rejectSymlinkPathComponents(rootDir, target, true);
+  rejectSymlinkPathComponents(rootDir, targetMetadataPath, true);
+  const file = await open(tempPath, "wx", 0o600);
+  const hash = createHash("sha256");
+  let byteLength = 0;
+  let closed = false;
+  let completed = false;
+  let targetBackedUp = false;
+  let metadataBackedUp = false;
+  let targetPublished = false;
+  let metadataPublished = false;
 
-  const artifactFilename = uriParts.filename;
-  writeArtifactMetadata(target, input.mimeType ? { mimeType: input.mimeType } : {});
+  const closeFile = async (): Promise<void> => {
+    if (!closed) {
+      closed = true;
+      await file.close();
+    }
+  };
+
+  const removeStaging = async (): Promise<void> => {
+    await Promise.all([rm(tempPath, { force: true }), rm(tempMetadataPath, { force: true })]);
+  };
+
+  const restorePreviousArtifacts = async (): Promise<void> => {
+    if (metadataPublished) {
+      await rm(targetMetadataPath, { force: true });
+      metadataPublished = false;
+    }
+    if (targetPublished) {
+      await rm(target, { force: true });
+      targetPublished = false;
+    }
+    if (targetBackedUp) {
+      await rename(backupPath, target);
+      targetBackedUp = false;
+    }
+    if (metadataBackedUp) {
+      await rename(backupMetadataPath, targetMetadataPath);
+      metadataBackedUp = false;
+    }
+    await removeStaging();
+  };
+
+  const abort = async (): Promise<void> => {
+    if (completed) {
+      return;
+    }
+    await closeFile().catch(() => {});
+    await removeStaging();
+  };
+
   return {
-    uri: artifactUri(uriParts.capletId, uriParts.callId, artifactFilename),
-    ...(input.exposeLocalPath === false ? {} : { path: target }),
-    filename: artifactFilename,
-    ...(input.mimeType ? { mimeType: input.mimeType } : {}),
-    byteLength: bytes.byteLength,
-    sha256: sha256(bytes),
+    async write(bytes: Uint8Array): Promise<void> {
+      if (completed || closed) {
+        throw new CapletsError("REQUEST_INVALID", "Media artifact writer is already closed");
+      }
+      const chunk = Buffer.isBuffer(bytes)
+        ? bytes
+        : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let offset = 0;
+      while (offset < chunk.byteLength) {
+        const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
+        if (bytesWritten === 0) {
+          throw new CapletsError("DOWNSTREAM_TOOL_ERROR", "Could not write media artifact");
+        }
+        offset += bytesWritten;
+      }
+      hash.update(chunk);
+      byteLength += chunk.byteLength;
+    },
+    async complete(): Promise<MediaArtifact> {
+      if (completed || closed) {
+        throw new CapletsError("REQUEST_INVALID", "Media artifact writer is already closed");
+      }
+      await closeFile();
+      const digest = hash.digest("hex");
+      return await serializeArtifactPublication(target, async () => {
+        try {
+          await recoverOrScavengeArtifactBackups(target);
+          await chmod(tempPath, 0o600);
+          await writeArtifactMetadata(tempPath, input.mimeType ? { mimeType: input.mimeType } : {});
+          rejectSymlinkPathComponents(rootDir, target, true);
+          rejectSymlinkPathComponents(rootDir, targetMetadataPath, true);
+          if (existsSync(target)) {
+            await rename(target, backupPath);
+            targetBackedUp = true;
+          }
+          if (existsSync(targetMetadataPath)) {
+            await rename(targetMetadataPath, backupMetadataPath);
+            metadataBackedUp = true;
+          }
+          await rename(tempPath, target);
+          targetPublished = true;
+          if (input.mimeType) {
+            await rename(tempMetadataPath, targetMetadataPath);
+            metadataPublished = true;
+          }
+          completed = true;
+        } catch (error) {
+          try {
+            await restorePreviousArtifacts();
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "Could not roll back failed media artifact publication",
+            );
+          }
+          throw error;
+        }
+        await removeArtifactBackups(
+          [backupPath, backupMetadataPath],
+          "Media artifact was published but backup cleanup failed",
+        );
+        return {
+          uri: artifactUri(uriParts.capletId, uriParts.callId, uriParts.filename),
+          ...(input.exposeLocalPath === false ? {} : { path: target }),
+          filename: uriParts.filename,
+          ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+          byteLength,
+          sha256: digest,
+        };
+      });
+    },
+    abort,
   };
 }
 
@@ -92,6 +384,7 @@ export function resolveMediaArtifact(
     resolve(rootDir, parsed.capletId, parsed.callId, parsed.filename),
   );
   rejectSymlinkPathComponents(rootDir, path, true);
+  rejectSymlinkPathComponents(rootDir, artifactMetadataPath(path), true);
 
   if (!existsSync(path)) {
     throw new CapletsError("REQUEST_INVALID", "Media artifact was not found");
@@ -290,14 +583,17 @@ function artifactMetadataPath(path: string): string {
   return `${path}.caplets.json`;
 }
 
-function writeArtifactMetadata(path: string, metadata: StoredMediaArtifactMetadata): void {
+async function writeArtifactMetadata(
+  path: string,
+  metadata: StoredMediaArtifactMetadata,
+): Promise<void> {
   const metadataPath = artifactMetadataPath(path);
   if (!metadata.mimeType) {
-    rmSync(metadataPath, { force: true });
+    await rm(metadataPath, { force: true });
     return;
   }
-  writeFileSync(metadataPath, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
-  chmodSync(metadataPath, 0o600);
+  await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, { mode: 0o600 });
+  await chmod(metadataPath, 0o600);
 }
 
 function readArtifactMetadata(path: string): StoredMediaArtifactMetadata | undefined {

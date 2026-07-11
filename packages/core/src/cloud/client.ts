@@ -15,6 +15,10 @@ export type RegisterPresenceInput = {
   fallbackConsent?: "allow" | "deny" | undefined;
 };
 
+export type PresenceRequestOptions = {
+  signal?: AbortSignal;
+};
+
 export type RegisterPresenceResult = {
   presenceId: string;
   expiresAt: string;
@@ -76,7 +80,10 @@ export class CapletsCloudClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
-  async registerPresence(input: RegisterPresenceInput): Promise<RegisterPresenceResult> {
+  async registerPresence(
+    input: RegisterPresenceInput,
+    options: PresenceRequestOptions = {},
+  ): Promise<RegisterPresenceResult> {
     const response = await this.fetchImpl(this.endpoint("api/project-bindings"), {
       method: "POST",
       headers: this.headers({ json: true }),
@@ -90,6 +97,7 @@ export class CapletsCloudClient {
         fallbackConsent: input.fallbackConsent ?? "deny",
         projectFiles: input.projectFiles ?? [],
       }),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     if (!response.ok) {
       throw new Error(`Caplets Cloud Project Binding registration failed: HTTP ${response.status}`);
@@ -101,13 +109,14 @@ export class CapletsCloudClient {
     };
   }
 
-  async stopPresence(presenceId: string): Promise<void> {
+  async stopPresence(presenceId: string, options: PresenceRequestOptions = {}): Promise<void> {
     const response = await this.fetchImpl(
       this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
       {
         method: "PATCH",
         headers: this.headers({ json: true }),
         body: JSON.stringify({ state: "offline" }),
+        ...(options.signal ? { signal: options.signal } : {}),
       },
     );
     if (!response.ok && response.status !== 404) {
@@ -115,13 +124,17 @@ export class CapletsCloudClient {
     }
   }
 
-  async heartbeatPresence(presenceId: string): Promise<HeartbeatPresenceResult> {
+  async heartbeatPresence(
+    presenceId: string,
+    options: PresenceRequestOptions = {},
+  ): Promise<HeartbeatPresenceResult> {
     const response = await this.fetchImpl(
       this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
       {
         method: "PATCH",
         headers: this.headers({ json: true }),
         body: JSON.stringify({ state: "ready", syncState: "idle" }),
+        ...(options.signal ? { signal: options.signal } : {}),
       },
     );
     if (!response.ok) {
@@ -133,13 +146,18 @@ export class CapletsCloudClient {
     };
   }
 
-  async updatePresenceCaplets(presenceId: string, allowedCapletIds: string[]): Promise<void> {
+  async updatePresenceCaplets(
+    presenceId: string,
+    allowedCapletIds: string[],
+    options: PresenceRequestOptions = {},
+  ): Promise<void> {
     const response = await this.fetchImpl(
       this.endpoint(`api/project-bindings/${encodeURIComponent(presenceId)}`),
       {
         method: "PATCH",
         headers: this.headers({ json: true }),
         body: JSON.stringify({ allowedCapletIds }),
+        ...(options.signal ? { signal: options.signal } : {}),
       },
     );
     if (!response.ok) {

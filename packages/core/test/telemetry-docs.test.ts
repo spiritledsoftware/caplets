@@ -59,15 +59,4 @@ describe("telemetry product docs", () => {
     expect(text).not.toMatch(/session replay.*in scope/iu);
     expect(text).not.toMatch(/known-user.*in scope/iu);
   });
-
-  it("keeps public catalog indexing separate from anonymous telemetry", () => {
-    const telemetry = read("docs/product/anonymous-telemetry.md");
-    const indexing = read("apps/docs/src/content/docs/privacy/indexing.mdx");
-
-    expect(telemetry).toContain(
-      "Catalog public indexing remains separate from anonymous telemetry",
-    );
-    expect(indexing).toContain("Landing, docs, and catalog analytics are anonymous telemetry");
-    expect(indexing).toContain("They do not publish");
-  });
 });

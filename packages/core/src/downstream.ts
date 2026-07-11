@@ -374,11 +374,17 @@ export class DownstreamManager {
     }
   }
 
+  async supportsCompletions(server: CapletServerConfig): Promise<boolean> {
+    const connection = await this.connect(server);
+    return Boolean(connection.client.getServerCapabilities()?.completions);
+  }
+
   async complete(
     server: CapletServerConfig,
     request: {
       ref: { type: "prompt"; name: string } | { type: "resourceTemplate"; uri: string };
       argument: { name: string; value: string };
+      context?: { arguments?: Record<string, string> | undefined } | undefined;
     },
   ) {
     const connection = await this.assertCapability(server, "completions");
@@ -388,6 +394,7 @@ export class DownstreamManager {
           ? { type: "ref/prompt", name: request.ref.name }
           : { type: "ref/resource", uri: request.ref.uri },
       argument: request.argument,
+      ...(request.context ? { context: request.context } : {}),
     };
     try {
       return await connection.client.complete(params, { timeout: server.callTimeoutMs });

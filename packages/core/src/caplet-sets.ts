@@ -1,5 +1,10 @@
-import type { CompatibilityCallToolResult, Tool } from "@modelcontextprotocol/sdk/types";
+import type { Tool } from "@modelcontextprotocol/sdk/types";
 import { resolve } from "node:path";
+import {
+  createBackendOperationRuntime,
+  type BackendCallToolResult,
+  type BackendOperationRuntime,
+} from "./backend-operation-dispatch";
 import { CliToolsManager } from "./cli-tools";
 import {
   type CapletConfig,
@@ -27,12 +32,8 @@ import { handleServerTool } from "./tools";
 type ChildRuntime = {
   registry: ServerRegistry;
   downstream: DownstreamManager;
-  openapi: OpenApiManager;
-  graphql: GraphQLManager;
-  http: HttpActionManager;
-  cli: CliToolsManager;
-  googleDiscovery: GoogleDiscoveryManager;
   capletSets: CapletSetManager;
+  runtime: BackendOperationRuntime;
   cacheKey: string;
   configFingerprint: string;
   loadedAt: number;
@@ -48,6 +49,8 @@ export class CapletSetManager {
       authDir?: string;
       artifactDir?: string;
       exposeLocalArtifactPaths?: boolean;
+      mediaInlineThresholdBytes?: number;
+      mediaArtifactMaxBytes?: number;
       ancestry?: Set<string>;
     } = {},
   ) {}
@@ -131,7 +134,7 @@ export class CapletSetManager {
     config: CapletSetConfig,
     toolName: string,
     args: Record<string, unknown>,
-  ): Promise<CompatibilityCallToolResult> {
+  ): Promise<BackendCallToolResult> {
     const child = await this.childRuntime(config, false);
     const caplet = child.registry.get(toolName);
     if (!caplet) {
@@ -146,21 +149,9 @@ export class CapletSetManager {
       );
     }
     try {
-      return (await handleServerTool(
-        caplet,
-        args,
-        child.registry,
-        child.downstream,
-        child.openapi,
-        child.graphql,
-        child.http,
-        child.cli,
-        child.capletSets,
-        {},
-        child.googleDiscovery,
-      )) as CompatibilityCallToolResult;
+      return await handleServerTool(caplet, args, child.registry, child.runtime);
     } catch (error) {
-      return errorResult(error) as CompatibilityCallToolResult;
+      return errorResult(error) as BackendCallToolResult;
     }
   }
 
@@ -232,19 +223,36 @@ export class CapletSetManager {
         ...(this.options.exposeLocalArtifactPaths === false
           ? { exposeLocalArtifactPaths: false }
           : {}),
+        ...(this.options.mediaInlineThresholdBytes === undefined
+          ? {}
+          : { mediaInlineThresholdBytes: this.options.mediaInlineThresholdBytes }),
+        ...(this.options.mediaArtifactMaxBytes === undefined
+          ? {}
+          : { mediaArtifactMaxBytes: this.options.mediaArtifactMaxBytes }),
       };
       const childAncestry = new Set([...ancestry, cacheKey]);
+      const downstream = new DownstreamManager(registry, sharedOptions);
+      const openapi = new OpenApiManager(registry, sharedOptions);
+      const googleDiscovery = new GoogleDiscoveryManager(registry, sharedOptions);
+      const graphql = new GraphQLManager(registry, sharedOptions);
+      const http = new HttpActionManager(registry, sharedOptions);
+      const cli = new CliToolsManager(registry);
+      const capletSets = new CapletSetManager(registry, {
+        ...sharedOptions,
+        ancestry: childAncestry,
+      });
       child = {
         registry,
-        downstream: new DownstreamManager(registry, sharedOptions),
-        openapi: new OpenApiManager(registry, sharedOptions),
-        graphql: new GraphQLManager(registry, sharedOptions),
-        http: new HttpActionManager(registry, sharedOptions),
-        cli: new CliToolsManager(registry),
-        googleDiscovery: new GoogleDiscoveryManager(registry, sharedOptions),
-        capletSets: new CapletSetManager(registry, {
-          ...sharedOptions,
-          ancestry: childAncestry,
+        downstream,
+        capletSets,
+        runtime: createBackendOperationRuntime({
+          mcp: downstream,
+          openapi,
+          googleDiscovery,
+          graphql,
+          http,
+          cli,
+          caplets: capletSets,
         }),
         cacheKey,
         configFingerprint: JSON.stringify(config),

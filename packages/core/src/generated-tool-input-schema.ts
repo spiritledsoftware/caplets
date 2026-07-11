@@ -41,6 +41,7 @@ export const generatedToolInputDescriptions = {
   uri: "Exact downstream resource URI for read_resource.",
   ref: "Completion target reference for complete.",
   argument: "Completion argument object for complete.",
+  context: "Optional sibling completion arguments keyed by downstream argument name.",
 } as const;
 
 export const completionRefSchema = z.union([
@@ -51,6 +52,21 @@ export const completionRefSchema = z.union([
 export const completionArgumentSchema = z
   .object({ name: z.string().min(1), value: z.string() })
   .strict();
+
+export const completionContextSchema = z
+  .object({ arguments: z.record(z.string(), z.string()).optional() })
+  .strict();
+
+export const completionContextJsonSchema = {
+  type: "object",
+  properties: {
+    arguments: {
+      type: "object",
+      additionalProperties: { type: "string" },
+    },
+  },
+  additionalProperties: false,
+} as const;
 
 const baseShape = {
   query: z.string().optional().describe(generatedToolInputDescriptions.query),
@@ -83,6 +99,9 @@ export function generatedToolInputSchemaForCaplet(
             argument: completionArgumentSchema
               .optional()
               .describe(generatedToolInputDescriptions.argument),
+            context: completionContextSchema
+              .optional()
+              .describe(generatedToolInputDescriptions.context),
           }
         : {}),
     })
@@ -154,6 +173,10 @@ export function generatedToolInputJsonSchemaForCaplet(
               required: ["name", "value"],
               additionalProperties: false,
               description: generatedToolInputDescriptions.argument,
+            },
+            context: {
+              ...completionContextJsonSchema,
+              description: generatedToolInputDescriptions.context,
             },
           }
         : {}),
