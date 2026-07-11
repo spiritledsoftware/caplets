@@ -2,6 +2,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -13,6 +14,7 @@ import Ajv from "ajv";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   artifactUri,
+  createMediaArtifactWriter,
   readMediaInput,
   resolveMediaArtifact,
   writeMediaArtifact,
@@ -234,6 +236,35 @@ describe("media artifacts", () => {
     }
     expect(readFileSync(outputPath, "utf8")).toBe("previous-pdf");
     expect(result.path).not.toBe(outputPath);
+  });
+
+  it("restores an orphaned publication backup before a failed retry", async () => {
+    const root = tempDir("caplets-artifacts-");
+    const outputDir = join(root, "drive", "call-1");
+    const outputPath = join(outputDir, "report.pdf");
+    const backupPath = join(outputDir, ".report.pdf.crashed.previous");
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(backupPath, "previous-pdf");
+    writeFileSync(`${backupPath}.caplets.json`, JSON.stringify({ mimeType: "application/pdf" }));
+
+    const writer = await createMediaArtifactWriter({
+      rootDir: root,
+      capletId: "drive",
+      outputPath,
+      mimeType: "application/pdf",
+    });
+    await writer.write(Buffer.from("replacement-pdf"));
+    const partialPath = join(
+      outputDir,
+      readdirSync(outputDir).find((entry) => entry.endsWith(".partial"))!,
+    );
+    rmSync(partialPath);
+
+    await expect(writer.complete()).rejects.toMatchObject({ code: "ENOENT" });
+    expect(readFileSync(outputPath, "utf8")).toBe("previous-pdf");
+    expect(JSON.parse(readFileSync(`${outputPath}.caplets.json`, "utf8"))).toEqual({
+      mimeType: "application/pdf",
+    });
   });
 
   it("cancels oversized responses rejected by content-length before reading", async () => {

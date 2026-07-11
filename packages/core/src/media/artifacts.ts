@@ -1,7 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
-import { chmod, mkdir, open, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_ARTIFACT_DIR } from "../config/paths";
 import { CapletsError } from "../errors";
 
@@ -44,6 +55,8 @@ type ParsedArtifactUri = {
 };
 
 const artifactPublicationLocks = new Map<string, Promise<void>>();
+const PUBLICATION_LOCK_WAIT_MS = 30_000;
+const OWNERLESS_LOCK_STALE_MS = 1_000;
 
 async function serializeArtifactPublication<T>(
   target: string,
@@ -58,11 +71,75 @@ async function serializeArtifactPublication<T>(
   artifactPublicationLocks.set(target, queued);
   await previous.catch(() => {});
   try {
-    return await operation();
+    return await withArtifactPublicationFileLock(target, operation);
   } finally {
     release?.();
     if (artifactPublicationLocks.get(target) === queued) {
       artifactPublicationLocks.delete(target);
+    }
+  }
+}
+
+async function withArtifactPublicationFileLock<T>(
+  target: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockDir = resolve(dirname(target), `.${basename(target)}.publication.lock`);
+  const ownerPath = resolve(lockDir, "owner.json");
+  const startedAt = Date.now();
+  for (;;) {
+    try {
+      await mkdir(lockDir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw error;
+      }
+      if (await publicationLockIsStale(lockDir, ownerPath)) {
+        await rm(lockDir, { force: true, recursive: true });
+        continue;
+      }
+      if (Date.now() - startedAt >= PUBLICATION_LOCK_WAIT_MS) {
+        throw new CapletsError(
+          "DOWNSTREAM_TOOL_ERROR",
+          `Timed out waiting to publish media artifact ${target}`,
+        );
+      }
+      await delay(25);
+      continue;
+    }
+    try {
+      await writeFile(ownerPath, JSON.stringify({ pid: process.pid }), {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      return await operation();
+    } finally {
+      await rm(lockDir, { force: true, recursive: true });
+    }
+  }
+}
+
+async function publicationLockIsStale(lockDir: string, ownerPath: string): Promise<boolean> {
+  try {
+    const owner = JSON.parse(await readFile(ownerPath, "utf8")) as { pid?: unknown };
+    if (!Number.isInteger(owner.pid)) {
+      return true;
+    }
+    try {
+      process.kill(owner.pid as number, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      return true;
+    }
+    try {
+      return Date.now() - (await stat(lockDir)).mtimeMs >= OWNERLESS_LOCK_STALE_MS;
+    } catch (statError) {
+      return (statError as NodeJS.ErrnoException).code === "ENOENT";
     }
   }
 }
@@ -82,7 +159,7 @@ async function removeArtifactBackups(paths: string[], errorMessage: string): Pro
   }
 }
 
-async function scavengeArtifactBackups(target: string): Promise<void> {
+async function recoverOrScavengeArtifactBackups(target: string): Promise<void> {
   let entries: string[];
   try {
     entries = await readdir(dirname(target));
@@ -93,6 +170,26 @@ async function scavengeArtifactBackups(target: string): Promise<void> {
     throw error;
   }
   const prefix = `.${basename(target)}.`;
+  const backupPaths = entries
+    .filter((entry) => entry.startsWith(prefix) && entry.endsWith(".previous"))
+    .map((entry) => resolve(dirname(target), entry))
+    .filter((path) => lstatSync(path).isFile());
+  let recoveredPaths: string[] = [];
+  if (!existsSync(target) && backupPaths.length > 0) {
+    const candidates = await Promise.all(
+      backupPaths.map(async (path) => ({ path, modifiedAt: (await stat(path)).mtimeMs })),
+    );
+    candidates.sort((left, right) => right.modifiedAt - left.modifiedAt);
+    const recoveryPath = candidates[0]!.path;
+    const recoveryMetadataPath = artifactMetadataPath(recoveryPath);
+    await rename(recoveryPath, target);
+    recoveredPaths = [recoveryPath];
+    if (existsSync(recoveryMetadataPath) && lstatSync(recoveryMetadataPath).isFile()) {
+      await rm(artifactMetadataPath(target), { force: true });
+      await rename(recoveryMetadataPath, artifactMetadataPath(target));
+      recoveredPaths.push(recoveryMetadataPath);
+    }
+  }
   await removeArtifactBackups(
     entries
       .filter(
@@ -100,7 +197,8 @@ async function scavengeArtifactBackups(target: string): Promise<void> {
           entry.startsWith(prefix) &&
           (entry.endsWith(".previous") || entry.endsWith(".previous.caplets.json")),
       )
-      .map((entry) => resolve(dirname(target), entry)),
+      .map((entry) => resolve(dirname(target), entry))
+      .filter((path) => !recoveredPaths.includes(path)),
     "Could not remove stale media artifact publication backups",
   );
 }
@@ -226,7 +324,7 @@ export async function createMediaArtifactWriter(
       const digest = hash.digest("hex");
       return await serializeArtifactPublication(target, async () => {
         try {
-          await scavengeArtifactBackups(target);
+          await recoverOrScavengeArtifactBackups(target);
           await chmod(tempPath, 0o600);
           await writeArtifactMetadata(tempPath, input.mimeType ? { mimeType: input.mimeType } : {});
           rejectSymlinkPathComponents(rootDir, target, true);

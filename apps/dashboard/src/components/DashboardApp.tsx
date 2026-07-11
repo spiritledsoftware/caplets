@@ -2525,13 +2525,23 @@ function VaultPage({
                           if (!isMounted.current || confirmation !== `reveal ${rawKey}`) return;
                           const requestGeneration = ++revealGeneration.current;
                           await action("Vault value revealed", async () => {
-                            const revealed = await dashboardApi<{ value: string }>("vault/reveal", {
-                              method: "POST",
-                              body: JSON.stringify({
-                                key: entry.key,
-                                confirmation,
-                              }),
-                            });
+                            let revealed: { value: string };
+                            try {
+                              revealed = await dashboardApi<{ value: string }>("vault/reveal", {
+                                method: "POST",
+                                body: JSON.stringify({
+                                  key: entry.key,
+                                  confirmation,
+                                }),
+                              });
+                            } catch (error) {
+                              if (
+                                !isMounted.current ||
+                                requestGeneration !== revealGeneration.current
+                              )
+                                return ACTION_DISCARDED;
+                              throw error;
+                            }
                             if (
                               !isMounted.current ||
                               requestGeneration !== revealGeneration.current

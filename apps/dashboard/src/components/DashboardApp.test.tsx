@@ -26,6 +26,7 @@ import { DashboardApp } from "./DashboardApp";
 
 type Deferred<T> = {
   promise: Promise<T>;
+  reject: (error: unknown) => void;
   resolve: (value: T) => void;
 };
 
@@ -41,11 +42,13 @@ let container: HTMLDivElement | undefined;
 let revealResponses: Array<Deferred<{ value: string }> | { value: string }>;
 
 function deferred<T>(): Deferred<T> {
+  let reject!: (error: unknown) => void;
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((fulfill) => {
+  const promise = new Promise<T>((fulfill, fail) => {
+    reject = fail;
     resolve = fulfill;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function responseFor(path: string) {
@@ -200,6 +203,30 @@ describe("Vault reveal races", () => {
 
     expect(dashboardApi).not.toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("does not show an error when Hide invalidates a rejected reveal", async () => {
+    await mountVault();
+    await reveal("visible secret");
+    toast.error.mockClear();
+
+    const stale = deferred<{ value: string }>();
+    revealResponses.push(stale);
+    await openRevealConfirmation();
+    await confirmReveal();
+    await waitFor(() =>
+      dashboardApi.mock.calls.some(([path]) => path === "vault/reveal") ? true : undefined,
+    );
+
+    await act(async () => {
+      button("Hide revealed value").click();
+    });
+    await act(async () => {
+      stale.reject(new Error("stale request failed"));
+    });
+    await flush();
+
+    expect(toast.error).not.toHaveBeenCalled();
   });
 
   it("does not refresh or toast when a newer reveal invalidates an older response", async () => {
