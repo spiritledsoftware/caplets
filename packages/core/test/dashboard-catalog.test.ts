@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { currentHostCatalogInstallSource } from "../src/current-host/catalog";
 import { CapletsEngine } from "../src/engine";
 import { RemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import { createHttpServeApp, type CapletsHttpApp } from "../src/serve/http";
@@ -11,11 +12,55 @@ const dirs: string[] = [];
 
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 describe("dashboard caplets and catalog APIs", () => {
-  it("serves the checked-in official catalog for dashboard browsing", async () => {
+  it("serves the official catalog API for dashboard browsing and detail", async () => {
     const setup = await authenticatedDashboard();
+    const officialEntryKey = "github:spiritledsoftware:caplets:github%2Fcaplet.md:github";
+    const officialEntry = {
+      entryKey: officialEntryKey,
+      id: "github",
+      name: "GitHub from API",
+      description: "Work with GitHub repositories.",
+      source: {
+        provider: "github",
+        owner: "spiritledsoftware",
+        repo: "caplets",
+        repository: "spiritledsoftware/caplets",
+        canonicalUrl: "https://github.com/spiritledsoftware/caplets",
+      },
+      sourcePath: "github/CAPLET.md",
+      trustLevel: "official",
+      tags: ["github"],
+      intendedTask: "Work with GitHub repositories.",
+      setupReadiness: "ready",
+      authReadiness: "required",
+      projectBindingReadiness: "ready",
+      warnings: [],
+      installCommand: {
+        text: "caplets install spiritledsoftware/caplets github",
+        copyable: true,
+        revisionBound: false,
+      },
+      workflow: { kind: "code_mode", label: "Code Mode" },
+      installCount: 0,
+      installCountDisplay: "<10",
+      rankScore: 0,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("/entries/")) {
+        return Response.json({
+          version: 1,
+          entry: { ...officialEntry, contentMarkdown: "# GitHub from catalog.caplets.dev" },
+        });
+      }
+      return Response.json({
+        version: 1,
+        entries: [{ ...officialEntry, contentMarkdown: "# GitHub" }],
+      });
+    });
 
     const search = await dashboardGet(
       setup,
@@ -26,15 +71,225 @@ describe("dashboard caplets and catalog APIs", () => {
       entries: [
         expect.objectContaining({
           id: "github",
-          name: "GitHub",
+          name: "GitHub from API",
           source: expect.objectContaining({ repository: "spiritledsoftware/caplets" }),
-          installCommand: expect.objectContaining({
-            text: "caplets install spiritledsoftware/caplets github",
-          }),
         }),
       ],
     });
 
+    const detail = await dashboardGet(
+      setup,
+      `/dashboard/api/catalog/detail?source=official&entryKey=${encodeURIComponent(officialEntryKey)}`,
+    );
+    expect(detail.status).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({
+      entry: {
+        id: "github",
+        contentMarkdown: "# GitHub from catalog.caplets.dev",
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://catalog.caplets.dev/api/v1/catalog", {
+      signal: expect.any(AbortSignal),
+    });
+
+    await setup.engine.close();
+  });
+
+  it("returns all 150 compact official entries without the former search ceiling", async () => {
+    const setup = await authenticatedDashboard();
+    const entries = Array.from({ length: 150 }, (_, index) => officialCompactEntry(index));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ version: 1, view: "compact", entries }),
+    );
+
+    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: Array<Record<string, unknown>> };
+    expect(body.entries).toHaveLength(150);
+    expect(body.entries[149]).toMatchObject({ id: "entry-149" });
+    expect(body.entries.some((entry) => "contentMarkdown" in entry)).toBe(false);
+
+    await setup.engine.close();
+  });
+
+  it("preserves legacy catalog search limits when query parameters are present", async () => {
+    const setup = await authenticatedDashboard();
+    const entries = Array.from({ length: 5 }, (_, index) => ({
+      ...officialCompactEntry(index),
+      contentMarkdown: `# Entry ${index}`,
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ version: 1, entries }));
+
+    const response = await dashboardGet(
+      setup,
+      "/dashboard/api/catalog/search?source=official&limit=2",
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: Array<Record<string, unknown>> };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries).toEqual([
+      expect.objectContaining({ id: "entry-0" }),
+      expect.objectContaining({ id: "entry-1" }),
+    ]);
+
+    await setup.engine.close();
+  });
+
+  it("rejects an official compact index above 10,000 entries as a protocol error", async () => {
+    const setup = await authenticatedDashboard();
+    const entry = officialCompactEntry(0);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        version: 1,
+        view: "compact",
+        entries: Array.from({ length: 10_001 }, () => entry),
+      }),
+    );
+
+    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+    });
+
+    await setup.engine.close();
+  });
+
+  it("rejects overlong compact fields as a protocol error", async () => {
+    const setup = await authenticatedDashboard();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        version: 1,
+        view: "compact",
+        entries: [{ ...officialCompactEntry(0), name: "x".repeat(1_025) }],
+      }),
+    );
+
+    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+    });
+
+    await setup.engine.close();
+  });
+
+  it.each([
+    [
+      "missing readiness",
+      (entry: Record<string, unknown>) => {
+        delete entry.setupReadiness;
+      },
+    ],
+    [
+      "missing workflow",
+      (entry: Record<string, unknown>) => {
+        delete entry.workflow;
+      },
+    ],
+    [
+      "null warning",
+      (entry: Record<string, unknown>) => {
+        entry.warnings = [null];
+      },
+    ],
+    [
+      "invalid warning enum",
+      (entry: Record<string, unknown>) => {
+        entry.warnings = [{ code: "bogus", severity: "info", label: "Warning", message: "Bad." }];
+      },
+    ],
+    [
+      "overlong warning",
+      (entry: Record<string, unknown>) => {
+        entry.warnings = [
+          {
+            code: "auth_required",
+            severity: "info",
+            label: "x".repeat(257),
+            message: "Bad.",
+          },
+        ];
+      },
+    ],
+    [
+      "substituted repository",
+      (entry: Record<string, unknown>) => {
+        entry.source = {
+          provider: "github",
+          owner: "attacker",
+          repo: "caplets",
+          repository: "attacker/caplets",
+          canonicalUrl: "https://github.com/attacker/caplets",
+        };
+      },
+    ],
+    [
+      "localhost icon",
+      (entry: Record<string, unknown>) => {
+        entry.icon = { type: "url", url: "https://localhost/icon.png" };
+      },
+    ],
+    [
+      "HTTP icon",
+      (entry: Record<string, unknown>) => {
+        entry.icon = { type: "url", url: "http://example.com/icon.png" };
+      },
+    ],
+  ])("rejects official compact entries with %s", async (_label, mutate) => {
+    const setup = await authenticatedDashboard();
+    const entry = officialCompactEntry(0) as Record<string, unknown>;
+    mutate(entry);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({ version: 1, view: "compact", entries: [entry] }),
+    );
+
+    const response = await dashboardGet(setup, "/dashboard/api/catalog/search?source=official");
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+    });
+    await setup.engine.close();
+  });
+
+  it("pins official installer input to the inspected revision", () => {
+    expect(currentHostCatalogInstallSource("official", "abc123")).toBe(
+      "spiritledsoftware/caplets#abc123",
+    );
+  });
+
+  it("rejects official detail whose returned entryKey differs from the requested key", async () => {
+    const setup = await authenticatedDashboard();
+    const requested = officialCompactEntry(0);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        version: 1,
+        entry: {
+          ...requested,
+          entryKey: "github:spiritledsoftware:caplets:other%2FCAPLET.md:other",
+          id: "other",
+          contentMarkdown: "# Other",
+          installCommand: {
+            text: "caplets install spiritledsoftware/caplets other",
+            copyable: true,
+            revisionBound: false,
+          },
+        },
+      }),
+    );
+
+    const response = await dashboardGet(
+      setup,
+      `/dashboard/api/catalog/detail?source=official&entryKey=${encodeURIComponent(requested.entryKey)}`,
+    );
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "DOWNSTREAM_PROTOCOL_ERROR" },
+    });
     await setup.engine.close();
   });
 
@@ -68,7 +323,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const detail = await dashboardGet(
       setup,
-      `/dashboard/api/catalog/detail?source=${encodeURIComponent(source)}&id=sample`,
+      `/dashboard/api/catalog/detail?source=${encodeURIComponent(source)}&entryKey=${encodeURIComponent(await localEntryKey(setup, source))}`,
     );
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({
@@ -90,7 +345,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
       source,
-      capletId: "sample",
+      entryKey: await localEntryKey(setup, source),
     });
     expect(installed.status).toBe(200);
     await expect(installed.json()).resolves.toMatchObject({
@@ -131,7 +386,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
       source,
-      capletId: "sample",
+      entryKey: await localEntryKey(setup, source),
     });
     expect(installed.status).toBe(200);
     const installedPath = join(setup.context.globalCapletsRoot, "sample.md");
@@ -162,7 +417,7 @@ describe("dashboard caplets and catalog APIs", () => {
 
     const installed = await dashboardPost(setup, "/dashboard/api/catalog/install", {
       source,
-      capletId: "sample",
+      entryKey: await localEntryKey(setup, source),
     });
     expect(installed.status).toBe(200);
 
@@ -180,14 +435,14 @@ describe("dashboard caplets and catalog APIs", () => {
 
     await setup.engine.close();
   });
-  it("returns the same redacted catalog failure through dashboard and bearer adapters", async () => {
+  it("rejects dashboard install before an unvalidated source reaches installation", async () => {
     const setup = await authenticatedDashboard();
     const source =
       "https://operator:credential@127.0.0.1:1/private-repository?token=transport_secret";
 
     const dashboardResponse = await dashboardPost(setup, "/dashboard/api/catalog/install", {
       source,
-      capletId: "sample",
+      entryKey: "github:local:source:caplets%2Fsample.md:sample",
     });
     expect(dashboardResponse.status).toBe(404);
     const dashboardError = (await dashboardResponse.json()) as {
@@ -220,11 +475,11 @@ describe("dashboard caplets and catalog APIs", () => {
       error: { code: string; message: string };
     };
 
-    expect(dashboardError.error).toEqual({
+    expect(dashboardError.error).toMatchObject({ code: "CONFIG_NOT_FOUND" });
+    expect(bearerError.error).toMatchObject({
       code: "CONFIG_NOT_FOUND",
       message: "Could not clone repo [REDACTED]",
     });
-    expect(bearerError.error).toEqual(dashboardError.error);
     expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("credential");
     expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("transport_secret");
     expect(JSON.stringify({ dashboardError, bearerError })).not.toContain("127.0.0.1");
@@ -279,6 +534,17 @@ async function authenticatedDashboard(): Promise<AuthenticatedDashboard> {
     csrfToken: body.session.csrfToken,
     operatorClientId: body.session.operatorClientId,
   };
+}
+
+async function localEntryKey(setup: AuthenticatedDashboard, source: string): Promise<string> {
+  const response = await dashboardGet(
+    setup,
+    `/dashboard/api/catalog/search?source=${encodeURIComponent(source)}`,
+  );
+  const body = (await response.json()) as { entries: Array<{ entryKey: string }> };
+  const entryKey = body.entries[0]?.entryKey;
+  if (!entryKey) throw new Error("Missing local catalog entry");
+  return entryKey;
 }
 
 async function dashboardGet(setup: AuthenticatedDashboard, path: string) {
@@ -412,6 +678,40 @@ function catalogSource(): string {
     ].join("\n"),
   );
   return source;
+}
+
+function officialCompactEntry(index: number) {
+  const id = `entry-${index}`;
+  return {
+    entryKey: `github:spiritledsoftware:caplets:${id}%2Fcaplet.md:${id}`,
+    id,
+    name: `Entry ${index}`,
+    description: "Catalog entry.",
+    source: {
+      provider: "github",
+      owner: "spiritledsoftware",
+      repo: "caplets",
+      repository: "spiritledsoftware/caplets",
+      canonicalUrl: "https://github.com/spiritledsoftware/caplets",
+    },
+    sourcePath: `${id}/CAPLET.md`,
+    trustLevel: "official",
+    tags: ["test"],
+    intendedTask: "Test catalog behavior.",
+    setupReadiness: "ready",
+    authReadiness: "ready",
+    projectBindingReadiness: "ready",
+    warnings: [],
+    installCommand: {
+      text: `caplets install spiritledsoftware/caplets ${id}`,
+      copyable: true,
+      revisionBound: false,
+    },
+    workflow: { kind: "code_mode", label: "Code Mode" },
+    installCount: 0,
+    installCountDisplay: "<10",
+    rankScore: 0,
+  };
 }
 
 function tempDir(prefix: string): string {

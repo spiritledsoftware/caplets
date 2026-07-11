@@ -17,6 +17,7 @@ describe("dashboard static serving", () => {
   it("serves built dashboard pages and assets while preserving API precedence", async () => {
     const dashboardDistDir = tempDir("caplets-dashboard-dist-");
     mkdirSync(join(dashboardDistDir, "dashboard", "access"), { recursive: true });
+    mkdirSync(join(dashboardDistDir, "dashboard", "catalog"), { recursive: true });
     mkdirSync(join(dashboardDistDir, "_astro"), { recursive: true });
     writeFileSync(
       join(dashboardDistDir, "dashboard", "index.html"),
@@ -25,6 +26,10 @@ describe("dashboard static serving", () => {
     writeFileSync(
       join(dashboardDistDir, "dashboard", "access", "index.html"),
       '<div id="react-dashboard">Access</div>',
+    );
+    writeFileSync(
+      join(dashboardDistDir, "dashboard", "catalog", "index.html"),
+      '<div id="react-dashboard">Catalog</div>',
     );
     writeFileSync(join(dashboardDistDir, "_astro", "client.js"), "console.log('dashboard')");
     writeFileSync(join(dashboardDistDir, "icon.png"), "png");
@@ -47,6 +52,12 @@ describe("dashboard static serving", () => {
     expect(access.status).toBe(200);
     await expect(access.text()).resolves.toContain("Access");
 
+    const catalogDetail = await app.request(
+      "http://127.0.0.1:5387/dashboard/catalog/github%3Aowner%2Frepo%3Acaplet",
+    );
+    expect(catalogDetail.status).toBe(200);
+    await expect(catalogDetail.text()).resolves.toContain("Catalog");
+
     const asset = await app.request("http://127.0.0.1:5387/_astro/client.js");
     expect(asset.status).toBe(200);
     expect(asset.headers.get("content-type")).toContain("javascript");
@@ -65,10 +76,15 @@ describe("dashboard static serving", () => {
   it("serves dashboard HTML and immutable assets under a configured base path", async () => {
     const dashboardDistDir = tempDir("caplets-dashboard-base-dist-");
     mkdirSync(join(dashboardDistDir, "dashboard"), { recursive: true });
+    mkdirSync(join(dashboardDistDir, "dashboard", "catalog"), { recursive: true });
     mkdirSync(join(dashboardDistDir, "_astro"), { recursive: true });
     writeFileSync(
       join(dashboardDistDir, "dashboard", "index.html"),
       "<main>Base path dashboard</main>",
+    );
+    writeFileSync(
+      join(dashboardDistDir, "dashboard", "catalog", "index.html"),
+      "<main>Base path catalog</main>",
     );
     writeFileSync(join(dashboardDistDir, "_astro", "base.js"), "export const base = true;");
 
@@ -85,6 +101,12 @@ describe("dashboard static serving", () => {
     const dashboard = await app.request("http://127.0.0.1:5387/caplets/dashboard");
     expect(dashboard.status).toBe(200);
     await expect(dashboard.text()).resolves.toBe("<main>Base path dashboard</main>");
+
+    const catalogDetail = await app.request(
+      "http://127.0.0.1:5387/caplets/dashboard/catalog/github%3Aowner%2Frepo%3Acaplet",
+    );
+    expect(catalogDetail.status).toBe(200);
+    await expect(catalogDetail.text()).resolves.toBe("<main>Base path catalog</main>");
 
     const asset = await app.request("http://127.0.0.1:5387/caplets/_astro/base.js");
     expect(asset.status).toBe(200);
@@ -108,6 +130,10 @@ describe("dashboard static serving", () => {
       dashboardStaticResponse("/dashboard/%2e%2e%2foutside-dashboard-secret.txt", dashboardDistDir),
     ).toBeUndefined();
     expect(dashboardStaticResponse("/dashboard/%", dashboardDistDir)).toBeUndefined();
+    expect(
+      dashboardStaticResponse("/dashboard/catalog/%2e%2e%2fsecret", dashboardDistDir),
+    ).toBeUndefined();
+    expect(dashboardStaticResponse("/dashboard/catalog/key.js", dashboardDistDir)).toBeUndefined();
   });
 });
 

@@ -1,6 +1,10 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { describe, expect, it } from "vitest";
-import { getCatalogEntry, listCatalogEntries } from "../src/lib/catalog-store";
+import {
+  getCatalogEntry,
+  listCatalogEntries,
+  listCompactCatalogEntries,
+} from "../src/lib/catalog-store";
 
 describe("catalog read model", () => {
   it("serves official entries with low-count display and generated install commands", async () => {
@@ -17,6 +21,24 @@ describe("catalog read model", () => {
       trustLevel: "official",
     });
     expect(await getCatalogEntry(github?.entryKey ?? "")).toMatchObject({ id: "github" });
+  });
+
+  it("projects a complete compact index without readable content", async () => {
+    const full = await listCatalogEntries();
+    const compact = await listCompactCatalogEntries();
+
+    expect(compact).toHaveLength(full.length);
+    expect(compact[0]).toMatchObject({
+      entryKey: expect.any(String),
+      installCount: expect.any(Number),
+      installCountDisplay: expect.any(String),
+      rankScore: expect.any(Number),
+      tags: expect.any(Array),
+      warnings: expect.any(Array),
+      source: expect.objectContaining({ repository: expect.any(String) }),
+      installCommand: expect.objectContaining({ text: expect.any(String) }),
+    });
+    expect(compact.some((entry) => "contentMarkdown" in entry)).toBe(false);
   });
 
   it("hides suppressed entries from list and detail reads", async () => {

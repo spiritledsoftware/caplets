@@ -13,6 +13,7 @@
     "@astrojs/react": "^6.0.1",
     "@base-ui/react": "^1.6.0",
     "@tailwindcss/vite": "^4.3.1",
+    "@tanstack/react-virtual": "^3.14.5",
     "astro": "^7.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

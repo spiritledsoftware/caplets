@@ -1,4 +1,4 @@
-import type { CatalogEntry } from "../catalog";
+import type { CatalogCompactEntry, CatalogEntry } from "../catalog";
 import {
   DashboardActivityLog,
   type DashboardActivityAction,
@@ -101,12 +101,15 @@ export type CurrentHostOperation =
       query?: string | undefined;
       limit?: number | undefined;
     }
-  | { kind: "catalog_detail"; source: string; capletId: string }
+  | { kind: "catalog_index"; source: string }
+  | { kind: "catalog_detail"; source: string; entryKey: string }
   | { kind: "catalog_updates" }
   | {
       kind: "catalog_install";
       /** A dashboard catalog source. When present, it also determines setup actions. */
       source?: string | undefined;
+      /** Stable catalog identity. Requires source and is independently re-resolved before install. */
+      entryKey?: string | undefined;
       /** A bearer-compatible repository source. Omit to restore the server lockfile. */
       repo?: string | undefined;
       capletIds?: string[] | undefined;
@@ -229,6 +232,7 @@ export type CurrentHostOperationOutcome =
   | { kind: "summary"; summary: CurrentHostSummary }
   | { kind: "caplets_list"; caplets: CurrentHostInstalledCaplet[] }
   | { kind: "catalog_search"; entries: CatalogEntry[] }
+  | { kind: "catalog_index"; entries: CatalogCompactEntry[] }
   | {
       kind: "catalog_detail";
       entry: CatalogEntry;
@@ -392,9 +396,11 @@ async function executeCurrentHostOperation(
     case "caplets_list":
       return catalog.capletsList(operation);
     case "catalog_search":
-      return catalog.search(operation);
+      return await catalog.search(operation);
+    case "catalog_index":
+      return await catalog.index(operation);
     case "catalog_detail":
-      return catalog.detail(operation);
+      return await catalog.detail(operation);
     case "catalog_updates":
       return catalog.updates(operation);
     case "catalog_install":

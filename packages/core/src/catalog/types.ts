@@ -142,3 +142,16 @@ export type CatalogEntry = {
   installCommand: CatalogInstallCommand;
   warnings: CatalogWarning[];
 };
+
+/** Complete-index projection. Readable CAPLET.md content is intentionally excluded. */
+export type CatalogCompactEntry = Omit<CatalogEntry, "contentMarkdown"> & {
+  installCount: number;
+  installCountDisplay: string;
+  rankScore: number;
+};
+
+export type CatalogCompactIndexEnvelope = {
+  version: 1;
+  view: "compact";
+  entries: CatalogCompactEntry[];
+};

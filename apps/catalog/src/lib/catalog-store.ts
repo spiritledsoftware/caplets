@@ -40,6 +40,14 @@ export async function listCatalogEntries(env: CatalogStoreEnv = {}): Promise<Cat
     });
 }
 
+export async function listCompactCatalogEntries(
+  env: CatalogStoreEnv = {},
+): Promise<Array<Omit<CatalogEntryRecord, "contentMarkdown">>> {
+  return (await listCatalogEntries(env)).map(
+    ({ contentMarkdown: _contentMarkdown, ...entry }) => entry,
+  );
+}
+
 export async function getCatalogEntry(
   entryKey: string,
   env: CatalogStoreEnv = {},

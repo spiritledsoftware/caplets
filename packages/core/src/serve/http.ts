@@ -422,15 +422,19 @@ export function createHttpServeApp(
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "catalog_search",
-          source: requiredQueryParam(query, "source"),
-          query: query.get("q") ?? undefined,
-          limit: numberQueryParam(query.get("limit")),
-        },
-      );
+      const source = requiredQueryParam(query, "source");
+      const outcome =
+        query.has("q") || query.has("limit")
+          ? await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
+              kind: "catalog_search",
+              source,
+              query: query.get("q") ?? undefined,
+              limit: numberQueryParam(query.get("limit")),
+            })
+          : await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
+              kind: "catalog_index",
+              source,
+            });
 
       return c.json({ entries: outcome.entries });
     } catch (error) {
@@ -448,7 +452,7 @@ export function createHttpServeApp(
         {
           kind: "catalog_detail",
           source: requiredQueryParam(query, "source"),
-          capletId: requiredQueryParam(query, "id"),
+          entryKey: requiredQueryParam(query, "entryKey"),
         },
       );
 
@@ -490,7 +494,7 @@ export function createHttpServeApp(
         {
           kind: "catalog_install",
           source: stringField(parsed, "source"),
-          capletIds: [stringField(parsed, "capletId")],
+          entryKey: stringField(parsed, "entryKey"),
           force: optionalBooleanField(parsed, "force"),
           disableCatalogIndexing: true,
         },
