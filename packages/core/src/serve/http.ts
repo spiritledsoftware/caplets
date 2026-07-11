@@ -425,10 +425,8 @@ export function createHttpServeApp(
       const outcome = await currentHostOperations.execute(
         dashboardPrincipalForSession(c, session.session),
         {
-          kind: "catalog_search",
+          kind: "catalog_index",
           source: requiredQueryParam(query, "source"),
-          query: query.get("q") ?? undefined,
-          limit: numberQueryParam(query.get("limit")),
         },
       );
 
@@ -448,7 +446,7 @@ export function createHttpServeApp(
         {
           kind: "catalog_detail",
           source: requiredQueryParam(query, "source"),
-          capletId: requiredQueryParam(query, "id"),
+          entryKey: requiredQueryParam(query, "entryKey"),
         },
       );
 
@@ -490,7 +488,7 @@ export function createHttpServeApp(
         {
           kind: "catalog_install",
           source: stringField(parsed, "source"),
-          capletIds: [stringField(parsed, "capletId")],
+          entryKey: stringField(parsed, "entryKey"),
           force: optionalBooleanField(parsed, "force"),
           disableCatalogIndexing: true,
         },

@@ -32,6 +32,8 @@ export {
 export { catalogWarningsForEntry } from "./warnings";
 export type {
   CatalogEntry,
+  CatalogCompactEntry,
+  CatalogCompactIndexEnvelope,
   CatalogEntryChild,
   CatalogEntryInput,
   CatalogEntryKey,

@@ -9,11 +9,12 @@ import {
 import { CapletsError } from "../errors";
 import {
   currentHostCatalogDetail,
+  currentHostCatalogIndex,
   currentHostCatalogInstallSource,
   currentHostCatalogSearch,
   currentHostCatalogUpdateReadiness,
   currentHostInstalledCaplets,
-  currentHostSetupActionsForInstalled,
+  type CurrentHostSetupAction,
 } from "./catalog";
 import type {
   CurrentHostControlContext,
@@ -25,12 +26,14 @@ import type {
 
 type CapletsListOperation = Extract<CurrentHostOperation, { kind: "caplets_list" }>;
 type CatalogSearchOperation = Extract<CurrentHostOperation, { kind: "catalog_search" }>;
+type CatalogIndexOperation = Extract<CurrentHostOperation, { kind: "catalog_index" }>;
 type CatalogDetailOperation = Extract<CurrentHostOperation, { kind: "catalog_detail" }>;
 type CatalogUpdatesOperation = Extract<CurrentHostOperation, { kind: "catalog_updates" }>;
 type CatalogInstallOperation = Extract<CurrentHostOperation, { kind: "catalog_install" }>;
 type CatalogUpdateOperation = Extract<CurrentHostOperation, { kind: "catalog_update" }>;
 type CapletsListOutcome = Extract<CurrentHostOperationOutcome, { kind: "caplets_list" }>;
 type CatalogSearchOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_search" }>;
+type CatalogIndexOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_index" }>;
 type CatalogDetailOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_detail" }>;
 type CatalogUpdatesOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_updates" }>;
 type CatalogInstallOutcome = Extract<CurrentHostOperationOutcome, { kind: "catalog_install" }>;
@@ -47,13 +50,17 @@ export function createCurrentHostCatalogOperations(
         globalLockfilePath: dependencies.control?.globalLockfilePath,
       }),
     }),
-    search: (operation: CatalogSearchOperation): CatalogSearchOutcome => ({
+    search: async (operation: CatalogSearchOperation): Promise<CatalogSearchOutcome> => ({
       kind: "catalog_search",
-      ...currentHostCatalogSearch(operation),
+      ...(await currentHostCatalogSearch(operation)),
     }),
-    detail: (operation: CatalogDetailOperation): CatalogDetailOutcome => ({
+    index: async (operation: CatalogIndexOperation): Promise<CatalogIndexOutcome> => ({
+      kind: "catalog_index",
+      ...(await currentHostCatalogIndex(operation)),
+    }),
+    detail: async (operation: CatalogDetailOperation): Promise<CatalogDetailOutcome> => ({
       kind: "catalog_detail",
-      ...currentHostCatalogDetail(operation),
+      ...(await currentHostCatalogDetail(operation)),
     }),
     updates: (_operation: CatalogUpdatesOperation): CatalogUpdatesOutcome => ({
       kind: "catalog_updates",
@@ -77,7 +84,8 @@ async function catalogInstallOutcome(
   principal: CurrentHostOperatorPrincipal,
   operation: CatalogInstallOperation,
 ): Promise<CatalogInstallOutcome> {
-  const capletIds = optionalCapletIds(operation.capletIds);
+  let setupActions: CurrentHostSetupAction[] = [];
+  let capletIds = optionalCapletIds(operation.capletIds);
   if (operation.source !== undefined && operation.repo !== undefined) {
     throw new CapletsError(
       "REQUEST_INVALID",
@@ -87,11 +95,26 @@ async function catalogInstallOutcome(
   try {
     const control = requireControlContext(dependencies.control, "Catalog actions");
     const target = globalCatalogTarget(control);
-    const repo =
-      operation.repo ??
-      (operation.source === undefined
-        ? undefined
-        : currentHostCatalogInstallSource(operation.source));
+    let repo = operation.repo;
+    if (operation.source !== undefined) {
+      if (!operation.entryKey) {
+        throw new CapletsError("REQUEST_INVALID", "Catalog install requires a stable entryKey.");
+      }
+      const detail = await currentHostCatalogDetail({
+        source: operation.source,
+        entryKey: operation.entryKey,
+      });
+      if (
+        typeof detail.entry.contentMarkdown !== "string" ||
+        detail.entry.contentMarkdown.length === 0 ||
+        (operation.source.trim() === "official" && !detail.entry.installCommand.copyable)
+      ) {
+        throw new CapletsError("REQUEST_INVALID", "Catalog entry is not currently installable.");
+      }
+      setupActions = detail.setupActions;
+      capletIds = [detail.entry.id];
+      repo = currentHostCatalogInstallSource(operation.source, detail.entry.resolvedRevision);
+    }
     const installOptions = {
       ...target,
       ...(capletIds === undefined ? {} : { capletIds }),
@@ -109,13 +132,6 @@ async function catalogInstallOutcome(
         metadata: { status: entry.status ?? null, kind: entry.kind },
       });
     }
-    const catalogSource = operation.source;
-    const setupActions =
-      catalogSource === undefined
-        ? []
-        : installed.flatMap((entry) =>
-            currentHostSetupActionsForInstalled(catalogSource, entry.id),
-          );
     return { kind: "catalog_install", installed, setupActions };
   } catch (error) {
     appendCatalogFailureActivities(dependencies, principal, "catalog_installed", capletIds);

@@ -1226,6 +1226,16 @@ describe("remote CLI routing", () => {
       `Installed github to global ${join(dirname(context.configPath), "github")}`,
     );
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(dirname(context.configPath), "state", "caplets", "caplets.lock.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      entries: [expect.objectContaining({ id: "github" })],
+    });
   });
 
   it("routes install through remote control with --remote", async () => {
@@ -1700,6 +1710,7 @@ function remoteEnv(context: {
     CAPLETS_REMOTE_URL: "http://127.0.0.1:5387/caplets",
     CAPLETS_CONFIG: context.configPath,
     CAPLETS_PROJECT_CONFIG: context.projectConfigPath,
+    XDG_STATE_HOME: join(dirname(context.configPath), "state"),
     ...(context.authDir
       ? { CAPLETS_CLOUD_AUTH_PATH: join(context.authDir, "cloud-auth.json") }
       : {}),

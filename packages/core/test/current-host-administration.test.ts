@@ -107,10 +107,17 @@ describe("Current Host administration operations", () => {
     const setup = testOperations();
     try {
       const source = catalogSource(setup.root);
+      const catalog = await setup.operations.execute(setup.principal, {
+        kind: "catalog_search",
+        source,
+      });
+      if (catalog.kind !== "catalog_search") throw new Error("Expected catalog search outcome.");
+      const entryKey = catalog.entries.find((entry) => entry.id === "sample")?.entryKey;
+      if (!entryKey) throw new Error("Expected sample catalog entry.");
       const installed = await setup.operations.execute(setup.principal, {
         kind: "catalog_install",
         source,
-        capletIds: ["sample"],
+        entryKey,
         disableCatalogIndexing: true,
       });
       const updates = await setup.operations.execute(setup.principal, { kind: "catalog_updates" });

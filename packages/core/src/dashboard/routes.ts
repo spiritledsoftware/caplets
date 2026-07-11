@@ -35,7 +35,7 @@ export function dashboardStaticResponse(
 
 function dashboardStaticFilePath(requestPath: string, distDir: string): string | undefined {
   const decodedPath = safeDecodePath(requestPath);
-  if (!decodedPath) return undefined;
+  if (!decodedPath || hasUnsafePathSegment(decodedPath)) return undefined;
   if (decodedPath.startsWith("/_astro/")) {
     return safeJoin(distDir, decodedPath.slice(1));
   }
@@ -46,8 +46,24 @@ function dashboardStaticFilePath(requestPath: string, distDir: string): string |
   if (decodedPath.startsWith("/dashboard/api/")) return undefined;
   const route = decodedPath.slice("/dashboard/".length).replace(/\/$/u, "");
   if (!route) return safeJoin(distDir, "dashboard/index.html");
+  if (isCatalogDetailRequest(requestPath)) {
+    return safeJoin(distDir, "dashboard/catalog/index.html");
+  }
   if (route.includes(".")) return safeJoin(distDir, route);
   return safeJoin(distDir, `dashboard/${route}/index.html`);
+}
+
+function hasUnsafePathSegment(path: string): boolean {
+  return path.split("/").some((segment) => segment === "." || segment === "..");
+}
+
+function isCatalogDetailRequest(requestPath: string): boolean {
+  const normalizedPath = requestPath.replace(/\/+$/u, "");
+  const prefix = "/dashboard/catalog/";
+  if (!normalizedPath.startsWith(prefix)) return false;
+  const encodedEntryKey = normalizedPath.slice(prefix.length);
+  if (!encodedEntryKey || encodedEntryKey.includes("/")) return false;
+  return !/\.(?:css|gif|ico|jpe?g|js|json|mjs|png|svg|webp)$/iu.test(encodedEntryKey);
 }
 
 function safeDecodePath(value: string): string | undefined {

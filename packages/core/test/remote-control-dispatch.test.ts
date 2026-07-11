@@ -572,6 +572,11 @@ describe("dispatchRemoteCliRequest", () => {
         ],
       },
     });
+    expect(
+      JSON.parse(readFileSync(join(context.tempRoot, "remote-state", "caplets.lock.json"), "utf8")),
+    ).toMatchObject({
+      entries: [expect.objectContaining({ id: "sample" })],
+    });
   });
 
   it("dispatches complete_cli using server-owned config", async () => {
@@ -899,7 +904,8 @@ function currentHostAdministration(context: DispatchAdministrationContext) {
         projectConfigPath: context.projectConfigPath,
         authDir: context.authDir,
         globalCapletsRoot: context.globalCapletsRoot,
-        globalLockfilePath: context.globalLockfilePath,
+        globalLockfilePath:
+          context.globalLockfilePath ?? join(context.tempRoot, "remote-state", "caplets.lock.json"),
       },
       activityLog: new DashboardActivityLog({ dir: join(context.tempRoot, "activity") }),
       version: "test-version",
