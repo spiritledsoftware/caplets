@@ -422,13 +422,19 @@ export function createHttpServeApp(
     if (!session.ok) return session.response;
     try {
       const query = new URL(c.req.url).searchParams;
-      const outcome = await currentHostOperations.execute(
-        dashboardPrincipalForSession(c, session.session),
-        {
-          kind: "catalog_index",
-          source: requiredQueryParam(query, "source"),
-        },
-      );
+      const source = requiredQueryParam(query, "source");
+      const outcome =
+        query.has("q") || query.has("limit")
+          ? await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
+              kind: "catalog_search",
+              source,
+              query: query.get("q") ?? undefined,
+              limit: numberQueryParam(query.get("limit")),
+            })
+          : await currentHostOperations.execute(dashboardPrincipalForSession(c, session.session), {
+              kind: "catalog_index",
+              source,
+            });
 
       return c.json({ entries: outcome.entries });
     } catch (error) {

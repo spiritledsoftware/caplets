@@ -56,7 +56,10 @@ describe("dashboard caplets and catalog APIs", () => {
           entry: { ...officialEntry, contentMarkdown: "# GitHub from catalog.caplets.dev" },
         });
       }
-      return Response.json({ version: 1, view: "compact", entries: [officialEntry] });
+      return Response.json({
+        version: 1,
+        entries: [{ ...officialEntry, contentMarkdown: "# GitHub" }],
+      });
     });
 
     const search = await dashboardGet(
@@ -85,10 +88,9 @@ describe("dashboard caplets and catalog APIs", () => {
         contentMarkdown: "# GitHub from catalog.caplets.dev",
       },
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://catalog.caplets.dev/api/v1/catalog?view=compact",
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(fetchMock).toHaveBeenCalledWith("https://catalog.caplets.dev/api/v1/catalog", {
+      signal: expect.any(AbortSignal),
+    });
 
     await setup.engine.close();
   });
@@ -106,6 +108,29 @@ describe("dashboard caplets and catalog APIs", () => {
     expect(body.entries).toHaveLength(150);
     expect(body.entries[149]).toMatchObject({ id: "entry-149" });
     expect(body.entries.some((entry) => "contentMarkdown" in entry)).toBe(false);
+
+    await setup.engine.close();
+  });
+
+  it("preserves legacy catalog search limits when query parameters are present", async () => {
+    const setup = await authenticatedDashboard();
+    const entries = Array.from({ length: 5 }, (_, index) => ({
+      ...officialCompactEntry(index),
+      contentMarkdown: `# Entry ${index}`,
+    }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ version: 1, entries }));
+
+    const response = await dashboardGet(
+      setup,
+      "/dashboard/api/catalog/search?source=official&limit=2",
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: Array<Record<string, unknown>> };
+    expect(body.entries).toHaveLength(2);
+    expect(body.entries).toEqual([
+      expect.objectContaining({ id: "entry-0" }),
+      expect.objectContaining({ id: "entry-1" }),
+    ]);
 
     await setup.engine.close();
   });

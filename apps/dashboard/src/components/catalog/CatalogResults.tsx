@@ -6,13 +6,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import {
-  observeWindowOffset,
-  observeWindowRect,
-  Virtualizer,
-  windowScroll,
-  type VirtualItem,
-} from "@tanstack/virtual-core";
+import { useWindowVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { CheckCircle2Icon, CopyIcon, DownloadIcon, ShieldCheckIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,44 +48,22 @@ function CatalogResultsClient({
   },
 }: CatalogResultsProps) {
   const spacerRef = useRef<HTMLDivElement>(null);
-  const [, render] = useState(0);
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
+  const [scrollMargin, setScrollMargin] = useState(0);
   const identity = useMemo(() => visible.map((entry) => entry.entryKey).join("\u0000"), [visible]);
-  const virtualizerRef = useRef<Virtualizer<Window, HTMLDivElement> | null>(null);
-
-  if (!virtualizerRef.current) {
-    virtualizerRef.current = new Virtualizer<Window, HTMLDivElement>({
-      count: visible.length,
-      getScrollElement: () => window,
-      estimateSize: () => catalogRowEstimate(window.innerWidth),
-      getItemKey: (index) => visibleRef.current[index]?.entryKey ?? index,
-      overscan: CATALOG_RESULTS_OVERSCAN,
-      scrollToFn: windowScroll,
-      observeElementRect: observeWindowRect,
-      observeElementOffset: observeWindowOffset,
-      initialRect: { width: window.innerWidth, height: window.innerHeight },
-      onChange: () => render((value) => value + 1),
-    });
-  }
-  const virtualizer = virtualizerRef.current!;
-
-  useLayoutEffect(() => {
-    const cleanup = virtualizer._didMount();
-    virtualizer._willUpdate();
-    return cleanup;
-  }, [virtualizer]);
+  const virtualizer = useWindowVirtualizer({
+    count: visible.length,
+    estimateSize: () => catalogRowEstimate(window.innerWidth),
+    getItemKey: (index) => visible[index]?.entryKey ?? index,
+    overscan: CATALOG_RESULTS_OVERSCAN,
+    scrollMargin,
+    initialRect: { width: window.innerWidth, height: window.innerHeight },
+  });
 
   useLayoutEffect(() => {
     const top = (spacerRef.current?.getBoundingClientRect().top ?? 0) + window.scrollY;
-    virtualizer.setOptions({
-      ...virtualizer.options,
-      count: visible.length,
-      scrollMargin: top,
-      getItemKey: (index) => visibleRef.current[index]?.entryKey ?? index,
-    });
+    setScrollMargin((current) => (current === top ? current : top));
     virtualizer.measure();
-  }, [identity, visible.length, virtualizer]);
+  }, [identity, virtualizer]);
 
   useEffect(() => {
     const active = document.activeElement;
@@ -118,7 +90,8 @@ function CatalogResultsClient({
   );
 
   function rowClick(event: ReactMouseEvent<HTMLElement>, entry: CatalogCompactEntry) {
-    if ((event.target as Element).closest("button,input,select,textarea,[data-row-action]")) return;
+    if ((event.target as Element).closest("a[href],button,input,select,textarea,[data-row-action]"))
+      return;
     onNavigate(event, entry);
   }
 

@@ -27,13 +27,18 @@ function entry(index: number): CatalogCompactEntry {
   };
 }
 
-async function render(entries: CatalogCompactEntry[], discoveryKey = "initial") {
+async function render(
+  entries: CatalogCompactEntry[],
+  discoveryKey = "initial",
+  onNavigate?: React.ComponentProps<typeof CatalogResults>["onNavigate"],
+) {
   await act(async () =>
     root.render(
       <CatalogResults
         discoveryKey={discoveryKey}
         visible={entries}
         onInstall={install}
+        onNavigate={onNavigate}
         onCopy={async (command, item) => {
           try {
             await navigator.clipboard.writeText(command);
@@ -134,11 +139,14 @@ describe("CatalogResults", () => {
     input.remove();
   });
 
-  it("isolates links and actions from row navigation and keeps Install non-authorizing", async () => {
-    await render([entry(1)]);
+  it("navigates once from the detail link and retains navigation from row space", async () => {
+    const navigate = vi.fn((event: React.MouseEvent<HTMLElement>) => event.preventDefault());
+    await render([entry(1)], "initial", navigate);
     const link = document.querySelector<HTMLAnchorElement>("[data-result-row] a")!;
-    link.addEventListener("click", (event) => event.preventDefault());
     await act(async () => link.click());
+    expect(navigate).toHaveBeenCalledTimes(1);
+    await act(async () => document.querySelector<HTMLElement>("[data-result-row] > p")!.click());
+    expect(navigate).toHaveBeenCalledTimes(2);
     expect(install).not.toHaveBeenCalled();
     await act(async () =>
       (document.querySelector('[aria-label="Install Entry 1"]') as HTMLButtonElement).click(),

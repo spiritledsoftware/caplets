@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  catalogDetailHref,
-  catalogListHref,
-  catalogLocationFromPath,
-  type CatalogHistoryState,
-} from "./catalog-route";
+import { catalogDetailHref, catalogListHref, catalogLocationFromPath } from "./catalog-route";
 
 describe("catalog route helpers", () => {
   it("round-trips repository-qualified entry keys under root and configured base paths", () => {
@@ -28,13 +23,5 @@ describe("catalog route helpers", () => {
     });
     expect(catalogLocationFromPath("/dashboard/catalog/key%00value")).toEqual({ mode: "list" });
     expect(catalogLocationFromPath("/dashboard/catalog/key/extra")).toEqual({ mode: "list" });
-  });
-
-  it("recognizes only safe originating list history state", () => {
-    const valid = {
-      catalogListHref: "/dashboard/catalog?q=github&scope=official",
-    } satisfies CatalogHistoryState;
-
-    expect(valid.catalogListHref).toBe("/dashboard/catalog?q=github&scope=official");
   });
 });

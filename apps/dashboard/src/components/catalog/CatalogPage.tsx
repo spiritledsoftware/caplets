@@ -57,6 +57,8 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   const [installingKey, setInstallingKey] = useState<string>();
   const requestSequence = useRef(0);
   const detailSequence = useRef(0);
+  const activeRequestController = useRef<AbortController | undefined>(undefined);
+  const activeDetailController = useRef<AbortController | undefined>(undefined);
   const installLock = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const tags = useMemo(() => catalogTags(entries), [entries]);
@@ -64,8 +66,10 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   const discoveryKey = `${discovery.query}\u0000${discovery.scope}\u0000${discovery.setup}\u0000${discovery.tag}\u0000${discovery.sort}`;
 
   const load = useCallback(() => {
+    activeRequestController.current?.abort();
     const request = ++requestSequence.current;
     const controller = new AbortController();
+    activeRequestController.current = controller;
     setLoading(true);
     setError(undefined);
 
@@ -95,14 +99,19 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       })
       .finally(() => {
         if (request === requestSequence.current) setLoading(false);
+        if (activeRequestController.current === controller) {
+          activeRequestController.current = undefined;
+        }
       });
 
     return controller;
   }, []);
 
   const fetchDetail = useCallback(async (entryKey: string): Promise<CatalogDetail | undefined> => {
+    activeDetailController.current?.abort();
     const request = ++detailSequence.current;
     const controller = new AbortController();
+    activeDetailController.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), DETAIL_TIMEOUT_MS);
     setDetailState({ status: "loading" });
 
@@ -142,6 +151,9 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       return;
     } finally {
       window.clearTimeout(timeout);
+      if (activeDetailController.current === controller) {
+        activeDetailController.current = undefined;
+      }
     }
   }, []);
 
@@ -162,10 +174,11 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   }, [detailState, location.mode]);
 
   useEffect(() => {
-    const controller = load();
+    load();
     return () => {
       ++requestSequence.current;
-      controller.abort();
+      activeRequestController.current?.abort();
+      activeRequestController.current = undefined;
     };
   }, [load]);
 
@@ -174,8 +187,19 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
       void fetchDetail(location.entryKey);
     } else {
       ++detailSequence.current;
+      activeDetailController.current?.abort();
+      activeDetailController.current = undefined;
     }
   }, [fetchDetail, location]);
+
+  useEffect(
+    () => () => {
+      ++detailSequence.current;
+      activeDetailController.current?.abort();
+      activeDetailController.current = undefined;
+    },
+    [],
+  );
 
   function focusList(previousEntryKey = "") {
     window.setTimeout(() => {
@@ -243,15 +267,13 @@ export function CatalogPage({ data, action, confirmTyped = async () => false }: 
   }
 
   function change(patch: Partial<CatalogDiscoveryState>) {
-    setDiscovery((current) => {
-      const next = { ...current, ...patch };
-      window.history.replaceState(
-        window.history.state,
-        "",
-        updateCatalogUrl(window.location.href, next),
-      );
-      return next;
-    });
+    const next = { ...discovery, ...patch };
+    window.history.replaceState(
+      window.history.state,
+      "",
+      updateCatalogUrl(window.location.href, next),
+    );
+    setDiscovery(next);
   }
 
   async function copy(command: string, name?: string) {

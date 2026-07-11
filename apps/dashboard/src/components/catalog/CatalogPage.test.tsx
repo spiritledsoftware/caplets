@@ -26,13 +26,7 @@ let root: Root;
 let host: HTMLDivElement;
 
 function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  return { promise, resolve, reject };
+  return Promise.withResolvers<T>();
 }
 
 function entry(index: number, overrides: Partial<CatalogCompactEntry> = {}): CatalogCompactEntry {
@@ -136,8 +130,10 @@ describe("CatalogPage", () => {
       "name",
     );
     const search = document.querySelector<HTMLInputElement>('[aria-label="Search Caplets"]')!;
+    const writesBeforeChange = replace.mock.calls.length;
     await act(async () => setValue(search, "changed"));
     expect(window.location.search).toContain("keep=1");
+    expect(replace.mock.calls.length).toBe(writesBeforeChange + 1);
     const writes = replace.mock.calls.length;
     window.history.replaceState({}, "", "/dashboard/catalog?keep=1&q=back");
     await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
@@ -191,13 +187,29 @@ describe("CatalogPage", () => {
     const second = deferred<{ entries: CatalogCompactEntry[] }>();
     dashboardApi.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     await mount();
+    const firstSignal = dashboardApi.mock.calls[0]?.[1]?.signal as AbortSignal;
     await act(async () =>
       (document.querySelector('[aria-label="Retry loading catalog"]') as HTMLButtonElement).click(),
     );
+    expect(firstSignal.aborted).toBe(true);
     await act(async () => second.resolve({ entries: [entry(2, { name: "Current" })] }));
     await act(async () => first.resolve({ entries: [entry(1, { name: "Stale" })] }));
     expect(document.body.textContent).toContain("Current");
     expect(document.body.textContent).not.toContain("Stale");
+  });
+
+  it("aborts a retry-created catalog request on unmount", async () => {
+    const first = deferred<{ entries: CatalogCompactEntry[] }>();
+    const retry = deferred<{ entries: CatalogCompactEntry[] }>();
+    dashboardApi.mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
+    await mount();
+    await act(async () =>
+      (document.querySelector('[aria-label="Retry loading catalog"]') as HTMLButtonElement).click(),
+    );
+    const retrySignal = dashboardApi.mock.calls[1]?.[1]?.signal as AbortSignal;
+    await act(async () => root.unmount());
+    expect(retrySignal.aborted).toBe(true);
+    host.remove();
   });
   it("loads a stable deep link independently of the compact index", async () => {
     window.history.replaceState({}, "", "/dashboard/catalog/stable%3Akey");
@@ -224,6 +236,22 @@ describe("CatalogPage", () => {
       "catalog/detail?source=official&entryKey=stable%3Akey",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("aborts active detail work on unmount", async () => {
+    window.history.replaceState({}, "", "/dashboard/catalog/pending");
+    const detail = deferred<unknown>();
+    dashboardApi.mockImplementation((path: string) =>
+      path.startsWith("catalog/detail?") ? detail.promise : Promise.resolve({ entries: [] }),
+    );
+    await mount();
+    await flush();
+    const signal = dashboardApi.mock.calls.find(([path]) =>
+      String(path).startsWith("catalog/detail?"),
+    )?.[1]?.signal as AbortSignal;
+    await act(async () => root.unmount());
+    expect(signal.aborted).toBe(true);
+    host.remove();
   });
 
   it("distinguishes missing and unreadable detail responses", async () => {
@@ -366,9 +394,13 @@ describe("CatalogPage", () => {
     await mount();
     await flush();
     await act(async () => host.querySelector<HTMLAnchorElement>('a[href$="/A"]')?.click());
+    const aSignal = dashboardApi.mock.calls.find(([path]) =>
+      String(path).includes("entryKey=A"),
+    )?.[1]?.signal as AbortSignal;
     window.history.pushState({ catalogListHref: "/dashboard/catalog" }, "", "/dashboard/catalog/B");
     await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
     await flush();
+    expect(aSignal.aborted).toBe(true);
     await act(async () =>
       b.resolve({ entry: { ...entries[1], contentMarkdown: "# B" }, setupActions: [] }),
     );

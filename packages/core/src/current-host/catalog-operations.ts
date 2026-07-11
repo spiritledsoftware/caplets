@@ -104,10 +104,16 @@ async function catalogInstallOutcome(
         source: operation.source,
         entryKey: operation.entryKey,
       });
+      const officialInstall =
+        operation.source.trim() !== "official" ||
+        (detail.entry.installCommand.copyable &&
+          detail.entry.installCommand.revisionBound === true &&
+          typeof detail.entry.resolvedRevision === "string" &&
+          detail.entry.resolvedRevision.length > 0);
       if (
         typeof detail.entry.contentMarkdown !== "string" ||
         detail.entry.contentMarkdown.length === 0 ||
-        (operation.source.trim() === "official" && !detail.entry.installCommand.copyable)
+        !officialInstall
       ) {
         throw new CapletsError("REQUEST_INVALID", "Catalog entry is not currently installable.");
       }
