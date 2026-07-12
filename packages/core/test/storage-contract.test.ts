@@ -16,7 +16,15 @@ import {
   type AuthorityGeneration,
   type AuthorityHead,
 } from "../src/storage/types";
-import { registerAuthorityProvider, registeredAuthorityProviders } from "../src/storage/factory";
+import {
+  AuthorityProviderRegistryMissError,
+  createAuthority,
+  createAuthorityWithBuiltinFallback,
+  lookupAuthorityProvider,
+  registerAuthorityProvider,
+  registeredAuthorityProviders,
+  type AuthorityProviderContext,
+} from "../src/storage/factory";
 import { FileVaultStore } from "../src/vault";
 
 describe("authority bootstrap", () => {
@@ -163,6 +171,37 @@ describe("safe provider-neutral surface", () => {
     expect(registeredAuthorityProviders()).toContain("s3");
     expect(() => registerAuthorityProvider("s3", factory)).toThrow(/already registered/);
     unregister();
+  });
+
+  it("distinguishes a registry miss from a registered factory failure", async () => {
+    const context: AuthorityProviderContext = {
+      bootstrap: {
+        provider: "s3",
+        authorityId: "factory-test",
+        namespace: "factory-test",
+        pollIntervalMs: 1,
+        bucket: "factory-test",
+        region: "auto",
+      },
+      secrets: {},
+    };
+    const miss = lookupAuthorityProvider("s3");
+    expect(miss).toEqual({ kind: "registry-miss", provider: "s3" });
+    await expect(createAuthority(context)).rejects.toBeInstanceOf(
+      AuthorityProviderRegistryMissError,
+    );
+
+    const factoryFailure = new Error("Authority provider s3 is not registered");
+    const unregister = registerAuthorityProvider("s3", async () => {
+      throw factoryFailure;
+    });
+    try {
+      await expect(createAuthorityWithBuiltinFallback(context, "/tmp/config.json")).rejects.toBe(
+        factoryFailure,
+      );
+    } finally {
+      unregister();
+    }
   });
 
   it("uses authority provenance as Vault grant identity without a fake path", () => {

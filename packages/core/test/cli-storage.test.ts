@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -524,6 +524,55 @@ describe("storage lifecycle CLI", () => {
         (created.value.header as Record<string, unknown>).keyFingerprint,
       );
       expectSafeOutput(inspected.text, fixture);
+
+      const grownBackupPath = join(fixture.root, "backups", "grown.backup");
+      await writeFile(grownBackupPath, await readFile(backupPath), { mode: 0o600 });
+      await truncate(grownBackupPath, 64 * 1024 * 1024 + 16 * 1024 + 1);
+      const grownBackup = await runStorageJson(fixture, [
+        "storage",
+        "backup",
+        "inspect-header",
+        "--input",
+        grownBackupPath,
+      ]);
+      expectJsonError(grownBackup.value, "CONFIG_INVALID");
+      expect(grownBackup.exitCode).toBe(1);
+
+      const competingOutput = join(fixture.root, "backups", "competing.backup");
+      const competing = await Promise.all([
+        runStorageJson(fixture, [
+          "storage",
+          "backup",
+          "create",
+          "--config",
+          fixture.sourceConfig,
+          "--key-file",
+          fixture.keyFile,
+          "--output",
+          competingOutput,
+        ]),
+        runStorageJson(fixture, [
+          "storage",
+          "backup",
+          "create",
+          "--config",
+          fixture.sourceConfig,
+          "--key-file",
+          fixture.keyFile,
+          "--output",
+          competingOutput,
+        ]),
+      ]);
+      expect(competing.filter((result) => result.exitCode === undefined)).toHaveLength(1);
+      expect(competing).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: expect.objectContaining({
+              error: expect.objectContaining({ code: "CONFIG_EXISTS" }),
+            }),
+          }),
+        ]),
+      );
 
       const restoreBefore = await readSqliteHead(
         fixture.restoreDb,

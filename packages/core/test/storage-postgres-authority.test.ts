@@ -3,12 +3,59 @@ import { randomUUID } from "node:crypto";
 import { createPostgresAuthority, type PostgresAuthority } from "../src/storage/sql/authority";
 import { migratePostgresDatabase } from "../src/storage/sql/migrate";
 import type postgres from "postgres";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { stableJsonStringify } from "../src/stable-json";
 
 const require = createRequire(import.meta.url);
 const loadPostgres = require("postgres") as typeof postgres;
 const connectionString = process.env.TEST_POSTGRES_URL;
+
+type PostgresCommitWindow = "before" | "after";
+
+type PostgresFaultState = {
+  window: PostgresCommitWindow;
+  armed: boolean;
+  triggered: boolean;
+};
+
+function createFaultPostgresClient(state: PostgresFaultState): postgres.Sql {
+  const client = loadPostgres(connectionString!, {
+    max: 1,
+    prepare: false,
+    backoff: () => 0,
+  });
+  const intercepted = client as unknown as {
+    begin(...args: unknown[]): Promise<unknown>;
+  };
+  const originalBegin = intercepted.begin.bind(client);
+  intercepted.begin = async (...args: unknown[]) => {
+    const callback =
+      typeof args[0] === "function"
+        ? (args[0] as (transaction: unknown) => unknown)
+        : (args[1] as (transaction: unknown) => unknown);
+    if (typeof callback !== "function")
+      return Reflect.apply(originalBegin, client, args) as Promise<unknown>;
+    const wrappedCallback = async (transaction: unknown) => {
+      const result = await callback(transaction);
+      if (state.armed && state.window === "before") {
+        state.armed = false;
+        state.triggered = true;
+        throw new Error("socket closed immediately before PostgreSQL COMMIT");
+      }
+      return result;
+    };
+    const beginArgs =
+      typeof args[0] === "function" ? [wrappedCallback] : [args[0], wrappedCallback];
+    const result = await Reflect.apply(originalBegin, client, beginArgs);
+    if (state.armed && state.window === "after") {
+      state.armed = false;
+      state.triggered = true;
+      throw new Error("socket closed immediately after PostgreSQL COMMIT");
+    }
+    return result;
+  };
+  return client;
+}
 
 describe.skipIf(!connectionString)("PostgreSQL SQL authority", () => {
   let authority: PostgresAuthority<{ value: number }, { snapshot: { value: number } }>;
@@ -173,6 +220,101 @@ describe.skipIf(!connectionString)("PostgreSQL SQL authority", () => {
       await blocker.end({ timeout: 2 }).catch(() => undefined);
     }
   });
+
+  it.each(["before", "after"] as const)(
+    "recovers one PostgreSQL generation, receipt, and activity when the socket is lost %s COMMIT",
+    async (window) => {
+      const authorityId = `authority-pg-ambiguous-${window}-${randomUUID()}`;
+      await migratePostgresDatabase({
+        connectionString: connectionString!,
+        authorityId,
+        namespace: "test",
+      });
+      const faultState: PostgresFaultState = {
+        window,
+        armed: false,
+        triggered: false,
+      };
+      const client = createFaultPostgresClient(faultState);
+      const applyCommand = vi.fn(
+        ({ command }: { command: { snapshot: { value: number }; result?: unknown } }) => ({
+          snapshot: command.snapshot,
+          result: command.result,
+        }),
+      );
+      let authority:
+        | PostgresAuthority<{ value: number }, { snapshot: { value: number }; result?: unknown }>
+        | undefined;
+      try {
+        authority = await createPostgresAuthority<
+          { value: number },
+          { snapshot: { value: number }; result?: unknown }
+        >({
+          client,
+          authorityId,
+          namespace: "test",
+          initialSnapshot: { value: 0 },
+          applyCommand,
+        });
+        faultState.armed = true;
+        const envelope = {
+          authorityId,
+          currentHostId: "host",
+          principalId: "operator",
+          expectedGeneration: null,
+          idempotencyKey: "ambiguous-commit",
+          requestDigest: "ambiguous-commit-digest",
+          command: { snapshot: { value: 1 }, result: { accepted: true } },
+        };
+
+        if (window === "before") {
+          await expect(authority.commit(envelope)).rejects.toMatchObject({
+            code: "SERVER_UNAVAILABLE",
+          });
+        } else {
+          await expect(authority.commit(envelope)).resolves.toMatchObject({ kind: "replayed" });
+        }
+        expect(faultState.triggered).toBe(true);
+
+        const recovered = await authority.commit(envelope);
+        expect(recovered.kind).toBe(window === "before" ? "committed" : "replayed");
+        const replay = await authority.commit(envelope);
+        expect(replay.kind).toBe("replayed");
+        if (recovered.kind !== "committed" && recovered.kind !== "replayed")
+          throw new Error("expected a recovered generation");
+
+        await expect(
+          authority.commitAuxiliary({
+            kind: "security_event",
+            event: {
+              kind: "conflicted",
+              occurredAt: "2026-01-01T00:00:01.000Z",
+              code: "AMBIGUOUS_COMMIT",
+            },
+          }),
+        ).resolves.toMatchObject({ kind: "applied" });
+        const exported = await authority.exportState();
+        expect(exported.generation.sequence).toBe(1);
+        expect(exported.generation.id).toBe(recovered.generation.id);
+        expect(exported.receipts).toHaveLength(1);
+        expect(exported.receipts?.[0]).toMatchObject({
+          idempotencyKey: "ambiguous-commit",
+          generation: recovered.generation,
+        });
+        expect(exported.auxiliary?.securityEvents).toEqual([
+          {
+            kind: "conflicted",
+            occurredAt: "2026-01-01T00:00:01.000Z",
+            code: "AMBIGUOUS_COMMIT",
+          },
+        ]);
+        expect(applyCommand).toHaveBeenCalledTimes(window === "before" ? 2 : 1);
+      } finally {
+        await authority?.close().catch(() => undefined);
+        await client.end({ timeout: 2 }).catch(() => undefined);
+      }
+    },
+  );
 
   it("exports canonical receipts and auxiliary state under one transaction", async () => {
     const authorityId = `authority-pg-export-${randomUUID()}`;

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
+import { assertAuthorityLifecycleIdentity } from "./factory";
 import type {
   AuthorityAuxiliaryExport,
   AuthorityAuxiliarySession,
@@ -12,7 +13,6 @@ import type {
   AuthorityLifecycleDiagnostic,
   AuthorityMigrationStage,
   AuthorityMigrationStageContext,
-  AuthorityMigrationTarget,
   AuthorityProviderKind,
   AuthorityRestoreResult,
   MaintenanceFence,
@@ -247,9 +247,19 @@ export async function migrateAuthority(options: MigrationOptions): Promise<Migra
       "Authority lifecycle requires injected source and destination maintenance fences",
     );
   }
-  const sourceNamespace = sourceNamespaceFor(options.source, sourceHealth);
-  const targetNamespace =
-    options.targetNamespace ?? targetNamespaceFor(options.target, targetHealth, sourceNamespace);
+  const sourceLifecycleIdentity = assertAuthorityLifecycleIdentity(options.source);
+  const targetLifecycleIdentity = assertAuthorityLifecycleIdentity(options.target);
+  const sourceNamespace = sourceLifecycleIdentity.namespace;
+  const targetNamespace = targetLifecycleIdentity.namespace;
+  if (
+    options.targetNamespace !== undefined &&
+    options.targetNamespace !== targetLifecycleIdentity.namespace
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Target authority namespace override does not match the provider lifecycle identity",
+    );
+  }
   const owner = options.owner ?? `migration-${randomUUID()}`;
   const targetSchemaVersion = resolveTargetSchemaVersion(
     options.target,
@@ -1091,39 +1101,18 @@ function digestForTarget(generation: AuthorityGeneration, provider: AuthorityPro
 export function createWritableAuthorityMigrationAdapter(
   authority: WritableAuthority,
 ): MigrationTargetAdapter {
-  const native = authority as WritableAuthority & Partial<AuthorityMigrationTarget>;
   if (
-    typeof native.stageMigration === "function" &&
-    typeof native.readMigrationStage === "function" &&
-    typeof native.publishMigrationStage === "function" &&
-    typeof native.invalidateMigrationStage === "function"
+    typeof authority.stageMigration === "function" &&
+    typeof authority.readMigrationStage === "function" &&
+    typeof authority.publishMigrationStage === "function" &&
+    typeof authority.invalidateMigrationStage === "function"
   ) {
     return {
-      stageMigration: (state, context) => native.stageMigration!(state, context),
-      readMigrationStage: (stage, context) => native.readMigrationStage!(stage, context),
-      publishMigrationStage: (stage, context) => native.publishMigrationStage!(stage, context),
+      stageMigration: (state, context) => authority.stageMigration!(state, context),
+      readMigrationStage: (stage, context) => authority.readMigrationStage!(stage, context),
+      publishMigrationStage: (stage, context) => authority.publishMigrationStage!(stage, context),
       invalidateMigrationStage: (stage, context) =>
-        native.invalidateMigrationStage!(stage, context),
-    };
-  }
-
-  const legacy = authority as WritableAuthority & {
-    stageState?: MigrationTargetAdapter["stageMigration"];
-    readStagedState?: MigrationTargetAdapter["readMigrationStage"];
-    publishStagedState?: MigrationTargetAdapter["publishMigrationStage"];
-    invalidateStagedState?: MigrationTargetAdapter["invalidateMigrationStage"];
-  };
-  if (
-    typeof legacy.stageState === "function" &&
-    typeof legacy.readStagedState === "function" &&
-    typeof legacy.publishStagedState === "function" &&
-    typeof legacy.invalidateStagedState === "function"
-  ) {
-    return {
-      stageMigration: (state, context) => legacy.stageState!(state, context),
-      readMigrationStage: (stage, context) => legacy.readStagedState!(stage, context),
-      publishMigrationStage: (stage, context) => legacy.publishStagedState!(stage, context),
-      invalidateMigrationStage: (stage, context) => legacy.invalidateStagedState!(stage, context),
+        authority.invalidateMigrationStage!(stage, context),
     };
   }
 
@@ -1295,24 +1284,6 @@ async function assertHealthyWritable(authority: WritableAuthority, label: string
   }
 }
 
-function sourceNamespaceFor(authority: WritableAuthority, health: AuthorityHealth): string {
-  const candidate = authority as WritableAuthority & { namespace?: unknown };
-  return typeof candidate.namespace === "string"
-    ? candidate.namespace
-    : health.activeGeneration
-      ? "default"
-      : "default";
-}
-
-function targetNamespaceFor(
-  authority: WritableAuthority,
-  health: AuthorityHealth,
-  fallback: string,
-): string {
-  const candidate = authority as WritableAuthority & { namespace?: unknown };
-  return typeof candidate.namespace === "string" ? candidate.namespace : fallback;
-}
-
 function resolveTargetSchemaVersion(
   authority: WritableAuthority,
   explicit: number | undefined,
@@ -1322,19 +1293,13 @@ function resolveTargetSchemaVersion(
     if (!Number.isSafeInteger(explicit) || explicit < 1) {
       throw new CapletsError("CONFIG_INVALID", "Target authority schema version is invalid");
     }
-    if (capability !== undefined && capability !== explicit) {
+    if (capability !== explicit) {
       throw new CapletsError(
         "CONFIG_INVALID",
         "Target authority schema version override is incompatible",
       );
     }
     return explicit;
-  }
-  if (typeof capability !== "number" || !Number.isSafeInteger(capability) || capability < 1) {
-    throw new CapletsError(
-      "UNSUPPORTED_OPERATION",
-      "Target authority does not expose a logical schema version",
-    );
   }
   return capability;
 }

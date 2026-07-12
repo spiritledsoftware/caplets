@@ -189,6 +189,42 @@ describe("dashboard authority mutations", () => {
       await setup.authority.close();
     }
   });
+  it("cleans authority dashboard auxiliary state when the dashboard revokes its own client", async () => {
+    const setup = await sqliteDashboard();
+    try {
+      const sessionResponse = await dashboardGet(setup, "/dashboard/api/session");
+      expect(sessionResponse.status).toBe(200);
+      const sessionBody = (await sessionResponse.json()) as {
+        session: { sessionId: string; operatorClientId: string };
+      };
+      const before = await setup.authority.readAuxiliary({
+        kind: "session_touch",
+        sessionId: sessionBody.session.sessionId,
+      });
+      expect(before).toMatchObject({ revoked: false });
+
+      const revoke = await dashboardPost(
+        setup,
+        `/dashboard/api/access/clients/${encodeURIComponent(sessionBody.session.operatorClientId)}/revoke`,
+        {},
+      );
+      expect(revoke.status).toBe(200);
+      await expect(revoke.json()).resolves.toMatchObject({
+        revoked: true,
+        sessionEnded: true,
+      });
+      expect(
+        await setup.authority.readAuxiliary({
+          kind: "session_touch",
+          sessionId: sessionBody.session.sessionId,
+        }),
+      ).toBeNull();
+      expect((await dashboardGet(setup, "/dashboard/api/session")).status).toBe(401);
+    } finally {
+      await setup.runtime.close();
+      await setup.authority.close();
+    }
+  });
   it("preserves existing records when mutating an array-backed authority snapshot", async () => {
     const setup = await sqliteDashboard(true);
     try {

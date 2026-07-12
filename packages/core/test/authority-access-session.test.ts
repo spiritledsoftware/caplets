@@ -2,7 +2,11 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthorityDashboardActivityLog } from "../src/dashboard/activity-log";
-import { AuthorityDashboardSessionStore } from "../src/dashboard/session-store";
+import {
+  AuthorityDashboardSessionStore,
+  DASHBOARD_SESSION_TOUCH_THROTTLE_MS,
+  MAX_DASHBOARD_SESSIONS,
+} from "../src/dashboard/session-store";
 import { CapletsError } from "../src/errors";
 import { AuthorityRemoteServerCredentialStore } from "../src/remote/server-credential-store";
 import type {
@@ -120,6 +124,20 @@ describe("authority-backed access/session/activity codecs", () => {
       sessionId: created.session.sessionId,
       csrfToken: created.session.csrfToken,
     });
+    expect(authority.sessionTouchCommits).toBe(1);
+    expect(
+      await authority.readAuxiliary({
+        kind: "session_touch",
+        sessionId: created.session.sessionId,
+      }),
+    ).toMatchObject({ lastUsedAt: created.session.createdAt });
+    await sessionsB.validate({
+      cookieHeader: `caplets_dashboard_session=${created.cookieValue}`,
+      now: new Date(
+        Date.parse(created.session.createdAt) + DASHBOARD_SESSION_TOUCH_THROTTLE_MS + 1,
+      ),
+    });
+    expect(authority.sessionTouchCommits).toBe(2);
     const activity = new AuthorityDashboardActivityLog({ authority, encryptionKey: key });
     await expect(activity.list()).resolves.toMatchObject({
       entries: expect.arrayContaining([
@@ -133,6 +151,18 @@ describe("authority-backed access/session/activity codecs", () => {
     await expect(
       sessionsB.validate({ cookieHeader: `caplets_dashboard_session=${created.cookieValue}` }),
     ).rejects.toMatchObject({ code: "AUTH_FAILED" });
+    expect(
+      await authority.readAuxiliary({
+        kind: "session_touch",
+        sessionId: created.session.sessionId,
+      }),
+    ).toBeNull();
+    await expect(
+      sessionsB.touch(created.session.sessionId, {
+        lastUsedAt: new Date(Date.now() + 20_000).toISOString(),
+        expectedRevision: "",
+      }),
+    ).resolves.toMatchObject({ kind: "missing" });
     if (!activeBefore) throw new Error("expected active session generation");
     await expect(
       sessionsB.touch(created.session.sessionId, {
@@ -150,11 +180,72 @@ describe("authority-backed access/session/activity codecs", () => {
     expect(failed.kind).toBe("applied");
     expect(JSON.stringify(authority.rawState())).not.toContain("secret-request");
   });
+  it("prunes expired authority sessions before enforcing the active-session cap", async () => {
+    const authority = new MemoryAuthority();
+    authorities.push(authority);
+    const key = Buffer.alloc(32, 9);
+    const remote = new AuthorityRemoteServerCredentialStore({ authority, encryptionKey: key });
+    const pending = await remote.createPendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      requestedRole: "operator",
+      idempotencyKey: "cap-pending",
+    });
+    await remote.approvePendingLogin({
+      operatorCode: pending.operatorCode,
+      idempotencyKey: "cap-approve",
+    });
+    const credentials = await remote.completePendingLogin({
+      hostUrl: "https://caplets.example.com/caplets",
+      flowId: pending.flowId,
+      pendingCompletionSecret: pending.pendingCompletionSecret,
+      requiredRole: "operator",
+      idempotencyKey: "cap-complete",
+    });
+    const sessions = new AuthorityDashboardSessionStore({ authority, encryptionKey: key });
+    const staleAt = new Date("2026-01-01T00:00:00.000Z");
+    const stale = await sessions.create({
+      operatorClientId: credentials.clientId,
+      now: staleAt,
+      idempotencyKey: "cap-stale",
+    });
+    const activeAt = new Date(staleAt.getTime() + 2 * 60 * 60_000);
+    const active = await sessions.create({
+      operatorClientId: credentials.clientId,
+      now: activeAt,
+      idempotencyKey: "cap-active",
+    });
+    expect((await sessions.dumpForTest()).sessions).toHaveLength(1);
+    expect(
+      await authority.readAuxiliary({ kind: "session_touch", sessionId: stale.session.sessionId }),
+    ).toBeNull();
+
+    for (let index = 0; index < MAX_DASHBOARD_SESSIONS - 1; index += 1) {
+      await sessions.create({
+        operatorClientId: credentials.clientId,
+        now: new Date(activeAt.getTime() + index + 1),
+        idempotencyKey: `cap-fill-${index}`,
+      });
+    }
+    expect((await sessions.dumpForTest()).sessions).toHaveLength(MAX_DASHBOARD_SESSIONS);
+    await expect(
+      sessions.create({
+        operatorClientId: credentials.clientId,
+        now: new Date(activeAt.getTime() + MAX_DASHBOARD_SESSIONS + 1),
+        idempotencyKey: "cap-overflow",
+      }),
+    ).rejects.toMatchObject({
+      code: "SERVER_UNAVAILABLE",
+      details: { limit: MAX_DASHBOARD_SESSIONS },
+    });
+    expect((await sessions.dumpForTest()).sessions).toHaveLength(MAX_DASHBOARD_SESSIONS);
+    expect(active.session.sessionId).not.toBe(stale.session.sessionId);
+  });
 });
 
 class MemoryAuthority implements WritableAuthority<Snapshot, Record<string, unknown>> {
   readonly authorityId = "memory-authority";
   readonly namespace = "test";
+  readonly schemaVersion = 1;
   private sequence = 0;
   private head: AuthorityHead | null = null;
   private generation: AuthorityGeneration<Snapshot> | null = null;
@@ -175,6 +266,7 @@ class MemoryAuthority implements WritableAuthority<Snapshot, Record<string, unkn
     { revision: string; lastUsedAt: string; revoked: boolean }
   >();
   private watermark = 0;
+  sessionTouchCommits = 0;
   private readonly events: Array<{ watermark: string; event: unknown }> = [];
 
   async readHead(): Promise<AuthorityHead | null> {
@@ -263,11 +355,19 @@ class MemoryAuthority implements WritableAuthority<Snapshot, Record<string, unkn
   }
 
   async commitAuxiliary(command: AuxiliaryCommit): Promise<AuxiliaryCommitResult> {
+    if (command.kind === "remove_session_touch") {
+      if (!this.sessions.delete(command.sessionId)) {
+        return { kind: "unchanged", watermark: String(this.watermark) };
+      }
+      this.watermark += 1;
+      return { kind: "applied", watermark: String(this.watermark) };
+    }
     if (command.kind === "security_event") {
       this.watermark += 1;
       this.events.push({ watermark: String(this.watermark), event: command.event });
       return { kind: "applied", watermark: String(this.watermark) };
     }
+    if (command.kind === "session_touch") this.sessionTouchCommits += 1;
     if (!sameIdentity(this.head, command.expectedGeneration)) return { kind: "conflict" };
     const existing = this.sessions.get(command.sessionId);
     if (!existing) {

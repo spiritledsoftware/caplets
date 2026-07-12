@@ -223,6 +223,18 @@ type PgGenerationRow = SqliteGenerationRow;
 type PgReceiptRow = SqliteReceiptRow;
 type PgSessionRow = SqliteSessionRow;
 type PgEventRow = SqliteEventRow;
+type PgReceiptJoinRow = PgReceiptRow & {
+  generation_authority_id: string | null;
+  generation_row_id: string | null;
+  generation_sequence: number | null;
+  generation_predecessor_id: string | null;
+  generation_schema_version: number | null;
+  generation_digest: string | null;
+  generation_committed_at: string | null;
+  generation_snapshot_json: string | null;
+};
+
+const POSTGRES_BULK_INSERT_ROWS = 2_000;
 
 type CommandEnvelopeResult = {
   snapshot: unknown;
@@ -1287,6 +1299,21 @@ export class SqliteAuthority<TSnapshot = unknown, TCommand = unknown> implements
           const meta = this.db
             .prepare("SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ?")
             .get(this.authorityId) as { auxiliary_watermark: number };
+          if (command.kind === "remove_session_touch") {
+            const deleted = this.db
+              .prepare("DELETE FROM authority_sessions WHERE authority_id = ? AND session_id = ?")
+              .run(this.authorityId, command.sessionId);
+            if (deleted.changes === 0) {
+              return { kind: "unchanged", watermark: String(meta.auxiliary_watermark) };
+            }
+            const watermark = meta.auxiliary_watermark + 1;
+            this.db
+              .prepare(
+                "UPDATE authority_schema_meta SET auxiliary_watermark = ? WHERE authority_id = ?",
+              )
+              .run(watermark, this.authorityId);
+            return { kind: "applied", watermark: String(watermark) };
+          }
           if (command.kind === "session_touch") {
             const headRow = this.db
               .prepare(
@@ -3061,6 +3088,16 @@ export class PostgresAuthority<
         const metaRows =
           await tx`SELECT auxiliary_watermark FROM authority_schema_meta WHERE authority_id = ${this.authorityId}`;
         const meta = metaRows[0] as { auxiliary_watermark: number };
+        if (command.kind === "remove_session_touch") {
+          const deleted =
+            await tx`DELETE FROM authority_sessions WHERE authority_id = ${this.authorityId} AND session_id = ${command.sessionId} RETURNING session_id`;
+          if (deleted.length === 0) {
+            return { kind: "unchanged", watermark: String(meta.auxiliary_watermark) };
+          }
+          const watermark = meta.auxiliary_watermark + 1;
+          await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${watermark} WHERE authority_id = ${this.authorityId}`;
+          return { kind: "applied", watermark: String(watermark) };
+        }
         if (command.kind === "session_touch") {
           if (!matchesExpected(command.expectedGeneration, currentHead))
             return { kind: "conflict" };
@@ -3165,20 +3202,63 @@ export class PostgresAuthority<
             "CONFIG_INVALID",
             "SQL authority head references a missing generation",
           );
-        const receiptRows =
-          (await tx`SELECT authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at FROM authority_receipts WHERE authority_id = ${this.authorityId} AND expires_at > ${nowIso} ORDER BY current_host_id, principal_id, idempotency_key`) as unknown as PgReceiptRow[];
+        const receiptJoinRows = (await tx`SELECT
+            r.authority_id,
+            r.current_host_id,
+            r.principal_id,
+            r.idempotency_key,
+            r.request_digest,
+            r.generation_id,
+            r.result_json,
+            r.expires_at,
+            g.authority_id AS generation_authority_id,
+            g.generation_id AS generation_row_id,
+            g.sequence AS generation_sequence,
+            g.predecessor_id AS generation_predecessor_id,
+            g.schema_version AS generation_schema_version,
+            g.digest AS generation_digest,
+            g.committed_at AS generation_committed_at,
+            g.snapshot_json AS generation_snapshot_json
+          FROM authority_receipts AS r
+          LEFT JOIN authority_generations AS g
+            ON g.authority_id = r.authority_id
+            AND g.generation_id = r.generation_id
+          WHERE r.authority_id = ${this.authorityId}
+            AND r.expires_at > ${nowIso}
+          ORDER BY r.current_host_id, r.principal_id, r.idempotency_key`) as unknown as PgReceiptJoinRow[];
+        const receiptRows: PgReceiptRow[] = [];
         const receiptGenerationRows = new Map<string, PgGenerationRow>();
-        for (const row of receiptRows) {
-          if (receiptGenerationRows.has(row.generation_id)) continue;
-          const rows =
-            await tx`SELECT authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json FROM authority_generations WHERE authority_id = ${this.authorityId} AND generation_id = ${row.generation_id}`;
-          const receiptGeneration = rows[0] as PgGenerationRow | undefined;
-          if (!receiptGeneration)
-            throw new CapletsError(
-              "CONFIG_INVALID",
-              "Authority receipt references a missing generation",
-            );
-          receiptGenerationRows.set(row.generation_id, receiptGeneration);
+        for (const row of receiptJoinRows) {
+          receiptRows.push({
+            authority_id: row.authority_id,
+            current_host_id: row.current_host_id,
+            principal_id: row.principal_id,
+            idempotency_key: row.idempotency_key,
+            request_digest: row.request_digest,
+            generation_id: row.generation_id,
+            result_json: row.result_json,
+            expires_at: row.expires_at,
+          });
+          if (
+            row.generation_authority_id !== null &&
+            row.generation_row_id !== null &&
+            row.generation_sequence !== null &&
+            row.generation_schema_version !== null &&
+            row.generation_digest !== null &&
+            row.generation_committed_at !== null &&
+            row.generation_snapshot_json !== null
+          ) {
+            receiptGenerationRows.set(row.generation_id, {
+              authority_id: row.generation_authority_id,
+              generation_id: row.generation_row_id,
+              sequence: row.generation_sequence,
+              predecessor_id: row.generation_predecessor_id,
+              schema_version: row.generation_schema_version,
+              digest: row.generation_digest,
+              committed_at: row.generation_committed_at,
+              snapshot_json: row.generation_snapshot_json,
+            });
+          }
         }
         const sessionRows =
           (await tx`SELECT authority_id, session_id, revision, last_used_at, revoked FROM authority_sessions WHERE authority_id = ${this.authorityId} ORDER BY session_id`) as unknown as PgSessionRow[];
@@ -3285,16 +3365,69 @@ export class PostgresAuthority<
           throw new CapletsError("CONFIG_EXISTS", "SQL authority restore requires an empty target");
         await tx`INSERT INTO authority_generations (authority_id, generation_id, sequence, predecessor_id, schema_version, digest, committed_at, snapshot_json) VALUES (${this.authorityId}, ${prepared.generation.id}, ${prepared.generation.sequence}, ${prepared.generation.predecessorId}, ${prepared.generation.schemaVersion}, ${prepared.generation.digest}, ${prepared.generation.committedAt}, ${snapshotJson})`;
         await tx`UPDATE authority_heads SET namespace = ${this.namespace}, generation_id = ${prepared.generation.id}, sequence = ${prepared.generation.sequence}, predecessor_id = ${prepared.generation.predecessorId}, schema_version = ${prepared.generation.schemaVersion}, digest = ${prepared.generation.digest}, committed_at = ${prepared.generation.committedAt} WHERE authority_id = ${this.authorityId}`;
-        for (const receipt of prepared.receipts) {
-          const resultJson = safeJson(receipt.result, "Authority receipt result");
-          await tx`INSERT INTO authority_receipts (authority_id, current_host_id, principal_id, idempotency_key, request_digest, generation_id, result_json, expires_at) VALUES (${this.authorityId}, ${receipt.currentHostId}, ${receipt.principalId}, ${receipt.idempotencyKey}, ${receipt.requestDigest}, ${prepared.generation.id}, ${resultJson}, ${receipt.expiresAt})`;
+        for (let start = 0; start < prepared.receipts.length; start += POSTGRES_BULK_INSERT_ROWS) {
+          const rows = prepared.receipts
+            .slice(start, start + POSTGRES_BULK_INSERT_ROWS)
+            .map((receipt) => ({
+              authority_id: this.authorityId,
+              current_host_id: receipt.currentHostId,
+              principal_id: receipt.principalId,
+              idempotency_key: receipt.idempotencyKey,
+              request_digest: receipt.requestDigest,
+              generation_id: prepared.generation.id,
+              result_json: safeJson(receipt.result, "Authority receipt result"),
+              expires_at: receipt.expiresAt,
+            }));
+          await tx`INSERT INTO authority_receipts ${tx(
+            rows,
+            "authority_id",
+            "current_host_id",
+            "principal_id",
+            "idempotency_key",
+            "request_digest",
+            "generation_id",
+            "result_json",
+            "expires_at",
+          )}`;
         }
-        for (const [sessionId, session] of Object.entries(prepared.auxiliary.sessions)) {
-          await tx`INSERT INTO authority_sessions (authority_id, session_id, revision, last_used_at, revoked) VALUES (${this.authorityId}, ${sessionId}, ${Number(session.revision)}, ${session.lastUsedAt}, ${session.revoked ? 1 : 0})`;
+        const sessionEntries = Object.entries(prepared.auxiliary.sessions);
+        for (let start = 0; start < sessionEntries.length; start += POSTGRES_BULK_INSERT_ROWS) {
+          const rows = sessionEntries
+            .slice(start, start + POSTGRES_BULK_INSERT_ROWS)
+            .map(([sessionId, session]) => ({
+              authority_id: this.authorityId,
+              session_id: sessionId,
+              revision: Number(session.revision),
+              last_used_at: session.lastUsedAt,
+              revoked: session.revoked ? 1 : 0,
+            }));
+          await tx`INSERT INTO authority_sessions ${tx(
+            rows,
+            "authority_id",
+            "session_id",
+            "revision",
+            "last_used_at",
+            "revoked",
+          )}`;
         }
-        for (const row of auxiliaryEventRows) {
-          const eventJson = safeJson(row.event, "Security event");
-          await tx`INSERT INTO authority_events (authority_id, watermark, kind, occurred_at, event_json) VALUES (${this.authorityId}, ${row.watermark}, ${row.event.kind}, ${row.event.occurredAt}, ${eventJson})`;
+        for (let start = 0; start < auxiliaryEventRows.length; start += POSTGRES_BULK_INSERT_ROWS) {
+          const rows = auxiliaryEventRows
+            .slice(start, start + POSTGRES_BULK_INSERT_ROWS)
+            .map((row) => ({
+              authority_id: this.authorityId,
+              watermark: row.watermark,
+              kind: row.event.kind,
+              occurred_at: row.event.occurredAt,
+              event_json: safeJson(row.event, "Security event"),
+            }));
+          await tx`INSERT INTO authority_events ${tx(
+            rows,
+            "authority_id",
+            "watermark",
+            "kind",
+            "occurred_at",
+            "event_json",
+          )}`;
         }
         await tx`UPDATE authority_schema_meta SET auxiliary_watermark = ${prepared.auxiliary.watermark} WHERE authority_id = ${this.authorityId}`;
       });

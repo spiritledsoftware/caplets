@@ -906,8 +906,14 @@ export function createHttpServeApp(
       );
 
       if ("status" in outcome) return c.json({ error: "dashboard_auth_unavailable" }, 404);
+      if (outcome.revoked) {
+        if (dashboardAuthoritySessionStore) {
+          await dashboardAuthoritySessionStore.revokeClient(outcome.clientId);
+        } else {
+          dashboardSessionStore.revokeClient(outcome.clientId);
+        }
+      }
       if (outcome.sessionEnded) {
-        dashboardSessionStore.delete(c.req.header("cookie"));
         c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
       }
       return c.json({
@@ -942,7 +948,11 @@ export function createHttpServeApp(
       }
       if (outcome.status === "not_found") return c.json({ error: "client_not_found" }, 404);
       if (outcome.sessionEnded) {
-        dashboardSessionStore.delete(c.req.header("cookie"));
+        if (dashboardAuthoritySessionStore) {
+          await dashboardAuthoritySessionStore.delete(c.req.header("cookie"));
+        } else {
+          dashboardSessionStore.delete(c.req.header("cookie"));
+        }
         c.header("set-cookie", expiredDashboardSessionCookie(paths.dashboard));
       }
       return c.json({ client: outcome.client, sessionEnded: outcome.sessionEnded });

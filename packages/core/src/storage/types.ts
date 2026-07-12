@@ -74,11 +74,11 @@ export type AuxiliaryCommit =
       expectedRevision: string;
       expectedGeneration: AuthorityGenerationIdentity | null;
     }
+  | { kind: "remove_session_touch"; sessionId: string }
   | { kind: "security_event"; event: RedactedAuthorityEvent };
 export type AuxiliaryCommitResult =
   | { kind: "applied" | "unchanged"; watermark: string }
   | { kind: "missing" | "revoked" | "conflict" };
-
 export type RedactedAuthorityEvent = {
   kind: "rejected" | "conflicted";
   occurredAt: string;
@@ -201,8 +201,10 @@ export type AuthorityHealth = {
 };
 
 export interface WritableAuthority<TSnapshot = unknown, TCommand = unknown> {
-  /** Logical authority snapshot schema expected by this provider. */
-  readonly schemaVersion?: number;
+  /** Provider-owned logical namespace for lifecycle restore and migration identity. */
+  readonly namespace: string;
+  /** Provider-owned logical snapshot schema expected by lifecycle operations. */
+  readonly schemaVersion: number;
   readHead(): Promise<AuthorityHead | null>;
   readGeneration(id: AuthorityGenerationId): Promise<AuthorityGeneration<TSnapshot>>;
   commit<TResult = unknown>(

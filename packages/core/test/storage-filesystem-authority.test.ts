@@ -324,6 +324,15 @@ describe("filesystem authority auxiliary CAS", () => {
       sessionId: "session-1",
     });
     expect(current).toMatchObject({ lastUsedAt: "2026-01-01T00:00:00.000Z" });
+    expect(
+      await authority.commitAuxiliary({ kind: "remove_session_touch", sessionId: "session-1" }),
+    ).toMatchObject({ kind: "applied" });
+    expect(
+      await authority.readAuxiliary({ kind: "session_touch", sessionId: "session-1" }),
+    ).toBeUndefined();
+    expect(
+      await authority.commitAuxiliary({ kind: "remove_session_touch", sessionId: "session-1" }),
+    ).toMatchObject({ kind: "unchanged" });
 
     const events = await authority.readAuxiliary({ kind: "security_events", limit: 10 });
     expect(events).toEqual([

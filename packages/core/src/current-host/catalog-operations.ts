@@ -276,11 +276,23 @@ async function sharedCatalogInstallOutcome(
 
 async function sharedCatalogUpdateOutcome(
   dependencies: CurrentHostOperationsDependencies,
-  principal: CurrentHostOperatorPrincipal,
+  _principal: CurrentHostOperatorPrincipal,
   operation: CatalogUpdateOperation,
 ): Promise<CatalogUpdateOutcome> {
-  const snapshot = authoritySnapshotForMutation(dependencies);
-  const caplets = authorityCapletRecords(snapshot);
+  /*
+   * The shared update envelope currently carries selectors and mutation
+   * controls, but no resolved replacement bundle. Unlike the filesystem path,
+   * there is no candidate authority state to publish yet. Keep this path
+   * validate-only until a resolved bundle payload is available; publishing
+   * the active snapshot would manufacture a generation, receipt, activation,
+   * and success activity for a semantic no-op.
+   */
+  const activeSnapshot = dependencies.activeGeneration?.snapshot;
+  const caplets = authorityCapletRecords(
+    activeSnapshot && typeof activeSnapshot === "object"
+      ? (activeSnapshot as Record<string, unknown>)
+      : {},
+  );
   const ids = optionalCapletIds(operation.capletIds) ?? Object.keys(caplets);
   if (ids.length === 0)
     throw new CapletsError("CONFIG_NOT_FOUND", "No authority Caplets are installed.");
@@ -294,17 +306,10 @@ async function sharedCatalogUpdateOutcome(
       source: `authority://${id}`,
       destination: `authority://${id}`,
       kind: "file",
-      status: "updated",
+      status: "noop",
     });
   }
-  const receipt = await commitCurrentHostMutation(
-    dependencies,
-    principal,
-    operation,
-    { kind: "catalog_update", ids },
-    snapshot,
-  );
-  return { kind: "catalog_update", installed, setupActions: [], ...receipt };
+  return { kind: "catalog_update", installed, setupActions: [] };
 }
 
 function authorityCapletRecords(

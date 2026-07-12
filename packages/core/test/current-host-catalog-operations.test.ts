@@ -115,3 +115,113 @@ describe("Current Host official catalog installs", () => {
     );
   });
 });
+describe("Current Host shared catalog updates", () => {
+  it("returns the current records without a generation, receipt, activation, or activity", async () => {
+    const shared = sharedCatalogDependencies({
+      alpha: { id: "alpha" },
+      beta: { id: "beta" },
+    });
+    const operations = createCurrentHostCatalogOperations(shared.dependencies);
+
+    const outcome = await operations.update(principal, {
+      kind: "catalog_update",
+      capletIds: ["alpha", "beta"],
+      expectedGeneration: {
+        authorityId: "authority",
+        id: "stale-generation",
+        sequence: 0,
+        predecessorId: null,
+      },
+      idempotencyKey: "selector-only-noop",
+    });
+
+    expect(outcome).toEqual({
+      kind: "catalog_update",
+      installed: [
+        {
+          id: "alpha",
+          source: "authority://alpha",
+          destination: "authority://alpha",
+          kind: "file",
+          status: "noop",
+        },
+        {
+          id: "beta",
+          source: "authority://beta",
+          destination: "authority://beta",
+          kind: "file",
+          status: "noop",
+        },
+      ],
+      setupActions: [],
+    });
+    expect(shared.commit).not.toHaveBeenCalled();
+    expect(shared.activityLog.append).not.toHaveBeenCalled();
+  });
+
+  it("replays selector-only updates as the same current outcome without idempotency receipts", async () => {
+    const shared = sharedCatalogDependencies({ alpha: { id: "alpha" } });
+    const operations = createCurrentHostCatalogOperations(shared.dependencies);
+    const request = {
+      kind: "catalog_update" as const,
+      capletIds: ["alpha"],
+      idempotencyKey: "selector-only-replay",
+    };
+
+    const first = await operations.update(principal, request);
+    const replay = await operations.update(principal, request);
+
+    expect(replay).toEqual(first);
+    expect(shared.commit).not.toHaveBeenCalled();
+    expect(shared.activityLog.append).not.toHaveBeenCalled();
+  });
+
+  it("reserves staged IDs before returning a shared catalog no-op", async () => {
+    const shared = sharedCatalogDependencies(
+      { alpha: { id: "alpha" } },
+      { alpha: { kind: "global-file", path: "/mounted/caplets" } },
+    );
+    const operations = createCurrentHostCatalogOperations(shared.dependencies);
+
+    await expect(
+      operations.update(principal, {
+        kind: "catalog_update",
+        capletIds: ["alpha"],
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+      details: { id: "alpha", staged: true, authority: false },
+    });
+    expect(shared.commit).not.toHaveBeenCalled();
+    expect(shared.activityLog.append).not.toHaveBeenCalled();
+  });
+});
+
+function sharedCatalogDependencies(
+  caplets: Record<string, { id: string; bundle?: { files: unknown[] } }>,
+  stagedProvenance?: CurrentHostOperationsDependencies["stagedProvenance"],
+) {
+  const commit = vi.fn();
+  const activityLog = { append: vi.fn() };
+  return {
+    dependencies: {
+      ...dependencies,
+      activityLog,
+      activeGeneration: {
+        authorityId: "authority",
+        id: "generation-1",
+        sequence: 1,
+        predecessorId: null,
+        schemaVersion: 1,
+        digest: "sha256:generation-1",
+        committedAt: "2026-07-12T00:00:00.000Z",
+        provenance: { provider: "filesystem", namespace: "catalog-test" },
+        snapshot: { caplets },
+      },
+      runtime: { commit },
+      ...(stagedProvenance === undefined ? {} : { stagedProvenance }),
+    } as unknown as CurrentHostOperationsDependencies,
+    commit,
+    activityLog,
+  };
+}

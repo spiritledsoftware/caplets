@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -77,13 +77,35 @@ describe("content-addressed authority bundle cache", () => {
     expect((await readdir(root)).filter((entry) => entry === first.fingerprint)).toEqual([]);
   });
 
-  it("removes interrupted temporary candidates", async () => {
+  it("age-gates interrupted temporary candidates", async () => {
     const root = await mkdtemp(join(tmpdir(), "caplets-bundle-cache-"));
-    await mkdir(join(root, ".tmp-interrupted"));
-    await writeFile(join(root, ".tmp-interrupted", "partial"), "partial");
+    const fresh = join(root, ".tmp-fresh");
+    const stale = join(root, ".tmp-stale");
+    await mkdir(fresh);
+    await writeFile(join(fresh, "partial"), "partial");
+    await mkdir(stale);
+    await writeFile(join(stale, "partial"), "partial");
+    const now = Date.now();
+    const staleAt = new Date(now - 120_000);
+    await utimes(stale, staleAt, staleAt);
     const cache = new ContentAddressedBundleCache({ root });
-    expect(await cache.cleanup()).toEqual([]);
-    await expect(readdir(join(root, ".tmp-interrupted"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    expect(await cache.cleanup({ now })).toEqual([]);
+    await expect(readdir(fresh)).resolves.toEqual(["partial"]);
+    await expect(readdir(stale)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("retains a local materialization while cleanup runs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "caplets-bundle-cache-"));
+    const cache = new ContentAddressedBundleCache({ root });
+    const pending = cache.materialize(bundle());
+    expect(await cache.cleanup({ now: Date.now() + 120_000 })).toEqual([]);
+    const result = await pending;
+    await expect(readdir(result.root)).resolves.toEqual(
+      expect.arrayContaining([".bundle.json", "app"]),
+    );
+    await result.release();
+    expect(await cache.cleanup()).toEqual([result.fingerprint]);
   });
 
   it("rejects malformed bundles before materialization", async () => {

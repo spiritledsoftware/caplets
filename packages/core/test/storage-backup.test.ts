@@ -257,6 +257,20 @@ describe("external-key authority backups", () => {
     ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(fence.acquired).toBe(0);
 
+    const namespaceMismatch = new BackupAuthority(stateFor(), {
+      authorityId: "authority",
+      namespace: "other-namespace",
+      selected: false,
+    });
+    await expect(
+      restoreAuthorityBackup(namespaceMismatch, backup, {
+        key: Buffer.alloc(32, 9),
+        fence,
+        targetNamespace: "namespace",
+      }),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(fence.acquired).toBe(0);
+
     const nonEmpty = new BackupAuthority(stateFor(), {
       authorityId: "authority",
       namespace: "namespace",

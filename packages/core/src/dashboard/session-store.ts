@@ -41,6 +41,11 @@ const STATE_FILE = "dashboard-sessions.json";
 const LOCK_DIR = "dashboard-sessions.lock";
 const LOCK_TIMEOUT_MS = 100;
 const LOCK_STALE_MS = 30_000;
+/** Hard upper bound for active dashboard sessions retained in an authority snapshot. */
+export const MAX_DASHBOARD_SESSIONS = 128;
+/** Persist dashboard last-used timestamps at most once per bounded window. */
+export const DASHBOARD_SESSION_TOUCH_THROTTLE_MS = 60_000;
+
 const ABSOLUTE_TIMEOUT_MS = 12 * 60 * 60_000;
 const IDLE_TIMEOUT_MS = 60 * 60_000;
 
@@ -70,6 +75,13 @@ export class DashboardSessionStore {
       };
       const state = this.loadState();
       cleanupSessions(state, now);
+      if (state.sessions.length >= MAX_DASHBOARD_SESSIONS) {
+        throw new CapletsError(
+          "SERVER_UNAVAILABLE",
+          "Dashboard session capacity has been reached.",
+          { limit: MAX_DASHBOARD_SESSIONS },
+        );
+      }
       state.sessions.push(session);
       this.saveState(state);
       return { cookieValue: `${session.sessionId}.${secret}`, session: sessionView(session) };
@@ -135,6 +147,16 @@ export class DashboardSessionStore {
       state.sessions = state.sessions.filter((session) => session.sessionId !== parsed.sessionId);
       this.saveState(state);
       return state.sessions.length !== before;
+    });
+  }
+
+  revokeClient(clientId: string): number {
+    return this.withStateLock(() => {
+      const state = this.loadState();
+      const before = state.sessions.length;
+      state.sessions = state.sessions.filter((session) => session.operatorClientId !== clientId);
+      if (state.sessions.length !== before) this.saveState(state);
+      return before - state.sessions.length;
     });
   }
 
@@ -300,6 +322,31 @@ export class AuthorityDashboardSessionStore {
     const root: Record<string, unknown> = { ...read.snapshot };
     assertAuthorityOperator(root, input.operatorClientId);
     const state = parseAuthorityDashboardSessionState(root.dashboardSessions);
+    const prunedSessionIds: string[] = [];
+    state.sessions = (
+      await Promise.all(
+        state.sessions.map(async (candidate) => {
+          const auxiliary = await this.codec.readAuxiliary({
+            kind: "session_touch",
+            sessionId: candidate.sessionId,
+          });
+          const touch = parseAuthoritySessionTouch(auxiliary);
+          const lastUsedAt = touch?.lastUsedAt ?? candidate.lastUsedAt;
+          const expired = Date.parse(candidate.expiresAt) <= now.getTime();
+          const idleExpired = now.getTime() - Date.parse(lastUsedAt) > IDLE_TIMEOUT_MS;
+          if (touch?.revoked === true || expired || idleExpired) {
+            prunedSessionIds.push(candidate.sessionId);
+            return undefined;
+          }
+          return candidate;
+        }),
+      )
+    ).filter((candidate): candidate is AuthorityDashboardSessionRecord => candidate !== undefined);
+    if (state.sessions.length >= MAX_DASHBOARD_SESSIONS) {
+      throw new CapletsError("SERVER_UNAVAILABLE", "Dashboard session capacity has been reached.", {
+        limit: MAX_DASHBOARD_SESSIONS,
+      });
+    }
     const secret = `dash_secret_${randomToken(32)}`;
     const csrfToken = `csrf_${randomToken(32)}`;
     const record: AuthorityDashboardSessionRecord = {
@@ -333,6 +380,7 @@ export class AuthorityDashboardSessionStore {
       principalId: input.principalId,
       now,
     });
+    await Promise.all(prunedSessionIds.map((sessionId) => this.removeTouch(sessionId)));
     await this.seedTouch(record.sessionId, record.lastUsedAt, committed.generation);
     return committed.result;
   }
@@ -355,43 +403,54 @@ export class AuthorityDashboardSessionStore {
     ) {
       throw new CapletsError("AUTH_FAILED", "Dashboard session is invalid.");
     }
-    const expired = Date.parse(session.expiresAt) <= now.getTime();
-    const idleExpired = now.getTime() - Date.parse(session.lastUsedAt) > IDLE_TIMEOUT_MS;
-    if (expired || idleExpired) {
-      await this.removeSession(session.sessionId, input.now, "dashboard_session_expired");
-      throw new CapletsError("AUTH_FAILED", "Dashboard session has expired.");
-    }
-    assertAuthorityOperator(read.snapshot, session.operatorClientId);
-    const csrfToken = this.codec.decrypt<string>(session.csrfTokenEncrypted);
-    if (input.requireCsrf && input.csrfToken !== csrfToken) {
-      throw new CapletsError("REQUEST_INVALID", "Dashboard CSRF token is invalid.");
-    }
     const auxiliary = await this.codec.readAuxiliary({
       kind: "session_touch",
       sessionId: session.sessionId,
     });
-    const auxiliaryRecord =
-      auxiliary && typeof auxiliary === "object" && !Array.isArray(auxiliary)
-        ? (auxiliary as { revision?: unknown; revoked?: unknown })
-        : undefined;
+    const auxiliaryRecord = parseAuthoritySessionTouch(auxiliary);
     if (auxiliaryRecord?.revoked === true) {
+      await this.removeSession(session.sessionId, input.now, "dashboard_session_revoked");
       throw new CapletsError("AUTH_FAILED", "Dashboard session has expired.");
+    }
+    const persistedLastUsedAt = auxiliaryRecord?.lastUsedAt ?? session.lastUsedAt;
+    const expired = Date.parse(session.expiresAt) <= now.getTime();
+    const idleExpired = now.getTime() - Date.parse(persistedLastUsedAt) > IDLE_TIMEOUT_MS;
+    if (expired || idleExpired) {
+      await this.removeSession(session.sessionId, input.now, "dashboard_session_expired");
+      throw new CapletsError("AUTH_FAILED", "Dashboard session has expired.");
+    }
+    try {
+      assertAuthorityOperator(read.snapshot, session.operatorClientId);
+    } catch (error) {
+      await this.removeSession(session.sessionId, input.now, "dashboard_session_revoked");
+      throw error;
+    }
+    const csrfToken = this.codec.decrypt<string>(session.csrfTokenEncrypted);
+    if (input.requireCsrf && input.csrfToken !== csrfToken) {
+      throw new CapletsError("REQUEST_INVALID", "Dashboard CSRF token is invalid.");
+    }
+    const persistedAt = Date.parse(persistedLastUsedAt);
+    const shouldPersistTouch =
+      !auxiliaryRecord ||
+      !Number.isFinite(persistedAt) ||
+      now.getTime() - persistedAt >= DASHBOARD_SESSION_TOUCH_THROTTLE_MS;
+    if (!shouldPersistTouch) {
+      return authoritySessionView(session, csrfToken, persistedLastUsedAt);
     }
     const touched = await this.codec.commitAuxiliary({
       kind: "session_touch",
       sessionId: session.sessionId,
       lastUsedAt: now.toISOString(),
-      expectedRevision:
-        typeof auxiliaryRecord?.revision === "string" ? auxiliaryRecord.revision : "",
+      expectedRevision: auxiliaryRecord?.revision ?? "",
       expectedGeneration: read.head,
     });
-    if (touched.kind === "revoked" || touched.kind === "missing") {
+    if (touched.kind === "revoked" || touched.kind === "missing" || touched.kind === "conflict") {
       throw new CapletsError("AUTH_FAILED", "Dashboard session is no longer active.");
     }
     return authoritySessionView(
       session,
       csrfToken,
-      touched.kind === "applied" ? now.toISOString() : session.lastUsedAt,
+      touched.kind === "applied" ? now.toISOString() : persistedLastUsedAt,
     );
   }
 
@@ -406,7 +465,10 @@ export class AuthorityDashboardSessionStore {
       this.codec.domainSnapshot(read, "dashboardSessions"),
     );
     const session = state.sessions.find((candidate) => candidate.sessionId === parsed.sessionId);
-    if (!session) return false;
+    if (!session) {
+      await this.removeTouch(parsed.sessionId);
+      return false;
+    }
     const nextState = {
       version: 1 as const,
       sessions: state.sessions.filter((candidate) => candidate.sessionId !== parsed.sessionId),
@@ -431,6 +493,7 @@ export class AuthorityDashboardSessionStore {
       principalId: options.principalId,
       now,
     });
+    await this.removeTouch(session.sessionId);
     return committed.result;
   }
 
@@ -440,21 +503,25 @@ export class AuthorityDashboardSessionStore {
   ): Promise<number> {
     const read = await this.codec.read();
     const state = parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
+    const removedSessionIds = state.sessions
+      .filter((session) => session.operatorClientId === clientId)
+      .map((session) => session.sessionId);
+    if (removedSessionIds.length === 0) return 0;
     const retained = state.sessions.filter((session) => session.operatorClientId !== clientId);
-    if (retained.length === state.sessions.length) return 0;
     const now = options.now ?? new Date();
     await this.codec.commit({
       read,
       domain: "dashboardSessions",
       command: { kind: "revoke_dashboard_client_sessions" },
       snapshot: { ...read.snapshot, dashboardSessions: { version: 1, sessions: retained } },
-      result: state.sessions.length - retained.length,
+      result: removedSessionIds.length,
       payload: { clientId },
       idempotencyKey: options.idempotencyKey,
       principalId: options.principalId,
       now,
     });
-    return state.sessions.length - retained.length;
+    await Promise.all(removedSessionIds.map((sessionId) => this.removeTouch(sessionId)));
+    return removedSessionIds.length;
   }
 
   async touch(
@@ -495,6 +562,13 @@ export class AuthorityDashboardSessionStore {
     });
   }
 
+  private async removeTouch(sessionId: string): Promise<void> {
+    await this.codec.commitAuxiliary({
+      kind: "remove_session_touch",
+      sessionId,
+    });
+  }
+
   private async removeSession(
     sessionId: string,
     nowInput: Date | undefined,
@@ -503,23 +577,25 @@ export class AuthorityDashboardSessionStore {
     const read = await this.codec.read();
     const state = parseAuthorityDashboardSessionState(read.snapshot.dashboardSessions);
     const session = state.sessions.find((candidate) => candidate.sessionId === sessionId);
-    if (!session) return;
-    const now = nowInput ?? new Date();
-    await this.codec.commit({
-      read,
-      domain: "dashboardSessions",
-      command: { kind },
-      snapshot: {
-        ...read.snapshot,
-        dashboardSessions: {
-          version: 1,
-          sessions: state.sessions.filter((candidate) => candidate.sessionId !== sessionId),
+    if (session) {
+      const now = nowInput ?? new Date();
+      await this.codec.commit({
+        read,
+        domain: "dashboardSessions",
+        command: { kind },
+        snapshot: {
+          ...read.snapshot,
+          dashboardSessions: {
+            version: 1,
+            sessions: state.sessions.filter((candidate) => candidate.sessionId !== sessionId),
+          },
         },
-      },
-      result: true,
-      payload: { sessionId },
-      now,
-    });
+        result: true,
+        payload: { sessionId },
+        now,
+      });
+    }
+    await this.removeTouch(sessionId);
   }
 }
 
@@ -534,6 +610,22 @@ function parseAuthorityDashboardSessionState(value: unknown): AuthorityDashboard
           isAuthorityDashboardSessionRecord(session),
         )
       : [],
+  };
+}
+
+type AuthoritySessionTouch = {
+  revision?: string;
+  lastUsedAt?: string;
+  revoked?: boolean;
+};
+
+function parseAuthoritySessionTouch(value: unknown): AuthoritySessionTouch | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    ...(typeof record.revision === "string" ? { revision: record.revision } : {}),
+    ...(typeof record.lastUsedAt === "string" ? { lastUsedAt: record.lastUsedAt } : {}),
+    ...(typeof record.revoked === "boolean" ? { revoked: record.revoked } : {}),
   };
 }
 

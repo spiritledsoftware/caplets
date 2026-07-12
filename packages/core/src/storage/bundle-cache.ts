@@ -7,6 +7,7 @@ import { CapletsError } from "../errors";
 export const MAX_AUTHORITY_BUNDLE_BYTES = 64 * 1024 * 1024;
 /** A single asset is deliberately bounded below the generation ceiling. */
 export const MAX_AUTHORITY_BUNDLE_ASSET_BYTES = 16 * 1024 * 1024;
+const BUNDLE_TEMP_RETENTION_MS = 60_000;
 
 export type AuthorityBundleAsset = {
   path: string;
@@ -170,16 +171,30 @@ export class ContentAddressedBundleCache {
     await mkdir(this.root, { recursive: true });
     const active = new Set(options.activeFingerprints ?? []);
     const pinned = new Set(options.pinnedFingerprints ?? []);
+    const pending = new Set(this.pending.keys());
+    const now = options.now ?? Date.now();
     const removed: string[] = [];
     for (const entry of await readdir(this.root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith(".tmp-")) {
-        if (entry.name.startsWith(".tmp-")) {
-          await rm(join(this.root, entry.name), { recursive: true, force: true });
+      const entryPath = join(this.root, entry.name);
+      if (entry.name.startsWith(".tmp-")) {
+        const ownedByPendingMaterialization = [...pending].some((fingerprint) =>
+          entry.name.startsWith(`.tmp-${fingerprint}-`),
+        );
+        if (ownedByPendingMaterialization) continue;
+        let metadata;
+        try {
+          metadata = await stat(entryPath);
+        } catch {
+          continue;
         }
+        if (metadata.mtimeMs > now - BUNDLE_TEMP_RETENTION_MS) continue;
+        await rm(entryPath, { recursive: true, force: true });
         continue;
       }
+      if (!entry.isDirectory()) continue;
       const fingerprint = entry.name;
       if (
+        pending.has(fingerprint) ||
         active.has(fingerprint) ||
         pinned.has(fingerprint) ||
         (this.references.get(fingerprint) ?? 0) > 0 ||
@@ -187,7 +202,7 @@ export class ContentAddressedBundleCache {
       ) {
         continue;
       }
-      await rm(join(this.root, fingerprint), { recursive: true, force: true });
+      await rm(entryPath, { recursive: true, force: true });
       removed.push(fingerprint);
     }
     return removed;

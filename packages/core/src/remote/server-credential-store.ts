@@ -1247,7 +1247,8 @@ export class AuthorityRemoteServerCredentialStore {
       this.codec.domainSnapshot(read, REMOTE_CREDENTIAL_DOMAIN),
     ).clients.find((candidate) => candidate.clientId === clientId);
     if (!existing) return false;
-    return (
+    const sessionIds = authorityDashboardSessionIds(read.snapshot, clientId);
+    const result = (
       await this.mutate(
         { ...options, now, payload: { clientId } },
         "revoke_client",
@@ -1260,6 +1261,8 @@ export class AuthorityRemoteServerCredentialStore {
         now,
       )
     ).result;
+    if (result) await this.removeDashboardSessionTouches(sessionIds);
+    return result;
   }
 
   async changeClientRole(
@@ -1273,7 +1276,9 @@ export class AuthorityRemoteServerCredentialStore {
       this.codec.domainSnapshot(read, REMOTE_CREDENTIAL_DOMAIN),
     ).clients.find((candidate) => candidate.clientId === clientId);
     if (!existing) return undefined;
-    return (
+    const sessionIds =
+      role === "operator" ? [] : authorityDashboardSessionIds(read.snapshot, clientId);
+    const result = (
       await this.mutate(
         { ...options, now, payload: { clientId, role } },
         "change_client_role",
@@ -1289,7 +1294,18 @@ export class AuthorityRemoteServerCredentialStore {
         now,
       )
     ).result;
+    if (result && sessionIds.length > 0) await this.removeDashboardSessionTouches(sessionIds);
+    return result;
   }
+
+  private async removeDashboardSessionTouches(sessionIds: string[]): Promise<void> {
+    await Promise.all(
+      sessionIds.map((sessionId) =>
+        this.codec.commitAuxiliary({ kind: "remove_session_touch", sessionId }),
+      ),
+    );
+  }
+
   async listClients(): Promise<RemoteClientStatus[]> {
     const read = await this.codec.read();
     return parseAuthorityRemoteState(this.codec.domainSnapshot(read, REMOTE_CREDENTIAL_DOMAIN))
@@ -1485,6 +1501,40 @@ export function createAuthorityRemoteServerCredentialStore(
 }
 
 export { AuthorityRemoteServerCredentialStore as AsyncRemoteServerCredentialStore };
+
+function authorityDashboardSessionIds(root: Record<string, unknown>, clientId: string): string[] {
+  const sessions = root.dashboardSessions;
+  const candidates: Array<{ id: string; value: unknown }> = [];
+  if (Array.isArray(sessions)) {
+    for (const value of sessions) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const id = (value as Record<string, unknown>).sessionId;
+        if (typeof id === "string") candidates.push({ id, value });
+      }
+    }
+  } else if (sessions && typeof sessions === "object" && !Array.isArray(sessions)) {
+    const record = sessions as Record<string, unknown>;
+    if (Array.isArray(record.sessions)) {
+      for (const value of record.sessions) {
+        if (value && typeof value === "object" && !Array.isArray(value)) {
+          const id = (value as Record<string, unknown>).sessionId;
+          if (typeof id === "string") candidates.push({ id, value });
+        }
+      }
+    } else {
+      for (const [id, value] of Object.entries(record)) candidates.push({ id, value });
+    }
+  }
+  return candidates
+    .filter(
+      ({ value }) =>
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).operatorClientId === clientId,
+    )
+    .map(({ id }) => id);
+}
 
 function removeAuthorityDashboardSessions(
   root: Record<string, unknown>,

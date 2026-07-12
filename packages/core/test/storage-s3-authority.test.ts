@@ -74,6 +74,7 @@ class MemoryS3Client implements S3AuthorityClient {
     }
     if (operation === "PutObjectCommand") {
       const key = String(input.Key);
+      const body = await bytes(input.Body);
       const existing = this.objects.get(key);
       if (!this.ignoreConditions && input.IfNoneMatch === "*" && existing)
         throw fault({ status: 412, name: "PreconditionFailed" });
@@ -83,7 +84,6 @@ class MemoryS3Client implements S3AuthorityClient {
         (!existing || existing.etag !== input.IfMatch)
       )
         throw fault({ status: 412, name: "PreconditionFailed" });
-      const body = await bytes(input.Body);
       const etag = `opaque-${++this.etagCounter}`;
       this.objects.set(key, {
         body,
@@ -310,6 +310,67 @@ describe("S3 authority bounded protocol", () => {
     ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(client.requests.length).toBe(before);
     await authority.close();
+  });
+
+  it("accepts an exact-limit generation PUT and rejects a larger snapshot before any request", async () => {
+    const clock = () => new Date("2026-01-01T00:00:00.000Z");
+    const probeClient = new MemoryS3Client();
+    const probeAuthority = await createS3Authority(options(probeClient, { clock }));
+    const boundaryEnvelope = envelope(null, {
+      idempotencyKey: "boundary-exact",
+      requestDigest: "boundary-digest",
+      command: { snapshot: "probe", result: { accepted: true } },
+    });
+    try {
+      const probe = await probeAuthority.commit(boundaryEnvelope);
+      expect(probe.kind).toBe("committed");
+    } finally {
+      await probeAuthority.close();
+    }
+    const probePut = probeClient.requests.find(
+      ({ operation, input }) =>
+        operation === "PutObjectCommand" && String(input.Key).includes("/generations/"),
+    );
+    if (!probePut) throw new Error("missing probe generation PUT");
+    const probeSnapshotBytes = Buffer.byteLength(JSON.stringify("probe"), "utf8");
+    const candidateOverhead = Number(probePut.input.ContentLength) - probeSnapshotBytes;
+    expect(candidateOverhead).toBeGreaterThan(0);
+
+    const client = new MemoryS3Client();
+    const authority = await createS3Authority(options(client, { clock }));
+    try {
+      const exactSnapshot = "x".repeat(MAX_AUTHORITY_GENERATION_BYTES - candidateOverhead - 2);
+      const exact = await authority.commit(
+        envelope(null, {
+          idempotencyKey: "boundary-exact",
+          requestDigest: "boundary-digest",
+          command: { snapshot: exactSnapshot, result: { accepted: true } },
+        }),
+      );
+      expect(exact.kind).toBe("committed");
+      if (exact.kind !== "committed") throw new Error("expected exact-limit commit");
+      const exactPut = client.requests.find(
+        ({ operation, input }) =>
+          operation === "PutObjectCommand" && String(input.Key).includes("/generations/"),
+      );
+      if (!exactPut) throw new Error("missing exact-limit generation PUT");
+      expect(exactPut.input.ContentLength).toBe(MAX_AUTHORITY_GENERATION_BYTES);
+      expect((await bytes(exactPut.input.Body)).byteLength).toBe(MAX_AUTHORITY_GENERATION_BYTES);
+
+      const beforeTooLarge = client.requests.length;
+      const tooLarge = "x".repeat(MAX_AUTHORITY_GENERATION_BYTES + 1);
+      await expect(
+        authority.commit(
+          envelope(exact.generation, {
+            idempotencyKey: "boundary-over",
+            command: { snapshot: tooLarge, result: { accepted: true } },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      expect(client.requests.length).toBe(beforeTooLarge);
+    } finally {
+      await authority.close();
+    }
   });
 
   it("verifies canonical SHA-256 instead of trusting opaque ETags", async () => {
@@ -679,4 +740,136 @@ describe("S3 authority bounded protocol", () => {
     );
     await authority.close();
   }, 120_000);
+  it("keeps receipt replay and auxiliary touch bounded as retained history grows", async () => {
+    const client = new MemoryS3Client();
+    const authority = await createS3Authority(options(client));
+    let expected: AuthorityGenerationIdentity | null = null;
+    let last = envelope(null, { idempotencyKey: "scale-0" });
+    for (let index = 0; index < 96; index += 1) {
+      last = envelope(expected, {
+        idempotencyKey: `scale-${index}`,
+        requestDigest: `scale-digest-${index}`,
+        command: { snapshot: { value: index }, result: { index } },
+      });
+      const committed = await authority.commit(last);
+      expect(committed.kind).toBe("committed");
+      if (committed.kind !== "committed") throw new Error("expected scale commit");
+      expected = committed.generation;
+    }
+    const beforeReplay = client.requests.length;
+    await expect(authority.commit(last)).resolves.toMatchObject({ kind: "replayed" });
+    const replayRequests = client.requests.slice(beforeReplay);
+    expect(replayRequests.length).toBeLessThanOrEqual(4);
+    expect(
+      replayRequests.some(
+        ({ operation, input }) =>
+          operation === "ListObjectsV2Command" || String(input.Key).includes("/manifest.json"),
+      ),
+    ).toBe(false);
+
+    const sessions = Object.fromEntries(
+      Array.from({ length: 2_000 }, (_, index) => [`session-${index}`, {}]),
+    );
+    const seeded = await authority.commit(
+      envelope(expected, {
+        idempotencyKey: "scale-sessions",
+        requestDigest: "scale-sessions-digest",
+        command: { snapshot: { value: 97, sessions } },
+      }),
+    );
+    expect(seeded.kind).toBe("committed");
+    if (seeded.kind !== "committed") throw new Error("expected session seed commit");
+    const beforeTouch = client.requests.length;
+    const touched = await authority.commitAuxiliary({
+      kind: "session_touch",
+      sessionId: "session-1000",
+      lastUsedAt: "2026-01-01T00:00:01.000Z",
+      expectedRevision: "",
+      expectedGeneration: seeded.generation,
+    });
+    expect(touched.kind).toBe("applied");
+    const touchRequests = client.requests.slice(beforeTouch);
+    expect(touchRequests.length).toBeLessThanOrEqual(20);
+    expect(
+      touchRequests.some(
+        ({ operation, input }) =>
+          operation === "ListObjectsV2Command" || String(input.Key).endsWith("/aux/state.json"),
+      ),
+    ).toBe(false);
+    await authority.close();
+  });
+
+  it("serializes multi-replica session creation and removes stale touches without LIST", async () => {
+    const client = new MemoryS3Client();
+    const first = await createS3Authority(options(client));
+    const initial = await first.commit(
+      envelope(null, {
+        idempotencyKey: "replica-seed",
+        requestDigest: "replica-seed-digest",
+        command: { snapshot: { sessions: { "replica-session": {} } } },
+      }),
+    );
+    expect(initial.kind).toBe("committed");
+    if (initial.kind !== "committed") throw new Error("expected replica seed");
+    const second = await createS3Authority(options(client));
+    const results = await Promise.all([
+      first.commitAuxiliary({
+        kind: "session_touch",
+        sessionId: "replica-session",
+        lastUsedAt: "2026-01-01T00:00:01.000Z",
+        expectedRevision: "",
+        expectedGeneration: initial.generation,
+      }),
+      second.commitAuxiliary({
+        kind: "session_touch",
+        sessionId: "replica-session",
+        lastUsedAt: "2026-01-01T00:00:01.000Z",
+        expectedRevision: "",
+        expectedGeneration: initial.generation,
+      }),
+    ]);
+    expect(results.filter((result) => result.kind === "applied")).toHaveLength(1);
+    expect(results.filter((result) => result.kind === "conflict")).toHaveLength(1);
+    const beforeRemove = client.requests.length;
+    await expect(
+      first.commitAuxiliary({ kind: "remove_session_touch", sessionId: "replica-session" }),
+    ).resolves.toMatchObject({ kind: "applied" });
+    await expect(
+      first.readAuxiliary({ kind: "session_touch", sessionId: "replica-session" }),
+    ).resolves.toBeUndefined();
+    const removeRequests = client.requests.slice(beforeRemove);
+    expect(removeRequests.some(({ operation }) => operation === "ListObjectsV2Command")).toBe(
+      false,
+    );
+    await first.close();
+    await second.close();
+  });
+
+  it("cleans expired immutable receipts through shard heads", async () => {
+    let now = Date.parse("2026-01-01T00:00:00.000Z");
+    const client = new MemoryS3Client();
+    const authority = await createS3Authority(
+      options(client, { clock: () => new Date(now), receiptTtlMs: 10 }),
+    );
+    const committed = await authority.commit(
+      envelope(null, { idempotencyKey: "cleanup-receipt", requestDigest: "cleanup-digest" }),
+    );
+    expect(committed.kind).toBe("committed");
+    const receiptKey = [...client.objects.keys()].find((key) =>
+      key.includes("/receipts/host/operator/cleanup-receipt.json"),
+    );
+    expect(receiptKey).toBeDefined();
+    now += 20;
+    const beforeCleanup = client.requests.length;
+    await expect(authority.cleanupExpiredReceipts()).resolves.toEqual([
+      "host\u0000operator\u0000cleanup-receipt",
+    ]);
+    expect(client.objects.has(receiptKey ?? "")).toBe(false);
+    expect(
+      client.requests
+        .slice(beforeCleanup)
+        .some(({ operation }) => operation === "ListObjectsV2Command"),
+    ).toBe(false);
+    await authority.close();
+  });
 });

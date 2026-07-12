@@ -45,8 +45,11 @@ const MAX_REQUEST_TIMEOUT_MS = 60_000;
 const MAX_RECEIPTS = 10_000;
 const MAX_AUXILIARY_SESSIONS = 50_000;
 const MAX_AUXILIARY_EVENTS = 10_000;
+const RECEIPT_INDEX_SHARDS = 32;
+const SESSION_INDEX_SHARDS = 32;
 const AUXILIARY_STATE_VERSION = 1;
 const RECEIPT_MANIFEST_VERSION = 1;
+const INDEX_RECORD_VERSION = 1;
 type S3RequestOptions = { abortSignal?: AbortSignal };
 type S3Command = { input: unknown };
 
@@ -140,6 +143,82 @@ type ReceiptManifest = {
   authorityId: string;
   namespace: string;
   receipts: AuthorityReceipt<unknown>[];
+  digest: string;
+};
+type ReceiptIndexHead = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  shard: string;
+  latestKey: string | null;
+  latestIdentity: string | null;
+  digest: string;
+};
+
+type ReceiptIndexEntry = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  shard: string;
+  receiptKey: string;
+  identity: string;
+  previousKey: string | null;
+  digest: string;
+};
+
+type AuxiliaryWatermarkRecord = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  watermark: string;
+  digest: string;
+};
+
+type SessionIndexHead = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  shard: string;
+  latestKey: string | null;
+  latestSessionId: string | null;
+  digest: string;
+};
+
+type SessionIndexEntry = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  shard: string;
+  sessionId: string;
+  previousKey: string | null;
+  digest: string;
+};
+
+type EventIndexHead = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  latestKey: string | null;
+  watermark: string;
+  digest: string;
+};
+
+type EventIndexEntry = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  eventKey: string;
+  watermark: string;
+  previousKey: string | null;
+  digest: string;
+};
+
+type EventRecordObject = {
+  version: typeof INDEX_RECORD_VERSION;
+  authorityId: string;
+  namespace: string;
+  watermark: string;
+  event: unknown;
   digest: string;
 };
 
@@ -531,6 +610,8 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   private readonly rootPrefix: string;
   private readonly clients = new Set<S3AuthorityClient>();
   private readonly ownedClients = new Set<S3AuthorityClient>();
+  private staticClient: S3AuthorityClient | undefined;
+  private staticClientPromise: Promise<S3AuthorityClient> | undefined;
   private readonly controllers = new Set<AbortController>();
   private closed = false;
   private closing = false;
@@ -715,26 +796,20 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
 
   async readAuxiliary(request: AuxiliaryRead): Promise<unknown> {
     this.assertOpen();
-    const snapshot = await this.readAuxiliarySnapshot();
     if (request.kind === "session_touch") {
-      const session = snapshot.state.sessions[request.sessionId];
-      if (session) return structuredClone(session);
-      const legacy = await this.tryGetObject(this.sessionKey(request.sessionId), "session");
-      return legacy ? this.parseSession(legacy.body) : undefined;
+      const session = await this.readSessionRecordWithEtag(request.sessionId);
+      return session ? structuredClone(session.record) : undefined;
     }
-    const events = snapshot.state.events
-      .filter(
-        ({ watermark }) =>
-          !request.afterWatermark || isWatermarkAfter(watermark, request.afterWatermark),
-      )
-      .sort((left, right) => compareWatermarks(left.watermark, right.watermark));
-    return events.slice(0, Math.max(0, request.limit)).map(({ event }) => structuredClone(event));
+    const events = await this.readEventRecords(request.afterWatermark, request.limit);
+    return events.map(({ event }) => structuredClone(event));
   }
 
   async commitAuxiliary(command: AuxiliaryCommit): Promise<AuxiliaryCommitResult> {
     this.assertOpen();
     await this.assertMaintenanceWriteAllowed();
     if (command.kind === "session_touch") return await this.commitSessionTouch(command);
+    if (command.kind === "remove_session_touch")
+      return await this.removeSessionTouch(command.sessionId);
     return await this.commitSecurityEvent(command.event);
   }
 
@@ -781,52 +856,26 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
       if (!head)
         throw new CapletsError("CONFIG_NOT_FOUND", "S3 authority has no committed generation");
       const generation = await this.readGeneration(head.head.id);
-      const manifest = await this.readReceiptManifest();
+      const receipts = await this.readReceiptCollection();
       const auxiliary = await this.readAuxiliarySnapshot();
       const rereadHead = await this.readHeadRecord();
+      const rereadReceipts = await this.readReceiptCollection();
+      const rereadAuxiliary = await this.readAuxiliarySnapshot();
       if (
         rereadHead?.etag === head.etag &&
         rereadHead.head.digest === head.head.digest &&
-        (await this.readReceiptManifest())?.etag === manifest?.etag &&
-        (await this.readAuxiliarySnapshot()).state.digest === auxiliary.state.digest
+        rereadReceipts.token === receipts.token &&
+        rereadAuxiliary.state.digest === auxiliary.state.digest
       ) {
-        const exportedAuxiliary: AuthorityAuxiliaryExport = {
-          watermark: auxiliary.state.watermark,
-          sessions: Object.fromEntries(
-            Object.entries(auxiliary.state.sessions)
-              .sort(([left], [right]) => left.localeCompare(right))
-              .map(([sessionId, session]) => [
-                sessionId,
-                {
-                  lastUsedAt: session.lastUsedAt,
-                  revision: session.revision,
-                  revoked: session.revoked,
-                },
-              ]),
-          ),
-          securityEvents: auxiliary.state.events
-            .slice()
-            .sort((left, right) => compareWatermarks(left.watermark, right.watermark))
-            .map(
-              ({ event }) =>
-                structuredClone(event) as NonNullable<
-                  AuthorityAuxiliaryExport["securityEvents"]
-                >[number],
-            ),
-          securityEventWatermarks: auxiliary.state.events
-            .slice()
-            .sort((left, right) => compareWatermarks(left.watermark, right.watermark))
-            .map(({ watermark }) => watermark),
-        };
         return {
           generation,
           auxiliaryWatermark: auxiliary.state.watermark,
           receipts: canonicalReceipts(
-            (manifest?.manifest.receipts ?? []).filter(
+            receipts.receipts.filter(
               (receipt) => Date.parse(receipt.expiresAt) > this.clock().getTime(),
             ),
           ),
-          auxiliary: exportedAuxiliary,
+          auxiliary: this.exportAuxiliary(auxiliary.state),
         };
       }
     }
@@ -853,9 +902,13 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     const receipts = this.parseExportReceipts(state.receipts, generation);
     const auxiliary = this.parseExportAuxiliary(state.auxiliary, state.auxiliaryWatermark);
     const active = await this.readHeadRecord();
-    const manifest = await this.readReceiptManifest();
     const existingAuxiliary = await this.readAuxiliarySnapshot();
-    if (active || manifest || existingAuxiliary.stateEtag || existingAuxiliary.headEtag) {
+    if (
+      active ||
+      (await this.hasReceiptData()) ||
+      existingAuxiliary.stateEtag ||
+      existingAuxiliary.headEtag
+    ) {
       throw new CapletsError("CONFIG_EXISTS", "S3 authority restore target must be empty");
     }
     const candidate: CandidateRecord = {
@@ -897,13 +950,16 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
         "S3 migration stage identity or schema does not match",
       );
     }
-    this.validateGeneration(generation);
     const receipts = this.parseExportReceipts(state.receipts, generation);
     const auxiliary = this.parseExportAuxiliary(state.auxiliary, state.auxiliaryWatermark);
     const active = await this.readHeadRecord();
-    const activeManifest = await this.readReceiptManifest();
     const existingAuxiliary = await this.readAuxiliarySnapshot();
-    if (active || activeManifest || existingAuxiliary.stateEtag || existingAuxiliary.headEtag) {
+    if (
+      active ||
+      (await this.hasReceiptData()) ||
+      existingAuxiliary.stateEtag ||
+      existingAuxiliary.headEtag
+    ) {
       throw new CapletsError("CONFIG_EXISTS", "S3 migration target must be empty");
     }
     const token = `stage-${randomUUID()}`;
@@ -990,9 +1046,13 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     this.validateMigrationStageContext(context);
     const bundle = await this.readMigrationStageBundle(stage, context);
     const active = await this.readHeadRecord();
-    const manifest = await this.readReceiptManifest();
     const existingAuxiliary = await this.readAuxiliarySnapshot();
-    if (active || manifest || existingAuxiliary.stateEtag || existingAuxiliary.headEtag) {
+    if (
+      active ||
+      (await this.hasReceiptData()) ||
+      existingAuxiliary.stateEtag ||
+      existingAuxiliary.headEtag
+    ) {
       throw new CapletsError("CONFIG_EXISTS", "S3 migration target must be empty");
     }
     try {
@@ -1061,6 +1121,114 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
         removed.push(candidate.generation.id);
       } catch (error) {
         throw errorForRequest(error);
+      }
+    }
+    return removed;
+  }
+
+  async cleanupExpiredReceipts(options: { now?: Date } = {}): Promise<string[]> {
+    this.assertOpen();
+    const now = options.now ?? this.clock();
+    const removed: string[] = [];
+    for (let index = 0; index < RECEIPT_INDEX_SHARDS; index += 1) {
+      const shard = this.shardName(index, RECEIPT_INDEX_SHARDS);
+      let headObject = await this.tryGetObject(
+        this.receiptIndexHeadKey(shard),
+        "receipt index head cleanup",
+      );
+      let atHead = true;
+      while (headObject) {
+        const head = this.parseReceiptIndexHead(
+          this.parseJson(headObject.body, "S3 authority receipt index head"),
+          shard,
+        );
+        const key = atHead ? head.latestKey : null;
+        if (!key) break;
+        let currentKey: string | null = key;
+        let first = true;
+        while (currentKey) {
+          const entryObject = await this.tryGetObject(currentKey, "receipt index cleanup");
+          if (!entryObject) break;
+          const entry = this.parseReceiptIndexEntry(
+            this.parseJson(entryObject.body, "S3 authority receipt index entry"),
+            shard,
+          );
+          const receiptObject = await this.tryGetObject(entry.receiptKey, "receipt cleanup");
+          const expired =
+            receiptObject &&
+            Date.parse(
+              this.parseReceiptValue(this.parseJson(receiptObject.body, "S3 authority receipt"))
+                .expiresAt,
+            ) <= now.getTime();
+          if (expired && receiptObject.etag) {
+            try {
+              await this.deleteObject(entry.receiptKey, "receipt cleanup", receiptObject.etag);
+              await this.deleteObject(
+                this.receiptIndexMarkerKey(entry.identity),
+                "receipt index marker cleanup",
+              );
+              removed.push(entry.identity);
+            } catch (error) {
+              if (!isPreconditionStatus(error)) throw errorForRequest(error);
+            }
+            if (first) {
+              let previousIdentity: string | null = null;
+              if (entry.previousKey) {
+                const previousObject = await this.tryGetObject(
+                  entry.previousKey,
+                  "receipt index cleanup",
+                );
+                if (previousObject) {
+                  previousIdentity = this.parseReceiptIndexEntry(
+                    this.parseJson(previousObject.body, "S3 authority receipt index entry"),
+                    shard,
+                  ).identity;
+                }
+              }
+              const nextPayload = {
+                version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+                authorityId: this.authorityId,
+                namespace: this.namespace,
+                shard,
+                latestKey: entry.previousKey,
+                latestIdentity: previousIdentity,
+              };
+              const nextHead: ReceiptIndexHead = {
+                ...nextPayload,
+                digest: digestRecord(nextPayload, "S3 authority receipt index head"),
+              };
+              try {
+                await this.putObject(
+                  this.receiptIndexHeadKey(shard),
+                  safeJson(nextHead, "S3 authority receipt index head"),
+                  headObject.etag ? { ifMatch: headObject.etag } : { ifNoneMatch: "*" },
+                  "receipt index cleanup",
+                );
+                await this.deleteObject(currentKey, "receipt index cleanup");
+                headObject = await this.tryGetObject(
+                  this.receiptIndexHeadKey(shard),
+                  "receipt index head cleanup",
+                );
+                atHead = true;
+                break;
+              } catch (error) {
+                if (isPreconditionStatus(error)) {
+                  headObject = await this.tryGetObject(
+                    this.receiptIndexHeadKey(shard),
+                    "receipt index head cleanup",
+                  );
+                  atHead = true;
+                  break;
+                }
+                throw errorForRequest(error);
+              }
+            }
+          }
+          first = false;
+          currentKey = entry.previousKey;
+          atHead = false;
+        }
+        if (!atHead) break;
       }
     }
     return removed;
@@ -1482,97 +1650,129 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
       return { kind: "conflict" };
     const sessionExists = semanticSessionExists(activeSnapshot?.snapshot, command.sessionId);
     const sessionRevoked = semanticSessionRevoked(activeSnapshot?.snapshot, command.sessionId);
-    return await this.mutateAuxiliaryState<AuxiliaryCommitResult>(
-      "session touch",
-      (state): AuxiliaryMutation<AuxiliaryCommitResult> => {
-        const current = state.sessions[command.sessionId];
-        if (!sessionExists || sessionRevoked) {
-          if (current && !current.revoked) {
-            return {
-              state: this.withAuxiliaryState(state, {
-                sessions: { ...state.sessions, [command.sessionId]: { ...current, revoked: true } },
-              }),
-              result: { kind: "revoked" },
-              changed: true,
-            };
-          }
-          return {
-            state,
-            result: sessionRevoked || current?.revoked ? { kind: "revoked" } : { kind: "missing" },
-            changed: false,
-          };
+    const current = await this.readSessionRecordWithEtag(command.sessionId);
+    if (!sessionExists || sessionRevoked) {
+      if (current && !current.record.revoked) {
+        const revoked: SessionRecord = { ...current.record, revoked: true };
+        try {
+          await this.putObject(
+            this.sessionKey(command.sessionId),
+            safeJson(revoked, "S3 authority session"),
+            current.etag ? { ifMatch: current.etag } : { ifNoneMatch: "*" },
+            "session revoke",
+          );
+        } catch (error) {
+          if (isPreconditionStatus(error)) return { kind: "conflict" };
+          throw errorForRequest(error);
         }
-        if (!current) {
-          if (command.expectedRevision !== "")
-            return { state, result: { kind: "missing" }, changed: false };
-          const watermark = this.nextAuxiliaryWatermark(state.watermark);
-          const nextSession: SessionRecord = {
-            sessionId: command.sessionId,
-            lastUsedAt: command.lastUsedAt,
-            revision: watermark,
-            revoked: false,
-          };
-          return {
-            state: this.withAuxiliaryState(state, {
-              watermark,
-              sessions: { ...state.sessions, [command.sessionId]: nextSession },
-            }),
-            result: { kind: "applied", watermark },
-            changed: true,
-          };
-        }
-        if (current.revoked) return { state, result: { kind: "revoked" }, changed: false };
-        if (current.revision !== command.expectedRevision)
-          return { state, result: { kind: "conflict" }, changed: false };
-        if (current.lastUsedAt >= command.lastUsedAt)
-          return {
-            state,
-            result: { kind: "unchanged", watermark: state.watermark },
-            changed: false,
-          };
-        const watermark = this.nextAuxiliaryWatermark(state.watermark);
-        return {
-          state: this.withAuxiliaryState(state, {
-            watermark,
-            sessions: {
-              ...state.sessions,
-              [command.sessionId]: {
-                ...current,
-                lastUsedAt: command.lastUsedAt,
-                revision: watermark,
-              },
-            },
-          }),
-          result: { kind: "applied", watermark },
-          changed: true,
-        };
-      },
-    );
+        await this.ensureSessionIndex(command.sessionId);
+        return { kind: "revoked" };
+      }
+      return {
+        kind: sessionRevoked || current?.record.revoked ? "revoked" : "missing",
+      };
+    }
+    if (!current) {
+      if (command.expectedRevision !== "") return { kind: "missing" };
+      const watermark = await this.allocateAuxiliaryWatermark();
+      const nextSession: SessionRecord = {
+        sessionId: command.sessionId,
+        lastUsedAt: command.lastUsedAt,
+        revision: watermark,
+        revoked: false,
+      };
+      try {
+        await this.putObject(
+          this.sessionKey(command.sessionId),
+          safeJson(nextSession, "S3 authority session"),
+          { ifNoneMatch: "*" },
+          "session touch",
+        );
+      } catch (error) {
+        if (isPreconditionStatus(error)) return { kind: "conflict" };
+        throw errorForRequest(error);
+      }
+      await this.ensureSessionIndex(command.sessionId);
+      return { kind: "applied", watermark };
+    }
+    if (current.record.revoked) return { kind: "revoked" };
+    if (current.record.revision !== command.expectedRevision) return { kind: "conflict" };
+    if (current.record.lastUsedAt >= command.lastUsedAt) {
+      return { kind: "unchanged", watermark: await this.readAuxiliaryWatermark() };
+    }
+    const watermark = await this.allocateAuxiliaryWatermark();
+    const nextSession: SessionRecord = {
+      ...current.record,
+      lastUsedAt: command.lastUsedAt,
+      revision: watermark,
+      revoked: false,
+    };
+    try {
+      await this.putObject(
+        this.sessionKey(command.sessionId),
+        safeJson(nextSession, "S3 authority session"),
+        current.etag ? { ifMatch: current.etag } : { ifNoneMatch: "*" },
+        "session touch",
+      );
+    } catch (error) {
+      if (isPreconditionStatus(error)) return { kind: "conflict" };
+      throw errorForRequest(error);
+    }
+    await this.ensureSessionIndex(command.sessionId);
+    return { kind: "applied", watermark };
+  }
+
+  private async removeSessionTouch(sessionId: string): Promise<AuxiliaryCommitResult> {
+    const current = await this.readDirectSessionRecord(sessionId);
+    if (!current) return { kind: "unchanged", watermark: await this.readAuxiliaryWatermark() };
+    try {
+      await this.deleteObject(this.sessionKey(sessionId), "session removal", current.etag);
+    } catch (error) {
+      if (isPreconditionStatus(error)) return { kind: "conflict" };
+      throw errorForRequest(error);
+    }
+    try {
+      await this.deleteObject(this.sessionIndexMarkerKey(sessionId), "session index cleanup");
+    } catch (error) {
+      if (!isMissingStatus(error) && !isPreconditionStatus(error)) throw errorForRequest(error);
+    }
+    return { kind: "applied", watermark: await this.readAuxiliaryWatermark() };
   }
 
   private async commitSecurityEvent(event: unknown): Promise<AuxiliaryCommitResult> {
     const redacted = redactEvent(event);
     const eventJson = safeJson(redacted, "Security event");
-    return await this.mutateAuxiliaryState("security event", (state) => {
-      const duplicate = state.events.find(
-        (entry) => stableJsonStringify(entry.event) === eventJson,
+    const eventKey = this.eventRecordKey(eventJson);
+    const existing = await this.readEventRecordObject(eventKey);
+    if (existing) return { kind: "applied", watermark: existing.watermark };
+    const watermark = await this.allocateAuxiliaryWatermark();
+    const recordPayload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      watermark,
+      event: structuredClone(redacted),
+    };
+    const record: EventRecordObject = {
+      ...recordPayload,
+      digest: digestRecord(recordPayload, "S3 authority security event"),
+    };
+    try {
+      await this.putObject(
+        eventKey,
+        safeJson(record, "S3 authority security event"),
+        { ifNoneMatch: "*" },
+        "security event",
       );
-      if (duplicate)
-        return {
-          state,
-          result: { kind: "applied", watermark: duplicate.watermark },
-          changed: false,
-        };
-      const watermark = this.nextAuxiliaryWatermark(state.watermark);
-      const events = [...state.events, { watermark, event: structuredClone(redacted) }]
-        .sort((left, right) => compareWatermarks(left.watermark, right.watermark))
-        .slice(-MAX_AUXILIARY_EVENTS);
-      return {
-        state: this.withAuxiliaryState(state, { watermark, events }),
-        result: { kind: "applied", watermark },
-        changed: true,
-      };
-    });
+    } catch (error) {
+      if (isPreconditionStatus(error)) {
+        const duplicate = await this.readEventRecordObject(eventKey);
+        if (duplicate) return { kind: "applied", watermark: duplicate.watermark };
+      }
+      throw errorForRequest(error);
+    }
+    await this.appendEventIndex(eventKey, watermark);
+    return { kind: "applied", watermark };
   }
 
   private async mutateAuxiliaryState<TResult>(
@@ -1696,26 +1896,576 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   }
 
   private async readAuxiliarySnapshot(): Promise<AuxiliarySnapshot> {
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const [headObject, stateObject] = await Promise.all([
-        this.tryGetObject(this.auxiliaryHeadKey(), "auxiliary head"),
-        this.tryGetObject(this.auxiliaryStateKey(), "auxiliary state"),
-      ]);
-      if (!headObject && !stateObject) return { state: this.emptyAuxiliaryState(), head: null };
-      if (!headObject || !stateObject) continue;
-      if (!headObject.etag || !stateObject.etag)
-        throw new CapletsError("UNSUPPORTED_CAPABILITY", "S3 provider omitted auxiliary ETags");
-      const state = this.parseAuxiliaryState(
-        this.parseJson(stateObject.body, "S3 authority auxiliary state"),
+    const watermarkRecord = await this.readAuxiliaryWatermarkRecord();
+    const indexedSessions = await this.readIndexedSessions();
+    const indexedEvents = await this.readIndexedEvents();
+    const legacy =
+      !watermarkRecord && !indexedSessions.indexed && !indexedEvents.indexed
+        ? await this.readLegacyAuxiliaryState()
+        : null;
+    const watermark =
+      watermarkRecord?.record.watermark ??
+      legacy?.watermark ??
+      indexedEvents.events.reduce(
+        (latest, entry) =>
+          compareWatermarks(entry.watermark, latest) > 0 ? entry.watermark : latest,
+        "0",
       );
-      const head = this.parseAuxiliaryHead(
-        this.parseJson(headObject.body, "S3 authority auxiliary head"),
-      );
-      if (head.digest !== state.digest || head.watermark !== state.watermark) continue;
-      return { state, stateEtag: stateObject.etag, head, headEtag: headObject.etag };
-    }
-    throw new CapletsError("SERVER_UNAVAILABLE", "S3 authority auxiliary state is changing");
+    const state = this.withAuxiliaryState(
+      {
+        version: AUXILIARY_STATE_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        watermark,
+        sessions: indexedSessions.indexed ? indexedSessions.sessions : (legacy?.sessions ?? {}),
+        events: indexedEvents.indexed ? indexedEvents.events : (legacy?.events ?? []),
+        digest: "",
+      },
+      {},
+    );
+    const head: AuxiliaryHeadRecord = {
+      version: AUXILIARY_STATE_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      watermark,
+      digest: state.digest,
+    };
+    const snapshot: AuxiliarySnapshot = { state, head };
+    const headEtag = watermarkRecord?.etag ?? indexedEvents.etag ?? indexedSessions.etag;
+    if (watermarkRecord?.etag || legacy) snapshot.stateEtag = watermarkRecord?.etag ?? "legacy";
+    if (headEtag || legacy) snapshot.headEtag = headEtag ?? "legacy";
+    return snapshot;
   }
+
+  private async readLegacyAuxiliaryState(): Promise<AuxiliaryStateRecord | null> {
+    const legacyHead = await this.tryGetObject(this.auxiliaryHeadKey(), "legacy auxiliary head");
+    if (!legacyHead) return null;
+    const object = await this.tryGetObject(this.auxiliaryStateKey(), "legacy auxiliary state");
+    if (!object) return null;
+    return this.parseAuxiliaryState(this.parseJson(object.body, "S3 authority auxiliary state"));
+  }
+
+  private async readDirectSessionRecord(
+    sessionId: string,
+  ): Promise<{ record: SessionRecord; etag: string } | null> {
+    const object = await this.tryGetObject(this.sessionKey(sessionId), "session");
+    if (!object) return null;
+    if (!object.etag)
+      throw new CapletsError("UNSUPPORTED_CAPABILITY", "S3 provider omitted session ETag");
+    const record = this.parseSession(object.body);
+    if (record.sessionId !== sessionId)
+      throw new CapletsError("CONFIG_INVALID", "S3 authority session identity is invalid");
+    return { record, etag: object.etag };
+  }
+
+  private async readSessionRecordWithEtag(
+    sessionId: string,
+  ): Promise<{ record: SessionRecord; etag?: string } | null> {
+    const direct = await this.readDirectSessionRecord(sessionId);
+    if (direct) return direct;
+    const legacy = await this.readLegacyAuxiliaryState();
+    const record = legacy?.sessions[sessionId];
+    return record ? { record } : null;
+  }
+
+  private async readAuxiliaryWatermarkRecord(): Promise<{
+    record: AuxiliaryWatermarkRecord;
+    etag: string;
+  } | null> {
+    const object = await this.tryGetObject(this.auxiliaryWatermarkKey(), "auxiliary watermark");
+    if (!object) return null;
+    if (!object.etag)
+      throw new CapletsError(
+        "UNSUPPORTED_CAPABILITY",
+        "S3 provider omitted auxiliary watermark ETag",
+      );
+    const record = this.parseAuxiliaryWatermark(
+      this.parseJson(object.body, "S3 authority auxiliary watermark"),
+    );
+    return { record, etag: object.etag };
+  }
+
+  private async readAuxiliaryWatermark(): Promise<string> {
+    const current = await this.readAuxiliaryWatermarkRecord();
+    if (current) return current.record.watermark;
+    const legacy = await this.readLegacyAuxiliaryState();
+    return legacy?.watermark ?? "0";
+  }
+
+  private async allocateAuxiliaryWatermark(): Promise<string> {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (Date.now() < deadline) {
+      const current = await this.readAuxiliaryWatermarkRecord();
+      const currentWatermark = current?.record.watermark ?? (await this.readAuxiliaryWatermark());
+      const watermark = this.nextAuxiliaryWatermark(currentWatermark);
+      const payload = {
+        version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        watermark,
+      };
+      const next: AuxiliaryWatermarkRecord = {
+        ...payload,
+        digest: digestRecord(payload, "S3 authority auxiliary watermark"),
+      };
+      try {
+        await this.putObject(
+          this.auxiliaryWatermarkKey(),
+          safeJson(next, "S3 authority auxiliary watermark"),
+          current?.etag ? { ifMatch: current.etag } : { ifNoneMatch: "*" },
+          "auxiliary watermark",
+        );
+        return watermark;
+      } catch (error) {
+        if (isPreconditionStatus(error)) continue;
+        if (isAmbiguousStatus(error)) {
+          const reread = await this.readAuxiliaryWatermarkRecord();
+          if (reread?.record.watermark === watermark) return watermark;
+          continue;
+        }
+        throw errorForRequest(error);
+      }
+    }
+    throw new CapletsError("SERVER_UNAVAILABLE", "S3 authority auxiliary watermark is changing");
+  }
+
+  private async readIndexedSessions(): Promise<{
+    sessions: Record<string, SessionRecord>;
+    indexed: boolean;
+    etag?: string;
+  }> {
+    const sessions: Record<string, SessionRecord> = {};
+    const seen = new Set<string>();
+    let indexed = false;
+    let etag: string | undefined;
+    for (let index = 0; index < SESSION_INDEX_SHARDS; index += 1) {
+      const shard = this.shardName(index, SESSION_INDEX_SHARDS);
+      const headObject = await this.tryGetObject(
+        this.sessionIndexHeadKey(shard),
+        "session index head",
+      );
+      if (!headObject) continue;
+      indexed = true;
+      etag = headObject.etag ?? etag;
+      const head = this.parseSessionIndexHead(
+        this.parseJson(headObject.body, "S3 authority session index head"),
+        shard,
+      );
+      let key = head.latestKey;
+      for (let count = 0; key && count < MAX_AUXILIARY_SESSIONS; count += 1) {
+        const entryObject = await this.tryGetObject(key, "session index entry");
+        if (!entryObject) break;
+        const entry = this.parseSessionIndexEntry(
+          this.parseJson(entryObject.body, "S3 authority session index entry"),
+          shard,
+        );
+        if (!seen.has(entry.sessionId)) {
+          seen.add(entry.sessionId);
+          const session = await this.readDirectSessionRecord(entry.sessionId);
+          if (session) sessions[entry.sessionId] = session.record;
+        }
+        key = entry.previousKey;
+      }
+    }
+    return etag ? { sessions, indexed, etag } : { sessions, indexed };
+  }
+
+  private async readIndexedEvents(): Promise<{
+    events: EventRecord[];
+    indexed: boolean;
+    etag?: string;
+  }> {
+    const headObject = await this.tryGetObject(this.eventIndexHeadKey(), "security event head");
+    if (!headObject) return { events: [], indexed: false };
+    const events: EventRecord[] = [];
+    const seen = new Set<string>();
+    let key = this.parseEventIndexHead(
+      this.parseJson(headObject.body, "S3 authority security event head"),
+    ).latestKey;
+    for (let count = 0; key && count < MAX_AUXILIARY_EVENTS; count += 1) {
+      const entryObject = await this.tryGetObject(key, "security event index");
+      if (!entryObject) break;
+      const entry = this.parseEventIndexEntry(
+        this.parseJson(entryObject.body, "S3 authority security event index"),
+      );
+      if (!seen.has(entry.eventKey)) {
+        seen.add(entry.eventKey);
+        const event = await this.readEventRecordObject(entry.eventKey);
+        if (event) events.push({ watermark: event.watermark, event: event.event });
+      }
+      key = entry.previousKey;
+    }
+    events.sort((left, right) => compareWatermarks(left.watermark, right.watermark));
+    return headObject.etag
+      ? { events: events.slice(-MAX_AUXILIARY_EVENTS), indexed: true, etag: headObject.etag }
+      : { events: events.slice(-MAX_AUXILIARY_EVENTS), indexed: true };
+  }
+
+  private async readEventRecords(
+    afterWatermark: string | undefined,
+    limit: number,
+  ): Promise<EventRecord[]> {
+    const indexed = await this.readIndexedEvents();
+    const source = indexed.indexed
+      ? indexed.events
+      : ((await this.readLegacyAuxiliaryState())?.events ?? []);
+    return source
+      .filter(({ watermark }) => !afterWatermark || isWatermarkAfter(watermark, afterWatermark))
+      .sort((left, right) => compareWatermarks(left.watermark, right.watermark))
+      .slice(0, Math.max(0, limit));
+  }
+
+  private async readEventRecordObject(key: string): Promise<EventRecordObject | null> {
+    const object = await this.tryGetObject(key, "security event");
+    if (!object) return null;
+    const record = asRecord(this.parseJson(object.body, "S3 authority security event"));
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      typeof record.watermark !== "string" ||
+      !("event" in record) ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority security event is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      watermark: parseNonNegativeWatermark(
+        record.watermark,
+        "S3 authority security event watermark",
+      ),
+      event: redactEvent(record.event),
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority security event"))
+      throw new CapletsError("CONFIG_INVALID", "S3 authority security event digest is invalid");
+    return { ...payload, digest: record.digest };
+  }
+
+  private shardName(index: number, count: number): string {
+    return index.toString(16).padStart(Math.ceil(Math.log2(count) / 4), "0");
+  }
+
+  private shardFor(value: string, count: number): string {
+    const digest = createHash("sha256").update(value, "utf8").digest("hex");
+    return this.shardName(Number.parseInt(digest.slice(0, 8), 16) % count, count);
+  }
+
+  private parseAuxiliaryWatermark(value: unknown): AuxiliaryWatermarkRecord {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      typeof record.watermark !== "string" ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority auxiliary watermark is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      watermark: parseNonNegativeWatermark(record.watermark, "S3 authority auxiliary watermark"),
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority auxiliary watermark"))
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "S3 authority auxiliary watermark digest is invalid",
+      );
+    return { ...payload, digest: record.digest };
+  }
+
+  private parseSessionIndexHead(value: unknown, shard: string): SessionIndexHead {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      record.shard !== shard ||
+      (record.latestKey !== null && typeof record.latestKey !== "string") ||
+      (record.latestSessionId !== null && typeof record.latestSessionId !== "string") ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority session index head is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      shard,
+      latestKey: record.latestKey as string | null,
+      latestSessionId: record.latestSessionId as string | null,
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority session index head"))
+      throw new CapletsError("CONFIG_INVALID", "S3 authority session index head digest is invalid");
+    return { ...payload, digest: record.digest };
+  }
+
+  private parseSessionIndexEntry(value: unknown, shard: string): SessionIndexEntry {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      record.shard !== shard ||
+      typeof record.sessionId !== "string" ||
+      (record.previousKey !== null && typeof record.previousKey !== "string") ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority session index entry is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      shard,
+      sessionId: record.sessionId,
+      previousKey: record.previousKey as string | null,
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority session index entry"))
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "S3 authority session index entry digest is invalid",
+      );
+    return { ...payload, digest: record.digest };
+  }
+
+  private parseEventIndexHead(value: unknown): EventIndexHead {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      (record.latestKey !== null && typeof record.latestKey !== "string") ||
+      typeof record.watermark !== "string" ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority security event head is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      latestKey: record.latestKey as string | null,
+      watermark: parseNonNegativeWatermark(record.watermark, "S3 security event watermark"),
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority security event head"))
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "S3 authority security event head digest is invalid",
+      );
+    return { ...payload, digest: record.digest };
+  }
+
+  private parseEventIndexEntry(value: unknown): EventIndexEntry {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      typeof record.eventKey !== "string" ||
+      typeof record.watermark !== "string" ||
+      (record.previousKey !== null && typeof record.previousKey !== "string") ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority security event index is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      eventKey: record.eventKey,
+      watermark: parseNonNegativeWatermark(record.watermark, "S3 security event watermark"),
+      previousKey: record.previousKey as string | null,
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority security event index"))
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "S3 authority security event index digest is invalid",
+      );
+    return { ...payload, digest: record.digest };
+  }
+
+  private async ensureSessionIndex(sessionId: string): Promise<void> {
+    const marker = await this.tryGetObject(
+      this.sessionIndexMarkerKey(sessionId),
+      "session index marker",
+    );
+    if (marker) return;
+    const shard = this.shardFor(sessionId, SESSION_INDEX_SHARDS);
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (Date.now() < deadline) {
+      const currentObject = await this.tryGetObject(
+        this.sessionIndexHeadKey(shard),
+        "session index head",
+      );
+      const current = currentObject
+        ? this.parseSessionIndexHead(
+            this.parseJson(currentObject.body, "S3 authority session index head"),
+            shard,
+          )
+        : null;
+      const entryKey = this.sessionIndexEntryKey(shard);
+      const entryPayload = {
+        version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        shard,
+        sessionId,
+        previousKey: current?.latestKey ?? null,
+      };
+      const entry: SessionIndexEntry = {
+        ...entryPayload,
+        digest: digestRecord(entryPayload, "S3 authority session index entry"),
+      };
+      try {
+        await this.putObject(
+          entryKey,
+          safeJson(entry, "S3 authority session index entry"),
+          { ifNoneMatch: "*" },
+          "session index entry",
+        );
+        const headPayload = {
+          version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+          authorityId: this.authorityId,
+          namespace: this.namespace,
+          shard,
+          latestKey: entryKey,
+          latestSessionId: sessionId,
+        };
+        const head: SessionIndexHead = {
+          ...headPayload,
+          digest: digestRecord(headPayload, "S3 authority session index head"),
+        };
+        await this.putObject(
+          this.sessionIndexHeadKey(shard),
+          safeJson(head, "S3 authority session index head"),
+          currentObject?.etag ? { ifMatch: currentObject.etag } : { ifNoneMatch: "*" },
+          "session index head",
+        );
+        await this.putObject(
+          this.sessionIndexMarkerKey(sessionId),
+          safeJson({ sessionId, entryKey }, "S3 authority session index marker"),
+          { ifNoneMatch: "*" },
+          "session index marker",
+        ).catch((error) => {
+          if (!isPreconditionStatus(error)) throw error;
+        });
+        return;
+      } catch (error) {
+        if (isPreconditionStatus(error)) continue;
+        if (isAmbiguousStatus(error)) {
+          const reread = await this.tryGetObject(
+            this.sessionIndexHeadKey(shard),
+            "session index head",
+          );
+          if (
+            reread &&
+            this.parseSessionIndexHead(
+              this.parseJson(reread.body, "S3 authority session index head"),
+              shard,
+            ).latestSessionId === sessionId
+          )
+            return;
+          continue;
+        }
+        throw errorForRequest(error);
+      }
+    }
+    throw new CapletsError("SERVER_UNAVAILABLE", "S3 authority session index is changing");
+  }
+
+  private async appendEventIndex(eventKey: string, watermark: string): Promise<void> {
+    const marker = await this.tryGetObject(
+      this.eventIndexMarkerKey(eventKey),
+      "security event marker",
+    );
+    if (marker) return;
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (Date.now() < deadline) {
+      const currentObject = await this.tryGetObject(
+        this.eventIndexHeadKey(),
+        "security event head",
+      );
+      const current = currentObject
+        ? this.parseEventIndexHead(
+            this.parseJson(currentObject.body, "S3 authority security event head"),
+          )
+        : null;
+      const entryKey = this.eventIndexEntryKey();
+      const entryPayload = {
+        version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        eventKey,
+        watermark,
+        previousKey: current?.latestKey ?? null,
+      };
+      const entry: EventIndexEntry = {
+        ...entryPayload,
+        digest: digestRecord(entryPayload, "S3 authority security event index"),
+      };
+      try {
+        await this.putObject(
+          entryKey,
+          safeJson(entry, "S3 authority security event index"),
+          { ifNoneMatch: "*" },
+          "security event index",
+        );
+        const headPayload = {
+          version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+          authorityId: this.authorityId,
+          namespace: this.namespace,
+          latestKey: entryKey,
+          watermark,
+        };
+        const head: EventIndexHead = {
+          ...headPayload,
+          digest: digestRecord(headPayload, "S3 authority security event head"),
+        };
+        await this.putObject(
+          this.eventIndexHeadKey(),
+          safeJson(head, "S3 authority security event head"),
+          currentObject?.etag ? { ifMatch: currentObject.etag } : { ifNoneMatch: "*" },
+          "security event head",
+        );
+        await this.putObject(
+          this.eventIndexMarkerKey(eventKey),
+          safeJson({ eventKey, entryKey }, "S3 authority security event marker"),
+          { ifNoneMatch: "*" },
+          "security event marker",
+        ).catch((error) => {
+          if (!isPreconditionStatus(error)) throw error;
+        });
+        return;
+      } catch (error) {
+        if (isPreconditionStatus(error)) continue;
+        if (isAmbiguousStatus(error)) {
+          const reread = await this.tryGetObject(this.eventIndexHeadKey(), "security event head");
+          if (
+            reread &&
+            this.parseEventIndexHead(
+              this.parseJson(reread.body, "S3 authority security event head"),
+            ).watermark === watermark
+          )
+            return;
+          continue;
+        }
+        throw errorForRequest(error);
+      }
+    }
+    throw new CapletsError("SERVER_UNAVAILABLE", "S3 authority security event index is changing");
+  }
+
   private parseAuxiliaryState(value: unknown): AuxiliaryStateRecord {
     const record = asRecord(value);
     const sessionsRecord = asRecord(record?.sessions);
@@ -1817,15 +2567,68 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   }
 
   private async publishAuxiliaryCanonical(state: AuxiliaryStateRecord): Promise<void> {
-    const stateResult = await this.putObject(
-      this.auxiliaryStateKey(),
-      safeJson(state, "S3 authority auxiliary state"),
+    const watermarkPayload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      watermark: state.watermark,
+    };
+    const watermark: AuxiliaryWatermarkRecord = {
+      ...watermarkPayload,
+      digest: digestRecord(watermarkPayload, "S3 authority auxiliary watermark"),
+    };
+    const watermarkResult = await this.putObject(
+      this.auxiliaryWatermarkKey(),
+      safeJson(watermark, "S3 authority auxiliary watermark"),
       { ifNoneMatch: "*" },
       "auxiliary restore",
     );
-    if (!stateResult.etag)
-      throw new CapletsError("UNSUPPORTED_CAPABILITY", "S3 provider omitted auxiliary state ETag");
-    await this.publishAuxiliaryHead(state, undefined);
+    if (!watermarkResult.etag)
+      throw new CapletsError(
+        "UNSUPPORTED_CAPABILITY",
+        "S3 provider omitted auxiliary watermark ETag",
+      );
+    for (const [sessionId, session] of Object.entries(state.sessions).sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      const record: SessionRecord = {
+        sessionId,
+        lastUsedAt: session.lastUsedAt,
+        revision: session.revision,
+        revoked: session.revoked,
+      };
+      await this.putObject(
+        this.sessionKey(sessionId),
+        safeJson(record, "S3 authority session"),
+        { ifNoneMatch: "*" },
+        "auxiliary restore session",
+      );
+      await this.ensureSessionIndex(sessionId);
+    }
+    for (const entry of state.events
+      .slice()
+      .sort((left, right) => compareWatermarks(left.watermark, right.watermark))) {
+      const event = redactEvent(entry.event);
+      const eventJson = safeJson(event, "Security event");
+      const eventPayload = {
+        version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        watermark: entry.watermark,
+        event: structuredClone(event),
+      };
+      const record: EventRecordObject = {
+        ...eventPayload,
+        digest: digestRecord(eventPayload, "S3 authority security event"),
+      };
+      await this.putObject(
+        this.eventRecordKey(eventJson),
+        safeJson(record, "S3 authority security event"),
+        { ifNoneMatch: "*" },
+        "auxiliary restore event",
+      );
+      await this.appendEventIndex(this.eventRecordKey(eventJson), entry.watermark);
+    }
   }
 
   private parseExportAuxiliary(value: unknown, watermarkValue: unknown): AuxiliaryStateRecord {
@@ -1954,24 +2757,21 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   private async publishReceiptManifestCanonical(
     receipts: readonly AuthorityReceipt<unknown>[],
   ): Promise<void> {
-    const payload = {
-      version: RECEIPT_MANIFEST_VERSION as typeof RECEIPT_MANIFEST_VERSION,
-      authorityId: this.authorityId,
-      namespace: this.namespace,
-      receipts: canonicalReceipts(receipts),
-    };
-    const manifest: ReceiptManifest = {
-      ...payload,
-      digest: digestRecord(payload, "S3 authority receipt manifest"),
-    };
-    const result = await this.putObject(
-      this.receiptManifestKey(),
-      safeJson(manifest, "S3 authority receipt manifest"),
-      { ifNoneMatch: "*" },
-      "receipt manifest restore",
-    );
-    if (!result.etag)
-      throw new CapletsError("UNSUPPORTED_CAPABILITY", "S3 provider omitted receipt manifest ETag");
+    for (const receipt of canonicalReceipts(receipts)) {
+      const envelope = {
+        currentHostId: receipt.currentHostId,
+        principalId: receipt.principalId,
+        idempotencyKey: receipt.idempotencyKey,
+      } as SemanticCommandEnvelope<TCommand>;
+      const key = this.receiptKey(envelope);
+      await this.putObject(
+        key,
+        safeJson(receipt, "Authority receipt"),
+        { ifNoneMatch: "*" },
+        "receipt restore",
+      );
+      await this.ensureReceiptIndex(receipt);
+    }
   }
   private async resolveAmbiguousCommit<TResult>(
     envelope: SemanticCommandEnvelope<TCommand>,
@@ -2231,6 +3031,65 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     };
   }
 
+  private parseReceiptIndexHead(value: unknown, shard: string): ReceiptIndexHead {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      record.shard !== shard ||
+      (record.latestKey !== null && typeof record.latestKey !== "string") ||
+      (record.latestIdentity !== null && typeof record.latestIdentity !== "string") ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority receipt index head is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      shard,
+      latestKey: record.latestKey as string | null,
+      latestIdentity: record.latestIdentity as string | null,
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority receipt index head"))
+      throw new CapletsError("CONFIG_INVALID", "S3 authority receipt index head digest is invalid");
+    return { ...payload, digest: record.digest };
+  }
+
+  private parseReceiptIndexEntry(value: unknown, shard: string): ReceiptIndexEntry {
+    const record = asRecord(value);
+    if (
+      !record ||
+      record.version !== INDEX_RECORD_VERSION ||
+      record.authorityId !== this.authorityId ||
+      record.namespace !== this.namespace ||
+      record.shard !== shard ||
+      typeof record.receiptKey !== "string" ||
+      typeof record.identity !== "string" ||
+      (record.previousKey !== null && typeof record.previousKey !== "string") ||
+      typeof record.digest !== "string"
+    ) {
+      throw new CapletsError("CONFIG_INVALID", "S3 authority receipt index entry is invalid");
+    }
+    const payload = {
+      version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+      authorityId: this.authorityId,
+      namespace: this.namespace,
+      shard,
+      receiptKey: record.receiptKey,
+      identity: record.identity,
+      previousKey: record.previousKey as string | null,
+    };
+    if (record.digest !== digestRecord(payload, "S3 authority receipt index entry"))
+      throw new CapletsError(
+        "CONFIG_INVALID",
+        "S3 authority receipt index entry digest is invalid",
+      );
+    return { ...payload, digest: record.digest };
+  }
+
   private parseReceiptManifest(value: unknown, label: string): ReceiptManifest {
     const record = asRecord(value);
     if (
@@ -2368,88 +3227,32 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     envelope: SemanticCommandEnvelope<TCommand>,
   ): Promise<AuthorityReceipt<TResult> | null> {
     const identity = `${envelope.currentHostId}\u0000${envelope.principalId}\u0000${envelope.idempotencyKey}`;
-    const manifest = await this.readReceiptManifest();
-    const fromManifest = manifest?.manifest.receipts.find(
-      (receipt) => receiptIdentity(receipt) === identity,
-    );
-    if (fromManifest) {
-      if (fromManifest.requestDigest !== envelope.requestDigest)
+    const object = await this.tryGetObject(this.receiptKey(envelope), "receipt");
+    if (object) {
+      const receipt = this.parseReceiptValue(this.parseJson(object.body, "S3 authority receipt"));
+      if (receiptIdentity(receipt) !== identity)
+        throw new CapletsError("CONFIG_INVALID", "S3 authority receipt identity is invalid");
+      if (receipt.requestDigest !== envelope.requestDigest)
         throw new CapletsError(
           "REQUEST_INVALID",
           "Idempotency key was reused with a different request",
         );
-      if (Date.parse(fromManifest.expiresAt) <= this.clock().getTime()) return null;
-      return fromManifest as AuthorityReceipt<TResult>;
+      if (Date.parse(receipt.expiresAt) <= this.clock().getTime()) return null;
+      await this.ensureReceiptIndex(receipt);
+      return receipt as AuthorityReceipt<TResult>;
     }
-    const object = await this.tryGetObject(this.receiptKey(envelope), "receipt");
-    if (!object) return null;
-    const receipt = this.parseReceiptValue(this.parseJson(object.body, "S3 authority receipt"));
-    if (receipt.requestDigest !== envelope.requestDigest)
+    const manifest = await this.readReceiptManifest();
+    const fromManifest = manifest?.manifest.receipts.find(
+      (receipt) => receiptIdentity(receipt) === identity,
+    );
+    if (!fromManifest) return null;
+    if (fromManifest.requestDigest !== envelope.requestDigest)
       throw new CapletsError(
         "REQUEST_INVALID",
         "Idempotency key was reused with a different request",
       );
-    if (Date.parse(receipt.expiresAt) <= this.clock().getTime()) return null;
-    await this.ensureReceiptManifest(receipt);
-    return receipt as AuthorityReceipt<TResult>;
-  }
-
-  private async ensureReceiptManifest(receipt: AuthorityReceipt<unknown>): Promise<void> {
-    const deadline = Date.now() + this.requestTimeoutMs;
-    while (Date.now() < deadline) {
-      const current = await this.readReceiptManifest();
-      const now = this.clock().getTime();
-      const retained = (current?.manifest.receipts ?? []).filter(
-        (entry) => Date.parse(entry.expiresAt) > now,
-      );
-      const existing = retained.find(
-        (entry) => receiptIdentity(entry) === receiptIdentity(receipt),
-      );
-      if (existing) {
-        if (existing.requestDigest !== receipt.requestDigest)
-          throw new CapletsError(
-            "REQUEST_INVALID",
-            "Idempotency key was reused with a different request",
-          );
-        return;
-      }
-      if (retained.length >= MAX_RECEIPTS)
-        throw new CapletsError("CONFIG_INVALID", "S3 authority receipt capacity is exhausted");
-      const payload = {
-        version: RECEIPT_MANIFEST_VERSION as typeof RECEIPT_MANIFEST_VERSION,
-        authorityId: this.authorityId,
-        namespace: this.namespace,
-        receipts: canonicalReceipts([...retained, receipt]),
-      };
-      const next: ReceiptManifest = {
-        ...payload,
-        digest: digestRecord(payload, "S3 authority receipt manifest"),
-      };
-      try {
-        await this.putObject(
-          this.receiptManifestKey(),
-          safeJson(next, "S3 authority receipt manifest"),
-          current?.etag ? { ifMatch: current.etag } : { ifNoneMatch: "*" },
-          "receipt manifest",
-        );
-        return;
-      } catch (error) {
-        if (isPreconditionStatus(error)) continue;
-        if (isAmbiguousStatus(error)) {
-          const reread = await this.readReceiptManifest();
-          const found = reread?.manifest.receipts.find(
-            (entry) => receiptIdentity(entry) === receiptIdentity(receipt),
-          );
-          if (found?.requestDigest === receipt.requestDigest) return;
-          continue;
-        }
-        throw errorForRequest(error);
-      }
-    }
-    throw new CapletsError(
-      "SERVER_UNAVAILABLE",
-      "S3 authority receipt manifest publication outcome is ambiguous",
-    );
+    if (Date.parse(fromManifest.expiresAt) <= this.clock().getTime()) return null;
+    return fromManifest as AuthorityReceipt<TResult>;
   }
 
   private async publishReceipt<TResult>(
@@ -2466,8 +3269,25 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
       );
     } catch (error) {
       if (isPreconditionStatus(error)) {
-        const existing = await this.readReceipt(envelope);
+        const existing = await this.tryGetObject(key, "receipt");
         if (!existing) throw errorForRequest(error);
+        const parsed = this.parseReceiptValue(
+          this.parseJson(existing.body, "S3 authority receipt"),
+        );
+        if (parsed.requestDigest !== receipt.requestDigest)
+          throw new CapletsError(
+            "REQUEST_INVALID",
+            "Idempotency key was reused with a different request",
+          );
+        if (Date.parse(parsed.expiresAt) <= this.clock().getTime() && existing.etag) {
+          await this.deleteObject(key, "expired receipt cleanup", existing.etag);
+          await this.putObject(
+            key,
+            safeJson(receipt, "Authority receipt"),
+            { ifNoneMatch: "*" },
+            "receipt",
+          );
+        }
       } else if (isAmbiguousStatus(error)) {
         const existing = await this.tryGetObject(key, "receipt");
         if (!existing)
@@ -2479,7 +3299,174 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
         throw errorForRequest(error);
       }
     }
-    await this.ensureReceiptManifest(receipt as AuthorityReceipt<unknown>);
+    await this.ensureReceiptIndex(receipt as AuthorityReceipt<unknown>);
+  }
+
+  private async ensureReceiptIndex(receipt: AuthorityReceipt<unknown>): Promise<void> {
+    const identity = receiptIdentity(receipt);
+    const marker = await this.tryGetObject(
+      this.receiptIndexMarkerKey(identity),
+      "receipt index marker",
+    );
+    if (marker) return;
+    const shard = this.shardFor(identity, RECEIPT_INDEX_SHARDS);
+    const deadline = Date.now() + this.requestTimeoutMs;
+    while (Date.now() < deadline) {
+      const currentObject = await this.tryGetObject(
+        this.receiptIndexHeadKey(shard),
+        "receipt index head",
+      );
+      const current = currentObject
+        ? this.parseReceiptIndexHead(
+            this.parseJson(currentObject.body, "S3 authority receipt index head"),
+            shard,
+          )
+        : null;
+      if (current?.latestIdentity === identity) return;
+      const entryKey = this.receiptIndexEntryKey(shard);
+      const receiptKey = this.receiptObjectKey(receipt);
+      const entryPayload = {
+        version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+        authorityId: this.authorityId,
+        namespace: this.namespace,
+        shard,
+        receiptKey,
+        identity,
+        previousKey: current?.latestKey ?? null,
+      };
+      const entry: ReceiptIndexEntry = {
+        ...entryPayload,
+        digest: digestRecord(entryPayload, "S3 authority receipt index entry"),
+      };
+      try {
+        await this.putObject(
+          entryKey,
+          safeJson(entry, "S3 authority receipt index entry"),
+          { ifNoneMatch: "*" },
+          "receipt index entry",
+        );
+        const headPayload = {
+          version: INDEX_RECORD_VERSION as typeof INDEX_RECORD_VERSION,
+          authorityId: this.authorityId,
+          namespace: this.namespace,
+          shard,
+          latestKey: entryKey,
+          latestIdentity: identity,
+        };
+        const head: ReceiptIndexHead = {
+          ...headPayload,
+          digest: digestRecord(headPayload, "S3 authority receipt index head"),
+        };
+        await this.putObject(
+          this.receiptIndexHeadKey(shard),
+          safeJson(head, "S3 authority receipt index head"),
+          currentObject?.etag ? { ifMatch: currentObject.etag } : { ifNoneMatch: "*" },
+          "receipt index head",
+        );
+        await this.putObject(
+          this.receiptIndexMarkerKey(identity),
+          safeJson({ identity, entryKey }, "S3 authority receipt index marker"),
+          { ifNoneMatch: "*" },
+          "receipt index marker",
+        ).catch((error) => {
+          if (!isPreconditionStatus(error)) throw error;
+        });
+        return;
+      } catch (error) {
+        if (isPreconditionStatus(error)) continue;
+        if (isAmbiguousStatus(error)) {
+          const reread = await this.tryGetObject(
+            this.receiptIndexHeadKey(shard),
+            "receipt index head",
+          );
+          if (
+            reread &&
+            this.parseReceiptIndexHead(
+              this.parseJson(reread.body, "S3 authority receipt index head"),
+              shard,
+            ).latestIdentity === identity
+          )
+            return;
+          continue;
+        }
+        throw errorForRequest(error);
+      }
+    }
+    throw new CapletsError("SERVER_UNAVAILABLE", "S3 authority receipt index is changing");
+  }
+
+  private async readReceiptCollection(): Promise<{
+    receipts: AuthorityReceipt<unknown>[];
+    token: string;
+  }> {
+    const receipts: AuthorityReceipt<unknown>[] = [];
+    const seen = new Set<string>();
+    const headTokens: string[] = [];
+    let indexed = false;
+    for (let index = 0; index < RECEIPT_INDEX_SHARDS; index += 1) {
+      const shard = this.shardName(index, RECEIPT_INDEX_SHARDS);
+      const headObject = await this.tryGetObject(
+        this.receiptIndexHeadKey(shard),
+        "receipt index head",
+      );
+      if (!headObject) continue;
+      indexed = true;
+      const head = this.parseReceiptIndexHead(
+        this.parseJson(headObject.body, "S3 authority receipt index head"),
+        shard,
+      );
+      headTokens.push(`${shard}:${headObject.etag ?? ""}:${head.digest}`);
+      let key = head.latestKey;
+      for (let count = 0; key && count < MAX_RECEIPTS; count += 1) {
+        const entryObject = await this.tryGetObject(key, "receipt index entry");
+        if (!entryObject) break;
+        const entry = this.parseReceiptIndexEntry(
+          this.parseJson(entryObject.body, "S3 authority receipt index entry"),
+          shard,
+        );
+        if (!seen.has(entry.identity)) {
+          seen.add(entry.identity);
+          const receiptObject = await this.tryGetObject(entry.receiptKey, "receipt");
+          if (receiptObject) {
+            const receipt = this.parseReceiptValue(
+              this.parseJson(receiptObject.body, "S3 authority receipt"),
+            );
+            if (receiptIdentity(receipt) !== entry.identity)
+              throw new CapletsError(
+                "CONFIG_INVALID",
+                "S3 authority receipt index identity is invalid",
+              );
+            receipts.push(receipt);
+          }
+        }
+        key = entry.previousKey;
+      }
+    }
+    if (!indexed) {
+      const manifest = await this.readReceiptManifest();
+      const legacyReceipts = manifest?.manifest.receipts ?? [];
+      return {
+        receipts: canonicalReceipts(legacyReceipts),
+        token: digestRecord(
+          { legacy: manifest?.etag ?? null, receipts: canonicalReceipts(legacyReceipts) },
+          "S3 receipt collection",
+        ),
+      };
+    }
+    const canonical = canonicalReceipts(receipts);
+    return {
+      receipts: canonical,
+      token: digestRecord({ heads: headTokens, receipts: canonical }, "S3 receipt collection"),
+    };
+  }
+
+  private async hasReceiptData(): Promise<boolean> {
+    for (let index = 0; index < RECEIPT_INDEX_SHARDS; index += 1) {
+      const shard = this.shardName(index, RECEIPT_INDEX_SHARDS);
+      if (await this.tryGetObject(this.receiptIndexHeadKey(shard), "receipt index head"))
+        return true;
+    }
+    return Boolean(await this.readReceiptManifest());
   }
 
   private async publishCandidate(candidate: CandidateRecord): Promise<void> {
@@ -2664,15 +3651,43 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     operation: (client: S3AuthorityClient, signal: AbortSignal) => Promise<T>,
     _label: string,
   ): Promise<T> {
-    const credentials = await this.resolveCredentials();
     const usingInjected = Boolean(this.options.client);
-    const client =
-      this.options.client ??
-      (this.options.clientFactory
+    const dynamic =
+      !usingInjected &&
+      Boolean(
+        this.options.clientFactory ||
+        typeof this.options.credentialProvider === "function" ||
+        typeof this.options.credentials === "function",
+      );
+    let client: S3AuthorityClient;
+    let destroyAfterRequest = false;
+    if (usingInjected) {
+      client = this.options.client as S3AuthorityClient;
+      this.clients.add(client);
+    } else if (dynamic) {
+      const credentials = await this.resolveCredentials();
+      client = this.options.clientFactory
         ? await this.options.clientFactory(credentials)
-        : this.createSdkClient(credentials));
-    this.clients.add(client);
-    if (!usingInjected) this.ownedClients.add(client);
+        : this.createSdkClient(credentials);
+      this.clients.add(client);
+      this.ownedClients.add(client);
+      destroyAfterRequest = true;
+    } else {
+      if (!this.staticClientPromise) {
+        this.staticClientPromise = (async () => {
+          const credentials = await this.resolveCredentials();
+          const created = this.createSdkClient(credentials);
+          this.staticClient = created;
+          this.clients.add(created);
+          this.ownedClients.add(created);
+          return created;
+        })().catch((error) => {
+          this.staticClientPromise = undefined;
+          throw error;
+        });
+      }
+      client = await this.staticClientPromise;
+    }
     const controller = new AbortController();
     this.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
@@ -2681,7 +3696,7 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
     } finally {
       clearTimeout(timeout);
       this.controllers.delete(controller);
-      if (!usingInjected) {
+      if (destroyAfterRequest) {
         this.ownedClients.delete(client);
         this.clients.delete(client);
         try {
@@ -2746,6 +3761,21 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   private receiptKey(envelope: SemanticCommandEnvelope<TCommand>): string {
     return `${this.rootPrefix}receipts/${encodeKeyPart(envelope.currentHostId)}/${encodeKeyPart(envelope.principalId)}/${encodeKeyPart(envelope.idempotencyKey)}.json`;
   }
+  private receiptObjectKey(receipt: AuthorityReceipt<unknown>): string {
+    return `${this.rootPrefix}receipts/${encodeKeyPart(receipt.currentHostId)}/${encodeKeyPart(receipt.principalId)}/${encodeKeyPart(receipt.idempotencyKey)}.json`;
+  }
+
+  private receiptIndexHeadKey(shard: string): string {
+    return `${this.rootPrefix}receipts/index/${shard}/shard.json`;
+  }
+
+  private receiptIndexEntryKey(shard: string): string {
+    return `${this.rootPrefix}receipts/index/${shard}/${randomUUID()}.json`;
+  }
+
+  private receiptIndexMarkerKey(identity: string): string {
+    return `${this.rootPrefix}receipts/index-markers/${encodeKeyPart(identity)}.json`;
+  }
 
   private receiptManifestKey(): string {
     return `${this.rootPrefix}receipts/manifest.json`;
@@ -2762,9 +3792,40 @@ export class S3Authority<TSnapshot = unknown, TCommand = unknown> implements Wri
   private sessionKey(sessionId: string): string {
     return `${this.rootPrefix}aux/sessions/${encodeKeyPart(sessionId)}.json`;
   }
+  private auxiliaryWatermarkKey(): string {
+    return `${this.rootPrefix}aux/watermark.json`;
+  }
+
+  private sessionIndexHeadKey(shard: string): string {
+    return `${this.rootPrefix}aux/session-index/${shard}/shard.json`;
+  }
+
+  private sessionIndexEntryKey(shard: string): string {
+    return `${this.rootPrefix}aux/session-index/${shard}/${randomUUID()}.json`;
+  }
+
+  private sessionIndexMarkerKey(sessionId: string): string {
+    return `${this.rootPrefix}aux/session-index-markers/${encodeKeyPart(sessionId)}.json`;
+  }
 
   private eventsPrefix(): string {
     return `${this.rootPrefix}aux/events/`;
+  }
+  private eventIndexHeadKey(): string {
+    return `${this.rootPrefix}aux/events/index.json`;
+  }
+
+  private eventIndexEntryKey(): string {
+    return `${this.rootPrefix}aux/events/pages/${randomUUID()}.json`;
+  }
+
+  private eventIndexMarkerKey(eventKey: string): string {
+    return `${this.rootPrefix}aux/events/markers/${encodeKeyPart(eventKey)}.json`;
+  }
+
+  private eventRecordKey(eventJson: string): string {
+    const digest = createHash("sha256").update(eventJson, "utf8").digest("hex");
+    return `${this.rootPrefix}aux/events/records/${digest}.json`;
   }
 
   private migrationStagePrefix(token: string): string {

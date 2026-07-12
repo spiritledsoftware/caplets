@@ -1,5 +1,4 @@
 import { existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   loadAuthorityBootstrap,
   resolveProjectCapletsRoot,
@@ -18,7 +17,7 @@ import {
   type ResolvedExposureProjection,
 } from "../engine";
 import { CapletsError, toSafeError, type SafeErrorSummary } from "../errors";
-import { createAuthority, type AuthorityProviderContext } from "./factory";
+import { createAuthorityWithBuiltinFallback, type AuthorityProviderContext } from "./factory";
 import {
   composeRuntimeConfig,
   type AuthorityCompositionInput,
@@ -652,16 +651,10 @@ export class RuntimeEpochCoordinator<TSnapshot = AuthoritySnapshot> {
       secrets: this.bootstrap.secrets,
     };
     if (this.options.authorityFactory) return await this.options.authorityFactory(context);
-    try {
-      return (await createAuthority(context)) as AuthorityLike<TSnapshot>;
-    } catch (error) {
-      if (!(error instanceof CapletsError) || !error.message.includes("is not registered"))
-        throw error;
-      return (await createBuiltinAuthority(
-        this.bootstrap,
-        this.options.configPath,
-      )) as AuthorityLike<TSnapshot>;
-    }
+    return (await createAuthorityWithBuiltinFallback(
+      context,
+      this.options.configPath,
+    )) as AuthorityLike<TSnapshot>;
   }
   private activate(view: PreparedRuntimeView): void {
     const previous = this.active;
@@ -798,84 +791,6 @@ function resolveSecrets(
     ...(bootstrap.vaultKeyRef ? { vaultKey: resolveSecret(bootstrap.vaultKeyRef) } : {}),
   };
 }
-
-async function createBuiltinAuthority(
-  loaded: LoadedAuthorityBootstrap,
-  configPath: string,
-): Promise<WritableAuthority> {
-  const bootstrap = loaded.bootstrap;
-  if (bootstrap.provider === "filesystem") {
-    // Provider modules must load only after the configured provider is selected.
-    const { createFilesystemAuthority } = await import("./filesystem-authority");
-    return await createFilesystemAuthority({
-      root: resolve(resolveConfigPath(configPath), "..", "caplets"),
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  if (bootstrap.provider === "sqlite") {
-    // Provider modules must load only after the configured provider is selected.
-    const { createSqliteAuthority } = await import("./sql/authority");
-    return await createSqliteAuthority({
-      databasePath: bootstrap.databasePath,
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  if (bootstrap.provider === "postgresql") {
-    const credential = loaded.secrets.credential;
-    if (typeof credential !== "string") {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "PostgreSQL authority requires a resolved connection credential",
-      );
-    }
-    // Provider modules must load only after the configured provider is selected.
-    const { createPostgresAuthority } = await import("./sql/authority");
-    return await createPostgresAuthority({
-      connectionString: credential,
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  const credential = loaded.secrets.credential;
-  // Provider modules must load only after the configured provider is selected.
-  const { createS3Authority } = await import("./s3-authority");
-  return await createS3Authority({
-    bucket: bootstrap.bucket,
-    region: bootstrap.region,
-    ...(bootstrap.endpoint ? { endpoint: bootstrap.endpoint } : {}),
-    ...(bootstrap.forcePathStyle === undefined ? {} : { forcePathStyle: bootstrap.forcePathStyle }),
-    ...(credential ? { credentialProvider: () => parseS3Credential(credential) } : {}),
-    authorityId: bootstrap.authorityId,
-    namespace: bootstrap.namespace,
-  });
-}
-
-function parseS3Credential(value: string | Uint8Array): {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-} {
-  if (typeof value !== "string")
-    throw new CapletsError("CONFIG_INVALID", "S3 credential is invalid");
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (typeof parsed.accessKeyId !== "string" || typeof parsed.secretAccessKey !== "string")
-      throw new Error("invalid");
-    return {
-      accessKeyId: parsed.accessKeyId,
-      secretAccessKey: parsed.secretAccessKey,
-      ...(typeof parsed.sessionToken === "string" ? { sessionToken: parsed.sessionToken } : {}),
-    };
-  } catch {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "S3 credential must resolve to a JSON access key pair",
-    );
-  }
-}
-
 function boundedInterval(value: number, label = "poll interval"): number {
   if (!Number.isFinite(value) || value < 1 || value > MAX_REFRESH_INTERVAL_MS) {
     throw new CapletsError(

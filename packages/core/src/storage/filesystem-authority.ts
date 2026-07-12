@@ -392,6 +392,15 @@ export class FilesystemAuthority implements WritableAuthority<
     try {
       await this.assertMaintenanceWriteAllowed();
       await this.loadAuxiliary();
+      if (command.kind === "remove_session_touch") {
+        if (!this.auxiliary.sessions[command.sessionId]) {
+          return { kind: "unchanged", watermark: String(this.auxiliary.watermark) };
+        }
+        delete this.auxiliary.sessions[command.sessionId];
+        const watermark = this.nextAuxiliaryWatermark();
+        await this.persistAuxiliary();
+        return { kind: "applied", watermark: String(watermark) };
+      }
       if (command.kind === "session_touch") {
         const activeHead = await this.readHead();
         if (!sameIdentity(activeHead, command.expectedGeneration)) return { kind: "conflict" };

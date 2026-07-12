@@ -6,6 +6,7 @@ import { loadConfig } from "../src/config";
 import { CapletsEngine } from "../src/engine";
 import { CapletsError } from "../src/errors";
 import { RuntimeEpochCoordinator, assembleCapletsHost } from "../src/storage/coordinator";
+import { registerAuthorityProvider } from "../src/storage/factory";
 import { createAsyncCapletsRuntime } from "../src/runtime";
 import { createAsyncNativeCapletsService } from "../src/native/service";
 import type {
@@ -75,6 +76,8 @@ function fakeAuthority(initial: AuthorityGeneration<AuthoritySnapshot>): {
   let current = initial;
   const closed = vi.fn(async () => undefined);
   const authority: WritableAuthority<AuthoritySnapshot, unknown> = {
+    namespace: "default",
+    schemaVersion: 1,
     readHead: vi.fn(
       async () =>
         ({
@@ -141,6 +144,29 @@ describe("RuntimeEpochCoordinator", () => {
     } satisfies Partial<CapletsError>);
     expect(coordinator.current).toBeUndefined();
     expect(fake.close).toHaveBeenCalledOnce();
+  });
+
+  it("propagates registered provider factory failures without built-in fallback", async () => {
+    const factoryFailure = new Error("Authority provider filesystem is not registered");
+    const unregister = registerAuthorityProvider("filesystem", async () => {
+      throw factoryFailure;
+    });
+    try {
+      const coordinator = new RuntimeEpochCoordinator({
+        bootstrap: {
+          provider: "filesystem",
+          authorityId: "factory-test",
+          namespace: "default",
+          pollIntervalMs: 1,
+        },
+        configPath: join(tmpdir(), "missing-factory-config.json"),
+        autoRefresh: false,
+      });
+      await expect(coordinator.start()).rejects.toBe(factoryFailure);
+      expect(coordinator.current).toBeUndefined();
+    } finally {
+      unregister();
+    }
   });
 
   it("keeps one immutable epoch through a lease and retires it after activation", async () => {

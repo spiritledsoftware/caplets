@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import type BetterSqlite3 from "better-sqlite3";
@@ -17,7 +18,7 @@ import {
 } from "../config";
 import { CapletsError, toSafeError } from "../errors";
 import {
-  createAuthority as createRegisteredAuthority,
+  createAuthorityWithBuiltinFallback,
   type AuthorityProviderContext,
   type AuthorityProviderFactory,
 } from "../storage/factory";
@@ -670,67 +671,7 @@ async function openAuthority(
     secrets: selector.secrets,
   };
   if (io.authorityFactory !== undefined) return await io.authorityFactory(context);
-  try {
-    return await createRegisteredAuthority(context);
-  } catch (error) {
-    if (!(error instanceof CapletsError) || !error.message.includes("is not registered"))
-      throw error;
-    return await createBuiltinAuthority(selector.bootstrap, selector.secrets, selector.configPath);
-  }
-}
-
-async function createBuiltinAuthority(
-  bootstrap: AuthorityBootstrap,
-  secrets: ResolvedAuthoritySecrets,
-  configPath: string,
-): Promise<WritableAuthority> {
-  if (bootstrap.provider === "filesystem") {
-    // Provider modules must load only after the configured provider is selected.
-    const { createFilesystemAuthority } = await import("../storage/filesystem-authority");
-    return await createFilesystemAuthority({
-      root: resolve(dirname(configPath), "caplets"),
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  if (bootstrap.provider === "sqlite") {
-    // Provider modules must load only after the configured provider is selected.
-    const { createSqliteAuthority } = await import("../storage/sql/authority");
-    return await createSqliteAuthority({
-      databasePath: bootstrap.databasePath,
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  if (bootstrap.provider === "postgresql") {
-    if (typeof secrets.credential !== "string") {
-      throw new CapletsError(
-        "CONFIG_INVALID",
-        "PostgreSQL authority requires a resolved connection credential",
-      );
-    }
-    // Provider modules must load only after the configured provider is selected.
-    const { createPostgresAuthority } = await import("../storage/sql/authority");
-    return await createPostgresAuthority({
-      connectionString: secrets.credential,
-      authorityId: bootstrap.authorityId,
-      namespace: bootstrap.namespace,
-    });
-  }
-  const credential = secrets.credential;
-  // Provider modules must load only after the configured provider is selected.
-  const { createS3Authority } = await import("../storage/s3-authority");
-  return await createS3Authority({
-    bucket: bootstrap.bucket,
-    region: bootstrap.region,
-    ...(bootstrap.endpoint === undefined ? {} : { endpoint: bootstrap.endpoint }),
-    ...(bootstrap.forcePathStyle === undefined ? {} : { forcePathStyle: bootstrap.forcePathStyle }),
-    ...(credential === undefined
-      ? {}
-      : { credentialProvider: () => parseS3Credential(credential) }),
-    authorityId: bootstrap.authorityId,
-    namespace: bootstrap.namespace,
-  });
+  return await createAuthorityWithBuiltinFallback(context, selector.configPath);
 }
 
 function authoritySecretResolver(io: StorageCliIO): AuthoritySecretResolver {
@@ -810,35 +751,47 @@ async function readKeyFile(path: string): Promise<Buffer> {
 
 async function readBackupBytes(path: string): Promise<Uint8Array> {
   const resolved = resolve(path);
-  let info;
+  let handle;
   try {
-    info = await stat(resolved);
+    handle = await open(resolved, "r");
   } catch {
     throw new CapletsError("CONFIG_NOT_FOUND", "backup input was not found");
   }
-  if (!info.isFile())
-    throw new CapletsError("CONFIG_INVALID", "backup input must be a regular file");
-  if (info.size > MAX_BACKUP_BYTES + 16 * 1024) {
-    throw new CapletsError("CONFIG_INVALID", "backup input exceeds the 64 MiB limit");
+
+  const maxReadableBytes = MAX_BACKUP_BYTES + 16 * 1024;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile())
+      throw new CapletsError("CONFIG_INVALID", "backup input must be a regular file");
+    if (info.size > maxReadableBytes) {
+      throw new CapletsError("CONFIG_INVALID", "backup input exceeds the 64 MiB limit");
+    }
+
+    const bytes = Buffer.allocUnsafe(maxReadableBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > maxReadableBytes) {
+      throw new CapletsError("CONFIG_INVALID", "backup input exceeds the 64 MiB limit");
+    }
+    return bytes.subarray(0, offset);
+  } finally {
+    await handle.close().catch(() => undefined);
   }
-  return await readFile(resolved);
 }
 
 async function writePrivateBytes(path: string, bytes: Uint8Array, force: boolean): Promise<void> {
   const resolved = resolve(path);
-  if (existsSync(resolved) && !force) {
-    throw new CapletsError(
-      "CONFIG_EXISTS",
-      "backup output already exists; use --force to replace it",
-    );
-  }
   await mkdir(dirname(resolved), { recursive: true, mode: 0o700 });
   try {
     await chmod(dirname(resolved), 0o700);
   } catch {
     // Best effort on platforms without POSIX permissions.
   }
-  const temporary = `${resolved}.${process.pid}.${Date.now()}.tmp`;
+  const temporary = `${resolved}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, bytes, { mode: 0o600, flag: "wx" });
     try {
@@ -846,7 +799,21 @@ async function writePrivateBytes(path: string, bytes: Uint8Array, force: boolean
     } catch {
       // Best effort on platforms without POSIX permissions.
     }
-    await rename(temporary, resolved);
+    if (force) {
+      await rename(temporary, resolved);
+    } else {
+      try {
+        await link(temporary, resolved);
+      } catch (error) {
+        if (isFsError(error, "EEXIST") || isFsError(error, "EISDIR")) {
+          throw new CapletsError(
+            "CONFIG_EXISTS",
+            "backup output already exists; use --force to replace it",
+          );
+        }
+        throw error;
+      }
+    }
   } finally {
     await rm(temporary, { force: true }).catch(() => undefined);
   }
@@ -1006,6 +973,10 @@ function ensureNotAborted(signal: AbortSignal | undefined): void {
     throw new CapletsError("SERVER_UNAVAILABLE", "storage lifecycle operation was interrupted");
 }
 
+function isFsError(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
 function assertPrivateFile(path: string, label: string): void {
   let info;
   try {
@@ -1045,28 +1016,4 @@ function loadBetterSqlite3(): BetterSqlite3Constructor {
 function loadPostgres(): PostgresFactory {
   const loaded = require("postgres") as { default?: PostgresFactory } | PostgresFactory;
   return typeof loaded === "function" ? loaded : loaded.default!;
-}
-
-function parseS3Credential(value: string | Uint8Array): {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-} {
-  if (typeof value !== "string")
-    throw new CapletsError("CONFIG_INVALID", "S3 credential is invalid");
-  try {
-    const parsed = JSON.parse(value) as Record<string, unknown>;
-    if (typeof parsed.accessKeyId !== "string" || typeof parsed.secretAccessKey !== "string")
-      throw new Error("invalid");
-    return {
-      accessKeyId: parsed.accessKeyId,
-      secretAccessKey: parsed.secretAccessKey,
-      ...(typeof parsed.sessionToken === "string" ? { sessionToken: parsed.sessionToken } : {}),
-    };
-  } catch {
-    throw new CapletsError(
-      "CONFIG_INVALID",
-      "S3 credential must resolve to a JSON access key pair",
-    );
-  }
 }

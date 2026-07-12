@@ -400,6 +400,15 @@ describe("SQLite SQL authority", () => {
           revoked: false,
         },
       );
+      expect(
+        await target.commitAuxiliary({ kind: "remove_session_touch", sessionId: "session-1" }),
+      ).toMatchObject({ kind: "applied", watermark: "3" });
+      expect(
+        await target.readAuxiliary({ kind: "session_touch", sessionId: "session-1" }),
+      ).toBeNull();
+      expect(
+        await target.commitAuxiliary({ kind: "remove_session_touch", sessionId: "session-1" }),
+      ).toMatchObject({ kind: "unchanged", watermark: "3" });
       await expect(target.restoreState(exported)).rejects.toMatchObject({ code: "CONFIG_EXISTS" });
 
       const duplicate = structuredClone(exported);

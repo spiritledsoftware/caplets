@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { CapletsError } from "../errors";
 import { stableJsonStringify } from "../stable-json";
+import { assertAuthorityLifecycleIdentity } from "./factory";
 import type {
   AuthorityExport,
   AuthorityGeneration,
@@ -80,7 +81,17 @@ export async function createAuthorityBackup(
   const key = normalizeBackupKey(options.key);
   const state = await authority.exportState();
   validateExport(state);
+  const lifecycleIdentity = assertAuthorityLifecycleIdentity(authority);
   const generation = state.generation;
+  if (
+    generation.provenance.namespace !== lifecycleIdentity.namespace ||
+    generation.schemaVersion !== lifecycleIdentity.schemaVersion
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Authority export identity does not match the provider lifecycle identity",
+    );
+  }
   const header = makeHeader(generation, state.auxiliaryWatermark, fingerprint(key));
   const headerBytes = encodeHeader(header);
   const aad = authenticatedHeaderBytes(headerBytes);
@@ -175,8 +186,26 @@ export async function restoreAuthorityBackup(
 ): Promise<AuthorityRestoreResult> {
   const decoded = await decodeAuthorityBackup(input, options.key);
   const health = await authority.health();
-  const namespace =
-    options.targetNamespace ?? authorityNamespace(authority, decoded.header.namespace);
+  const lifecycleIdentity = assertAuthorityLifecycleIdentity(authority);
+  const namespace = lifecycleIdentity.namespace;
+  if (
+    options.targetNamespace !== undefined &&
+    options.targetNamespace !== lifecycleIdentity.namespace
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Authority restore namespace override does not match the provider lifecycle identity",
+    );
+  }
+  if (
+    options.expectedSchemaVersion !== undefined &&
+    options.expectedSchemaVersion !== lifecycleIdentity.schemaVersion
+  ) {
+    throw new CapletsError(
+      "CONFIG_INVALID",
+      "Authority restore schema version override does not match the provider lifecycle identity",
+    );
+  }
   if (health.authorityId !== decoded.header.authorityId) {
     throw new CapletsError(
       "CONFIG_INVALID",
@@ -195,8 +224,7 @@ export async function restoreAuthorityBackup(
       "Authority backup namespace does not match restore target",
     );
   }
-  const targetSchemaVersion = options.expectedSchemaVersion ?? schemaVersionOf(authority);
-  if (targetSchemaVersion !== undefined && targetSchemaVersion !== decoded.header.schemaVersion) {
+  if (lifecycleIdentity.schemaVersion !== decoded.header.schemaVersion) {
     throw new CapletsError(
       "CONFIG_INVALID",
       "Authority backup schema version does not match restore target",
@@ -456,16 +484,6 @@ function encodeLength(length: number): Buffer {
   const encoded = Buffer.allocUnsafe(4);
   encoded.writeUInt32BE(length, 0);
   return encoded;
-}
-
-function authorityNamespace(authority: WritableAuthority, fallback: string): string {
-  const candidate = authority as WritableAuthority & { namespace?: unknown };
-  return typeof candidate.namespace === "string" ? candidate.namespace : fallback;
-}
-
-function schemaVersionOf(authority: WritableAuthority): number | undefined {
-  const candidate = authority as WritableAuthority & { schemaVersion?: unknown };
-  return typeof candidate.schemaVersion === "number" ? candidate.schemaVersion : undefined;
 }
 
 async function releaseFence(

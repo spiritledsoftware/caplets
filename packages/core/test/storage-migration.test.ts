@@ -9,6 +9,7 @@ import type {
   AuthorityHead,
   AuthorityHealth,
   AuthorityRestoreResult,
+  AuthorityMigrationStageContext,
   AuxiliaryCommit,
   AuxiliaryCommitResult,
   AuxiliaryRead,
@@ -143,18 +144,27 @@ class FakeAuthority implements WritableAuthority {
 
   async close(): Promise<void> {}
 
-  async stageState(state: AuthorityExport): Promise<MigrationStage> {
+  async stageMigration(
+    state: AuthorityExport,
+    _context: AuthorityMigrationStageContext,
+  ): Promise<MigrationStage> {
     this.stageCalls += 1;
     this.staged = structuredClone(state);
     return { token: "candidate", state: structuredClone(state) };
   }
 
-  async readStagedState(_stage: MigrationStage): Promise<AuthorityExport> {
+  async readMigrationStage(
+    _stage: MigrationStage,
+    _context: AuthorityMigrationStageContext,
+  ): Promise<AuthorityExport> {
     if (!this.staged) throw new Error("missing candidate");
     return structuredClone(this.staged);
   }
 
-  async publishStagedState(_stage: MigrationStage): Promise<AuthorityRestoreResult> {
+  async publishMigrationStage(
+    _stage: MigrationStage,
+    _context: AuthorityMigrationStageContext,
+  ): Promise<AuthorityRestoreResult> {
     this.publishCalls += 1;
     if (!this.staged) throw new Error("missing candidate");
     this.state = structuredClone(this.staged);
@@ -170,7 +180,10 @@ class FakeAuthority implements WritableAuthority {
     };
   }
 
-  async invalidateStagedState(_stage: MigrationStage): Promise<void> {
+  async invalidateMigrationStage(
+    _stage: MigrationStage,
+    _context: AuthorityMigrationStageContext,
+  ): Promise<void> {
     this.invalidateCalls += 1;
     this.staged = undefined;
   }
@@ -847,6 +860,26 @@ describe("provider-neutral authority migration", () => {
     ).toBe(true);
     expect(leaseReleases).toEqual(["destination", "source"]);
     expect(await target.readHead()).not.toBeNull();
+  });
+
+  it("fails closed when a target namespace override disagrees with provider identity", async () => {
+    const source = new FakeAuthority(sourceState({ caplets: { one: { id: "one" } } }));
+    const target = new FakeAuthority(sourceState({ caplets: {} }), {
+      authorityId: "target",
+      namespace: "target-provider-namespace",
+    });
+    const fence = sourceFence();
+
+    await expect(
+      migrateAuthority({
+        source,
+        target,
+        fence,
+        targetNamespace: "source-ns",
+      }),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await target.readHead()).toBeNull();
+    expect(target.stageCalls).toBe(0);
   });
 
   it("fails closed instead of adapting restoreState as publish-early staging", () => {
