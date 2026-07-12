@@ -593,7 +593,9 @@ function prepareSqlRestoreState(
     };
   });
   receipts.sort((left, right) =>
-    stableJsonStringify(left).localeCompare(stableJsonStringify(right)),
+    receiptKeyForSqlValues(left.currentHostId, left.principalId, left.idempotencyKey).localeCompare(
+      receiptKeyForSqlValues(right.currentHostId, right.principalId, right.idempotencyKey),
+    ),
   );
   return { generation, receipts, auxiliary };
 }

@@ -1277,8 +1277,11 @@ export class FilesystemAuthority implements WritableAuthority<
       seen.add(key);
       receipts.push(receipt);
     }
-    receipts.sort((left, right) =>
-      stableJsonStringify(left).localeCompare(stableJsonStringify(right)),
+    receipts.sort(
+      (left, right) =>
+        left.currentHostId.localeCompare(right.currentHostId) ||
+        left.principalId.localeCompare(right.principalId) ||
+        left.idempotencyKey.localeCompare(right.idempotencyKey),
     );
     return receipts;
   }
@@ -1765,8 +1768,11 @@ function parseExportReceipts(
     seen.add(key);
     receipts.push(receipt);
   }
-  receipts.sort((left, right) =>
-    stableJsonStringify(left).localeCompare(stableJsonStringify(right)),
+  receipts.sort(
+    (left, right) =>
+      left.currentHostId.localeCompare(right.currentHostId) ||
+      left.principalId.localeCompare(right.principalId) ||
+      left.idempotencyKey.localeCompare(right.idempotencyKey),
   );
   return receipts;
 }
